@@ -11,7 +11,7 @@
 //
 // Ranges: U+FF00, U+FFEF
 //
-// Licence of the glyph outlines: SIL Open Font License 1.1. See the repository-root `NOTICE`, which
+// Licence of the glyph outlines: SIL Open Font License 1.1. See this crate's `NOTICE`, which
 // records this file by name together with the facts above.
 //
 // The shard is 64492 bytes (548 glyphs), covering 240 codepoints

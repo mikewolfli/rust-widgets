@@ -123,6 +123,16 @@ impl WidgetFactory {
             self.register(drop_down_popup_host_capability(), create_drop_down_popup_host);
             self.register(command_palette_host_capability(), create_command_palette_host);
             self.register(header_menu_capability(), create_header_menu);
+            // The COMP-A1..A7 companions were fully implemented and mounted by their owners but had
+            // no registration row, which is why `check_drawn_types_are_covered` reported every one
+            // of them: a type that draws and that no factory name can build is outside every gate.
+            self.register(chart_reference_line_capability(), create_chart_reference_line);
+            self.register(terminal_find_bar_capability(), create_terminal_find_bar);
+            self.register(map_attribution_capability(), create_map_attribution);
+            self.register(gantt_task_grid_capability(), create_gantt_task_grid);
+            self.register(web_history_panel_capability(), create_web_history_panel);
+            self.register(chapter_list_panel_capability(), create_chapter_list_panel);
+            self.register(map_overview_capability(), create_map_overview);
             self.register(grid_capability(), create_grid);
             // Controls that existed with a complete implementation but were never
             // registered. Without these rows the factory could not construct them by

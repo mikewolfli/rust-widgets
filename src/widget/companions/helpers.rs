@@ -16,7 +16,7 @@ use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 /// precedence the other controls use, so a companion mounted beside them does not switch
 /// appearance on its own.
 pub(super) fn surface_ink(style: &WidgetStyle) -> (Color, Color) {
-    let themed = crate::style::theme_manager().current_theme().map(|theme| theme.colors.background);
+    let themed = crate::style::palette_shared().map(|colors| colors.background);
     let surface = style.background_color.or(themed).unwrap_or(Color::rgb(245, 246, 248));
     let ink = style
         .text_color
@@ -27,10 +27,7 @@ pub(super) fn surface_ink(style: &WidgetStyle) -> (Color, Color) {
 
 /// The active theme's accent, or the library's primary colour.
 pub(super) fn accent_color() -> Color {
-    crate::style::theme_manager()
-        .current_theme()
-        .map(|theme| theme.colors.primary)
-        .unwrap_or(Color::PRIMARY)
+    crate::style::palette_shared().map(|colors| colors.primary).unwrap_or(Color::PRIMARY)
 }
 
 /// Encodes a point as the `[x, y]` tuple property representation.

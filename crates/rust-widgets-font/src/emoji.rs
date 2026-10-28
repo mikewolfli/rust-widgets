@@ -8,8 +8,8 @@
 // Glyph source: Noto Color Emoji, colour emoji as CBDT PNG bitmaps, one strike at 109 ppem:
 //     https://raw.githubusercontent.com/googlefonts/noto-emoji/main/2D/fonts/NotoColorEmoji.ttf
 //     SHA-256 (upstream .ttf): 15671215ab769fdc7162a045d56fd7d7e477c51b04e6b3c761d914d8fdd6cc44
-// Licence of the glyph data: OFL-1.1 (SIL Open Font License 1.1). See the
-// repository-root `NOTICE`. This subset is a Modified Version under the OFL: it retains
+// Licence of the glyph data: OFL-1.1 (SIL Open Font License 1.1). See this
+// crate's `NOTICE`. This subset is a Modified Version under the OFL: it retains
 // the upstream colour bitmaps verbatim, and it does not use the upstream Reserved Font
 // Name.
 //

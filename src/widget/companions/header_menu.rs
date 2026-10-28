@@ -22,7 +22,7 @@
 //! reported through the same [`HeaderMenu::sort_requested`] signal as ascending and descending so
 //! the grid has one path for all three.
 
-use crate::compat::{String, ToString, Vec};
+use crate::compat::{lock, Arc, Mutex, String, ToString, Vec};
 use crate::core::{HorizontalAlignment, Point, Rect, Size};
 use crate::event::{key_codes, Event, EventHandler};
 use crate::impl_draw_bridge;
@@ -50,8 +50,7 @@ const HEADER_INSET: u32 = 12;
 const HEADER_MENU_MIN_WIDTH: u32 = 168;
 
 /// The sort a column is currently under.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SortState {
     /// The column is not part of the sort.
     #[default]
@@ -61,7 +60,6 @@ pub enum SortState {
     /// The column sorts descending.
     Desc,
 }
-
 
 impl SortState {
     /// The token used by the property contract and the sort signal.
@@ -126,6 +124,13 @@ pub struct HeaderMenu {
     filterable: bool,
     sort_state: SortState,
     filter_text: String,
+    /// The `(column token, filter text)` a bound table reads when it applies a request.
+    ///
+    /// `sort_requested`, `hide_column_requested` and `column_chooser_requested` carry the token
+    /// themselves, but `filter_requested` carries only the operator, so the grid needs the menu's
+    /// current column and operand. The pair is mirrored here because a table attaches with
+    /// `&HeaderMenu` and cannot call the `&mut self` setters.
+    context: Arc<Mutex<(String, String)>>,
     /// Emitted as `(column token, requested state)`; `None` in the state clears the sort.
     pub sort_requested: Signal1<(String, SortState)>,
     /// Emitted with the operator the Filter row requests.
@@ -157,6 +162,7 @@ impl HeaderMenu {
             filterable: true,
             sort_state: SortState::None,
             filter_text: String::new(),
+            context: Arc::new(Mutex::new((String::new(), String::new()))),
             sort_requested: Signal1::new(),
             filter_requested: Signal1::new(),
             hide_column_requested: Signal1::new(),
@@ -172,6 +178,7 @@ impl HeaderMenu {
         self.open = true;
         self.selected_index = 0;
         self.clamp_selection();
+        self.sync_context();
         self.base.show();
         self.base.request_redraw();
     }
@@ -225,8 +232,27 @@ impl HeaderMenu {
         let text = text.into();
         if self.filter_text != text {
             self.filter_text = text;
+            self.sync_context();
             self.base.request_redraw();
         }
+    }
+
+    /// The shared `(column token, filter text)` pair a bound table reads when it applies a
+    /// reported request (COMP-A8).
+    ///
+    /// The filter signal carries only the operator, so this is how a table learns which column the
+    /// menu was opened for and what operand the user typed. The pair is updated by [`Self::open_for`]
+    /// and [`Self::set_filter_text`], so a table sees the values in force when the row was
+    /// activated. A writer reads it when a `HeaderMenu` signal arrives; it must not hold the lock
+    /// across its own signal work.
+    pub fn context_handle(&self) -> Arc<Mutex<(String, String)>> {
+        Arc::clone(&self.context)
+    }
+
+    /// Mirrors the mutable fields a bound table reads through [`Self::context_handle`].
+    fn sync_context(&self) {
+        let mut context = lock(&self.context);
+        *context = (self.column_token.clone(), self.filter_text.clone());
     }
 
     /// Whether sort rows are offered.

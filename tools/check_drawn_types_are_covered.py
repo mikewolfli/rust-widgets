@@ -97,6 +97,10 @@ ACKNOWLEDGED = {
         "src/widget/cupertino/navigation_stack.rs",
         "Cupertino navigation container: exported from `widget/mod.rs`, no `create_*` constructor and no canonical name, so nothing snapshots it.",
     ),
+    "DataGridCellEditor": (
+        "src/widget/view_widgets/data_grid.rs",
+        "The in-place editor `DataGrid::begin_edit` hands a host and `commit_edit` reads back (V-002). Registering it as a factory kind would let a caller mount an editor with no cell behind it; the grid's own snapshot covers the frame it paints over a cell, and `the_cell_editor_paints_its_box_and_commits_its_text` covers the editor itself.",
+    ),
     "DrumColumn": (
         "src/widget/misc_widgets/drum_column.rs",
         "One scrolling column of the drum picker; the picker's snapshot covers the assembled control.",

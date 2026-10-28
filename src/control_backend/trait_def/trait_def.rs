@@ -1503,6 +1503,39 @@ pub trait ControlBackend: Send + Sync {
         None
     }
 
+    /// Translates the geometry of every id in `ids` by `(dx, dy)`, returning how many resolved.
+    ///
+    /// # Why this is one call rather than a loop at the call site
+    ///
+    /// A scroll step moves every descendant of a viewport, and the default body below is the
+    /// same read-then-write pair a caller would write itself. Putting it on the backend is what
+    /// lets a host with a native window send one batched geometry message instead of two calls
+    /// per descendant, without the scroll container knowing which kind of host it is (CP-001).
+    /// A backend that cannot batch keeps the default and remains correct.
+    fn translate_widget_geometries(
+        &self,
+        ids: &[ObjectId],
+        dx: i32,
+        dy: i32,
+        moved_out: &mut usize,
+    ) {
+        if dx == 0 && dy == 0 {
+            return;
+        }
+        for &id in ids {
+            if let Some((x, y, width, height)) = self.get_widget_geometry(id) {
+                self.set_widget_geometry(
+                    id,
+                    x.saturating_add(dx),
+                    y.saturating_add(dy),
+                    width,
+                    height,
+                );
+                *moved_out += 1;
+            }
+        }
+    }
+
     /// Report that a container's client area became `width` by `height`.
     ///
     /// A host calls this when the *user* resizes a window — the case no

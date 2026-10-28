@@ -59,6 +59,7 @@ use crate::widget::capability::coercion::{expect_bool, expect_string, expect_str
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::companions::DragGhostLayer;
 use crate::widget::metrics::role_font;
 use crate::widget::{draw_icon_at, BaseWidget, Draw, IconName, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
@@ -442,6 +443,9 @@ pub struct KanbanBoard {
     lanes: Vec<KanbanLane>,
     /// Card id to lane id. Cards without an entry render in the first lane.
     card_lanes: HashMap<String, String>,
+    /// Lanes the user has collapsed, by id (SP-001). A collapsed lane keeps its header strip and
+    /// hides its card rows.
+    collapsed_lanes: Vec<String>,
     /// Whether cards are grouped into lanes.
     lane_mode: KanbanLaneMode,
     /// Bumped whenever the board's structure (columns, cards, lanes, lane assignments) changes.
@@ -471,6 +475,18 @@ pub struct KanbanBoard {
     /// [`Self::card_moved`] keeps its published single-card payload; this companion reports the
     /// batch a multi-selection drop produced without redefining that signal.
     pub cards_moved: Signal1<Vec<String>>,
+    /// The drag proxy this board keeps in step, when one is attached.
+    drag_ghost: Option<DragGhostBinding>,
+}
+
+/// The live link between a [`KanbanBoard`] and a [`DragGhostLayer`].
+///
+/// The board owns the layer so it can write its drag session into it; `poll_drag_ghost_layer`
+/// compares the board's existing `drag`/`drag_origin` fields with the layer on every poll, so the
+/// proxy starts, follows and hides without a second drag model.
+struct DragGhostBinding {
+    /// The proxy kept in step with the board's drag session.
+    layer: DragGhostLayer,
 }
 
 /// Cached lane geometry and per-card lane slots.
@@ -507,6 +523,7 @@ impl KanbanBoard {
             column_widths: HashMap::new(),
             horizontal_scroll: 0,
             lanes: Vec::new(),
+            collapsed_lanes: Vec::new(),
             card_lanes: HashMap::new(),
             lane_mode: KanbanLaneMode::None,
             layout_revision: 0,
@@ -518,6 +535,7 @@ impl KanbanBoard {
             card_hovered: Signal1::new(),
             selection_changed: Signal1::new(),
             cards_moved: Signal1::new(),
+            drag_ghost: None,
         }
     }
 
@@ -757,6 +775,15 @@ impl KanbanBoard {
         let mut heights = Vec::with_capacity(lane_count);
         let mut tops = Vec::with_capacity(lane_count);
         let mut y = HEADER_HEIGHT as i32;
+        // A collapsed lane keeps only its caption strip; its cards are hidden rather than moved,
+        // so expanding it again restores the order the model already has (SP-001).
+        for (index, lane) in self.lanes.iter().enumerate() {
+            if self.is_lane_collapsed(&lane.id) {
+                if let Some(row) = rows.get_mut(index) {
+                    *row = 0;
+                }
+            }
+        }
         for &row in rows.iter().take(lane_count) {
             tops.push(y);
             let height =
@@ -800,6 +827,47 @@ impl KanbanBoard {
             self.lane_top(index),
             LANE_HEADER_WIDTH,
             (self.lane_height(index) - LANE_GAP).max(1) as u32,
+        ))
+    }
+
+    /// Whether lane `id` is collapsed (SP-001).
+    pub fn is_lane_collapsed(&self, id: &str) -> bool {
+        self.collapsed_lanes.iter().any(|lane| lane == id)
+    }
+
+    /// Collapses or expands lane `id`; returns whether the id named a lane.
+    pub fn set_lane_collapsed(&mut self, id: &str, collapsed: bool) -> bool {
+        if !self.lanes.iter().any(|lane| lane.id == id) {
+            return false;
+        }
+        let position = self.collapsed_lanes.iter().position(|lane| lane == id);
+        match (collapsed, position) {
+            (true, None) => self.collapsed_lanes.push(id.to_string()),
+            (false, Some(index)) => {
+                self.collapsed_lanes.remove(index);
+            }
+            _ => return true,
+        }
+        self.invalidate_layout();
+        self.base.request_layout();
+        self.base.request_redraw();
+        true
+    }
+
+    /// Flips the collapsed state of lane `id`; returns whether the id named a lane.
+    pub fn toggle_lane_collapsed(&mut self, id: &str) -> bool {
+        self.set_lane_collapsed(id, !self.is_lane_collapsed(id))
+    }
+
+    /// The painted box of lane `id`'s collapse chevron, or `None` for an unknown lane.
+    pub fn lane_collapse_rect(&self, id: &str) -> Option<Rect> {
+        let index = self.lanes.iter().position(|lane| lane.id == id)?;
+        let header = self.lane_header_rect(index)?;
+        Some(Rect::new(
+            header.x + 4,
+            header.y + (LANE_HEADER_HEIGHT - HEADER_ICON) / 2,
+            HEADER_ICON as u32,
+            HEADER_ICON as u32,
         ))
     }
 
@@ -1105,6 +1173,10 @@ impl KanbanBoard {
         // different y in every lane, so the ordinal is the one the cached layout derived.
         if self.lanes_active() {
             let (lane, ordinal) = self.lane_slot(position)?;
+            // A collapsed lane hides its cards; the header strip remains (SP-001).
+            if self.lanes.get(lane).is_some_and(|lane| self.is_lane_collapsed(&lane.id)) {
+                return None;
+            }
             let band = self.lane_band_rect(lane)?;
             let y = band.y + LANE_HEADER_HEIGHT + ordinal as i32 * (CARD_HEIGHT as i32 + CARD_GAP);
             return Some(Rect::new(column_rect.x, y, column_rect.width, CARD_HEIGHT));
@@ -1457,6 +1529,103 @@ impl KanbanBoard {
     /// provide for itself.
     pub fn hovered_column(&self) -> Option<usize> {
         self.hovered_column
+    }
+
+    /// Follows a [`DragGhostLayer`] with this board's drag session.
+    ///
+    /// This is the companion binding for COMP-A8. The layer is pushed from the board's existing
+    /// `drag`/`drag_origin` fields — the card id is the title, the source card's rectangle is the
+    /// origin, and the board's own geometry is the drop bound — so there is no second drag model.
+    /// Attaching adopts an active drag immediately; [`Self::poll_drag_ghost_layer`] starts the
+    /// proxy when the pointer crosses the drag threshold, follows it, and hides it when the drag
+    /// ends or is cancelled. Attaching replaces any previous layer.
+    pub fn attach_drag_ghost_layer(&mut self, mut layer: DragGhostLayer) {
+        layer.set_drop_bounds(self.geometry());
+        match self.drag_ghost_state() {
+            Some((origin, title, pointer)) => {
+                layer.begin(origin, title);
+                layer.follow(pointer);
+            }
+            None => {
+                let _ = layer.cancel();
+            }
+        }
+        self.drag_ghost = Some(DragGhostBinding { layer });
+        self.base.request_redraw();
+    }
+
+    /// Stops following the attached drag proxy and returns it.
+    pub fn detach_drag_ghost_layer(&mut self) -> Option<DragGhostLayer> {
+        let binding = self.drag_ghost.take()?;
+        self.base.request_redraw();
+        Some(binding.layer)
+    }
+
+    /// Whether a [`DragGhostLayer`] is attached.
+    pub fn is_drag_ghost_layer_attached(&self) -> bool {
+        self.drag_ghost.is_some()
+    }
+
+    /// The attached drag proxy, if any.
+    pub fn drag_ghost_layer(&self) -> Option<&DragGhostLayer> {
+        self.drag_ghost.as_ref().map(|binding| &binding.layer)
+    }
+
+    /// The attached drag proxy for editing, if any.
+    pub fn drag_ghost_layer_mut(&mut self) -> Option<&mut DragGhostLayer> {
+        self.drag_ghost.as_mut().map(|binding| &mut binding.layer)
+    }
+
+    /// Pushes the board's drag session into the attached proxy.
+    ///
+    /// Called from `draw` and `handle_event`; returns whether the layer's active state, title,
+    /// origin, bounds or pointer moved. With no drag in progress the proxy is hidden once and
+    /// later polls return `false`.
+    pub fn poll_drag_ghost_layer(&mut self) -> bool {
+        let bounds = self.geometry();
+        let state = self.drag_ghost_state();
+        let Some(binding) = self.drag_ghost.as_mut() else {
+            return false;
+        };
+        let mut changed = false;
+        if binding.layer.drop_bounds() != Some(bounds) {
+            binding.layer.set_drop_bounds(bounds);
+            changed = true;
+        }
+        match state {
+            Some((origin, title, pointer)) => {
+                if !binding.layer.is_active()
+                    || binding.layer.origin_rect() != origin
+                    || binding.layer.title() != title
+                {
+                    binding.layer.begin(origin, title);
+                    changed = true;
+                }
+                if binding.layer.pointer() != pointer {
+                    binding.layer.follow(pointer);
+                    changed = true;
+                }
+            }
+            None => {
+                if binding.layer.is_active() {
+                    binding.layer.cancel();
+                    changed = true;
+                }
+            }
+        }
+        changed
+    }
+
+    /// The board's drag session expressed as a proxy state: source card rectangle, card id and
+    /// pointer. `None` when no drag has crossed the activation threshold.
+    fn drag_ghost_state(&self) -> Option<(Rect, String, Point)> {
+        if !self.is_dragging_card() {
+            return None;
+        }
+        let origin = self.card_rect(self.drag_origin?)?;
+        let title = self.dragged_card_id()?.to_string();
+        let pointer = self.drag.as_ref()?.current();
+        Some((origin, title, pointer))
     }
 
     /// Abandons the drag in progress.
@@ -2012,6 +2181,9 @@ impl WidgetProperties for KanbanBoard {
 
 impl EventHandler for KanbanBoard {
     fn handle_event(&mut self, event: &Event) {
+        // The proxy follows the board's own drag session, so it is drained before routing: the
+        // frame that follows the gesture already shows the updated proxy.
+        let _ = self.poll_drag_ghost_layer();
         self.base.handle_event(event);
         if !self.base.is_enabled() {
             return;
@@ -2025,6 +2197,19 @@ impl EventHandler for KanbanBoard {
                 });
                 if let Some(index) = collapse {
                     self.toggle_column_collapsed(index);
+                    return;
+                }
+                // The lane chevron sits in the left strip, one level above the columns (SP-001).
+                let lane_collapse = self
+                    .lanes
+                    .iter()
+                    .find(|lane| {
+                        self.lane_collapse_rect(&lane.id)
+                            .is_some_and(|rect| rect.contains_point(*pos))
+                    })
+                    .map(|lane| lane.id.clone());
+                if let Some(id) = lane_collapse {
+                    self.toggle_lane_collapsed(&id);
                     return;
                 }
                 if let Some(position) = self.card_at(*pos) {
@@ -2195,6 +2380,9 @@ impl EventHandler for KanbanBoard {
 
 impl Draw for KanbanBoard {
     fn draw(&mut self, context: &mut RenderContext) {
+        // Keep the attached proxy on the board's drag session; a drag can end or move without an
+        // event this control receives before painting.
+        let _ = self.poll_drag_ghost_layer();
         let rect = self.geometry();
         if rect.width == 0 || rect.height == 0 {
             return;
@@ -2545,11 +2733,21 @@ impl KanbanBoard {
                 continue;
             };
             context.fill_rounded_rect(header, 6, chrome.lane_band(index));
+            // The chevron is the lane's collapse control, in the same leading cell the column
+            // headers use, so one interaction model covers both levels (SP-001).
+            if let Some(icon_rect) = self.lane_collapse_rect(&self.lanes[index].id) {
+                let icon = if self.is_lane_collapsed(&self.lanes[index].id) {
+                    crate::widget::IconName::ChevronRight
+                } else {
+                    crate::widget::IconName::ChevronDown
+                };
+                crate::widget::draw_icon_at(context, icon_rect, chrome.text(), icon);
+            }
             context.draw_text_line_cow(
                 Rect::new(
-                    header.x + CARD_PADDING,
+                    header.x + CARD_PADDING + HEADER_ICON,
                     header.y,
-                    header.width.saturating_sub(2 * CARD_PADDING as u32),
+                    header.width.saturating_sub((CARD_PADDING + HEADER_ICON) as u32 * 2),
                     LANE_HEADER_HEIGHT as u32,
                 ),
                 &self.lanes[index].title,
@@ -4597,5 +4795,46 @@ mod issue_2_8_tests {
         assert_eq!(board.is_column_collapsed(0), Some(true));
         assert_eq!(board.is_column_collapsed(9), None);
         assert!(!board.toggle_column_collapsed(9));
+    }
+
+    /// The attached proxy follows the board's existing drag session and hides when it ends.
+    #[test]
+    fn the_drag_ghost_follows_the_board_drag() {
+        let mut board = board();
+        board.attach_drag_ghost_layer(DragGhostLayer::new(Rect::new(0, 0, 200, 60)));
+        assert!(board.is_drag_ghost_layer_attached());
+        assert_eq!(
+            board.drag_ghost_layer().expect("attached").drop_bounds(),
+            Some(board.geometry()),
+            "attach pushes the board as the drop bound"
+        );
+        assert!(!board.drag_ghost_layer().expect("attached").is_active());
+        assert!(!board.poll_drag_ghost_layer(), "no drag is nothing to apply");
+
+        let position = CardPosition { column: 0, card: 0 };
+        let origin = board.card_rect(position).expect("card is laid out");
+        let start =
+            Point::new(origin.x + origin.width as i32 / 2, origin.y + origin.height as i32 / 2);
+        board.handle_event(&Event::mouse_press(start.x, start.y, 1));
+        board.handle_event(&Event::mouse_move(start.x + 40, start.y + 10));
+        assert!(board.is_dragging_card());
+        assert!(board.poll_drag_ghost_layer(), "the active drag reaches the proxy");
+        {
+            let layer = board.drag_ghost_layer().expect("attached");
+            assert!(layer.is_active());
+            assert_eq!(layer.title(), "a", "the card id is the proxy title");
+            assert_eq!(layer.origin_rect(), origin);
+            assert_eq!(layer.pointer(), Point::new(start.x + 40, start.y + 10));
+        }
+        assert!(!board.poll_drag_ghost_layer(), "an unchanged drag is not re-applied");
+
+        board.cancel_drag();
+        assert!(board.poll_drag_ghost_layer(), "the ended drag hides the proxy");
+        assert!(!board.drag_ghost_layer().expect("attached").is_active());
+
+        let layer = board.detach_drag_ghost_layer().expect("detached");
+        assert!(!board.is_drag_ghost_layer_attached());
+        assert!(!board.poll_drag_ghost_layer(), "a detached proxy is not polled");
+        assert!(!layer.is_active());
     }
 }

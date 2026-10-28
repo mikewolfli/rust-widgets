@@ -468,10 +468,8 @@ impl Draw for RecentValuesPopup {
         let surface = style.background_color.unwrap_or(Color::WHITE);
         let ink = style.text_color.unwrap_or_else(|| surface.contrast_color());
         let border = style.border_color.unwrap_or_else(|| surface.blend(&ink, 0.25));
-        let accent = {
-            let manager = crate::style::theme_manager();
-            manager.current_theme().map(|theme| theme.colors.primary).unwrap_or(Color::PRIMARY)
-        };
+        let accent =
+            crate::style::palette_shared().map(|colors| colors.primary).unwrap_or(Color::PRIMARY);
 
         context.fill_rounded_rect(popup, 2, surface);
         context.draw_rounded_rect_stroke(popup, 2, border, 1);

@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 
 //! TextArea widget — multi-line text input (BLUE13 R2.5).
+#[cfg(full_widgets)]
+use crate::compat::{lock, Arc, Mutex};
 use crate::compat::{Box, Rc, RefCell, String, ToString, Vec};
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::dnd::{DragPayload, DragSource, DropEffect, DropTarget};
@@ -10,12 +12,16 @@ use crate::event::wheel::WheelScroll;
 use crate::event::FocusReason;
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
+#[cfg(full_widgets)]
+use crate::signal::ConnectionScope;
 use crate::signal::{GenericSignal, Signal1};
 use crate::undo::UndoStack;
 use crate::widget::capability::coercion::{expect_bool, expect_string, expect_usize};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+#[cfg(full_widgets)]
+use crate::widget::companions::FindReplaceBar;
 use crate::widget::input_widgets::input_companions::{ScrollOrientation, Scrollbar};
 use crate::widget::metrics::{active_profile, dimensions, effective_font, profile_metrics};
 use crate::widget::text_utils::{byte_index_of_char, floor_char_boundary};
@@ -154,6 +160,16 @@ pub struct TextArea {
     /// Only one splice is described at a time. A second edit before the rows are read clears the
     /// hint, which falls back to the whole-table path rather than composing two unrelated deltas.
     pending_row_edit: Cell<Option<PendingEdit>>,
+    /// The splice the next [`Self::line_spans`] call may patch in place (I-P10).
+    ///
+    /// The line table has the same incremental rule as the display rows: an edit that inserts or
+    /// removes bytes changes only the lines it touched and shifts the offsets after them. A second
+    /// splice before the table is read clears the hint and falls back to a full rescan.
+    pending_line_edit: Cell<Option<PendingEdit>>,
+    /// Character boundaries of the row the pointer last hit-tested (I-P09).
+    line_advance_cache: RefCell<Option<LineAdvanceCache>>,
+    /// The renderer's line height for the current font, measured once (I-P09).
+    line_height_cache: RefCell<Option<(Font, u32)>>,
     /// Measured advances for the selection band's two edges, keyed by the revision.
     ///
     /// The band used to re-shape its line prefix and its selected run on every frame, which is two
@@ -171,6 +187,43 @@ pub struct TextArea {
     /// control still paints it in its own ink because the companion's painter reads only palette
     /// roles and would move the field's themed scrollbar to a different colour.
     scrollbar: Scrollbar,
+    /// The `FindReplaceBar` this area follows, when one is attached (COMP-A8).
+    #[cfg(full_widgets)]
+    find_replace: Option<FindReplaceBinding>,
+}
+
+/// One intent reported by an attached [`FindReplaceBar`] (COMP-A8).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg(full_widgets)]
+enum FindReplaceIntent {
+    /// Move to the next match.
+    Next,
+    /// Move to the previous match.
+    Previous,
+    /// Replace the current match.
+    ReplaceOne,
+    /// Replace every match.
+    ReplaceAll,
+}
+
+/// The live link between a [`TextArea`] and a [`FindReplaceBar`] (COMP-A8).
+///
+/// The bar reports intents with unit signals, so the link parks one intent per emission and
+/// [`TextArea::poll_find_replace_bar`] applies them. The query, replacement and match policy are
+/// read from the bar's shared context at apply time, and the match counters are written back
+/// through the bar's shared cell so the strip can show "3 of 7" without the host forwarding it.
+#[cfg(full_widgets)]
+struct FindReplaceBinding {
+    /// The intents reported since the last poll.
+    intents: Arc<Mutex<Vec<FindReplaceIntent>>>,
+    /// `(query, replacement, match_case, use_regex)` as last written by the bar.
+    context: Arc<Mutex<(String, String, bool, bool)>>,
+    /// `(total, current)` match counters written back to the bar.
+    matches: Arc<Mutex<(usize, usize)>>,
+    /// The bar's paint request, emitted after a counter write.
+    redraw: GenericSignal,
+    /// The subscriptions, dropped with the binding so a detach leaves no slot behind.
+    _scope: ConnectionScope,
 }
 
 /// One display row: the byte range of the value it paints.
@@ -305,8 +358,104 @@ struct BandWidthCache {
     entries: HashMap<(usize, usize), i32>,
 }
 
+/// Per-character advances for one display row, keyed by the document revision and font (I-P09).
+///
+/// The pointer hit test used to shape every glyph of the row on every press and drag step. The
+/// row is immutable for a given revision, so the cumulative boundaries are built once and read
+/// by every following click; a caret move does not invalidate them.
+struct LineAdvanceCache {
+    revision: u64,
+    font: Font,
+    start: usize,
+    end: usize,
+    /// `(byte offset relative to `start`, cumulative advance)` at every character boundary.
+    cuts: Vec<(usize, i32)>,
+}
+
 /// Upper bound on memoised selection-band advances (I-P61).
 const BAND_WIDTH_CACHE_LIMIT: usize = 256;
+
+/// One line's visible content end, excluding a `\r\n` or `\n` terminator.
+fn line_content_end(chunk: &str, end: usize) -> usize {
+    if chunk.ends_with("\r\n") {
+        end - 2
+    } else if chunk.ends_with('\n') {
+        end - 1
+    } else {
+        end
+    }
+}
+
+/// Patches a line table with one splice, returning whether the patch applied (I-P10).
+///
+/// Only the lines the edit touched are rescanned; every line after the change has its offsets
+/// shifted by the size difference. The full-table fallback remains for the cases this cannot
+/// describe (a block-count trim or two splices before the table is read).
+fn splice_line_spans(spans: &mut Vec<LineSpan>, text: &str, edit: PendingEdit) -> bool {
+    let Some(&(_, _, old_len)) = spans.last() else {
+        return false;
+    };
+    let offset = edit.start.min(old_len);
+    let removed_end = offset.saturating_add(edit.removed).min(old_len);
+    if offset > text.len() {
+        return false;
+    }
+    // The line containing the edit's start. An offset exactly on a line boundary belongs to the
+    // line that begins there, which is what keeps an insertion at a line start from rewriting the
+    // previous terminator.
+    let first = spans
+        .partition_point(|&(start, _, _)| start <= offset)
+        .saturating_sub(1)
+        .min(spans.len() - 1);
+    // The last line the removal touched. When the removed run ends exactly on a boundary the
+    // following line joins the affected region, because deleting a terminator merges the two.
+    let last = if removed_end > offset {
+        spans
+            .partition_point(|&(start, _, _)| start <= removed_end)
+            .saturating_sub(1)
+            .min(spans.len() - 1)
+    } else {
+        first
+    }
+    .max(first);
+    let region_start = spans[first].0;
+    let region_end_old = spans[last].2;
+    // Bytes removed inside the region; the caret can sit after a terminator, so clamp.
+    let removed_in_region = removed_end.saturating_sub(offset).min(region_end_old - region_start);
+    let region_end_new =
+        region_start + (region_end_old - region_start) - removed_in_region + edit.inserted;
+    if region_end_new > text.len() || region_end_new < region_start {
+        return false;
+    }
+    let mut fresh = Vec::new();
+    let mut start = region_start;
+    for chunk in text[region_start..region_end_new].split_inclusive('\n') {
+        let end = start + chunk.len();
+        fresh.push((start, line_content_end(chunk, end), end));
+        start = end;
+    }
+    if fresh.is_empty() {
+        fresh.push((region_start, region_start, region_start));
+    } else if start == text.len() && text.ends_with('\n') {
+        fresh.push((start, start, start));
+    }
+    let fresh_len = fresh.len();
+    spans.splice(first..=last, fresh);
+    let shift = edit.inserted as i64 - edit.removed as i64;
+    if shift != 0 {
+        let begin = first + fresh_len;
+        for span in spans.iter_mut().skip(begin) {
+            span.0 = shift_saturating(span.0, shift);
+            span.1 = shift_saturating(span.1, shift);
+            span.2 = shift_saturating(span.2, shift);
+        }
+    }
+    true
+}
+
+fn shift_saturating(value: usize, shift: i64) -> usize {
+    (value as i64 + shift).max(0) as usize
+}
 
 impl TextArea {
     /// Creates a new `TextArea` with the given initial text and geometry.
@@ -345,6 +494,9 @@ impl TextArea {
             revision: 0,
             display_rows_cache: RefCell::new(None),
             pending_row_edit: Cell::new(None),
+            pending_line_edit: Cell::new(None),
+            line_advance_cache: RefCell::new(None),
+            line_height_cache: RefCell::new(None),
             band_width_cache: RefCell::new(None),
             cursor_blink: crate::style::CursorBlink::new(),
             scrollbar_drag: false,
@@ -354,6 +506,8 @@ impl TextArea {
                 bar.set_thumb_min_length(8);
                 bar
             },
+            #[cfg(full_widgets)]
+            find_replace: None,
         }
     }
 
@@ -500,20 +654,26 @@ impl TextArea {
     /// The trailing empty line of a value that ends in a newline is part of the table, because
     /// [`Self::line_count`] counts it (a caret can sit there) even though it paints nothing.
     fn line_spans(&self) -> LineSpanTable {
-        if let Some(cached) = self.line_spans_cache.borrow().as_ref() {
-            return Rc::clone(cached);
+        // A pending splice is consumed at most once. It is taken before the cache borrow so the
+        // immutable read and the later write cannot overlap.
+        let pending = self.pending_line_edit.take();
+        let cached = self.line_spans_cache.borrow().as_ref().map(Rc::clone);
+        if let Some(cached) = cached {
+            if let Some(edit) = pending {
+                let mut spans = (*cached).clone();
+                if splice_line_spans(&mut spans, &self.text, edit) {
+                    let next = Rc::new(spans);
+                    *self.line_spans_cache.borrow_mut() = Some(Rc::clone(&next));
+                    return next;
+                }
+            }
+            return cached;
         }
         let mut spans = Vec::new();
         let mut start = 0usize;
         for chunk in self.text.split_inclusive('\n') {
             let end = start + chunk.len();
-            let content_end = if chunk.ends_with("\r\n") {
-                end - 2
-            } else if chunk.ends_with('\n') {
-                end - 1
-            } else {
-                end
-            };
+            let content_end = line_content_end(chunk, end);
             spans.push((start, content_end, end));
             start = end;
         }
@@ -578,6 +738,7 @@ impl TextArea {
         // control actually keeps. The caches are invalidated first: the budget reads the line
         // table, and a stale one would cut at an offset from the previous document.
         self.line_spans_cache.borrow_mut().take();
+        self.pending_line_edit.set(None);
         self.display_rows_cache.borrow_mut().take();
         self.pending_row_edit.set(None);
         self.revision = self.revision.wrapping_add(1);
@@ -617,24 +778,33 @@ impl TextArea {
         if self.restoring_history {
             return;
         }
-        self.line_spans_cache.borrow_mut().take();
+        let edit = PendingEdit { start: offset, removed: removed.len(), inserted: inserted.len() };
         self.revision = self.revision.wrapping_add(1);
         if self.max_block_count.is_some() {
             // The line budget may drop a prefix, which no single splice describes. Keep the
-            // whole-table path for that case.
-            self.display_rows_cache.borrow_mut().take();
-            self.pending_row_edit.set(None);
-        } else if self.pending_row_edit.get().is_some() {
-            // A second splice landed before the rows were read. One hint cannot describe both,
-            // so fall back to the whole-table path rather than composing unrelated deltas.
+            // whole-table paths for both caches.
+            self.line_spans_cache.borrow_mut().take();
+            self.pending_line_edit.set(None);
             self.display_rows_cache.borrow_mut().take();
             self.pending_row_edit.set(None);
         } else {
-            // The row cache survives: the next `display_rows` re-wraps only the paragraphs the
-            // splice touched and reuses the untouched ends (I-006).
-            let edit =
-                PendingEdit { start: offset, removed: removed.len(), inserted: inserted.len() };
-            self.pending_row_edit.set(Some(edit));
+            // A second splice landed before either table was read. One hint cannot describe both,
+            // so each affected cache falls back to its whole-table path rather than composing
+            // unrelated deltas.
+            if self.pending_line_edit.get().is_some() {
+                self.line_spans_cache.borrow_mut().take();
+                self.pending_line_edit.set(None);
+            } else {
+                self.pending_line_edit.set(Some(edit));
+            }
+            if self.pending_row_edit.get().is_some() {
+                self.display_rows_cache.borrow_mut().take();
+                self.pending_row_edit.set(None);
+            } else {
+                // The row cache survives: the next `display_rows` re-wraps only the paragraphs the
+                // splice touched and reuses the untouched ends (I-006).
+                self.pending_row_edit.set(Some(edit));
+            }
         }
         self.enforce_max_block_count();
         match before {
@@ -697,6 +867,7 @@ impl TextArea {
         let before = self.text.clone();
         self.text = next;
         self.line_spans_cache.borrow_mut().take();
+        self.pending_line_edit.set(None);
         self.display_rows_cache.borrow_mut().take();
         self.pending_row_edit.set(None);
         self.revision = self.revision.wrapping_add(1);
@@ -954,7 +1125,7 @@ impl TextArea {
         if lines == 0 {
             return false;
         }
-        let max_first = self.display_rows().len().saturating_sub(self.visible_line_count());
+        let max_first = self.max_first_visible_line();
         let next =
             (self.first_visible_line as i64 + lines as i64).clamp(0, max_first as i64) as usize;
         if next == self.first_visible_line {
@@ -962,6 +1133,33 @@ impl TextArea {
         }
         self.first_visible_line = next;
         true
+    }
+
+    /// The largest first-visible line that still fills the viewport, i.e. the scroll clamp.
+    fn max_first_visible_line(&self) -> usize {
+        self.display_rows().len().saturating_sub(self.visible_line_count())
+    }
+
+    /// Places `line` at the top of the viewport, clamped so the field never scrolls past its end.
+    ///
+    /// The same clamp [`Self::scroll_lines`] applies: a line past the last window is pinned to
+    /// the last window, and a line that is already first is a no-op with no repaint.
+    pub fn set_first_visible_line(&mut self, line: usize) {
+        let next = line.min(self.max_first_visible_line());
+        if next == self.first_visible_line {
+            return;
+        }
+        self.first_visible_line = next;
+        self.base.request_redraw();
+    }
+
+    /// Scrolls the viewport so `line` is the first visible line.
+    ///
+    /// A convenience spelling of [`Self::set_first_visible_line`] for hosts that mirror an
+    /// external view: the line is clamped to the document's last window rather than being
+    /// accepted as an arbitrary scroll position.
+    pub fn scroll_to_line(&mut self, line: usize) {
+        self.set_first_visible_line(line);
     }
 
     /// The number of logical lines in the value, counting a trailing newline's empty line.
@@ -1051,6 +1249,7 @@ impl TextArea {
         self.cursor_pos = self.cursor_pos.saturating_sub(cut);
         self.selection_anchor = self.selection_anchor.map(|anchor| anchor.saturating_sub(cut));
         self.line_spans_cache.borrow_mut().take();
+        self.pending_line_edit.set(None);
         self.display_rows_cache.borrow_mut().take();
         self.pending_row_edit.set(None);
         self.revision = self.revision.wrapping_add(1);
@@ -1452,6 +1651,7 @@ impl TextArea {
             let boundary = byte_index_of_char(&self.text, max);
             self.text.truncate(boundary);
             self.line_spans_cache.borrow_mut().take();
+            self.pending_line_edit.set(None);
             self.display_rows_cache.borrow_mut().take();
             self.pending_row_edit.set(None);
             self.revision = self.revision.wrapping_add(1);
@@ -1702,7 +1902,7 @@ impl TextArea {
         };
         let start = row.start;
         let content_end = row.end.min(self.text.len());
-        start + self.column_at_x(&self.text[start..content_end], x)
+        start + self.column_at_x(start, content_end, x)
     }
 
     /// Reverts the most recent text mutation.
@@ -1742,6 +1942,7 @@ impl TextArea {
         self.restoring_history = true;
         self.text = self.history_target.borrow().clone();
         self.line_spans_cache.borrow_mut().take();
+        self.pending_line_edit.set(None);
         self.display_rows_cache.borrow_mut().take();
         self.pending_row_edit.set(None);
         self.revision = self.revision.wrapping_add(1);
@@ -1751,6 +1952,300 @@ impl TextArea {
         self.notify_caret_change();
         self.base.request_redraw();
     }
+
+    // ── FindReplaceBar wiring (COMP-A8) ──
+
+    /// Attaches `bar` to this area (COMP-A8).
+    ///
+    /// The bar's four intent signals are subscribed into a shared queue and applied by
+    /// [`Self::poll_find_replace_bar`]. Attaching also reports the current match count for whatever
+    /// query the bar already holds, so the strip does not wait for the first navigation. Attaching
+    /// replaces any previous bar, so calling this twice leaves one set of subscriptions.
+    ///
+    /// The bar exposes a `use_regex` flag, but this crate has no regular-expression engine, so a
+    /// regex query is searched literally. `match_case` is honoured.
+    #[cfg(full_widgets)]
+    pub fn attach_find_replace_bar(&mut self, bar: &FindReplaceBar) {
+        let intents = Arc::new(Mutex::new(Vec::new()));
+        let scope = ConnectionScope::new();
+        let redraw = self.base.redraw_requested_signal().clone();
+
+        let sink = Arc::clone(&intents);
+        let request_redraw = redraw.clone();
+        bar.find_next.connect_scoped(&scope, move || {
+            lock(&sink).push(FindReplaceIntent::Next);
+            request_redraw.emit();
+        });
+
+        let sink = Arc::clone(&intents);
+        let request_redraw = redraw.clone();
+        bar.find_previous.connect_scoped(&scope, move || {
+            lock(&sink).push(FindReplaceIntent::Previous);
+            request_redraw.emit();
+        });
+
+        let sink = Arc::clone(&intents);
+        let request_redraw = redraw.clone();
+        bar.replace_one.connect_scoped(&scope, move || {
+            lock(&sink).push(FindReplaceIntent::ReplaceOne);
+            request_redraw.emit();
+        });
+
+        let sink = Arc::clone(&intents);
+        bar.replace_all.connect_scoped(&scope, move || {
+            lock(&sink).push(FindReplaceIntent::ReplaceAll);
+            redraw.emit();
+        });
+
+        let (matches, bar_redraw) = bar.match_counts_handle();
+        self.find_replace = Some(FindReplaceBinding {
+            intents,
+            context: bar.context_handle(),
+            matches,
+            redraw: bar_redraw,
+            _scope: scope,
+        });
+        // Adopt the bar's current query now, so its counter starts in step with the document.
+        let (query, _replacement, match_case, _use_regex) = self.find_replace_context();
+        self.report_find_replace_matches(&query, match_case);
+        self.base.request_redraw();
+    }
+
+    /// Stops following the attached find/replace bar; the last reported counts stay.
+    #[cfg(full_widgets)]
+    pub fn detach_find_replace_bar(&mut self) {
+        if self.find_replace.take().is_some() {
+            self.base.request_redraw();
+        }
+    }
+
+    /// Whether a [`FindReplaceBar`] is attached.
+    #[cfg(full_widgets)]
+    pub fn is_find_replace_bar_attached(&self) -> bool {
+        self.find_replace.is_some()
+    }
+
+    /// Applies every find/replace intent reported since the last poll (COMP-A8).
+    ///
+    /// Called from `draw` and `handle_event`, so a strip click reaches the document on the next
+    /// frame or interaction. Returns whether the document or the selection moved. A bar with no
+    /// query reports zero matches and changes nothing.
+    #[cfg(full_widgets)]
+    pub fn poll_find_replace_bar(&mut self) -> bool {
+        let Some(binding) = self.find_replace.as_ref() else {
+            return false;
+        };
+        let intents: Vec<FindReplaceIntent> = {
+            let mut guard = lock(&binding.intents);
+            core::mem::take(&mut *guard)
+        };
+        if intents.is_empty() {
+            return false;
+        }
+        let (query, replacement, match_case, _use_regex) = self.find_replace_context();
+        let mut applied = false;
+        for intent in intents {
+            applied |= match intent {
+                FindReplaceIntent::Next => self.find_replace_step(&query, match_case, true),
+                FindReplaceIntent::Previous => self.find_replace_step(&query, match_case, false),
+                FindReplaceIntent::ReplaceOne => {
+                    self.find_replace_one(&query, &replacement, match_case)
+                }
+                FindReplaceIntent::ReplaceAll => {
+                    self.find_replace_all(&query, &replacement, match_case)
+                }
+            };
+        }
+        applied
+    }
+
+    /// The attached bar's `(query, replacement, match_case, use_regex)`, or empty defaults.
+    #[cfg(full_widgets)]
+    fn find_replace_context(&self) -> (String, String, bool, bool) {
+        match self.find_replace.as_ref() {
+            Some(binding) => lock(&binding.context).clone(),
+            None => (String::new(), String::new(), false, false),
+        }
+    }
+
+    /// Moves the selection to the next or previous match, wrapping at the document ends.
+    ///
+    /// Returns whether the selection moved. The search starts outside the current selection, so
+    /// pressing "next" twice visits two different matches rather than re-selecting the first.
+    #[cfg(full_widgets)]
+    fn find_replace_step(&mut self, query: &str, match_case: bool, forward: bool) -> bool {
+        if query.is_empty() {
+            self.write_find_replace_counts(0, 0);
+            return false;
+        }
+        let matches = self.find_replace_matches(query, match_case);
+        if matches.is_empty() {
+            self.write_find_replace_counts(0, 0);
+            return false;
+        }
+        let from = self
+            .selection_range()
+            .map(|(start, end)| if forward { end } else { start })
+            .unwrap_or(self.cursor_pos);
+        let index = if forward {
+            matches.iter().position(|&(start, _)| start >= from).unwrap_or(0)
+        } else {
+            matches.iter().rposition(|&(_, end)| end <= from).unwrap_or(matches.len() - 1)
+        };
+        let (start, end) = matches[index];
+        self.select_find_match(start, end);
+        self.write_find_replace_counts(matches.len(), index);
+        true
+    }
+
+    /// Replaces the current match, or the next one when the selection is not a match.
+    #[cfg(full_widgets)]
+    fn find_replace_one(&mut self, query: &str, replacement: &str, match_case: bool) -> bool {
+        if self.read_only || query.is_empty() {
+            self.report_find_replace_matches(query, match_case);
+            return false;
+        }
+        let matches = self.find_replace_matches(query, match_case);
+        if matches.is_empty() {
+            self.write_find_replace_counts(0, 0);
+            return false;
+        }
+        let selection = self.selection_range();
+        let target = selection.filter(|range| matches.contains(range)).or_else(|| {
+            let from = selection.map_or(self.cursor_pos, |(_, end)| end);
+            matches
+                .iter()
+                .copied()
+                .find(|&(start, _)| start >= from)
+                .or_else(|| matches.first().copied())
+        });
+        let Some((start, end)) = target else {
+            self.write_find_replace_counts(matches.len(), 0);
+            return false;
+        };
+        self.select_find_match(start, end);
+        let before = self.text.clone();
+        self.insert_str(replacement);
+        let changed = self.text != before;
+        self.report_find_replace_matches(query, match_case);
+        changed
+    }
+
+    /// Replaces every match in one edit, which is one undo step through the area's own path.
+    #[cfg(full_widgets)]
+    fn find_replace_all(&mut self, query: &str, replacement: &str, match_case: bool) -> bool {
+        if self.read_only || query.is_empty() {
+            self.report_find_replace_matches(query, match_case);
+            return false;
+        }
+        let matches = self.find_replace_matches(query, match_case);
+        if matches.is_empty() {
+            self.write_find_replace_counts(0, 0);
+            return false;
+        }
+        let mut next = String::with_capacity(self.text.len());
+        let mut consumed = 0usize;
+        for &(start, end) in &matches {
+            next.push_str(&self.text[consumed..start]);
+            next.push_str(replacement);
+            consumed = end;
+        }
+        next.push_str(&self.text[consumed..]);
+        let before = self.text.clone();
+        self.set_text(next);
+        let changed = self.text != before;
+        self.report_find_replace_matches(query, match_case);
+        changed
+    }
+
+    /// Selects one match without going through a movement gesture.
+    #[cfg(full_widgets)]
+    fn select_find_match(&mut self, start: usize, end: usize) {
+        self.selection_anchor = Some(start);
+        self.cursor_pos = end;
+        self.scroll_caret_into_view();
+        self.notify_caret_change();
+        self.base.request_redraw();
+    }
+
+    /// Counts the matches of `query` and writes `(total, current)` into the attached bar.
+    #[cfg(full_widgets)]
+    fn report_find_replace_matches(&self, query: &str, match_case: bool) {
+        let matches = self.find_replace_matches(query, match_case);
+        let anchor = self.selection_range().map_or(self.cursor_pos, |(start, _)| start);
+        let current = matches.iter().position(|&(start, _)| start >= anchor).unwrap_or(0);
+        self.write_find_replace_counts(matches.len(), current);
+    }
+
+    /// Writes the reported counters into the attached bar's shared cell.
+    #[cfg(full_widgets)]
+    fn write_find_replace_counts(&self, total: usize, current: usize) {
+        let Some(binding) = self.find_replace.as_ref() else {
+            return;
+        };
+        let current = if total == 0 { 0 } else { current.min(total - 1) };
+        {
+            let mut guard = lock(&binding.matches);
+            if *guard == (total, current) {
+                return;
+            }
+            *guard = (total, current);
+        }
+        binding.redraw.emit();
+    }
+
+    /// Every non-overlapping match of `query`, as ordered `(start, end)` byte ranges.
+    ///
+    /// Matching is literal: the bar's `use_regex` flag is not honoured because the crate has no
+    /// regular-expression engine. A case-insensitive comparison folds one character at a time, so
+    /// offsets stay on character boundaries for multi-byte text.
+    #[cfg(full_widgets)]
+    fn find_replace_matches(&self, query: &str, match_case: bool) -> Vec<(usize, usize)> {
+        let mut matches = Vec::new();
+        if query.is_empty() {
+            return matches;
+        }
+        let mut start = 0usize;
+        while start < self.text.len() {
+            if let Some(end) = match_query_at(&self.text, start, query, match_case) {
+                matches.push((start, end));
+                start = end;
+            } else {
+                match self.text[start..].chars().next() {
+                    Some(ch) => start += ch.len_utf8(),
+                    None => break,
+                }
+            }
+        }
+        matches
+    }
+}
+
+/// The end offset of `query` when it matches at `start`, or `None`.
+///
+/// A character-wise comparison keeps the answer on a character boundary for multi-byte text. Case
+/// folding is per character, which is the honest limit of a comparison done without the Unicode
+/// multi-character case tables.
+#[cfg(full_widgets)]
+fn match_query_at(haystack: &str, start: usize, query: &str, match_case: bool) -> Option<usize> {
+    if !haystack.is_char_boundary(start) {
+        return None;
+    }
+    let mut consumed = start;
+    let mut chars = haystack[start..].chars();
+    for wanted in query.chars() {
+        let found = chars.next()?;
+        let same = if match_case {
+            found == wanted
+        } else {
+            found == wanted || found.to_lowercase().eq(wanted.to_lowercase())
+        };
+        if !same {
+            return None;
+        }
+        consumed += found.len_utf8();
+    }
+    Some(consumed)
 }
 
 impl Widget for TextArea {
@@ -1891,6 +2386,7 @@ impl DragSource for TextArea {
         let before = self.text.clone();
         if self.replace_selection() {
             self.line_spans_cache.borrow_mut().take();
+            self.pending_line_edit.set(None);
             self.record_edit(before);
             self.base.request_redraw();
         }
@@ -2021,6 +2517,10 @@ impl WidgetProperties for TextArea {
 
 impl EventHandler for TextArea {
     fn handle_event(&mut self, event: &Event) {
+        // A queued find/replace intent is a shared write, applied before the event is routed so the
+        // frame that follows the strip click already reflects it (COMP-A8).
+        #[cfg(full_widgets)]
+        self.poll_find_replace_bar();
         self.base.handle_event(event);
         if !self.base.is_enabled() {
             return;
@@ -2296,6 +2796,10 @@ const FIRST_LINE_INSET: i32 = 4;
 
 impl Draw for TextArea {
     fn draw(&mut self, context: &mut RenderContext) {
+        // Drain a queued find/replace intent first, so the caret and the selection this frame
+        // paints are the ones the strip asked for (COMP-A8).
+        #[cfg(full_widgets)]
+        self.poll_find_replace_bar();
         // A text area is the one field whose height is **not** a fixed band: it is
         // multi-line, so the lines legitimately span whatever height the caller gives it.
         // `rect.height` therefore stays. Everything *inside* is measured from the field's
@@ -2666,33 +3170,69 @@ impl TextArea {
         context.measure_text(text, self.text_font()).width as i32
     }
 
-    /// The byte offset the horizontal coordinate `x` points at, **within `line`**.
+    /// The byte offset the horizontal coordinate `x` points at, within the display row
+    /// `start..end`.
     ///
-    /// Found by walking the characters and measuring the prefix, so the answer is the character the
-    /// pointer is actually over rather than the one a fixed advance would guess. The result is a
-    /// character boundary by construction.
-    fn column_at_x(&self, line: &str, x: i32) -> usize {
-        let target = x.max(0) as f32;
-        let font = self.text_font();
-        // One measurement surface for the whole walk: the old per-character helper built a
-        // `SoftwarePaintBackend` and a `RenderContext` for every glyph it passed (I-P61).
-        Self::with_measurement(|context| {
-            let mut best = 0usize;
-            let mut prefix_width = 0.0f32;
-            let mut glyph = [0u8; 4];
-            for (index, ch) in line.char_indices() {
-                let advance = context.measure_text(ch.encode_utf8(&mut glyph), font).width as f32;
-                // The midpoint decides which side of a character's centre the pointer is on, which
-                // is the conventional rule and the one that makes clicking the left half of a
-                // glyph put the caret before it.
-                if target < prefix_width + advance / 2.0 {
-                    break;
+    /// The row's per-character advances are cached by [`Self::revision`] and the font, so a press
+    /// or drag step reads a table instead of shaping every glyph again (I-P09). The first click
+    /// after an edit builds the table once; moving the caret does not invalidate it.
+    fn column_at_x(&self, start: usize, end: usize, x: i32) -> usize {
+        if start >= end {
+            return 0;
+        }
+        let font = self.text_font().clone();
+        let fresh = {
+            let cache = self.line_advance_cache.borrow();
+            match cache.as_ref() {
+                Some(entry)
+                    if entry.revision == self.revision
+                        && entry.font == font
+                        && entry.start == start
+                        && entry.end == end =>
+                {
+                    Some(entry.cuts.clone())
                 }
-                prefix_width += advance;
-                best = index + ch.len_utf8();
+                _ => None,
             }
-            best
-        })
+        };
+        let cuts = match fresh {
+            Some(cuts) => cuts,
+            None => {
+                let row = &self.text[start..end];
+                let mut cuts: Vec<(usize, i32)> = Vec::with_capacity(row.len() + 1);
+                cuts.push((0, 0));
+                Self::with_measurement(|context| {
+                    let mut advance = 0i32;
+                    let mut glyph = [0u8; 4];
+                    for (index, ch) in row.char_indices() {
+                        advance +=
+                            context.measure_text(ch.encode_utf8(&mut glyph), &font).width as i32;
+                        cuts.push((index + ch.len_utf8(), advance));
+                    }
+                });
+                let cached = LineAdvanceCache {
+                    revision: self.revision,
+                    font: font.clone(),
+                    start,
+                    end,
+                    cuts: cuts.clone(),
+                };
+                *self.line_advance_cache.borrow_mut() = Some(cached);
+                cuts
+            }
+        };
+        let target = x.max(0);
+        let mut best = 0usize;
+        for window in cuts.windows(2) {
+            let (_, previous) = window[0];
+            let (offset, cumulative) = window[1];
+            let advance = cumulative - previous;
+            if target < previous + advance / 2 {
+                break;
+            }
+            best = offset;
+        }
+        best
     }
 
     /// Runs `f` against a throwaway measurement surface.
@@ -2727,27 +3267,40 @@ impl TextArea {
     /// than the caret's document position.
     fn caret_query(&self) -> InputMethodQuery {
         let rect = self.geometry();
-        let font = self.text_font();
         let origin_x = rect.x + dimensions::TEXT_FIELD_PADDING_H as i32;
         let caret = floor_char_boundary(&self.text, self.cursor_pos.min(self.text.len()));
         let caret_x =
             origin_x + self.content_margin - self.scroll_x + self.advance_of_caret_prefix(caret);
 
         // The first line's band is the same one `draw` lays the glyphs out in: one line tall, one
-        // inset below the top edge. Measuring it through the renderer keeps the anchor on the
-        // glyph box even for a font whose line height differs from its point size.
+        // inset below the top edge. The line height is measured once per font and cached, so an
+        // IME query does not build a throwaway paint backend on every keystroke (I-P09).
         let band = Rect::new(origin_x, rect.y + FIRST_LINE_INSET, rect.width, LINE_H as u32);
-        let text_top = {
-            let mut measurement =
-                crate::render::SoftwarePaintBackend::new(crate::core::Size::new(0, 0), 1.0);
-            let context = RenderContext::new(&mut measurement);
-            context.text_line(band, font).y
-        };
+        let line_height = self.measured_line_height();
+        let text_top = band.y + ((band.height as i32 - line_height) / 2).max(0);
         let row = self.display_row_of(self.cursor_pos).saturating_sub(self.first_visible_line);
         InputMethodQuery {
             caret_rect: Rect::new(caret_x, text_top + row as i32 * LINE_H, 1, LINE_H as u32),
             caret_byte: Some(caret),
         }
+    }
+
+    /// The renderer's line height for the current body font, measured once per font.
+    ///
+    /// `RenderContext::text_line` derives its box from `measure_text("M", font)`. Repeating that
+    /// measurement for every IME query built a throwaway backend per call; this caches the one
+    /// number it needs (I-P09).
+    fn measured_line_height(&self) -> i32 {
+        let font = self.text_font().clone();
+        if let Some((cached_font, height)) = self.line_height_cache.borrow().as_ref() {
+            if *cached_font == font {
+                return *height as i32;
+            }
+        }
+        let height =
+            Self::with_measurement(|context| context.measure_text("M", &font).height).max(1);
+        *self.line_height_cache.borrow_mut() = Some((font, height));
+        height as i32
     }
 }
 
@@ -4207,5 +4760,89 @@ mod tests {
         assert_eq!(command.offset, 5, "the common prefix is not part of the delta");
         assert_eq!(command.removed, "");
         assert_eq!(command.inserted, "!");
+    }
+
+    // ─── COMP-A8: FindReplaceBar wiring ───
+
+    /// COMP-A8: attaching reports the current query's matches and queues nothing.
+    #[test]
+    #[cfg(full_widgets)]
+    fn the_find_bar_counts_matches_when_attached() {
+        let mut ta = area("one two one two one");
+        let mut bar = FindReplaceBar::new(Rect::new(0, 0, 400, 32));
+        bar.set_query("one");
+
+        ta.attach_find_replace_bar(&bar);
+        assert!(ta.is_find_replace_bar_attached());
+        assert_eq!(bar.match_count(), 3, "attach reports the current query's matches");
+        assert!(!ta.poll_find_replace_bar(), "attaching queues no intent");
+    }
+
+    /// COMP-A8: a queued navigation intent moves the area's selection on the next poll.
+    #[test]
+    #[cfg(full_widgets)]
+    fn a_find_intent_moves_the_selection_on_poll() {
+        let mut ta = area("one two one two one");
+        ta.set_cursor_pos(0);
+        let mut bar = FindReplaceBar::new(Rect::new(0, 0, 400, 32));
+        bar.set_query("one");
+        ta.attach_find_replace_bar(&bar);
+
+        bar.find_next.emit();
+        assert!(ta.poll_find_replace_bar(), "the queued intent is applied");
+        assert_eq!(ta.selection_range(), Some((0, 3)));
+        assert_eq!((bar.match_count(), bar.current_match()), (3, 0));
+
+        bar.find_next.emit();
+        assert!(ta.poll_find_replace_bar());
+        assert_eq!(ta.selection_range(), Some((8, 11)));
+        assert_eq!(bar.current_match(), 1);
+
+        bar.find_previous.emit();
+        assert!(ta.poll_find_replace_bar());
+        assert_eq!(ta.selection_range(), Some((0, 3)), "previous wraps to the first match");
+        assert!(!ta.poll_find_replace_bar(), "the queue is drained");
+    }
+
+    /// COMP-A8: replace and replace-all go through the area's own edit path.
+    #[test]
+    #[cfg(full_widgets)]
+    fn replace_intents_go_through_the_areas_edit_path() {
+        let mut ta = area("one two one");
+        let mut bar = FindReplaceBar::new(Rect::new(0, 0, 400, 32));
+        bar.set_query("one");
+        bar.set_replacement("1");
+        ta.attach_find_replace_bar(&bar);
+
+        bar.replace_one.emit();
+        assert!(ta.poll_find_replace_bar());
+        assert_eq!(ta.text(), "1 two one", "the first match is replaced");
+        assert_eq!(bar.match_count(), 1, "the counter follows the new document");
+
+        bar.replace_all.emit();
+        assert!(ta.poll_find_replace_bar());
+        assert_eq!(ta.text(), "1 two 1");
+        assert_eq!(bar.match_count(), 0, "nothing matches after the replacement");
+
+        bar.replace_all.emit();
+        assert!(!ta.poll_find_replace_bar(), "nothing left to replace");
+    }
+
+    /// COMP-A8: detaching stops the link and keeps the last reported state.
+    #[test]
+    #[cfg(full_widgets)]
+    fn a_detached_find_bar_is_not_polled() {
+        let mut ta = area("aaa");
+        let mut bar = FindReplaceBar::new(Rect::new(0, 0, 400, 32));
+        bar.set_query("a");
+        ta.attach_find_replace_bar(&bar);
+        assert_eq!(bar.match_count(), 3);
+
+        ta.detach_find_replace_bar();
+        assert!(!ta.is_find_replace_bar_attached());
+        bar.find_next.emit();
+        assert!(!ta.poll_find_replace_bar(), "a detached bar reports nothing");
+        assert_eq!(bar.match_count(), 3, "detach leaves the last count");
+        assert_eq!(ta.selection_range(), None, "and the selection did not move");
     }
 }

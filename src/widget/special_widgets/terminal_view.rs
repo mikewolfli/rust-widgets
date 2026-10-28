@@ -458,9 +458,8 @@ impl TerminalView {
     /// palette is unreadable on a light one, so "the default" is two palettes, not one.
     pub fn ansi_palette(&self) -> [Color; 16] {
         self.ansi_palette.unwrap_or_else(|| {
-            let dark = crate::style::theme_manager()
-                .current_theme()
-                .map(|active| active.colors.background.luminance() < 0.5)
+            let dark = crate::style::palette_shared()
+                .map(|colors| colors.background.luminance() < 0.5)
                 .unwrap_or(true);
             default_ansi_palette(dark)
         })
@@ -862,6 +861,76 @@ impl TerminalView {
     /// Returns output lines.
     pub fn lines(&self) -> &[String] {
         &self.lines
+    }
+
+    /// Returns the raw text of one scrollback row, or `None` when `row` is out of range.
+    ///
+    /// The text is what [`Self::append_output`] stored, so it may still carry SGR escape
+    /// sequences. Use [`Self::plain_row_text`] for the visible characters.
+    pub fn row_text(&self, row: usize) -> Option<&str> {
+        self.lines.get(row).map(String::as_str)
+    }
+
+    /// Returns one scrollback row with every escape sequence removed.
+    ///
+    /// This is the text a search sees: an `"error"` painted red is the same five characters as
+    /// one painted in the default ink.
+    pub fn plain_row_text(&self, row: usize) -> Option<String> {
+        self.lines.get(row).map(|line| strip_ansi(line))
+    }
+
+    /// Finds every occurrence of `needle` in the scrollback and returns `(row, column)` pairs.
+    ///
+    /// Rows are indices into [`Self::lines`]; matches come back top-to-bottom, and
+    /// left-to-right inside a row. Columns count **characters**, not bytes, of the visible text,
+    /// so a column can be used with `line.chars().nth(column)`.
+    ///
+    /// The scan covers the actual buffer rather than a copy: in screen mode the grid is
+    /// materialised back into the line buffer after every write (`feed_screen`), so `lines`
+    /// already holds both the scrollback and the visible screen. Escape sequences are stripped
+    /// before comparison.
+    ///
+    /// # Regex
+    ///
+    /// `use_regex` is accepted so this API matches the other find bars, but **this build has no
+    /// regular-expression engine** — the crate has no `regex` dependency and compiles none in.
+    /// Matching is therefore always literal, and the flag is deliberately not allowed to change
+    /// the result silently: [`TerminalFindBar::regex_supported`] reports `false` for this build,
+    /// so a caller can disable the option rather than assume it works. An empty `needle` matches
+    /// nothing.
+    pub fn find_matches(
+        &self,
+        needle: &str,
+        case_sensitive: bool,
+        _use_regex: bool,
+    ) -> Vec<(usize, usize)> {
+        if needle.is_empty() {
+            return Vec::new();
+        }
+        let needle_chars: Vec<char> = needle.chars().collect();
+        let mut matches = Vec::new();
+        let mut plain = String::new();
+        for (row, line) in self.lines.iter().enumerate() {
+            plain.clear();
+            strip_ansi_into(line, &mut plain);
+            let haystack: Vec<char> = plain.chars().collect();
+            if needle_chars.len() > haystack.len() {
+                continue;
+            }
+            for start in 0..=haystack.len() - needle_chars.len() {
+                let hit = needle_chars.iter().zip(&haystack[start..]).all(|(query, ch)| {
+                    if case_sensitive {
+                        query == ch
+                    } else {
+                        query.eq_ignore_ascii_case(ch)
+                    }
+                });
+                if hit {
+                    matches.push((row, start));
+                }
+            }
+        }
+        matches
     }
 
     /// Returns current input line.
@@ -1564,10 +1633,8 @@ impl Draw for TerminalView {
         // The step is large enough to read as a distinct surface (a terminal is *not* the
         // window) and is applied to the window colour rather than to a value that may
         // already be a step. A caller's own colour still wins (rule #21).
-        let window_fill = crate::style::theme_manager()
-            .current_theme()
-            .map(|active| active.colors.background)
-            .unwrap_or(Color::WHITE);
+        let window_fill =
+            crate::style::palette_shared().map(|colors| colors.background).unwrap_or(Color::WHITE);
         let field_from_theme = theme
             .as_ref()
             .and_then(|t| t.background_color)
@@ -3484,5 +3551,67 @@ mod issue_20261026_tests {
         );
         assert!(runtime::dirty_rects(id).is_empty(), "no damage rectangle is recorded");
         runtime::unregister(id);
+    }
+}
+
+#[cfg(test)]
+mod find_tests {
+    use super::*;
+
+    /// The scan reads the text the user sees, not the raw buffer: an SGR-coloured match is the
+    /// same characters as an uncoloured one, and columns are character offsets.
+    #[test]
+    fn find_matches_scans_visible_text_and_reports_character_columns() {
+        let mut terminal = TerminalView::new(Rect::new(0, 0, 500, 260));
+        terminal.append_output("\u{1b}[32mok\u{1b}[0m done");
+        terminal.append_output("ok ok");
+
+        assert_eq!(terminal.find_matches("ok", true, false), vec![(0, 0), (1, 0), (1, 3)]);
+        assert_eq!(terminal.row_text(0), Some("\u{1b}[32mok\u{1b}[0m done"));
+        assert_eq!(terminal.plain_row_text(0).as_deref(), Some("ok done"));
+        assert_eq!(terminal.row_text(2), None);
+        assert_eq!(terminal.plain_row_text(2), None);
+    }
+
+    /// A case-insensitive search folds ASCII case, exactly as the crate's web find does.
+    #[test]
+    fn find_matches_honours_case_sensitivity() {
+        let mut terminal = TerminalView::new(Rect::new(0, 0, 500, 260));
+        terminal.append_output("Rust rust");
+
+        assert_eq!(terminal.find_matches("Rust", true, false), vec![(0, 0)]);
+        assert_eq!(terminal.find_matches("RUST", true, false), Vec::new());
+        assert_eq!(terminal.find_matches("RUST", false, false), vec![(0, 0), (0, 5)]);
+    }
+
+    /// No regex engine is compiled in, so the flag must not change the result shape. The literal
+    /// dot only matches a dot, which is what pins the documented literal behaviour.
+    #[test]
+    fn find_matches_treats_the_regex_flag_as_literal() {
+        let mut terminal = TerminalView::new(Rect::new(0, 0, 500, 260));
+        terminal.append_output("abc a.c");
+
+        assert_eq!(terminal.find_matches("a.c", true, true), vec![(0, 4)]);
+        assert_eq!(terminal.find_matches("abc", true, true), vec![(0, 0)]);
+    }
+
+    /// An empty needle is not a match-everything wildcard.
+    #[test]
+    fn find_matches_ignores_an_empty_needle() {
+        let mut terminal = TerminalView::new(Rect::new(0, 0, 500, 260));
+        terminal.append_output("anything");
+        assert!(terminal.find_matches("", true, false).is_empty());
+    }
+
+    /// The scan covers the whole retained scrollback, not just the rows the viewport shows.
+    #[test]
+    fn find_matches_reaches_rows_outside_the_visible_window() {
+        let mut terminal = TerminalView::new(Rect::new(0, 0, 500, 60));
+        for index in 0..80 {
+            terminal.append_output(format!("line {index}"));
+        }
+        terminal.append_output("the failing command");
+
+        assert_eq!(terminal.find_matches("failing", true, false), vec![(80, 4)]);
     }
 }

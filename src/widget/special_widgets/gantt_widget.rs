@@ -73,6 +73,22 @@ struct GanttPan {
     end: i64,
 }
 
+/// The cached hover read-out for one `(task, revision, font)` (VP-002).
+struct GanttReadoutCache {
+    /// The hovered task index.
+    task: usize,
+    /// [`GanttWidget::tasks_revision`] the text was formatted at.
+    revision: u64,
+    /// The effective font size, as bits.
+    font_size_bits: u32,
+    /// The formatted label and dates.
+    text: String,
+    /// The measured bubble width, padding included.
+    width: i32,
+    /// The measured bubble height, padding included.
+    height: i32,
+}
+
 /// One gantt task bar.
 ///
 /// Describes a single bar on the timeline. The widget treats `start` and `end`
@@ -395,6 +411,10 @@ pub struct GanttWidget {
     critical_cache: RefCell<Option<Vec<usize>>>,
     /// The task row under the pointer, when no drag is in progress.
     hovered_task: Option<usize>,
+    /// Bumped whenever a task's label, start or end changes; keys the hover read-out (VP-002).
+    tasks_revision: u64,
+    /// The cached hover read-out, so an unchanged hover pays no formatting or measurement.
+    readout_cache: RefCell<Option<GanttReadoutCache>>,
     /// The pointer position that produced [`Self::hovered_task`], for the read-out anchor.
     hover_position: Point,
     /// Whether [`Self::hover_position`] names a real pointer position.
@@ -437,6 +457,17 @@ pub struct GanttWidget {
     pub link_selected: Signal1<Dependency>,
     /// Emitted when the task under the pointer changes, with its index (or `None` on exit).
     pub task_hovered: Signal1<Option<usize>>,
+    /// Emitted with the new row height whenever [`Self::set_row_height`] changes it.
+    ///
+    /// A task-list companion binds its rows to this chart, so it has to follow the lane
+    /// height; without the report it would only learn the height once, at attach time.
+    pub row_height_changed: Signal1<u32>,
+    /// Emitted with the new absolute scroll offset whenever the visible rows shift.
+    ///
+    /// The offset is a row index, which is exactly what a companion list mirrors. Every
+    /// scroll path (`scroll_by`, wheel, keyboard and drag autoscroll) goes through
+    /// [`Self::set_scroll_offset`], so one emission point covers them all.
+    pub scroll_changed: Signal1<usize>,
 }
 
 impl GanttWidget {
@@ -459,6 +490,8 @@ impl GanttWidget {
             id_index: HashMap::new(),
             critical_cache: RefCell::new(None),
             hovered_task: None,
+            tasks_revision: 0,
+            readout_cache: RefCell::new(None),
             hover_position: Point::new(0, 0),
             pointer_known: false,
             pan: None,
@@ -477,6 +510,8 @@ impl GanttWidget {
             dependency_removed: Signal1::new(),
             link_selected: Signal1::new(),
             task_hovered: Signal1::new(),
+            row_height_changed: Signal1::new(),
+            scroll_changed: Signal1::new(),
         }
     }
 
@@ -701,6 +736,7 @@ impl GanttWidget {
             return;
         }
         self.row_height = row_height;
+        self.row_height_changed.emit(row_height);
         self.base.request_layout();
         self.base.request_redraw();
     }
@@ -888,10 +924,22 @@ impl GanttWidget {
     pub fn scroll_by(&mut self, delta: isize) {
         let max = self.tasks.len().saturating_sub(self.visible_row_count());
         let next = (self.scroll_offset as isize + delta).clamp(0, max as isize) as usize;
+        self.set_scroll_offset(next);
+    }
+
+    /// Scrolls so `offset` rows are hidden above the viewport, clamped to the task list.
+    ///
+    /// [`Self::scroll_by`] is relative; a companion that mirrors this chart's rows needs an
+    /// absolute position to adopt at attach time and to follow after a jump. Both paths share
+    /// this clamp and this one emission point, so they can never disagree about the offset.
+    pub fn set_scroll_offset(&mut self, offset: usize) {
+        let max = self.tasks.len().saturating_sub(self.visible_row_count());
+        let next = offset.min(max);
         if self.scroll_offset == next {
             return;
         }
         self.scroll_offset = next;
+        self.scroll_changed.emit(next);
         self.base.request_redraw();
     }
 
@@ -1053,6 +1101,7 @@ impl GanttWidget {
         // The task's fields are read before the cache is invalidated: holding the borrow across a
         // `&mut self` call is what a cache write is.
         let (start, end, id) = (task.start, task.end, task.id.clone());
+        self.tasks_revision = self.tasks_revision.wrapping_add(1);
         self.invalidate_critical_path();
         if start != drag.start || end != drag.end {
             self.task_rescheduled.emit(id.clone());
@@ -1066,6 +1115,7 @@ impl GanttWidget {
     /// Sets tasks.
     pub fn set_tasks(&mut self, tasks: Vec<GanttTask>) {
         self.tasks = tasks;
+        self.tasks_revision = self.tasks_revision.wrapping_add(1);
         self.invalidate_critical_path();
         // The map is rebuilt with the list rather than maintained per lookup: a dependency arrow
         // resolves its predecessor through it, and `tasks.iter().position` per arrow made one paint
@@ -1408,6 +1458,17 @@ impl Widget for GanttWidget {
         #[allow(unused_imports)]
         use crate::widget::capability::CapabilityValue;
         match name {
+            "row_height_changed" => Some(EventSignalRef::mapped(
+                "row_height_changed",
+                &self.row_height_changed,
+                |height| CapabilityValue::UInt(u64::from(*height)),
+            )),
+            "scroll_changed" => Some(EventSignalRef::mapped(
+                "scroll_changed",
+                &self.scroll_changed,
+                |offset| CapabilityValue::UInt(*offset as u64),
+            )),
+
             "task_selected" => {
                 Some(EventSignalRef::mapped("task_selected", &self.task_selected, |v| {
                     CapabilityValue::String(v.clone())
@@ -1720,6 +1781,7 @@ impl EventHandler for GanttWidget {
                     GanttDragKind::Progress => unreachable!("progress returned above"),
                 }
                 self.invalidate_critical_path();
+                self.tasks_revision = self.tasks_revision.wrapping_add(1);
                 self.base.request_redraw();
             }
             Event::MouseRelease { button: 1, .. } => {
@@ -2148,12 +2210,35 @@ impl Draw for GanttWidget {
         // last so an editor next to it cannot cover it.
         if self.show_hover_readout {
             if let Some(index) = self.hovered_task {
-                if let Some(task) = self.tasks.get(index) {
-                    let text = format!("{}  {} \u{2192} {}", task.label, task.start, task.end);
-                    let font = effective_font(style);
-                    let metrics = context.measure_text(&text, font);
-                    let width = metrics.width as i32 + 10;
-                    let height = metrics.height.max(1) as i32 + 8;
+                let font = effective_font(style);
+                let font_size_bits = font.size().to_bits();
+                let revision = self.tasks_revision;
+                let mut cache = self.readout_cache.borrow_mut();
+                let stale = cache.as_ref().is_none_or(|cached| {
+                    cached.task != index
+                        || cached.revision != revision
+                        || cached.font_size_bits != font_size_bits
+                });
+                if stale {
+                    // The text and its measurement move only with the hovered task, the task data or
+                    // the font, so a still pointer pays neither a `format!` nor a `measure_text`
+                    // (VP-002).
+                    *cache = self.tasks.get(index).map(|task| {
+                        let text = format!("{}  {} \u{2192} {}", task.label, task.start, task.end);
+                        let metrics = context.measure_text(&text, font);
+                        GanttReadoutCache {
+                            task: index,
+                            revision,
+                            font_size_bits,
+                            text,
+                            width: metrics.width as i32 + 10,
+                            height: metrics.height.max(1) as i32 + 8,
+                        }
+                    });
+                }
+                if let Some(cached) = cache.as_ref() {
+                    let width = cached.width;
+                    let height = cached.height;
                     let x = (self.hover_position.x + 12)
                         .min(rect.x + rect.width as i32 - width)
                         .max(rect.x);
@@ -2165,7 +2250,7 @@ impl Draw for GanttWidget {
                     context.draw_rect(bubble, border);
                     context.draw_text_line_cow(
                         bubble,
-                        &text,
+                        &cached.text,
                         font,
                         text_color,
                         HorizontalAlignment::Left,
@@ -2182,7 +2267,8 @@ impl Draw for GanttWidget {
 #[path = "gantt_companions.rs"]
 pub(crate) mod companions;
 pub use companions::{
-    DateFormat, Dependency, DependencyEditor, TimelineAxis, AXIS_MAX_ZOOM, AXIS_MIN_ZOOM,
+    DateFormat, Dependency, DependencyEditor, GanttTaskGrid, TaskColumn, TimelineAxis,
+    AXIS_MAX_ZOOM, AXIS_MIN_ZOOM,
 };
 
 #[cfg(test)]

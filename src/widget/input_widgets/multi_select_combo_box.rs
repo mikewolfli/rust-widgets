@@ -766,16 +766,15 @@ impl Draw for MultiSelectComboBox {
         // `resolved_theme_style`, so it is not held across the draw — the global
         // manager's mutex is not re-entrant.
         let style = self.base.style();
-        // I-P68: one theme read serves the ink, the border, the fill and the accent. The draw
-        // used to take the manager lock twice (the resolved style and then the primary).
+        // I-P68: one palette snapshot serves the ink, the border, the fill and the accent. The
+        // draw used to take the manager lock twice (the resolved style and then the primary).
         let (themed_ink, themed_border, themed_field, themed_accent) = {
-            let manager = crate::style::theme_manager();
-            match manager.current_theme() {
-                Some(active) => (
-                    Some(active.colors.foreground),
-                    Some(active.colors.outline_variant),
-                    Some(active.colors.background),
-                    Some(active.colors.primary),
+            match crate::style::palette_shared() {
+                Some(colors) => (
+                    Some(colors.foreground),
+                    Some(colors.outline_variant),
+                    Some(colors.background),
+                    Some(colors.primary),
                 ),
                 None => (None, None, None, None),
             }

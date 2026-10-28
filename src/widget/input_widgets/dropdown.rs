@@ -9,11 +9,15 @@
 //! emits `activated`, and the row the pointer or keyboard marks while the
 //! list is open is reported through `highlighted`.
 
+#[cfg(full_widgets)]
+use crate::compat::{lock, Arc, Mutex};
 use crate::compat::{Instant, String, ToString, Vec};
 use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
 use crate::event::key_codes;
 use crate::event::{Event, EventHandler, WheelScroll};
 use crate::render::RenderContext;
+#[cfg(full_widgets)]
+use crate::signal::ConnectionScope;
 use crate::signal::{GenericSignal, Signal1};
 use crate::style::EdgeOffsets;
 use crate::widget::capability::coercion::{
@@ -23,6 +27,8 @@ use crate::widget::capability::coercion::{
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+#[cfg(full_widgets)]
+use crate::widget::companions::{DropDownPopupHost, PopupItem as HostPopupItem};
 use crate::widget::input_widgets::combobox::{neighbour_row, prefix_row, PopupWindow};
 use crate::widget::metrics::{dimensions, effective_font, estimate_text_width, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, IconName, Widget, WidgetKind};
@@ -223,6 +229,24 @@ pub struct Dropdown {
     expanded_selection: Option<usize>,
     /// When the current type-ahead prefix began, for the shared 800 ms rule (I-P06).
     type_ahead_started: Option<Instant>,
+    /// The shared pop-up host this drop-down keeps in step, when one is attached.
+    #[cfg(full_widgets)]
+    popup_host: Option<PopupHostBinding>,
+}
+
+/// The live link between a [`Dropdown`] and a [`DropDownPopupHost`].
+///
+/// The drop-down owns the host and pushes its open state, anchor, rows and selection into it; the
+/// host's `item_clicked` stream is parked in the shared cell and applied by
+/// [`Dropdown::poll_drop_down_popup_host`] through [`Dropdown::set_selected_index`].
+#[cfg(full_widgets)]
+struct PopupHostBinding {
+    /// The pop-up surface kept in step with this control.
+    host: DropDownPopupHost,
+    /// The row the host activated since the last poll.
+    clicked: Arc<Mutex<Option<usize>>>,
+    /// The subscription, dropped with the binding so a detach leaves no slot behind.
+    _scope: ConnectionScope,
 }
 
 impl Dropdown {
@@ -249,6 +273,8 @@ impl Dropdown {
             placeholder: String::from("(Select)"),
             expanded_selection: None,
             type_ahead_started: None,
+            #[cfg(full_widgets)]
+            popup_host: None,
         }
     }
 
@@ -507,6 +533,148 @@ impl Dropdown {
     /// Toggles the expanded / collapsed state.
     pub fn toggle(&mut self) {
         self.set_expanded(!self.expanded);
+    }
+
+    /// Follows a [`DropDownPopupHost`] with this control's open state, anchor, rows and selection.
+    ///
+    /// This is the companion binding for COMP-A8. The host mirrors the control: its rows are the
+    /// control's rows (ids are row indices, so an activation maps back to
+    /// [`Self::set_selected_index`]), its open state follows [`Self::is_expanded`], and its anchor
+    /// is the field band's bottom edge. [`Self::poll_drop_down_popup_host`] repeats the comparison
+    /// on every paint and event, so opening, closing and replacing the rows reach the host without
+    /// host bookkeeping. Attaching replaces any previous host.
+    #[cfg(full_widgets)]
+    pub fn attach_drop_down_popup_host(&mut self, mut host: DropDownPopupHost) {
+        let clicked = Arc::new(Mutex::new(None));
+        let sink = Arc::clone(&clicked);
+        let scope = ConnectionScope::new();
+        let redraw = self.base.redraw_requested_signal().clone();
+        host.item_clicked.connect_scoped(&scope, move |item| {
+            if let Ok(index) = item.id.parse::<usize>() {
+                *lock(&sink) = Some(index);
+                // A host activation is a command, so the poll that applies it runs next frame.
+                redraw.emit();
+            }
+        });
+        let items = self.popup_host_items();
+        let anchor = self.popup_anchor();
+        let expanded = self.is_expanded();
+        let selected = self.selected_index();
+        Self::push_popup_host_state(&mut host, items, anchor, expanded, selected);
+        self.popup_host = Some(PopupHostBinding { host, clicked, _scope: scope });
+        self.base.request_redraw();
+    }
+
+    /// Stops following the attached pop-up host and returns it.
+    #[cfg(full_widgets)]
+    pub fn detach_drop_down_popup_host(&mut self) -> Option<DropDownPopupHost> {
+        let binding = self.popup_host.take()?;
+        self.base.request_redraw();
+        Some(binding.host)
+    }
+
+    /// Whether a [`DropDownPopupHost`] is attached.
+    #[cfg(full_widgets)]
+    pub fn is_drop_down_popup_host_attached(&self) -> bool {
+        self.popup_host.is_some()
+    }
+
+    /// The attached pop-up host, if any.
+    #[cfg(full_widgets)]
+    pub fn drop_down_popup_host(&self) -> Option<&DropDownPopupHost> {
+        self.popup_host.as_ref().map(|binding| &binding.host)
+    }
+
+    /// The attached pop-up host for editing, if any.
+    #[cfg(full_widgets)]
+    pub fn drop_down_popup_host_mut(&mut self) -> Option<&mut DropDownPopupHost> {
+        self.popup_host.as_mut().map(|binding| &mut binding.host)
+    }
+
+    /// Applies the control's pop-up state to the attached host and drains an activation.
+    ///
+    /// Returns whether the host's open state, anchor, rows or highlight changed, or an activation
+    /// was applied. A second call with nothing pending returns `false`.
+    #[cfg(full_widgets)]
+    pub fn poll_drop_down_popup_host(&mut self) -> bool {
+        if self.popup_host.is_none() {
+            return false;
+        }
+        let items = self.popup_host_items();
+        let anchor = self.popup_anchor();
+        let expanded = self.is_expanded();
+        let selected = self.selected_index();
+        let Some(binding) = self.popup_host.as_mut() else {
+            return false;
+        };
+        let mut changed =
+            Self::push_popup_host_state(&mut binding.host, items, anchor, expanded, selected);
+        let pending = lock(&binding.clicked).take();
+        if let Some(index) = pending {
+            self.set_selected_index(index);
+            self.set_expanded(false);
+            changed = true;
+            // The activation collapsed the control, so close the host in this poll rather than
+            // leaving it open until the next frame.
+            let items = self.popup_host_items();
+            let anchor = self.popup_anchor();
+            let selected = self.selected_index();
+            if let Some(binding) = self.popup_host.as_mut() {
+                changed |=
+                    Self::push_popup_host_state(&mut binding.host, items, anchor, false, selected);
+            }
+        }
+        changed
+    }
+
+    /// Writes `expanded`, `anchor`, `items` and `selected` into `host`, returning whether anything
+    /// moved. Kept free of `&self` so a poll can hold a mutable borrow of the binding.
+    #[cfg(full_widgets)]
+    fn push_popup_host_state(
+        host: &mut DropDownPopupHost,
+        items: Vec<HostPopupItem>,
+        anchor: Rect,
+        expanded: bool,
+        selected: Option<usize>,
+    ) -> bool {
+        let mut changed = false;
+        if host.items() != items.as_slice() {
+            host.set_items(items);
+            changed = true;
+        }
+        if expanded {
+            if !host.is_open() || host.anchor_rect() != anchor {
+                host.open_at(anchor);
+                changed = true;
+            }
+            if host.highlighted_index() != selected {
+                changed |= host.set_highlighted_index(selected);
+            }
+        } else if host.is_open() {
+            host.close();
+            changed = true;
+        }
+        changed
+    }
+
+    /// The rows this control offers, as host rows keyed by their index.
+    #[cfg(full_widgets)]
+    fn popup_host_items(&self) -> Vec<HostPopupItem> {
+        self.items
+            .iter()
+            .enumerate()
+            .map(|(index, item)| {
+                HostPopupItem::new(index.to_string(), item.text().to_string())
+                    .with_enabled(item.is_enabled())
+            })
+            .collect()
+    }
+
+    /// The rectangle the open list hangs from: the field band's bottom edge.
+    #[cfg(full_widgets)]
+    fn popup_anchor(&self) -> Rect {
+        let band = self.field_band();
+        Rect::new(band.x, band.y + band.height as i32, band.width, 0)
     }
 
     // ─── helpers ────────────────────────────────────────────────────────
@@ -829,6 +997,10 @@ impl WidgetProperties for Dropdown {
 
 impl EventHandler for Dropdown {
     fn handle_event(&mut self, event: &Event) {
+        // A host activation is a shared write, drained before routing so the next frame reflects
+        // the chosen row.
+        #[cfg(full_widgets)]
+        let _ = self.poll_drop_down_popup_host();
         self.base.handle_event(event);
         if !self.base.is_enabled() {
             return;
@@ -1005,6 +1177,10 @@ impl EventHandler for Dropdown {
 
 impl Draw for Dropdown {
     fn draw(&mut self, context: &mut RenderContext) {
+        // Keep the attached host on this control's open state, rows and selection; the popup can
+        // open or change without an event this control receives before painting.
+        #[cfg(full_widgets)]
+        let _ = self.poll_drop_down_popup_host();
         // ── The collapsed field actually painted ──
         //
         // `geometry()` is the area the control was *given*; the **button** part of a dropdown
@@ -1033,19 +1209,19 @@ impl Draw for Dropdown {
         //                   field's own focus ring
         //   list row     -> `surface_container`, one step above the page, which is what a popup *is*
         //
-        // The guard is released before drawing: `theme_manager()` is a non-reentrant mutex and the
-        // accessors below take the same one — the rule `slider.rs` documents.
+        // The read is the shared palette snapshot, not a manager guard: `theme_manager()` is a
+        // non-reentrant mutex and the accessors below take the same one — the rule `slider.rs`
+        // documents.
         let (weak_ink, accent, on_accent, separator, popup_surface) = {
-            let manager = crate::style::theme_manager();
-            match manager.current_theme() {
-                Some(active) => {
-                    let accent = active.colors.primary;
+            match crate::style::palette_shared() {
+                Some(colors) => {
+                    let accent = colors.primary;
                     (
-                        Some(active.colors.secondary),
+                        Some(colors.secondary),
                         Some(accent),
                         Some(accent.contrast_color()),
-                        Some(active.colors.outline_variant),
-                        Some(active.colors.surface_container),
+                        Some(colors.outline_variant),
+                        Some(colors.surface_container),
                     )
                 }
                 None => (None, None, None, None, None),
@@ -1544,9 +1720,8 @@ mod tests {
             let mut dd = Dropdown::new(vec!["One".to_string(), "Two".to_string()], rect);
             dd.set_expanded(true);
             crate::theme::apply_theme_to_widget(&mut dd);
-            let backdrop = crate::style::theme_manager()
-                .current_theme()
-                .map(|active| active.colors.background)
+            let backdrop = crate::style::palette_shared()
+                .map(|colors| colors.background)
                 .expect("a preset is active");
             let svg = crate::widget::svg::render_widget_to_svg_on(&mut dd, rect, backdrop);
             // The rows live below the field's own band, so a fill whose `y` is past it belongs to
@@ -1699,5 +1874,56 @@ mod tests {
             dropdown.set("items", CapabilityValue::String("First".to_string())),
             Err(CapabilityAccessError::TypeMismatch)
         );
+    }
+
+    /// The attached pop-up host mirrors the dropdown and routes its activation back.
+    #[test]
+    #[cfg(full_widgets)]
+    fn the_popup_host_follows_the_dropdown_and_applies_its_choice() {
+        let mut dropdown = make_dropdown();
+        dropdown.attach_drop_down_popup_host(DropDownPopupHost::new(Rect::new(0, 0, 200, 300)));
+        assert!(dropdown.is_drop_down_popup_host_attached());
+        {
+            let host = dropdown.drop_down_popup_host().expect("attached");
+            assert_eq!(host.items().len(), 3, "attach pushes the rows");
+            assert!(!host.is_open(), "a collapsed dropdown is a closed host");
+        }
+        assert!(!dropdown.poll_drop_down_popup_host(), "nothing changed yet");
+
+        dropdown.set_expanded(true);
+        assert!(dropdown.poll_drop_down_popup_host(), "opening reaches the host");
+        {
+            let host = dropdown.drop_down_popup_host().expect("attached");
+            assert!(host.is_open());
+            assert_eq!(host.anchor_rect(), dropdown.popup_anchor());
+            assert_eq!(host.highlighted_index(), Some(0), "the selected row is highlighted");
+        }
+        assert!(!dropdown.poll_drop_down_popup_host(), "the second poll has nothing to do");
+
+        dropdown.set_selected_index(2);
+        assert!(dropdown.poll_drop_down_popup_host(), "a selection change reaches the host");
+        assert_eq!(dropdown.drop_down_popup_host().expect("attached").highlighted_index(), Some(2));
+
+        dropdown.set_items(vec!["First".to_string(), "Second".to_string()]);
+        assert!(dropdown.poll_drop_down_popup_host(), "a new item set reaches the host");
+        {
+            let host = dropdown.drop_down_popup_host().expect("attached");
+            assert_eq!(host.items().len(), 2);
+            assert_eq!(host.items()[0].label, "First");
+        }
+        assert!(!dropdown.poll_drop_down_popup_host(), "the new item set is stable");
+
+        // The host's own activation is applied through the control's selection API and closes it.
+        assert!(dropdown.drop_down_popup_host_mut().expect("attached").activate(1));
+        assert!(dropdown.poll_drop_down_popup_host(), "the host choice is applied");
+        assert_eq!(dropdown.selected_index(), Some(1));
+        assert!(!dropdown.is_expanded(), "choosing a row collapses the dropdown");
+        assert!(!dropdown.drop_down_popup_host().expect("attached").is_open());
+
+        let host = dropdown.detach_drop_down_popup_host().expect("detached");
+        assert!(!dropdown.is_drop_down_popup_host_attached());
+        dropdown.set_expanded(true);
+        assert!(!dropdown.poll_drop_down_popup_host(), "a detached host is not polled");
+        assert!(!host.is_open(), "detach stops updates");
     }
 }

@@ -245,6 +245,12 @@ pub struct Cascader {
     /// Separate from `selected_path` so that closing the overlay without choosing
     /// leaves the committed value untouched — cancelling must not be a selection.
     expanded_path: Vec<usize>,
+    /// Whether choosing a branch row commits it as a value (I-010).
+    ///
+    /// Off by default, so a branch row only navigates into its children and the existing
+    /// "only leaves are values" contract is unchanged. On, a branch row commits its own path and
+    /// closes the overlay, which is what "pick a province without picking a city" needs.
+    change_on_any_level: bool,
     /// Whether the overlay is showing.
     expanded: bool,
     /// Separator used when rendering the selected path as text.
@@ -325,6 +331,7 @@ impl Cascader {
             multi_select: false,
             selected_paths: Vec::new(),
             expanded_path: Vec::new(),
+            change_on_any_level: false,
             expanded: false,
             separator: "/".to_string(),
             filterable: false,
@@ -604,6 +611,24 @@ impl Cascader {
     /// Whether the overlay is showing.
     pub fn is_expanded(&self) -> bool {
         self.expanded
+    }
+
+    /// Whether choosing a branch row commits that branch as the value (I-010).
+    pub fn change_on_any_level(&self) -> bool {
+        self.change_on_any_level
+    }
+
+    /// Enables or disables committing a branch row (I-010).
+    ///
+    /// Default `false` keeps the original navigation-only behaviour. When `true`, activating a
+    /// branch stores its full path in [`Self::selected_path`] and closes the overlay, without
+    /// changing the leaf-only result of [`Self::set_selected_path`].
+    pub fn set_change_on_any_level(&mut self, enabled: bool) {
+        if self.change_on_any_level == enabled {
+            return;
+        }
+        self.change_on_any_level = enabled;
+        self.base.request_redraw();
     }
 
     /// Opens the overlay, starting from the committed selection.
@@ -1067,6 +1092,13 @@ impl Cascader {
             let path = self.expanded_path.clone();
             self.collapse();
             self.set_selected_path(path);
+        } else if self.change_on_any_level && !self.multi_select {
+            // A branch row is a value in this mode. The commit is a separate path from
+            // `set_selected_path`: that method keeps its leaf-only contract, while this mode is
+            // explicitly asking for a partial path to be meaningful.
+            let path = self.expanded_path.clone();
+            self.collapse();
+            self.commit_any_level_path(path);
         } else {
             // A branch still marked `Loading` has no children yet; the host is asked to
             // supply them for exactly this path (I-121). A branch only ever navigates, in
@@ -1076,6 +1108,24 @@ impl Cascader {
             }
             self.base.request_redraw();
         }
+    }
+
+    /// Commits a path that may end on a branch (I-010).
+    ///
+    /// Runs the same signal and cache invalidation as [`Self::set_selected_path`], but without its
+    /// leaf-only gate. That gate still applies to the public setter, so a caller cannot commit a
+    /// branch by accident unless this mode is explicitly on.
+    fn commit_any_level_path(&mut self, path: Vec<usize>) {
+        if path.is_empty() || self.resolve(&path).is_none() {
+            return;
+        }
+        if self.selected_path == path {
+            return;
+        }
+        self.selected_path = path;
+        *self.display_cache.borrow_mut() = None;
+        self.selection_changed.emit(self.selected_path.clone());
+        self.base.request_redraw();
     }
 }
 
@@ -1096,6 +1146,10 @@ impl Widget for Cascader {
     }
 
     /// The overlay fade owes frames until it is complete.
+    fn has_open_popup(&self) -> bool {
+        self.expanded
+    }
+
     fn is_animating(&self) -> bool {
         self.expanded && self.reveal_progress < 1.0
     }
@@ -1326,14 +1380,13 @@ struct OverlayPalette {
 impl OverlayPalette {
     /// Reads the palette the open list is painted from.
     fn resolve() -> Self {
-        let manager = crate::style::theme_manager();
-        match manager.current_theme() {
-            Some(active) => Self {
-                column_surface: active.colors.surface_container,
-                highlight_surface: active.colors.primary,
-                separator: active.colors.outline_variant,
-                on_highlight: active.colors.primary.contrast_color(),
-                branch_ink: active.colors.secondary,
+        match crate::style::palette_shared() {
+            Some(colors) => Self {
+                column_surface: colors.surface_container,
+                highlight_surface: colors.primary,
+                separator: colors.outline_variant,
+                on_highlight: colors.primary.contrast_color(),
+                branch_ink: colors.secondary,
             },
             None => Self {
                 column_surface: Color::WHITE,
@@ -2414,9 +2467,8 @@ mod tests {
 
         let column_pixel = |appearance| -> [u8; 4] {
             crate::theme::global_theme_manager().set_appearance(appearance);
-            let backdrop = crate::style::theme_manager()
-                .current_theme()
-                .map(|active| active.colors.background)
+            let backdrop = crate::style::palette_shared()
+                .map(|colors| colors.background)
                 .expect("a preset is active");
             let mut c = cascader();
             c.expand();

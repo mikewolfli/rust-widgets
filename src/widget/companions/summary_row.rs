@@ -21,7 +21,7 @@
 //! pixel in this control's own paint; it is exposed only as a query (`sticky()`, and the
 //! `sticky` property) so the host can make that decision.
 
-use crate::compat::{format, String, ToString, Vec};
+use crate::compat::{format, lock, Arc, Mutex, String, ToString, Vec};
 use crate::core::{HorizontalAlignment, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::impl_draw_bridge;
@@ -125,7 +125,17 @@ pub struct SummaryRow {
     base: BaseWidget,
     aggregates: Vec<ColumnAggregate>,
     sticky: bool,
+    /// The values painted and returned by the `values()` accessor.
+    ///
+    /// A mirror of the shared cell, refreshed whenever this control paints. The local vector is
+    /// what `values()` can hand out as a slice; the shared cell is what a bound table writes
+    /// through without a `&mut SummaryRow`.
     values: Vec<(String, f64)>,
+    /// The canonical per-token values, shared with a bound table (COMP-A8).
+    ///
+    /// [`Self::value`] reads this cell, so a value pushed by an attached `DataGrid` is visible
+    /// immediately rather than after the next paint.
+    shared_values: Arc<Mutex<Vec<(String, f64)>>>,
     /// Emitted once per [`SummaryRow::update_from_source`] call after values were refreshed.
     pub summary_recalculated: GenericSignal,
 }
@@ -138,6 +148,7 @@ impl SummaryRow {
             aggregates: Vec::new(),
             sticky: false,
             values: Vec::new(),
+            shared_values: Arc::new(Mutex::new(Vec::new())),
             summary_recalculated: GenericSignal::new(),
         }
     }
@@ -150,9 +161,10 @@ impl SummaryRow {
     pub fn set_aggregates(&mut self, aggregates: Vec<ColumnAggregate>) {
         self.aggregates = aggregates;
         let known = &self.aggregates;
-        self.values.retain(|(token, _)| {
-            known.iter().any(|item| item.column_token.as_str() == token.as_str())
-        });
+        let is_known =
+            |token: &String| known.iter().any(|item| item.column_token.as_str() == token.as_str());
+        self.values.retain(|(token, _)| is_known(token));
+        lock(&self.shared_values).retain(|(token, _)| is_known(token));
         self.base.request_redraw();
     }
 
@@ -173,17 +185,26 @@ impl SummaryRow {
         {
             return false;
         }
-        match self.values.iter_mut().find(|(existing, _)| existing.as_str() == token) {
-            Some((_, current)) => {
-                if *current == value {
-                    return true;
-                }
-                *current = value;
-            }
-            None => self.values.push((token.to_string(), value)),
+        let changed = {
+            let mut shared = lock(&self.shared_values);
+            write_token(&mut shared, token, value)
+        };
+        write_token(&mut self.values, token, value);
+        if changed {
+            self.base.request_redraw();
         }
-        self.base.request_redraw();
         true
+    }
+
+    /// The shared value cell a bound table writes, plus the signal that repaints this row.
+    ///
+    /// A table attaches with `&SummaryRow` and cannot call [`Self::set_value`], which needs
+    /// `&mut self`. The cell is the same storage [`Self::value`] reads; a writer is responsible for
+    /// two rules `set_value` enforces — a finite value and a token among
+    /// [`Self::aggregates`] — and emits the returned signal so the row repaints. The local mirror
+    /// behind `values()` is refreshed on the next paint.
+    pub fn values_handle(&self) -> (Arc<Mutex<Vec<(String, f64)>>>, GenericSignal) {
+        (Arc::clone(&self.shared_values), self.base.redraw_requested_signal().clone())
     }
 
     /// Finalizes a batch of [`Self::set_value`] writes after the host re-read its source.
@@ -193,9 +214,10 @@ impl SummaryRow {
     /// this method is the notification boundary, not a hidden table read.
     pub fn update_from_source(&mut self) {
         let known = &self.aggregates;
-        self.values.retain(|(token, _)| {
-            known.iter().any(|item| item.column_token.as_str() == token.as_str())
-        });
+        let is_known =
+            |token: &String| known.iter().any(|item| item.column_token.as_str() == token.as_str());
+        self.values.retain(|(token, _)| is_known(token));
+        lock(&self.shared_values).retain(|(token, _)| is_known(token));
         self.base.request_redraw();
         self.summary_recalculated.emit();
     }
@@ -203,7 +225,10 @@ impl SummaryRow {
     /// Returns the value stored for `token`, if one has been written.
     pub fn value(&self, token: impl AsRef<str>) -> Option<f64> {
         let token = token.as_ref();
-        self.values.iter().find(|(existing, _)| existing.as_str() == token).map(|(_, value)| *value)
+        lock(&self.shared_values)
+            .iter()
+            .find(|(existing, _)| existing.as_str() == token)
+            .map(|(_, value)| *value)
     }
 
     /// Returns every stored value, in the order the values were first written.
@@ -244,6 +269,18 @@ impl SummaryRow {
         self.sticky = sticky;
     }
 
+    /// Copies the shared cell into the local mirror when a bound table wrote through it.
+    ///
+    /// This is the only place the mirror is refreshed without `&mut` editing: an attached grid
+    /// writes the shared cell between frames, and the paint pass is the first guaranteed `&mut`
+    /// entry point afterwards.
+    fn pull_shared_values(&mut self) {
+        let shared = lock(&self.shared_values);
+        if *shared != self.values {
+            self.values.clone_from(&shared);
+        }
+    }
+
     /// The rectangle of one cell, using the layout shared with [`Self::column_rect`].
     fn cell_rect(&self, index: usize) -> Option<Rect> {
         if index >= self.aggregates.len() {
@@ -282,13 +319,16 @@ impl EventHandler for SummaryRow {
         // host's generic state channel sees the same facts as for any other control. The enabled
         // guard keeps a disabled row from receiving even that bookkeeping.
         self.base.handle_event(event);
-        if !self.base.is_enabled() {
-        }
+        if !self.base.is_enabled() {}
     }
 }
 
 impl Draw for SummaryRow {
     fn draw(&mut self, context: &mut RenderContext) {
+        // A bound table writes the shared cell without touching this mirror, so an attached grid's
+        // latest aggregates are folded in at the one point a frame is guaranteed to run before the
+        // cells are painted.
+        self.pull_shared_values();
         let rect = self.geometry();
         let style = self.style();
         let (surface, ink) = surface_ink(style);
@@ -357,6 +397,28 @@ impl Widget for SummaryRow {
                 Some(EventSignalRef::unit("summary_recalculated", &self.summary_recalculated))
             }
             _ => None,
+        }
+    }
+}
+
+/// Stores one value in `values`, replacing the token's earlier entry.
+///
+/// Returns whether the stored number moved; a repeated write of the same value is a no-op for the
+/// caller's redraw decision but still a successful write. Both the local mirror and the shared
+/// cell go through this one rule, so they cannot disagree about ordering or replacement.
+fn write_token(values: &mut Vec<(String, f64)>, token: &str, value: f64) -> bool {
+    match values.iter_mut().find(|(existing, _)| existing.as_str() == token) {
+        Some((_, current)) => {
+            if *current == value {
+                false
+            } else {
+                *current = value;
+                true
+            }
+        }
+        None => {
+            values.push((token.to_string(), value));
+            true
         }
     }
 }

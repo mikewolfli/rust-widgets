@@ -384,9 +384,8 @@ mod tests {
     /// it, so the pane has a visible extent — while a colour the caller set is never moved.
     #[test]
     fn a_surface_equal_to_the_window_fill_is_stepped_away_from_it() {
-        let window_fill = crate::style::theme_manager()
-            .current_theme()
-            .map(|active| active.colors.background)
+        let window_fill = crate::style::palette_shared()
+            .map(|colors| colors.background)
             .unwrap_or(Color::rgb(240, 240, 240));
         let theme_derived = panel_colors(None);
         assert_ne!(
@@ -655,24 +654,21 @@ pub const PANEL_MIN_CONTRAST: f32 = 4.5;
 /// `OrderBookWidget` already applies; it lives here now so four panes cannot each get it
 /// slightly wrong.
 ///
-/// The theme reads are separate manager lock acquisitions, taken and released inside
-/// `resolved_theme_style` and `theme_manager()`, so no guard is held across the caller's
-/// draw. Colour decisions go through [`Color::contrast_color`] and the derived ink via
+/// The theme is read by a lock taken and released inside `resolved_theme_style`, plus a palette
+/// snapshot from `palette_shared()`, so no guard is held across the caller's draw. Colour
+/// decisions go through [`Color::contrast_color`] and the derived ink via
 /// [`Color::legible_on`], the crate's single pair of contrast rules.
 pub fn panel_colors(style: Option<&WidgetStyle>) -> PanelColors {
     let theme = crate::style::resolved_theme_style_shared("chart");
-    // Read as its own lock acquisition and copied out as values, so the guard is dropped
-    // before anything else touches the theme. Only the theme's *background* is taken: it is
-    // needed to detect a surface the resolver has made identical to the window. The ink is
-    // derived from the surface itself below, so that a theme declaring a dark foreground for
-    // a light window still produces ink that reads on the panel it is actually painted on.
-    let window_fill = {
-        let manager = crate::style::theme_manager();
-        manager
-            .current_theme()
-            .map(|active| active.colors.background)
-            .unwrap_or(Color::rgb(240, 240, 240))
-    };
+    // Read once from the palette snapshot and copied out as a value; `palette_shared()` holds
+    // no manager guard, so the manager is free for the rest of the call. Only the theme's
+    // *background* is taken: it is needed to detect a surface the resolver has made identical
+    // to the window. The ink is derived from the surface itself below, so that a theme
+    // declaring a dark foreground for a light window still produces ink that reads on the
+    // panel it is actually painted on.
+    let window_fill = crate::style::palette_shared()
+        .map(|colors| colors.background)
+        .unwrap_or(Color::rgb(240, 240, 240));
 
     let resolved = style
         .and_then(|s| s.background_color)

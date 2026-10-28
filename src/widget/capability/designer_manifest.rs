@@ -1749,9 +1749,13 @@ pub fn designer_manifest(
 
     let mut properties = Vec::with_capacity(capability.properties.len());
     for schema in capability.properties {
+        // Resolved through `default_property_value` rather than the kind-keyed table: a control
+        // that shares a `WidgetKind` with its owner answers some defaults by canonical name (the
+        // popup host's `items`, the palette host's `entries`, and the COMP companions), and the
+        // kind-keyed lookup cannot see them — which made those controls fail to export at all.
         let default_value = factory
-            .schema_default_value(capability.kind, schema.name)
-            .ok_or(ManifestExportError::IncompleteDefaults)?;
+            .default_property_value(capability.canonical_name, schema.name)
+            .map_err(|_| ManifestExportError::IncompleteDefaults)?;
         properties.push(DesignerProperty {
             name: schema.name.into(),
             kind: schema.value_kind,

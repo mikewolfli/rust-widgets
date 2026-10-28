@@ -206,6 +206,7 @@ fn scrim_is_live(modal: ObjectId) -> bool {
 /// entries are pruned in the same pass, so a closed modal cannot keep a live one from owning the
 /// plane.
 fn claim_scrim(modal: ObjectId) -> bool {
+    let modal = registry_id(modal);
     SCRIM_STACK.with(|stack| {
         let mut stack = stack.borrow_mut();
         stack.retain(|id| *id == modal || scrim_is_live(*id));
@@ -221,6 +222,7 @@ fn claim_scrim(modal: ObjectId) -> bool {
 /// [`Dialog::open`](super::dialog_widget::Dialog::open) calls this so a dialog that is opened
 /// second owns the plane from the instant it opens, rather than from the first frame it paints.
 pub(crate) fn push_modal_layer(modal: ObjectId) {
+    let modal = registry_id(modal);
     SCRIM_STACK.with(|stack| {
         let mut stack = stack.borrow_mut();
         stack.retain(|id| *id != modal);
@@ -230,6 +232,7 @@ pub(crate) fn push_modal_layer(modal: ObjectId) {
 
 /// Removes `modal` from the scrim stack, returning ownership to whatever is below it.
 pub(crate) fn pop_modal_layer(modal: ObjectId) {
+    let modal = registry_id(modal);
     SCRIM_STACK.with(|stack| {
         let mut stack = stack.borrow_mut();
         if let Some(position) = stack.iter().rposition(|id| *id == modal) {
@@ -316,6 +319,60 @@ pub(crate) fn draw_modal_scrim_tinted(
     });
     let scrim = scrim.with_alpha((scrim.a as f32 * strength) as u8);
     context.fill_rect(page, scrim);
+}
+
+/// The scrim every modal family paints when it does not name its own tint.
+///
+/// Shared with the window layer so the plane a host paints for a modal that is not one of its
+/// painted children is the same colour as the per-control plane (DLG-001).
+pub(crate) fn scrim_plane_color() -> Color {
+    crate::style::layer_color(crate::style::LayerColor::Scrim)
+        .unwrap_or_else(|| Color::BLACK.with_alpha(82))
+}
+
+/// The id the widget runtime knows `id` by.
+///
+/// A control's `BaseWidget` id is its own construction-time id; the registry mounts it under a
+/// separate `ObjectId` and keeps the mapping in `runtime::registry_id_of`. The scrim stack has to
+/// speak the registry's language: `scrim_owner_for_root` is asked about a registry id (the root
+/// being painted), and `modal_root` walks parent links that are already registry ids. Storing the
+/// own id made those two answers incomparable, so a modal mounted as its own surface never dimmed
+/// its window at all.
+fn registry_id(id: ObjectId) -> ObjectId {
+    crate::widget::runtime::registry_id_of(id).unwrap_or(id)
+}
+
+/// The modal that owns the scrim plane for `root`, if any (DLG-001).
+///
+/// A modal is associated with a window through its parent chain, which is the same relation
+/// [`modal_page_rect`] walks to find the page it dims. The window layer uses this to answer
+/// "does this frame owe a scrim?" for a modal it does not paint as one of its children (a
+/// dialog mounted as its own surface).
+pub(crate) fn scrim_owner_for_root(root: ObjectId) -> Option<ObjectId> {
+    let root = registry_id(root);
+    SCRIM_STACK.with(|stack| {
+        stack
+            .borrow()
+            .iter()
+            .rev()
+            .copied()
+            .find(|modal| scrim_is_live(*modal) && modal_root(*modal) == Some(root))
+    })
+}
+
+/// The root of `id`'s parent chain, or `None` when it has no parent.
+fn modal_root(id: ObjectId) -> Option<ObjectId> {
+    let mut current =
+        crate::widget::runtime::read_widget(id, |widget| widget.parent()).flatten()?;
+    for _ in 0..MODAL_ROOT_WALK_LIMIT {
+        match crate::widget::runtime::read_widget(current, |widget| widget.parent()).flatten() {
+            Some(parent) => current = parent,
+            // An unreadable node is the root being painted (it is lent out during its own
+            // frame), which is exactly the answer wanted here.
+            None => return Some(current),
+        }
+    }
+    None
 }
 
 /// The scrim owners, bottom first. Test-only: production code only needs "am I the owner".
@@ -471,5 +528,74 @@ mod tests {
 
         runtime::unregister(dialog);
         runtime::unregister(window);
+    }
+
+    /// DLG-001: a modal this frame paints is dimmed exactly once.
+    ///
+    /// The dialog paints its own scrim over the page; the window pass used to paint the same
+    /// plane again, which showed as a visibly darker page. The window pass is only owed when the
+    /// owner is not among this frame's painted subtrees. Two identical windows are rendered — one
+    /// bare, one with a settled modal linked as its child — so the page pixel can be compared
+    /// against a single blend of the scrim over the measured base colour, with the double blend
+    /// asserted different so the comparison cannot pass vacuously.
+    #[test]
+    fn a_modal_painted_by_this_frame_is_dimmed_once() {
+        use crate::core::{Color, Size};
+        use crate::widget::capability::coercion::widget_as_mut;
+        use crate::widget::{runtime, Dialog, Window};
+
+        const PAGE: (u32, u32) = (320, 240);
+        let size = Size::new(PAGE.0, PAGE.1);
+        // A page pixel far from where the card will sit, so the scrim is the only thing on it.
+        let (x, y) = (300u32, 220u32);
+        let index = (((y * PAGE.0) + x) * 4) as usize;
+        let pixel = |frame: &[u8]| Color::rgb(frame[index], frame[index + 1], frame[index + 2]);
+
+        let bare = runtime::register(Box::new(Window::new(
+            "scrim-bare".to_string(),
+            Rect::new(0, 0, PAGE.0, PAGE.1),
+        )))
+        .expect("mount bare window");
+        let base = pixel(&runtime::render_frame_tree(bare, size, Color::WHITE).expect("bare frame"));
+
+        let window = runtime::register(Box::new(Window::new(
+            "scrim-modal".to_string(),
+            Rect::new(0, 0, PAGE.0, PAGE.1),
+        )))
+        .expect("mount modal window");
+        let dialog = runtime::register(Box::new(Dialog::new(Rect::new(20, 20, 120, 80))))
+            .expect("mount dialog");
+        runtime::with_widget_mut(dialog, |widget| {
+            let dialog = widget_as_mut::<Dialog>(widget).expect("the registered type is a Dialog");
+            dialog.open();
+            // Settle the reveal unconditionally: the transition only reports movement once a
+            // tick has advanced it, so a `while is_animating()` loop can exit before the first
+            // frame and leave the scrim at zero strength.
+            for _ in 0..40 {
+                dialog.tick(16);
+            }
+            assert_eq!(dialog.reveal_progress(), 1.0, "the modal is fully revealed");
+        })
+        .expect("dialog is mounted");
+        runtime::with_widget_mut(window, |widget| widget.base_mut().add_child_linked(dialog))
+            .expect("window is mounted");
+
+        let frame = runtime::render_frame_tree(window, size, Color::WHITE).expect("modal frame");
+        let page = pixel(&frame);
+        let scrim = scrim_plane_color();
+        let weight = f32::from(scrim.a) / 255.0;
+        let once = base.blend(&scrim, weight);
+        let twice = once.blend(&scrim, weight);
+        let close = |left: Color, right: Color| {
+            (i32::from(left.r) - i32::from(right.r)).abs() <= 2
+                && (i32::from(left.g) - i32::from(right.g)).abs() <= 2
+                && (i32::from(left.b) - i32::from(right.b)).abs() <= 2
+        };
+        assert!(close(page, once), "the page is dimmed by one scrim: {page:?} vs {once:?}");
+        assert!(!close(page, twice), "and not by two: {page:?} vs {twice:?}");
+
+        runtime::unregister(dialog);
+        runtime::unregister(window);
+        runtime::unregister(bare);
     }
 }

@@ -1410,6 +1410,11 @@ impl Widget for DateEdit {
         &mut self.base
     }
 
+    /// The calendar popup is an overlay, so a host sees it as open (X-002).
+    fn has_open_popup(&self) -> bool {
+        self.calendar_open
+    }
+
     fn size_hint(&self) -> Size {
         crate::core::Size::new(
             dimensions::DATE_EDIT_DEFAULT_WIDTH,

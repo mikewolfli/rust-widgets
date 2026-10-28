@@ -459,6 +459,27 @@ impl CupertinoDatePicker {
         &self.month_names
     }
 
+    /// Replaces the AM/PM captions shown by the 12-hour wheel (CB-002).
+    ///
+    /// The pair is rejected as a whole when either entry is empty, the same rule
+    /// [`Self::set_month_names`] applies: a caption is the row's content, so a blank one would
+    /// leave a wheel row the user cannot identify.
+    pub fn set_ampm_labels(&mut self, labels: [String; 2]) {
+        if labels.iter().any(String::is_empty) {
+            return;
+        }
+        if self.ampm_labels == labels {
+            return;
+        }
+        self.ampm_labels = labels.to_vec();
+        self.base.request_redraw();
+    }
+
+    /// The AM/PM captions currently used by the 12-hour wheel.
+    pub fn ampm_labels(&self) -> &[String] {
+        &self.ampm_labels
+    }
+
     /// Emits the countdown tuple when the picker is in countdown mode.
     fn emit_countdown(&self) {
         if self.mode == CupertinoDatePickerMode::CountDownTimer {
@@ -826,22 +847,22 @@ impl Draw for CupertinoDatePicker {
         // mutex is not re-entrant.
         let style = self.base.style();
         let theme = crate::style::resolved_theme_style_shared("cupertino_date_picker");
-        // Read as its own lock acquisition and copied out as values, so the guard is dropped
-        // before anything else touches the theme. The picker is not in the role table, so it
+        // Read from the shared palette snapshot, which is revision-cached and applies the
+        // crossfade/high-contrast resolution the draw should use, so this does not take the
+        // manager lock. The picker is not in the role table, so it
         // classifies as `Surface` and its resolved background is the window fill itself; the
         // wheel below therefore derives its own distinct surface rather than painting the
         // window's. The selected row is the wheel's value indicator, so it reads the theme's
         // accent. `muted` is the theme's own de-emphasised colour, which replaces the two
         // fixed greys the unselected rows and the arrows used.
         let (window_fill, foreground, accent, muted, disabled) = {
-            let manager = crate::style::theme_manager();
-            match manager.current_theme() {
-                Some(active) => (
-                    active.colors.background,
-                    active.colors.foreground,
-                    active.colors.accent,
-                    active.colors.secondary,
-                    active.colors.disabled,
+            match crate::style::palette_shared() {
+                Some(colors) => (
+                    colors.background,
+                    colors.foreground,
+                    colors.accent,
+                    colors.secondary,
+                    colors.disabled,
                 ),
                 None => (
                     Color::rgb(240, 240, 240),

@@ -916,16 +916,15 @@ impl Draw for Tooltip {
         // and the whole body used to be skipped unless the tooltip was already showing — so
         // the census reported `ink = 0` *and* no response to a light/dark switch.
         //
-        // The theme reads take and release the global manager's lock internally, so no
-        // guard is held across the draw (the mutex is not re-entrant).
+        // The theme reads are the cached shared snapshots, so no manager lock is held across
+        // the draw (the mutex is not re-entrant).
         let style = self.base.style();
-        // One theme-manager read supplies both the window fill and the fallback ink; the
+        // One palette-snapshot read supplies both the window fill and the fallback ink; the
         // previous path resolved a separate widget style and then took the manager lock again
         // for the same frame (G-P13).
         let (window_fill, theme_ink) = {
-            let manager = crate::style::theme_manager();
-            match manager.current_theme() {
-                Some(active) => (active.colors.background, Some(active.colors.foreground)),
+            match crate::style::palette_shared() {
+                Some(colors) => (colors.background, Some(colors.foreground)),
                 None => (Color::WHITE, None),
             }
         };
@@ -1446,9 +1445,8 @@ mod tests {
             // yet the assertion passed, because it only checked the bubble's absolute luminance
             // and never once looked at the window. A test named `inverts_against_its_window` that
             // does not read the window proves nothing about the inversion it claims to guard.
-            let window = crate::style::theme_manager()
-                .current_theme()
-                .map(|theme| theme.colors.background)
+            let window = crate::style::palette_shared()
+                .map(|colors| colors.background)
                 .unwrap_or(crate::core::Color::WHITE);
             assert_eq!(
                 is_dark(window),

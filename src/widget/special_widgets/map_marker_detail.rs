@@ -475,16 +475,12 @@ impl Draw for MapMarkerDetail {
         let style = self.base.style();
         // The window deliberately inverts against the page, exactly as a snackbar does, so it reads
         // as floating *over* the map rather than as another map layer.
-        let (surface, ink) = crate::style::theme_manager()
-            .current_theme()
-            .map(|theme| (theme.colors.inverse_surface, theme.colors.on_inverse_surface))
-            .unwrap_or_else(|| {
-                (style.background_color.unwrap_or(Color::rgb(48, 52, 58)), Color::WHITE)
-            });
-        let accent = crate::style::palette_shared()
-            .as_ref()
-            .map(|colors| colors.primary)
-            .unwrap_or(Color::PRIMARY);
+        let palette = crate::style::palette_shared();
+        let (surface, ink) = match palette.as_ref() {
+            Some(colors) => (colors.inverse_surface, colors.on_inverse_surface),
+            None => (style.background_color.unwrap_or(Color::rgb(48, 52, 58)), Color::WHITE),
+        };
+        let accent = palette.as_ref().map(|colors| colors.primary).unwrap_or(Color::PRIMARY);
         let font = effective_font(style);
 
         context.fill_rounded_rect(window, 6, surface);

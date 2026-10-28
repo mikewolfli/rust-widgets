@@ -593,10 +593,9 @@ impl AudioVisualizer {
             return chosen;
         }
         // A visualizer's panel is a **surface one step above the page**, the same role
-        // `font_preview` and the popup panels use. The theme guard is released before returning.
-        let themed = crate::style::theme_manager()
-            .current_theme()
-            .map(|active| active.colors.surface_container);
+        // `font_preview` and the popup panels use. The palette comes from the shared cache, so no
+        // manager lock is taken.
+        let themed = crate::style::palette_shared().map(|colors| colors.surface_container);
         themed.unwrap_or(Color::rgba(20, 20, 30, 255))
     }
 

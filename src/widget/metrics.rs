@@ -874,9 +874,8 @@ impl FocusRing {
 /// Takes the colour rather than a theme handle so a control with no theme can still ask.
 pub fn focus_ring_color(fallback: Color) -> Color {
     ring_color_from(
-        crate::style::theme_manager()
-            .current_theme()
-            .map(|theme| focus_ring_color_from_theme(&theme.colors)),
+        crate::style::palette_shared()
+            .map(|colors| focus_ring_color_from_theme(&colors)),
         fallback,
     )
 }

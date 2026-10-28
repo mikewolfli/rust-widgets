@@ -240,6 +240,8 @@ pub struct FontComboBox {
     edit_cursor: usize,
     /// The other end of the edit's selection, in bytes. `None` means no selection (I-16).
     edit_anchor: Option<usize>,
+    /// The editable caret's blink phase (X-003); advanced only while an edit is in progress.
+    cursor_blink: crate::style::CursorBlink,
     max_visible_items: i32,
     expanded: bool,
     /// How the field's value is aligned within its own box.
@@ -321,6 +323,7 @@ impl FontComboBox {
             edit_buffer: None,
             edit_cursor: 0,
             edit_anchor: None,
+            cursor_blink: crate::style::CursorBlink::new(),
             max_visible_items: 10,
             expanded: false,
             alignment: crate::core::Alignment::Left,
@@ -477,6 +480,7 @@ impl FontComboBox {
         // The edit is over, so the caret and the range it described go with it (I-16).
         self.edit_cursor = 0;
         self.edit_anchor = None;
+        self.cursor_blink.stop();
         self.base.request_redraw();
         if text.trim().is_empty() {
             return false;
@@ -509,6 +513,7 @@ impl FontComboBox {
             self.edit_cursor = seed.len();
             self.edit_anchor = None;
             self.edit_buffer = Some(seed);
+            self.cursor_blink.start();
         }
     }
 
@@ -944,6 +949,56 @@ impl Widget for FontComboBox {
         &mut self.base
     }
 
+    fn tick(&mut self, delta_ms: u32) -> bool {
+        if self.edit_buffer.is_none() {
+            self.cursor_blink.stop();
+            return false;
+        }
+        let running = self.cursor_blink.tick(delta_ms);
+        if running {
+            self.base.request_redraw();
+        }
+        running
+    }
+
+    fn is_animating(&self) -> bool {
+        self.expanded || self.edit_buffer.is_some()
+    }
+
+    fn has_open_popup(&self) -> bool {
+        self.expanded
+    }
+
+    /// Reports the edit caret so an IME candidate window anchors to it (X-001).
+    fn input_method_query(&self) -> Option<crate::widget::widget_trait::InputMethodQuery> {
+        let text = self.edit_buffer.as_ref()?;
+        let font = effective_font(self.style());
+        let line_height = font.effective_line_height().max(1.0) as u32;
+        let geometry = self.field_geometry(line_height);
+        let caret_byte = floor_char_boundary(text, self.edit_cursor.min(text.len()));
+        let advance =
+            crate::widget::metrics::estimate_text_width(&text[..caret_byte], font, 1.0) as i32;
+        let align = self.alignment.to_horizontal().unwrap_or(HorizontalAlignment::Left);
+        let total = crate::widget::metrics::estimate_text_width(text, font, 1.0) as i32;
+        let origin = crate::render::fitted_origin(
+            Rect::new(
+                geometry.value_box.x,
+                geometry.value_box.y,
+                geometry.value_box.width,
+                geometry.value_box.height,
+            ),
+            total,
+            align,
+        );
+        let x = (origin.x + advance)
+            .min(geometry.value_box.x + geometry.value_box.width as i32 - 1)
+            .max(geometry.value_box.x);
+        Some(crate::widget::widget_trait::InputMethodQuery {
+            caret_rect: Rect::new(x, geometry.value_box.y, 1, geometry.value_box.height.max(1)),
+            caret_byte: Some(caret_byte),
+        })
+    }
+
     fn size_hint(&self) -> crate::core::Size {
         // Derived through the same metric the band is drawn from, so the reported size and the
         // painted box cannot describe two different controls. The width was a bare `200` and the
@@ -1167,6 +1222,7 @@ impl EventHandler for FontComboBox {
                         self.edit_buffer = None;
                         self.edit_cursor = 0;
                         self.edit_anchor = None;
+                        self.cursor_blink.stop();
                         self.base.request_redraw();
                     }
                     _ => {
@@ -1298,6 +1354,7 @@ impl EventHandler for FontComboBox {
             // field kept text that neither Enter had committed nor Escape had cancelled (I-17).
             Event::FocusLost => {
                 self.base.set_pressed(false);
+                self.cursor_blink.stop();
                 if self.edit_buffer.is_some() {
                     self.edit_buffer = None;
                     self.edit_cursor = 0;
@@ -1338,17 +1395,13 @@ impl Draw for FontComboBox {
         // `fontcombobox`), whose resolved background is the field interior — lighter on a light
         // theme, darker on a dark one — and whose ink is the theme's foreground.
         let theme = crate::style::resolved_theme_style_shared("font_combo_box");
-        // Read as its own lock acquisition and copied out as values, so the guard is dropped
-        // before anything else touches the theme.
+        // Read from the shared palette snapshot and copied out as values, so no manager guard is
+        // held while anything else touches the theme.
         let (window_fill, foreground, primary, secondary) = {
-            let manager = crate::style::theme_manager();
-            match manager.current_theme() {
-                Some(active) => (
-                    active.colors.background,
-                    active.colors.foreground,
-                    active.colors.primary,
-                    active.colors.secondary,
-                ),
+            match crate::style::palette_shared() {
+                Some(colors) => {
+                    (colors.background, colors.foreground, colors.primary, colors.secondary)
+                }
                 None => (
                     Color::rgb(240, 240, 240),
                     Color::BLACK,
@@ -1466,11 +1519,13 @@ impl Draw for FontComboBox {
             let caret_x = caret_x
                 .min(geometry.value_box.x + geometry.value_box.width as i32 - 1)
                 .max(geometry.value_box.x);
-            ctx.draw_line(
-                Point::new(caret_x, value_line.y),
-                Point::new(caret_x, value_line.y + value_line.height as i32),
-                ink,
-            );
+            if self.cursor_blink.is_visible() {
+                ctx.draw_line(
+                    Point::new(caret_x, value_line.y),
+                    Point::new(caret_x, value_line.y + value_line.height as i32),
+                    ink,
+                );
+            }
         }
         // Draw popup list when expanded
         if self.expanded && !self.visible_fonts.is_empty() {

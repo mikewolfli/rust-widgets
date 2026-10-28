@@ -190,6 +190,33 @@ impl TimelineItem {
     }
 }
 
+/// The inputs that decide an axis-label layout (VP-003).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct TickLabelKey {
+    rect_x: i32,
+    rect_width: u32,
+    viewport_start: i64,
+    viewport_end: i64,
+    dpi_bits: u32,
+    font_size_bits: u32,
+    font_weight: u16,
+    auto_time_step: bool,
+}
+
+/// One tick's painted x and its label text.
+struct TickLabel {
+    x: i32,
+    text: String,
+}
+
+/// Cached axis labels for one [`TickLabelKey`] (VP-003).
+struct TickLabelCache {
+    key: TickLabelKey,
+    ticks: Vec<TickLabel>,
+    /// Dense-cluster markers: painted x and the `+N` caption.
+    dense: Vec<TickLabel>,
+}
+
 /// Basic vertical timeline widget with selectable rows and zoomable viewport.
 pub struct TimelineWidget {
     base: BaseWidget,
@@ -221,6 +248,8 @@ pub struct TimelineWidget {
     drag_preview: Option<(usize, i64, i64)>,
     /// Whether the time labels use a 1-2-5 step, time formatting and density markers (SP-112).
     auto_time_step: bool,
+    /// The axis labels, rebuilt only when the viewport or the header geometry changes (VP-003).
+    tick_label_cache: RefCell<Option<TickLabelCache>>,
     /// Emitted when selected item changes. Payload is selected item id.
     pub item_selected: Signal1<String>,
     /// Emitted when the visible time range changes. Payload is `(start, end)`.
@@ -255,6 +284,7 @@ impl TimelineWidget {
             drag: None,
             drag_preview: None,
             auto_time_step: false,
+            tick_label_cache: RefCell::new(None),
             item_selected: Signal1::new(),
             viewport_changed: Signal1::new(),
             item_hovered: Signal1::new(),
@@ -1215,53 +1245,77 @@ impl Draw for TimelineWidget {
             );
             let auto = self.auto_time_step;
             let ink = text_color.blend(&background, 0.3);
-            if auto {
-                for value in self.time_ticks() {
-                    let x = self.project_x(value, track_x, track_w);
-                    let band = Rect::new((x - 24).max(rect.x), header.y, 48, header.height);
-                    context.draw_text_line_cow(
-                        band,
-                        &Self::format_time_label(value),
-                        effective_font(style),
-                        ink,
-                        HorizontalAlignment::Center,
-                    );
+            let font = effective_font(style);
+            let key = TickLabelKey {
+                rect_x: rect.x,
+                rect_width: rect.width,
+                viewport_start: self.viewport_start,
+                viewport_end: self.viewport_end,
+                dpi_bits: self.base.dpi_scale().to_bits(),
+                font_size_bits: font.size().to_bits(),
+                font_weight: font.weight(),
+                auto_time_step: auto,
+            };
+            // The labels are a pure function of the key, so a still viewport reuses the strings
+            // instead of formatting one per tick per frame (VP-003).
+            let mut cache = self.tick_label_cache.borrow_mut();
+            if cache.as_ref().is_none_or(|cached| cached.key != key) {
+                let mut ticks = Vec::new();
+                if auto {
+                    for value in self.time_ticks() {
+                        let x = self.project_x(value, track_x, track_w);
+                        ticks.push(TickLabel { x, text: Self::format_time_label(value) });
+                    }
+                } else {
+                    let span = self.viewport_end - self.viewport_start;
+                    for tick in 0..=TIME_LABEL_TICKS {
+                        let ratio = tick as f64 / f64::from(TIME_LABEL_TICKS);
+                        let value = self.viewport_start + (span as f64 * ratio).round() as i64;
+                        let x = track_x + (track_w as f64 * ratio) as i32;
+                        ticks.push(TickLabel { x, text: value.to_string() });
+                    }
                 }
-            } else {
-                // The historical four equal divisions, kept at their original arithmetic so the
-                // default header is unchanged.
-                let span = self.viewport_end - self.viewport_start;
-                for tick in 0..=TIME_LABEL_TICKS {
-                    let ratio = tick as f64 / f64::from(TIME_LABEL_TICKS);
-                    let value = self.viewport_start + (span as f64 * ratio).round() as i64;
-                    let x = track_x + (track_w as f64 * ratio) as i32;
-                    let band = Rect::new((x - 24).max(rect.x), header.y, 48, header.height);
-                    context.draw_text_line_cow(
-                        band,
-                        &value.to_string(),
-                        effective_font(style),
-                        ink,
-                        HorizontalAlignment::Center,
-                    );
-                }
+                let dense = if auto {
+                    self.dense_clusters()
+                        .into_iter()
+                        .map(|(start, count)| TickLabel {
+                            x: self.project_x(start, track_x, track_w),
+                            text: crate::compat::format!("+{count}"),
+                        })
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+                *cache = Some(TickLabelCache { key, ticks, dense });
             }
-            // Dense start times get one marker instead of a wall of overprinted bars; the count
-            // says how many arrivals the marker stands for (SP-112).
-            if auto {
-                for (start, count) in self.dense_clusters() {
-                    let x = self.project_x(start, track_x, track_w);
-                    context.fill_circle(
-                        Point::new(x, header.y + header.height as i32 - 3),
-                        2,
-                        text_color,
+            if let Some(cached) = cache.as_ref() {
+                for tick in &cached.ticks {
+                    let band = Rect::new((tick.x - 24).max(rect.x), header.y, 48, header.height);
+                    context.draw_text_line_cow(
+                        band,
+                        &tick.text,
+                        font,
+                        ink,
+                        HorizontalAlignment::Center,
                     );
-                    context.draw_text(
-                        Point::new(x + 4, header.y + 1),
-                        &crate::compat::format!("+{count}"),
-                        effective_font(style),
-                        text_color,
-                        HorizontalAlignment::Left,
-                    );
+                }
+                // Dense start times get one marker instead of a wall of overprinted bars; the
+                // count says how many arrivals the marker stands for (SP-112).
+                if auto {
+                    for cluster in &cached.dense {
+                        context.fill_circle(
+                            Point::new(cluster.x, header.y + header.height as i32 - 3),
+                            2,
+                            text_color,
+                        );
+                        context.draw_text(
+                            Point::new(cluster.x + 4, header.y + 1),
+                            &cluster.text,
+                            font,
+                            text_color,
+                            HorizontalAlignment::Left,
+                        );
+                    }
                 }
             }
         }

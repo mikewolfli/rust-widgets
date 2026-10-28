@@ -463,8 +463,8 @@ impl Draw for ModalBottomSheet {
         // and the whole sheet used to be skipped unless it was already showing — so the
         // census reported `ink = 0` *and* no response to a light/dark switch.
         //
-        // The theme reads take and release the global manager's lock internally, so no
-        // guard is held across the draw (the mutex is not re-entrant).
+        // The theme reads are the cached shared snapshots, so no manager lock is held across
+        // the draw (the mutex is not re-entrant).
         let style = self.base.style();
         let theme = crate::style::resolved_theme_style_shared("modal_bottom_sheet");
         // `modal_bottom_sheet` is absent from `WidgetRole::for_kind_name`'s table, so it
@@ -474,8 +474,7 @@ impl Draw for ModalBottomSheet {
         // re-derived a visible step away from it, the same distinction
         // `Colors::input_background` draws for a field.
         let window_fill = {
-            let manager = crate::style::theme_manager();
-            manager.current_theme().map(|active| active.colors.background).unwrap_or(Color::WHITE)
+            crate::style::palette_shared().map(|colors| colors.background).unwrap_or(Color::WHITE)
         };
         let ink = style
             .text_color
@@ -982,9 +981,8 @@ mod tests {
         for appearance in [crate::theme::AppearanceMode::Dark, crate::theme::AppearanceMode::Light]
         {
             crate::theme::global_theme_manager().set_appearance(appearance);
-            let window = crate::style::theme_manager()
-                .current_theme()
-                .map(|active| active.colors.background)
+            let window = crate::style::palette_shared()
+                .map(|colors| colors.background)
                 .expect("a preset is active");
             let scrim = crate::style::layer_color(crate::style::LayerColor::Scrim)
                 .expect("the preset defines a scrim role");
@@ -1010,10 +1008,7 @@ mod tests {
         let _guard = crate::style::theme_test_guard();
         let scrim_of = |appearance| {
             crate::theme::global_theme_manager().set_appearance(appearance);
-            crate::style::theme_manager()
-                .current_theme()
-                .map(|active| active.colors.scrim)
-                .expect("a preset is active")
+            crate::style::palette_shared().map(|colors| colors.scrim).expect("a preset is active")
         };
         let dark = scrim_of(crate::theme::AppearanceMode::Dark);
         let light = scrim_of(crate::theme::AppearanceMode::Light);

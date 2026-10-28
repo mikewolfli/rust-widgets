@@ -2327,6 +2327,13 @@ pub fn is_widget_enabled(widget_id: crate::core::ObjectId) -> bool {
 #[cfg(not(alloc_frugal))]
 pub fn set_widget_visible(widget_id: crate::core::ObjectId, visible: bool) {
     control_backend::get_control_backend().set_widget_visible(widget_id, visible);
+    // Hiding a modal releases the scrim plane so the modal below it (or the page) takes over
+    // (DLG-001). The call is a no-op for an id that never claimed the plane. Gated because the
+    // dialog layer only exists in a build with the full widget set.
+    #[cfg(full_widgets)]
+    if !visible {
+        crate::widget::dialog::pop_modal_layer(widget_id);
+    }
 }
 /// Check if a widget is visible.
 #[cfg(not(alloc_frugal))]

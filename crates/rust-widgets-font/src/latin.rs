@@ -9,8 +9,8 @@
 //     https://raw.githubusercontent.com/google/fonts/main/ofl/opensans/OpenSans%5Bwdth,wght%5D.ttf
 //     SHA-256 (upstream .ttf): 36643644f318a812aab2d2ed3bb98f8cf0872527f835fe9398d95fe6b9adb878
 //
-// Licence of the glyph outlines: SIL Open Font License 1.1. See the repository-root `NOTICE`,
-// which records this file by name together with the facts above. The subset is a Modified
+// Licence of the glyph outlines: SIL Open Font License 1.1. See this crate's `NOTICE`, which
+// records this file by name together with the facts above. The subset is a Modified
 // Version under the OFL and is renamed: it does not use the upstream Reserved Font Name.
 //
 // The subset is 35896 bytes (309 glyphs, layout tables: GSUB, GPOS),

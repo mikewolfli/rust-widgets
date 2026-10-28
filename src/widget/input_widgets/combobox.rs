@@ -20,9 +20,13 @@
 //! indicator" true by construction rather than by two subtractions that happen to agree.
 
 use crate::compat::{HashMap, Instant, Rc, RefCell, String, ToString, Vec};
+#[cfg(full_widgets)]
+use crate::compat::{lock, Arc, Mutex};
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{wheel::WheelScroll, Event, EventHandler};
 use crate::render::RenderContext;
+#[cfg(full_widgets)]
+use crate::signal::ConnectionScope;
 use crate::signal::Signal1;
 use crate::style::EdgeOffsets;
 use crate::widget::capability::coercion::{
@@ -32,6 +36,8 @@ use crate::widget::capability::coercion::{
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+#[cfg(full_widgets)]
+use crate::widget::companions::{DropDownPopupHost, PopupItem as HostPopupItem};
 use crate::widget::input_widgets::suggestion_popup::{MatchMode, PopupItem, SuggestionPopup};
 use crate::widget::metrics::{
     active_profile, dimensions, effective_font, estimate_text_width, focus_ring_color,
@@ -646,6 +652,37 @@ pub struct ComboBox {
     popup_revision: u64,
     /// The revision the popup's row list currently reflects.
     popup_synced_revision: u64,
+    /// Bumped whenever the editable value changes, so its advance cache invalidates (IP-002).
+    editor_revision: u64,
+    /// Cumulative advances of the editable value, keyed by revision and font (IP-002).
+    editor_advance_cache: RefCell<Option<EditorAdvanceCache>>,
+    /// The editable caret's blink state (X-003).
+    cursor_blink: crate::style::CursorBlink,
+    /// The shared pop-up host this combo box keeps in step, when one is attached.
+    #[cfg(full_widgets)]
+    popup_host: Option<PopupHostBinding>,
+}
+
+/// The live link between a [`ComboBox`] and a [`DropDownPopupHost`].
+///
+/// The combo box owns the host and pushes its open state, anchor, rows and selection into it; the
+/// host's `item_clicked` stream is parked in the shared cell and applied by
+/// [`ComboBox::poll_drop_down_popup_host`] through [`ComboBox::set_current_index`].
+#[cfg(full_widgets)]
+struct PopupHostBinding {
+    /// The pop-up surface kept in step with this control.
+    host: DropDownPopupHost,
+    /// The row the host activated since the last poll.
+    clicked: Arc<Mutex<Option<usize>>>,
+    /// The subscription, dropped with the binding so a detach leaves no slot behind.
+    _scope: ConnectionScope,
+}
+
+/// Per-character cumulative advances for an editable combo box's value (IP-002).
+struct EditorAdvanceCache {
+    revision: u64,
+    font: Font,
+    cuts: Vec<(usize, i32)>,
 }
 
 /// First-row index for every label, matching `Iterator::position`'s first-match semantics.
@@ -681,6 +718,142 @@ impl ComboBox {
     fn popup_anchor(&self) -> Rect {
         let band = self.field_band();
         Rect::new(band.x, band.y + band.height as i32, band.width, 0)
+    }
+
+    /// Follows a [`DropDownPopupHost`] with this control's open state, anchor, rows and selection.
+    ///
+    /// This is the companion binding for COMP-A8. The host mirrors the control's item list (ids are
+    /// item indices, so an activation maps back to [`Self::set_current_index`]), its open state
+    /// follows [`Self::is_open`], and its anchor is the field band's bottom edge.
+    /// [`Self::poll_drop_down_popup_host`] repeats the comparison on every paint and event, so
+    /// opening, closing and replacing the items reach the host without host bookkeeping. The host
+    /// mirrors the full item list, not the completer's filtered candidates. Attaching replaces any
+    /// previous host.
+    #[cfg(full_widgets)]
+    pub fn attach_drop_down_popup_host(&mut self, mut host: DropDownPopupHost) {
+        let clicked = Arc::new(Mutex::new(None));
+        let sink = Arc::clone(&clicked);
+        let scope = ConnectionScope::new();
+        let redraw = self.base.redraw_requested_signal().clone();
+        host.item_clicked.connect_scoped(&scope, move |item| {
+            if let Ok(index) = item.id.parse::<usize>() {
+                *lock(&sink) = Some(index);
+                // A host activation is a command, so the poll that applies it runs next frame.
+                redraw.emit();
+            }
+        });
+        let items = self.popup_host_items();
+        let anchor = self.popup_anchor();
+        let open = self.is_open();
+        let selected = self.current_index();
+        Self::push_popup_host_state(&mut host, items, anchor, open, selected);
+        self.popup_host = Some(PopupHostBinding { host, clicked, _scope: scope });
+        self.base.request_redraw();
+    }
+
+    /// Stops following the attached pop-up host and returns it.
+    #[cfg(full_widgets)]
+    pub fn detach_drop_down_popup_host(&mut self) -> Option<DropDownPopupHost> {
+        let binding = self.popup_host.take()?;
+        self.base.request_redraw();
+        Some(binding.host)
+    }
+
+    /// Whether a [`DropDownPopupHost`] is attached.
+    #[cfg(full_widgets)]
+    pub fn is_drop_down_popup_host_attached(&self) -> bool {
+        self.popup_host.is_some()
+    }
+
+    /// The attached pop-up host, if any.
+    #[cfg(full_widgets)]
+    pub fn drop_down_popup_host(&self) -> Option<&DropDownPopupHost> {
+        self.popup_host.as_ref().map(|binding| &binding.host)
+    }
+
+    /// The attached pop-up host for editing, if any.
+    #[cfg(full_widgets)]
+    pub fn drop_down_popup_host_mut(&mut self) -> Option<&mut DropDownPopupHost> {
+        self.popup_host.as_mut().map(|binding| &mut binding.host)
+    }
+
+    /// Applies the control's pop-up state to the attached host and drains an activation.
+    ///
+    /// Returns whether the host's open state, anchor, rows or highlight changed, or an activation
+    /// was applied. A second call with nothing pending returns `false`.
+    #[cfg(full_widgets)]
+    pub fn poll_drop_down_popup_host(&mut self) -> bool {
+        if self.popup_host.is_none() {
+            return false;
+        }
+        let items = self.popup_host_items();
+        let anchor = self.popup_anchor();
+        let open = self.is_open();
+        let selected = self.current_index();
+        let Some(binding) = self.popup_host.as_mut() else {
+            return false;
+        };
+        let mut changed =
+            Self::push_popup_host_state(&mut binding.host, items, anchor, open, selected);
+        let pending = lock(&binding.clicked).take();
+        if let Some(index) = pending {
+            self.set_current_index(Some(index));
+            self.set_open(false);
+            changed = true;
+            // The activation closed the control, so close the host in this poll rather than
+            // leaving it open until the next frame.
+            let items = self.popup_host_items();
+            let anchor = self.popup_anchor();
+            let selected = self.current_index();
+            if let Some(binding) = self.popup_host.as_mut() {
+                changed |=
+                    Self::push_popup_host_state(&mut binding.host, items, anchor, false, selected);
+            }
+        }
+        changed
+    }
+
+    /// Writes `open`, `anchor`, `items` and `selected` into `host`, returning whether anything
+    /// moved. Kept free of `&self` so a poll can hold a mutable borrow of the binding.
+    #[cfg(full_widgets)]
+    fn push_popup_host_state(
+        host: &mut DropDownPopupHost,
+        items: Vec<HostPopupItem>,
+        anchor: Rect,
+        open: bool,
+        selected: Option<usize>,
+    ) -> bool {
+        let mut changed = false;
+        if host.items() != items.as_slice() {
+            host.set_items(items);
+            changed = true;
+        }
+        if open {
+            if !host.is_open() || host.anchor_rect() != anchor {
+                host.open_at(anchor);
+                changed = true;
+            }
+            if host.highlighted_index() != selected {
+                changed |= host.set_highlighted_index(selected);
+            }
+        } else if host.is_open() {
+            host.close();
+            changed = true;
+        }
+        changed
+    }
+
+    /// The rows this control offers, as host rows keyed by their item index.
+    #[cfg(full_widgets)]
+    fn popup_host_items(&self) -> Vec<HostPopupItem> {
+        self.items
+            .iter()
+            .enumerate()
+            .map(|(index, label)| {
+                HostPopupItem::new(index.to_string(), label.clone())
+                    .with_enabled(self.is_item_enabled(index))
+            })
+            .collect()
     }
 
     /// The rows the open list offers: the completer's candidates when it has any, the items
@@ -828,6 +1001,11 @@ impl ComboBox {
             popup: SuggestionPopup::new(geometry),
             popup_revision: 0,
             popup_synced_revision: u64::MAX,
+            editor_revision: 0,
+            editor_advance_cache: RefCell::new(None),
+            cursor_blink: crate::style::CursorBlink::new(),
+            #[cfg(full_widgets)]
+            popup_host: None,
         };
         combo.sync_popup();
         combo
@@ -1202,6 +1380,7 @@ impl ComboBox {
                     // The field shows the editable value, so a row becoming current writes its
                     // label there (I-06).
                     self.editor.set_text(self.items[idx].clone(), false);
+                    self.editor_revision = self.editor_revision.wrapping_add(1);
                 }
                 self.current_text_changed.emit(self.items[idx].clone());
                 self.current_index_changed.emit(Some(idx));
@@ -1212,6 +1391,7 @@ impl ComboBox {
             self.current_index = None;
             if self.editable {
                 self.editor.set_text(String::new(), false);
+                self.editor_revision = self.editor_revision.wrapping_add(1);
             }
             self.current_text_changed.emit(String::new());
             self.current_index_changed.emit(None);
@@ -1257,6 +1437,69 @@ impl ComboBox {
         self.current_index.and_then(|idx| self.items.get(idx)).map(|s| s.as_str()).unwrap_or("")
     }
 
+    /// The advance of the editable value before `end`, read from a revision-keyed cache (IP-002).
+    fn editor_prefix_advance(&self, font: &Font, end: usize) -> i32 {
+        let text = self.editor.text();
+        let end = crate::widget::text_utils::floor_char_boundary(text, end.min(text.len()));
+        {
+            let cache = self.editor_advance_cache.borrow();
+            if let Some(entry) = cache.as_ref() {
+                if entry.revision == self.editor_revision && entry.font == *font {
+                    return entry
+                        .cuts
+                        .iter()
+                        .find(|(offset, _)| *offset >= end)
+                        .map(|(_, advance)| *advance)
+                        .unwrap_or_else(|| {
+                            entry.cuts.last().map(|(_, advance)| *advance).unwrap_or(0)
+                        });
+                }
+            }
+        }
+        let mut cuts = Vec::with_capacity(text.len() + 1);
+        cuts.push((0usize, 0i32));
+        let mut advance = 0i32;
+        for (start, ch) in text.char_indices() {
+            advance += crate::widget::metrics::estimate_text_width(
+                &text[start..start + ch.len_utf8()],
+                font,
+                1.0,
+            ) as i32;
+            cuts.push((start + ch.len_utf8(), advance));
+        }
+        let width = cuts
+            .iter()
+            .find(|(offset, _)| *offset >= end)
+            .map(|(_, advance)| *advance)
+            .unwrap_or_else(|| cuts.last().map(|(_, advance)| *advance).unwrap_or(0));
+        *self.editor_advance_cache.borrow_mut() =
+            Some(EditorAdvanceCache { revision: self.editor_revision, font: font.clone(), cuts });
+        width
+    }
+
+    /// The caret's window rectangle for an IME candidate window (X-001).
+    fn caret_query(&self) -> crate::widget::widget_trait::InputMethodQuery {
+        let band = self.field_band();
+        let font = effective_font(self.style());
+        let text = self.displayed_text();
+        let caret = self.editor.cursor().min(text.len());
+        let geometry = self.indicator_geometry(font.effective_line_height().max(1.0) as u32);
+        let align = self.alignment.to_horizontal().unwrap_or(HorizontalAlignment::Left);
+        let advance = self.editor_prefix_advance(font, text.len());
+        let origin = crate::render::fitted_origin(geometry.text_box, advance, align);
+        let x = origin.x + self.editor_prefix_advance(font, caret);
+        crate::widget::widget_trait::InputMethodQuery {
+            caret_rect: Rect::new(
+                x.min(geometry.text_box.x + geometry.text_box.width as i32 - 1)
+                    .max(geometry.text_box.x),
+                band.y + 2,
+                1,
+                band.height.saturating_sub(4).max(1),
+            ),
+            caret_byte: Some(caret),
+        }
+    }
+
     /// Inserts typed text into the editable value and re-derives the current row (I-06).
     fn edit_insert(&mut self, text: &str) -> bool {
         if !self.editable || !self.editor.insert(text) {
@@ -1288,6 +1531,7 @@ impl ComboBox {
     /// **same** label, when there is one. Emitting the index and the text together is what keeps
     /// a host that mirrors the value from seeing two disagreeing facts.
     fn sync_editor_selection(&mut self) {
+        self.editor_revision = self.editor_revision.wrapping_add(1);
         // One hash lookup in the incrementally maintained label map, not an O(n) scan of the
         // candidate list, and no cloned copy of the editor text (I-102).
         let index = self.find_label(self.editor.text());
@@ -1467,6 +1711,7 @@ impl ComboBox {
         let value =
             self.current_index.and_then(|idx| self.items.get(idx)).cloned().unwrap_or(typed);
         self.editor.set_text(value, false);
+        self.editor_revision = self.editor_revision.wrapping_add(1);
         // The editable value is this control's one editable-text mutation point. Report it through
         // `text_edited` as well as through the selection's `current_text_changed`, so a host can
         // distinguish "the user edited the value" from "the selection moved".
@@ -1489,9 +1734,15 @@ impl ComboBox {
             return;
         }
         self.editable = editable;
+        if !editable {
+            self.cursor_blink.stop();
+        } else if self.base.focus_reason().is_some() {
+            self.cursor_blink.start();
+        }
         let seed =
             self.current_index.and_then(|idx| self.items.get(idx)).cloned().unwrap_or_default();
         self.editor.set_text(seed, false);
+        self.editor_revision = self.editor_revision.wrapping_add(1);
         self.popup_revision = self.popup_revision.wrapping_add(1);
         self.base.request_redraw();
     }
@@ -1683,6 +1934,9 @@ impl ComboBox {
     /// this falls back to the whole-control request, which is the historical behaviour
     /// (I-132).
     fn request_rows_repaint(&self, rows: &[Option<usize>]) {
+        // A frugal build has no damage tracking, so the row list has no reader here.
+        #[cfg(alloc_frugal)]
+        let _ = rows;
         #[cfg(not(alloc_frugal))]
         {
             if let Some(id) = crate::widget::runtime::registry_id_of(self.id()) {
@@ -1854,12 +2108,18 @@ impl ComboBox {
 impl ComboBox {
     /// Advances the drop-down fade. Returns whether another frame is due.
     pub fn tick(&mut self, delta_ms: u32) -> bool {
-        if !self.open || self.reveal_progress >= 1.0 {
-            return false;
+        let mut animating = false;
+        if self.open && self.reveal_progress < 1.0 {
+            self.reveal_progress = (self.reveal_progress + delta_ms as f32 / 150.0).min(1.0);
+            self.base.request_redraw();
+            animating = true;
         }
-        self.reveal_progress = (self.reveal_progress + delta_ms as f32 / 150.0).min(1.0);
-        self.base.request_redraw();
-        self.reveal_progress < 1.0
+        // The editable caret cycles only while the box is focused (X-003).
+        if self.editable && self.base.focus_reason().is_some() && self.cursor_blink.tick(delta_ms) {
+            self.base.request_redraw();
+            animating = true;
+        }
+        animating
     }
 }
 
@@ -1893,6 +2153,17 @@ impl Widget for ComboBox {
 
     fn has_open_popup(&self) -> bool {
         self.open
+    }
+
+    /// Reports the editable value's caret rectangle for an IME candidate window (X-001).
+    fn input_method_query(&self) -> Option<crate::widget::widget_trait::InputMethodQuery> {
+        Some(self.caret_query())
+    }
+
+    /// An open drop-down or a blinking editable caret owes frames.
+    fn is_animating(&self) -> bool {
+        (self.open && self.reveal_progress < 1.0)
+            || (self.editable && self.base.focus_reason().is_some())
     }
 
     fn size_hint(&self) -> Size {
@@ -1956,10 +2227,6 @@ impl Widget for ComboBox {
         Size::new(width, self.field_band().height.max(floor.height))
     }
 
-    /// An opening drop-down owes frames while it fades in.
-    fn is_animating(&self) -> bool {
-        self.open && self.reveal_progress < 1.0
-    }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
     /// Resolves a published event name to the control's own signal.
@@ -2178,6 +2445,10 @@ impl EventHandler for ComboBox {
     /// then the keyboard. A press that lands on neither still closes an open list rather than being
     /// swallowed, because a popup that cannot be dismissed by clicking away traps the user.
     fn handle_event(&mut self, event: &Event) {
+        // A host activation is a shared write, drained before routing so this event and the next
+        // frame see the chosen row.
+        #[cfg(full_widgets)]
+        let _ = self.poll_drop_down_popup_host();
         self.base.handle_event(event);
         if !self.base.is_enabled() {
             return;
@@ -2438,10 +2709,19 @@ impl EventHandler for ComboBox {
                     self.edit_insert(text);
                 }
             }
+            Event::FocusGained { .. } if self.editable => {
+                self.cursor_blink.start();
+                self.base.request_redraw();
+            }
             // Focus loss commits the typed value through the insert policy, so a host that
             // validates on `text_edited` sees the value the field is showing (I-06).
             Event::FocusLost if self.editable => {
+                self.cursor_blink.stop();
                 self.commit_editor();
+            }
+            Event::FocusLost => {
+                self.cursor_blink.stop();
+                self.base.request_redraw();
             }
             // Other events are not relevant for this widget
             _ => {}
@@ -2450,6 +2730,10 @@ impl EventHandler for ComboBox {
 }
 impl Draw for ComboBox {
     fn draw(&mut self, context: &mut RenderContext) {
+        // Keep the attached pop-up host on this control's open state, rows and selection before
+        // the frame is painted.
+        #[cfg(full_widgets)]
+        let _ = self.poll_drop_down_popup_host();
         // The list is painted from the popup's window and row boxes, so its rows, cap, anchor and
         // highlight are synchronised once at the top of the frame (I-129).
         self.sync_popup();
@@ -2560,16 +2844,14 @@ impl Draw for ComboBox {
         // what a replacement would consume. Both are measured from the same fitted origin the
         // value was drawn from, so the marker cannot drift from the glyphs.
         if self.editable && self.base.draws_focus_ring() {
-            let value_advance = context.measure_text(current_text, font).width as i32;
+            let value_advance = self.editor_prefix_advance(font, current_text.len());
             let value_origin =
                 crate::render::fitted_origin(geometry.text_box, value_advance, value_align);
             if let Some((start, end)) = self.editor.selection() {
                 let start = start.min(current_text.len());
                 let end = end.min(current_text.len());
-                let start_x = value_origin.x
-                    + context.measure_text(&current_text[..start], font).width as i32;
-                let end_x =
-                    value_origin.x + context.measure_text(&current_text[..end], font).width as i32;
+                let start_x = value_origin.x + self.editor_prefix_advance(font, start);
+                let end_x = value_origin.x + self.editor_prefix_advance(font, end);
                 context.fill_rect(
                     Rect::new(
                         start_x.min(end_x),
@@ -2581,16 +2863,17 @@ impl Draw for ComboBox {
                 );
             }
             let caret = self.editor.cursor().min(current_text.len());
-            let caret_x =
-                value_origin.x + context.measure_text(&current_text[..caret], font).width as i32;
+            let caret_x = value_origin.x + self.editor_prefix_advance(font, caret);
             let caret_x = caret_x
                 .min(geometry.text_box.x + geometry.text_box.width as i32 - 1)
                 .max(geometry.text_box.x);
-            context.draw_line(
-                Point::new(caret_x, value_line.y),
-                Point::new(caret_x, value_line.y + value_line.height as i32),
-                text_color,
-            );
+            if self.cursor_blink.is_visible() {
+                context.draw_line(
+                    Point::new(caret_x, value_line.y),
+                    Point::new(caret_x, value_line.y + value_line.height as i32),
+                    text_color,
+                );
+            }
         }
 
         // ── Keyboard focus ring ──
@@ -3719,5 +4002,58 @@ mod tests {
         assert_eq!(cb.find_label("dup"), None);
         cb.set_item_enabled(0, true);
         assert_eq!(cb.find_label("dup"), Some(0));
+    }
+
+    /// The attached pop-up host mirrors the combo box and routes its activation back.
+    #[test]
+    #[cfg(full_widgets)]
+    fn the_popup_host_follows_the_combo_box_and_applies_its_choice() {
+        let mut cb = ComboBox::new(Rect::new(0, 0, 200, 24));
+        cb.set_items(vec!["A".to_string(), "B".to_string(), "C".to_string()]);
+        cb.set_current_index(Some(0));
+        cb.attach_drop_down_popup_host(DropDownPopupHost::new(Rect::new(0, 0, 200, 200)));
+        assert!(cb.is_drop_down_popup_host_attached());
+        {
+            let host = cb.drop_down_popup_host().expect("attached");
+            assert_eq!(host.items().len(), 3, "attach pushes the items");
+            assert!(!host.is_open(), "a closed combo box is a closed host");
+        }
+        assert!(!cb.poll_drop_down_popup_host(), "nothing changed yet");
+
+        cb.set_open(true);
+        assert!(cb.poll_drop_down_popup_host(), "opening reaches the host");
+        {
+            let host = cb.drop_down_popup_host().expect("attached");
+            assert!(host.is_open());
+            assert_eq!(host.anchor_rect(), cb.popup_anchor());
+            assert_eq!(host.highlighted_index(), Some(0), "the value row is highlighted");
+        }
+        assert!(!cb.poll_drop_down_popup_host(), "the second poll has nothing to do");
+
+        cb.set_current_index(Some(2));
+        assert!(cb.poll_drop_down_popup_host(), "a value change reaches the host");
+        assert_eq!(cb.drop_down_popup_host().expect("attached").highlighted_index(), Some(2));
+
+        cb.set_items(vec!["X".to_string(), "Y".to_string()]);
+        assert!(cb.poll_drop_down_popup_host(), "a new item set reaches the host");
+        {
+            let host = cb.drop_down_popup_host().expect("attached");
+            assert_eq!(host.items().len(), 2);
+            assert_eq!(host.items()[0].label, "X");
+        }
+        assert!(!cb.poll_drop_down_popup_host(), "the new item set is stable");
+
+        // The host's activation is applied through the control's item API and closes the list.
+        assert!(cb.drop_down_popup_host_mut().expect("attached").activate(1));
+        assert!(cb.poll_drop_down_popup_host(), "the host choice is applied");
+        assert_eq!(cb.current_index(), Some(1));
+        assert!(!cb.is_open(), "choosing a row closes the list");
+        assert!(!cb.drop_down_popup_host().expect("attached").is_open());
+
+        let host = cb.detach_drop_down_popup_host().expect("detached");
+        assert!(!cb.is_drop_down_popup_host_attached());
+        cb.set_open(true);
+        assert!(!cb.poll_drop_down_popup_host(), "a detached host is not polled");
+        assert!(!host.is_open(), "detach stops updates");
     }
 }

@@ -59,6 +59,25 @@ pub enum ButtonState {
     Disabled,
 }
 
+/// Where the icon sits relative to the button's label.
+///
+/// The default is [`Leading`](Self::Leading), which is the historical picture: the icon's box
+/// comes first and the label follows it. The other three slots let a caller express a toolbar
+/// button (icon above the label), a trailing action (label first, icon last) or an icon below a
+/// caption without composing two separate controls.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum IconPosition {
+    /// The icon is the leading slot and the label follows it — the default.
+    #[default]
+    Leading,
+    /// The label comes first and the icon follows it.
+    Trailing,
+    /// The icon is above the label.
+    Top,
+    /// The icon is below the label.
+    Bottom,
+}
+
 /// The inputs [`Button::implicit_size`] derives its answer from.
 ///
 /// # Why the key is the inputs, not a bare dirty flag
@@ -78,6 +97,9 @@ struct ButtonHintKey {
     icon: bool,
     /// The icon slot's size, which the hint adds as advance and height.
     icon_size: u32,
+    /// Where the icon sits relative to the label, which decides whether its size is added as
+    /// a horizontal advance or as a stacked row.
+    icon_position: IconPosition,
     /// The metrics profile whose button floor and padding decide the answer.
     profile: ControlMetricsProfile,
 }
@@ -109,6 +131,11 @@ pub struct Button {
     /// size as a property of the button rather than of the widget class, so a control with a
     /// larger icon can say so.
     icon_size: u32,
+    /// Where the icon sits relative to the label.
+    ///
+    /// Defaults to [`IconPosition::Leading`], so a button that never asks for a position keeps
+    /// the historical leading slot.
+    icon_position: IconPosition,
     /// The keyboard chord that activates this button, if one was declared.
     shortcut: Option<crate::shortcut::Shortcut>,
     /// Whether gaining focus makes this button the default button.
@@ -250,6 +277,7 @@ impl Button {
             shared_icon_pixels: None,
             default_button: false,
             icon_size: dimensions::BUTTON_ICON_SIZE,
+            icon_position: IconPosition::default(),
             shortcut: None,
             auto_default: false,
             auto_exclusive: false,
@@ -426,6 +454,7 @@ impl Button {
             font: font.clone(),
             icon: self.has_icon(),
             icon_size: self.icon_size,
+            icon_position: self.icon_position,
             profile: active_profile(),
         }
     }
@@ -446,13 +475,19 @@ impl Button {
         // (D09-STYLE-02). A text scale or custom face now grows the hint with the ink.
         let line_height = estimate_line_height(font, 1.0);
         let label_width = estimate_text_width(&self.text, font, 1.0);
-        // The icon is the *leading* slot, so its box and the gap to the label are content. Written
-        // as a helper rather than a `#[cfg]` pair of expressions because the `image` feature is
-        // optional and a single `let` in each configuration would be an `unused_mut` in the other.
-        let content_width = label_width + self.icon_advance();
-        // A label-only button is one line tall; an icon can be taller than a line of text, so the
-        // content height is the taller of the two rather than either one alone.
-        let content_height = line_height.max(self.icon_height());
+        // The icon is a content slot whichever side it is on. Leading and trailing slots take
+        // horizontal room; top and bottom slots take a stacked row instead, so the label and the
+        // icon never claim the same axis twice. Written as helpers rather than a `#[cfg]` pair of
+        // expressions because the `image` feature is optional.
+        let icon_extent = if self.has_icon() { self.icon_size } else { 0 };
+        let (content_width, content_height) = match self.icon_position {
+            IconPosition::Leading | IconPosition::Trailing => {
+                (label_width + self.icon_advance(), line_height.max(self.icon_height()))
+            }
+            IconPosition::Top | IconPosition::Bottom => {
+                (label_width.max(icon_extent), line_height + self.icon_height())
+            }
+        };
         // The profile, not the constant table: Material keeps its `64x40` floor and its 8 px
         // vertical padding, while macOS's `64x28` floor is the whole height and the remaining
         // air around the content is split evenly. Cupertino is the Material row. Compare the
@@ -476,10 +511,13 @@ impl Button {
 
     /// How much horizontal room the icon and its gap take.
     ///
-    /// Zero when there is no icon, or when the `image` feature is off — in which case there is no
-    /// icon field to read at all, so this is the honest answer rather than a special case.
+    /// Zero when there is no icon, when the `image` feature is off — in which case there is no
+    /// icon field to read at all, so this is the honest answer rather than a special case — or
+    /// when the icon is stacked above or below the label, where its room is vertical.
     fn icon_advance(&self) -> u32 {
-        if self.has_icon() {
+        if self.has_icon()
+            && matches!(self.icon_position, IconPosition::Leading | IconPosition::Trailing)
+        {
             self.icon_size + dimensions::BUTTON_ICON_SPACING
         } else {
             0
@@ -487,11 +525,19 @@ impl Button {
     }
 
     /// The height the icon contributes, or zero without one.
+    ///
+    /// A stacked icon contributes its own square plus the gap to the label, because the label
+    /// follows it on the block axis. A leading or trailing icon only contributes the square,
+    /// since it shares the label's line.
     fn icon_height(&self) -> u32 {
-        if self.has_icon() {
-            self.icon_size
-        } else {
-            0
+        if !self.has_icon() {
+            return 0;
+        }
+        match self.icon_position {
+            IconPosition::Top | IconPosition::Bottom => {
+                self.icon_size + dimensions::BUTTON_ICON_SPACING
+            }
+            IconPosition::Leading | IconPosition::Trailing => self.icon_size,
         }
     }
 
@@ -525,14 +571,17 @@ impl Button {
 
     /// The box the icon occupies, when the button has one.
     ///
-    /// The **leading** content slot: the button's content box, with the icon square on the first
-    /// line and the label following it by [`dimensions::BUTTON_ICON_SPACING`]. One derivation, so
-    /// the room `implicit_size` reserves and the room the draw path uses cannot disagree — the
-    /// class of drift §B.9 names.
+    /// The slot is the one [`Self::icon_position`] names. A leading icon is the historical
+    /// picture: the icon square on the content box's first line, with the label following it by
+    /// [`dimensions::BUTTON_ICON_SPACING`]. A trailing icon sits at the content box's far edge; a
+    /// top or bottom icon is centred horizontally on its own row. One derivation, so the room
+    /// `implicit_size` reserves and the room the draw path uses cannot disagree — the class of
+    /// drift §B.9 names.
     ///
-    /// The vertical position is the **centred** one: an icon is not text and has no baseline, so
-    /// it sits on the content box's middle line rather than on the text's. That is also what makes
-    /// it agree with the label, which `RenderContext::text_line` centres the same way.
+    /// For the two inline slots the vertical position is the **centred** one: an icon is not text
+    /// and has no baseline, so it sits on the content box's middle line rather than on the text's.
+    /// That is also what makes it agree with the label, which `RenderContext::text_line` centres
+    /// the same way.
     pub fn icon_rect(&self) -> Option<Rect> {
         if !self.has_icon() {
             return None;
@@ -542,24 +591,76 @@ impl Button {
             EdgeOffsets::symmetric(dimensions::BUTTON_PADDING_V, dimensions::BUTTON_PADDING_H),
         );
         let size = self.icon_size.min(content.width).min(content.height);
-        Some(ControlMetrics::center_in(
-            Rect::new(content.x, content.y, size, content.height),
-            Size::new(size, size),
-        ))
+        Some(match self.icon_position {
+            IconPosition::Leading => ControlMetrics::center_in(
+                Rect::new(content.x, content.y, size, content.height),
+                Size::new(size, size),
+            ),
+            IconPosition::Trailing => ControlMetrics::center_in(
+                Rect::new(
+                    content.x + content.width as i32 - size as i32,
+                    content.y,
+                    size,
+                    content.height,
+                ),
+                Size::new(size, size),
+            ),
+            IconPosition::Top => {
+                let x = content.x + (content.width.saturating_sub(size) / 2) as i32;
+                Rect::new(x, content.y, size, size)
+            }
+            IconPosition::Bottom => {
+                let x = content.x + (content.width.saturating_sub(size) / 2) as i32;
+                let y = content.y + content.height as i32 - size as i32;
+                Rect::new(x, y, size, size)
+            }
+        })
     }
 
-    /// The box the label occupies: the content box with the icon's advance removed.
+    /// The box the label occupies: the content box with the icon's own slot removed.
     ///
-    /// The label is the trailing slot, so it begins after the icon and its gap. This is §B.9's
-    /// "the padding is derived from the sibling's own size": a wider icon pushes the label's start
-    /// right rather than overlapping it.
+    /// A leading icon pushes the label's start right; a trailing icon shortens the label's end; a
+    /// stacked icon removes a row from the top or the bottom. This is §B.9's "the padding is
+    /// derived from the sibling's own size": neither slot overlaps the other.
     pub fn label_rect(&self) -> Rect {
         let content = ControlMetrics::content_box(
             self.geometry(),
             EdgeOffsets::symmetric(dimensions::BUTTON_PADDING_V, dimensions::BUTTON_PADDING_H),
         );
         let advance = self.icon_advance().min(content.width);
-        Rect::new(content.x + advance as i32, content.y, content.width - advance, content.height)
+        match self.icon_position {
+            IconPosition::Leading => Rect::new(
+                content.x + advance as i32,
+                content.y,
+                content.width - advance,
+                content.height,
+            ),
+            IconPosition::Trailing => {
+                Rect::new(content.x, content.y, content.width - advance, content.height)
+            }
+            IconPosition::Top => {
+                // The icon box is clamped to the content box, so the label must use that same
+                // clamped height; `icon_height()` measures the *declared* icon size and would
+                // leave a gap in a button too short to fit it.
+                let stacked = self
+                    .icon_rect()
+                    .map_or(0, |icon| icon.height + dimensions::BUTTON_ICON_SPACING)
+                    .min(content.height);
+                Rect::new(
+                    content.x,
+                    content.y + stacked as i32,
+                    content.width,
+                    content.height - stacked,
+                )
+            }
+            IconPosition::Bottom => {
+                let stacked = self
+                    .icon_rect()
+                    .map_or(0, |icon| icon.height + dimensions::BUTTON_ICON_SPACING)
+                    .min(content.height);
+                Rect::new(content.x, content.y, content.width, content.height - stacked)
+            }
+        }
     }
 
     /// Returns current button interaction state.
@@ -929,6 +1030,25 @@ impl Button {
     /// The icon slot's size in logical pixels.
     pub fn icon_size(&self) -> u32 {
         self.icon_size
+    }
+
+    /// Where the icon sits relative to the label.
+    pub fn icon_position(&self) -> IconPosition {
+        self.icon_position
+    }
+
+    /// Sets where the icon sits relative to the label.
+    ///
+    /// The room the intrinsic size reserves and the boxes the draw path paints both read this
+    /// one value, so a changed position cannot make the two disagree. The default is
+    /// [`IconPosition::Leading`], which keeps the historical picture.
+    pub fn set_icon_position(&mut self, position: IconPosition) {
+        if self.icon_position == position {
+            return;
+        }
+        self.icon_position = position;
+        self.invalidate_hint();
+        self.base.request_redraw();
     }
 
     /// Sets the icon slot's size.
@@ -2365,7 +2485,13 @@ impl Draw for Button {
             });
             // Vertically centred through the shared primitive, so the label sits in the
             // button's middle instead of having its glyph-box top edge on that middle line.
-            let line = context.text_line(rect, font);
+            // A stacked icon gives the label its own band below or above the icon; an inline
+            // icon leaves the label centred in the whole button, exactly as before.
+            let label_box = self.label_rect();
+            let line = match self.icon_position {
+                IconPosition::Top | IconPosition::Bottom => context.text_line(label_box, font),
+                IconPosition::Leading | IconPosition::Trailing => context.text_line(rect, font),
+            };
             // Horizontally centred in the button's own box, which is what a push button's
             // label is: a push button's `contentItem` is an `AbstractButton`
             // whose `Text` is horizontally centred, and Material M3's
@@ -2383,10 +2509,9 @@ impl Draw for Button {
             // box, rather than inside the raw rectangle, is what gives a wide button the room
             // the constant promises.
             // The label's own box comes from `label_rect`, which is the content box with the
-            // icon's advance removed. That is the trailing slot of the same two-part row, so a
-            // button with an icon centres its label in the room *after* the icon rather than under
-            // it. Without an icon the advance is zero and this is the whole content box.
-            let label_box = self.label_rect();
+            // icon's slot removed. That is the other slot of the same two-part composition, so a
+            // button with an icon centres its label in the room the icon left rather than under
+            // it. Without an icon the slot is zero and this is the whole content box.
             let label_bounds = Rect::new(label_box.x, line.y, label_box.width, line.height);
             match self.elide_mode {
                 // `ElideRight` is the historical fitted draw, byte for byte.
@@ -4099,6 +4224,87 @@ mod tests {
             + 2 * dimensions::BUTTON_PADDING_H;
         assert!(long_measured > dimensions::BUTTON_MIN.width);
         assert_eq!(long.implicit_size().width, long_measured);
+    }
+
+    /// B-001: the icon slot is configurable, and the default is still leading.
+    ///
+    /// The four slots tile the content box without overlap: a stacked icon owns a row and the
+    /// label owns the other, and a trailing icon owns the far edge. The hint is rebuilt for the
+    /// chosen slot, so a stacked button is taller than an inline one.
+    #[test]
+    fn the_icon_position_selects_the_slot_and_defaults_to_leading() {
+        let mut button = Button::new("Save".into(), rect());
+        button.set_icon_source(Some(IconSource::builtin(crate::widget::IconName::Info)));
+        assert_eq!(button.icon_position(), IconPosition::Leading, "leading is the default");
+
+        let content = ControlMetrics::content_box(
+            button.geometry(),
+            EdgeOffsets::symmetric(dimensions::BUTTON_PADDING_V, dimensions::BUTTON_PADDING_H),
+        );
+        let leading_icon = button.icon_rect().expect("the icon has a box");
+        let leading_label = button.label_rect();
+        assert_eq!(leading_icon.x, content.x, "a leading icon starts at the content edge");
+        assert!(leading_label.x > leading_icon.x, "the label follows the leading icon");
+        let leading_hint = button.implicit_size();
+
+        // Asking for leading explicitly must reproduce the default picture exactly.
+        button.set_icon_position(IconPosition::Leading);
+        assert_eq!(button.icon_rect(), Some(leading_icon));
+        assert_eq!(button.label_rect(), leading_label);
+        assert_eq!(button.implicit_size(), leading_hint);
+
+        // Trailing: the label keeps the leading edge and the icon takes the far one.
+        button.set_icon_position(IconPosition::Trailing);
+        assert_eq!(button.icon_position(), IconPosition::Trailing);
+        let trailing_icon = button.icon_rect().expect("the icon has a box");
+        let trailing_label = button.label_rect();
+        assert_eq!(trailing_label.x, content.x, "the label keeps the leading edge");
+        assert_eq!(
+            trailing_icon.x + trailing_icon.width as i32,
+            content.x + content.width as i32,
+            "the trailing icon ends at the content edge"
+        );
+        assert!(trailing_label.width < content.width, "the icon's slot is removed from the label");
+
+        // Top and bottom: the icon owns its own row, centred horizontally.
+        button.set_icon_position(IconPosition::Top);
+        let top_icon = button.icon_rect().expect("the icon has a box");
+        let top_label = button.label_rect();
+        assert_eq!(top_icon.y, content.y);
+        assert_eq!(
+            top_label.y,
+            (top_icon.y + top_icon.height as i32 + dimensions::BUTTON_ICON_SPACING as i32)
+                .min(content.y + content.height as i32),
+            "the label follows the icon's row by the shared gap, or starts at the content \
+             bottom when the given box is too short for both rows"
+        );
+        assert_eq!(
+            top_icon.x + top_icon.width as i32 / 2,
+            content.x + content.width as i32 / 2,
+            "a stacked icon is horizontally centred"
+        );
+        let stacked_hint = button.implicit_size();
+        assert!(
+            stacked_hint.height > leading_hint.height,
+            "a stacked icon needs its own row: {stacked_hint:?} vs {leading_hint:?}"
+        );
+
+        button.set_icon_position(IconPosition::Bottom);
+        let bottom_icon = button.icon_rect().expect("the icon has a box");
+        let bottom_label = button.label_rect();
+        assert_eq!(
+            bottom_icon.y + bottom_icon.height as i32,
+            content.y + content.height as i32,
+            "a bottom icon ends at the content edge"
+        );
+        assert_eq!(bottom_label.y, content.y, "the label moves above the bottom icon");
+        assert!(bottom_label.y + bottom_label.height as i32 <= bottom_icon.y);
+
+        // Without an icon every slot is the label-only picture, so the position is inert.
+        button.set_icon_source(None);
+        let plain = button.label_rect();
+        assert_eq!(plain, content);
+        assert!(button.icon_rect().is_none());
     }
 
     /// The size hint and the drawn box agree about the button's height.

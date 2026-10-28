@@ -14,7 +14,7 @@
 //! a subscriber that wants to open a filter editor or a selection dialog gets one notification
 //! and can decide what the click means.
 
-use crate::compat::{format, String, ToString};
+use crate::compat::{format, lock, Arc, Mutex, String, ToString};
 use crate::core::{HorizontalAlignment, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::impl_draw_bridge;
@@ -37,8 +37,12 @@ const STATUS_INSET: u32 = 8;
 /// A one-line summary of a table's row and selection counts.
 pub struct GridStatusBar {
     base: BaseWidget,
-    row_count: u64,
-    selected_count: u64,
+    /// The row and selection counts, shared with a bound table.
+    ///
+    /// A grid attaches with `&GridStatusBar`, so the counts live behind a lock: the grid writes
+    /// the same cell this control reads, which is what lets `bar.row_count()` answer immediately
+    /// after a grid push instead of one frame later.
+    counts: Arc<Mutex<(u64, u64)>>,
     filter_active: bool,
     /// Optional caller-supplied text, shown instead of the generated summary.
     text: String,
@@ -51,8 +55,7 @@ impl GridStatusBar {
     pub fn new(geometry: Rect) -> Self {
         Self {
             base: BaseWidget::new(WidgetKind::StatusBar, geometry, "GridStatusBar"),
-            row_count: 0,
-            selected_count: 0,
+            counts: Arc::new(Mutex::new((0, 0))),
             filter_active: false,
             text: String::new(),
             status_clicked: GenericSignal::new(),
@@ -61,12 +64,23 @@ impl GridStatusBar {
 
     /// The number of rows the grid reports.
     pub fn row_count(&self) -> u64 {
-        self.row_count
+        lock(&self.counts).0
     }
 
     /// The number of selected rows.
     pub fn selected_count(&self) -> u64 {
-        self.selected_count
+        lock(&self.counts).1
+    }
+
+    /// The shared count cell a bound table writes, plus the signal that repaints this strip.
+    ///
+    /// A table attaches with `&GridStatusBar` and cannot call [`Self::set_counts`], which needs
+    /// `&mut self`. This is the writable half: the cell is the same storage the accessors read, and
+    /// the returned signal is the strip's own redraw request, so a write becomes visible without
+    /// the host forwarding a frame. The pair is `(rows, selected)`; callers clamp `selected` to
+    /// `rows` the way [`Self::set_counts`] does.
+    pub fn counts_handle(&self) -> (Arc<Mutex<(u64, u64)>>, GenericSignal) {
+        (Arc::clone(&self.counts), self.base.redraw_requested_signal().clone())
     }
 
     /// Whether the grid has an active filter.
@@ -85,11 +99,14 @@ impl GridStatusBar {
 
     /// Records both counts in one call, which is how a grid refreshes the strip.
     pub fn set_counts(&mut self, rows: u64, selected: u64) {
-        if self.row_count == rows && self.selected_count == selected {
-            return;
+        let selected = selected.min(rows);
+        {
+            let mut counts = lock(&self.counts);
+            if *counts == (rows, selected) {
+                return;
+            }
+            *counts = (rows, selected);
         }
-        self.row_count = rows;
-        self.selected_count = selected.min(rows);
         self.base.request_redraw();
     }
 
@@ -117,15 +134,12 @@ impl GridStatusBar {
         if !self.text.is_empty() {
             return self.text.clone();
         }
-        let rows = if self.row_count == 1 {
-            "1 row".to_string()
-        } else {
-            format!("{} rows", self.row_count)
-        };
-        let selection = if self.selected_count == 0 {
+        let (row_count, selected_count) = *lock(&self.counts);
+        let rows = if row_count == 1 { "1 row".to_string() } else { format!("{row_count} rows") };
+        let selection = if selected_count == 0 {
             String::new()
         } else {
-            format!(", {} selected", self.selected_count)
+            format!(", {selected_count} selected")
         };
         let filter = if self.filter_active { ", filtered" } else { "" };
         format!("{rows}{selection}{filter}")
@@ -200,8 +214,8 @@ impl Widget for GridStatusBar {
 impl WidgetProperties for GridStatusBar {
     fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
         match name {
-            "row_count" => Ok(CapabilityValue::UInt(self.row_count)),
-            "selected_count" => Ok(CapabilityValue::UInt(self.selected_count)),
+            "row_count" => Ok(CapabilityValue::UInt(self.row_count())),
+            "selected_count" => Ok(CapabilityValue::UInt(self.selected_count())),
             "filter_active" => Ok(CapabilityValue::Bool(self.filter_active)),
             "text" => Ok(CapabilityValue::String(self.text.clone())),
             "summary" => Ok(CapabilityValue::String(self.summary())),
@@ -212,12 +226,12 @@ impl WidgetProperties for GridStatusBar {
         match name {
             "row_count" => {
                 let rows = expect_usize(value)? as u64;
-                self.set_counts(rows, self.selected_count);
+                self.set_counts(rows, self.selected_count());
                 Ok(())
             }
             "selected_count" => {
                 let selected = expect_usize(value)? as u64;
-                self.set_counts(self.row_count, selected);
+                self.set_counts(self.row_count(), selected);
                 Ok(())
             }
             "filter_active" => {

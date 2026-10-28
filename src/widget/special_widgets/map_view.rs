@@ -1509,8 +1509,7 @@ impl Draw for MapView {
         // A pane whose resolved fill is the window's own would be indistinguishable from the
         // frame behind it, so a surface equal to the theme background is stepped toward the
         // ink — the same distinction `splash_screen` makes.
-        let window_fill =
-            crate::style::theme_manager().current_theme().map(|active| active.colors.background);
+        let window_fill = crate::style::palette_shared().map(|colors| colors.background);
         let surface = match window_fill {
             Some(window_fill) if window_fill == ink => ink.blend(&border, 0.5),
             _ => style

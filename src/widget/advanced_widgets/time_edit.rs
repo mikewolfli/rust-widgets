@@ -933,6 +933,11 @@ impl Widget for TimeEdit {
         &mut self.base
     }
 
+    /// The clock face is an overlay, so a host sees it as open (X-002).
+    fn has_open_popup(&self) -> bool {
+        self.clock_popup
+    }
+
     /// The size this control claims when nothing constrains it.
     ///
     /// The answer is `max(floor, content + padding)` through `ControlMetrics::implicit_size`, with the

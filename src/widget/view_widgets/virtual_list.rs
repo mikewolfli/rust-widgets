@@ -34,6 +34,20 @@ struct WindowCache {
     rows: Rc<Vec<(usize, String)>>,
 }
 
+/// Paint hook for a rich virtual-list row (V-010).
+///
+/// The list itself only knows how to draw a row's text. A host that wants an icon, a badge or a
+/// composite row installs a delegate, which owns the row's ink when `paint` returns `true`;
+/// returning `false` keeps the list's own text rendering. The shape mirrors
+/// [`super::virtual_table::VirtualCellDelegate`], so a host writes one kind of painter for both.
+pub trait VirtualRowDelegate: Send + Sync {
+    /// Paints `row` inside `rect`, returning whether the delegate took over the row.
+    fn paint(&self, context: &mut RenderContext, rect: Rect, row: usize, text: &str) -> bool {
+        let _ = (context, rect, row, text);
+        false
+    }
+}
+
 /// The index a row takes after the row at `from` is moved to `to`.
 ///
 /// The display projection and the selected row are both addressed by display index, so they
@@ -114,6 +128,8 @@ pub struct VirtualList {
     pub drag_finished: Signal1<DropEffect>,
     /// Whether a vertical scroll-bar thumb is painted.
     show_scrollbar: bool,
+    /// Optional rich-row painter (V-010).
+    row_delegate: Option<Arc<dyn VirtualRowDelegate>>,
 }
 
 impl VirtualList {
@@ -142,12 +158,31 @@ impl VirtualList {
             visible_window_changed: Signal1::new(),
             drag_finished: Signal1::new(),
             show_scrollbar: false,
+            row_delegate: None,
         }
     }
 
     /// Whether a vertical scroll-bar thumb is painted.
     pub fn show_scrollbar(&self) -> bool {
         self.show_scrollbar
+    }
+
+    /// Installs a rich-row painter (V-010).
+    pub fn set_row_delegate(&mut self, delegate: Arc<dyn VirtualRowDelegate>) {
+        self.row_delegate = Some(delegate);
+        self.base.request_redraw();
+    }
+
+    /// Removes the rich-row painter.
+    pub fn clear_row_delegate(&mut self) {
+        if self.row_delegate.take().is_some() {
+            self.base.request_redraw();
+        }
+    }
+
+    /// Whether a rich-row painter is installed.
+    pub fn has_row_delegate(&self) -> bool {
+        self.row_delegate.is_some()
     }
 
     /// Enables or disables the vertical scroll-bar thumb.
@@ -987,8 +1022,9 @@ impl Draw for VirtualList {
         // switch visible; the surface, the border, the selected-row highlight and the text
         // colour used to be hardcoded literals, so light and dark rendered identically.
         //
-        // The theme reads take and release the global manager's lock internally, so no guard
-        // is held across the draw (the mutex is not re-entrant).
+        // The theme read takes and releases the global manager's lock internally, and the palette
+        // comes from the shared snapshot, so no guard is held across the draw (the mutex is not
+        // re-entrant).
         // `WidgetStyle` carries a font-family `String` and a gradient `Vec`; cloning it to read
         // three `Copy` colour fields allocated both on every frame (WDGT-08). Copy the fields
         // under one short borrow instead.
@@ -1009,10 +1045,9 @@ impl Draw for VirtualList {
         // surface equal to the window fill is re-derived a visible step away from it, the same
         // distinction `Colors::input_background` draws for a field. `data_view` is the same
         // control under its other spelling, so the derivation covers both names.
-        let window_fill = crate::style::theme_manager()
-            .current_theme()
-            .map(|active| active.colors.background)
-            .unwrap_or(Color::WHITE);
+        // One palette snapshot read for the window fill and the accent below.
+        let palette = crate::style::palette_shared();
+        let window_fill = palette.as_ref().map(|colors| colors.background).unwrap_or(Color::WHITE);
         if surface == window_fill {
             surface = window_fill.blend(&ink, 0.08);
         }
@@ -1022,10 +1057,7 @@ impl Draw for VirtualList {
             .unwrap_or_else(|| surface.blend(&ink, 0.20));
         // The selected row is a selection state, so it reads the theme's accent token and is
         // laid over the surface, which keeps it legible in either appearance.
-        let accent = crate::style::theme_manager()
-            .current_theme()
-            .map(|active| active.colors.primary)
-            .unwrap_or(Color::PRIMARY);
+        let accent = palette.as_ref().map(|colors| colors.primary).unwrap_or(Color::PRIMARY);
         let selected_bg = surface.blend(&accent, 0.30);
 
         context.face_with_gradient_corners(
@@ -1074,7 +1106,13 @@ impl Draw for VirtualList {
             // never asks whether it fits; the sibling `list_view` already fits its rows, and this
             // one let a long label run past the control's right edge.
             let row_box = Rect::new(rect.x + 4, y, rect.width.saturating_sub(8), self.row_height);
-            context.draw_text_line_cow(row_box, text, row_font, ink, HorizontalAlignment::Left);
+            let painted = self
+                .row_delegate
+                .as_ref()
+                .is_some_and(|delegate| delegate.paint(context, row_box, row_index, text));
+            if !painted {
+                context.draw_text_line_cow(row_box, text, row_font, ink, HorizontalAlignment::Left);
+            }
         }
 
         if self.show_scrollbar {

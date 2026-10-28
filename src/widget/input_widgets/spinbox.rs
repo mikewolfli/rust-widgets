@@ -19,7 +19,7 @@
 //! `SpinBox::down_button`) keep their names and their meaning: they report the derivation's
 //! answer rather than a second copy of it, so the paint path, the hit test and the tests all read
 //! one geometry.
-use crate::compat::{format, Box, Rc, String, ToString};
+use crate::compat::{format, Box, Rc, String, ToString, Vec};
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler, WheelScroll};
 use crate::render::RenderContext;
@@ -235,6 +235,17 @@ pub struct SpinBox {
     /// predicates; the spin box still paints its own themed chevrons because the companion's
     /// painter has no colour hook (see `sync_step_buttons`).
     step_buttons: StepButtons,
+    /// Prefix advances of the open entry, keyed by the entry's revision and font (IP-006).
+    entry_advance_cache: RefCell<Option<EntryAdvanceCache>>,
+    /// The edit caret's blink state (X-003).
+    cursor_blink: crate::style::CursorBlink,
+}
+
+/// Per-character cumulative advances for the open entry (IP-006).
+struct EntryAdvanceCache {
+    revision: u64,
+    font: Font,
+    cuts: Vec<(usize, i32)>,
 }
 
 /// How a spin box chooses the distance of one step.
@@ -589,6 +600,8 @@ impl SpinBox {
             numeric_link: Rc::new(RefCell::new(None)),
             decoration_cache: RefCell::new(None),
             step_buttons: StepButtons::new(Rect::new(0, 0, 0, 0)),
+            entry_advance_cache: RefCell::new(None),
+            cursor_blink: crate::style::CursorBlink::new(),
         };
         spin_box.sync_step_buttons();
         spin_box
@@ -978,6 +991,43 @@ impl SpinBox {
         self.entry.text()
     }
 
+    /// The advance of the entry text before `end`, read from a revision-keyed cache (IP-006).
+    fn entry_prefix_advance(&self, font: &Font, end: usize) -> i32 {
+        let text = self.entry.text();
+        let revision = self.entry.text_revision();
+        let end = crate::widget::text_utils::floor_char_boundary(text, end.min(text.len()));
+        {
+            let cache = self.entry_advance_cache.borrow();
+            if let Some(entry) = cache.as_ref() {
+                if entry.revision == revision && entry.font == *font {
+                    return entry
+                        .cuts
+                        .iter()
+                        .find(|(offset, _)| *offset >= end)
+                        .map(|(_, advance)| *advance)
+                        .unwrap_or_else(|| {
+                            entry.cuts.last().map(|(_, advance)| *advance).unwrap_or(0)
+                        });
+                }
+            }
+        }
+        let mut cuts = Vec::with_capacity(text.len() + 1);
+        cuts.push((0usize, 0i32));
+        let mut advance = 0i32;
+        for (start, ch) in text.char_indices() {
+            advance += estimate_text_width(&text[start..start + ch.len_utf8()], font, 1.0) as i32;
+            cuts.push((start + ch.len_utf8(), advance));
+        }
+        let width = cuts
+            .iter()
+            .find(|(offset, _)| *offset >= end)
+            .map(|(_, advance)| *advance)
+            .unwrap_or_else(|| cuts.last().map(|(_, advance)| *advance).unwrap_or(0));
+        *self.entry_advance_cache.borrow_mut() =
+            Some(EntryAdvanceCache { revision, font: font.clone(), cuts });
+        width
+    }
+
     /// The hosted text editor, so a host can inspect the text, caret and selection engine this
     /// control is now built on.
     pub fn line_edit(&self) -> &LineEdit {
@@ -1212,6 +1262,7 @@ impl SpinBox {
         let end = self.entry.text().len();
         self.entry.set_cursor_position(end);
         self.editing = true;
+        self.cursor_blink.start();
         self.place_entry();
         self.revalidate();
         self.base.request_redraw();
@@ -1258,6 +1309,7 @@ impl SpinBox {
                 }
             };
         self.editing = false;
+        self.cursor_blink.stop();
         self.entry.set_text(String::new());
         self.entry.set_cursor_position(0);
         let mut reported = false;
@@ -1279,6 +1331,7 @@ impl SpinBox {
             return;
         }
         self.editing = false;
+        self.cursor_blink.stop();
         self.entry.set_text(String::new());
         self.entry.set_cursor_position(0);
         self.revalidate();
@@ -1292,39 +1345,46 @@ impl SpinBox {
     /// A held step button repeats after an initial delay, then at a steady interval; this is
     /// what turns one press into a continuous adjustment.
     pub fn tick(&mut self, delta_ms: u32) -> bool {
-        let Some(up) = self.held_step else {
-            return false;
-        };
-        self.repeat_elapsed = self.repeat_elapsed.saturating_add(delta_ms);
-        self.repeat_held_ms = self.repeat_held_ms.saturating_add(delta_ms);
-        let delay = 400u32;
-        // A held button accelerates: the longer it is held, the shorter the repeat interval
-        // becomes. The thresholds are a monotone step-down of the historical 120 ms interval,
-        // so a short press behaves exactly as before (I-116).
-        let interval = match self.repeat_held_ms {
-            0..=2000 => 120u32,
-            2001..=5000 => 60,
-            _ => 30,
-        };
-        if self.repeat_elapsed < delay {
-            return true;
-        }
-        let mut remaining = self.repeat_elapsed - delay;
-        let mut stepped = false;
-        while remaining >= interval {
-            remaining -= interval;
-            if up {
-                self.step_up();
+        let mut animating = false;
+        if let Some(up) = self.held_step {
+            self.repeat_elapsed = self.repeat_elapsed.saturating_add(delta_ms);
+            self.repeat_held_ms = self.repeat_held_ms.saturating_add(delta_ms);
+            let delay = 400u32;
+            // A held button accelerates: the longer it is held, the shorter the repeat interval
+            // becomes. The thresholds are a monotone step-down of the historical 120 ms interval,
+            // so a short press behaves exactly as before (I-116).
+            let interval = match self.repeat_held_ms {
+                0..=2000 => 120u32,
+                2001..=5000 => 60,
+                _ => 30,
+            };
+            if self.repeat_elapsed < delay {
+                animating = true;
             } else {
-                self.step_down();
+                let mut remaining = self.repeat_elapsed - delay;
+                let mut stepped = false;
+                while remaining >= interval {
+                    remaining -= interval;
+                    if up {
+                        self.step_up();
+                    } else {
+                        self.step_down();
+                    }
+                    stepped = true;
+                }
+                self.repeat_elapsed = delay + remaining;
+                if stepped {
+                    self.base.request_redraw();
+                }
+                animating = true;
             }
-            stepped = true;
         }
-        self.repeat_elapsed = delay + remaining;
-        if stepped {
+        // The edit caret cycles only while a typed entry is open (X-003).
+        if self.editing && self.cursor_blink.tick(delta_ms) {
+            animating = true;
             self.base.request_redraw();
         }
-        true
+        animating
     }
 
     /// Stops any held-button repeat, called when the pointer leaves or is released.
@@ -1628,6 +1688,39 @@ impl Widget for SpinBox {
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
+
+    /// Advances the held-button repeat and the edit caret (X-003/IP-006).
+    fn tick(&mut self, delta_ms: u32) -> bool {
+        SpinBox::tick(self, delta_ms)
+    }
+
+    fn is_animating(&self) -> bool {
+        self.editing || self.held_step.is_some()
+    }
+
+    /// Reports the edit caret's rectangle for an IME candidate window (X-001).
+    fn input_method_query(&self) -> Option<crate::widget::widget_trait::InputMethodQuery> {
+        if !self.editing {
+            return None;
+        }
+        let editable = self.editable_rect();
+        let font = effective_font(self.style());
+        let text = self.entry.text();
+        let caret = self.entry.cursor_position().min(text.len());
+        let advance = self.entry_prefix_advance(font, text.len());
+        let align = self.alignment.to_horizontal().unwrap_or(HorizontalAlignment::Left);
+        let origin = crate::render::fitted_origin(editable, advance, align);
+        let x = origin.x + self.entry_prefix_advance(font, caret);
+        Some(crate::widget::widget_trait::InputMethodQuery {
+            caret_rect: Rect::new(
+                x.min(editable.x + editable.width as i32 - 1).max(editable.x),
+                editable.y + 2,
+                1,
+                editable.height.saturating_sub(4).max(1),
+            ),
+            caret_byte: Some(caret),
+        })
+    }
     /// Resolves a published event name to the control's own signal.
     ///
     /// # Why this is explicit per control
@@ -2153,7 +2246,7 @@ impl Draw for SpinBox {
         // While an edit is open the entry's own caret and selection are painted, so
         // `entry_cursor_position` / `select_all` are visible rather than model-only state.
         let entry_origin = if self.editing {
-            let advance = context.measure_text(value_text, font).width as i32;
+            let advance = self.entry_prefix_advance(font, value_text.len());
             Some(crate::render::fitted_origin(value_box, advance, align))
         } else {
             None
@@ -2163,18 +2256,18 @@ impl Draw for SpinBox {
         let caret = self.entry.cursor_position().min(value_text.len());
         let selection = self.entry_selection_range();
         let (start_prefix, end_prefix, caret_prefix) = if let Some((start, end)) = selection {
-            let start_prefix = context.measure_text(&value_text[..start], font).width as i32;
-            let end_prefix = context.measure_text(&value_text[..end], font).width as i32;
+            let start_prefix = self.entry_prefix_advance(font, start);
+            let end_prefix = self.entry_prefix_advance(font, end);
             let caret_prefix = if caret == end {
                 end_prefix
             } else if caret == start {
                 start_prefix
             } else {
-                context.measure_text(&value_text[..caret], font).width as i32
+                self.entry_prefix_advance(font, caret)
             };
             (start_prefix, end_prefix, caret_prefix)
         } else {
-            let caret_prefix = context.measure_text(&value_text[..caret], font).width as i32;
+            let caret_prefix = self.entry_prefix_advance(font, caret);
             (caret_prefix, caret_prefix, caret_prefix)
         };
         if let (Some(origin), Some(_)) = (entry_origin, selection) {
@@ -2195,17 +2288,19 @@ impl Draw for SpinBox {
             context.draw_text_fitted_cow(value_box, value_text, font, text_color, align);
         }
         if let Some(origin) = entry_origin {
-            // The insertion point, from the same origin and shared prefix measurement as the
-            // band, clipped to the value's box.
-            let caret_x = origin.x + caret_prefix;
-            let caret_x = caret_x
-                .clamp(value_box.x, value_box.x + value_box.width as i32 - 1)
-                .max(value_box.x);
-            context.draw_line(
-                Point::new(caret_x, value_line.y),
-                Point::new(caret_x, value_line.y + value_line.height as i32),
-                text_color,
-            );
+            if self.cursor_blink.is_visible() {
+                // The insertion point, from the same origin and shared prefix measurement as the
+                // band, clipped to the value's box.
+                let caret_x = origin.x + caret_prefix;
+                let caret_x = caret_x
+                    .clamp(value_box.x, value_box.x + value_box.width as i32 - 1)
+                    .max(value_box.x);
+                context.draw_line(
+                    Point::new(caret_x, value_line.y),
+                    Point::new(caret_x, value_line.y + value_line.height as i32),
+                    text_color,
+                );
+            }
         }
         // The slots are chrome, not content, so they are drawn a step toward the field's own fill —
         // the same "less prominent than the value" reading `lineedit` uses for the same two slots.

@@ -24,6 +24,6 @@ does not compile the others.
 
 The crate's own source is MIT. The font data is **not**: every payload is a subset of a font under
 the SIL Open Font License 1.1, and each subset is a Modified Version under that licence. See
-[`NOTICE`](NOTICE) for the per-face record, and the
-[`rust_widgets` NOTICE](https://github.com/mikewolfli/rust-widgets/blob/main/NOTICE) for the full
-prose record.
+[`NOTICE`](NOTICE) for the full per-face prose record, and the
+[`rust_widgets` NOTICE](https://github.com/mikewolfli/rust-widgets/blob/main/NOTICE) for the
+non-font material (the Unifont bitmap table and the icon outlines).

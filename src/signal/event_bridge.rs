@@ -1088,9 +1088,10 @@ mod tests {
         let view = crate::widget::web_widgets::web_engine::WebEngineView::new(r);
         assert_eq!(
             binder.forward_all(&view),
-            17,
-            "`web_engine_view` publishes seventeen events after `link_hovered`, \
-             `render_process_crashed`, `js_evaluated` and `download_progress_changed` (MW-19/MW-24)"
+            19,
+            "`web_engine_view` publishes nineteen events after `link_hovered`, \
+             `link_activated`, `on_window_requested`, `render_process_crashed`, \
+             `js_evaluated` and `download_progress_changed` (MW-19/MW-24, WEB-001)"
         );
 
         let player = crate::widget::special_widgets::media_player::MediaPlayer::new(r);

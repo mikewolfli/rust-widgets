@@ -3060,6 +3060,116 @@ pub(crate) fn header_menu_capability() -> WidgetCapability {
     }
 }
 
+/// Chart reference line (COMP-A1).
+///
+/// It shares `WidgetKind::LineChart` with the chart it annotates, so it needs its own canonical
+/// name and a concrete-type tie-break; the annotations are attached by method call, and the line
+/// publishes no factory event of its own.
+#[cfg(not(alloc_frugal))]
+pub(crate) fn chart_reference_line_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::LineChart,
+        canonical_name: "chart_reference_line",
+        aliases: &[],
+        properties: CHART_REFERENCE_LINE_PROPERTIES,
+        events: events_of!("chart_reference_line"),
+        commands: &[],
+    }
+}
+
+/// Terminal scrollback find bar (COMP-A2).
+///
+/// It shares `WidgetKind::SearchBar` with the search field; the bar attaches to a `TerminalView`
+/// and reports no factory event of its own.
+#[cfg(not(alloc_frugal))]
+pub(crate) fn terminal_find_bar_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::SearchBar,
+        canonical_name: "terminal_find_bar",
+        aliases: &[],
+        properties: TERMINAL_FIND_BAR_PROPERTIES,
+        events: events_of!("terminal_find_bar"),
+        commands: &[],
+    }
+}
+
+/// Map attribution overlay (COMP-A3).
+///
+/// It shares `WidgetKind::Canvas` with the map's own scene canvas and with the overview below, so
+/// each of the three needs its own concrete-type tie-break.
+#[cfg(not(alloc_frugal))]
+pub(crate) fn map_attribution_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::Canvas,
+        canonical_name: "map_attribution",
+        aliases: &[],
+        properties: MAP_ATTRIBUTION_PROPERTIES,
+        events: events_of!("map_attribution"),
+        commands: &[],
+    }
+}
+
+/// Gantt task column (COMP-A4).
+///
+/// It shares `WidgetKind::Chart` with the chart controls; the column is the row-aligned task list
+/// the gantt chart draws beside its bars.
+#[cfg(not(alloc_frugal))]
+pub(crate) fn gantt_task_grid_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::Chart,
+        canonical_name: "gantt_task_grid",
+        aliases: &[],
+        properties: GANTT_TASK_GRID_PROPERTIES,
+        events: events_of!("gantt_task_grid"),
+        commands: &[],
+    }
+}
+
+/// Web history panel (COMP-A5).
+///
+/// It shares `WidgetKind::WebEngineView` with the web view it lists history for.
+#[cfg(not(alloc_frugal))]
+pub(crate) fn web_history_panel_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::WebEngineView,
+        canonical_name: "web_history_panel",
+        aliases: &[],
+        properties: WEB_HISTORY_PANEL_PROPERTIES,
+        events: events_of!("web_history_panel"),
+        commands: &[],
+    }
+}
+
+/// Media chapter list (COMP-A6).
+///
+/// It shares `WidgetKind::VideoPlayer` with the player whose chapters it lists.
+#[cfg(not(alloc_frugal))]
+pub(crate) fn chapter_list_panel_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::VideoPlayer,
+        canonical_name: "chapter_list_panel",
+        aliases: &[],
+        properties: CHAPTER_LIST_PANEL_PROPERTIES,
+        events: events_of!("chapter_list_panel"),
+        commands: &[],
+    }
+}
+
+/// Map overview (COMP-A7).
+///
+/// It shares `WidgetKind::Canvas` with the scene canvas and the attribution overlay.
+#[cfg(not(alloc_frugal))]
+pub(crate) fn map_overview_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::Canvas,
+        canonical_name: "map_overview",
+        aliases: &[],
+        properties: MAP_OVERVIEW_PROPERTIES,
+        events: events_of!("map_overview"),
+        commands: &[],
+    }
+}
+
 /// Property grid properties: property_count (read-only), selected_index (r/w).
 #[cfg(not(alloc_frugal))]
 pub(crate) fn property_grid_capability() -> WidgetCapability {

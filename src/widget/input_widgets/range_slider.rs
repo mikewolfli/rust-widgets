@@ -836,14 +836,13 @@ impl Draw for RangeSlider {
         // distinct colour rather than painting the window's.
         // I-P68: one theme read for every colour; the draw used to take the manager lock twice.
         let (window_fill, foreground, primary, muted, disabled) = {
-            let manager = crate::style::theme_manager();
-            match manager.current_theme() {
-                Some(active) => (
-                    active.colors.background,
-                    active.colors.foreground,
-                    active.colors.primary,
-                    active.colors.secondary,
-                    active.colors.disabled,
+            match crate::style::palette_shared() {
+                Some(colors) => (
+                    colors.background,
+                    colors.foreground,
+                    colors.primary,
+                    colors.secondary,
+                    colors.disabled,
                 ),
                 None => (
                     Color::rgb(240, 240, 240),

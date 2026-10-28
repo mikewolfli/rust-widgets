@@ -1275,8 +1275,9 @@ impl Draw for MenuButton {
         // for this control, and only then the original literal. The literal stays as the
         // fallback so an inactive theme still has a defined appearance, and because keeping
         // the old value means the existing pixel baselines cannot regress. The theme read is
-        // a separate manager lock, taken and released inside `resolved_theme_style`, so no
-        // guard is held across the draw (the mutex is not re-entrant).
+        // a separate manager lock, taken and released inside `resolved_theme_style`; the accent
+        // comes from the shared palette snapshot, so no guard is held across the draw (the mutex
+        // is not re-entrant).
         let style = self.base.style();
         // The **effective font** — the resolved theme/caller font — for the button's own label;
         // the popup rows take the same font below (D09-STYLE-01).
@@ -1297,9 +1298,8 @@ impl Draw for MenuButton {
         // The three button states are derived from the resolved pair instead of from three
         // separate literals, so they keep their relationship in either appearance: a disabled
         // button recedes towards the surface, an open-menu button steps towards the accent.
-        let accent = crate::style::theme_manager()
-            .current_theme()
-            .map(|theme| theme.colors.accent)
+        let accent = crate::style::palette_shared()
+            .map(|colors| colors.accent)
             .unwrap_or(Color::rgba(200, 200, 220, 200));
         let disabled_ink = self.base.disabled_ink_on(ink, background);
 

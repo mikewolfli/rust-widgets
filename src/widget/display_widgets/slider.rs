@@ -304,6 +304,13 @@ pub struct Slider {
     /// edge, and without this the handle moved the opposite way from the value it reported — the one
     /// functional consequence of missing RTL support in this crate.
     direction: crate::core::TextDirection,
+    /// Whether the value axis is drawn in reverse (D-001).
+    ///
+    /// Defaults to `false`, which keeps the historical mapping: the minimum at the left (or
+    /// bottom) and the maximum at the right (or top). With it on, only the value↔pixel mapping and
+    /// therefore the tick endpoints flip; the direction, the step arithmetic and every setter keep
+    /// their meaning.
+    inverted_appearance: bool,
     /// Emitted with the new value on every value change, from user interaction
     /// or from a programmatic setter.
     pub value_changed: Signal1<i32>,
@@ -482,6 +489,7 @@ impl Slider {
             animated_halo: false,
             halo: PropertyDriver::at(0.0, MotionSlot::Fast),
             direction: crate::core::TextDirection::default(),
+            inverted_appearance: false,
             value_changed: Signal1::new(),
             slider_moved: Signal1::new(),
             slider_pressed: GenericSignal::new(),
@@ -1092,6 +1100,10 @@ impl Slider {
                 1.0 - ((pos - rect.y as f32 - inset) / travel).clamp(0.0, 1.0)
             }
         };
+        // The pixel frame has been converted to a value-axis fraction; an inverted appearance is
+        // the one more reversal, and applying it here (rather than in the drawing code) keeps this
+        // function the exact inverse of `value_to_pixel_pos`.
+        let relative = if self.inverted_appearance { 1.0 - relative } else { relative };
         let value = self.minimum as f64 + range * relative as f64;
         // `round()` then a saturating cast: a value at the far end can round a hair past the bound,
         // and `f64 as i32` saturates rather than wrapping, so the answer stays inside `[minimum,
@@ -1122,6 +1134,9 @@ impl Slider {
             };
         }
         let relative = (clamped as f64 - self.minimum as f64) / range;
+        // The reverse appearance is a single reversal of the value-axis fraction. The direction
+        // conversion below is unchanged, so RTL and inverted compose rather than fight.
+        let relative = if self.inverted_appearance { 1.0 - relative } else { relative };
         match self.orientation {
             Orientation::Horizontal => {
                 // The value runs in reading order; the pixel is measured from the left edge. The
@@ -1175,6 +1190,27 @@ impl Slider {
             return;
         }
         self.direction = direction;
+        self.base.request_redraw();
+    }
+
+    /// Whether the value axis is drawn in reverse.
+    ///
+    /// The default is `false`, which is the historical left-to-right (or bottom-to-top) mapping.
+    pub fn is_inverted_appearance(&self) -> bool {
+        self.inverted_appearance
+    }
+
+    /// Draws the value axis in reverse without changing the value or the direction.
+    ///
+    /// Only the value↔pixel mapping flips, so the handle, the tick endpoints and the input
+    /// mapping move together: an inverted slider at its minimum shows the handle at the far end
+    /// its direction would otherwise put the maximum, and dragging toward that end still lowers
+    /// the value. The default is `false`, so an existing slider is unchanged.
+    pub fn set_inverted_appearance(&mut self, inverted: bool) {
+        if self.inverted_appearance == inverted {
+            return;
+        }
+        self.inverted_appearance = inverted;
         self.base.request_redraw();
     }
 
@@ -1739,7 +1775,8 @@ impl Draw for Slider {
         // the other chrome when the control is disabled. Only read when the caller asked for
         // the highlight, so the default picture still paints the groove alone.
         let track_fill = if is_enabled { accent } else { accent.blend(&window_fill, 0.50) };
-        let horizontal_ltr = self.direction == crate::core::TextDirection::LeftToRight;
+        let horizontal_ltr =
+            (self.direction == crate::core::TextDirection::LeftToRight) != self.inverted_appearance;
         match self.orientation {
             Orientation::Horizontal => {
                 // Draw groove
@@ -1840,15 +1877,23 @@ impl Draw for Slider {
                     groove_color,
                 );
                 if self.track_highlight {
-                    // A vertical slider's minimum is at the bottom, so the passed part runs
-                    // from the handle down to the end of the thumb's travel. The fill is a
-                    // band on the value axis, centred in the control, because that is the line
-                    // the handle moves along.
+                    // A vertical slider's extreme end is the bottom for the normal appearance and
+                    // the top for the inverted one, so the passed part runs from the handle to
+                    // that end. The fill is a band on the value axis, centred in the control,
+                    // because that is the line the handle moves along.
                     let thickness = dimensions::SLIDER_TRACK_HEIGHT.min(rect.width);
                     let band_x = rect.x + (rect.width.saturating_sub(thickness) / 2) as i32;
-                    let bottom =
-                        (rect.y + rect.height as i32 - (SLIDER_SIZE / 2.0) as i32).max(track.y);
-                    let top = (slider_pos as i32).max(track.y).min(bottom);
+                    let (top, bottom) = if self.inverted_appearance {
+                        let top = (rect.y + (SLIDER_SIZE / 2.0) as i32).min(track.y);
+                        let bottom =
+                            (rect.y + rect.height as i32 - (SLIDER_SIZE / 2.0) as i32).max(track.y);
+                        (top, (slider_pos as i32).max(top).min(bottom))
+                    } else {
+                        let bottom =
+                            (rect.y + rect.height as i32 - (SLIDER_SIZE / 2.0) as i32).max(track.y);
+                        let top = (slider_pos as i32).max(track.y).min(bottom);
+                        (top, bottom)
+                    };
                     if bottom > top {
                         context.fill_rect(
                             Rect::from_f32(
@@ -2030,6 +2075,72 @@ mod tests {
             ((ltr_max_x + rtl_max_x) - width).abs() < 1.0,
             "the maximum sits at mirrored positions: {ltr_max_x} vs {rtl_max_x}"
         );
+    }
+
+    /// D-001: the inverted appearance is off by default and flips only the value axis.
+    ///
+    /// The tick endpoints use the same mapping as the handle, so asserting on the handle positions
+    /// for the range's two ends is also the assertion for the first and last tick. The default is
+    /// checked against the historical mapping, and the inverted one is checked as its exact
+    /// mirror in both orientations.
+    #[test]
+    fn the_inverted_appearance_flips_the_value_axis_and_the_tick_endpoints() {
+        let mut s = make_slider();
+        s.set_range(0, 100);
+        assert!(!s.is_inverted_appearance(), "the historical appearance is upright");
+
+        s.set_value(0);
+        let upright_min_x = s.handle_centre_x();
+        s.set_value(100);
+        let upright_max_x = s.handle_centre_x();
+        assert!(upright_min_x < upright_max_x);
+
+        s.set_inverted_appearance(true);
+        assert!(s.is_inverted_appearance());
+        s.set_value(0);
+        let inverted_min_x = s.handle_centre_x();
+        s.set_value(100);
+        let inverted_max_x = s.handle_centre_x();
+        assert!(
+            inverted_min_x > inverted_max_x,
+            "an inverted slider puts its minimum at the far end: {inverted_min_x} vs {inverted_max_x}"
+        );
+        assert!(
+            ((upright_min_x + inverted_min_x) - 200.0).abs() < 1.0,
+            "the two appearances are exact mirrors: {upright_min_x} vs {inverted_min_x}"
+        );
+        assert!(
+            ((upright_max_x + inverted_max_x) - 200.0).abs() < 1.0,
+            "the maximum is mirrored too: {upright_max_x} vs {inverted_max_x}"
+        );
+
+        // The input mapping follows the drawing, so a pointer still selects what it points at.
+        s.set_value(25);
+        let x = s.handle_centre_x();
+        assert!((s.value_at_x(x) - 25).abs() <= 1, "the mapping round-trips when inverted");
+
+        // A vertical slider's inverted mapping starts at the top, while the default starts at the
+        // bottom — the tick endpoints use this same conversion.
+        let mut vertical = Slider::new(Rect::new(0, 0, 30, 200));
+        vertical.set_orientation(Orientation::Vertical);
+        vertical.set_range(0, 100);
+        vertical.set_value(0);
+        let upright_min_y = vertical.handle_centre_y();
+        vertical.set_value(100);
+        let upright_max_y = vertical.handle_centre_y();
+        assert!(upright_min_y > upright_max_y, "the upright minimum is at the bottom");
+
+        vertical.set_inverted_appearance(true);
+        vertical.set_value(0);
+        let inverted_min_y = vertical.handle_centre_y();
+        vertical.set_value(100);
+        let inverted_max_y = vertical.handle_centre_y();
+        assert!(inverted_min_y < inverted_max_y, "the inverted minimum is at the top");
+
+        // Turning it back off restores the historical picture exactly.
+        s.set_inverted_appearance(false);
+        s.set_value(0);
+        assert!((s.handle_centre_x() - upright_min_x).abs() < 0.01);
     }
 
     /// The drawn handle and the value read from a position are inverses in both directions.

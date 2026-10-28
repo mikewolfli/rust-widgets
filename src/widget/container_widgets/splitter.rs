@@ -43,6 +43,12 @@ const SPLITTER_DRAG_TYPE: &str = "splitter_handle";
 /// first few pixels of every drag feel unresponsive.
 const SPLITTER_DRAG_THRESHOLD: i32 = 2;
 
+/// How far one arrow-key press moves a focused handle, in logical pixels.
+///
+/// A keyboard step is expressed in pixels so it travels the same visual distance as a small
+/// pointer drag, independent of the splitter's extent.
+const SPLITTER_KEY_STEP: i32 = 8;
+
 /// The default width of the divider between adjacent panes, in logical pixels.
 ///
 /// This is **one** number with three consumers: the layout reserves it between panes, the
@@ -87,6 +93,11 @@ pub struct Splitter {
     /// The splitter-specific snapshot a drag started with.
     drag_state: Option<HandleDrag>,
     active_pane: Option<usize>,
+    /// The handle arrow keys move while the splitter holds focus.
+    ///
+    /// Set when a handle is grabbed and clamped to the current pane count, so a keyboard user
+    /// always adjusts a divider that exists.
+    focused_handle: usize,
     /// Width of the divider between adjacent panes, in logical pixels.
     handle_width: u32,
     /// Per-pane collapsed state, parallel to the layout's pane list.
@@ -119,6 +130,7 @@ impl Splitter {
             drag_session: None,
             drag_state: None,
             active_pane: None,
+            focused_handle: 0,
             handle_width: HANDLE_WIDTH,
             collapsed: Vec::new(),
             max_pane_sizes: Vec::new(),
@@ -204,6 +216,72 @@ impl Splitter {
         }
         true
     }
+    /// Replaces the widget hosted by pane `index`, keeping the split it had (C-004).
+    ///
+    /// The pane is the *slot*, and its ratios, minimum/maximum extents and collapse flag stay
+    /// attached to that slot: only the hosted control changes. `false` is returned for an
+    /// out-of-range index and for a widget another pane already hosts, because two slots with
+    /// one id would make removal and hit testing ambiguous.
+    pub fn replace_widget(&mut self, index: usize, widget: ObjectId) -> bool {
+        if index >= self.pane_count() {
+            return false;
+        }
+        let previous = self.layout.pane_ids()[index];
+        if previous == widget {
+            return true;
+        }
+        if self
+            .layout
+            .pane_ids()
+            .iter()
+            .enumerate()
+            .any(|(slot, id)| slot != index && *id == widget)
+        {
+            return false;
+        }
+        self.rebuild_layout_with_replacement(index, widget);
+        // The tree link moves with the hosted control: the replacement takes the old child's
+        // slot, so the paint order is the pane order, and the old control leaves the tree rather
+        // than keep painting over the pane it lost.
+        if !self.base.replace_child_linked(previous, widget) {
+            self.base.add_child_linked(widget);
+        }
+        crate::set_widget_visible(previous, false);
+        crate::set_widget_visible(widget, true);
+        self.place_panes();
+        if self.pane_layout_changed.slot_count() > 0 {
+            self.pane_layout_changed.emit(self.layout.ratios().to_vec());
+        }
+        self.base.request_redraw();
+        true
+    }
+
+    /// Replays the pane list into a fresh layout with pane `index` hosting `widget`.
+    ///
+    /// `SplitterLayout` has no id-replacement setter, so the split's inputs are copied out and
+    /// replayed — the same route [`Self::rebuild_layout_with_spacing`] uses. Weights,
+    /// minimums, maximums and collapse permissions therefore survive the replacement.
+    fn rebuild_layout_with_replacement(&mut self, index: usize, widget: ObjectId) {
+        let count = self.layout.pane_count();
+        let mut ids = self.layout.pane_ids().to_vec();
+        ids[index] = widget;
+        let ratios = self.layout.ratios().to_vec();
+        let minimums: Vec<u32> = (0..count).map(|slot| self.layout.min_size(slot)).collect();
+        let maximums: Vec<u32> = (0..count).map(|slot| self.layout.max_size(slot)).collect();
+        let permissions: Vec<bool> = (0..count).map(|slot| self.layout.collapsible(slot)).collect();
+        let mut rebuilt = SplitterLayout::new(self.layout.orientation(), self.handle_width);
+        for pane_id in &ids {
+            rebuilt.add_pane(*pane_id, 1);
+        }
+        let _ = rebuilt.set_ratios(ratios);
+        for slot in 0..count {
+            let _ = rebuilt.set_min_size(slot, minimums[slot]);
+            let _ = rebuilt.set_max_size(slot, maximums[slot]);
+            let _ = rebuilt.set_collapsible(slot, permissions[slot]);
+        }
+        self.layout = rebuilt;
+    }
+
     /// Sets ratio for pane index.
     pub fn set_ratio(&mut self, index: usize, ratio: f32) -> bool {
         // C-22: an explicit write honours the pane's maximum too, so a host cannot put a pane
@@ -717,6 +795,16 @@ impl Widget for Splitter {
         crate::core::Size::new(300, 200)
     }
 
+    /// A splitter is reachable by keyboard once it has panes (C-005).
+    ///
+    /// `WidgetKind::wants_keyboard_focus` lists interaction controls only, and a splitter was
+    /// therefore skipped by the tab order — so the arrow-key handling below could never be
+    /// reached. A splitter with fewer than two panes has no divider to move and stays out of
+    /// the order.
+    fn is_focusable(&self) -> bool {
+        self.pane_count() > 1
+    }
+
     /// Moves the splitter and re-places every pane.
     ///
     /// A layout positions the splitter through the same geometry entry point, so this is where
@@ -938,6 +1026,32 @@ impl crate::event::EventHandler for Splitter {
             crate::event::Event::MouseRelease { button, .. } if *button == 1 => {
                 self.end_handle_drag();
             }
+            // C-005: arrow keys move the focused handle by the same pixel step a small drag
+            // would. Focus is what gates it: a splitter embedded in a page must not consume the
+            // arrows of whatever the user is editing.
+            crate::event::Event::KeyPress { key, .. }
+                if self.base.focus_reason().is_some() && self.pane_count() > 1 =>
+            {
+                let handle = self.focused_handle.min(self.pane_count() - 2);
+                let delta = match (self.orientation(), *key) {
+                    (Orientation::Horizontal, crate::event::key_codes::LEFT) => -SPLITTER_KEY_STEP,
+                    (Orientation::Horizontal, crate::event::key_codes::RIGHT) => SPLITTER_KEY_STEP,
+                    (Orientation::Vertical, crate::event::key_codes::UP) => -SPLITTER_KEY_STEP,
+                    (Orientation::Vertical, crate::event::key_codes::DOWN) => SPLITTER_KEY_STEP,
+                    _ => 0,
+                };
+                if delta != 0 && self.move_handle_by(handle, delta as f32) {
+                    // A keyboard step is a committed layout change, so the same
+                    // `pane_layout_changed` signal a released drag emits is sent. The step keeps
+                    // the ratio weights' scale (it rescales the pair, not the whole set), so a
+                    // following `ratio(i)` reads the value this step wrote.
+                    if self.pane_layout_changed.slot_count() > 0 {
+                        self.pane_layout_changed.emit(self.layout.ratios().to_vec());
+                    }
+                    self.place_panes();
+                    self.base.request_redraw();
+                }
+            }
             crate::event::Event::MouseDoubleClick { pos, button: 1 } => {
                 let coordinate = match self.orientation() {
                     Orientation::Horizontal => pos.x,
@@ -1035,6 +1149,8 @@ impl Splitter {
                 Orientation::Vertical => center as f32 - self.base.geometry().y as f32,
             };
             if (pos_primary - center).abs() <= self.handle_width as f32 / 2.0 {
+                // The handle a pointer grabs becomes the one the keyboard adjusts.
+                self.focused_handle = index;
                 // The payload names the handle, so a future drop target can tell
                 // which divider the drag came from.
                 let payload =
@@ -1139,6 +1255,53 @@ impl Splitter {
                 self.pane_layout_preview.emit(self.layout.ratios().to_vec());
             }
         }
+    }
+
+    /// Moves the pair around `handle` by `delta_px`, preserving every other pane's share.
+    ///
+    /// This is the keyboard counterpart of [`Self::update_handle_drag`]: the same clamp to zero,
+    /// the same pair-sum rescale and the same per-pane maximum. Returns whether a ratio changed.
+    fn move_handle_by(&mut self, handle: usize, delta_px: f32) -> bool {
+        if handle + 1 >= self.pane_count() {
+            return false;
+        }
+        let total = self.primary_extent();
+        if total <= 0.0 {
+            return false;
+        }
+        let left = self.layout.ratio(handle).unwrap_or(0.0);
+        let right = self.layout.ratio(handle + 1).unwrap_or(0.0);
+        let pair_sum = left + right;
+        if pair_sum <= 0.0 {
+            return false;
+        }
+        let ratio_delta = delta_px / total;
+        let new_left = (left + ratio_delta).max(0.0);
+        let new_right = (right - ratio_delta).max(0.0);
+        let new_pair_sum = new_left + new_right;
+        if new_pair_sum <= 0.0 {
+            return false;
+        }
+        let scale = pair_sum / new_pair_sum;
+        let extent = self.ratio_extent();
+        let weight_total: f32 = self.layout.ratios().iter().copied().sum();
+        let mut left_ratio = new_left * scale;
+        let mut right_ratio = new_right * scale;
+        if extent > 0.0 && weight_total > 0.0 {
+            if let Some(max) = self.max_pane_size(handle) {
+                left_ratio = left_ratio.min((max as f32 / extent) * weight_total);
+            }
+            if let Some(max) = self.max_pane_size(handle + 1) {
+                right_ratio = right_ratio.min((max as f32 / extent) * weight_total);
+            }
+        }
+        self.layout.set_ratio(handle, left_ratio);
+        self.layout.set_ratio(handle + 1, right_ratio);
+        self.converge_pane_to_maximum(handle);
+        self.converge_pane_to_maximum(handle + 1);
+        self.place_panes();
+        self.base.request_redraw();
+        true
     }
 
     /// Ends the handle drag, normalising the ratios and clearing the session.
@@ -1483,5 +1646,53 @@ mod tests {
         let width = sp.pane_rects()[0].1.width;
         assert!(width <= 50, "the written ratio is clamped to the cap: {width}");
         assert!(!sp.set_max_pane_size(9, 10), "an unknown pane is refused");
+    }
+
+    /// C-004: a pane's hosted widget can be swapped without disturbing the split.
+    #[test]
+    fn replace_widget_swaps_the_child_and_keeps_the_split() {
+        const TEST_PANE_C: ObjectId = (1 << 40) + 2;
+        let mut sp = two_pane_splitter();
+        assert!(sp.set_ratios(&[0.3, 0.7]));
+
+        assert!(sp.replace_widget(0, TEST_PANE_C));
+        assert_eq!(sp.pane_ids(), &[TEST_PANE_C, TEST_PANE_B]);
+        assert_eq!(sp.ratios(), vec![0.3, 0.7], "the split is inherited by the slot");
+        assert_eq!(sp.children(), &[TEST_PANE_C, TEST_PANE_B], "the tree link moves too");
+
+        assert!(!sp.replace_widget(9, TEST_PANE_C), "an unknown pane is refused");
+        assert!(
+            !sp.replace_widget(0, TEST_PANE_B),
+            "a widget another pane hosts cannot be installed twice"
+        );
+    }
+
+    /// C-005: a focused splitter moves its handle with the arrows on its own axis.
+    #[test]
+    fn arrow_keys_move_the_focused_handle_and_emit_the_layout_signal() {
+        use crate::event::key_codes;
+        use crate::event::FocusReason;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let mut sp = two_pane_splitter();
+        assert!(sp.is_focusable());
+        sp.handle_event(&crate::event::Event::FocusGained { reason: FocusReason::Tab });
+
+        let emitted = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&emitted);
+        sp.pane_layout_changed.connect(move |_ratios: Arc<Vec<f32>>| {
+            counter.fetch_add(1, Ordering::SeqCst);
+        });
+
+        let before = sp.ratio(0).expect("ratio 0");
+        sp.handle_event(&crate::event::Event::KeyPress { key: key_codes::RIGHT, modifiers: 0 });
+        assert!(sp.ratio(0).expect("ratio 0") > before, "Right grows the leading pane");
+        assert_eq!(emitted.load(Ordering::SeqCst), 1, "one step commits one layout change");
+
+        sp.set_orientation(Orientation::Vertical);
+        let before = sp.ratio(0).expect("ratio 0");
+        sp.handle_event(&crate::event::Event::KeyPress { key: key_codes::UP, modifiers: 0 });
+        assert!(sp.ratio(0).expect("ratio 0") < before, "Up shrinks the leading pane");
     }
 }

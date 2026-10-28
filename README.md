@@ -112,8 +112,9 @@ user is actually on the keyboard.
   CJK; `desktop` additionally includes colour emoji. `mini` and `embedded` carry no font data and
   draw a built-in 8x8 bitmap face covering ASCII.
 - Text quality is feature-driven: `fonts-vector-latin`, `fonts-complex`, `fonts-cjk`,
-  `fonts-cjk-bitmap` and `fonts-emoji-color` can be enabled independently. `NOTICE` records the
-  upstream works and licences.
+  `fonts-cjk-bitmap` and `fonts-emoji-color` can be enabled independently. The font payloads'
+  licence record is [`crates/rust-widgets-font/NOTICE`](crates/rust-widgets-font/NOTICE); the root
+  `NOTICE` records the non-font material.
 - Fonts can be supplied at runtime with `render::text::register_face` (feature `runtime-fonts`).
   Installed system fonts are enumerated through CoreText on Apple targets, DirectWrite on Windows,
   fontconfig on Linux/BSD and `/system/fonts` on Android. `FontDialog` and
@@ -217,7 +218,7 @@ sysroot.
 ## License
 
 MIT — see [LICENSE](LICENSE). Third-party font, icon and codec data is recorded with its licence in
-[`NOTICE`](NOTICE).
+[`NOTICE`](NOTICE) and [`crates/rust-widgets-font/NOTICE`](crates/rust-widgets-font/NOTICE).
 
 ## Links
 

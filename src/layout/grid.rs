@@ -121,6 +121,43 @@ struct GridAllocation {
     spacing_y: u32,
 }
 
+// Floors buffers reused across grid arrangements (LAY-801).
+//
+// `arrange` runs on every relayout, so allocating two `Vec<u32>` per call made a nested grid
+// pay allocation on each pass. The stack mirrors the painter's child-buffer pool so a re-entrant
+// arrangement (a callback that lays out another grid) cannot hand the same buffers to two live
+// calls.
+thread_local! {
+    #[allow(clippy::missing_const_for_thread_local)]
+    static GRID_FLOOR_SCRATCH: RefCell<Vec<(Vec<u32>, Vec<u32>)>> = RefCell::new(Vec::new());
+}
+
+/// Takes a zeroed column/row floor pair of the requested lengths.
+fn take_grid_floors(cols: usize, rows: usize) -> (Vec<u32>, Vec<u32>) {
+    let mut floors = GRID_FLOOR_SCRATCH
+        .try_with(|scratch| scratch.borrow_mut().pop())
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| (Vec::new(), Vec::new()));
+    floors.0.clear();
+    floors.0.resize(cols, 0);
+    floors.1.clear();
+    floors.1.resize(rows, 0);
+    floors
+}
+
+/// Returns a floor pair to the scratch stack, keeping its capacity.
+fn return_grid_floors(mut columns: Vec<u32>, mut rows: Vec<u32>) {
+    let _ = GRID_FLOOR_SCRATCH.try_with(|scratch| {
+        let mut scratch = scratch.borrow_mut();
+        if scratch.len() < 2 {
+            columns.clear();
+            rows.clear();
+            scratch.push((columns, rows));
+        }
+    });
+}
+
 /// Fixed-grid layout manager with row/column cell placement.
 pub struct GridLayout {
     rows: u32,
@@ -1221,8 +1258,8 @@ impl Layout for GridLayout {
     /// laid out at its preferred extent on the axes that alignment names, which is the per-cell
     /// half of LAY-N10.
     fn arrange(&self, rect: Rect, children: &[ChildInfo], out: &mut dyn FnMut(ObjectId, Rect)) {
-        let mut column_floors = vec![0u32; self.cols as usize];
-        let mut row_floors = vec![0u32; self.rows as usize];
+        let (mut column_floors, mut row_floors) =
+            take_grid_floors(self.cols as usize, self.rows as usize);
         for info in children {
             let Some((row, col)) = self.cell_of(info.id) else {
                 continue;
@@ -1250,6 +1287,7 @@ impl Layout for GridLayout {
             }
         }
         self.place(rect, Some((&column_floors, &row_floors)), Some(children), out);
+        return_grid_floors(column_floors, row_floors);
     }
 
     /// A single-cell query without running the whole arrangement.

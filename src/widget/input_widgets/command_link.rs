@@ -322,10 +322,8 @@ impl Draw for CommandLink {
         // command link was the one control in its group that ignored the appearance in exactly
         // the state a user is most likely to be looking at. Deriving it means light and dark
         // differ on hover rather than both snapping to the same blue.
-        let hover_color = crate::style::theme_manager()
-            .current_theme()
-            .map(|active| active.colors.primary)
-            .unwrap_or(text_color);
+        let hover_color =
+            crate::style::palette_shared().map(|colors| colors.primary).unwrap_or(text_color);
         // The disabled label steps off the *surface it is painted on*, like the description below,
         // rather than substituting a fixed grey. `Color::GRAY` measured 2.48:1 on a light panel —
         // under the 4.5:1 body-text floor — so a disabled command link read as *less* legible than

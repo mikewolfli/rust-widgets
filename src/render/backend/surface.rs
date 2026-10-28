@@ -4,7 +4,7 @@
 //! Software rendering surface: back buffer, surface, and configuration.
 use crate::compat::Arc;
 use crate::compat::Rc;
-use crate::compat::{lock, vec, Cow, MiniToString, Mutex, OnceLock, Vec};
+use crate::compat::{lock, vec, Cow, MiniToString, Mutex, OnceLock, String, Vec};
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::render::core::command::{LayerEffect, MatteMode};
 use crate::render::pixel_bytes_len;
@@ -271,6 +271,25 @@ impl BackBuffer {
     /// buffer is never read or drawn into again.
     pub(crate) fn take_front(&mut self) -> Vec<u8> {
         core::mem::take(&mut self.front)
+    }
+    /// Moves the presented frame out and restores a full-size front buffer.
+    ///
+    /// Unlike [`Self::take_front`], the buffer stays usable: the front slot is refilled so the
+    /// next `begin_frame`/`end_frame` pair has both halves of the double buffer.
+    ///
+    /// # Why this reuses the backend rather than the bytes
+    ///
+    /// The returned frame leaves the crate, so one allocation per frame is unavoidable. What is
+    /// avoidable is the *second* one: a fresh backend allocated and zero-filled both front and
+    /// back (16.6 MB at 1080p). Reusing the backend across frames keeps the back buffer, so only
+    /// the buffer that is handed to the caller is allocated anew.
+    pub(crate) fn take_front_and_recycle(&mut self) -> Vec<u8> {
+        let frame = core::mem::take(&mut self.front);
+        let bytes = pixel_bytes_len(self.size);
+        if self.front.len() != bytes {
+            self.front = vec![0; bytes];
+        }
+        frame
     }
     /// Swaps the front and back buffers, publishing the drawn frame.
     ///
@@ -1063,6 +1082,17 @@ struct RegionBuckets {
     /// The buckets stay owned by the context between traversals so the free-group pool survives
     /// to the next frame; `dispatch` only records while this is true (G-03).
     active: bool,
+    /// Frame arena for path vertices (G-802).
+    ///
+    /// Recording a path copies its translated vertices here instead of allocating an `Arc<[Point]>`
+    /// per command; `flush` resolves the recorded slice and calls the backend by reference. The
+    /// arena is cleared at the start of each traversal and keeps its capacity between frames, so a
+    /// steady frame records paths without allocating.
+    path_arena: Vec<Point>,
+    /// Frame arena for packed contour ranges; indices are relative to `path_arena`.
+    contour_arena: Vec<(usize, usize)>,
+    /// Frame arena for recorded label bytes.
+    text_arena: String,
 }
 
 impl RegionBuckets {
@@ -1073,14 +1103,124 @@ impl RegionBuckets {
             open_groups: Vec::new(),
             free_groups: Vec::new(),
             active: true,
+            path_arena: Vec::new(),
+            contour_arena: Vec::new(),
+            text_arena: String::new(),
         }
     }
 
-    /// Starts a new traversal on an existing bucket set, retaining its pooled groups (G-03).
+    /// Starts a new traversal on an existing bucket set, retaining its pooled groups (G-03) and
+    /// arena capacity (G-802).
     fn reset(&mut self, regions: Vec<Rect>) {
         self.regions = regions;
         self.recycle_groups();
+        self.path_arena.clear();
+        self.contour_arena.clear();
+        self.text_arena.clear();
         self.active = true;
+    }
+
+    /// Records a path whose vertices go into the frame arena (G-802).
+    fn record_path(
+        &mut self,
+        points: &[Point],
+        offset: (i32, i32),
+        closed: bool,
+        color: Color,
+        filled: bool,
+        width: u32,
+    ) {
+        let start = self.path_arena.len();
+        self.path_arena
+            .extend(points.iter().map(|point| Point::new(point.x + offset.0, point.y + offset.1)));
+        let bounds =
+            crate::render::core::command::bounds_of_points(&self.path_arena[start..], width);
+        self.record(RenderCommand::DrawPathRecorded {
+            start,
+            len: points.len(),
+            bounds,
+            closed,
+            color,
+            filled,
+            width,
+        });
+    }
+
+    /// Records a dashed path whose vertices go into the frame arena (G-802).
+    fn record_path_dashed(
+        &mut self,
+        points: &[Point],
+        offset: (i32, i32),
+        closed: bool,
+        color: Color,
+        width: u32,
+        dash: crate::render::core::command::DashPattern,
+    ) {
+        let start = self.path_arena.len();
+        self.path_arena
+            .extend(points.iter().map(|point| Point::new(point.x + offset.0, point.y + offset.1)));
+        let bounds =
+            crate::render::core::command::bounds_of_points(&self.path_arena[start..], width);
+        self.record(RenderCommand::DrawPathDashedRecorded {
+            start,
+            len: points.len(),
+            bounds,
+            closed,
+            color,
+            width,
+            dash,
+        });
+    }
+
+    /// Records a non-zero fill whose points and contours go into the frame arenas (G-802).
+    fn record_fill_path_non_zero(
+        &mut self,
+        points: &[Point],
+        contours: &[(usize, usize)],
+        offset: (i32, i32),
+        color: Color,
+    ) -> Result<(), crate::render::CompoundPathError> {
+        crate::render::CompoundPath::validate_ranges(points.len(), contours)?;
+        let point_start = self.path_arena.len();
+        self.path_arena
+            .extend(points.iter().map(|point| Point::new(point.x + offset.0, point.y + offset.1)));
+        let contour_start = self.contour_arena.len();
+        self.contour_arena.extend_from_slice(contours);
+        let bounds =
+            crate::render::core::command::bounds_of_points(&self.path_arena[point_start..], 0);
+        self.record(RenderCommand::FillPathNonZeroRecorded {
+            point_start,
+            point_len: points.len(),
+            contour_start,
+            contour_len: contours.len(),
+            bounds,
+            color,
+        });
+        Ok(())
+    }
+
+    /// Records a label whose bytes go into the frame text arena (G-802).
+    #[allow(clippy::too_many_arguments)]
+    fn record_text(
+        &mut self,
+        origin: Point,
+        text: &str,
+        font: &crate::core::Font,
+        color: Color,
+        alignment: HorizontalAlignment,
+    ) {
+        let text_start = self.text_arena.len();
+        self.text_arena.push_str(text);
+        let bounds = crate::render::core::command::bounds_of_text(origin, text, font, alignment);
+        self.record(RenderCommand::DrawTextRecorded {
+            origin,
+            text_start,
+            text_len: text.len(),
+            bounds,
+            font: font.clone(),
+            color,
+            alignment,
+        });
     }
 
     /// Recycles every recorded group, keeping the capacity of its command vector (G-03).
@@ -1165,7 +1305,66 @@ impl RegionBuckets {
                     continue;
                 }
                 for command in &group.commands {
-                    backend.execute_command(command);
+                    match command {
+                        RenderCommand::DrawPathRecorded {
+                            start,
+                            len,
+                            closed,
+                            color,
+                            filled,
+                            width,
+                            ..
+                        } => backend.draw_path_ref(
+                            &self.path_arena[*start..*start + *len],
+                            *closed,
+                            *color,
+                            *filled,
+                            *width,
+                        ),
+                        RenderCommand::DrawPathDashedRecorded {
+                            start,
+                            len,
+                            closed,
+                            color,
+                            width,
+                            dash,
+                            ..
+                        } => backend.draw_path_dashed_ref(
+                            &self.path_arena[*start..*start + *len],
+                            *closed,
+                            *color,
+                            *width,
+                            *dash,
+                        ),
+                        RenderCommand::FillPathNonZeroRecorded {
+                            point_start,
+                            point_len,
+                            contour_start,
+                            contour_len,
+                            color,
+                            ..
+                        } => backend.fill_path_non_zero_ref(
+                            &self.path_arena[*point_start..*point_start + *point_len],
+                            &self.contour_arena[*contour_start..*contour_start + *contour_len],
+                            *color,
+                        ),
+                        RenderCommand::DrawTextRecorded {
+                            origin,
+                            text_start,
+                            text_len,
+                            font,
+                            color,
+                            alignment,
+                            ..
+                        } => backend.draw_text(
+                            *origin,
+                            &self.text_arena[*text_start..*text_start + *text_len],
+                            font,
+                            *color,
+                            *alignment,
+                        ),
+                        other => backend.execute_command(other),
+                    }
                 }
             }
             backend.execute_command(&RenderCommand::PopClip);
@@ -1979,6 +2178,18 @@ impl<'a> RenderContext<'a> {
         filled: bool,
         width: u32,
     ) {
+        // Recorded paths copy their vertices into the frame arena instead of allocating an
+        // `Arc<[Point]>` per command (G-802). The flush resolves the slice and calls the
+        // backend by reference.
+        if self.bucket_recording() {
+            let offset = (self.offset_x, self.offset_y);
+            if let Some(buckets) = self.buckets.as_mut() {
+                if buckets.active {
+                    buckets.record_path(points, offset, closed, color, filled, width);
+                    return;
+                }
+            }
+        }
         // Collect straight into the shared slice the command now carries, so the immediate path
         // does not allocate an intermediate `Vec` (G-02).
         let points: Arc<[Point]> = points.iter().map(|point| self.offset_point(*point)).collect();
@@ -2003,6 +2214,15 @@ impl<'a> RenderContext<'a> {
         width: u32,
         dash: crate::render::core::command::DashPattern,
     ) {
+        if self.bucket_recording() {
+            let offset = (self.offset_x, self.offset_y);
+            if let Some(buckets) = self.buckets.as_mut() {
+                if buckets.active {
+                    buckets.record_path_dashed(points, offset, closed, color, width, dash);
+                    return;
+                }
+            }
+        }
         let points: Arc<[Point]> = points.iter().map(|point| self.offset_point(*point)).collect();
         self.dispatch_owned(RenderCommand::DrawPathDashed { points, closed, color, width, dash });
     }
@@ -2017,6 +2237,12 @@ impl<'a> RenderContext<'a> {
         color: Color,
     ) -> Result<(), crate::render::CompoundPathError> {
         if self.bucket_recording() {
+            let offset = (self.offset_x, self.offset_y);
+            if let Some(buckets) = self.buckets.as_mut() {
+                if buckets.active {
+                    return buckets.record_fill_path_non_zero(points, contours, offset, color);
+                }
+            }
             let translated = self.offset_points(points);
             let path = crate::render::CompoundPath::new(translated, contours.to_vec())?;
             self.dispatch_owned(RenderCommand::FillPathNonZero { path, color });
@@ -2040,6 +2266,12 @@ impl<'a> RenderContext<'a> {
     ) {
         let origin = self.offset_point(origin);
         if self.bucket_recording() {
+            if let Some(buckets) = self.buckets.as_mut() {
+                if buckets.active {
+                    buckets.record_text(origin, text, font, color, alignment);
+                    return;
+                }
+            }
             self.dispatch_owned(RenderCommand::DrawText {
                 origin,
                 text: crate::compat::Arc::from(text),
@@ -4425,5 +4657,59 @@ mod tests {
         // (18,18), distance from (11,11) is ~9.9 > 8).
         assert_eq!(rounded(11, 11), [255, 255, 255], "the corner must stay clean");
         assert_eq!(plain(11, 11), [0, 0, 0], "the plain shadow fills the same corner");
+    }
+
+    /// G-802: a recorded path/label carries arena indices, and the flush paints them without an
+    /// owning payload. This is the observable form of the change: the queued command is the
+    /// recorder variant, and the pixels still arrive.
+    #[test]
+    fn recorded_paths_and_labels_are_resolved_from_the_frame_arenas() {
+        let mut backend = SoftwarePaintBackend::new(Size::new(32, 32), 1.0);
+        backend.begin_frame(Color::WHITE);
+        {
+            let mut ctx = RenderContext::new(&mut backend);
+            ctx.begin_region_buckets(&[Rect::new(0, 0, 32, 32)]);
+            ctx.draw_path(
+                &[Point::new(2, 2), Point::new(20, 2), Point::new(20, 20), Point::new(2, 20)],
+                true,
+                Color::BLACK,
+                true,
+                1,
+            );
+            ctx.draw_text(
+                Point::new(2, 28),
+                "A",
+                &Font::default(),
+                Color::BLACK,
+                crate::core::HorizontalAlignment::Left,
+            );
+            let recorded = ctx
+                .buckets
+                .as_ref()
+                .expect("the traversal is recording")
+                .groups
+                .iter()
+                .flat_map(|group| &group.commands)
+                .filter(|command| {
+                    matches!(
+                        command,
+                        RenderCommand::DrawPathRecorded { .. }
+                            | RenderCommand::DrawTextRecorded { .. }
+                    )
+                })
+                .count();
+            assert_eq!(recorded, 2, "the path and the label live in the arenas");
+            ctx.end_region_buckets();
+        }
+        backend.end_frame();
+        let rgba = backend.frame_rgba();
+        assert!(
+            rgba.as_chunks::<4>().0.iter().any(|pixel| pixel[0] < 128),
+            "the recorded filled path painted ink"
+        );
+        assert!(
+            rgba.as_chunks::<4>().0.iter().filter(|pixel| pixel[0] < 128).count() > 50,
+            "the recorded path covers an area, not a single pixel"
+        );
     }
 }

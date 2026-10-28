@@ -338,6 +338,9 @@ pub struct MenuBar {
     /// one pointer fact, one hit test. A move that arrives while the base says "not hovered"
     /// (or a `MouseLeave`) clears it, so the two cannot diverge.
     hovered_index: Option<usize>,
+    /// Cached entry widths and the fingerprint they were measured for (MTP-001).
+    entry_widths: Vec<f32>,
+    entry_widths_key: u64,
     /// Emitted with the clicked entry's title when an enabled entry is pressed
     /// with the primary mouse button. The payload is the title text, not the
     /// index — duplicate titles are therefore indistinguishable, and renaming
@@ -421,6 +424,8 @@ impl MenuBar {
             entries: Vec::new(),
             active_index: None,
             hovered_index: None,
+            entry_widths: Vec::new(),
+            entry_widths_key: 0,
             triggered: Signal1::new(),
             entry_hovered: Signal1::new(),
             triggered_entry: Signal1::new(),
@@ -965,6 +970,28 @@ impl MenuBar {
         ControlMetrics::top_band(self.geometry(), dimensions::MENU_BAR_HEIGHT)
     }
 
+    /// The fingerprint the width cache is keyed by (MTP-001).
+    ///
+    /// The widths depend on the entry titles, whether each carries an icon, and the resolved
+    /// face. Hashing those is O(entries) over short strings; measuring each title shapes it,
+    /// which is the cost this cache removes from every frame.
+    fn entry_width_key(entries: &[MenuBarEntry], font: &crate::core::Font) -> u64 {
+        use core::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        font.family().hash(&mut hasher);
+        font.size().to_bits().hash(&mut hasher);
+        font.weight().hash(&mut hasher);
+        font.is_italic().hash(&mut hasher);
+        font.letter_spacing().to_bits().hash(&mut hasher);
+        font.word_spacing().to_bits().hash(&mut hasher);
+        font.line_height().to_bits().hash(&mut hasher);
+        for entry in entries {
+            entry.title().hash(&mut hasher);
+            entry.icon().is_some().hash(&mut hasher);
+        }
+        hasher.finish()
+    }
+
     /// Entry width measured with an already-resolved font.
     ///
     /// The draw loop and each hit-test walk resolve the font **once** and pass it in; the
@@ -1391,9 +1418,8 @@ impl Draw for MenuBar {
         // The active entry is filled with the accent token (the "open menu" indicator),
         // the hovered one with a lighter step of the same family, and the label over each
         // is picked for contrast rather than hardcoded white-on-accent.
-        let active_fill = crate::style::theme_manager()
-            .current_theme()
-            .map(|theme| theme.colors.primary)
+        let active_fill = crate::style::palette_shared()
+            .map(|theme| theme.primary)
             .unwrap_or(Color::rgb(0, 120, 215));
         let hover_fill = background.blend(&active_fill, 0.25);
         let disabled_ink = ink.blend(&background, 0.5);
@@ -1414,9 +1440,23 @@ impl Draw for MenuBar {
         );
         let mut x = rect.x;
         let font = effective_font(style);
+        let widths_key = Self::entry_width_key(&self.entries, font);
+        if widths_key != self.entry_widths_key {
+            self.entry_widths = self
+                .entries
+                .iter()
+                .map(|entry| self.entry_width_with(entry.title(), font, entry.icon().is_some()))
+                .collect();
+            self.entry_widths_key = widths_key;
+        }
         for (i, entry) in self.entries.iter().enumerate() {
             let has_icon = entry.icon().is_some();
-            let w = self.entry_width_with(entry.title(), font, has_icon) as i32;
+            let w = self
+                .entry_widths
+                .get(i)
+                .copied()
+                .unwrap_or_else(|| self.entry_width_with(entry.title(), font, has_icon))
+                as i32;
             let is_hovered = self.hovered_index == Some(i);
             let is_active = self.active_index == Some(i);
             let entry_rect = Rect { x, y: rect.y, width: w as u32, height: rect.height };

@@ -10,11 +10,12 @@
 /// A 2-D control point.
 type Point2 = (f32, f32);
 
-use crate::compat::{vec, Vec};
+use crate::compat::{vec, Box, Rc, RefCell, Vec};
 use crate::core::{Color, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
+use crate::undo::{UndoStack, ValueCommand};
 use crate::widget::capability::coercion::expect_bool;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
@@ -150,6 +151,20 @@ pub struct BezierCurveEditor {
     /// The geometry and segments [`Self::curve_samples`] was built from; `None` before the
     /// first sample.
     curve_sample_inputs: Option<(Rect, Vec<CubicSegment>)>,
+    /// The undo history of whole control-point sets (M-004).
+    undo_stack: UndoStack,
+    /// The point set the history commands write to.
+    ///
+    /// An [`UndoCommand`](crate::undo::UndoCommand) cannot reach a field of this widget, so the
+    /// editor keeps the authoritative set in a shared cell the `ValueCommand` can restore — the
+    /// same `Rc<RefCell<T>>` pattern the date and key-sequence editors use. `segments` stays the
+    /// readable field every drawing path uses; `restore_history_segments` copies the cell back
+    /// into it after an undo or redo.
+    history_target: Rc<RefCell<Vec<CubicSegment>>>,
+    /// Whether the current change came from a history restore and must not be recorded again.
+    restoring_history: bool,
+    /// The segments at the start of the active drag, so one gesture is one undo step.
+    drag_origin: Option<Vec<CubicSegment>>,
     /// Emitted when the curve changes. Passes the first segment's two control handles.
     ///
     /// The payload is kept as the historical pair so the published event schema is unchanged;
@@ -197,6 +212,10 @@ impl BezierCurveEditor {
             curve_samples: Vec::new(),
             curve_sample_ranges: Vec::new(),
             curve_sample_inputs: None,
+            undo_stack: UndoStack::new(),
+            history_target: Rc::new(RefCell::new(vec![CubicSegment::default_ease()])),
+            restoring_history: false,
+            drag_origin: None,
             curve_changed: Signal1::new(),
         }
     }
@@ -426,6 +445,7 @@ impl BezierCurveEditor {
         }
         let (q0, r0, join, r1, q2, _) =
             split_cubic(segment.p0, segment.p1, segment.p2, segment.p3, u);
+        let before = self.segments.clone();
         let left = CubicSegment {
             p0: segment.p0,
             p1: q0,
@@ -446,6 +466,7 @@ impl BezierCurveEditor {
         };
         self.segments[index] = left;
         self.segments.insert(index + 1, right);
+        self.record_history(before);
         self.emit_curve_changed();
         self.base.request_redraw();
         true
@@ -468,6 +489,7 @@ impl BezierCurveEditor {
             return false;
         }
         let (p0, p1, p2, p3) = merge_cubics(left.p0, left.p1, right.p2, right.p3, t);
+        let before = self.segments.clone();
         self.segments[point - 1] = CubicSegment {
             p0,
             p1,
@@ -478,6 +500,7 @@ impl BezierCurveEditor {
             split_fraction: left.split_fraction,
         };
         self.segments.remove(point);
+        self.record_history(before);
         self.emit_curve_changed();
         self.base.request_redraw();
         true
@@ -543,6 +566,77 @@ impl BezierCurveEditor {
     /// Returns the grid size.
     pub fn grid_size(&self) -> f32 {
         self.grid_size
+    }
+
+    /// Undoes the most recent control-point change (drag commit, add or remove).
+    ///
+    /// Returns `false` when the history is empty. The restored set is exact: the command stores
+    /// the whole `segments` vector, parameterisation included, so a split undone by this returns
+    /// to the cubic it came from rather than to a re-merged approximation.
+    pub fn undo(&mut self) -> bool {
+        if self.undo_stack.undo().is_err() {
+            return false;
+        }
+        self.restore_history_segments();
+        true
+    }
+
+    /// Redoes the most recently undone control-point change.
+    pub fn redo(&mut self) -> bool {
+        if self.undo_stack.redo().is_err() {
+            return false;
+        }
+        self.restore_history_segments();
+        true
+    }
+
+    /// Whether there is a control-point change to undo.
+    pub fn can_undo(&self) -> bool {
+        self.undo_stack.can_undo()
+    }
+
+    /// Whether there is an undone control-point change to redo.
+    pub fn can_redo(&self) -> bool {
+        self.undo_stack.can_redo()
+    }
+
+    /// Records a completed change to the control-point set (M-004).
+    ///
+    /// The before set is mirrored into [`Self::history_target`] first, because undo/redo reach the
+    /// value only through that shared cell. A change that moved nothing — a press with no motion,
+    /// or a rejected split — records no entry.
+    fn record_history(&mut self, before: Vec<CubicSegment>) {
+        if self.restoring_history || before == self.segments {
+            return;
+        }
+        let after = self.segments.clone();
+        *self.history_target.borrow_mut() = before.clone();
+        self.undo_stack.push(Box::new(ValueCommand::new(
+            self.history_target.clone(),
+            before,
+            after,
+            "Edit bezier curve",
+            "bezier_curve_editor",
+        )));
+    }
+
+    /// Copies the history target back into the painted point set after an undo or redo.
+    fn restore_history_segments(&mut self) {
+        self.restoring_history = true;
+        self.segments = self.history_target.borrow().clone();
+        self.restoring_history = false;
+        // A drag that was in flight started from a point set the restore has just replaced, so
+        // its release must not record a stale `before`.
+        self.drag_origin = None;
+        self.emit_curve_changed();
+        self.base.request_redraw();
+    }
+
+    /// Records the drag that has just ended as one undo step.
+    fn commit_drag(&mut self) {
+        if let Some(before) = self.drag_origin.take() {
+            self.record_history(before);
+        }
     }
 
     /// Evaluates the cubic bezier curve at parameter t (0.0–1.0).
@@ -1063,6 +1157,7 @@ impl EventHandler for BezierCurveEditor {
                 if *button == 1 {
                     if let Some(target) = self.hit_test_handle(*pos) {
                         self.dragging = Some(target);
+                        self.drag_origin = Some(self.segments.clone());
                         self.base.set_mouse_pressed(true);
                     }
                 }
@@ -1071,6 +1166,9 @@ impl EventHandler for BezierCurveEditor {
                 if *button == 1 && self.dragging.is_some() {
                     self.dragging = None;
                     self.base.set_mouse_pressed(false);
+                    // The whole gesture is one undo step, so the press's snapshot is recorded
+                    // only now that the pointer has been lifted.
+                    self.commit_drag();
                 }
             }
             // Leaving the control clears both the hover emphasis and any drag the runtime
@@ -1082,6 +1180,11 @@ impl EventHandler for BezierCurveEditor {
             // pattern elsewhere (`KanbanBoard::cancel_drag`).
             Event::MouseLeave { .. } => {
                 let had_drag = self.dragging.take().is_some();
+                if had_drag {
+                    // The moves already happened, so leaving commits the gesture rather than
+                    // losing it from the history.
+                    self.commit_drag();
+                }
                 if self.hovered_handle.take().is_some() || had_drag {
                     self.base.set_mouse_pressed(false);
                     self.base.request_redraw();
@@ -1503,5 +1606,101 @@ mod tests {
         editor.set_control_point1(0.1, 0.2);
         let _ = crate::widget::svg::render_to_svg(&mut editor);
         assert_ne!(editor.curve_samples, cached, "a moved control point resamples");
+    }
+
+    /// A drag records one undo step when it commits, and undo/redo restore the exact point set
+    /// (M-004).
+    #[test]
+    fn a_drag_commit_undoes_and_redoes_the_exact_points() {
+        let mut editor = BezierCurveEditor::new(Rect::new(0, 0, 300, 300));
+        let original = editor.segment_control_points(0).expect("one segment");
+        let start = editor.curve_to_pixel(0.25, 0.1);
+        let end = editor.curve_to_pixel(0.5, 0.5);
+
+        editor.handle_event(&Event::MousePress { pos: start, button: 1, modifiers: 0 });
+        editor.handle_event(&Event::MouseMove { pos: end });
+        assert!(!editor.can_undo(), "the gesture is not history until it commits");
+        editor.handle_event(&Event::MouseRelease { pos: end, button: 1 });
+        assert!(editor.can_undo(), "the release commits one step");
+
+        let dragged = editor.segment_control_points(0).expect("one segment");
+        assert_ne!(dragged, original, "the drag moved the handle");
+        assert!(editor.undo());
+        assert_eq!(
+            editor.segment_control_points(0),
+            Some(original),
+            "undo restores the exact points"
+        );
+        assert!(editor.can_redo());
+        assert!(editor.redo());
+        assert_eq!(
+            editor.segment_control_points(0),
+            Some(dragged),
+            "redo restores the drag exactly"
+        );
+    }
+
+    /// Adding and removing a point are each one undoable command, and undo returns the exact
+    /// control-point set (M-004).
+    #[test]
+    fn adding_and_removing_a_point_is_undoable_and_exact() {
+        let mut editor = BezierCurveEditor::new(Rect::new(0, 0, 200, 200));
+        editor.set_points(&[(0.2, 0.3), (0.8, 0.7)]).expect("two controls");
+        let original = editor.segment_control_points(0).expect("one segment");
+
+        assert!(editor.add_point(0.4));
+        let split_left = editor.segment_control_points(0).expect("left half");
+        assert_eq!(editor.segment_count(), 2);
+        assert!(editor.undo());
+        assert_eq!(editor.segment_count(), 1);
+        assert_eq!(editor.segment_control_points(0), Some(original), "the split is undone exactly");
+        assert!(editor.redo());
+        assert_eq!(editor.segment_control_points(0), Some(split_left));
+
+        assert!(editor.remove_point(1));
+        assert_eq!(editor.segment_count(), 1);
+        assert!(editor.undo());
+        assert_eq!(editor.segment_count(), 2);
+        assert_eq!(
+            editor.segment_control_points(0),
+            Some(split_left),
+            "the removal is undone exactly"
+        );
+    }
+
+    /// An empty history, a press with no motion, and an edit the curve refused all record nothing
+    /// (M-004 boundaries).
+    #[test]
+    fn an_empty_history_and_a_motionless_or_refused_edit_record_nothing() {
+        let mut editor = default_editor();
+        assert!(!editor.can_undo());
+        assert!(!editor.undo());
+        assert!(!editor.redo());
+
+        let handle = editor.curve_to_pixel(0.25, 0.1);
+        editor.handle_event(&Event::MousePress { pos: handle, button: 1, modifiers: 0 });
+        editor.handle_event(&Event::MouseRelease { pos: handle, button: 1 });
+        assert!(!editor.can_undo(), "a press with no motion is not an edit");
+
+        assert!(!editor.add_point(0.0));
+        assert!(!editor.add_point(1.0));
+        assert!(!editor.remove_point(0));
+        assert!(!editor.can_undo(), "an edit the curve refused records nothing");
+    }
+
+    /// A drag whose release lands outside the control is still committed: the moves already
+    /// happened (M-004).
+    #[test]
+    fn leaving_mid_drag_commits_the_moves_that_happened() {
+        let mut editor = BezierCurveEditor::new(Rect::new(0, 0, 300, 300));
+        let start = editor.curve_to_pixel(0.25, 0.1);
+        let end = editor.curve_to_pixel(0.4, 0.4);
+        editor.handle_event(&Event::MousePress { pos: start, button: 1, modifiers: 0 });
+        editor.handle_event(&Event::MouseMove { pos: end });
+        editor.handle_event(&Event::MouseLeave { pos: Point::new(299, 299) });
+
+        assert!(editor.can_undo(), "the moves already happened, so leaving commits them");
+        assert!(editor.undo());
+        assert_eq!(editor.control_point1(), (0.25, 0.1));
     }
 }

@@ -469,9 +469,8 @@ impl Draw for ColorWell {
         let hovered = self.base.is_hovered();
         let pressed = self.base.is_pressed();
         if hovered || pressed {
-            let accent = crate::style::theme_manager()
-                .current_theme()
-                .map(|active| active.colors.primary)
+            let accent = crate::style::palette_shared()
+                .map(|active| active.primary)
                 .unwrap_or_else(|| border.blend(&text_color, 0.5));
             if pressed {
                 context.fill_rounded_rect(well, 2, accent.with_alpha(40));

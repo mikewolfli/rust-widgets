@@ -817,19 +817,24 @@ impl Draw for MiniChart {
         if self.show_axis_labels {
             let font = self.label_font();
             self.ensure_axis_labels(effective_min, effective_max);
-            let (value_labels, first_label, last_label) = match self.axis_labels.as_ref() {
-                Some(cache) => (cache.values.clone(), cache.first.clone(), cache.last.clone()),
-                None => return,
+            // Borrowed, not cloned: the cache lives for the whole frame and the draw path only
+            // reads it. Cloning the three value labels and both category labels made five
+            // allocations per frame for text that had already been built once.
+            let Some(cache) = self.axis_labels.as_ref() else {
+                return;
             };
+            let value_labels = &cache.values;
+            let first_label = cache.first.as_str();
+            let last_label = cache.last.as_str();
             let value_ys = [
                 chart_origin_y,
                 chart_origin_y + chart_area_h as i32 / 2,
                 chart_origin_y + chart_area_h as i32,
             ];
-            for (label, y) in value_labels.into_iter().zip(value_ys) {
+            for (label, y) in value_labels.iter().zip(value_ys) {
                 context.draw_text(
                     Point::new(chart_origin_x - 4, y + 4),
-                    &label,
+                    label,
                     &font,
                     axis_color,
                     HorizontalAlignment::Right,
@@ -843,14 +848,14 @@ impl Draw for MiniChart {
                 let half = (chart_area_w / 2).max(1);
                 context.draw_text_line_cow(
                     Rect::new(chart_origin_x, label_y, half, 12),
-                    &first_label,
+                    first_label,
                     &font,
                     axis_color,
                     HorizontalAlignment::Left,
                 );
                 context.draw_text_line_cow(
                     Rect::new(chart_origin_x + half as i32, label_y, half, 12),
-                    &last_label,
+                    last_label,
                     &font,
                     axis_color,
                     HorizontalAlignment::Right,
@@ -978,7 +983,10 @@ impl Draw for MiniChart {
                 if let Some(point) = self.data.get(index) {
                     let x = self.point_center_x(index, plot);
                     let value = point.value;
-                    let label = point.label.clone();
+                    // Borrowed for the comparison and the `write!`; the owned copy in the cache
+                    // is refreshed only when the label actually changes, so a still hover does
+                    // not allocate a `String` per frame.
+                    let label = point.label.as_str();
                     context.draw_line_stroke(
                         Point::new(x, chart_origin_y),
                         Point::new(x, chart_origin_y + chart_area_h as i32),
@@ -998,7 +1006,8 @@ impl Draw for MiniChart {
                             let _ = write!(self.hover_caption, "{}: {}", label, value);
                         }
                         self.hover_caption_key = Some(key);
-                        self.hover_caption_label = label;
+                        self.hover_caption_label.clear();
+                        self.hover_caption_label.push_str(label);
                     }
                     let font = self.label_font();
                     context.draw_text(
@@ -1334,6 +1343,41 @@ mod tests {
         chart.set_hovered_index(Some(1));
         let _ = render_pixels(&mut chart);
         assert_eq!(chart.hover_caption, "Bee: 50");
+    }
+
+    /// DP-002: the draw path borrows the cached labels and the hover readout buffer.
+    #[test]
+    fn draw_reuses_the_cached_labels_and_hover_caption() {
+        let mut chart = MiniChart::new(Rect::new(0, 0, 200, 150));
+        chart.set_data(vec![
+            DataPoint::new("A", 10),
+            DataPoint::new("B", 50),
+            DataPoint::new("C", 30),
+        ]);
+        chart.set_show_axis_labels(true);
+        chart.set_hovered_index(Some(1));
+        let _ = render_pixels(&mut chart);
+
+        let (values_ptr, first_ptr, last_ptr, caption_ptr) = {
+            let cache = chart.axis_labels.as_ref().expect("axis labels are built");
+            (
+                cache.values.as_ptr(),
+                cache.first.as_ptr(),
+                cache.last.as_ptr(),
+                chart.hover_caption.as_ptr(),
+            )
+        };
+        assert_eq!(chart.hover_caption, "B: 50");
+
+        // A second frame reads the same allocations, which is what "borrowed instead of cloned"
+        // means in observable terms.
+        let _ = render_pixels(&mut chart);
+        let cache = chart.axis_labels.as_ref().unwrap();
+        assert_eq!(cache.values.as_ptr(), values_ptr);
+        assert_eq!(cache.first.as_ptr(), first_ptr);
+        assert_eq!(cache.last.as_ptr(), last_ptr);
+        assert_eq!(chart.hover_caption.as_ptr(), caption_ptr);
+        assert_eq!(chart.hover_caption_label, "B");
     }
 
     /// The hover switch gates both the event path and the paint.

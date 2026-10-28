@@ -25,9 +25,10 @@
 #      takes `--license=<id>` from a closed set and exits 2 otherwise. That is the *inbound*
 #      gate: data cannot enter the tree through a run that did not assert which licence it was
 #      relying on.
-#   2. **The generated file declares its provenance in its own header, and `NOTICE` repeats
-#      it.** That is the *outbound* gate: whoever reads the shipped bytes can find the origin,
-#      the exact upstream digest, the font project's name and both halves of a dual licence.
+#   2. **The generated file declares its provenance in its own header, and the `NOTICE` that
+#      covers it repeats it.** That is the *outbound* gate: whoever reads the shipped bytes can
+#      find the origin, the exact upstream digest, the font project's name and both halves of a
+#      dual licence.
 #
 # This script checks both, and checks that the first one still refuses.
 #
@@ -36,8 +37,9 @@
 #   * `tools/gen_cjk_bitmap.py` exits **2** with no `--license`, and **2** with an unknown
 #     `--license`. (A gate that only read the script would not notice the check being deleted.)
 #   * Every `.rs` file under `src/` that declares itself `GENERATED FILE` and has a
-#     `Glyph source:` header is named in `NOTICE`, with its upstream SHA-256 repeated there,
-#     its font project named there, and both halves of its dual licence present there.
+#     `Glyph source:` header is named in the NOTICE that covers it, with its upstream SHA-256
+#     repeated there, its font project named there, and both halves of its dual licence present
+#     there.
 #   * The regenerator named in that header exists.
 #
 # # What this gate does NOT prove
@@ -68,11 +70,12 @@ cd "$ROOT_DIR"
 
 # ── Half 1: the outbound record ─────────────────────────────────────────────────────────────────
 #
-# Two roots, because the tables no longer share one directory: the payload wrappers moved into the
-# `rust-widgets-font` crate when this package reached crates.io's 10 MiB ceiling, while the shard
-# index (`cjk_shards.rs`) stayed behind as library code. Scanning only `src` would silently stop
-# checking nine of the ten shipped tables, which is the kind of green that this gate exists to
-# prevent.
+# Two roots and two NOTICE files, because the tables no longer share one directory: the payload
+# wrappers and their per-face records moved into the `rust-widgets-font` crate when this package
+# reached crates.io's 10 MiB ceiling, while the shard index (`cjk_shards.rs`) stayed behind as
+# library code. The scanner reads both NOTICE files, so a table's record follows the material
+# rather than the tree. Scanning only `src` would silently stop checking nine of the ten shipped
+# tables, which is the kind of green that this gate exists to prevent.
 SCAN_ROOTS=(--root src --root crates/rust-widgets-font/src)
 if ! OUT="$("$PYTHON" tools/font_license_scan.py "${SCAN_ROOTS[@]}")"; then
     echo "FAIL: font_license_scan.py could not run"
@@ -84,7 +87,8 @@ case "$OUT" in
     *)
         echo ""
         echo "  A generated font table ships without a complete licence record. Add a section to"
-        echo "  NOTICE naming the file, the upstream project, the source digest and the licence."
+        echo "  the NOTICE that covers it, naming the file, the upstream project, the source digest"
+        echo "  and the licence."
         exit 1
         ;;
 esac

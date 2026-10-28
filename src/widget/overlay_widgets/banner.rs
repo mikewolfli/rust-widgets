@@ -1,18 +1,19 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
 // SPDX-License-Identifier: MIT
 
-//! Banner — a persistent, full-width notice.
+//! Banner — a full-width notice.
 //!
 //! # Why this is not `Snackbar`
 //!
 //! A snackbar is transient: it appears at the bottom of the screen, hides itself
-//! after a timeout, and is at most a nudge. A banner is the Material 3
+//! after a short timeout, and is at most a nudge. A banner is the Material 3
 //! *persistent* notice instead — it sits in the layout flow, spans the full
-//! width, and stays until the user deals with it. That difference is not a timer
-//! setting: nothing in this control hides itself, because a notice the user has
-//! not acknowledged simply is not acknowledged. The two also differ in shape —
-//! a banner carries a severity, a dismiss control the user must click, and any
-//! number of actions.
+//! width, and by default stays until the user deals with it. A host may opt into a
+//! timeout with [`Banner::auto_dismiss`]; when it elapses the banner leaves through
+//! the same collapse animation a manual dismissal uses. Without that opt-in the
+//! notice is genuinely persistent: nothing in this control hides it behind the
+//! user's back. A banner also differs from a snackbar in shape — it carries a
+//! severity, a dismiss control the user must click, and any number of actions.
 //!
 //! # Reachability
 //!
@@ -32,6 +33,7 @@ use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::role_font;
 use crate::widget::{BaseWidget, Draw, IconName, IconSource, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
+use core::time::Duration;
 
 /// Side of the square dismiss hit area, in logical pixels.
 const DISMISS_SIZE: u32 = 24;
@@ -218,6 +220,13 @@ pub struct Banner {
     max_text_lines: u32,
     /// The affordance the current press armed, `None` when no press is in flight (OV-001).
     pressed_target: Option<BannerPressTarget>,
+    /// The optional auto-dismiss timeout (OV-001).
+    auto_dismiss: Option<Duration>,
+    /// How long the banner has been shown since the timer was last armed, in milliseconds.
+    ///
+    /// Kept as an integer so `tick`'s `u32` delta accumulates without floating-point drift and
+    /// without needing `Instant` (which is not available in every profile).
+    auto_dismiss_elapsed_ms: u64,
 }
 
 impl Banner {
@@ -237,6 +246,8 @@ impl Banner {
             reveal: PropertyDriver::at(1.0, MotionSlot::Normal),
             max_text_lines: 2,
             pressed_target: None,
+            auto_dismiss: None,
+            auto_dismiss_elapsed_ms: 0,
         }
     }
 
@@ -294,7 +305,20 @@ impl Banner {
     /// dismissed, so the caller can tell an acknowledgement that happened from
     /// one that was rejected.
     pub fn dismiss(&mut self) -> bool {
-        if !self.dismissible || self.is_dismissed {
+        if !self.dismissible {
+            return false;
+        }
+        self.begin_dismiss()
+    }
+
+    /// Starts the collapse animation, returning whether it started.
+    ///
+    /// The single implementation behind the user's [`Self::dismiss`] and the
+    /// [`Self::auto_dismiss`] timeout. Auto-dismiss is not a user acknowledgement, so it is not
+    /// gated on `dismissible` — a notice the host asked to expire must expire even when the user
+    /// has no affordance to dismiss it.
+    fn begin_dismiss(&mut self) -> bool {
+        if self.is_dismissed {
             return false;
         }
         self.is_dismissed = true;
@@ -305,6 +329,30 @@ impl Banner {
         true
     }
 
+    /// Arms an auto-dismiss timeout (OV-001).
+    ///
+    /// Once `duration` of [`Self::tick`] time has elapsed the banner starts the same collapse
+    /// animation [`Self::dismiss`] uses. The timer restarts at zero when armed, so a host that
+    /// resolves a new message into a reused banner can re-arm it with the new message's lifetime.
+    pub fn auto_dismiss(&mut self, duration: Duration) {
+        self.auto_dismiss = Some(duration);
+        self.auto_dismiss_elapsed_ms = 0;
+        self.base.request_redraw();
+    }
+
+    /// The armed auto-dismiss timeout, if any.
+    pub fn auto_dismiss_duration(&self) -> Option<Duration> {
+        self.auto_dismiss
+    }
+
+    /// Removes the auto-dismiss timeout, leaving the banner visible until it is dismissed.
+    pub fn clear_auto_dismiss(&mut self) {
+        if self.auto_dismiss.take().is_some() {
+            self.auto_dismiss_elapsed_ms = 0;
+            self.base.request_redraw();
+        }
+    }
+
     /// Un-dismisses the banner so it can be shown again.
     ///
     /// This is what makes a banner reusable: a caller that owns one banner for a
@@ -312,6 +360,8 @@ impl Banner {
     pub fn show(&mut self) {
         self.is_dismissed = false;
         self.hovered_action = None;
+        // A shown banner is a fresh notice, so its timeout starts over.
+        self.auto_dismiss_elapsed_ms = 0;
         // A shown banner slides back in from its own leading edge rather than appearing whole.
         self.reveal.jump_to(0.0);
         self.reveal.set_target(1.0);
@@ -324,13 +374,32 @@ impl Banner {
     }
 
     /// Advances the reveal by `delta_ms`; `true` while it is still moving.
+    ///
+    /// This also accumulates the [`Self::auto_dismiss`] clock (OV-001). When the timeout is
+    /// reached the collapse is started through the same path a manual dismissal uses, so the
+    /// banner leaves rather than vanishing between two frames.
     pub fn tick(&mut self, delta_ms: u32) -> bool {
-        self.reveal.tick(delta_ms)
+        let mut moving = self.reveal.tick(delta_ms);
+        if !self.is_dismissed {
+            if let Some(limit) = self.auto_dismiss {
+                self.auto_dismiss_elapsed_ms =
+                    self.auto_dismiss_elapsed_ms.saturating_add(u64::from(delta_ms));
+                let limit_ms = u64::try_from(limit.as_millis()).unwrap_or(u64::MAX);
+                if self.auto_dismiss_elapsed_ms >= limit_ms {
+                    self.begin_dismiss();
+                    moving = true;
+                }
+            }
+        }
+        moving
     }
 
-    /// Whether the reveal is between two values.
+    /// Whether the reveal is between two values, or an auto-dismiss timeout is still pending.
+    ///
+    /// A pending timeout answers `true` so the frame bus keeps calling [`Self::tick`]; without
+    /// that the timer would only advance while some unrelated animation happened to be running.
     pub fn is_animating(&self) -> bool {
-        self.reveal.is_moving()
+        self.reveal.is_moving() || (self.auto_dismiss.is_some() && !self.is_dismissed)
     }
 
     /// Returns the leading icon source, when one was set.
@@ -1452,5 +1521,44 @@ mod tests {
             Err(CapabilityAccessError::OutOfRange),
             "a payload-bearing setter still needs its list"
         );
+    }
+
+    /// OV-001: after the armed timeout the banner leaves through the collapse animation.
+    #[test]
+    fn an_auto_dismiss_timeout_starts_the_collapse_animation() {
+        let mut banner = banner();
+        banner.set_text("Saved");
+        banner.auto_dismiss(Duration::from_millis(100));
+        assert_eq!(banner.auto_dismiss_duration(), Some(Duration::from_millis(100)));
+        assert!(banner.is_animating(), "a pending timeout keeps the frame bus ticking");
+
+        assert!(!banner.tick(50), "half the timeout has no visible effect");
+        assert!(!banner.is_dismissed());
+
+        assert!(banner.tick(60), "crossing the timeout starts the collapse");
+        assert!(banner.is_dismissed());
+        while banner.tick(1000) {}
+        assert_eq!(banner.reveal_progress(), 0.0, "and the banner finishes leaving");
+    }
+
+    /// OV-001: clearing the timeout leaves the notice persistent.
+    #[test]
+    fn clearing_the_timeout_leaves_the_banner_visible() {
+        let mut banner = banner();
+        banner.auto_dismiss(Duration::from_millis(10));
+        banner.clear_auto_dismiss();
+        assert_eq!(banner.auto_dismiss_duration(), None);
+        banner.tick(10_000);
+        assert!(!banner.is_dismissed(), "without a timeout the host must dismiss it");
+    }
+
+    /// OV-001: an auto-dismiss works even when the control offers no dismiss affordance.
+    #[test]
+    fn auto_dismiss_is_not_gated_on_dismissibility() {
+        let mut banner = banner();
+        banner.set_dismissible(false);
+        banner.auto_dismiss(Duration::from_millis(10));
+        banner.tick(10);
+        assert!(banner.is_dismissed(), "the timeout expires regardless of the affordance");
     }
 }

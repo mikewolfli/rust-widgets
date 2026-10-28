@@ -525,6 +525,14 @@ impl SoftwareSurface {
     pub fn into_frame_rgba(mut self) -> Vec<u8> {
         self.buffer.take_front()
     }
+
+    /// Moves the presented frame out while keeping the surface reusable for another frame.
+    ///
+    /// The counterpart to [`Self::into_frame_rgba`] for callers that pool their backends: it
+    /// keeps the back buffer that `into_frame_rgba` would have freed together with the surface.
+    pub fn take_frame_rgba(&mut self) -> Vec<u8> {
+        self.buffer.take_front_and_recycle()
+    }
     /// Measures text bounds and baseline metrics.
     ///
     /// The line box is the font's **effective** line height, so an explicit `line_height` — the

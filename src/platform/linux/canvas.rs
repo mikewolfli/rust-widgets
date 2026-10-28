@@ -649,18 +649,10 @@ thread_local! {
         const { RefCell::new(None) };
 }
 
-/// Returns the printable characters of a GTK key event, when it produced any.
-///
-/// Control characters are excluded: Enter, Tab and Escape are meaningful as
-/// `KeyPress` and the widget maps them to editing commands there.
-pub(crate) fn printable_text(event: &gdk::EventKey) -> Option<String> {
-    printable_char(event).map(|ch| ch.to_string())
-}
-
 /// The printable character `event` committed, if any.
 ///
-/// The single-character form of [`printable_text`], for callers that deliver the character
-/// through the pooled text-input entry (G-606) and so never build the owned `String` at all.
+/// Callers deliver the character through the pooled text-input entry (G-606) and so never build
+/// an owned `String` for it.
 pub(crate) fn printable_char(event: &gdk::EventKey) -> Option<char> {
     // A control chord is a command, not content. Without this test `Ctrl+C` produced the
     // printable `c` and a field inserted it instead of copying: the keyval is `c` whether or not
@@ -746,7 +738,7 @@ pub(crate) fn gdk_keyval_is_tab(keyval: u32) -> bool {
 ///
 /// Control, Alt and Super are commands rather than content: their keys must reach the
 /// control's key handler with a framework key code, not be typed as the bare character.
-/// Alt is included because [`printable_text`] already refuses it (on GTK, `Mod1` is the
+/// Alt is included because [`printable_char`] already refuses it (on GTK, `Mod1` is the
 /// Alt/Meta key and `Alt+letter` is a shortcut, not text).
 pub(crate) fn is_control_chord(modifiers: u32) -> bool {
     const WIDGET_CONTROL: u32 = 2;

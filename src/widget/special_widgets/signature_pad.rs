@@ -985,10 +985,9 @@ impl Draw for SignaturePad {
         // for a `Base`/`Input`-style face, so the writing area reads as a well the ink sits in.
         // A colour the caller set explicitly still wins: it is a deliberate choice, not the
         // window fill arriving through the resolver.
-        let window_fill = {
-            let manager = crate::style::theme_manager();
-            manager.current_theme().map(|active| active.colors.background).unwrap_or(Color::WHITE)
-        };
+        let window_fill = crate::style::palette_shared()
+            .map(|colors| colors.background)
+            .unwrap_or(Color::WHITE);
         let text_color = style
             .text_color
             .or_else(|| theme.as_ref().and_then(|t| t.text_color))

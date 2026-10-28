@@ -797,22 +797,19 @@ impl Draw for ProgressDialog {
         // but the title bar, the progress track and the button were literals, so a light/dark
         // switch left them unchanged and the census reported the control as theme-blind.
         //
-        // The theme reads take and release the global manager's lock internally, so no guard
-        // is held across the draw (the mutex is not re-entrant).
+        // The theme reads are the cached shared snapshots, so no manager lock is held across
+        // the draw (the mutex is not re-entrant).
         let style = self.base.style();
         // The **effective font** — the resolved theme/caller font — for the title, label, the
         // percentage readout and the buttons (D09-STYLE-01).
         let font = effective_font(style);
-        // One theme-manager read supplies the window fill and the fallback ink/border; the
-        // previous path resolved a widget style and then took the manager lock again (G-P13).
+        // One palette-snapshot read supplies the window fill, the fallback ink/border and the
+        // accent fill; the previous path resolved a widget style and then took the manager
+        // lock again (G-P13).
+        let palette = crate::style::palette_shared();
         let (window_fill, theme_ink, theme_border) = {
-            let manager = crate::style::theme_manager();
-            match manager.current_theme() {
-                Some(active) => (
-                    active.colors.background,
-                    Some(active.colors.foreground),
-                    Some(active.colors.outline),
-                ),
+            match palette.as_ref() {
+                Some(colors) => (colors.background, Some(colors.foreground), Some(colors.outline)),
                 None => (Color::WHITE, None, None),
             }
         };
@@ -835,10 +832,7 @@ impl Draw for ProgressDialog {
         // owned `Color`, so no guard outlives the call. A caller can opt into the action
         // colour instead, for the convention where the bar is an affordance.
         let progress_fill = if self.accent_fill {
-            crate::style::theme_manager()
-                .current_theme()
-                .map(|active| active.colors.primary)
-                .unwrap_or(Color::rgb(6, 176, 37))
+            palette.as_ref().map(|colors| colors.primary).unwrap_or(Color::rgb(6, 176, 37))
         } else {
             crate::style::semantic_color(crate::style::SemanticColor::Success)
                 .unwrap_or(Color::rgb(6, 176, 37))
@@ -1155,9 +1149,8 @@ mod tests {
         dialog.set_value(50);
         let semantic = crate::widget::svg::render_to_svg(&mut dialog);
 
-        let primary = crate::style::theme_manager()
-            .current_theme()
-            .map(|theme| theme.colors.primary)
+        let primary = crate::style::palette_shared()
+            .map(|colors| colors.primary)
             .expect("a preset is active");
         let primary_fill = format!("rgba({},{},{},", primary.r, primary.g, primary.b);
         let success = crate::style::semantic_color(crate::style::SemanticColor::Success)

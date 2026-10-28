@@ -9,9 +9,9 @@
     crates/rust-widgets-font/src/emoji.rs    a one-line `include_bytes!` with a provenance header
 
 The header repeats the upstream project, the upstream URL, the SHA-256 of the *upstream* file and
-the licence, because `tools/font_license_scan.py` requires exactly those facts and `NOTICE` must
-repeat them. Generating the header rather than hand-writing it is what makes the two impossible to
-disagree.
+the licence, because `tools/font_license_scan.py` requires exactly those facts and the crate's
+`NOTICE` must repeat them. Generating the header rather than hand-writing it is what makes the two
+impossible to disagree.
 
 # Why the payload is a PNG-in-`CBDT` subset and not an outline face
 
@@ -232,8 +232,8 @@ def header(face_id, face, payload_len, glyph_count, digest):
 // Glyph source: {face["project"]}, {face["note"]}:
 //     {face["url"]}
 //     SHA-256 (upstream .ttf): {digest}
-// Licence of the glyph data: {face["license"]} (SIL Open Font License 1.1). See the
-// repository-root `NOTICE`. This subset is a Modified Version under the OFL: it retains
+// Licence of the glyph data: {face["license"]} (SIL Open Font License 1.1). See this
+// crate's `NOTICE`. This subset is a Modified Version under the OFL: it retains
 // the upstream colour bitmaps verbatim, and it does not use the upstream Reserved Font
 // Name.
 //

@@ -777,6 +777,55 @@ impl BaseWidget {
         removed
     }
 
+    /// Swaps the child at `old`'s position for `new`, keeping the paint order (C-004).
+    ///
+    /// Removing and re-adding a child appends it, which moves it behind every sibling; a splitter
+    /// that replaces one pane would then paint its panes in a different order from the one it
+    /// lays out. This keeps the slot and updates both parent links, mirroring
+    /// [`BaseWidget::add_child_linked`] / [`BaseWidget::remove_child_linked`].
+    ///
+    /// Returns `false` when `old` is not a child, when `new` is already a different slot's child,
+    /// or when `new` is not a mountable id.
+    pub fn replace_child_linked(&mut self, old: ObjectId, new: ObjectId) -> bool {
+        if old == new {
+            return self.children().contains(&old);
+        }
+        let Some(index) = self.children.iter().position(|child| *child == old) else {
+            return false;
+        };
+        if new == 0 || new == self.id() {
+            return false;
+        }
+        if self.children.iter().enumerate().any(|(slot, child)| slot != index && *child == new) {
+            return false;
+        }
+        self.children[index] = new;
+        #[cfg(not(alloc_frugal))]
+        {
+            let parent =
+                crate::widget::runtime::registry_id_of(self.id()).unwrap_or_else(|| self.id());
+            if new == parent {
+                self.children[index] = old;
+                return false;
+            }
+            crate::widget::runtime::with_widget_mut(old, |child| child.set_parent(None));
+            let previous =
+                crate::widget::runtime::with_widget(new, |child| child.parent()).flatten();
+            if let Some(previous) = previous {
+                if previous != parent {
+                    crate::widget::runtime::with_widget_mut(previous, |old_parent| {
+                        old_parent.base_mut().remove_child(new);
+                    });
+                }
+            }
+            crate::widget::runtime::with_widget_mut(new, |child| {
+                child.set_parent(Some(parent));
+            });
+        }
+        self.request_layout();
+        true
+    }
+
     /// Appends `child`, reporting whether it was stored.
     ///
     /// Returns `true` on desktop builds (unbounded) and on the mini profile while the list has
@@ -1306,6 +1355,8 @@ impl BaseWidget {
         self.ever_requested_redraw.set(true);
         #[cfg(not(alloc_frugal))]
         crate::widget::runtime::mark_widget_damage(self.id(), rect);
+        #[cfg(alloc_frugal)]
+        let _ = rect;
         self.redraw_requested.emit();
     }
 

@@ -27,8 +27,9 @@ use crate::widget::capability::coercion::{
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
-use crate::widget::metrics::{dimensions, ControlMetrics};
-use crate::widget::text_utils::byte_index_of_char;
+use crate::widget::metrics::{dimensions, estimate_text_width, ControlMetrics};
+use crate::widget::text_utils::{byte_index_of_char, floor_char_boundary};
+use crate::widget::widget_trait::InputMethodQuery;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -119,6 +120,12 @@ pub struct MaskedEdit {
     dragging_selection: bool,
     /// Whether this widget currently has keyboard focus.
     focused: bool,
+    /// Whether the value is display-only (I-008).
+    ///
+    /// A read-only masked field still shows its formatted value and still allows a selection to
+    /// be copied, but no key, paste or committed text may change it. The caret does not blink
+    /// because there is nothing for it to mark: a value nobody can edit has no insertion point.
+    read_only: bool,
     /// How the field's content is aligned within its own box.
     ///
     /// Horizontal only: the field is a fixed-height band and the characters are centred vertically
@@ -181,6 +188,7 @@ impl MaskedEdit {
             selection_anchor: None,
             dragging_selection: false,
             focused: false,
+            read_only: false,
             alignment: crate::core::Alignment::Left,
             text_changed: Signal1::new(),
             editing_finished: GenericSignal::new(),
@@ -386,6 +394,29 @@ impl MaskedEdit {
         }
         self.cursor_pos = pos;
         self.selection_anchor = None;
+        self.base.request_redraw();
+    }
+
+    /// Returns whether the field is read-only.
+    pub fn is_read_only(&self) -> bool {
+        self.read_only
+    }
+
+    /// Sets the read-only state (I-008).
+    ///
+    /// Entering read-only stops the caret blink and cancels any in-progress selection drag, so
+    /// the field neither asks for frames nor paints a marker for an edit it will refuse.
+    pub fn set_read_only(&mut self, read_only: bool) {
+        if self.read_only == read_only {
+            return;
+        }
+        self.read_only = read_only;
+        if read_only {
+            self.cursor_blink.stop();
+            self.dragging_selection = false;
+        } else if self.focused {
+            self.cursor_blink.start();
+        }
         self.base.request_redraw();
     }
 
@@ -749,7 +780,7 @@ impl MaskedEdit {
 
     /// Advances the caret's blink by `delta_ms`, reporting whether another frame is due (I-26).
     pub fn tick(&mut self, delta_ms: u32) -> bool {
-        if !self.focused {
+        if !self.focused || self.read_only {
             return false;
         }
         let running = self.cursor_blink.tick(delta_ms);
@@ -857,6 +888,33 @@ impl MaskedEdit {
         (index as usize).min(self.segments.len())
     }
 
+    /// The caret's window rectangle and byte offset, as a native IME asks for them (X-001).
+    ///
+    /// A masked field has no per-character shaping: every segment occupies one cell of
+    /// [`MASK_CELL_WIDTH`], so the anchor is `padding + alignment shift + position * cell`. An
+    /// unmasked field falls back to measuring its raw value at the field's own font.
+    fn caret_query(&self) -> InputMethodQuery {
+        let field = self.field_rect();
+        let padding = dimensions::TEXT_FIELD_PADDING_H as i32;
+        let alignment = self.alignment.to_horizontal().unwrap_or(HorizontalAlignment::Left);
+        let caret_x = if self.mask.is_empty() {
+            let prefix_len = self.cursor_pos.min(self.raw_text.len());
+            let prefix = &self.raw_text[..floor_char_boundary(&self.raw_text, prefix_len)];
+            field.x + padding + estimate_text_width(prefix, mask_font(), 1.0) as i32
+        } else {
+            field.x
+                + padding
+                + mask_start_shift(field, padding, self.segments.len(), alignment)
+                + self.cursor_pos as i32 * MASK_CELL_WIDTH
+        };
+        let caret_byte =
+            byte_index_of_char(&self.raw_text, self.display_to_raw_index(self.cursor_pos));
+        InputMethodQuery {
+            caret_rect: Rect::new(caret_x, field.y + 2, 1, field.height.saturating_sub(4).max(1)),
+            caret_byte: Some(caret_byte),
+        }
+    }
+
     /// The band colour a selection is painted in.
     ///
     /// Derived from the field's own ink and fill rather than a fixed blue, so a selection reads on
@@ -893,7 +951,12 @@ impl Widget for MaskedEdit {
     }
 
     fn is_animating(&self) -> bool {
-        self.focused
+        self.focused && !self.read_only
+    }
+
+    /// Reports the caret rectangle an IME candidate window should anchor to (X-001).
+    fn input_method_query(&self) -> Option<InputMethodQuery> {
+        Some(self.caret_query())
     }
     /// Resolves a published event name to the control's own signal.
     ///
@@ -1019,12 +1082,11 @@ impl Draw for MaskedEdit {
             style.background_color.or(themed_bg).unwrap_or(Color::rgba(248, 248, 250, 200));
         // The page this field sits in and the caret's emphasis colour, read in **one** palette
         // acquisition (I-P07): the window fill and the semantic caret token used to cost two
-        // separate theme reads per frame. Values are copied out so the guard is released before
+        // separate theme reads per frame. Values are copied out so no manager guard is held while
         // anything is painted.
         let (window_fill, info_ink) = {
-            let manager = crate::style::theme_manager();
-            match manager.current_theme() {
-                Some(active) => (active.colors.background, Some(active.colors.info)),
+            match crate::style::palette_shared() {
+                Some(colors) => (colors.background, Some(colors.info)),
                 None => (Color::WHITE, None),
             }
         };
@@ -1263,6 +1325,7 @@ impl Draw for MaskedEdit {
                         let mut glyph = [0u8; 4];
                         let glyph = ch.encode_utf8(&mut glyph);
                         if self.focused
+                            && !self.read_only
                             && is_enabled
                             && seg_idx == self.cursor_pos
                             && self.cursor_blink.is_visible()
@@ -1378,12 +1441,23 @@ impl EventHandler for MaskedEdit {
                 self.base.request_redraw();
             }
             Event::TextInput { text } | Event::ImeCommit { text } => {
-                if self.focused {
+                if self.focused && !self.read_only {
                     self.insert_committed_text(text);
                 }
             }
             Event::KeyPress { key, modifiers } => {
                 if !self.focused {
+                    return;
+                }
+                if self.read_only {
+                    // A read-only field still copies its selection through the primary chord;
+                    // every other key is refused before it can reach an edit path.
+                    #[cfg(not(alloc_frugal))]
+                    if *key == 67 && crate::shortcut::event_carries_primary(*modifiers) {
+                        if let Some(raw) = self.selected_raw_text() {
+                            crate::set_clipboard_text(&raw);
+                        }
+                    }
                     return;
                 }
                 // The event carries the framework's wire bitmask; translate it once, here, so

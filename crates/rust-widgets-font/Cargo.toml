@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT
 [package]
 name = "rust-widgets-font"
-version = "2.9.4"
+version = "3.0.0"
 edition = "2021"
 rust-version = "1.88"
 license = "MIT"

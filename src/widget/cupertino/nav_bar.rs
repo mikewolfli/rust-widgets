@@ -534,18 +534,16 @@ impl Draw for CupertinoNavigationBar {
         // mutex is not re-entrant.
         let style = self.base.style();
         let theme = crate::style::resolved_theme_style_shared("cupertino_navigation_bar");
-        // Read as its own lock acquisition and copied out as values, so the guard is dropped
-        // before anything else touches the theme. The bar is not in the role table, so it
+        // Read from the shared palette snapshot, which is revision-cached and applies the
+        // crossfade/high-contrast resolution the draw should use, so this does not take the
+        // manager lock. The bar is not in the role table, so it
         // classifies as `Surface` and its resolved background is the window fill itself; the
         // bar below therefore derives its own distinct surface rather than painting the
         // window's. The back affordance is iOS blue only because it used to be hardcoded — it
         // is the bar's action colour, so it reads the theme's primary token.
         let (window_fill, foreground, primary) = {
-            let manager = crate::style::theme_manager();
-            match manager.current_theme() {
-                Some(active) => {
-                    (active.colors.background, active.colors.foreground, active.colors.primary)
-                }
+            match crate::style::palette_shared() {
+                Some(colors) => (colors.background, colors.foreground, colors.primary),
                 None => (Color::rgb(240, 240, 240), Color::BLACK, Color::rgb(0, 122, 255)),
             }
         };

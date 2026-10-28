@@ -18,10 +18,11 @@
 //! deliberately small so the two never diverge in the parts that matter: both
 //! use the same bar geometry, labels and colors.
 
+use crate::compat::{lock, Arc, Mutex};
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
-use crate::signal::Signal1;
+use crate::signal::{ConnectionScope, Signal1};
 use crate::style::{MotionSlot, PropertyDriver};
 use crate::widget::capability::coercion::expect_f32;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
@@ -48,7 +49,9 @@ use crate::widget::metrics::role_font;
 use crate::widget::chart_widgets::charts::{axis_chrome, axis_chrome_color};
 #[cfg(feature = "chart")]
 use crate::widget::chart_widgets::types::ChartContext;
-use crate::widget::companions::{Legend, LegendEntry};
+use crate::widget::companions::{
+    AxisEdge, AxisPicker, ChartDataTable, Legend, LegendEntry, ZoomStrip,
+};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -150,6 +153,45 @@ impl BarSeries {
     }
 }
 
+/// A chart data snapshot: `(name, points)` series and the indices to show.
+type ChartSeriesSnapshot = (Vec<(String, Vec<(f64, f64)>)>, Vec<usize>);
+
+/// Ties an attached [`ChartDataTable`] to this chart (COMP-A8).
+struct ChartDataTableBinding {
+    /// Writer end of the table's snapshot queue; the table drains it in its own paint/event path.
+    snapshots: Arc<Mutex<Option<ChartSeriesSnapshot>>>,
+    /// Series indices the table toggled since the last poll.
+    toggles: Arc<Mutex<Vec<usize>>>,
+    /// The snapshot last pushed, so an unchanged chart does not rebuild the table.
+    last_snapshot: ChartSeriesSnapshot,
+    /// The subscription, dropped with the binding so a detached chart leaves no slot behind.
+    _scope: ConnectionScope,
+}
+
+/// Ties an attached [`ZoomStrip`] to this chart (COMP-A8).
+struct ZoomStripBinding {
+    /// Levels the strip requested since the last poll.
+    requests: Arc<Mutex<Option<f32>>>,
+    /// Whether the strip's Fit segment was activated since the last poll.
+    fit_requests: Arc<Mutex<bool>>,
+    /// Writer end of the strip's mirror queue; the strip drains it to follow a chart gesture.
+    mirror: Arc<Mutex<Option<f32>>>,
+    /// The factor last written to `mirror`, so a wheel zoom is forwarded once.
+    last_pushed: f32,
+    /// The subscription, dropped with the binding so a detached chart leaves no slot behind.
+    _scope: ConnectionScope,
+}
+
+/// Ties an attached [`AxisPicker`] to this chart (COMP-A8).
+struct AxisPickerBinding {
+    /// Assignments reported since the last poll.
+    assignments: Arc<Mutex<Vec<(usize, AxisEdge)>>>,
+    /// The assignment the chart actually honoured, if any.
+    applied: Option<(usize, AxisEdge)>,
+    /// The subscription, dropped with the binding so a detached chart leaves no slot behind.
+    _scope: ConnectionScope,
+}
+
 /// A vertical bar chart widget for categorical data.
 pub struct BarChart {
     base: BaseWidget,
@@ -189,6 +231,14 @@ pub struct BarChart {
     value_axis: AxisConfig,
     /// Whether the category slots run from right/last to left/first.
     category_reversed: bool,
+    /// Whether wheel zoom and drag panning are enabled (CH-001).
+    zoom_enabled: bool,
+    /// The category-index window the zoom shows, or `None` for the whole axis.
+    view_categories: Option<(f64, f64)>,
+    /// The pointer position and window origin of a pan in progress.
+    pan_origin: Option<(i32, f64)>,
+    /// The last pointer position, so a wheel turn zooms around what it points at.
+    last_pointer: Option<Point>,
     /// The legend column's clickable rows from the last paint.
     last_legend_area: Option<LegendArea>,
     /// Cached y-axis label width; `None` until the first measured paint.
@@ -223,6 +273,12 @@ pub struct BarChart {
     legend: Option<Legend>,
     /// Toggles queued by the attached legend's `series_toggled` signal.
     legend_events: crate::compat::Arc<crate::compat::Mutex<crate::compat::Vec<(usize, bool)>>>,
+    /// The attached chart data table binding (COMP-A8).
+    chart_data_table: Option<ChartDataTableBinding>,
+    /// The attached zoom strip binding (COMP-A8).
+    zoom_strip: Option<ZoomStripBinding>,
+    /// The attached axis picker binding (COMP-A8).
+    axis_picker: Option<AxisPickerBinding>,
 }
 
 /// Cached width of the widest y-axis tick label.
@@ -338,6 +394,10 @@ impl BarChart {
             last_plot_area: None,
             value_axis: AxisConfig::default(),
             category_reversed: false,
+            zoom_enabled: false,
+            view_categories: None,
+            pan_origin: None,
+            last_pointer: None,
             last_legend_area: None,
             #[cfg(feature = "chart")]
             y_label_cache: None,
@@ -356,6 +416,9 @@ impl BarChart {
             legend_events: crate::compat::Arc::new(crate::compat::Mutex::new(
                 crate::compat::Vec::new(),
             )),
+            chart_data_table: None,
+            zoom_strip: None,
+            axis_picker: None,
         }
     }
 
@@ -506,6 +569,68 @@ impl BarChart {
         self.base.request_redraw();
     }
 
+    /// Enables wheel zoom and drag panning over the category axis (CH-001).
+    pub fn set_zoom_enabled(&mut self, enabled: bool) {
+        if self.zoom_enabled == enabled {
+            return;
+        }
+        self.zoom_enabled = enabled;
+        if !enabled {
+            self.view_categories = None;
+            self.pan_origin = None;
+        }
+        self.base.request_redraw();
+    }
+
+    /// Returns whether category zoom and pan are enabled.
+    pub fn is_zoom_enabled(&self) -> bool {
+        self.zoom_enabled
+    }
+
+    /// The visible category-index window, or `None` while the whole axis is shown.
+    pub fn view_window(&self) -> Option<(f64, f64)> {
+        self.view_categories
+    }
+
+    /// Sets an explicit category window; the range is normalised and clamped to the axis.
+    pub fn set_view_window(&mut self, window: Option<(f64, f64)>) {
+        let categories = self.category_count();
+        self.view_categories = window.map(|(low, high)| {
+            let (low, high) = if low <= high { (low, high) } else { (high, low) };
+            let low = low.clamp(0.0, categories as f64);
+            let high = high.clamp(0.0, categories as f64);
+            (low, high)
+        });
+        if self.view_categories.is_some_and(|(low, high)| high - low < 1.0) {
+            self.view_categories = None;
+        }
+        self.base.request_redraw();
+    }
+
+    /// Restores the full category axis.
+    pub fn reset_view(&mut self) {
+        if self.view_categories.is_none() && self.pan_origin.is_none() {
+            return;
+        }
+        self.view_categories = None;
+        self.pan_origin = None;
+        self.base.request_redraw();
+    }
+
+    /// The half-open category range the window shows.
+    fn category_window(&self, categories: usize) -> (usize, usize) {
+        let Some((low, high)) = self.view_categories else {
+            return (0, categories);
+        };
+        let first = low.floor().clamp(0.0, categories as f64) as usize;
+        let last = high.ceil().clamp(0.0, categories as f64) as usize;
+        if last <= first {
+            (0, categories)
+        } else {
+            (first, last)
+        }
+    }
+
     /// Whether series `index` is drawn and contributes to the value range.
     pub fn is_series_visible(&self, index: usize) -> bool {
         self.series.get(index).is_some_and(|series| series.visible)
@@ -625,6 +750,336 @@ impl BarChart {
             .filter(|(_, series)| !series.name.is_empty())
             .nth(row)
             .map(|(index, _)| index)
+    }
+
+    // ── COMP-A8 companion wiring ──
+
+    /// Follows `table` as this chart's data table (COMP-A8).
+    ///
+    /// Data flows chart → table: the current series are written into
+    /// [`ChartDataTable::set_from_series`] immediately, and [`Self::poll_chart_data_table`]
+    /// re-pushes the snapshot whenever the series change. Each point uses the category index as
+    /// its X and the series value as its Y. Toggles flow table → chart: a row click emits
+    /// `series_toggled`, which the poll applies through [`Self::set_series_visible`].
+    ///
+    /// The snapshot carries the chart's visibility too, so a hidden series does not reappear in
+    /// the table on the next data change. Only the multi-series model is exposed: the
+    /// single-series [`BarEntry`] list has no names and no per-bar visibility, so there is no
+    /// honest series identity to hand the table. Attaching replaces any previous table; after
+    /// [`Self::detach_chart_data_table`] the table keeps its last snapshot.
+    pub fn attach_chart_data_table(&mut self, table: &mut ChartDataTable) {
+        let snapshots = Arc::new(Mutex::new(None));
+        table.accept_series_updates(Arc::clone(&snapshots));
+
+        let toggles = Arc::new(Mutex::new(Vec::new()));
+        let scope = ConnectionScope::new();
+        let sink = Arc::clone(&toggles);
+        let redraw = self.base.redraw_requested_signal().clone();
+        table.series_toggled.connect_scoped(&scope, move |index| {
+            lock(&sink).push(*index);
+            // A table edit redraws the chart, so the poll that applies it happens next frame.
+            redraw.emit();
+        });
+
+        let snapshot = self.chart_data_snapshot();
+        table.set_from_series(&snapshot.0);
+        table.set_visible_series(snapshot.1.clone());
+        self.chart_data_table = Some(ChartDataTableBinding {
+            snapshots,
+            toggles,
+            last_snapshot: snapshot,
+            _scope: scope,
+        });
+        self.base.request_redraw();
+    }
+
+    /// Stops following the attached data table; its last snapshot stays.
+    pub fn detach_chart_data_table(&mut self) {
+        if self.chart_data_table.take().is_some() {
+            self.base.request_redraw();
+        }
+    }
+
+    /// Whether a [`ChartDataTable`] is attached.
+    pub fn is_chart_data_table_attached(&self) -> bool {
+        self.chart_data_table.is_some()
+    }
+
+    /// Applies the table's toggles and refreshes its rows when the chart's series changed.
+    ///
+    /// Called from `draw` and `handle_event`. Returns whether a toggle was applied or a new
+    /// snapshot was queued; an unchanged chart and an idle table return `false`.
+    pub fn poll_chart_data_table(&mut self) -> bool {
+        let toggles = match self.chart_data_table.as_ref() {
+            Some(binding) => core::mem::take(&mut *lock(&binding.toggles)),
+            None => return false,
+        };
+        let mut changed = false;
+        for index in toggles {
+            let next = !self.is_series_visible(index);
+            changed |= self.set_series_visible(index, next);
+        }
+        let current = self.chart_data_snapshot();
+        let differs =
+            self.chart_data_table.as_ref().is_some_and(|binding| current != binding.last_snapshot);
+        if differs {
+            if let Some(binding) = self.chart_data_table.as_mut() {
+                *lock(&binding.snapshots) = Some(current.clone());
+                binding.last_snapshot = current;
+            }
+            changed = true;
+        }
+        changed
+    }
+
+    /// Follows `strip` as this chart's zoom control (COMP-A8).
+    ///
+    /// Intent flows strip → chart: `zoom_requested` and `fit_requested` are queued and applied by
+    /// [`Self::poll_zoom_strip`]. A requested level is absolute over the full category axis — the
+    /// window becomes `category_count / level`, centred on the current view, and a level beyond
+    /// the category count is capped there because the chart cannot show less than one category —
+    /// while Fit restores the whole axis. The readout flows chart → strip: a wheel zoom or pan
+    /// changes the view factor, and the poll mirrors that factor back so the percentage follows
+    /// the chart. The mirror write is queued for the strip's own drain path.
+    pub fn attach_zoom_strip(&mut self, strip: &mut ZoomStrip) {
+        let requests = Arc::new(Mutex::new(None));
+        let fit_requests = Arc::new(Mutex::new(false));
+        let mirror = Arc::new(Mutex::new(None));
+        let scope = ConnectionScope::new();
+        let redraw = self.base.redraw_requested_signal().clone();
+
+        // Mirror the chart's current view before subscribing: a level pushed now must not come
+        // back as a fresh request.
+        let factor = self.zoom_factor();
+        strip.set_zoom(factor);
+        strip.accept_zoom_updates(Arc::clone(&mirror));
+
+        let request_sink = Arc::clone(&requests);
+        let request_redraw = redraw.clone();
+        strip.zoom_requested.connect_scoped(&scope, move |level| {
+            *lock(&request_sink) = Some(*level);
+            // A strip click redraws the chart, so the poll that applies it happens next frame.
+            request_redraw.emit();
+        });
+        let fit_sink = Arc::clone(&fit_requests);
+        strip.fit_requested.connect_scoped(&scope, move |_mode| {
+            *lock(&fit_sink) = true;
+            redraw.emit();
+        });
+
+        self.zoom_strip = Some(ZoomStripBinding {
+            requests,
+            fit_requests,
+            mirror,
+            last_pushed: factor,
+            _scope: scope,
+        });
+        self.base.request_redraw();
+    }
+
+    /// Stops following the attached strip; the last applied view stays.
+    pub fn detach_zoom_strip(&mut self) {
+        if self.zoom_strip.take().is_some() {
+            self.base.request_redraw();
+        }
+    }
+
+    /// Whether a [`ZoomStrip`] is attached.
+    pub fn is_zoom_strip_attached(&self) -> bool {
+        self.zoom_strip.is_some()
+    }
+
+    /// Applies what the attached strip requested and mirrors the resulting factor back.
+    ///
+    /// Called from `draw` and `handle_event`. Returns whether a request was consumed or the
+    /// mirrored factor changed.
+    pub fn poll_zoom_strip(&mut self) -> bool {
+        let (request, fit) = {
+            let Some(binding) = self.zoom_strip.as_ref() else {
+                return false;
+            };
+            (
+                lock(&binding.requests).take(),
+                core::mem::replace(&mut *lock(&binding.fit_requests), false),
+            )
+        };
+        let mut changed = fit || request.is_some();
+        if fit {
+            self.reset_view();
+        }
+        if let Some(level) = request {
+            let _ = self.apply_zoom_level(level);
+        }
+        let factor = self.zoom_factor();
+        if let Some(binding) = self.zoom_strip.as_mut() {
+            if (factor - binding.last_pushed).abs() > f32::EPSILON {
+                *lock(&binding.mirror) = Some(factor);
+                binding.last_pushed = factor;
+                changed = true;
+            }
+        }
+        changed
+    }
+
+    /// Follows `picker` as this chart's series-to-edge list (COMP-A8).
+    ///
+    /// On attach the picker receives this chart's series names. Assignments flow picker → chart
+    /// and are applied by [`Self::poll_axis_picker`]; because a [`BarChart`] has one category axis
+    /// and one value axis it cannot honour a per-series edge, so the assignment is recorded as
+    /// `None` rather than mapped onto a model the chart does not have (see
+    /// [`Self::axis_assignment`]).
+    pub fn attach_axis_picker(&mut self, picker: &mut AxisPicker) {
+        picker.set_series(self.chart_series_names());
+
+        let assignments = Arc::new(Mutex::new(Vec::new()));
+        let scope = ConnectionScope::new();
+        let sink = Arc::clone(&assignments);
+        let redraw = self.base.redraw_requested_signal().clone();
+        picker.axis_assigned.connect_scoped(&scope, move |value| {
+            lock(&sink).push(*value);
+            // A picker click redraws the chart, so the poll that applies it happens next frame.
+            redraw.emit();
+        });
+
+        self.axis_picker = Some(AxisPickerBinding { assignments, applied: None, _scope: scope });
+        self.base.request_redraw();
+    }
+
+    /// Stops following the attached picker; the last recorded assignment stays.
+    pub fn detach_axis_picker(&mut self) {
+        if self.axis_picker.take().is_some() {
+            self.base.request_redraw();
+        }
+    }
+
+    /// Whether an [`AxisPicker`] is attached.
+    pub fn is_axis_picker_attached(&self) -> bool {
+        self.axis_picker.is_some()
+    }
+
+    /// Consumes the assignments the attached picker reported.
+    ///
+    /// Called from `draw` and `handle_event`. Returns whether any assignment was consumed. A
+    /// consumed assignment is recorded through [`Self::axis_assignment`], which stays `None` for
+    /// this single-axis chart.
+    pub fn poll_axis_picker(&mut self) -> bool {
+        let pending: Vec<(usize, AxisEdge)> = {
+            let Some(binding) = self.axis_picker.as_ref() else {
+                return false;
+            };
+            core::mem::take(&mut *lock(&binding.assignments))
+        };
+        if pending.is_empty() {
+            return false;
+        }
+        let mut applied = None;
+        for (series, edge) in pending {
+            if let Some(result) = self.apply_axis_assignment(series, edge) {
+                applied = Some(result);
+            }
+        }
+        if let Some(binding) = self.axis_picker.as_mut() {
+            binding.applied = applied;
+        }
+        true
+    }
+
+    /// The `(series, edge)` the attached picker last assigned, or `None`.
+    ///
+    /// Always `None` here: a [`BarChart`] has one category axis and one value axis, so it has no
+    /// per-series edge to move a series to. The report is drained and recorded honestly instead
+    /// of being mapped onto an axis model the chart does not have.
+    pub fn axis_assignment(&self) -> Option<(usize, AxisEdge)> {
+        self.axis_picker.as_ref().and_then(|binding| binding.applied)
+    }
+
+    /// Applies one picker assignment, returning the pair when the chart honoured it.
+    ///
+    /// A single-axis chart cannot honour one, so this returns `None` and changes nothing. Hiding
+    /// a series when the picker moved it to Top or Bottom would invent an axis model; a future
+    /// multi-axis chart would map `edge` here.
+    fn apply_axis_assignment(
+        &mut self,
+        _series: usize,
+        _edge: AxisEdge,
+    ) -> Option<(usize, AxisEdge)> {
+        None
+    }
+
+    /// The label one series is known by: its name, or the legend's `Series N` fallback.
+    fn series_name(&self, index: usize) -> String {
+        match self.series.get(index) {
+            Some(series) if !series.name.is_empty() => series.name.clone(),
+            _ => format!("Series {}", index + 1),
+        }
+    }
+
+    /// The chart's series and visibility as the data table's snapshot.
+    fn chart_data_snapshot(&self) -> ChartSeriesSnapshot {
+        let series = (0..self.series.len())
+            .map(|index| {
+                let points = self.series[index]
+                    .values
+                    .iter()
+                    .enumerate()
+                    .map(|(category, value)| (category as f64, *value))
+                    .collect();
+                (self.series_name(index), points)
+            })
+            .collect();
+        let visible =
+            (0..self.series.len()).filter(|&index| self.is_series_visible(index)).collect();
+        (series, visible)
+    }
+
+    /// The series labels the axis picker lists.
+    fn chart_series_names(&self) -> Vec<String> {
+        (0..self.series.len()).map(|index| self.series_name(index)).collect()
+    }
+
+    /// The chart's current category zoom as a factor over the full axis.
+    fn zoom_factor(&self) -> f32 {
+        let base_span = self.category_count() as f64;
+        let (low, high) = self.view_categories.unwrap_or((0.0, base_span));
+        let span = high - low;
+        if !base_span.is_finite() || base_span <= 0.0 || !span.is_finite() || span <= 0.0 {
+            return 1.0;
+        }
+        let factor = (base_span / span) as f32;
+        if factor.is_finite() {
+            factor
+        } else {
+            1.0
+        }
+    }
+
+    /// Sets the category window to `category_count / level`, centred on the current view.
+    ///
+    /// Returns whether the view moved. A non-positive or non-finite level, or a chart with no
+    /// categories, is refused. The level is capped at the category count because
+    /// [`Self::set_view_window`] refuses a window narrower than one category.
+    fn apply_zoom_level(&mut self, level: f32) -> bool {
+        let base_span = self.category_count() as f64;
+        if !base_span.is_finite() || base_span <= 0.0 {
+            return false;
+        }
+        let level = f64::from(level);
+        if !level.is_finite() || level <= 0.0 {
+            return false;
+        }
+        let level = level.min(base_span);
+        let (low, high) = self.view_categories.unwrap_or((0.0, base_span));
+        let centre = low + (high - low) * 0.5;
+        let half = base_span / level * 0.5;
+        let next = (centre - half, centre + half);
+        let tolerance = base_span * 1e-9;
+        if self.view_categories.is_some_and(|(old_low, old_high)| {
+            (old_low - next.0).abs() <= tolerance && (old_high - next.1).abs() <= tolerance
+        }) {
+            return false;
+        }
+        self.set_view_window(Some(next));
+        true
     }
 
     /// Enables the hover tooltip.
@@ -803,7 +1258,7 @@ impl BarChart {
     }
 
     /// The number of categories the chart draws.
-    fn category_count(&self) -> usize {
+    pub fn category_count(&self) -> usize {
         if self.series.is_empty() {
             self.bars.len()
         } else {
@@ -1115,6 +1570,50 @@ impl BarChart {
         self.max_value
     }
 
+    /// The plot rectangle the last paint drew into, or `None` before the first paint.
+    ///
+    /// A companion that maps a value to a pixel must invert the same rectangle the chart
+    /// used; recomputing the margins elsewhere would drift from the engine's layout.
+    pub fn last_plot_area(&self) -> Option<Rect> {
+        self.last_plot_area
+    }
+
+    /// The value-axis range the current paint maps bars into, or `None` when the chart has
+    /// no categories to derive one from.
+    pub fn value_range(&self) -> Option<(f64, f64)> {
+        if self.min_value.is_some() && self.max_value.is_some() {
+            return Some(self.resolve_y_range());
+        }
+        if self.category_count() == 0 {
+            return None;
+        }
+        Some(self.resolve_y_range())
+    }
+
+    /// The category-index interval the current paint lays slots out over.
+    ///
+    /// The bounds carry half-slot margins, so an integer index maps to the centre of its
+    /// slot: index `i` has the fraction `(i + 0.5 - first) / (last - first)`. A reversed
+    /// category axis yields the pair in descending axis order, which keeps the same
+    /// fraction formula and reverses the pixels.
+    pub fn category_index_range(&self) -> Option<(f64, f64)> {
+        let categories = self.category_count();
+        if categories == 0 {
+            return None;
+        }
+        let (first, last) = self.category_window(categories);
+        if last <= first {
+            return None;
+        }
+        let low = first as f64 - 0.5;
+        let high = last as f64 - 0.5;
+        if self.category_reversed {
+            Some((high, low))
+        } else {
+            Some((low, high))
+        }
+    }
+
     /// Resolves the Y range for the chart.
     fn resolve_y_range(&self) -> (f64, f64) {
         let (mut min, mut max) = match (self.min_value, self.max_value) {
@@ -1348,6 +1847,10 @@ impl WidgetProperties for BarChart {
 
 impl Draw for BarChart {
     fn draw(&mut self, context: &mut RenderContext) {
+        // Drain shared writes the attached companions reported, so this frame paints them.
+        self.poll_chart_data_table();
+        self.poll_zoom_strip();
+        self.poll_axis_picker();
         self.sync_legend();
         let rect = self.base.geometry();
         if rect.width == 0 || rect.height == 0 {
@@ -1507,7 +2010,9 @@ impl Draw for BarChart {
 
         let plot_width = plot_area.width as f32;
         let n = self.bars.len();
-        let total_slots = n as f32;
+        let (first_visible, last_visible) = self.category_window(n);
+        let slots = (last_visible - first_visible).max(1);
+        let total_slots = slots as f32;
         let spacing_pixels = (plot_width * self.bar_spacing) / total_slots;
         let bar_slot_width = (plot_width - spacing_pixels * (total_slots + 1.0)) / total_slots;
         let bar_width = bar_slot_width.max(1.0);
@@ -1531,20 +2036,19 @@ impl Draw for BarChart {
         // Reused across bars so a value label costs no heap allocation per frame.
         let mut label = String::with_capacity(16);
 
-        for (i, bar) in self.bars.iter().enumerate() {
+        for (i, bar) in self.bars.iter().enumerate().take(last_visible).skip(first_visible) {
             let Some(value) = self.rendered_bar_value(i) else {
                 continue;
             };
+            let slot_index = i - first_visible;
+            let draw_index =
+                if self.category_reversed { slots - 1 - slot_index } else { slot_index };
             let bar_color = bar.color.unwrap_or(self.bar_color);
             let effective_color = if is_enabled { bar_color } else { disabled_color };
 
-            let bar_x = if self.category_reversed {
-                plot_area.x
-                    + (spacing_pixels * ((n - 1 - i) as f32 + 1.0)
-                        + bar_slot_width * (n - 1 - i) as f32) as i32
-            } else {
-                plot_area.x + (spacing_pixels * (i as f32 + 1.0) + bar_slot_width * i as f32) as i32
-            };
+            let bar_x = plot_area.x
+                + (spacing_pixels * (draw_index as f32 + 1.0) + bar_slot_width * draw_index as f32)
+                    as i32;
             let start = y_min;
             let end = start + (value - start) * growth;
             let bar_y = self.value_pixel(end.max(start), y_min, y_max, plot_area);
@@ -1624,11 +2128,14 @@ impl BarChart {
 
         match self.orientation {
             BarOrientation::Vertical => {
-                let slot = (plot_area.width as f32 / categories as f32).max(1.0);
+                let (first, last) = self.category_window(categories);
+                let visible = (last - first).max(1);
+                let slot = (plot_area.width as f32 / visible as f32).max(1.0);
                 let baseline = plot_area.y + plot_area.height as i32;
-                for category in 0..categories {
+                for category in first..last {
+                    let ordinal = category - first;
                     let slot_index =
-                        if self.category_reversed { categories - 1 - category } else { category };
+                        if self.category_reversed { visible - 1 - ordinal } else { ordinal };
                     let slot_x = plot_area.x + (slot * slot_index as f32) as i32;
                     let (mut positive, mut negative) = (0.0f64, 0.0f64);
                     let mut visible_index = 0usize;
@@ -1682,10 +2189,13 @@ impl BarChart {
                 }
             }
             BarOrientation::Horizontal => {
-                let slot = (plot_area.height as f32 / categories as f32).max(1.0);
-                for category in 0..categories {
+                let (first, last) = self.category_window(categories);
+                let visible = (last - first).max(1);
+                let slot = (plot_area.height as f32 / visible as f32).max(1.0);
+                for category in first..last {
+                    let ordinal = category - first;
                     let slot_index =
-                        if self.category_reversed { categories - 1 - category } else { category };
+                        if self.category_reversed { visible - 1 - ordinal } else { ordinal };
                     let slot_y = plot_area.y + (slot * slot_index as f32) as i32;
                     let (mut positive, mut negative) = (0.0f64, 0.0f64);
                     let mut visible_index = 0usize;
@@ -1856,20 +2366,23 @@ impl BarChart {
         if categories == 0 || !plot_area.contains_point(pos) {
             return None;
         }
-        let index = match self.orientation {
+        let (first, last) = self.category_window(categories);
+        let visible = (last - first).max(1);
+        let offset = match self.orientation {
             BarOrientation::Vertical => {
-                let slot = (plot_area.width as f32 / categories as f32).max(1.0);
+                let slot = (plot_area.width as f32 / visible as f32).max(1.0);
                 ((pos.x - plot_area.x) as f32 / slot) as usize
             }
             BarOrientation::Horizontal => {
-                let slot = (plot_area.height as f32 / categories as f32).max(1.0);
+                let slot = (plot_area.height as f32 / visible as f32).max(1.0);
                 ((pos.y - plot_area.y) as f32 / slot) as usize
             }
         };
-        if index >= categories {
+        if offset >= visible {
             return None;
         }
-        Some(if self.category_reversed { categories - 1 - index } else { index })
+        let relative = if self.category_reversed { visible - 1 - offset } else { offset };
+        Some(first + relative)
     }
 }
 
@@ -1943,6 +2456,11 @@ impl BarChart {
 
 impl EventHandler for BarChart {
     fn handle_event(&mut self, event: &Event) {
+        // Companion reports are shared writes, drained before routing so the frame that follows
+        // the click already reflects them.
+        self.poll_chart_data_table();
+        self.poll_zoom_strip();
+        self.poll_axis_picker();
         self.base.handle_event(event);
         if !self.base.is_enabled() {
             return;
@@ -1968,6 +2486,23 @@ impl EventHandler for BarChart {
         };
         match event {
             Event::MouseMove { pos } => {
+                self.last_pointer = Some(*pos);
+                // Drag panning: the window follows the pointer while the primary button is down
+                // (CH-001). The span is preserved and the origin is clamped to the axis.
+                if let Some((origin_x, origin_low)) = self.pan_origin {
+                    let categories = self.category_count();
+                    if categories > 0 {
+                        let span = self
+                            .view_categories
+                            .map_or(categories as f64, |(low, high)| high - low);
+                        let per_pixel = span / f64::from(plot_area.width.max(1));
+                        let max_low = (categories as f64 - span).max(0.0);
+                        let low = (origin_low - (pos.x - origin_x) as f64 * per_pixel)
+                            .clamp(0.0, max_low);
+                        self.view_categories = Some((low, low + span));
+                        self.base.request_redraw();
+                    }
+                }
                 let next = self.category_at(*pos, plot_area);
                 if next != self.hovered {
                     if let Some(index) = self.hovered {
@@ -1994,10 +2529,13 @@ impl EventHandler for BarChart {
                             .fold(f64::NEG_INFINITY, f64::max)
                     };
                     let categories = self.category_count().max(1);
-                    let slot = plot_area.width as f32 / categories as f32;
+                    let (first, last) = self.category_window(categories);
+                    let visible = (last - first).max(1);
+                    let slot = plot_area.width as f32 / visible as f32;
+                    let ordinal = index.saturating_sub(first);
                     (
                         Point::new(
-                            plot_area.x + (slot * (index as f32 + 0.5)) as i32,
+                            plot_area.x + (slot * (ordinal as f32 + 0.5)) as i32,
                             plot_area.y + plot_area.height as i32 / 2,
                         ),
                         (index as f64, value),
@@ -2029,6 +2567,10 @@ impl EventHandler for BarChart {
                     return;
                 }
                 self.base.set_mouse_pressed(true);
+                if self.zoom_enabled && plot_area.contains_point(*pos) {
+                    let low = self.view_categories.map_or(0.0, |(low, _)| low);
+                    self.pan_origin = Some((pos.x, low));
+                }
                 if let Some(index) = self.category_at(*pos, plot_area) {
                     self.bar_clicked.emit(index);
                     let series = self.series_at(*pos, plot_area, index);
@@ -2037,6 +2579,31 @@ impl EventHandler for BarChart {
             }
             Event::MouseRelease { button, .. } if *button == 1 => {
                 self.base.set_mouse_pressed(false);
+                self.pan_origin = None;
+            }
+            Event::Wheel { delta, .. } if self.zoom_enabled && delta.y != 0 => {
+                let categories = self.category_count();
+                if categories == 0 {
+                    return;
+                }
+                let (low, high) = self.view_categories.unwrap_or((0.0, categories as f64));
+                let span = (high - low).max(1.0);
+                // Anchor the zoom at the pointer's fraction across the plot, so a wheel turn
+                // zooms around what it points at rather than the centre (CH-001).
+                let anchor_x = self
+                    .last_pointer
+                    .map_or(plot_area.x + plot_area.width as i32 / 2, |point| point.x);
+                let fraction = (f64::from(anchor_x - plot_area.x)
+                    / f64::from(plot_area.width.max(1)))
+                .clamp(0.0, 1.0);
+                let factor = if delta.y > 0 { 1.25 } else { 0.8 };
+                let anchor = low + span * fraction;
+                let new_low = anchor - (anchor - low) * factor;
+                let new_high = anchor + (high - anchor) * factor;
+                let width = (new_high - new_low).clamp(1.0, categories as f64);
+                let low = new_low.clamp(0.0, (categories as f64 - width).max(0.0));
+                self.view_categories = Some((low, low + width));
+                self.base.request_redraw();
             }
             _ => { /* Other events are not relevant */ }
         }
@@ -2704,5 +3271,137 @@ mod tests {
         chart.handle_event(&Event::mouse_press(10, 10, 1));
         assert!(!chart.is_series_visible(0));
         assert!(!chart.legend().expect("attached").entries()[0].visible);
+    }
+
+    /// COMP-A8: attaching a data table pushes the chart's current series immediately.
+    #[test]
+    fn attaching_a_bar_chart_data_table_pushes_the_current_series() {
+        let mut chart = BarChart::new(Rect::new(0, 0, 400, 260));
+        chart.set_series(
+            vec![BarSeries::new("revenue", vec![3.0, 5.0]), BarSeries::new("cost", vec![1.0, 2.0])],
+            vec!["Q1".to_string(), "Q2".to_string()],
+        );
+        let mut table = ChartDataTable::new(Rect::new(0, 0, 240, 120));
+        chart.attach_chart_data_table(&mut table);
+        assert!(chart.is_chart_data_table_attached());
+        assert_eq!(table.series_count(), 2, "both series reach the table");
+        assert_eq!(table.rows().len(), 4, "one row per category per series");
+        assert_eq!(table.rows()[0][0], "revenue");
+        assert_eq!(table.rows()[1][0], "revenue");
+        assert_eq!(table.rows()[2][0], "cost");
+    }
+
+    /// COMP-A8: a changed chart refreshes the table on the next poll, and an unchanged one does
+    /// not; detaching leaves the table's last snapshot in place.
+    #[test]
+    fn polling_a_bar_chart_data_table_refreshes_only_after_a_data_change() {
+        let mut chart = BarChart::new(Rect::new(0, 0, 400, 260));
+        chart.set_series(vec![BarSeries::new("revenue", vec![3.0])], vec!["Q1".to_string()]);
+        let mut table = ChartDataTable::new(Rect::new(0, 0, 240, 120));
+        chart.attach_chart_data_table(&mut table);
+        assert!(!chart.poll_chart_data_table(), "an unchanged chart pushes nothing");
+
+        chart.set_series(
+            vec![BarSeries::new("revenue", vec![3.0, 5.0])],
+            vec!["Q1".to_string(), "Q2".to_string()],
+        );
+        assert!(chart.poll_chart_data_table(), "the changed series are queued");
+        assert_eq!(table.rows().len(), 1, "the table drains on its own paint path");
+        assert!(table.sync_series_updates());
+        assert_eq!(table.rows().len(), 2, "the new category reached the table");
+        assert!(!chart.poll_chart_data_table(), "the same snapshot is not re-pushed");
+
+        chart.detach_chart_data_table();
+        assert!(!chart.is_chart_data_table_attached());
+        chart.set_series(vec![BarSeries::new("revenue", Vec::new())], Vec::new());
+        assert!(!chart.poll_chart_data_table(), "a detached table receives nothing");
+        assert_eq!(table.rows().len(), 2, "the last state stays");
+    }
+
+    /// COMP-A8: a table row click toggles the same series on the chart.
+    #[test]
+    fn a_bar_chart_data_table_toggle_hides_the_series_in_the_chart() {
+        let mut chart = BarChart::new(Rect::new(0, 0, 400, 260));
+        chart.set_series(
+            vec![BarSeries::new("revenue", vec![3.0]), BarSeries::new("cost", vec![1.0])],
+            vec!["Q1".to_string()],
+        );
+        let mut table = ChartDataTable::new(Rect::new(0, 0, 240, 120));
+        chart.attach_chart_data_table(&mut table);
+        assert!(table.toggle_series(0), "the table hides the first series");
+        assert!(chart.poll_chart_data_table(), "the toggle is applied");
+        assert!(!chart.is_series_visible(0), "the chart hides the same series");
+        assert!(table.sync_series_updates());
+        assert!(!table.series_visible(0), "the refresh keeps the table's state");
+        assert!(chart.is_series_visible(1), "the other series is untouched");
+    }
+
+    /// COMP-A8: a strip level sets the category window by `category_count / level` around the
+    /// current centre.
+    #[test]
+    fn a_bar_zoom_strip_request_sets_the_window_around_the_current_centre() {
+        let mut chart = BarChart::new(Rect::new(0, 0, 400, 260));
+        chart.set_series(
+            vec![BarSeries::new("revenue", vec![1.0, 2.0, 3.0, 4.0])],
+            vec!["Q1".to_string(), "Q2".to_string(), "Q3".to_string(), "Q4".to_string()],
+        );
+        chart.set_view_window(Some((1.0, 3.0)));
+        let mut strip = ZoomStrip::new(Rect::new(0, 0, 240, 28));
+        chart.attach_zoom_strip(&mut strip);
+        assert!(chart.is_zoom_strip_attached());
+        assert!((strip.zoom_level() - 2.0).abs() < 1e-6, "attaching mirrors the factor");
+
+        strip.set_zoom(4.0);
+        assert!(chart.poll_zoom_strip(), "the strip request is applied");
+        let (low, high) = chart.view_window().expect("a category window is installed");
+        assert!(((low + high) * 0.5 - 2.0).abs() < 1e-6, "the window keeps its centre");
+        assert!((high - low - 1.0).abs() < 1e-6, "span = category count / level");
+    }
+
+    /// COMP-A8: Fit restores the full category axis and the mirrored readout returns to 100%.
+    #[test]
+    fn a_bar_zoom_strip_fit_request_restores_the_full_axis() {
+        let mut chart = BarChart::new(Rect::new(0, 0, 400, 260));
+        chart.set_series(
+            vec![BarSeries::new("revenue", vec![1.0, 2.0, 3.0, 4.0])],
+            vec!["Q1".to_string(), "Q2".to_string(), "Q3".to_string(), "Q4".to_string()],
+        );
+        chart.set_view_window(Some((1.0, 3.0)));
+        let mut strip = ZoomStrip::new(Rect::new(0, 0, 240, 28));
+        chart.attach_zoom_strip(&mut strip);
+
+        strip.fit_requested.emit(crate::widget::companions::ZoomMode::FitWidth);
+        assert!(chart.poll_zoom_strip(), "the fit request is applied");
+        assert_eq!(chart.view_window(), None, "the full axis is restored");
+        assert!(strip.sync_zoom_updates());
+        assert!((strip.zoom_level() - 1.0).abs() < 1e-6, "the readout follows the reset");
+        assert!(!chart.poll_zoom_strip(), "an idle strip reports nothing");
+    }
+
+    /// COMP-A8: the picker receives the series names, and its assignments are recorded as ignored
+    /// rather than mapped onto an axis model this chart does not have.
+    #[test]
+    fn a_bar_axis_picker_assignment_is_recorded_but_not_invented() {
+        let mut chart = BarChart::new(Rect::new(0, 0, 400, 260));
+        chart.set_series(
+            vec![BarSeries::new("revenue", vec![3.0]), BarSeries::new("cost", vec![1.0])],
+            vec!["Q1".to_string()],
+        );
+        let mut picker = AxisPicker::new(Rect::new(0, 0, 220, 120));
+        chart.attach_axis_picker(&mut picker);
+        assert!(chart.is_axis_picker_attached());
+        assert_eq!(picker.series_names().len(), 2);
+        assert_eq!(picker.series_names()[0], "revenue");
+
+        assert!(picker.assign(0, AxisEdge::Right));
+        assert!(chart.poll_axis_picker(), "the report is consumed");
+        assert!(chart.is_series_visible(0), "a single-axis chart does not hide the series");
+        assert_eq!(chart.axis_assignment(), None, "the assignment is recorded as ignored");
+        assert!(!chart.poll_axis_picker(), "an unchanged picker reports nothing");
+
+        chart.detach_axis_picker();
+        assert!(!chart.is_axis_picker_attached());
+        assert!(picker.assign(0, AxisEdge::Top));
+        assert!(!chart.poll_axis_picker(), "a detached picker reports nothing");
     }
 }

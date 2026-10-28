@@ -41,15 +41,16 @@ use super::types::{
     LineEnding, MarkerSeverity, MenuItem, ReadOnlySpan, SearchMatch, SearchOptions, SyntaxPalette,
     TextChange, TextPosition, TokenKind, TokenSpan, ViewportSnapshot, VisualLine, MAX_COMPLETIONS,
 };
-use crate::compat::MiniVec;
+use crate::compat::{lock, Arc, MiniVec, Mutex};
 use crate::core::{Color, Font, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
-use crate::signal::{GenericSignal, Signal1};
+use crate::signal::{ConnectionScope, GenericSignal, Signal1};
 use crate::undo::{UndoStack, ValueCommand};
 use crate::widget::capability::coercion::expect_string;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::companions::LineNumberGutter;
 use crate::widget::text_utils::floor_char_boundary;
 use crate::widget::{BaseWidget, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
@@ -100,6 +101,21 @@ impl CaretEdit {
         self.caret_in_insert = Some(index);
         self
     }
+}
+
+/// The live link between a [`CodeEditor`] and a [`LineNumberGutter`].
+///
+/// The editor owns the gutter so it can push its line range and viewport into it; the gutter's
+/// `line_clicked` stream is parked in the shared cell and drained by
+/// [`CodeEditor::poll_line_number_gutter`], which routes through the editor's existing
+/// [`CodeEditor::goto_line`] command.
+struct LineNumberGutterBinding {
+    /// The gutter kept in step with the editor's viewport.
+    gutter: LineNumberGutter,
+    /// The document line a click reported since the last poll.
+    clicked: Arc<Mutex<Option<u64>>>,
+    /// The subscription, dropped with the binding so a detach leaves no slot behind.
+    _scope: ConnectionScope,
 }
 
 /// What [`CodeEditor::occurrence_cache`] was computed from.
@@ -573,6 +589,8 @@ pub struct CodeEditor {
     pub marker_activated: Signal1<usize>,
     /// Emitted when the editor rebuilds its palette for a new appearance.
     pub palette_changed: GenericSignal,
+    /// The line-number gutter this editor keeps in step, when one is attached.
+    line_number_gutter: Option<LineNumberGutterBinding>,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -705,6 +723,7 @@ impl CodeEditor {
             breakpoint_toggled: Signal1::new(),
             marker_activated: Signal1::new(),
             palette_changed: GenericSignal::new(),
+            line_number_gutter: None,
         };
         // An editable editor is an active insertion point the moment it exists, so its caret blinks
         // from construction rather than waiting for a focus event this widget has no notion of.
@@ -713,6 +732,102 @@ impl CodeEditor {
         }
         editor.refresh_derived_state();
         editor
+    }
+
+    /// Follows a [`LineNumberGutter`]'s viewport and click stream.
+    ///
+    /// This is the companion binding for COMP-A8. The editor owns the gutter because only a
+    /// mutable owner can push the current line range into it: the range and visible window are
+    /// written immediately on attach, and [`Self::poll_line_number_gutter`] compares them with the
+    /// editor's own state on every poll so scrolling, edits and buffer switches reach the gutter
+    /// without host bookkeeping.
+    ///
+    /// The reverse direction is the gutter's `line_clicked` stream: a click is parked in the
+    /// binding and applied through [`Self::goto_line`], the editor's existing command, so the
+    /// gutter does not need a second navigation path. Attaching replaces any previous gutter, so
+    /// calling this twice leaves one subscription.
+    pub fn attach_line_number_gutter(&mut self, gutter: LineNumberGutter) {
+        let clicked = Arc::new(Mutex::new(None));
+        let sink = Arc::clone(&clicked);
+        let scope = ConnectionScope::new();
+        let redraw = self.base.redraw_requested_signal().clone();
+        gutter.line_clicked.connect_scoped(&scope, move |line| {
+            *lock(&sink) = Some(*line);
+            // A gutter click is a command, so the poll that applies it runs next frame.
+            redraw.emit();
+        });
+        self.line_number_gutter = Some(LineNumberGutterBinding { gutter, clicked, _scope: scope });
+        self.apply_editor_range_to_gutter();
+        self.base.request_redraw();
+    }
+
+    /// Stops following the attached gutter and returns it.
+    pub fn detach_line_number_gutter(&mut self) -> Option<LineNumberGutter> {
+        let binding = self.line_number_gutter.take()?;
+        self.base.request_redraw();
+        Some(binding.gutter)
+    }
+
+    /// Whether a [`LineNumberGutter`] is attached.
+    pub fn is_line_number_gutter_attached(&self) -> bool {
+        self.line_number_gutter.is_some()
+    }
+
+    /// The attached gutter, if any.
+    pub fn line_number_gutter(&self) -> Option<&LineNumberGutter> {
+        self.line_number_gutter.as_ref().map(|binding| &binding.gutter)
+    }
+
+    /// The attached gutter for editing, if any.
+    pub fn line_number_gutter_mut(&mut self) -> Option<&mut LineNumberGutter> {
+        self.line_number_gutter.as_mut().map(|binding| &mut binding.gutter)
+    }
+
+    /// Applies the editor's range and viewport to the attached gutter and drains a pending click.
+    ///
+    /// Returns whether anything changed: a pushed range/window/current line or a click routed
+    /// through [`Self::goto_line`]. A second call with nothing pending returns `false`.
+    pub fn poll_line_number_gutter(&mut self) -> bool {
+        let pending =
+            self.line_number_gutter.as_ref().and_then(|binding| lock(&binding.clicked).take());
+        let mut changed = false;
+        if let Some(line) = pending {
+            self.goto_line(line.saturating_sub(1) as usize);
+            changed = true;
+        }
+        // Push after applying a click, so the caret line the command produced is written in the
+        // same poll rather than leaving the gutter one frame behind.
+        changed |= self.apply_editor_range_to_gutter();
+        changed
+    }
+
+    /// Writes the editor's line range and visible window into the attached gutter.
+    ///
+    /// Using only public accessors keeps the gutter's own paint and hit-test arithmetic as the
+    /// single reading of the range. Returns whether any stored value moved.
+    fn apply_editor_range_to_gutter(&mut self) -> bool {
+        let first = self.scroll_line().saturating_add(1) as u64;
+        let line_count = self.line_count() as u64;
+        let remaining = self.line_count().saturating_sub(self.scroll_line());
+        let visible = self.visible_rows().min(remaining).max(1) as u64;
+        let current = self.cursor.head.line.saturating_add(1) as u64;
+        let Some(binding) = self.line_number_gutter.as_mut() else {
+            return false;
+        };
+        let mut changed = false;
+        if binding.gutter.first_line() != 1 || binding.gutter.line_count() != line_count {
+            binding.gutter.set_range(1, line_count);
+            changed = true;
+        }
+        if binding.gutter.visible_lines() != (first, visible) {
+            binding.gutter.set_visible_lines(first, visible);
+            changed = true;
+        }
+        if binding.gutter.current_line() != current {
+            binding.gutter.set_current_line(current);
+            changed = true;
+        }
+        changed
     }
 
     /// Returns the active configuration.
@@ -1775,5 +1890,57 @@ mod diff_range_tests {
     #[test]
     fn replacing_the_whole_text() {
         assert_eq!(diff_range("abc", "xyz"), Some((0, 3, "xyz".to_string())));
+    }
+}
+
+#[cfg(test)]
+mod gutter_binding_tests {
+    use super::*;
+
+    fn editor_with_lines(count: usize) -> CodeEditor {
+        let mut editor = CodeEditor::new(Rect::new(0, 0, 400, 200));
+        let text = (0..count).map(|line| format!("line {line}")).collect::<Vec<_>>().join("\n");
+        editor.set_text(text);
+        editor
+    }
+
+    /// Attach pushes the range/window, poll pushes later edits and scrolls, and detach stops both.
+    #[test]
+    fn the_gutter_follows_the_editor_range_and_viewport() {
+        let mut editor = editor_with_lines(30);
+        editor.attach_line_number_gutter(LineNumberGutter::new(Rect::new(0, 0, 40, 200)));
+        assert!(editor.is_line_number_gutter_attached());
+        let gutter = editor.line_number_gutter().expect("attached");
+        assert_eq!(gutter.line_count(), 30, "attach pushes the document length");
+        assert_eq!(gutter.visible_lines().0, 1, "attach pushes the first visible line");
+        assert!(!editor.poll_line_number_gutter(), "an unchanged editor is not re-applied");
+
+        let longer = (0..40).map(|line| format!("line {line}")).collect::<Vec<_>>().join("\n");
+        editor.set_text(longer);
+        assert!(editor.poll_line_number_gutter(), "an edit reaches the gutter");
+        assert_eq!(editor.line_number_gutter().expect("attached").line_count(), 40);
+
+        editor.scroll_by(3);
+        assert!(editor.poll_line_number_gutter(), "a scroll reaches the gutter");
+        assert_eq!(editor.line_number_gutter().expect("attached").visible_lines().0, 4);
+        assert!(!editor.poll_line_number_gutter(), "the second poll has nothing to do");
+
+        let gutter = editor.detach_line_number_gutter().expect("detached");
+        assert!(!editor.is_line_number_gutter_attached());
+        editor.scroll_by(2);
+        assert!(!editor.poll_line_number_gutter(), "a detached gutter is not polled");
+        assert_eq!(gutter.visible_lines().0, 4, "detach stops updates");
+    }
+
+    /// A gutter click is routed through the editor's existing `goto_line` command.
+    #[test]
+    fn a_gutter_click_moves_the_caret() {
+        let mut editor = editor_with_lines(10);
+        editor.attach_line_number_gutter(LineNumberGutter::new(Rect::new(0, 0, 40, 200)));
+        editor.line_number_gutter_mut().expect("attached").line_clicked.emit(4);
+
+        assert!(editor.poll_line_number_gutter(), "the click is applied");
+        assert_eq!(editor.cursor().0, 3, "a gutter line is one-based; goto_line is zero-based");
+        assert!(!editor.poll_line_number_gutter(), "the click is drained once");
     }
 }

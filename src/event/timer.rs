@@ -11,10 +11,66 @@ use crate::compat::{format, lock, Box, HashMap, Instant, MiniToString, Mutex, St
 use crate::core::ObjectId;
 use alloc::collections::BinaryHeap;
 use alloc::sync::Arc;
+#[cfg(full_widgets)]
+use alloc::sync::Weak;
 use core::cmp::Ordering;
 use core::time::Duration;
 #[cfg(not(alloc_frugal))]
 use std::thread;
+/// Process-wide weak handles to the timer sets of every live [`TimerManager`] (G-901).
+///
+/// Widget destruction happens in `widget::runtime`, which has no route to the loop's manager:
+/// the manager owns the worker's join handle and lives on the host thread, while `unregister`
+/// is a plain registry operation. The timer set itself is shared through an `Arc`, so a weak
+/// handle registered here lets the destroy chain stop a dead target's timers without owning the
+/// manager. Weak handles let the registry prune itself when a manager is dropped.
+///
+/// `full_widgets` only: that is the only profile with a widget destroy chain, and the `mini`
+/// timer set is a plain mutex with no worker to wake.
+#[cfg(full_widgets)]
+static TIMER_PURGE_ARMS: crate::compat::OnceLock<Mutex<Vec<Weak<TimerShared>>>> =
+    crate::compat::OnceLock::new();
+
+/// Publishes a manager's timer set so [`stop_timers_for_target_everywhere`] can reach it.
+#[cfg(full_widgets)]
+fn register_timer_purge_arm(arm: &TimerArm) {
+    let registry = TIMER_PURGE_ARMS.get_or_init(|| Mutex::new(Vec::new()));
+    let mut arms = lock(registry);
+    arms.retain(|weak| weak.strong_count() > 0);
+    arms.push(Arc::downgrade(&arm.state));
+}
+
+/// Stops every timer registered for `target` in any live timer manager, returning how many were
+/// removed (G-901).
+///
+/// This is the destroy-chain entry point. [`TimerManager::stop_timers_for_target`] cannot be
+/// called from `widget::runtime` — the manager is not reachable from there — so the same retain
+/// and wake-up is applied through the shared state instead. A repeating timer that outlives its
+/// target would otherwise keep waking the worker and posting events to a dead id.
+#[cfg(full_widgets)]
+pub(crate) fn stop_timers_for_target_everywhere(target: ObjectId) -> usize {
+    let Some(registry) = TIMER_PURGE_ARMS.get() else {
+        return 0;
+    };
+    let mut arms = lock(registry);
+    let mut removed = 0;
+    arms.retain(|weak| {
+        let Some(state) = weak.upgrade() else {
+            return false;
+        };
+        let mut guard = lock(&state.state);
+        let before = guard.timers.len();
+        guard.timers.retain(|(timer_target, _), _| *timer_target != target);
+        removed += before.saturating_sub(guard.timers.len());
+        drop(guard);
+        if removed > 0 {
+            state.notify();
+        }
+        true
+    });
+    removed
+}
+
 struct TimerEntry {
     interval: Duration,
     repeating: bool,
@@ -268,6 +324,11 @@ pub struct TimerManager {
 /// instead of requiring the host to arm a timer by hand (W-11).
 ///
 /// Dropping the handle changes nothing: the timer set lives as long as the manager.
+///
+/// Gated on `touch`: the event loop is the only caller, and it arms the handle from inside its
+/// `#[cfg(feature = "touch")]` gesture block, so a build without that capability has nothing to
+/// share the timer set with.
+#[cfg(feature = "touch")]
 pub(crate) struct TimerArm {
     #[cfg(not(alloc_frugal))]
     state: Arc<TimerShared>,
@@ -275,6 +336,7 @@ pub(crate) struct TimerArm {
     state: Arc<Mutex<TimerState>>,
 }
 
+#[cfg(feature = "touch")]
 impl TimerArm {
     /// Starts or replaces a **one-shot, precise** timer for `(target, id)`.
     ///
@@ -368,6 +430,8 @@ impl TimerManager {
             signal: Condvar::new(),
             wake_count: core::sync::atomic::AtomicU64::new(0),
         });
+        #[cfg(full_widgets)]
+        register_timer_purge_arm(&TimerArm { state: Arc::clone(&shared) });
 
         let worker_shared = Arc::clone(&shared);
         let worker_sender = sender;
@@ -546,6 +610,7 @@ impl TimerManager {
     ///
     /// Used by the event loop to arm the long-press deadline on its dispatch thread; it shares
     /// the timer set rather than the manager, so the worker's lifecycle stays with the manager.
+    #[cfg(feature = "touch")]
     pub(crate) fn arm_handle(&self) -> TimerArm {
         TimerArm { state: Arc::clone(&self.state) }
     }
@@ -911,6 +976,24 @@ mod tests {
             Err(_) => panic!("the timer worker deadlocked on a concurrent mutation or stop"),
         }
         worker.join().expect("the timer worker thread must join cleanly");
+    }
+
+    /// G-901: the destroy chain's purge must reach a manager owned by another part of the
+    /// process, stop only the dead target's timers, and leave other targets alone.
+    #[test]
+    fn destroying_a_target_stops_only_its_timers_everywhere() {
+        let queue = EventQueue::new();
+        let manager = TimerManager::new(queue.sender());
+        let dead = 0x9E01;
+        let alive = 0x9E02;
+        manager.start_timer(dead, 1, Duration::from_millis(10), true).unwrap();
+        manager.start_timer(dead, 2, Duration::from_millis(20), true).unwrap();
+        manager.start_timer(alive, 3, Duration::from_millis(30), true).unwrap();
+
+        assert_eq!(stop_timers_for_target_everywhere(dead), 2);
+        assert!(!manager.stop_timer(dead, 1), "a destroyed target's timers must be gone");
+        assert!(!manager.stop_timer(dead, 2));
+        assert!(manager.stop_timer(alive, 3), "another target's timer must survive");
     }
 
     /// W-P09: the deadline index reports the earliest timer instead of scanning the map.

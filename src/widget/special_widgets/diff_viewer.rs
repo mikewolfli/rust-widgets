@@ -1631,10 +1631,8 @@ impl Draw for DiffViewer {
         // token is exactly the row-divider role the theme declares for it — the same one
         // `table_widget`, `virtual_table`, `data_table` and `tree_table` now read. A local blend
         // of the surface is a colour no theme can tune independently; the role is.
-        let row_rule = crate::style::theme_manager()
-            .current_theme()
-            .map(|active| active.colors.outline_variant)
-            .unwrap_or(divider);
+        let row_rule =
+            crate::style::palette_shared().map(|colors| colors.outline_variant).unwrap_or(divider);
         let selection = crate::style::semantic_color(crate::style::SemanticColor::Info)
             .unwrap_or_else(|| background.blend(&text_color, 0.5));
         // Added / Removed / Changed are *states*, so they read the theme's semantic

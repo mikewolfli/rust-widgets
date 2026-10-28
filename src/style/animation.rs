@@ -1811,9 +1811,17 @@ impl CursorBlink {
         if !self.running {
             return false;
         }
+        // A zero half-period is the "no blinking" request (reduced motion, or a theme that sets
+        // the token to zero): hold the caret visible and stop asking for frames (X-004).
+        let half_period = crate::style::cursor_blink_half_period_ms();
+        if half_period == 0 {
+            self.elapsed_in_half = 0;
+            self.visible = true;
+            return false;
+        }
         self.elapsed_in_half += delta_ms;
-        while self.elapsed_in_half >= CURSOR_BLINK_HALF_PERIOD_MS {
-            self.elapsed_in_half -= CURSOR_BLINK_HALF_PERIOD_MS;
+        while self.elapsed_in_half >= half_period {
+            self.elapsed_in_half -= half_period;
             self.visible = !self.visible;
         }
         // A running cursor always owes the next frame: the blink is periodic, so the frame that
@@ -3110,6 +3118,31 @@ mod tests {
         assert!(blink.is_visible());
         assert!(!blink.tick(CURSOR_BLINK_HALF_PERIOD_MS * 10), "a stopped cursor owes no frame");
         assert!(blink.is_visible());
+    }
+
+    /// X-004: the blink tempo is a theme motion token, and the reduced-motion preference
+    /// collapses it to a steady caret that requests no frames.
+    #[test]
+    fn reduced_motion_holds_the_cursor_steady() {
+        struct ReduceMotion;
+        impl crate::style::environment::EnvironmentProvider for ReduceMotion {
+            fn motion_preference(&self) -> crate::style::environment::MotionPreference {
+                crate::style::environment::MotionPreference::ReduceMotion
+            }
+        }
+        let previous = crate::style::environment::install_environment(Box::new(ReduceMotion));
+        let mut blink = CursorBlink::new();
+        blink.start();
+        assert!(!blink.tick(10_000), "a steady cursor must not request frames");
+        assert!(blink.is_visible(), "and it stays visible");
+        match previous {
+            Some(provider) => {
+                crate::style::environment::install_environment(provider);
+            }
+            None => {
+                crate::style::environment::uninstall_environment();
+            }
+        }
     }
 
     // ── Transition (the shared state-transition primitive) ──

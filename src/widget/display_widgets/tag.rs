@@ -465,8 +465,7 @@ impl Draw for Tag {
         let font = self.resolved_font(style_font);
         let style = self.base.style();
         let surface = style.background_color.unwrap_or_else(|| {
-            let manager = crate::style::theme_manager();
-            manager.current_theme().map(|theme| theme.colors.background).unwrap_or(Color::WHITE)
+            crate::style::palette_shared().map(|theme| theme.background).unwrap_or(Color::WHITE)
         });
         let tone = self.tone_color(style);
         // A selected tag is filled with its tone; an unselected one is a tint of it, so the

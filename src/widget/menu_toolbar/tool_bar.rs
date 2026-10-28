@@ -548,6 +548,33 @@ impl<'a> StateReader<'a> {
         self.data.len().saturating_sub(self.at)
     }
 }
+/// One widget mounted as a toolbar item (MT-001).
+///
+/// The id is unique among the toolbar's hosted widgets and is what [`ToolBar::widget_band`] and
+/// [`ToolBar::remove_widget`] address; it is deliberately separate from
+/// [`ToolBarItem::id`]'s action namespace so one control cannot shadow an action.
+pub struct ToolBarWidgetItem {
+    id: String,
+    widget: Box<dyn Widget>,
+}
+
+impl ToolBarWidgetItem {
+    /// The item's stable id.
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    /// The hosted widget.
+    pub fn widget(&self) -> &dyn Widget {
+        self.widget.as_ref()
+    }
+
+    /// The hosted widget mutably.
+    pub fn widget_mut(&mut self) -> &mut dyn Widget {
+        self.widget.as_mut()
+    }
+}
+
 /// Toolbar widget.
 pub struct ToolBar {
     base: BaseWidget,
@@ -637,6 +664,15 @@ pub struct ToolBar {
     /// refill a `Vec` for each call. The signature is a cheap fold over the facts the layout
     /// reads, so a frame that changed none of them reuses the previous run (G-P03).
     bands_cache: RefCell<Option<(u64, Rc<Vec<Rect>>)>>,
+    /// Arbitrary widgets mounted as toolbar items (MT-001).
+    ///
+    /// A `ToolBarItem` is a cloneable presentation record that is also a capability record, so a
+    /// boxed widget cannot live in it. The mounted widgets therefore form a parallel list laid out
+    /// after the action items; keeping them separate is what lets both representations keep their
+    /// contract.
+    widget_items: Vec<ToolBarWidgetItem>,
+    /// The box each hosted widget occupied on the last paint, for event routing.
+    widget_bands: Vec<(String, Rect)>,
 }
 impl ToolBar {
     /// Creates a horizontal toolbar with a default icon size of 24 pixels, and
@@ -675,6 +711,8 @@ impl ToolBar {
             tooltip_source: None,
             tooltip_now_ms: 0,
             bands_cache: RefCell::new(None),
+            widget_items: Vec::new(),
+            widget_bands: Vec::new(),
         }
     }
     /// The direction items are laid out in.
@@ -702,6 +740,53 @@ impl ToolBar {
     /// The current items, in draw order.
     pub fn items(&self) -> &[ToolBarItem] {
         &self.items
+    }
+
+    /// The widgets mounted as toolbar items, in draw order (MT-001).
+    pub fn widget_items(&self) -> &[ToolBarWidgetItem] {
+        &self.widget_items
+    }
+
+    /// Mounts `widget` as a toolbar item after the action items.
+    ///
+    /// The id must be unique among the mounted widgets; a duplicate is refused so
+    /// [`Self::remove_widget`] cannot address two controls with one name. The item is laid out
+    /// with its own `size_hint` along the bar's main axis and the strip's full cross axis, and
+    /// pointer events inside its box are forwarded to it.
+    pub fn add_widget(&mut self, id: impl Into<String>, widget: Box<dyn Widget>) -> bool {
+        let id = id.into();
+        if id.is_empty() || self.widget_items.iter().any(|item| item.id == id) {
+            return false;
+        }
+        self.widget_items.push(ToolBarWidgetItem { id, widget });
+        self.base.request_layout();
+        self.base.request_redraw();
+        true
+    }
+
+    /// Removes the hosted widget `id`, returning it to the caller.
+    pub fn remove_widget(&mut self, id: &str) -> Option<Box<dyn Widget>> {
+        let index = self.widget_items.iter().position(|item| item.id == id)?;
+        let removed = self.widget_items.remove(index);
+        self.widget_bands.retain(|(band_id, _)| band_id != id);
+        self.base.request_layout();
+        self.base.request_redraw();
+        Some(removed.widget)
+    }
+
+    /// The hosted widget `id`.
+    pub fn widget_item(&self, id: &str) -> Option<&dyn Widget> {
+        self.widget_items.iter().find(|item| item.id == id).map(ToolBarWidgetItem::widget)
+    }
+
+    /// The hosted widget `id` mutably.
+    pub fn widget_item_mut(&mut self, id: &str) -> Option<&mut dyn Widget> {
+        self.widget_items.iter_mut().find(|item| item.id == id).map(ToolBarWidgetItem::widget_mut)
+    }
+
+    /// The box the hosted widget `id` occupied on the last paint.
+    pub fn widget_band(&self, id: &str) -> Option<Rect> {
+        self.widget_bands.iter().find(|(band_id, _)| band_id == id).map(|(_, band)| *band)
     }
 
     /// Registers the item under the pointer with the tooltip pipeline.
@@ -1680,6 +1765,58 @@ impl ToolBar {
     /// The callers read this list once per pass: `draw` and `hit_item` each walk it in place
     /// rather than asking a per-index helper, which used to rebuild the whole list per index and
     /// made both paths O(N²) in the item count (REND-01).
+    /// Lays out and paints the hosted widgets, storing their bands for event routing (MT-001).
+    ///
+    /// Kept out of `Draw::draw`'s body because that body holds an immutable `self.style()`
+    /// borrow for its whole length, while a hosted widget needs `&mut self` to be re-geometried.
+    /// Painting here is still before the action items, and the layout starts after the last
+    /// visible item, so the two groups never overlap.
+    fn paint_widget_items(&mut self, context: &mut RenderContext) {
+        if self.collapsed || self.widget_items.is_empty() {
+            self.widget_bands.clear();
+            return;
+        }
+        let rect = self.band_rect();
+        let horizontal = self.orientation == ToolBarOrientation::Horizontal;
+        let inset = dimensions::TOOLBAR_ITEM_INSET as i32;
+        let cross = if horizontal {
+            rect.height.saturating_sub(dimensions::TOOLBAR_ITEM_INSET * 2)
+        } else {
+            rect.width.saturating_sub(dimensions::TOOLBAR_ITEM_INSET * 2)
+        }
+        .max(1);
+        let bands = self.item_bands();
+        let mut cursor =
+            if let Some(last) = bands.iter().rev().find(|band| band.width > 0 || band.height > 0) {
+                if horizontal {
+                    last.x + last.width as i32
+                } else {
+                    last.y + last.height as i32
+                }
+            } else if horizontal {
+                rect.x
+            } else {
+                rect.y
+            } + inset;
+        let mut widget_bands = Vec::with_capacity(self.widget_items.len());
+        for item in &mut self.widget_items {
+            let hint = item.widget.size_hint();
+            let extent = if horizontal { hint.width } else { hint.height }.max(1);
+            let band = if horizontal {
+                Rect::new(cursor, rect.y + inset, extent, cross)
+            } else {
+                Rect::new(rect.x + inset, cursor, cross, extent)
+            };
+            item.widget.base_mut().set_geometry(band);
+            if let Some(drawable) = item.widget.as_draw_mut() {
+                drawable.draw(context);
+            }
+            widget_bands.push((item.id.clone(), band));
+            cursor += extent as i32 + dimensions::TOOLBAR_SPACING as i32;
+        }
+        self.widget_bands = widget_bands;
+    }
+
     fn item_bands(&self) -> Rc<Vec<Rect>> {
         let key = self.layout_signature();
         if let Some((cached_key, bands)) = self.bands_cache.borrow().as_ref() {
@@ -2090,6 +2227,28 @@ impl EventHandler for ToolBar {
         if !self.base.is_enabled() {
             return;
         }
+        // A hosted widget owns the pointer inside its box (MT-001). Forwarding before the
+        // toolbar's own hit path is what keeps a press on a hosted button from also activating
+        // an action item underneath it.
+        if let Some(pos) = match event {
+            Event::MouseMove { pos }
+            | Event::MousePress { pos, .. }
+            | Event::MouseRelease { pos, .. }
+            | Event::MouseDoubleClick { pos, .. } => Some(*pos),
+            _ => None,
+        } {
+            if let Some(id) = self
+                .widget_bands
+                .iter()
+                .find(|(_, band)| band.contains_point(pos))
+                .map(|(id, _)| id.clone())
+            {
+                if let Some(item) = self.widget_items.iter_mut().find(|item| item.id == id) {
+                    item.widget.handle_event(event);
+                    return;
+                }
+            }
+        }
         match event {
             Event::MouseMove { pos } => {
                 // The grip is not an item: hovering it must not light up the action underneath
@@ -2248,6 +2407,9 @@ impl EventHandler for ToolBar {
 }
 impl Draw for ToolBar {
     fn draw(&mut self, context: &mut RenderContext) {
+        // Hosted widgets first: their geometry update needs `&mut self`, while the rest of the
+        // paint holds an immutable `self.style()` borrow for the whole body (MT-001).
+        self.paint_widget_items(context);
         // The **strip**, not the control's rectangle: see `band_rect`. Every measurement below
         // — the fill, the rule, the separators and the item squares — is taken from this one
         // band, and the item bands (and therefore the hit test) read the same one.
@@ -2281,9 +2443,8 @@ impl Draw for ToolBar {
         context.draw_line(Point::new(rect.x, y), Point::new(rect.x + rect.width as i32, y), border);
         // A selection indicator is a step from the item's own rest fill, so it stays a
         // selection in either appearance. `primary` is the palette's active/selected slot.
-        let accent = crate::style::theme_manager()
-            .current_theme()
-            .map(|theme| theme.colors.primary)
+        let accent = crate::style::palette_shared()
+            .map(|colors| colors.primary)
             .unwrap_or(Color::rgb(0, 120, 215));
         let resting = surface.blend(&surface.contrast_color(), 0.04);
         let hovered_fill = resting.blend(&accent, 0.18);
@@ -2468,6 +2629,11 @@ impl Draw for ToolBar {
                 }
             }
         }
+
+        // ── Hosted widgets (MT-001) are laid out and painted before the strip's own paint ──
+        // `draw` holds an immutable `self.style()` borrow for the whole body, so a hosted
+        // widget's geometry update cannot happen later in this function. The helper owns that
+        // mutable pass; the bands it stores are what the event router reads.
 
         // ── Trailing affordances ──
         let affordance_ink = surface.contrast_color().with_alpha(150);
@@ -3027,5 +3193,51 @@ mod tests {
         assert!(!restored.restore_state(b"nope"), "a foreign blob is refused");
         assert!(!restored.restore_state(&saved[..8]), "so is a truncated one");
         assert_eq!(restored.items().len(), 4, "a refused restore leaves the state intact");
+    }
+
+    /// MT-001: a hosted widget is laid out after the action items and owns the pointer inside
+    /// its own box, so a press there is the widget's press rather than the toolbar's.
+    #[test]
+    fn a_hosted_widget_gets_a_band_and_receives_its_own_press() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let mut bar = ToolBar::new(Rect::new(0, 0, 300, dimensions::TOOLBAR_HEIGHT));
+        bar.add_action("open", "Open");
+        let button =
+            crate::widget::base_widgets::button::Button::new("Go".to_string(), Rect::default());
+        let pressed = Arc::new(AtomicUsize::new(0));
+        let sink = Arc::clone(&pressed);
+        button.pressed_signal.connect(move || {
+            sink.fetch_add(1, Ordering::SeqCst);
+        });
+        assert!(bar.add_widget("hosted", Box::new(button)));
+        assert!(
+            !bar.add_widget(
+                "hosted",
+                Box::new(crate::widget::base_widgets::button::Button::new(
+                    "X".to_string(),
+                    Rect::default(),
+                ))
+            ),
+            "a duplicate hosted id is refused"
+        );
+
+        let _ = crate::widget::svg::render_to_svg(&mut bar);
+        let band = bar.widget_band("hosted").expect("the hosted widget is laid out");
+        assert!(
+            band.x >= bar.item_bands()[0].x + bar.item_bands()[0].width as i32,
+            "the hosted widget follows the action items"
+        );
+
+        bar.handle_event(&crate::event::Event::MousePress {
+            pos: crate::core::Point::new(band.x + 2, band.y + 2),
+            button: 1,
+            modifiers: 0,
+        });
+        assert_eq!(pressed.load(Ordering::SeqCst), 1, "the hosted button received the press");
+
+        assert!(bar.remove_widget("hosted").is_some());
+        assert!(bar.widget_band("hosted").is_none(), "a removed widget has no band");
     }
 }

@@ -8,6 +8,7 @@ use std::collections::{BTreeSet, HashMap};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
+use crate::compat::Rc;
 use crate::core::{Color, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler, WheelScroll};
 use crate::render::RenderContext;
@@ -100,6 +101,21 @@ struct ColumnLayout {
     offsets: Vec<i32>,
 }
 
+/// Cached header label strings, keyed by the source and label revisions (VP-007).
+#[derive(Default)]
+struct HeaderNameCache {
+    /// The source's `revision()` the names were resolved at.
+    revision: u64,
+    /// The generation counter the widget advanced on `data_changed`.
+    generation: u64,
+    /// [`VirtualTable::header_text_revision`] the names were resolved at.
+    labels_revision: u64,
+    /// The source's column count when the cache was built.
+    column_count: usize,
+    /// The resolved, elided label per column.
+    entries: HashMap<usize, Rc<String>>,
+}
+
 /// Lightweight virtual table with pull-based window fetch.
 pub struct VirtualTable {
     base: BaseWidget,
@@ -180,6 +196,12 @@ pub struct VirtualTable {
     pub sort_changed: Signal1<(usize, bool)>,
     /// Emitted when the context menu is requested at a point (V-013).
     pub context_menu_requested: Signal1<Point>,
+    /// Per-column cell alignment (V-001); an absent entry means `Left`.
+    column_alignments: HashMap<usize, HorizontalAlignment>,
+    /// Bumped by `set_header_labels`, so the header name cache can invalidate (VP-007).
+    header_text_revision: u64,
+    /// Elided header labels, including the `"Column N"` fallback (VP-007).
+    header_text_cache: RefCell<HeaderNameCache>,
 }
 
 /// The sorted projection's window cache: the sort revision, the four window bounds, and the rows
@@ -229,6 +251,9 @@ impl VirtualTable {
             alternating_rows: false,
             sort_changed: Signal1::new(),
             context_menu_requested: Signal1::new(),
+            column_alignments: HashMap::new(),
+            header_text_revision: 0,
+            header_text_cache: RefCell::new(HeaderNameCache::default()),
         }
     }
 
@@ -1116,7 +1141,60 @@ impl VirtualTable {
     /// Replaces the header labels, taking precedence over [`IncrementalTableDataSource::column_name`].
     pub fn set_header_labels(&mut self, labels: &[&str]) {
         self.header_labels = labels.iter().map(|label| (*label).to_string()).collect();
+        self.header_text_revision = self.header_text_revision.wrapping_add(1);
         self.base.request_redraw();
+    }
+
+    /// The alignment `column` paints its cells with (V-001).
+    pub fn column_alignment(&self, column: usize) -> HorizontalAlignment {
+        self.column_alignments.get(&column).copied().unwrap_or(HorizontalAlignment::Left)
+    }
+
+    /// Sets one column's cell alignment, returning whether the column exists (V-001).
+    pub fn set_column_alignment(&mut self, column: usize, alignment: HorizontalAlignment) -> bool {
+        if column >= self.column_count() {
+            return false;
+        }
+        if alignment == HorizontalAlignment::Left {
+            self.column_alignments.remove(&column);
+        } else {
+            self.column_alignments.insert(column, alignment);
+        }
+        self.base.request_redraw();
+        true
+    }
+
+    /// Resolves the header label for `column` from the cache, building it on a miss (VP-007).
+    fn header_name(&self, column: usize, source: &dyn IncrementalTableDataSource) -> Rc<String> {
+        let revision = source.revision();
+        let generation = self.data_generation.load(Ordering::Relaxed);
+        let column_count = self.column_count();
+        let mut cache = self.header_text_cache.borrow_mut();
+        if cache.revision != revision
+            || cache.generation != generation
+            || cache.labels_revision != self.header_text_revision
+            || cache.column_count != column_count
+        {
+            cache.entries.clear();
+            cache.revision = revision;
+            cache.generation = generation;
+            cache.labels_revision = self.header_text_revision;
+            cache.column_count = column_count;
+        }
+        if let Some(label) = cache.entries.get(&column) {
+            return Rc::clone(label);
+        }
+        let name = self
+            .header_labels
+            .get(column)
+            .map(String::as_str)
+            .filter(|label| !label.is_empty())
+            .map(ToOwned::to_owned)
+            .or_else(|| source.column_name(column))
+            .unwrap_or_else(|| std::format!("Column {}", column + 1));
+        let name = Rc::new(crate::widget::text_utils::elide_end(&name, 20).into_owned());
+        cache.entries.insert(column, Rc::clone(&name));
+        name
     }
 
     /// How one wheel notch scrolls.
@@ -1726,18 +1804,13 @@ impl Draw for VirtualTable {
                         self.row_height.saturating_sub(2),
                     );
                     context.fill_rect(band, surface.blend(&ink, 0.08));
-                    let name = self
-                        .header_labels
-                        .get(global)
-                        .map(String::as_str)
-                        .filter(|label| !label.is_empty())
-                        .map(ToOwned::to_owned)
-                        .or_else(|| source.column_name(global))
-                        .unwrap_or_else(|| std::format!("Column {}", global + 1));
-                    let name = crate::widget::text_utils::elide_end(&name, 20);
+                    // The resolved label (host label, source name or the `Column N` fallback) is
+                    // cached, so an unnamed column no longer formats its fallback per frame
+                    // (VP-007).
+                    let name = self.header_name(global, source.as_ref());
                     context.draw_text_fitted_cow(
                         context.text_line(band, font),
-                        &name,
+                        name.as_str(),
                         font,
                         ink,
                         HorizontalAlignment::Left,
@@ -1860,7 +1933,7 @@ impl Draw for VirtualTable {
                         value.as_str(),
                         cell_font,
                         ink,
-                        HorizontalAlignment::Left,
+                        self.column_alignment(absolute_column),
                     );
                 }
             }
@@ -1922,9 +1995,9 @@ mod tests {
         crate::theme::apply_theme_to_widget(&mut table);
         let svg = render_to_svg(&mut table);
 
-        let manager = crate::style::theme_manager();
-        let variant = manager.current_theme().expect("a preset is active").colors.outline_variant;
-        let background = manager.current_theme().expect("a preset is active").colors.background;
+        let palette = crate::style::palette_shared();
+        let variant = palette.as_ref().expect("a preset is active").outline_variant;
+        let background = palette.as_ref().expect("a preset is active").background;
         let expected = format!("rgba({},{},{},", variant.r, variant.g, variant.b);
         assert!(
             svg.contains(&expected),

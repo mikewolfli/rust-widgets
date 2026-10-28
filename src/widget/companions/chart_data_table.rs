@@ -1,6 +1,6 @@
 //! `ChartDataTable` — a chart's series values as a previewable, exportable table (COMP-A26).
 
-use crate::compat::{format, String, ToString, Vec};
+use crate::compat::{format, lock, Arc, Mutex, String, ToString, Vec};
 use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::impl_draw_bridge;
@@ -29,6 +29,13 @@ const HEADER_HEIGHT: u32 = 22;
 const ROW_HEIGHT: u32 = 20;
 /// Default cap on the rows a preview renders and exports.
 const DEFAULT_MAX_ROWS: usize = 100;
+
+/// A chart-side snapshot: the `(name, points)` series and the indices to show.
+///
+/// The visible list travels with the data because [`ChartDataTable::set_from_series`] seeds every
+/// series visible; a chart that hides a series must not see its row reappear on the next data
+/// change.
+pub(crate) type ChartSeriesSnapshot = (Vec<(String, Vec<(f64, f64)>)>, Vec<usize>);
 
 /// How much of the table a host is looking at.
 ///
@@ -87,6 +94,8 @@ pub struct ChartDataTable {
     series_count: usize,
     mode: ChartDataMode,
     max_rows: usize,
+    /// Writer end of a chart-side snapshot queue, when a chart is attached (COMP-A8).
+    pending_series: Option<Arc<Mutex<Option<ChartSeriesSnapshot>>>>,
     /// Emitted with the complete CSV document when [`Self::request_export`] is called.
     pub export_requested: Signal1<String>,
     /// Emitted with the series index after a data row toggled that series.
@@ -105,6 +114,7 @@ impl ChartDataTable {
             series_count: 0,
             mode: ChartDataMode::Preview,
             max_rows: DEFAULT_MAX_ROWS,
+            pending_series: None,
             export_requested: Signal1::new(),
             series_toggled: Signal1::new(),
         }
@@ -137,6 +147,37 @@ impl ChartDataTable {
         self.series_count = series.len();
         self.visible_series = (0..series.len()).collect();
         self.base.request_redraw();
+    }
+
+    /// Accepts a chart-side snapshot queue (COMP-A8).
+    ///
+    /// The chart keeps the write end and this table drains it through
+    /// [`Self::sync_series_updates`], which the paint and event paths call, so a host only has to
+    /// attach the pair once. A new queue replaces the previous pairing; the current rows stay
+    /// until the next snapshot arrives.
+    pub(crate) fn accept_series_updates(
+        &mut self,
+        source: Arc<Mutex<Option<ChartSeriesSnapshot>>>,
+    ) {
+        self.pending_series = Some(source);
+        self.base.request_redraw();
+    }
+
+    /// Absorbs the snapshot a paired chart pushed since the last call.
+    ///
+    /// Returns whether a snapshot was applied. The data goes through [`Self::set_from_series`] and
+    /// the visibility list through [`Self::set_visible_series`], so row building and redraw rules
+    /// stay in one place.
+    pub fn sync_series_updates(&mut self) -> bool {
+        let Some(source) = self.pending_series.as_ref() else {
+            return false;
+        };
+        let Some((series, visible)) = lock(source).take() else {
+            return false;
+        };
+        self.set_from_series(&series);
+        self.set_visible_series(visible);
+        true
     }
 
     /// Replaces the header labels without touching the data rows.
@@ -321,6 +362,8 @@ impl ChartDataTable {
 
 impl EventHandler for ChartDataTable {
     fn handle_event(&mut self, event: &Event) {
+        // A chart-side write is drained before routing, so the click already sees the new rows.
+        self.sync_series_updates();
         self.base.handle_event(event);
         if !self.base.is_enabled() {
             return;
@@ -338,6 +381,8 @@ impl EventHandler for ChartDataTable {
 
 impl Draw for ChartDataTable {
     fn draw(&mut self, context: &mut RenderContext) {
+        // Drain a snapshot the paired chart pushed, so this frame paints it.
+        self.sync_series_updates();
         let rect = self.geometry();
         if rect.width == 0 || rect.height == 0 {
             return;

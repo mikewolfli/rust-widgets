@@ -479,8 +479,7 @@ impl Draw for Window {
         // literal as a last resort for a manager with no active theme. A stripped device
         // build has no theme module, so the literal is its only rung.
         #[cfg(device_profile)]
-        let themed_background =
-            crate::style::theme_manager().current_theme().map(|active| active.colors.background);
+        let themed_background = crate::style::palette_shared().map(|colors| colors.background);
         #[cfg(not(device_profile))]
         let themed_background: Option<Color> = None;
         let bg_color =

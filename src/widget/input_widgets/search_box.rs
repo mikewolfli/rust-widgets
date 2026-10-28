@@ -8,7 +8,7 @@
 //! text is non-empty. It emits `text_changed` with the current text value on
 //! every edit.
 
-use crate::core::{Color, HorizontalAlignment, Point, Rect};
+use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::shortcut::Key;
@@ -98,6 +98,20 @@ pub struct SearchBox {
     preedit: String,
     /// Lookup switches for a host that searches a document from this query (I-025).
     search_options: SearchOptions,
+    /// Bumped on every value mutation, so the advance cache invalidates (IP-007).
+    text_revision: u64,
+    /// Per-character advances of the query, keyed by the revision and font (IP-007).
+    advance_cache: RefCell<Option<SearchAdvanceCache>>,
+}
+
+/// Per-character cumulative advances for the search box's value (IP-007).
+///
+/// A press used to build a paint backend and shape the whole query to resolve one click. The
+/// table is built once per revision and font, and a click or an IME query reads it instead.
+struct SearchAdvanceCache {
+    revision: u64,
+    font: Font,
+    cuts: Vec<(usize, i32)>,
 }
 
 impl SearchBox {
@@ -121,7 +135,14 @@ impl SearchBox {
             dragging_selection: false,
             preedit: String::new(),
             search_options: SearchOptions::default(),
+            text_revision: 0,
+            advance_cache: RefCell::new(None),
         }
+    }
+
+    /// Marks the value as changed so revision-keyed caches rebuild.
+    fn touch_text(&mut self) {
+        self.text_revision = self.text_revision.wrapping_add(1);
     }
 
     /// The lookup switches this box reports to a host (I-025).
@@ -179,6 +200,7 @@ impl SearchBox {
         if self.text != text {
             let before = self.text.clone();
             self.text = text.clone();
+            self.touch_text();
             if !self.restoring_history {
                 *self.history_target.borrow_mut() = self.text.clone();
                 self.undo_stack.push(Box::new(TextSpliceCommand::new(
@@ -412,6 +434,7 @@ impl SearchBox {
     fn restore_history_text(&mut self) {
         self.restoring_history = true;
         self.text = self.history_target.borrow().clone();
+        self.touch_text();
         self.restoring_history = false;
         // Clamp the caret to the restored value; undo used to leave it past the new length, which
         // made the next edit slice out of bounds (I-023).
@@ -454,6 +477,7 @@ impl SearchBox {
         if self.restoring_history {
             return;
         }
+        self.touch_text();
         {
             let mut target = self.history_target.borrow_mut();
             let start = offset.min(target.len());
@@ -477,6 +501,7 @@ impl SearchBox {
         if self.restoring_history {
             return;
         }
+        self.touch_text();
         *self.history_target.borrow_mut() = self.text.clone();
         self.undo_stack.push(Box::new(TextSpliceCommand::new(
             self.history_target.clone(),
@@ -522,9 +547,6 @@ impl SearchBox {
             return 0;
         }
         let font = effective_font(self.style());
-        let mut measurement =
-            crate::render::SoftwarePaintBackend::new(crate::core::Size::new(0, 0), 1.0);
-        let context = RenderContext::new(&mut measurement);
         let rect = self.field_rect();
         let icon_margin = 10;
         let icon_size = 14;
@@ -534,26 +556,60 @@ impl SearchBox {
         let text_width = rect.width as i32
             - (icon_margin + icon_size + 6 + clear_margin + clear_btn_size + clear_margin);
         let value_box = Rect::new(text_x, rect.y, text_width.max(1) as u32, rect.height);
-        let advance = context.measure_text(&self.text, font).width as i32;
+        let advance = self.prefix_advance(font, self.text.len());
         let origin = crate::render::fitted_origin(
             value_box,
             advance,
             self.alignment.to_horizontal().unwrap_or(HorizontalAlignment::Left),
         );
         let dx = (x - origin.x).max(0);
-        // Accumulated real advances instead of a proportional mapping (I-P63).
+        // Read the cached boundaries instead of shaping every glyph on each press (IP-007).
+        let cuts = self.advance_cuts(font);
         let mut best = 0usize;
-        let mut prefix = 0i32;
-        let mut glyph = [0u8; 4];
-        for (index, ch) in self.text.char_indices() {
-            let advance = context.measure_text(ch.encode_utf8(&mut glyph), font).width as i32;
-            if dx < prefix + advance / 2 {
+        for window in cuts.windows(2) {
+            let (_, previous) = window[0];
+            let (offset, cumulative) = window[1];
+            let advance = cumulative - previous;
+            if dx < previous + advance / 2 {
                 break;
             }
-            prefix += advance;
-            best = index + ch.len_utf8();
+            best = offset;
         }
         best
+    }
+
+    /// The cumulative per-character advances of the value for `font` (IP-007).
+    fn advance_cuts(&self, font: &Font) -> Vec<(usize, i32)> {
+        if let Some(cache) = self.advance_cache.borrow().as_ref() {
+            if cache.revision == self.text_revision && cache.font == *font {
+                return cache.cuts.clone();
+            }
+        }
+        let mut cuts = Vec::with_capacity(self.text.len() + 1);
+        cuts.push((0usize, 0i32));
+        let mut advance = 0i32;
+        for (start, ch) in self.text.char_indices() {
+            advance +=
+                estimate_text_width(&self.text[start..start + ch.len_utf8()], font, 1.0) as i32;
+            cuts.push((start + ch.len_utf8(), advance));
+        }
+        *self.advance_cache.borrow_mut() = Some(SearchAdvanceCache {
+            revision: self.text_revision,
+            font: font.clone(),
+            cuts: cuts.clone(),
+        });
+        cuts
+    }
+
+    /// The advance of `text[..end]`, read from the revision cache (IP-007).
+    fn prefix_advance(&self, font: &Font, end: usize) -> i32 {
+        let end =
+            crate::widget::text_utils::floor_char_boundary(&self.text, end.min(self.text.len()));
+        let cuts = self.advance_cuts(font);
+        cuts.iter()
+            .find(|(offset, _)| *offset >= end)
+            .map(|(_, advance)| *advance)
+            .unwrap_or_else(|| cuts.last().map(|(_, advance)| *advance).unwrap_or(0))
     }
 }
 
@@ -566,6 +622,35 @@ impl Widget for SearchBox {
     }
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
+    }
+
+    /// Reports the caret rectangle an IME candidate window anchors to (X-001).
+    ///
+    /// The x is the fitted origin plus the cached prefix advance, the same model the paint and
+    /// the press hit test use; the vertical band is the field's content inset.
+    fn input_method_query(&self) -> Option<crate::widget::widget_trait::InputMethodQuery> {
+        let rect = self.field_rect();
+        let font = effective_font(self.style());
+        let text_x = rect.x + leading_slot() as i32;
+        let text_width = rect.width.saturating_sub(leading_slot() + trailing_slot()) as i32;
+        let value_box = Rect::new(text_x, rect.y, text_width.max(1) as u32, rect.height);
+        let advance = self.prefix_advance(font, self.text.len());
+        let origin = crate::render::fitted_origin(
+            value_box,
+            advance,
+            self.alignment.to_horizontal().unwrap_or(HorizontalAlignment::Left),
+        );
+        let caret = crate::widget::text_utils::floor_char_boundary(&self.text, self.cursor);
+        let x = origin.x + self.prefix_advance(font, caret);
+        Some(crate::widget::widget_trait::InputMethodQuery {
+            caret_rect: Rect::new(
+                x.min(rect.x + rect.width as i32 - 1).max(rect.x),
+                rect.y + 2,
+                1,
+                rect.height.saturating_sub(4).max(1),
+            ),
+            caret_byte: Some(caret),
+        })
     }
 
     fn size_hint(&self) -> crate::core::Size {
@@ -751,10 +836,8 @@ impl Draw for SearchBox {
         let base_bg =
             style.background_color.or(themed_bg).unwrap_or(Color::rgba(235, 235, 235, 200));
         // The page this field sits in, read once: a disabled fill recedes toward it.
-        let window_fill = crate::style::theme_manager()
-            .current_theme()
-            .map(|active| active.colors.background)
-            .unwrap_or(Color::WHITE);
+        let window_fill =
+            crate::style::palette_shared().map(|colors| colors.background).unwrap_or(Color::WHITE);
         let bg_color = if !is_enabled {
             // A disabled field recedes toward the page it sits in. The comment here claimed that
             // "blending toward white expresses energy taken out", but white is not a direction: on
@@ -832,9 +915,8 @@ impl Draw for SearchBox {
         // background resolved to a dark surface. The placeholder stays dimmer than the ink on
         // purpose (it is a hint, not a value), but it is derived from the ink now rather than
         // being a second fixed grey that could not match either appearance.
-        let ink = crate::style::theme_manager()
-            .current_theme()
-            .map(|active| active.colors.foreground)
+        let ink = crate::style::palette_shared()
+            .map(|colors| colors.foreground)
             .unwrap_or(Color::rgba(30, 30, 30, 230));
         let text_color = if !is_enabled {
             // Derived from the field the text sits on, not blended toward a fixed white: a text

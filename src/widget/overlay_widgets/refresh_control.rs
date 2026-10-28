@@ -1,12 +1,12 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
 // SPDX-License-Identifier: MIT
 
-//! RefreshControl widget — pull-to-refresh control for scrollable views.
+//! RefreshControl widget — pull-to-refresh and load-more control for scrollable views.
 //!
-//! Shows a pull-down indicator (spinner arrow) at the top of the widget when
-//! the user pulls down, and emits a `refresh_triggered` signal when the pull
-//! distance exceeds the configured threshold. Supports embedding child content
-//! below the indicator area.
+//! Shows an indicator band at the configured edge (top for pull-to-refresh, bottom for
+//! load-more) that opens as the user drags away from that edge, and emits a
+//! `refresh_triggered` signal when the pull distance exceeds the configured threshold.
+//! Supports embedding child content in the region the indicator leaves.
 
 use crate::core::{Color, HorizontalAlignment, ObjectId, Point, Rect};
 use crate::event::{Event, EventHandler};
@@ -32,6 +32,16 @@ pub enum RefreshState {
     Triggered,
 }
 
+/// Which edge the indicator lives on, and therefore which way a pull travels (OV-002).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RefreshDirection {
+    /// The top edge: pulling down refreshes. The historical behaviour.
+    #[default]
+    Top,
+    /// The bottom edge: pulling up loads more.
+    Bottom,
+}
+
 /// Pull-to-refresh control for mobile scrollable views.
 ///
 /// Wraps optional child content and displays a pull-down indicator at the top.
@@ -44,6 +54,8 @@ pub struct RefreshControl {
     pull_distance: f32,
     threshold: f32,
     state: RefreshState,
+    /// The edge the indicator sits on and the direction a pull travels (OV-002).
+    direction: RefreshDirection,
     /// The child widget this control wraps, by id.
     ///
     /// # Why an `ObjectId` rather than a stored `Box<dyn Widget>`
@@ -113,6 +125,7 @@ impl RefreshControl {
             pull_distance: 0.0,
             threshold: 60.0,
             state: RefreshState::Idle,
+            direction: RefreshDirection::Top,
             content: None,
             drag_origin_y: None,
             // At the resting end: a freshly built control shows no reveal band, and must not
@@ -185,20 +198,42 @@ impl RefreshControl {
         self.content
     }
 
-    /// The rectangle the child content paints into: the whole control below the pull indicator.
+    /// The rectangle the child content paints into: the whole control minus the indicator band.
     ///
     /// Derived here rather than re-derived at each call site, so a host positioning the child and the
-    /// draw filling the region cannot disagree about where the content area is. Public because the
-    /// host is the one who lays the child out.
+    /// draw filling the region cannot disagree about where the content area is. The band is at the
+    /// top for [`RefreshDirection::Top`] and at the bottom for [`RefreshDirection::Bottom`].
     pub fn content_rect(&self) -> Rect {
         let rect = self.geometry();
         let indicator = self.indicator_height();
-        Rect::new(
-            rect.x,
-            rect.y + indicator as i32,
-            rect.width,
-            rect.height.saturating_sub(indicator),
-        )
+        match self.direction {
+            RefreshDirection::Top => Rect::new(
+                rect.x,
+                rect.y + indicator as i32,
+                rect.width,
+                rect.height.saturating_sub(indicator),
+            ),
+            RefreshDirection::Bottom => {
+                Rect::new(rect.x, rect.y, rect.width, rect.height.saturating_sub(indicator))
+            }
+        }
+    }
+
+    /// Returns the edge the indicator sits on (OV-002).
+    pub fn direction(&self) -> RefreshDirection {
+        self.direction
+    }
+
+    /// Moves the indicator to `direction` (OV-002).
+    ///
+    /// The drag threshold, rubber-band resistance, spring-back and progress ratio are the same
+    /// model in both directions; only the edge the band occupies and the sign of the drag change.
+    pub fn set_direction(&mut self, direction: RefreshDirection) {
+        if self.direction == direction {
+            return;
+        }
+        self.direction = direction;
+        self.base.request_redraw();
     }
 
     /// Sets the refreshing state.
@@ -345,6 +380,18 @@ impl RefreshControl {
             // Aim the drawn distance at zero; the band springs back over the frames that follow.
             self.settle.set_target(0.0);
             self.base.request_redraw();
+        }
+    }
+
+    /// Converts a pointer movement between two y positions into a pull delta (OV-002).
+    ///
+    /// A top indicator grows as the pointer moves **down**; a bottom "load more" indicator
+    /// grows as it moves **up**. Expressing that once keeps the mouse and touch paths, which
+    /// both measure motion through this helper, from disagreeing about the sign.
+    fn pull_delta(&self, from_y: f32, to_y: f32) -> f32 {
+        match self.direction {
+            RefreshDirection::Top => to_y - from_y,
+            RefreshDirection::Bottom => from_y - to_y,
         }
     }
 
@@ -598,12 +645,15 @@ impl Draw for RefreshControl {
         );
 
         if indicator_height > 0 {
-            let indicator_area = ControlMetrics::top_band(rect, indicator_height);
+            let indicator_area = match self.direction {
+                RefreshDirection::Top => ControlMetrics::top_band(rect, indicator_height),
+                RefreshDirection::Bottom => ControlMetrics::bottom_band(rect, indicator_height),
+            };
             context.fill_rect(indicator_area, indicator_background);
 
             // Indicator center
             let center_x = rect.x + (rect.width as i32) / 2;
-            let center_y = rect.y + (indicator_height as i32) / 2;
+            let center_y = indicator_area.y + (indicator_height as i32) / 2;
 
             if self.is_refreshing {
                 // Draw a spinner arc that turns with the elapsed time. The arc is a stroked run
@@ -658,7 +708,13 @@ impl Draw for RefreshControl {
                 // so the arrow turns into place rather than swapping direction in one frame.
                 let arrow_color = if progress >= 1.0 { accent } else { idle_arrow };
                 self.arrow_flip.set_target(if progress >= 1.0 { 1.0 } else { 0.0 });
-                let angle = self.arrow_flip.value() * core::f32::consts::PI;
+                // A top indicator's arrow points down (toward the content it reveals); the bottom
+                // "load more" indicator's arrow points up, and both flip when the pull is armed.
+                let base_angle = match self.direction {
+                    RefreshDirection::Top => 0.0,
+                    RefreshDirection::Bottom => core::f32::consts::PI,
+                };
+                let angle = base_angle + self.arrow_flip.value() * core::f32::consts::PI;
                 let (sin, cos) = angle.sin_cos();
                 let rotate = |dx: f32, dy: f32| (dx * cos - dy * sin, dx * sin + dy * cos);
 
@@ -739,7 +795,7 @@ impl EventHandler for RefreshControl {
                 // the previous sample and the origin advances with it, so the
                 // pull distance accumulates across the whole gesture.
                 if let Some(origin) = self.drag_origin_y {
-                    let delta = pos.y as f32 - origin;
+                    let delta = self.pull_delta(origin, pos.y as f32);
                     self.drag_origin_y = Some(pos.y as f32);
                     self.update_pull(delta);
                 }
@@ -747,7 +803,7 @@ impl EventHandler for RefreshControl {
             #[cfg(feature = "touch")]
             Event::TouchMove { pos, .. } => {
                 if let Some(origin) = self.drag_origin_y {
-                    let delta = pos.y as f32 - origin;
+                    let delta = self.pull_delta(origin, pos.y as f32);
                     self.drag_origin_y = Some(pos.y as f32);
                     self.update_pull(delta);
                 }
@@ -766,10 +822,9 @@ impl EventHandler for RefreshControl {
             // A pointer that leaves during a pull ends the gesture where it last was: past the
             // threshold the refresh triggers, below it the band springs back. Without this arm
             // the drag stayed live and a later unrelated move kept pulling (OV-008).
-            Event::MouseLeave { .. }
-                if self.drag_origin_y.take().is_some() => {
-                    self.end_pull();
-                }
+            Event::MouseLeave { .. } if self.drag_origin_y.take().is_some() => {
+                self.end_pull();
+            }
             _ => { /* Other events need no control-specific handling */ }
         }
     }
@@ -1220,5 +1275,52 @@ mod tests {
         assert_eq!(control.indicator_scale(), 4.0, "the scale is bounded to keep the band usable");
         control.set_indicator_scale(f32::NAN);
         assert_eq!(control.indicator_scale(), 4.0, "a non-finite write is ignored");
+    }
+
+    /// OV-002: the bottom direction grows as the pointer moves up and puts the band at the foot.
+    #[test]
+    fn a_bottom_direction_pulls_up_and_places_the_band_at_the_bottom() {
+        let mut control = make_refresh_control();
+        assert_eq!(control.direction(), RefreshDirection::Top);
+        control.set_direction(RefreshDirection::Bottom);
+        assert_eq!(control.direction(), RefreshDirection::Bottom);
+
+        let triggered = Arc::new(AtomicBool::new(false));
+        control.refresh_triggered.connect({
+            let triggered = Arc::clone(&triggered);
+            move || triggered.store(true, Ordering::SeqCst)
+        });
+
+        control.handle_event(&Event::MousePress {
+            pos: Point::new(100, 300),
+            button: 1,
+            modifiers: 0,
+        });
+        control.handle_event(&Event::MouseMove { pos: Point::new(100, 230) });
+        assert_eq!(control.pull_distance(), 70.0, "an upward drag is a positive pull");
+
+        let content = control.content_rect();
+        assert_eq!(content.y, 0, "the content starts at the top edge");
+        assert!(content.height < 400, "and ends above the open indicator band");
+
+        control.handle_event(&Event::MouseRelease { pos: Point::new(100, 230), button: 1 });
+        assert!(control.is_refreshing());
+        assert!(triggered.load(Ordering::SeqCst));
+    }
+
+    /// OV-002: the bottom direction does not treat a downward drag as a pull.
+    #[test]
+    fn a_bottom_direction_ignores_a_downward_drag() {
+        let mut control = make_refresh_control();
+        control.set_direction(RefreshDirection::Bottom);
+        control.handle_event(&Event::MousePress {
+            pos: Point::new(100, 100),
+            button: 1,
+            modifiers: 0,
+        });
+        control.handle_event(&Event::MouseMove { pos: Point::new(100, 180) });
+        assert_eq!(control.pull_distance(), 0.0);
+        control.handle_event(&Event::MouseRelease { pos: Point::new(100, 180), button: 1 });
+        assert!(!control.is_refreshing());
     }
 }

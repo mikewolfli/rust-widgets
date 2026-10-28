@@ -21,6 +21,8 @@ use crate::widget::metrics::role_font;
 use crate::widget::metrics::ControlMetrics;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 /// The editor a property row uses.
 ///
@@ -275,6 +277,18 @@ enum PropertyRow {
     Item(usize),
 }
 
+/// A custom editor for one property row (V-008).
+///
+/// The grid's built-in editor is a text field. A date, a slider or a colour wheel needs an editor
+/// the grid cannot guess at, so a host installs one per entry and the grid asks it to build and
+/// commit the editor. The delegate is consulted before the plain-text path.
+pub trait PropertyEditorDelegate: Send + Sync {
+    /// Builds the editor widget for `entry`.
+    fn make_editor(&self, entry: &PropertyItem) -> Box<dyn Widget>;
+    /// Reads the committed text out of `editor`, or `None` to leave the value unchanged.
+    fn commit_value(&self, entry: &PropertyItem, editor: &dyn Widget) -> Option<String>;
+}
+
 /// Height of one property row, in pixels.
 ///
 /// Shared between `draw` and `handle_event`: the two must agree on where a row
@@ -328,6 +342,14 @@ pub struct PropertyGrid {
     grouped_cache: std::cell::RefCell<Option<(u64, Rc<Vec<PropertyRow>>)>>,
     /// Bumped by every structural change; keys `grouped_cache`.
     group_revision: u64,
+    /// Collapsed category headers (V-007).
+    collapsed_categories: HashSet<String>,
+    /// Emitted with `(category, collapsed)` when a category is toggled (V-007).
+    pub on_category_toggled: Signal1<(String, bool)>,
+    /// Per-entry custom editors (V-008).
+    entry_delegates: HashMap<usize, Arc<dyn PropertyEditorDelegate>>,
+    /// An editor a delegate built and the grid is holding for the host (V-008).
+    delegate_editor: Option<(usize, Box<dyn Widget>)>,
 }
 
 impl PropertyGrid {
@@ -371,7 +393,10 @@ impl PropertyGrid {
         let mut rows = Vec::with_capacity(self.properties.len());
         let mut current: Option<&str> = None;
         for (index, item) in self.properties.iter().enumerate() {
-            match item.category.as_deref().filter(|category| !category.is_empty()) {
+            let category = item.category.as_deref().filter(|category| !category.is_empty());
+            let collapsed =
+                category.is_some_and(|category| self.collapsed_categories.contains(category));
+            match category {
                 Some(category) => {
                     if current != Some(category) {
                         rows.push(PropertyRow::Category(category.to_string()));
@@ -380,7 +405,11 @@ impl PropertyGrid {
                 }
                 None => current = None,
             }
-            rows.push(PropertyRow::Item(index));
+            // A collapsed category keeps its header so the reader can reopen it, but hides
+            // every row underneath it (V-007).
+            if !collapsed {
+                rows.push(PropertyRow::Item(index));
+            }
         }
         rows
     }
@@ -440,6 +469,10 @@ impl PropertyGrid {
             choice_popup: None,
             grouped_cache: std::cell::RefCell::new(None),
             group_revision: 0,
+            collapsed_categories: HashSet::new(),
+            on_category_toggled: Signal1::new(),
+            entry_delegates: HashMap::new(),
+            delegate_editor: None,
         }
     }
 
@@ -553,6 +586,15 @@ impl PropertyGrid {
         };
         if !item.editable {
             return false;
+        }
+        // A custom editor takes precedence over every built-in kind (V-008): a date or a slider
+        // would otherwise fall through to the text path and lose the host's editor.
+        if let Some(delegate) = self.entry_delegates.get(&index).cloned() {
+            let editor = delegate.make_editor(&item);
+            self.delegate_editor = Some((index, editor));
+            self.selected_index = Some(index);
+            self.base.request_redraw();
+            return true;
         }
         match item.kind {
             PropertyItemKind::Bool => {
@@ -693,6 +735,94 @@ impl PropertyGrid {
         self.group_revision = self.group_revision.wrapping_add(1);
         &mut self.properties
     }
+
+    // ── Category collapse (V-007) ──
+
+    /// Whether `category`'s rows are hidden.
+    pub fn is_category_collapsed(&self, category: &str) -> bool {
+        self.collapsed_categories.contains(category)
+    }
+
+    /// Collapses or expands `category`, returning the new state.
+    ///
+    /// Collapsing hides the category's rows but keeps its header, so the gesture is reversible.
+    /// The scroll offset is clamped, because the row set may now be shorter than the viewport.
+    pub fn set_category_collapsed(&mut self, category: impl Into<String>, collapsed: bool) -> bool {
+        let category = category.into();
+        if category.is_empty() {
+            return false;
+        }
+        let changed = if collapsed {
+            self.collapsed_categories.insert(category.clone())
+        } else {
+            self.collapsed_categories.remove(&category)
+        };
+        if !changed {
+            return collapsed;
+        }
+        self.group_revision = self.group_revision.wrapping_add(1);
+        self.scroll_offset = self.scroll_offset.min(self.max_scroll());
+        self.on_category_toggled.emit((category, collapsed));
+        self.base.request_layout();
+        self.base.request_redraw();
+        collapsed
+    }
+
+    /// Toggles `category`'s collapsed state, returning the new state.
+    pub fn toggle_category(&mut self, category: impl Into<String>) -> bool {
+        let category = category.into();
+        let collapsed = !self.is_category_collapsed(&category);
+        self.set_category_collapsed(category, collapsed)
+    }
+
+    // ── Custom editors (V-008) ──
+
+    /// Installs a custom editor for the property at `index`.
+    ///
+    /// The delegate is consulted before the plain-text path: [`Self::begin_grid_edit`] asks it for
+    /// an editor and holds that editor until [`Self::commit_delegate_edit`]. Returns `false` when
+    /// the index does not name a property.
+    pub fn set_entry_delegate(
+        &mut self,
+        index: usize,
+        delegate: Arc<dyn PropertyEditorDelegate>,
+    ) -> bool {
+        if index >= self.properties.len() {
+            return false;
+        }
+        self.entry_delegates.insert(index, delegate);
+        true
+    }
+
+    /// Removes the custom editor for `index`.
+    pub fn clear_entry_delegate(&mut self, index: usize) -> bool {
+        self.entry_delegates.remove(&index).is_some()
+    }
+
+    /// The custom editor installed for `index`, if any.
+    pub fn entry_delegate(&self, index: usize) -> Option<&Arc<dyn PropertyEditorDelegate>> {
+        self.entry_delegates.get(&index)
+    }
+
+    /// Takes the editor the delegate built, so the host can mount it.
+    ///
+    /// Taking the editor hands its ownership to the host; [`Self::commit_delegate_edit`] can then
+    /// no longer read it, so a host that takes it commits through
+    /// [`PropertyEditorDelegate::commit_value`] itself.
+    pub fn take_delegate_editor(&mut self) -> Option<(usize, Box<dyn Widget>)> {
+        self.delegate_editor.take()
+    }
+
+    /// Reads the held delegate editor back and commits its value.
+    pub fn commit_delegate_edit(&mut self) -> Option<String> {
+        let (index, editor) = self.delegate_editor.take()?;
+        let delegate = self.entry_delegates.get(&index)?.clone();
+        let entry = self.properties.get(index)?.clone();
+        let text = delegate.commit_value(&entry, editor.as_ref())?;
+        let value = self.coerce_edit_value(index, &text);
+        self.commit_edit_value(index, value);
+        Some(text)
+    }
 }
 
 impl Widget for PropertyGrid {
@@ -723,6 +853,19 @@ impl Widget for PropertyGrid {
     fn event_signal_dyn(&self, name: &str) -> Option<crate::signal::EventSignalRef> {
         use crate::signal::EventSignalRef;
         match name {
+            "category_toggled" | "on_category_toggled" => {
+                Some(EventSignalRef::mapped(
+                    "category_toggled",
+                    &self.on_category_toggled,
+                    |value| {
+                        CapabilityValue::Tuple(crate::compat::Vec::from([
+                            CapabilityValue::String(value.0.clone()),
+                            CapabilityValue::Bool(value.1),
+                        ]))
+                    },
+                ))
+            }
+
             "selected" => Some(EventSignalRef::mapped("selected", &self.selected, |v| {
                 CapabilityValue::UInt(*v as u64)
             })),
@@ -866,8 +1009,9 @@ impl Draw for PropertyGrid {
         // all three text colours used to be hardcoded literals, so light and dark rendered
         // identically.
         //
-        // The theme reads take and release the global manager's lock internally, so no guard
-        // is held across the draw (the mutex is not re-entrant).
+        // The theme read takes and releases the global manager's lock internally, and the palette
+        // comes from the shared snapshot, so no guard is held across the draw (the mutex is not
+        // re-entrant).
         let style = self.base.style();
         let theme = crate::style::resolved_theme_style_shared("property_grid");
         let mut surface = style
@@ -884,20 +1028,16 @@ impl Draw for PropertyGrid {
         // is what the census measured: the whole rect in the window fill), so a resolved
         // surface equal to the window fill is re-derived a visible step away from it, the
         // same distinction `Colors::input_background` draws for a field.
-        let window_fill = crate::style::theme_manager()
-            .current_theme()
-            .map(|active| active.colors.background)
-            .unwrap_or(Color::WHITE);
+        // One palette snapshot read for the window fill and the accent below.
+        let palette = crate::style::palette_shared();
+        let window_fill = palette.as_ref().map(|colors| colors.background).unwrap_or(Color::WHITE);
         if surface == window_fill {
             surface = window_fill.blend(&ink, 0.08);
         }
         // The accent is the theme's `primary`: the hue a theme is expected to vary most, so
         // the header bar and the editable-value ink follow the appearance rather than a
         // literal grey and a literal navy.
-        let accent = crate::style::theme_manager()
-            .current_theme()
-            .map(|active| active.colors.primary)
-            .unwrap_or(Color::PRIMARY);
+        let accent = palette.as_ref().map(|colors| colors.primary).unwrap_or(Color::PRIMARY);
         // The header is the panel's own surface driven toward the accent, so it stays legible
         // against whatever the theme resolves rather than being a fixed dark grey.
         let header_bg = surface.blend(&accent, 0.75);
@@ -999,11 +1139,26 @@ impl Draw for PropertyGrid {
                 PropertyRow::Category(category) => {
                     // A group header is not selectable and is painted on the name-column wash.
                     context.fill_rect(row_rect, name_column);
+                    // A disclosure marker makes the collapsed state and the toggle gesture visible
+                    // (V-007).
+                    let collapsed = self.is_category_collapsed(category);
+                    let icon = if collapsed {
+                        crate::widget::IconName::ChevronRight
+                    } else {
+                        crate::widget::IconName::ChevronDown
+                    };
+                    let icon_rect = Rect::new(
+                        row_rect.x + 2,
+                        row_rect.y + (row_rect.height as i32 - 8) / 2,
+                        8,
+                        8,
+                    );
+                    crate::widget::draw_icon_at(context, icon_rect, ink, icon);
                     context.draw_text_fitted_cow(
                         Rect::new(
-                            row_rect.x + 4,
+                            row_rect.x + 14,
                             row_line.y,
-                            row_rect.width.saturating_sub(8),
+                            row_rect.width.saturating_sub(18),
                             row_line.height.max(1),
                         ),
                         category,
@@ -1173,6 +1328,16 @@ impl EventHandler for PropertyGrid {
                         // in the blank area below the last row selected an invisible row
                         // that merely happened to exist in `properties`.
                         if row_in_view < self.visible_row_count() {
+                            // A press on a category header toggles its rows instead of selecting
+                            // a property (V-007).
+                            if is_press {
+                                if let Some(PropertyRow::Category(category)) = display_row.as_ref()
+                                {
+                                    let category = category.clone();
+                                    self.toggle_category(category);
+                                    return;
+                                }
+                            }
                             if let Some(PropertyRow::Item(row_index)) = display_row {
                                 self.selected_index = Some(row_index);
                                 self.selected.emit(row_index);
@@ -2033,7 +2198,8 @@ mod tests {
             ]
         );
 
-        // A click on the header row selects nothing; the row under it selects its property.
+        // A click on a header row selects nothing and toggles its group (V-007); the row under
+        // it selects its property once the group is open again.
         let rows_top = grid.content_rect().y + FIRST_ROW_TOP as i32;
         grid.handle_event(&Event::MousePress {
             pos: Point::new(10, rows_top + 12),
@@ -2041,6 +2207,8 @@ mod tests {
             modifiers: 0,
         });
         assert_eq!(grid.selected_index(), None, "a group header is not selectable");
+        assert!(grid.is_category_collapsed("General"), "a header click toggles its group");
+        grid.toggle_category("General");
         grid.handle_event(&Event::MousePress {
             pos: Point::new(10, rows_top + ROW_HEIGHT as i32 + 12),
             button: 1,

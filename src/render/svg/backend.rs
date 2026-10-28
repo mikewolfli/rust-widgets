@@ -27,6 +27,7 @@ use crate::style::gradient::GradientType;
 /// Named because the thread-local below holds two of them: a bare `(Vec<(f32, f32)>, Vec<(f32,
 /// f32)>)` is a `clippy::type_complexity` finding and says nothing about what the pair means
 /// (contour vertices, then the clip helpers' scratch).
+#[cfg(any(feature = "fonts-vector-latin", feature = "fonts-complex", cjk_outline_face))]
 type ClipVertexBuffer = Vec<(f32, f32)>;
 
 #[cfg(any(feature = "fonts-vector-latin", feature = "fonts-complex", cjk_outline_face))]
@@ -1798,6 +1799,13 @@ impl PaintBackend for SvgPaintBackend {
                 let radius = radius_to_far_corner(*center, self.size.width, self.size.height);
                 draw_conic_fan(self, *center, radius, *start_angle, stops);
             }
+            // Recorder-owned payloads never reach a backend: the region flusher resolves them
+            // through the by-reference entry points before replaying. Ignoring one here keeps
+            // the exporter total without pretending it can paint an unresolved arena slice.
+            RenderCommand::DrawPathRecorded { .. }
+            | RenderCommand::DrawPathDashedRecorded { .. }
+            | RenderCommand::FillPathNonZeroRecorded { .. }
+            | RenderCommand::DrawTextRecorded { .. } => {}
         }
     }
 
@@ -2497,6 +2505,13 @@ mod tests {
                 RenderCommand::PushMatte { .. } => "PushMatte",
                 RenderCommand::PopMatte => "PopMatte",
                 RenderCommand::EndMatte => "EndMatte",
+                // Recorder-owned payloads: the flusher resolves them through the by-reference
+                // entry points, so no backend ever receives one. They are named here so this
+                // guard stays exhaustive over the enum.
+                RenderCommand::DrawPathRecorded { .. } => "DrawPathRecorded",
+                RenderCommand::DrawPathDashedRecorded { .. } => "DrawPathDashedRecorded",
+                RenderCommand::FillPathNonZeroRecorded { .. } => "FillPathNonZeroRecorded",
+                RenderCommand::DrawTextRecorded { .. } => "DrawTextRecorded",
                 #[cfg(feature = "3d")]
                 RenderCommand::FillQuad { .. } => "FillQuad",
                 #[cfg(feature = "3d")]

@@ -89,6 +89,12 @@ pub struct DockWidget {
     /// reachable through its Rust field and `request_close`, and its schema row is recorded as a
     /// remaining gap rather than declared here.
     pub about_to_close: Signal1<CloseRequest>,
+    /// Emitted with the new visibility whenever [`Widget::set_visible`] changes it (C-006).
+    ///
+    /// A dock's visibility is user state a host mirrors (a "Window" menu check mark, for
+    /// example), so a change must be announced rather than only stored. A write that does not
+    /// change the flag emits nothing, which keeps a host that re-applies its layout silent.
+    pub visibility_changed: Signal1<bool>,
     registry: Option<Rc<RefCell<SimpleRegistry>>>,
     /// Offset from mouse cursor to widget top-left, set when drag begins.
     drag_offset: (i32, i32),
@@ -379,6 +385,7 @@ impl DockWidget {
             features_changed: Signal1::new(),
             top_level_changed: Signal1::new(),
             about_to_close: Signal1::new(),
+            visibility_changed: Signal1::new(),
             registry: None,
             drag_offset: (0, 0),
             dock_area: None,
@@ -408,7 +415,9 @@ impl DockWidget {
         let request = CloseRequest::new();
         self.about_to_close.emit(request.clone());
         if request.is_allowed() {
-            self.hide();
+            // The trait entry point, so the transition is announced through
+            // [`Self::visibility_changed`] as well as taking the dock out of the picture.
+            self.set_visible(false);
             true
         } else {
             false
@@ -908,6 +917,23 @@ impl Widget for DockWidget {
         &mut self.base
     }
 
+    /// Hides or shows the dock and announces a real transition (C-006).
+    ///
+    /// Delegating to the base keeps the painting and hit-testing contract identical to
+    /// [`Widget::show`] / [`Widget::hide`]; the only addition is the signal, and it fires only
+    /// when the flag actually changed.
+    fn set_visible(&mut self, visible: bool) {
+        if self.base.is_visible() == visible {
+            return;
+        }
+        if visible {
+            self.base.show();
+        } else {
+            self.base.hide();
+        }
+        self.visibility_changed.emit(visible);
+    }
+
     fn save_state_dyn(&self) -> Option<&dyn SaveState> {
         Some(self)
     }
@@ -951,6 +977,12 @@ impl Widget for DockWidget {
     fn event_signal_dyn(&self, name: &str) -> Option<crate::signal::EventSignalRef> {
         use crate::signal::EventSignalRef;
         match name {
+            "visibility_changed" => {
+                Some(EventSignalRef::mapped("visibility_changed", &self.visibility_changed, |shown| {
+                    CapabilityValue::Bool(*shown)
+                }))
+            }
+
             "dock_location_changed" => Some(EventSignalRef::mapped(
                 "dock_location_changed",
                 &self.dock_location_changed,
@@ -1139,20 +1171,15 @@ impl Draw for DockWidget {
         // panel painted in that colour would be byte-identical to the frame behind it, so a
         // resolved surface equal to the window fill is re-derived a visible step away from
         // it, the same distinction `Colors::input_background` draws for a field.
-        let window_fill = crate::style::theme_manager()
-            .current_theme()
-            .map(|active| active.colors.background)
-            .unwrap_or(Color::WHITE);
+        let palette = crate::style::palette_shared();
+        let window_fill = palette.as_ref().map(|active| active.background).unwrap_or(Color::WHITE);
         let ink = style
             .text_color
             .or_else(|| theme.as_ref().and_then(|t| t.text_color))
             .unwrap_or(Color::BLACK);
         // The accent is the theme's `primary`: the hue a theme is expected to vary most, so
         // the floating indicator follows the appearance rather than staying a literal blue.
-        let accent = crate::style::theme_manager()
-            .current_theme()
-            .map(|active| active.colors.primary)
-            .unwrap_or(Color::PRIMARY);
+        let accent = palette.as_ref().map(|active| active.primary).unwrap_or(Color::PRIMARY);
         let panel = match style
             .background_color
             .or_else(|| theme.as_ref().and_then(|t| t.background_color))
@@ -2785,6 +2812,24 @@ mod tests {
         assert!(!dw.is_visible());
         dw.set_visible(true);
         assert!(dw.is_visible());
+    }
+
+    /// C-006: a real visibility change is announced; a re-applied flag is silent.
+    #[test]
+    fn visibility_changes_are_announced_once() {
+        let mut dw = DockWidget::new(Rect::new(0, 0, 200, 100));
+        let seen = Arc::new(Mutex::new(Vec::<bool>::new()));
+        let sink = Arc::clone(&seen);
+        dw.visibility_changed.connect(move |visible: Arc<bool>| {
+            sink.lock().expect("visibility sink poisoned").push(*visible);
+        });
+
+        dw.set_visible(false);
+        dw.set_visible(false);
+        dw.set_visible(true);
+        dw.set_visible(true);
+
+        assert_eq!(*seen.lock().expect("visibility sink poisoned"), vec![false, true]);
     }
 
     /// 9. ID and Kind

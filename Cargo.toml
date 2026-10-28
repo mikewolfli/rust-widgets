@@ -569,10 +569,11 @@ fonts-cjk-shard-han = ["text-shaping", "rust-widgets-font/cjk-shard-han"]
 ##
 ## # What it costs
 ##
-## The payload is a subset of Noto Color Emoji at 109 ppem — see `NOTICE`. Measured on the shipped
-## subset: 1,602,492 bytes of `CBDT` data covering 317 codepoints. (The upstream face is 10,730,124
-## bytes; the subset is generated from it by `tools/gen_emoji_subset.py`, and the codepoints are
-## chosen in `tools/emoji_subset_codepoints.txt`. The much smaller
+## The payload is a subset of Noto Color Emoji at 109 ppem — see
+## `crates/rust-widgets-font/NOTICE`. Measured on the shipped subset: 1,602,492 bytes of `CBDT` data
+## covering 317 codepoints. (The upstream face is 10,730,124 bytes; the subset is generated from it
+## by `tools/gen_emoji_subset.py`, and the codepoints are chosen in
+## `tools/emoji_subset_codepoints.txt`. The much smaller
 ## `NotoColorEmoji-flagsonly.ttf` is *not* usable — see that generator's module docs.)
 ##
 ## That size — 1.53 MB, an order of magnitude more than the vector faces — is why it ships in
@@ -813,7 +814,7 @@ all-desktop-features = [
 # crate would fail its own verification build with `couldn't read …ttf`. Moving them out and
 # excluding `crates/` (see the negated pattern in `include`) is the form of "exclude" that still
 # leaves a package that compiles.
-rust-widgets-font = { version = "2.9.4", path = "crates/rust-widgets-font", optional = true }
+rust-widgets-font = { version = "^3.0.0", path = "crates/rust-widgets-font", optional = true }
 serde = { version = "1.0", features = ["derive"], optional = true }
 serde_json = { version = "1.0", optional = true }
 # BLUE28 B28.40: the standard host/GPU interop handle type. Optional because it is a

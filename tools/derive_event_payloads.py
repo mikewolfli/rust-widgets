@@ -120,6 +120,10 @@ PRODUCER_ELSEWHERE: dict[str, str] = {
     "fab": "FAB",
     "key_sequence_editor": "KeySequenceEdit",
     "lcd_number": "LCDNumber",
+    # COMP-A3 / COMP-A7: the map companions are `MapAttributionOverlay` and `MapOverviewPanel`,
+    # which the `canonical_name` -> `PascalCase` convention cannot reach.
+    "map_attribution": "MapAttributionOverlay",
+    "map_overview": "MapOverviewPanel",
     # Alias rows (`password_edit`, `split_layout`, `time_picker`, `context_menu`, ...) are resolved
     # from the crate's `ALIAS_OF` registry in `resolve_owner`, so they are deliberately absent here:
     # one identity, one source.

@@ -11,9 +11,11 @@
 mod command;
 mod stack;
 mod types;
+#[cfg(full_widgets)]
 mod value_command;
 
 pub use command::*;
 pub use stack::*;
 pub use types::*;
+#[cfg(full_widgets)]
 pub(crate) use value_command::ValueCommand;

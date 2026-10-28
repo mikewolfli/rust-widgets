@@ -1058,6 +1058,27 @@ impl Widget for Mention {
     fn is_animating(&self) -> bool {
         self.focused && self.cursor_blink.is_running()
     }
+
+    /// Reports the caret rectangle an IME candidate window anchors to (X-001).
+    fn input_method_query(&self) -> Option<crate::widget::widget_trait::InputMethodQuery> {
+        let rect = self.geometry();
+        let font = self.field_font();
+        let dpi_bits = 1.0f32.to_bits();
+        let widths = self.text_widths(&font, dpi_bits, &mut |text| {
+            Self::with_measurement(|context| context.measure_text(text, &font).width)
+        });
+        let caret = self.caret.min(self.text.len());
+        let x = rect.x + 8 + widths.width_at(caret) as i32;
+        Some(crate::widget::widget_trait::InputMethodQuery {
+            caret_rect: Rect::new(x, rect.y + 8, 1, CARET_HEIGHT),
+            caret_byte: Some(caret),
+        })
+    }
+
+    /// Reports whether the candidate popup is open (X-002).
+    fn has_open_popup(&self) -> bool {
+        self.is_popup_open()
+    }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
     /// Resolves a published event name to the control's own signal.
@@ -1294,9 +1315,8 @@ impl Draw for Mention {
         // control recognises — including the ones typed by hand rather than chosen.
         // The underline is the theme's `primary`, the hue a theme varies most, rather than a
         // literal blue that stayed put on both appearances.
-        let mention_ink = crate::style::theme_manager()
-            .current_theme()
-            .map(|active| active.colors.primary)
+        let mention_ink = crate::style::palette_shared()
+            .map(|colors| colors.primary)
             .unwrap_or(Color::rgb(66, 133, 244));
         for mention in &self.completed {
             let start = mention.start.min(self.text.len());
@@ -1364,18 +1384,17 @@ impl Mention {
             rect.width,
             (rows as u32 * self.row_height).max(self.row_height),
         );
-        // One guard over the theme reads, released before drawing: `theme_manager()` is a
-        // non-reentrant mutex and the context's accessors cannot take it.
+        // One read of the shared palette snapshot rather than a manager lock per field:
+        // `theme_manager()` is a non-reentrant mutex and the context's accessors cannot take it.
         let (popup_surface, separator, highlight, on_highlight, row_ink, weak_ink) = {
-            let manager = crate::style::theme_manager();
-            match manager.current_theme() {
-                Some(active) => (
-                    active.colors.surface_container,
-                    active.colors.outline_variant,
-                    active.colors.primary,
-                    active.colors.primary.contrast_color(),
-                    active.colors.foreground,
-                    active.colors.secondary,
+            match crate::style::palette_shared() {
+                Some(colors) => (
+                    colors.surface_container,
+                    colors.outline_variant,
+                    colors.primary,
+                    colors.primary.contrast_color(),
+                    colors.foreground,
+                    colors.secondary,
                 ),
                 None => (
                     Color::WHITE,
@@ -1684,9 +1703,8 @@ mod tests {
 
         let popup_pixel = |appearance| -> [u8; 4] {
             crate::theme::global_theme_manager().set_appearance(appearance);
-            let backdrop = crate::style::theme_manager()
-                .current_theme()
-                .map(|active| active.colors.background)
+            let backdrop = crate::style::palette_shared()
+                .map(|colors| colors.background)
                 .expect("a preset is active");
             let mut m = mention();
             type_text(&mut m, "@");

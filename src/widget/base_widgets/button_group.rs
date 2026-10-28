@@ -107,6 +107,13 @@ thread_local! {
     /// notification path looks the hub up and returns when there is none.
     #[cfg_attr(alloc_frugal, allow(clippy::missing_const_for_thread_local))]
     static HUBS: RefCell<HashMap<GroupKey, GroupSignals>> = RefCell::new(HashMap::new());
+    /// The group-level exclusivity of each handle-owned group.
+    ///
+    /// Absence means the default, which is `true`: a group that never asks behaves like the
+    /// historical one. Only a [`ButtonGroup`] handle writes this map, so the auto-exclusive-only
+    /// case (no handle, no hub) pays nothing and keeps its member-level behaviour.
+    #[cfg_attr(alloc_frugal, allow(clippy::missing_const_for_thread_local))]
+    static EXCLUSIVE: RefCell<HashMap<GroupKey, bool>> = RefCell::new(HashMap::new());
     /// Source of the identities given to id-less [`ButtonGroup`] handles.
     static NEXT_HANDLE: Cell<ObjectId> = const { Cell::new(1) };
 }
@@ -387,8 +394,52 @@ pub(crate) fn notify_member_event(id: ObjectId, event: MemberEvent) {
     };
     let hub = HUBS.try_with(|hubs| hubs.borrow().get(&key).cloned()).ok().flatten();
     if let Some(hub) = hub {
+        // A member that reports a latched selection is the group's new selection when the group
+        // is exclusive. This mirrors the member-level auto-exclusive path (`select` + clear the
+        // peers), but at the hub, so a group can switch the rule off for *every* member without
+        // each control having to carry an `auto_exclusive` flag of its own. The push is done
+        // before the signal so a subscriber reading the group back sees the new selection.
+        if matches!(event, MemberEvent::Toggled(true)) {
+            apply_group_exclusivity(&key, id);
+        }
         hub.emit(event, id);
     }
+}
+
+/// Makes `id` the group's selection and clears its peers when the group is exclusive.
+///
+/// Called from [`notify_member_event`] on a member's `Toggled(true)` report. Every peer is told
+/// rather than only the previously recorded selection: a check box can be checked without being
+/// the group's recorded member, so "the previous selection" would leave it checked. `notify_checked`
+/// is a no-op for an unmounted peer, which is the documented limit of a control with no event loop.
+fn apply_group_exclusivity(key: &GroupKey, id: ObjectId) {
+    if !group_exclusive(key) {
+        return;
+    }
+    let peers: Vec<ObjectId> =
+        members(key).into_iter().map(|member| member.id).filter(|member| *member != id).collect();
+    let _ = select(key, id);
+    if !peers.is_empty() {
+        notify_checked(&peers, false);
+    }
+}
+
+/// Whether the group clears its peers when a member reports a selection.
+///
+/// Absence means `true`, which is the historical single-selection behaviour.
+fn group_exclusive(key: &GroupKey) -> bool {
+    EXCLUSIVE
+        .try_with(|exclusive| exclusive.borrow().get(key).copied())
+        .ok()
+        .flatten()
+        .unwrap_or(true)
+}
+
+/// Records the group-level exclusivity a [`ButtonGroup`] handle asked for.
+fn set_group_exclusive(key: &GroupKey, exclusive: bool) {
+    let _ = EXCLUSIVE.try_with(|map| {
+        map.borrow_mut().insert(key.clone(), exclusive);
+    });
 }
 
 /// Detaches `id` from every group: handle membership, the reverse index and the group itself.
@@ -542,6 +593,8 @@ fn member_facts(_id: ObjectId) -> Option<(Rect, bool, bool)> {
 pub struct ButtonGroup {
     key: GroupKey,
     signals: GroupSignals,
+    /// Whether a member's selection clears its peers. Defaults to `true`.
+    exclusive: bool,
 }
 
 impl Default for ButtonGroup {
@@ -554,7 +607,8 @@ impl ButtonGroup {
     /// Creates a group with a generated identity.
     pub fn new() -> Self {
         let key = GroupKey::Handle(next_handle_identity());
-        Self { signals: hub_for(&key), key }
+        let exclusive = group_exclusive(&key);
+        Self { signals: hub_for(&key), key, exclusive }
     }
 
     /// Creates (or adopts) the group named `id`.
@@ -564,7 +618,8 @@ impl ButtonGroup {
     pub fn with_id(id: impl Into<String>) -> Self {
         let name: String = id.into();
         let key = GroupKey::Name(Rc::from(name.as_str()));
-        Self { signals: hub_for(&key), key }
+        let exclusive = group_exclusive(&key);
+        Self { signals: hub_for(&key), key, exclusive }
     }
 
     /// The group's caller-chosen name, or `None` for a generated identity.
@@ -589,6 +644,7 @@ impl ButtonGroup {
         move_group(&self.key, &new_key);
         self.key = new_key;
         self.signals = hub_for(&self.key);
+        set_group_exclusive(&self.key, self.exclusive);
     }
 
     /// Removes the caller-chosen name, leaving the group under a fresh generated identity.
@@ -597,6 +653,29 @@ impl ButtonGroup {
         move_group(&self.key, &new_key);
         self.key = new_key;
         self.signals = hub_for(&self.key);
+        set_group_exclusive(&self.key, self.exclusive);
+    }
+
+    /// Whether a member's selection clears its peers.
+    ///
+    /// The default is `true`, which is the single-selection behaviour a group had before the
+    /// switch existed.
+    pub fn is_exclusive(&self) -> bool {
+        self.exclusive
+    }
+
+    /// Sets whether a member's selection clears its peers.
+    ///
+    /// With it on (the default) a check box in the group behaves like a radio button: checking
+    /// one member unchecks the rest. With it off the group only forwards the member signals and
+    /// leaves every member's own latch alone, which is what a group of independent check boxes
+    /// needs.
+    pub fn set_exclusive(&mut self, exclusive: bool) {
+        if self.exclusive == exclusive {
+            return;
+        }
+        self.exclusive = exclusive;
+        set_group_exclusive(&self.key, exclusive);
     }
 
     /// Adds `button` to the group, reporting whether the group now owns it.
@@ -759,6 +838,7 @@ pub(crate) fn clear() {
     let _ = MEMBER_KEYS.try_with(|keys| keys.borrow_mut().clear());
     let _ = MEMBERSHIP.try_with(|m| m.borrow_mut().clear());
     let _ = HUBS.try_with(|hubs| hubs.borrow_mut().clear());
+    let _ = EXCLUSIVE.try_with(|exclusive| exclusive.borrow_mut().clear());
     let _ = NEXT_HANDLE.try_with(|next| next.set(1));
 }
 
@@ -826,6 +906,36 @@ mod tests {
         assert_eq!(next_enabled_member(&key("g"), 1, false), Some(3));
         assert!(contains_member(&key("g"), 2));
         assert!(!contains_member(&key("g"), 9));
+    }
+
+    /// B-002: the group clears its peers by default and can opt out at the group level.
+    #[test]
+    fn a_group_is_exclusive_by_default_and_can_opt_out() {
+        clear();
+        register(key("exclusive"), 1, Rect::new(0, 0, 10, 10), true);
+        register(key("exclusive"), 2, Rect::new(0, 20, 10, 10), true);
+        let mut group = ButtonGroup::with_id("exclusive");
+        assert!(group.is_exclusive(), "the historical behaviour is exclusive");
+
+        select(&key("exclusive"), 1);
+        notify_member_event(2, MemberEvent::Toggled(true));
+        assert_eq!(group.checked_button(), Some(2), "a reported selection becomes the group's");
+        assert!(!is_selected(&key("exclusive"), 1), "the peer's selection is cleared");
+
+        group.set_exclusive(false);
+        assert!(!group.is_exclusive());
+        select(&key("exclusive"), 1);
+        notify_member_event(2, MemberEvent::Toggled(true));
+        assert_eq!(
+            group.checked_button(),
+            Some(1),
+            "a non-exclusive group forwards the report without moving its selection"
+        );
+
+        // A new handle for the same name sees the group-level setting, not a stale copy.
+        let adopted = ButtonGroup::with_id("exclusive");
+        assert!(!adopted.is_exclusive());
+        assert!(ButtonGroup::new().is_exclusive(), "a fresh group starts exclusive");
     }
 
     /// B-010: the group's `button_toggled` signal reports the new checked state alongside the

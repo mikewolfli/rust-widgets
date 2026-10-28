@@ -98,7 +98,8 @@ fn main() {
 - `desktop`、`tablet`、`mobile` 配置内置 Latin、复杂脚本与 CJK 的 OFL 子集；`desktop` 还内置彩色
   emoji。`mini` 与 `embedded` 不携带字体数据，使用内置 8x8 位图字体覆盖 ASCII 字符。
 - 文本质量按特性选择：`fonts-vector-latin`、`fonts-complex`、`fonts-cjk`、`fonts-cjk-bitmap`、
-  `fonts-emoji-color` 可以独立开启。`NOTICE` 记录上游作品与许可证。
+  `fonts-emoji-color` 可以独立开启。字体数据的许可证记录在
+  [`crates/rust-widgets-font/NOTICE`](crates/rust-widgets-font/NOTICE)；根目录 `NOTICE` 记录非字体素材。
 - 运行时可注册字体：`render::text::register_face`（特性 `runtime-fonts`）。系统字体在 Apple 平台
   通过 CoreText、Windows 通过 DirectWrite、Linux/BSD 通过 fontconfig、Android 通过 `/system/fonts`
   枚举。`FontDialog` 与 `FontComboBox::load_system_fonts` 共用一份进程级快照；选择某个家族时，如果
@@ -194,7 +195,8 @@ iOS 或 wasm 不需要 `pkg-config` sysroot。
 
 ## 许可证
 
-MIT——见 [LICENSE](LICENSE)。第三方字体、图标与编解码数据的许可证记录在 [`NOTICE`](NOTICE)。
+MIT——见 [LICENSE](LICENSE)。第三方字体、图标与编解码数据的许可证记录在 [`NOTICE`](NOTICE) 与
+[`crates/rust-widgets-font/NOTICE`](crates/rust-widgets-font/NOTICE)。
 
 ## 链接
 

@@ -33,6 +33,12 @@ pub struct Roller {
     font_size: f32,
     /// Whether wheel and drag movement tween to the row target rather than jumping.
     inertia: bool,
+    /// Whether the selection wraps at the ends of the option list (D-002).
+    ///
+    /// Defaults to `false`, which keeps the historical clamping. With it on, an out-of-range
+    /// index is taken modulo the option count and scrolling past either end continues at the
+    /// other.
+    wrap: bool,
     /// The drawn row position, in row units: `selected_index` while settled, and a
     /// fractional row while a tween is running.
     ///
@@ -94,6 +100,7 @@ impl Roller {
             visible_count,
             font_size: 16.0,
             inertia: false,
+            wrap: false,
             // A spring, not the easing curve: the driver's value is a **row index**, and the
             // easing path normalises its target to `0.0..=1.0`, which would stop the wheel at
             // the first row. The spring integrator works in the units it is given, so a row
@@ -143,7 +150,13 @@ impl Roller {
     /// *drawn* wheel tweens to the new row over the theme's motion token; without it the row
     /// is placed immediately, which is the historical behaviour.
     pub fn set_selected_index(&mut self, index: usize) {
-        let clamped = if self.options.is_empty() { 0 } else { index.min(self.options.len() - 1) };
+        let clamped = if self.options.is_empty() {
+            0
+        } else if self.wrap {
+            index % self.options.len()
+        } else {
+            index.min(self.options.len() - 1)
+        };
         if clamped != self.selected_index {
             self.selected_index = clamped;
             self.changed_signal.emit(self.selected_index);
@@ -156,6 +169,42 @@ impl Roller {
             }
         } else {
             self.scroll.jump_to(self.selected_index as f32);
+        }
+    }
+
+    /// Whether the selection wraps at the ends of the list.
+    pub fn wrap(&self) -> bool {
+        self.wrap
+    }
+
+    /// Enables or disables wrapping at the ends of the option list.
+    ///
+    /// The default is `false`, which is the historical behaviour: an index past either end is
+    /// clamped to that end. With it on, [`Self::set_selected_index`] takes an out-of-range index
+    /// modulo the option count, and the wheel, the keyboard and a drag continue at the other end
+    /// instead of stopping.
+    pub fn set_wrap(&mut self, wrap: bool) {
+        if self.wrap == wrap {
+            return;
+        }
+        self.wrap = wrap;
+        self.base.request_redraw();
+    }
+
+    /// Normalizes a signed row target to a selectable index.
+    ///
+    /// Wrapping uses `rem_euclid`, so a negative target continues from the end rather than
+    /// underflowing a `usize` conversion. Without wrapping the target is clamped, which is the
+    /// historical behaviour every event path had before this switch existed.
+    fn normalize_index(&self, index: i64) -> usize {
+        let len = self.options.len();
+        if len == 0 {
+            return 0;
+        }
+        if self.wrap {
+            index.rem_euclid(len as i64) as usize
+        } else {
+            index.clamp(0, len as i64 - 1) as usize
         }
     }
 
@@ -530,16 +579,14 @@ impl EventHandler for Roller {
             Event::Wheel { delta, modifiers } => {
                 let scroll = WheelScroll::from_event(*delta, *modifiers, 1);
                 if scroll.lines_y != 0 {
-                    let last = self.options.len().saturating_sub(1);
-                    let next = (self.selected_index as i64 + scroll.lines_y as i64)
-                        .clamp(0, last as i64) as usize;
+                    let next =
+                        self.normalize_index(self.selected_index as i64 + scroll.lines_y as i64);
                     self.set_selected_index(next);
                 }
             }
             // The wheel is keyboard-reachable through the same `set_selected_index` path the
             // wheel notch and the drag use, so the inertia tween applies to all three.
             Event::KeyPress { key, .. } => {
-                let last = self.options.len().saturating_sub(1);
                 let page = self.visible_count.max(1) as i64;
                 let target = match *key {
                     key_codes::UP => self.selected_index as i64 - 1,
@@ -547,10 +594,11 @@ impl EventHandler for Roller {
                     key_codes::PAGE_UP => self.selected_index as i64 - page,
                     key_codes::PAGE_DOWN => self.selected_index as i64 + page,
                     key_codes::HOME => 0,
-                    key_codes::END => last as i64,
+                    key_codes::END => self.options.len().saturating_sub(1) as i64,
                     _ => return,
                 };
-                self.set_selected_index(target.clamp(0, last as i64) as usize);
+                let target = self.normalize_index(target);
+                self.set_selected_index(target);
             }
             // Mouse press: determine which item was clicked relative to the
             // center of the visible wheel.
@@ -573,9 +621,8 @@ impl EventHandler for Roller {
                     // Clicked the center item — fire clicked signal.
                     self.base.clicked.emit();
                 } else {
-                    let target = self.selected_index as i32 + row_offset;
                     let target =
-                        target.clamp(0, self.options.len().saturating_sub(1) as i32) as usize;
+                        self.normalize_index(self.selected_index as i64 + row_offset as i64);
                     self.set_selected_index(target);
                 }
                 // The press is also the anchor for a drag. The selection the press landed on
@@ -591,9 +638,7 @@ impl EventHandler for Roller {
                 if let Some((origin_y, origin_index)) = self.drag_origin {
                     let item_h = self.item_height().max(1) as f32;
                     let rows = (origin_y - pos.y) as f32 / item_h;
-                    let last = self.options.len().saturating_sub(1) as i64;
-                    let target =
-                        (origin_index as i64 + rows.round() as i64).clamp(0, last) as usize;
+                    let target = self.normalize_index(origin_index as i64 + rows.round() as i64);
                     self.set_selected_index(target);
                 }
             }
@@ -793,6 +838,44 @@ mod tests {
         roller.set_selected_index(100);
         assert_eq!(roller.selected_index().unwrap_or(0), 4);
         assert_eq!(roller.selected_text(), Some("Elderberry"));
+    }
+
+    /// D-002: wrapping is off by default and, when on, continues at the other end.
+    #[test]
+    fn wrap_is_off_by_default_and_wraps_indexes_and_scrolling_when_enabled() {
+        let mut roller = make_roller();
+        assert!(!roller.wrap(), "clamping is the historical behaviour");
+        roller.set_selected_index(100);
+        assert_eq!(roller.selected_index(), Some(4), "the default still clamps");
+        roller.set_selected_index(0);
+        roller.handle_event(&Event::Wheel { delta: Point::new(0, -1), modifiers: 0 });
+        assert_eq!(roller.selected_index(), Some(0), "the default still clamps scrolling");
+
+        roller.set_wrap(true);
+        assert!(roller.wrap());
+        roller.set_selected_index(roller.options.len() + 1);
+        assert_eq!(roller.selected_index(), Some(1), "an out-of-range index wraps modulo the list");
+        roller.set_selected_index(roller.options.len());
+        assert_eq!(roller.selected_index(), Some(0), "the exact length wraps to the first row");
+
+        // Scrolling past the end continues at the start, and the reverse below zero continues at
+        // the end rather than saturating.
+        roller.set_selected_index(roller.options.len() - 1);
+        roller.handle_event(&Event::Wheel { delta: Point::new(0, 1), modifiers: 0 });
+        assert_eq!(roller.selected_index(), Some(0), "scrolling down past the end wraps");
+        roller.handle_event(&Event::Wheel { delta: Point::new(0, -1), modifiers: 0 });
+        assert_eq!(roller.selected_index(), Some(roller.options.len() - 1), "scrolling up wraps");
+
+        // The keyboard takes the same normalisation, so Home/End still land on the ends.
+        roller.handle_event(&Event::KeyPress { key: key_codes::HOME, modifiers: 0 });
+        assert_eq!(roller.selected_index(), Some(0));
+        roller.handle_event(&Event::KeyPress { key: key_codes::UP, modifiers: 0 });
+        assert_eq!(roller.selected_index(), Some(roller.options.len() - 1));
+
+        roller.set_wrap(false);
+        assert_eq!(roller.selected_index(), Some(roller.options.len() - 1));
+        roller.set_selected_index(100);
+        assert_eq!(roller.selected_index(), Some(roller.options.len() - 1), "clamping returns");
     }
 
     /// The canonical getter reports `None` until there is something to select (WDGT-13).

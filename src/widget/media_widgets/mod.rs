@@ -21,6 +21,7 @@
 pub mod animated_image;
 pub mod audio_visualizer;
 pub mod camera_preview;
+pub mod chapter_list_panel;
 pub mod hero_animation;
 pub mod lottie_widget;
 pub mod media_scrubber;
@@ -35,6 +36,7 @@ pub use animated_image::{
 };
 pub use audio_visualizer::AudioVisualizer;
 pub use camera_preview::{CameraDevice, CameraFrame, CameraPreview, PixelFormat};
+pub use chapter_list_panel::ChapterListPanel;
 pub use hero_animation::HeroAnimation;
 pub use lottie_widget::{
     LottieDirection, LottieFontProvider, LottieImage, LottieImageLayer, LottieImageProvider,

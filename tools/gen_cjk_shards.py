@@ -215,7 +215,7 @@ def shard_module(shard_id, license_id, payload_len, glyphs, requested, absent, r
 //
 // Ranges: {ranges_text}
 //
-// Licence of the glyph outlines: {LICENSES[license_id]}. See the repository-root `NOTICE`, which
+// Licence of the glyph outlines: {LICENSES[license_id]}. See this crate's `NOTICE`, which
 // records this file by name together with the facts above.
 //
 // The shard is {payload_len} bytes ({glyphs} glyphs), covering {requested} codepoints
@@ -248,8 +248,8 @@ def index_module(shards, sizes):
         f"//     {UPSTREAM['url']}",
         f"//     SHA-256 (upstream .otf): {UPSTREAM['sha256']}",
         "//",
-        "// Licence of the glyph outlines: SIL Open Font License, Version 1.1. The repository-root",
-        "// `NOTICE` records this file by name together with the facts above.",
+        "// Licence of the glyph outlines: SIL Open Font License, Version 1.1. See",
+        "// `crates/rust-widgets-font/NOTICE`, which records this file by name together with the facts above.",
         "//",
         "// The union of the shards equals `tools/cjk_vector_codepoints.txt` (the `fonts-cjk` face's",
         "// coverage), asserted by `tools/check_cjk_shards_cover_the_face.sh`.",

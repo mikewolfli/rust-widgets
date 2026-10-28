@@ -496,8 +496,7 @@ impl Draw for ColorHistory {
         //
         // Precedence: explicit style, then theme, then the literal as last resort.
         let style = self.base.style();
-        let themed_background =
-            crate::style::theme_manager().current_theme().map(|active| active.colors.background);
+        let themed_background = crate::style::palette_shared().map(|active| active.background);
         let background =
             style.background_color.or(themed_background).unwrap_or(Color::rgb(240, 240, 240));
         // A history panel that resolved to the window fill would be invisible; step
@@ -547,9 +546,8 @@ impl Draw for ColorHistory {
         // (the same slot `slider`, `progress_bar` and `rating` use), the outline is derived
         // from the panel, and the checkerboard that stands for "transparent" is derived too,
         // so a transparent swatch does not flash a bright grid on a dark theme.
-        let accent = crate::style::theme_manager()
-            .current_theme()
-            .map(|active| active.colors.primary)
+        let accent = crate::style::palette_shared()
+            .map(|active| active.primary)
             .unwrap_or(Color::rgba(0, 120, 255, 255));
         let outline = background.blend(&accent, 0.28);
         // The checkerboard's two tones: one at the panel, one a step away from it, so the grid
@@ -800,9 +798,8 @@ mod tests {
             selection, "rgba(0,0,0,0.78)",
             "the selection must not be the old literal black"
         );
-        let expected = crate::style::theme_manager()
-            .current_theme()
-            .map(|active| active.colors.primary)
+        let expected = crate::style::palette_shared()
+            .map(|colors| colors.primary)
             .unwrap_or(Color::rgba(0, 120, 255, 255));
         assert_eq!(
             selection,

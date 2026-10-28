@@ -2322,8 +2322,7 @@ impl Draw for LottieWidget {
         // sits on; it cannot recede toward its own contrast colour the way ink does, because that
         // would make it stand out *more* against the page -- the opposite of disabled.
         let window_fill = {
-            let manager = crate::style::theme_manager();
-            manager.current_theme().map(|active| active.colors.background).unwrap_or(Color::WHITE)
+            crate::style::palette_shared().map(|colors| colors.background).unwrap_or(Color::WHITE)
         };
         let border_color =
             style.border_color.or(themed_border).unwrap_or(Color::rgba(100, 100, 180, 150));

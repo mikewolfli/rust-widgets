@@ -458,6 +458,34 @@ pub fn motion_tokens() -> (u32, u32, u32) {
     reduce_motion(fast, normal, slow)
 }
 
+/// The half-period of a text cursor's blink, in milliseconds (X-004).
+///
+/// Zero means "hold the caret steady": the user's reduced-motion preference collapses every
+/// duration, and a light-sensitive user may set the token to zero explicitly. [`CursorBlink::tick`]
+/// treats zero as the settled state and stops asking for frames.
+#[cfg(device_profile)]
+pub fn cursor_blink_half_period_ms() -> u32 {
+    let configured = crate::style::theme_manager()
+        .current_theme()
+        .map(|theme| theme.motion.cursor_blink_half)
+        .unwrap_or(crate::style::animation::CURSOR_BLINK_HALF_PERIOD_MS);
+    if crate::style::environment::environment().prefers_reduced_motion() {
+        0
+    } else {
+        configured
+    }
+}
+
+/// The blink half-period where there is no theme module to read a token from.
+#[cfg(not(device_profile))]
+pub fn cursor_blink_half_period_ms() -> u32 {
+    if crate::style::environment::environment().prefers_reduced_motion() {
+        0
+    } else {
+        crate::style::animation::CURSOR_BLINK_HALF_PERIOD_MS
+    }
+}
+
 /// Applies the environment's motion preference to a `(fast, normal, slow)` token triple.
 ///
 /// Split out from [`motion_tokens`] so the rule is one expression that both the theme-reading and

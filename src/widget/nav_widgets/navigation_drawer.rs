@@ -50,6 +50,25 @@ pub struct DrawerItem {
     pub icon: String,
     /// Display label text.
     pub label: String,
+    /// Whether the item can be selected (N-002).
+    ///
+    /// A disabled item is still painted — it is an entry the user can see exists — but it is
+    /// skipped by hit testing, hover and keyboard traversal, and drawn in its disabled style.
+    pub enabled: bool,
+}
+
+impl DrawerItem {
+    /// Creates an enabled item.
+    pub fn new(icon: impl Into<String>, label: impl Into<String>) -> Self {
+        Self { icon: icon.into(), label: label.into(), enabled: true }
+    }
+
+    /// Returns the item with its enabled flag set to `enabled` (N-002).
+    #[must_use]
+    pub fn with_enabled(mut self, enabled: bool) -> Self {
+        self.enabled = enabled;
+        self
+    }
 }
 
 /// One painted row of the drawer's list (N-06).
@@ -252,11 +271,37 @@ impl NavigationDrawer {
     /// `icon` is a text/emoji character displayed to the left of the label.
     pub fn add_item(&mut self, icon: &str, label: &str) {
         let index = self.items.len();
-        self.items.push(DrawerItem { icon: icon.to_string(), label: label.to_string() });
+        self.items.push(DrawerItem::new(icon, label));
         self.rows.push(DrawerRow::Item(index));
         self.item_icon_sources.push(None);
         self.item_badges.push(None);
         self.base.request_redraw();
+    }
+
+    /// Enables or disables item `index` (N-002).
+    ///
+    /// Returns `false` for an out-of-range index. A disabled item stays in the list and keeps its
+    /// slot, but is not selectable until it is enabled again.
+    pub fn set_item_enabled(&mut self, index: usize, enabled: bool) -> bool {
+        let Some(item) = self.items.get_mut(index) else {
+            return false;
+        };
+        if item.enabled == enabled {
+            return true;
+        }
+        item.enabled = enabled;
+        if !enabled && self.hovered_row.is_some() {
+            // The row under the pointer may no longer be selectable; recomputing happens on the
+            // next pointer event, so the paint simply drops its hover until then.
+            self.hovered_row = None;
+        }
+        self.base.request_redraw();
+        true
+    }
+
+    /// Whether item `index` is enabled (N-002).
+    pub fn item_enabled(&self, index: usize) -> bool {
+        self.items.get(index).is_some_and(|item| item.enabled)
     }
 
     /// Adds a non-selectable section heading to the list (N-06).
@@ -518,7 +563,15 @@ impl NavigationDrawer {
             };
             if pos.y >= top && pos.y < top + height {
                 let item = match row {
-                    DrawerRow::Item(index) => Some(*index),
+                    DrawerRow::Item(index) => {
+                        // N-002: a disabled row is hit (so hover/pointer state can name it) but is
+                        // not a selectable item, which is what the `Option<usize>` pair reports.
+                        if self.items.get(*index).is_some_and(|item| item.enabled) {
+                            Some(*index)
+                        } else {
+                            None
+                        }
+                    }
                     DrawerRow::Section(_) => None,
                 };
                 return Some((row_index, item));
@@ -566,23 +619,28 @@ impl NavigationDrawer {
     }
 
     /// Moves the selection by one item, wrapping at the ends, and reveals it.
+    ///
+    /// Disabled items are skipped (N-002), so arrow navigation visits only destinations the user
+    /// can actually choose. When every item is disabled the selection is left alone.
     fn step_selection(&mut self, forward: bool) {
         let len = self.items.len();
         if len == 0 {
             return;
         }
-        let next = if forward {
-            (self.selected_index + 1) % len
-        } else {
-            (self.selected_index + len - 1) % len
-        };
-        self.set_selected_index(next);
-        self.reveal_selected();
+        let mut next = self.selected_index;
+        for _ in 0..len {
+            next = if forward { (next + 1) % len } else { (next + len - 1) % len };
+            if self.items[next].enabled {
+                self.set_selected_index(next);
+                self.reveal_selected();
+                return;
+            }
+        }
     }
 
     /// Activates the selected destination as the pointer's release would.
     fn activate_selected(&mut self) {
-        if self.items.is_empty() {
+        if !self.item_enabled(self.selected_index) {
             return;
         }
         self.item_selected.emit(self.selected_index);
@@ -974,10 +1032,12 @@ impl Draw for NavigationDrawer {
             };
 
             // Highlight selected item; a hovered row takes a lighter step so the pointer's
-            // target is visible before it is committed.
-            if *item_index == self.selected_index {
+            // target is visible before it is committed. A disabled item (N-002) never takes the
+            // selected or hover fill: it cannot be chosen, so it must not look chosen.
+            let enabled = self.items.get(*item_index).is_some_and(|item| item.enabled);
+            if enabled && *item_index == self.selected_index {
                 context.fill_rect(row_rect, highlight_color);
-            } else if self.hovered_row == Some(row_index) {
+            } else if enabled && self.hovered_row == Some(row_index) {
                 context.fill_rect(row_rect, panel.blend(&ink, 0.04));
             } else {
                 // Resting rows keep the panel's own surface, so the selected row is the only
@@ -985,13 +1045,22 @@ impl Draw for NavigationDrawer {
                 context.fill_rect(row_rect, panel);
             }
 
+            // A disabled entry is dimmed rather than tinted with the accent, so it reads as
+            // present but unavailable in either appearance.
+            let disabled_ink = panel.blend(&ink, 0.35);
             // Vertical center position for text: the origin is the glyph box's top edge, so
             // the centre of the row is `y + (row - line box)/2`.
             let text_center_y = y_offset + (item_height as i32 - item_metrics.height as i32) / 2;
 
             // Draw icon
             let icon_x = rect.x + 16;
-            let icon_color = if *item_index == self.selected_index { accent } else { ink };
+            let icon_color = if !enabled {
+                disabled_ink
+            } else if *item_index == self.selected_index {
+                accent
+            } else {
+                ink
+            };
             if let Some(source) = self.item_icon_sources.get(*item_index).copied().flatten() {
                 let side = item_metrics.height.clamp(1, 20);
                 let icon_rect = Rect::new(icon_x, text_center_y, side, side);
@@ -1015,7 +1084,13 @@ impl Draw for NavigationDrawer {
             // right border once it is fully open.
             let icon_width: u32 = 24;
             let label_x = rect.x + 16 + icon_width as i32 + 8;
-            let label_color = if *item_index == self.selected_index { accent } else { ink };
+            let label_color = if !enabled {
+                disabled_ink
+            } else if *item_index == self.selected_index {
+                accent
+            } else {
+                ink
+            };
             let label_line = context.text_line(row_rect, &item_font);
             let label_band_width = ((rect.x + panel_width as i32 - 8) - label_x).max(0) as u32;
             if label_band_width > 0 {
@@ -1632,9 +1707,41 @@ mod tests {
 
     #[test]
     fn drawer_drawer_item_struct() {
-        let item = DrawerItem { icon: "📁".to_string(), label: "Documents".to_string() };
+        let item =
+            DrawerItem { icon: "📁".to_string(), label: "Documents".to_string(), enabled: true };
         assert_eq!(item.icon, "📁");
         assert_eq!(item.label, "Documents");
+        assert!(item.enabled);
+    }
+
+    /// N-002: a disabled item is painted but cannot be selected or hovered as an item.
+    #[test]
+    fn a_disabled_item_is_skipped_by_selection_and_drawn_dimmed() {
+        let mut drawer = make_drawer();
+        assert!(drawer.item_enabled(1));
+        assert!(drawer.set_item_enabled(1, false));
+        assert!(!drawer.item_enabled(1));
+        assert!(!drawer.set_item_enabled(99, false), "an unknown item is refused");
+
+        drawer.open();
+        drawer.slide.jump_to(1.0);
+        let panel = drawer.panel_rect();
+        let target_y = panel.y + DRAWER_HEADER_HEIGHT as i32 + 48 + 24;
+        let pos = Point::new(panel.x + 20, target_y);
+        assert_eq!(
+            drawer.row_at(pos, panel),
+            Some((1, None)),
+            "the row is hit but reports no selectable item"
+        );
+
+        drawer.handle_event(&Event::MousePress { pos, button: 1, modifiers: 0 });
+        drawer.handle_event(&Event::MouseRelease { pos, button: 1 });
+        assert_ne!(drawer.selected_index(), Some(1), "a disabled item cannot be chosen");
+
+        // Keyboard traversal skips it too: Down from the first item lands on the third.
+        drawer.handle_event(&Event::FocusGained { reason: crate::event::FocusReason::Tab });
+        drawer.handle_event(&Event::KeyPress { key: crate::event::key_codes::DOWN, modifiers: 0 });
+        assert_eq!(drawer.selected_index(), Some(2));
     }
 
     /// Opening the drawer slides the panel in rather than placing it there.

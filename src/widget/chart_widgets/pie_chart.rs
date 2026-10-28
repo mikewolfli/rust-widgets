@@ -911,9 +911,8 @@ impl PieChart {
         let style = self.base.style();
         let theme = crate::style::resolved_theme_style_shared("pie_chart");
         let (window_fill, foreground) = {
-            let manager = crate::style::theme_manager();
-            match manager.current_theme() {
-                Some(active) => (active.colors.background, active.colors.foreground),
+            match crate::style::palette_shared() {
+                Some(colors) => (colors.background, colors.foreground),
                 None => (Color::WHITE, Color::BLACK),
             }
         };
@@ -1249,12 +1248,8 @@ impl Draw for PieChart {
                         metrics.height as i32,
                         rect,
                     );
-                    let raw = Rect::new(
-                        label_x,
-                        label_y,
-                        metrics.width.max(1),
-                        metrics.height.max(1),
-                    );
+                    let raw =
+                        Rect::new(label_x, label_y, metrics.width.max(1), metrics.height.max(1));
                     let row_height = metrics.height.max(1) as i32 + 2;
                     if let Some(bounds) = place_label(raw, &occupied_labels, rect, row_height) {
                         occupied_labels.push(bounds);

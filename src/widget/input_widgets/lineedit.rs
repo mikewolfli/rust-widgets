@@ -771,6 +771,14 @@ impl LineEdit {
     pub fn is_focused(&self) -> bool {
         self.focused
     }
+
+    /// The mutation counter for the value.
+    ///
+    /// Companion controls that host a `LineEdit` and cache measurements of its text key their
+    /// tables on this number, so an edit invalidates the cache without comparing the string.
+    pub(crate) fn text_revision(&self) -> u64 {
+        self.text_revision
+    }
     /// Sets the focus flag directly.
     ///
     /// The runtime normally drives this through `FocusGained` / `FocusLost`, the same
@@ -2370,6 +2378,84 @@ impl LineEdit {
             crate::set_clipboard_text(&text);
         }
     }
+
+    /// Whether there is a selection that a clipboard action would consume.
+    ///
+    /// A field whose echo mode is [`EchoMode::NoEcho`] reports `false` even with an anchor set:
+    /// the characters are not on screen, so there is nothing a user could mean by copying them.
+    pub fn has_selected_text(&self) -> bool {
+        self.can_copy()
+    }
+
+    /// Copies the current selection to the platform clipboard.
+    ///
+    /// This is the public entry point for a host toolbar or context menu; it runs the same
+    /// [`Self::clipboard_selection`] path as the primary+C shortcut, so a masked field copies its
+    /// mask and an empty selection is a no-op.
+    pub fn copy(&mut self) {
+        #[cfg(not(alloc_frugal))]
+        {
+            self.copy_selection_to_clipboard();
+        }
+        // A host driving the action still expects the field's own feedback (the selected range
+        // stays selected); the repaint is harmless on an empty selection.
+        self.base.request_redraw();
+    }
+
+    /// Cuts the current selection: copies it, then removes it.
+    ///
+    /// The two halves keep the conditions the shortcut arm documents — the clipboard receives
+    /// the masked form, while the deletion happens whenever there is a selection — so a cut from
+    /// a password field still removes what the user cut.
+    pub fn cut(&mut self) {
+        if self.read_only {
+            return;
+        }
+        #[cfg(not(alloc_frugal))]
+        {
+            let revision = self.text_revision;
+            let had_selection = !self.selected_text().is_empty();
+            if let Some(text) = self.clipboard_selection() {
+                crate::set_clipboard_text(&text);
+            }
+            if had_selection {
+                // Backspace removes the selection through the one deletion path, so the undo
+                // record and the `text_changed` signal are the same ones a key press produces.
+                self.backspace();
+            }
+            self.announce_value_changed_if_revision_moved(revision);
+            self.emit_text_edited_if_revision_moved(revision);
+        }
+        #[cfg(alloc_frugal)]
+        {
+            self.base.request_redraw();
+        }
+    }
+
+    /// Pastes the platform clipboard into the selection (or at the caret).
+    ///
+    /// Text goes through [`Self::insert_str`], the same entry point the primary+V shortcut uses,
+    /// so filtering, `max_length`, undo and the change signals behave identically.
+    pub fn paste(&mut self) {
+        if self.read_only {
+            return;
+        }
+        #[cfg(not(alloc_frugal))]
+        {
+            let revision = self.text_revision;
+            let pasted = crate::get_clipboard_text();
+            if !pasted.is_empty() {
+                self.insert_str(&pasted);
+            }
+            self.announce_value_changed_if_revision_moved(revision);
+            self.emit_text_edited_if_revision_moved(revision);
+        }
+        #[cfg(alloc_frugal)]
+        {
+            self.base.request_redraw();
+        }
+    }
+
     /// The field the control actually paints.
     ///
     /// # Why the field is not the control's rectangle

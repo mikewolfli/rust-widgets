@@ -253,6 +253,43 @@ pub fn default_named_property_value(
                 &crate::widget::companions::PALETTE_ENTRY_SCHEMA,
             )))
         }
+        // COMP-A1..A7. Each of these companions declares role-specific names on a kind whose
+        // default table was written for its owner, so the constructor defaults live here, keyed by
+        // canonical name. Every value below is the one the control's own `new` reports; a wrong
+        // one is a wrong value reaching a live control through `resolve_null_reset`.
+        ("chart_reference_line", "line_count") => Some(CapabilityValue::UInt(0)),
+        ("chart_reference_line", "label_visible") => Some(CapabilityValue::Bool(true)),
+        ("chart_reference_line", "hit_target") => Some(CapabilityValue::UInt(8)),
+        ("terminal_find_bar", "query") => Some(CapabilityValue::String(String::new())),
+        ("terminal_find_bar", "case_sensitive") => Some(CapabilityValue::Bool(false)),
+        ("terminal_find_bar", "use_regex") => Some(CapabilityValue::Bool(false)),
+        ("terminal_find_bar", "wrap_search") => Some(CapabilityValue::Bool(true)),
+        ("terminal_find_bar", "match_count") => Some(CapabilityValue::UInt(0)),
+        // The bar is created closed, and `visible` is its own open/close flag.
+        ("terminal_find_bar", "visible") => Some(CapabilityValue::Bool(false)),
+        ("map_attribution", "entry_count") => Some(CapabilityValue::UInt(0)),
+        ("map_attribution", "corner") => Some(CapabilityValue::String("top_left".to_string())),
+        ("map_attribution", "background_opacity") => Some(CapabilityValue::UInt(160)),
+        ("map_attribution", "font_scale") => Some(CapabilityValue::Float(1.0)),
+        ("gantt_task_grid", "row_height") => Some(CapabilityValue::UInt(24)),
+        ("gantt_task_grid", "indent_step") => Some(CapabilityValue::UInt(12)),
+        ("gantt_task_grid", "header_visible") => Some(CapabilityValue::Bool(true)),
+        ("gantt_task_grid", "columns") => Some(CapabilityValue::UInt(1)),
+        ("gantt_task_grid", "tasks") => Some(CapabilityValue::UInt(0)),
+        ("web_history_panel", "max_entries") => Some(CapabilityValue::UInt(8)),
+        ("web_history_panel", "show_timestamps") => Some(CapabilityValue::Bool(false)),
+        ("web_history_panel", "group_by_day") => Some(CapabilityValue::Bool(false)),
+        ("web_history_panel", "row_height") => Some(CapabilityValue::UInt(44)),
+        ("web_history_panel", "filter_prefix") => Some(CapabilityValue::String(String::new())),
+        ("web_history_panel", "visible_count") => Some(CapabilityValue::UInt(0)),
+        ("chapter_list_panel", "row_height") => Some(CapabilityValue::UInt(32)),
+        ("chapter_list_panel", "active_highlight") => Some(CapabilityValue::Bool(true)),
+        ("chapter_list_panel", "show_thumbnails") => Some(CapabilityValue::Bool(false)),
+        ("chapter_list_panel", "chapters") => Some(CapabilityValue::UInt(0)),
+        ("chapter_list_panel", "position_ms") => Some(CapabilityValue::UInt(0)),
+        ("map_overview", "viewport_ratio") => Some(CapabilityValue::Float(0.25)),
+        ("map_overview", "collapsed") => Some(CapabilityValue::Bool(false)),
+        ("map_overview", "map_view_attached") => Some(CapabilityValue::Bool(false)),
         _ => None,
     }
 }

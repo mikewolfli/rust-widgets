@@ -19,6 +19,10 @@ impl EventHandler for CodeEditor {
         if !self.base.is_enabled() {
             return;
         }
+        // An attached line-number gutter receives line clicks through this poll before the
+        // event's own meaning is applied, so a click on the gutter is a navigation request
+        // rather than an edit (COMP-A8).
+        let _ = self.poll_line_number_gutter();
         match event {
             Event::KeyPress { key, modifiers } => self.dispatch_key(*key, *modifiers),
             Event::KeyRelease { .. } => {

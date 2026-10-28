@@ -105,6 +105,38 @@ impl ClockDisplay {
     }
 }
 
+/// How the digital form spells the hour.
+///
+/// [`H24`](Self::H24) is the historical form and the default. [`H12`](Self::H12) converts the
+/// 0..24 hour into the 1..12 range and appends `AM`/`PM`, with midnight reading `12:00 AM` and
+/// noon reading `12:00 PM`. The dial is unaffected: its hands already wrap every twelve hours.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ClockHourFormat {
+    /// Twelve-hour notation with an `AM`/`PM` suffix.
+    H12,
+    /// Twenty-four-hour notation — the default.
+    #[default]
+    H24,
+}
+
+impl ClockHourFormat {
+    /// Every format, in publication order.
+    pub const ALL: [Self; 2] = [Self::H12, Self::H24];
+
+    /// The token this format is published as.
+    pub const fn token(self) -> &'static str {
+        match self {
+            Self::H12 => "h12",
+            Self::H24 => "h24",
+        }
+    }
+
+    /// Parses a published token. `None` for a spelling this control does not publish.
+    pub fn from_token(token: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|format| format.token() == token)
+    }
+}
+
 /// The current wall-clock time as `(hour, minute, second, millisecond)`, in the zone the source
 /// names.
 ///
@@ -182,6 +214,15 @@ pub struct Clock {
     time_source: ClockTimeSource,
     /// The dial or the numeric form; the dial is the default.
     display: ClockDisplay,
+    /// How the digital form spells the hour; twenty-four hour notation is the default.
+    hour_format: ClockHourFormat,
+    /// The digital reading and face, rebuilt only when an input changes.
+    ///
+    /// The digital branch used to `write!` a fresh `String` and construct a `Font` every frame —
+    /// two allocations per frame for a reading that changes once a second at most. The cache is
+    /// keyed by the time, the seconds flag, the hour format, the face size and the device scale,
+    /// which is every input the reading and its metrics depend on.
+    digital_text_cache: Option<DigitalTextCache>,
     /// An optional UTC offset in minutes applied to machine readings.
     ///
     /// `None` keeps the source's own zone, which is the historical behaviour. Setting an offset
@@ -216,6 +257,21 @@ struct NumeralCache {
     height: u32,
 }
 
+/// The digital reading's text and face, with every input that produced them.
+struct DigitalTextCache {
+    hour: u32,
+    minute: u32,
+    second: u32,
+    show_seconds: bool,
+    hour_format: ClockHourFormat,
+    /// `f32::to_bits` of the point size the face was built at.
+    size_bits: u32,
+    /// `f32::to_bits` of the logical DPI scale the metrics were measured under.
+    dpi_scale_bits: u32,
+    text: String,
+    font: Font,
+}
+
 impl Clock {
     /// Creates a clock reading midnight, with the second hand hidden.
     pub fn new(geometry: Rect) -> Self {
@@ -232,6 +288,8 @@ impl Clock {
             tick_cache: None,
             time_source: ClockTimeSource::Manual,
             display: ClockDisplay::Dial,
+            hour_format: ClockHourFormat::default(),
+            digital_text_cache: None,
             utc_offset_minutes: None,
             pending_ms: 0,
             tick: Signal1::new(),
@@ -402,6 +460,24 @@ impl Clock {
         self.base.request_redraw();
     }
 
+    /// How the digital form spells the hour.
+    pub fn hour_format(&self) -> ClockHourFormat {
+        self.hour_format
+    }
+
+    /// Sets the digital hour notation.
+    ///
+    /// The default is [`ClockHourFormat::H24`], which paints `13:05` and is the historical
+    /// picture. [`ClockHourFormat::H12`] paints `01:05 PM`, with midnight as `12:00 AM` and
+    /// noon as `12:00 PM`. Only the digital form is affected; the dial's hands already wrap.
+    pub fn set_hour_format(&mut self, format: ClockHourFormat) {
+        if self.hour_format == format {
+            return;
+        }
+        self.hour_format = format;
+        self.base.request_redraw();
+    }
+
     /// The optional UTC offset applied to machine readings, in minutes.
     pub fn utc_offset_minutes(&self) -> Option<i32> {
         self.utc_offset_minutes
@@ -485,6 +561,62 @@ impl Clock {
         }
         self.tick_cache =
             Some(TickCache { x: rect.x, y: rect.y, width: rect.width, height: rect.height, marks });
+        true
+    }
+
+    /// Builds or reuses the digital reading and its face.
+    ///
+    /// Returns whether the cache was rebuilt, which is the evidence a still second costs no
+    /// allocation. Every input the text or its metrics depend on is part of the key: the three
+    /// time components, whether seconds are shown, the hour notation, the face size and the
+    /// device scale. Time alone is not enough, because a theme or resize change can alter the
+    /// size while the reading stays the same.
+    fn ensure_digital_text(&mut self, size: f32, dpi_scale: f32) -> bool {
+        let size_bits = size.to_bits();
+        let dpi_scale_bits = dpi_scale.to_bits();
+        let fresh = self.digital_text_cache.as_ref().is_some_and(|cache| {
+            cache.hour == self.hour
+                && cache.minute == self.minute
+                && cache.second == self.second
+                && cache.show_seconds == self.show_seconds
+                && cache.hour_format == self.hour_format
+                && cache.size_bits == size_bits
+                && cache.dpi_scale_bits == dpi_scale_bits
+        });
+        if fresh {
+            return false;
+        }
+        let hour = match self.hour_format {
+            ClockHourFormat::H24 => self.hour,
+            ClockHourFormat::H12 => {
+                let wrapped = self.hour % 12;
+                if wrapped == 0 {
+                    12
+                } else {
+                    wrapped
+                }
+            }
+        };
+        let mut text = String::new();
+        let _ = write!(text, "{:02}:{:02}", hour, self.minute);
+        if self.show_seconds {
+            let _ = write!(text, ":{:02}", self.second);
+        }
+        if self.hour_format == ClockHourFormat::H12 {
+            text.push_str(if self.hour < 12 { " AM" } else { " PM" });
+        }
+        let font = Font::with_weight("sans-serif", size, 600, false);
+        self.digital_text_cache = Some(DigitalTextCache {
+            hour: self.hour,
+            minute: self.minute,
+            second: self.second,
+            show_seconds: self.show_seconds,
+            hour_format: self.hour_format,
+            size_bits,
+            dpi_scale_bits,
+            text,
+            font,
+        });
         true
     }
 
@@ -732,14 +864,9 @@ impl Draw for Clock {
         }
         let style = self.base.style();
         let themed = crate::style::resolved_theme_style_shared("clock");
-        let (window_background, window_foreground, accent) = {
-            let manager = crate::style::theme_manager();
-            match manager.current_theme() {
-                Some(theme) => {
-                    (theme.colors.background, theme.colors.foreground, theme.colors.primary)
-                }
-                None => (Color::WHITE, Color::BLACK, Color::PRIMARY),
-            }
+        let (window_background, window_foreground, accent) = match crate::style::palette_shared() {
+            Some(theme) => (theme.background, theme.foreground, theme.primary),
+            None => (Color::WHITE, Color::BLACK, Color::PRIMARY),
         };
         let surface = style
             .background_color
@@ -757,24 +884,24 @@ impl Draw for Clock {
         // The numeric form paints no hands and no tick ring: the reading is the whole control.
         // It is opt-in, so every clock that never asked for it keeps the dial picture.
         if self.display == ClockDisplay::Digital {
-            let mut text = crate::compat::String::new();
-            let _ = write!(text, "{:02}:{:02}", self.hour, self.minute);
-            if self.show_seconds {
-                let _ = write!(text, ":{:02}", self.second);
-            }
+            // The reading and its face are cached: a still second draws the same `String` and
+            // `Font` instead of allocating both per frame (DP-003). `measure_text` still runs
+            // because the placement depends on the measured box.
             let size = (radius * 0.42).clamp(10.0, 96.0);
-            let font = Font::with_weight("sans-serif", size, 600, false);
-            let metrics = ctx.measure_text(&text, &font);
-            ctx.draw_text(
-                Point::new(
-                    center.x - metrics.width as i32 / 2,
-                    center.y - metrics.height as i32 / 2,
-                ),
-                &text,
-                &font,
-                ink,
-                HorizontalAlignment::Left,
-            );
+            self.ensure_digital_text(size, ctx.dpi_scale());
+            if let Some(cache) = self.digital_text_cache.as_ref() {
+                let metrics = ctx.measure_text(&cache.text, &cache.font);
+                ctx.draw_text(
+                    Point::new(
+                        center.x - metrics.width as i32 / 2,
+                        center.y - metrics.height as i32 / 2,
+                    ),
+                    &cache.text,
+                    &cache.font,
+                    ink,
+                    HorizontalAlignment::Left,
+                );
+            }
             return;
         }
 
@@ -1119,5 +1246,89 @@ mod tests {
         for form in ClockDisplay::ALL {
             assert_eq!(ClockDisplay::from_token(form.token()), Some(form));
         }
+    }
+
+    /// D-003: the hour format is twenty-four hour by default and the twelve-hour form converts
+    /// midnight/noon correctly, with an `AM`/`PM` suffix.
+    #[test]
+    fn the_hour_format_defaults_to_24_and_converts_to_12_with_a_suffix() {
+        let mut clock = Clock::new(Rect::new(0, 0, 140, 140));
+        assert_eq!(clock.hour_format(), ClockHourFormat::H24, "24-hour notation is the default");
+
+        clock.set_time(13, 5, 7);
+        assert!(clock.ensure_digital_text(20.0, 1.0), "the first reading is built");
+        assert_eq!(clock.digital_text_cache.as_ref().unwrap().text, "13:05");
+
+        clock.set_hour_format(ClockHourFormat::H12);
+        assert_eq!(clock.hour_format(), ClockHourFormat::H12);
+        assert!(clock.ensure_digital_text(20.0, 1.0), "the notation is part of the key");
+        assert_eq!(clock.digital_text_cache.as_ref().unwrap().text, "01:05 PM");
+
+        // Midnight is 12 AM and noon is 12 PM, not 0 AM/0 PM.
+        clock.set_time(0, 0, 0);
+        let _ = clock.ensure_digital_text(20.0, 1.0);
+        assert_eq!(clock.digital_text_cache.as_ref().unwrap().text, "12:00 AM");
+        clock.set_time(12, 0, 0);
+        let _ = clock.ensure_digital_text(20.0, 1.0);
+        assert_eq!(clock.digital_text_cache.as_ref().unwrap().text, "12:00 PM");
+        clock.set_time(23, 59, 0);
+        clock.set_show_seconds(true);
+        let _ = clock.ensure_digital_text(20.0, 1.0);
+        assert_eq!(clock.digital_text_cache.as_ref().unwrap().text, "11:59:00 PM");
+
+        // Every format round-trips through its published token.
+        for format in ClockHourFormat::ALL {
+            assert_eq!(ClockHourFormat::from_token(format.token()), Some(format));
+        }
+        assert_eq!(ClockHourFormat::from_token("military"), None);
+
+        // The painted reading carries the suffix too, not only the cache: the twelve-hour form
+        // paints more ink (the meridiem) than the twenty-four-hour one.
+        clock.set_time(13, 5, 0);
+        clock.set_display(ClockDisplay::Digital);
+        clock.set_hour_format(ClockHourFormat::H24);
+        let h24 = crate::widget::svg::render_to_svg(&mut clock);
+        clock.set_hour_format(ClockHourFormat::H12);
+        let h12 = crate::widget::svg::render_to_svg(&mut clock);
+        assert_ne!(h12, h24, "the two notations must paint differently");
+        let ink_width = |svg: &str| {
+            let boxes = crate::widget::svg::text_ink_boxes(svg);
+            assert_eq!(boxes.len(), 1, "the digital clock paints one run: {svg}");
+            boxes[0].2 - boxes[0].0
+        };
+        assert!(ink_width(&h12) > ink_width(&h24), "the meridiem suffix adds ink to the reading");
+    }
+
+    /// DP-003: the digital text and face are rebuilt only when an input changes.
+    #[test]
+    fn the_digital_text_and_face_are_cached_until_an_input_changes() {
+        let mut clock = Clock::new(Rect::new(0, 0, 140, 140));
+        clock.set_time(9, 5, 30);
+        assert!(clock.ensure_digital_text(20.0, 1.0), "the first call builds the reading");
+        let text_ptr = clock.digital_text_cache.as_ref().unwrap().text.as_ptr();
+        let font_ptr = clock.digital_text_cache.as_ref().unwrap().font.family().as_ptr();
+
+        assert!(!clock.ensure_digital_text(20.0, 1.0), "a still second reuses the reading");
+        assert_eq!(
+            clock.digital_text_cache.as_ref().unwrap().text.as_ptr(),
+            text_ptr,
+            "the cached String is not rebuilt"
+        );
+        assert_eq!(
+            clock.digital_text_cache.as_ref().unwrap().font.family().as_ptr(),
+            font_ptr,
+            "the cached face is not rebuilt"
+        );
+
+        clock.set_time(9, 5, 31);
+        assert!(clock.ensure_digital_text(20.0, 1.0), "a new second rebuilds once");
+        clock.set_show_seconds(true);
+        assert!(clock.ensure_digital_text(20.0, 1.0), "the seconds flag is part of the key");
+        assert!(
+            clock.digital_text_cache.as_ref().unwrap().text.ends_with(":31"),
+            "the rebuilt reading carries the seconds"
+        );
+        assert!(clock.ensure_digital_text(20.0, 2.0), "a new device scale rebuilds once");
+        assert!(!clock.ensure_digital_text(20.0, 2.0), "and is then reused");
     }
 }

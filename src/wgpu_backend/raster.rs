@@ -773,11 +773,29 @@ fn fill_rounded_rect_cpu_rgba8(
     let y_start = clip_rect.y.max(rect.y);
     let x_end = clip_rect.right().min(rect.right());
     let y_end = clip_rect.bottom().min(rect.bottom());
+    // The shape is convex and horizontal, so every row is a single span. Rows between the two
+    // corner bands are the full width; a corner row's span is `[left + r - k, right - r - 1 + k]`
+    // with `k = floor(sqrt(r^2 - dy^2))`, which is the same integer predicate the per-pixel form
+    // evaluated, resolved once per row instead of once per pixel (G-803).
+    let r2 = r * r;
     for y in y_start..y_end {
-        for x in x_start..x_end {
-            if inside_rounded_rect(rect, r, x, y) {
-                sink.set(x as u32, y as u32, color);
+        let (span_start, span_end) = if r <= 0 {
+            (rect.x, rect.right())
+        } else if y >= rect.y + r && y < rect.bottom() - r {
+            (rect.x, rect.right())
+        } else {
+            let dy = if y < rect.y + r { rect.y + r - y } else { y - (rect.bottom() - r - 1) };
+            let remaining = r2 - dy * dy;
+            if remaining < 0 {
+                continue;
             }
+            let k = (remaining as u32).isqrt() as i32;
+            (rect.x + r - k, rect.right() - r + k)
+        };
+        let from = span_start.max(x_start);
+        let to = span_end.min(x_end);
+        for x in from..to {
+            sink.set(x as u32, y as u32, color);
         }
     }
 }

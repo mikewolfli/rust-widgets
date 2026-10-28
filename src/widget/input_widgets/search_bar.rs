@@ -21,7 +21,7 @@ use crate::widget::capability::properties_trait::{base_property_get, base_proper
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::input_widgets::shortcut_editor::primary_shortcut_pressed;
-use crate::widget::metrics::effective_font;
+use crate::widget::metrics::{effective_font, estimate_text_width};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 use std::cell::RefCell;
@@ -175,6 +175,20 @@ pub struct SearchBar {
     recent_scroll: usize,
     /// Lookup switches for a host that searches a document from this query (I-025).
     search_options: SearchOptions,
+    /// Bumped on every value mutation, so the advance cache invalidates (IP-007).
+    text_revision: u64,
+    /// Per-character advances of the query, keyed by the revision and font (IP-007).
+    advance_cache: RefCell<Option<SearchAdvanceCache>>,
+}
+
+/// Per-character cumulative advances for the search bar's value (IP-007).
+///
+/// A press used to build a paint backend and shape the whole query. The table is built once per
+/// revision and font, and every following click or IME query reads it.
+struct SearchAdvanceCache {
+    revision: u64,
+    font: crate::core::Font,
+    cuts: Vec<(usize, i32)>,
 }
 
 impl SearchBar {
@@ -205,7 +219,14 @@ impl SearchBar {
             preedit: String::new(),
             recent_scroll: 0,
             search_options: SearchOptions::default(),
+            text_revision: 0,
+            advance_cache: RefCell::new(None),
         }
+    }
+
+    /// Marks the value as changed so revision-keyed caches rebuild.
+    fn touch_text(&mut self) {
+        self.text_revision = self.text_revision.wrapping_add(1);
     }
 
     /// The lookup switches this bar reports to a host (I-025).
@@ -262,6 +283,7 @@ impl SearchBar {
         if self.text != new_text {
             let before = self.text.clone();
             self.text = new_text.clone();
+            self.touch_text();
             if !self.restoring_history {
                 *self.history_target.borrow_mut() = self.text.clone();
                 self.undo_stack.push(Box::new(TextSpliceCommand::new(
@@ -284,6 +306,7 @@ impl SearchBar {
         if self.restoring_history {
             return;
         }
+        self.touch_text();
         {
             let mut target = self.history_target.borrow_mut();
             let start = offset.min(target.len());
@@ -582,6 +605,7 @@ impl SearchBar {
     fn restore_history_text(&mut self) {
         self.restoring_history = true;
         self.text = self.history_target.borrow().clone();
+        self.touch_text();
         self.restoring_history = false;
         self.cursor = self.text.len();
         self.selection_anchor = None;
@@ -678,6 +702,36 @@ impl Widget for SearchBar {
     }
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
+    }
+
+    /// Reports the caret rectangle an IME candidate window anchors to (X-001).
+    ///
+    /// The bar already hand-paints its preedit; this is the anchor that places a native candidate
+    /// window on the same glyph the inline composition starts from.
+    fn input_method_query(&self) -> Option<crate::widget::widget_trait::InputMethodQuery> {
+        let rect = self.geometry();
+        let cancel_width = if self.is_active && self.cancel_button_visible {
+            self.cancel_button_width()
+        } else {
+            0
+        };
+        let field_width = rect.width.saturating_sub(cancel_width + 4);
+        let text_left = rect.x + 10 + 14 + 6;
+        let text_width = field_width.saturating_sub((text_left - rect.x) as u32);
+        let font = effective_font(self.style());
+        let value_box = Rect::new(text_left, rect.y, text_width.max(1), rect.height);
+        let advance = self.prefix_advance(font, self.text.len());
+        let origin = crate::render::fitted_origin(
+            value_box,
+            advance,
+            self.alignment.to_horizontal().unwrap_or(HorizontalAlignment::Left),
+        );
+        let caret = crate::widget::text_utils::floor_char_boundary(&self.text, self.cursor);
+        let x = origin.x + self.prefix_advance(font, caret);
+        Some(crate::widget::widget_trait::InputMethodQuery {
+            caret_rect: Rect::new(x, rect.y + 4, 1, rect.height.saturating_sub(8).max(1)),
+            caret_byte: Some(caret),
+        })
     }
 
     fn size_hint(&self) -> crate::core::Size {
@@ -829,10 +883,8 @@ impl Draw for SearchBar {
         let base_field =
             style.background_color.or(themed_bg).unwrap_or(Color::rgba(200, 200, 205, 200));
         // The page this field sits in, read once: a disabled fill recedes toward it.
-        let window_fill = crate::style::theme_manager()
-            .current_theme()
-            .map(|active| active.colors.background)
-            .unwrap_or(Color::WHITE);
+        let window_fill =
+            crate::style::palette_shared().map(|colors| colors.background).unwrap_or(Color::WHITE);
         // # Why the field acknowledges the pointer
         //
         // Disabled is handled (faded toward white); hovered was not, so a pointer over the
@@ -1102,10 +1154,7 @@ impl SearchBar {
         let text_left = rect.x + 10 + 14 + 6;
         let text_width = field_width.saturating_sub((text_left - rect.x) as u32);
         let font = effective_font(self.style());
-        let mut measurement =
-            crate::render::SoftwarePaintBackend::new(crate::core::Size::new(0, 0), 1.0);
-        let context = RenderContext::new(&mut measurement);
-        let advance = context.measure_text(&self.text, font).width as i32;
+        let advance = self.prefix_advance(font, self.text.len());
         let value_box = Rect::new(text_left, rect.y, text_width.max(1), rect.height);
         let origin = crate::render::fitted_origin(
             value_box,
@@ -1113,20 +1162,53 @@ impl SearchBar {
             self.alignment.to_horizontal().unwrap_or(HorizontalAlignment::Left),
         );
         let dx = (x - origin.x).max(0);
-        // Accumulate the real per-glyph advances; the old proportional mapping put the caret on
-        // the wrong glyph for any non-monospaced face (I-P63).
+        // Read the cached boundaries instead of shaping every glyph on each press (IP-007).
+        let cuts = self.advance_cuts(font);
         let mut best = 0usize;
-        let mut prefix = 0i32;
-        let mut glyph = [0u8; 4];
-        for (index, ch) in self.text.char_indices() {
-            let advance = context.measure_text(ch.encode_utf8(&mut glyph), font).width as i32;
-            if dx < prefix + advance / 2 {
+        for window in cuts.windows(2) {
+            let (_, previous) = window[0];
+            let (offset, cumulative) = window[1];
+            let advance = cumulative - previous;
+            if dx < previous + advance / 2 {
                 break;
             }
-            prefix += advance;
-            best = index + ch.len_utf8();
+            best = offset;
         }
         best
+    }
+
+    /// The cumulative per-character advances of the value for `font` (IP-007).
+    fn advance_cuts(&self, font: &crate::core::Font) -> Vec<(usize, i32)> {
+        if let Some(cache) = self.advance_cache.borrow().as_ref() {
+            if cache.revision == self.text_revision && cache.font == *font {
+                return cache.cuts.clone();
+            }
+        }
+        let mut cuts = Vec::with_capacity(self.text.len() + 1);
+        cuts.push((0usize, 0i32));
+        let mut advance = 0i32;
+        for (start, ch) in self.text.char_indices() {
+            advance +=
+                estimate_text_width(&self.text[start..start + ch.len_utf8()], font, 1.0) as i32;
+            cuts.push((start + ch.len_utf8(), advance));
+        }
+        *self.advance_cache.borrow_mut() = Some(SearchAdvanceCache {
+            revision: self.text_revision,
+            font: font.clone(),
+            cuts: cuts.clone(),
+        });
+        cuts
+    }
+
+    /// The advance of `text[..end]`, read from the revision cache (IP-007).
+    fn prefix_advance(&self, font: &crate::core::Font, end: usize) -> i32 {
+        let end =
+            crate::widget::text_utils::floor_char_boundary(&self.text, end.min(self.text.len()));
+        let cuts = self.advance_cuts(font);
+        cuts.iter()
+            .find(|(offset, _)| *offset >= end)
+            .map(|(_, advance)| *advance)
+            .unwrap_or_else(|| cuts.last().map(|(_, advance)| *advance).unwrap_or(0))
     }
 }
 

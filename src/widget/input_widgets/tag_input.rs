@@ -22,7 +22,7 @@ use crate::widget::capability::WidgetProperties;
 use crate::widget::input_widgets::input_validator::{ValidationState, Validator};
 use crate::widget::input_widgets::shortcut_editor::primary_shortcut_pressed;
 use crate::widget::input_widgets::suggestion_popup::{MatchMode, SuggestionPopup};
-use crate::widget::metrics::{dimensions, effective_font, ControlMetrics};
+use crate::widget::metrics::{dimensions, effective_font, estimate_text_width, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 use std::cell::RefCell;
@@ -144,6 +144,17 @@ pub struct TagInput {
     /// edits the input buffer allocates no tag copy (I-104). A tag mutation bumps `tags_revision`,
     /// which is what tells the next snapshot to build a fresh handle.
     shared_tags: RefCell<Option<(u64, Rc<Vec<String>>)>>,
+    /// Bumped whenever the input buffer changes, so its advance cache invalidates (IP-008).
+    input_revision: u64,
+    /// Per-character advances of the input buffer, keyed by its revision and font (IP-008).
+    input_advance_cache: RefCell<Option<InputAdvanceCache>>,
+}
+
+/// Per-character cumulative advances of the tag field's input buffer (IP-008).
+struct InputAdvanceCache {
+    revision: u64,
+    font: Font,
+    cuts: Vec<(usize, i32)>,
 }
 
 impl TagInput {
@@ -181,6 +192,8 @@ impl TagInput {
                 input_buffer: String::new(),
             })),
             shared_tags: RefCell::new(None),
+            input_revision: 0,
+            input_advance_cache: RefCell::new(None),
         }
     }
 
@@ -629,6 +642,7 @@ impl TagInput {
     }
 
     fn record_state_change(&mut self, before: TagInputState) {
+        self.input_revision = self.input_revision.wrapping_add(1);
         let after = self.snapshot_state();
         if before == after {
             return;
@@ -652,6 +666,7 @@ impl TagInput {
         self.input_buffer = state.input_buffer;
         self.input_cursor = self.input_buffer.len();
         self.input_anchor = None;
+        self.input_revision = self.input_revision.wrapping_add(1);
         self.bump_tags();
         if self.tags != previous_tags {
             self.tags_changed.emit(self.tags.clone());
@@ -806,6 +821,27 @@ impl TagInput {
         field.y + (field.height as i32 - TAG_HEIGHT) / 2
     }
 
+    /// The input area band after the last chip (or overflow chip).
+    ///
+    /// The paint path derives this inline; the IME anchor needs the same box, so the derivation
+    /// lives here and both callers read it.
+    fn input_band_rect(&self) -> Rect {
+        let rect = self.field_rect();
+        let layout = self.chip_layout();
+        let (mut last_x, mut last_y) = layout
+            .chips
+            .last()
+            .map(|chip| (chip.x + chip.width + TAG_GAP, chip.y))
+            .unwrap_or((rect.x + TAG_PADDING, self.chip_row_y()));
+        if let Some((overflow, _)) = self.overflow_rect() {
+            last_x = overflow.x + overflow.width as i32 + TAG_GAP;
+            last_y = overflow.y;
+        }
+        let input_x = last_x.min(rect.x + rect.width as i32 - MIN_INPUT_WIDTH);
+        let input_width = (rect.x + rect.width as i32 - TAG_PADDING - input_x).max(0);
+        Rect::new(input_x, last_y, input_width as u32, TAG_HEIGHT as u32)
+    }
+
     /// Returns the close button center for a tag chip at the given pixel position.
     fn tag_close_center(&self, chip_x: i32, chip_width: i32, chip_y: i32) -> Point {
         Point::new(chip_x + chip_width - TAG_PADDING - TAG_CLOSE_RADIUS, chip_y + TAG_HEIGHT / 2)
@@ -816,6 +852,43 @@ impl TagInput {
         let mut measurement =
             crate::render::SoftwarePaintBackend::new(crate::core::Size::new(0, 0), 1.0);
         f(&RenderContext::new(&mut measurement))
+    }
+
+    /// The cumulative per-character advances of the input buffer for `font` (IP-008).
+    fn input_advance_cuts(&self, font: &Font) -> Vec<(usize, i32)> {
+        if let Some(cache) = self.input_advance_cache.borrow().as_ref() {
+            if cache.revision == self.input_revision && cache.font == *font {
+                return cache.cuts.clone();
+            }
+        }
+        let mut cuts = Vec::with_capacity(self.input_buffer.len() + 1);
+        cuts.push((0usize, 0i32));
+        let mut advance = 0i32;
+        for (start, ch) in self.input_buffer.char_indices() {
+            advance +=
+                estimate_text_width(&self.input_buffer[start..start + ch.len_utf8()], font, 1.0)
+                    as i32;
+            cuts.push((start + ch.len_utf8(), advance));
+        }
+        *self.input_advance_cache.borrow_mut() = Some(InputAdvanceCache {
+            revision: self.input_revision,
+            font: font.clone(),
+            cuts: cuts.clone(),
+        });
+        cuts
+    }
+
+    /// The advance of `input_buffer[..end]`, read from the revision cache (IP-008).
+    fn input_prefix_advance(&self, font: &Font, end: usize) -> i32 {
+        let end = crate::widget::text_utils::floor_char_boundary(
+            &self.input_buffer,
+            end.min(self.input_buffer.len()),
+        );
+        let cuts = self.input_advance_cuts(font);
+        cuts.iter()
+            .find(|(offset, _)| *offset >= end)
+            .map(|(_, advance)| *advance)
+            .unwrap_or_else(|| cuts.last().map(|(_, advance)| *advance).unwrap_or(0))
     }
 
     /// The chip geometry the painter, the close hit test and the chip hit test all read (I-P58).
@@ -1106,6 +1179,45 @@ impl Widget for TagInput {
     fn is_animating(&self) -> bool {
         self.focused
     }
+
+    /// Reports the caret rectangle an IME candidate window anchors to (X-001).
+    ///
+    /// The field already hand-paints its preedit; this anchor is what places a native candidate
+    /// window on the same input band instead of leaving it unattached.
+    fn input_method_query(&self) -> Option<crate::widget::widget_trait::InputMethodQuery> {
+        let input_rect = self.input_band_rect();
+        let font = effective_font(self.style());
+        let input_line = Rect::new(
+            input_rect.x + 4,
+            input_rect.y,
+            input_rect.width.saturating_sub(8),
+            TAG_HEIGHT as u32,
+        );
+        let advance = if self.input_buffer.is_empty() {
+            0
+        } else {
+            self.input_prefix_advance(font, self.input_buffer.len())
+        };
+        let origin = crate::render::fitted_origin(
+            input_line,
+            advance,
+            self.alignment.to_horizontal().unwrap_or(HorizontalAlignment::Left),
+        );
+        let caret = crate::widget::text_utils::floor_char_boundary(
+            &self.input_buffer,
+            self.input_cursor.min(self.input_buffer.len()),
+        );
+        let x = origin.x + self.input_prefix_advance(font, caret);
+        Some(crate::widget::widget_trait::InputMethodQuery {
+            caret_rect: Rect::new(
+                x.min(input_rect.x + input_rect.width as i32 - 1).max(input_rect.x),
+                input_line.y,
+                1,
+                input_line.height.max(1),
+            ),
+            caret_byte: Some(caret),
+        })
+    }
     /// Resolves a published event name to the control's own signal.
     ///
     /// # Why this is explicit
@@ -1235,10 +1347,8 @@ impl Draw for TagInput {
         let base_bg =
             style.background_color.or(themed_bg).unwrap_or(Color::rgba(235, 235, 235, 200));
         // The page this field sits in, read once: a disabled fill recedes toward it.
-        let window_fill = crate::style::theme_manager()
-            .current_theme()
-            .map(|active| active.colors.background)
-            .unwrap_or(Color::WHITE);
+        let window_fill =
+            crate::style::palette_shared().map(|colors| colors.background).unwrap_or(Color::WHITE);
         let bg_color = if !is_enabled {
             // A disabled **field** recedes toward the page. It read `base_bg.blend(&Color::WHITE,
             // 0.35)`, and white is not a direction: on a dark field that moves the disabled fill
@@ -1432,12 +1542,14 @@ impl Draw for TagInput {
         let value_align = self.alignment.to_horizontal().unwrap_or(HorizontalAlignment::Left);
         // Selection band behind the buffer's selected range.
         if let Some((start, end)) = self.input_selection() {
-            let advance = context.measure_text(display_text, font).width as i32;
+            let advance = if self.input_buffer.is_empty() {
+                context.measure_text(display_text, font).width as i32
+            } else {
+                self.input_prefix_advance(font, self.input_buffer.len())
+            };
             let origin = crate::render::fitted_origin(input_line, advance, value_align);
-            let start_x =
-                origin.x + context.measure_text(&self.input_buffer[..start], font).width as i32;
-            let end_x =
-                origin.x + context.measure_text(&self.input_buffer[..end], font).width as i32;
+            let start_x = origin.x + self.input_prefix_advance(font, start);
+            let end_x = origin.x + self.input_prefix_advance(font, end);
             context.fill_rect(
                 Rect::new(
                     start_x.min(end_x),
@@ -1448,7 +1560,7 @@ impl Draw for TagInput {
                 Color::rgba(60, 140, 255, 70),
             );
         }
-        let drawn = context.draw_text_fitted_cow(
+        let _ = context.draw_text_fitted_cow(
             input_line,
             display_text,
             font,
@@ -1459,19 +1571,23 @@ impl Draw for TagInput {
         // ── Cursor (when focused and input is active) ──
         if self.focused && is_enabled && self.cursor_blink.is_visible() {
             // The caret follows the buffer's own caret, measured from the fitted origin so a
-            // centred buffer keeps its caret on the glyphs it belongs to.
-            let advance = context.measure_text(display_text, font).width as i32;
+            // centred buffer keeps its caret on the glyphs it belongs to. The prefix comes from
+            // the revision cache rather than a fresh shape every frame (IP-008).
+            let advance = if self.input_buffer.is_empty() {
+                context.measure_text(display_text, font).width as i32
+            } else {
+                self.input_prefix_advance(font, self.input_buffer.len())
+            };
             let origin = crate::render::fitted_origin(input_line, advance, value_align);
-            let prefix = if self.input_buffer.is_empty() {
-                &drawn[..]
+            let cursor_x = if self.input_buffer.is_empty() {
+                origin.x
             } else {
                 let caret = crate::widget::text_utils::floor_char_boundary(
                     &self.input_buffer,
                     self.input_cursor,
                 );
-                &self.input_buffer[..caret]
+                origin.x + self.input_prefix_advance(font, caret)
             };
-            let cursor_x = origin.x + context.measure_text(prefix, font).width as i32;
             let cursor_y1 = input_line.y;
             let cursor_y2 = input_line.y + input_line.height as i32;
             // Clamped to the input box: a caret at the far right of a full buffer belongs on

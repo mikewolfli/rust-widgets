@@ -1033,8 +1033,7 @@ impl Draw for ImageGallery {
         let theme = crate::style::resolved_theme_style_shared("image_gallery");
         // The accent for the selected thumbnail, read from the role rather than from the gallery's
         // own surface. See the selected-thumbnail block below for why the surface was wrong.
-        let accent_role =
-            crate::style::theme_manager().current_theme().map(|active| active.colors.primary);
+        let accent_role = crate::style::palette_shared().map(|colors| colors.primary);
         let stage_fallback =
             if !is_enabled { Color::rgba(30, 30, 30, 200) } else { Color::rgba(30, 30, 30, 255) };
         let stage = style
@@ -1077,7 +1076,7 @@ impl Draw for ImageGallery {
                             (source_w, source_h),
                             (draw_w, draw_h),
                         );
-                        if let crate::image::ImageData::Rgba8(resampled_pixels) = &resampled {
+                        if let crate::image::ImageData::Rgba8(resampled_pixels) = &*resampled {
                             context.draw_image(x, y, draw_w, draw_h, resampled_pixels);
                         }
                         context.pop_clip();
@@ -1292,7 +1291,7 @@ impl Draw for ImageGallery {
                             (image.width(), image.height()),
                             (fitted.width.max(1), fitted.height.max(1)),
                         );
-                        if let crate::image::ImageData::Rgba8(resampled_pixels) = &resampled {
+                        if let crate::image::ImageData::Rgba8(resampled_pixels) = &*resampled {
                             context.draw_image(
                                 fitted.x,
                                 fitted.y,

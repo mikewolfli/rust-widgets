@@ -68,6 +68,8 @@ impl Draw for CodeEditor {
         // constant instead of the font's real advance is what produced overlapping text.
         self.measure_cell_width(context);
         self.refresh_visible_rows();
+        // Keep an attached line-number gutter in step with the range and viewport (COMP-A8).
+        let _ = self.poll_line_number_gutter();
         // Lex the visible rows with `&mut self` before the immutable paint helpers
         // run. `tokens_on_line` takes `&self` and cannot fill its own cache, so
         // without this every frame would re-tokenize every visible row — and the

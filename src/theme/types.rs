@@ -145,6 +145,14 @@ pub struct Motion {
     /// override the token per property without changing the theme.
     #[cfg_attr(not(alloc_frugal), serde(default))]
     pub curve: MotionCurve,
+    /// Half of a text cursor's blink cycle, in milliseconds (X-004).
+    ///
+    /// It is a motion token rather than a bare constant so a theme can honour a platform's blink
+    /// rate, and so a light-sensitive user can slow it down. Zero means "do not blink": the
+    /// caret stays visible and the control stops asking for frames. The default is the 500 ms
+    /// tempo every platform's text fields converged on.
+    #[cfg_attr(not(alloc_frugal), serde(default))]
+    pub cursor_blink_half: u32,
 }
 
 impl Default for Motion {
@@ -155,6 +163,7 @@ impl Default for Motion {
             slow: 300,
             easing: EasingFunction::EaseOut,
             curve: MotionCurve::Easing,
+            cursor_blink_half: 500,
         }
     }
 }

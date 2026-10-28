@@ -103,6 +103,30 @@
       "g": 239,
       "b": 244,
       "a": 255
+    },
+    "link": {
+      "r": 33,
+      "g": 150,
+      "b": 243,
+      "a": 255
+    },
+    "link_visited": {
+      "r": 103,
+      "g": 58,
+      "b": 183,
+      "a": 255
+    },
+    "placeholder_text": {
+      "r": 117,
+      "g": 117,
+      "b": 117,
+      "a": 255
+    },
+    "bright_text": {
+      "r": 255,
+      "g": 255,
+      "b": 255,
+      "a": 255
     }
   },
   "fonts": {
@@ -648,6 +672,7 @@
     "normal": 200,
     "slow": 300,
     "easing": "EaseOut",
-    "curve": "Easing"
+    "curve": "Easing",
+    "cursor_blink_half": 500
   }
 }

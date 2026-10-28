@@ -189,6 +189,80 @@ impl NavigationStack {
         self.base.request_redraw();
     }
 
+    /// Replaces the top page, returning the page it displaced (N-003).
+    ///
+    /// This is the "login page → home" transition: the stack depth does not grow, so a back
+    /// affordance does not lead to a screen the user has already left. The new page arrives with
+    /// the same trailing-edge transition as [`Self::push`] and announces
+    /// [`NavigationEvent::Pushed`]. On an empty stack it pushes the page and returns `None`.
+    pub fn replace_top(&mut self, page: Box<dyn Widget>) -> Option<Box<dyn Widget>> {
+        let previous = if self.pages.is_empty() {
+            self.pages.push(page);
+            self.page_titles.push(None);
+            None
+        } else {
+            let index = self.pages.len() - 1;
+            let previous = core::mem::replace(&mut self.pages[index], page);
+            if self.page_titles.len() > index {
+                // The replacement has no per-page title of its own; the old page's title must not
+                // be carried over to a different screen.
+                self.page_titles[index] = None;
+            }
+            Some(previous)
+        };
+        self.slide.jump_to(1.0);
+        self.slide.set_target(0.0);
+        self.navigation_changed.emit(NavigationEvent::Pushed);
+        self.base.request_redraw();
+        previous
+    }
+
+    /// Inserts `page` at `index`, returning whether the index was in range (N-003).
+    ///
+    /// `index == page_count()` appends and becomes the visible top, so it plays the same push
+    /// transition as [`Self::push`]. Inserting below the top changes the history without changing
+    /// what is on screen, so the signal is emitted but no slide is started.
+    pub fn insert(&mut self, index: usize, page: Box<dyn Widget>) -> bool {
+        if index > self.pages.len() {
+            return false;
+        }
+        let becomes_top = index == self.pages.len();
+        self.pages.insert(index, page);
+        let title_index = index.min(self.page_titles.len());
+        self.page_titles.insert(title_index, None);
+        self.page_titles.resize(self.pages.len(), None);
+        if becomes_top {
+            self.slide.jump_to(1.0);
+            self.slide.set_target(0.0);
+        }
+        self.navigation_changed.emit(NavigationEvent::Pushed);
+        self.base.request_redraw();
+        true
+    }
+
+    /// Pops every page above `index`, returning whether anything was popped (N-003).
+    ///
+    /// `index` itself survives and becomes the top. Popping to the root announces
+    /// [`NavigationEvent::PoppedToRoot`] (the same state [`Self::pop_to_root`] reaches); any other
+    /// target announces [`NavigationEvent::Popped`]. Both play the leading-edge transition, so a
+    /// back gesture and a programmatic pop look the same.
+    pub fn pop_to(&mut self, index: usize) -> bool {
+        if index >= self.pages.len() || self.pages.len() <= index + 1 {
+            return false;
+        }
+        self.pages.truncate(index + 1);
+        self.page_titles.truncate(self.pages.len());
+        self.slide.jump_to(-1.0);
+        self.slide.set_target(0.0);
+        self.navigation_changed.emit(if index == 0 {
+            NavigationEvent::PoppedToRoot
+        } else {
+            NavigationEvent::Popped
+        });
+        self.base.request_redraw();
+        true
+    }
+
     /// Returns the writing direction the back affordance is placed by.
     pub fn direction(&self) -> TextDirection {
         self.direction
@@ -1365,5 +1439,49 @@ mod tests {
         stack.handle_event(&Event::TouchMove { pos: Point::new(390, 300), touch_id: 1 });
         stack.handle_event(&Event::TouchEnd { pos: Point::new(390, 300), touch_id: 1 });
         assert_eq!(stack.page_count(), 2, "no edge band, no back gesture");
+    }
+
+    /// N-003: replace/insert/pop-to extend the stack without inventing a second transition model.
+    #[test]
+    fn replace_insert_and_pop_to_follow_the_navigation_model() {
+        let mut stack = NavigationStack::new(Rect::new(0, 0, 400, 600));
+        stack.push(Box::new(Badge::new(Rect::new(0, 44, 100, 24))));
+        stack.push(Box::new(Badge::new(Rect::new(0, 44, 100, 24))));
+        stack.set_page_title(1, "Top");
+
+        let events = Arc::new(Mutex::new(Vec::new()));
+        stack.navigation_changed.connect({
+            let events = Arc::clone(&events);
+            move |event: Arc<NavigationEvent>| {
+                events.lock().unwrap().push(event.as_ref().clone());
+            }
+        });
+
+        let displaced = stack.replace_top(Box::new(Badge::new(Rect::new(0, 44, 100, 24))));
+        assert!(displaced.is_some(), "the replaced page is handed back");
+        assert_eq!(stack.page_count(), 2, "replace does not grow the stack");
+        assert_eq!(stack.page_title(1), None, "the replacement starts without a title");
+
+        assert!(stack.insert(1, Box::new(Badge::new(Rect::new(0, 44, 100, 24)))));
+        assert_eq!(stack.page_count(), 3);
+        assert_eq!(stack.current_page_index(), Some(2), "the top stays visible");
+        assert!(!stack.insert(4, Box::new(Badge::new(Rect::new(0, 44, 100, 24)))));
+
+        assert!(stack.pop_to(1));
+        assert_eq!(stack.page_count(), 2);
+        assert_eq!(stack.current_page_index(), Some(1));
+        assert!(!stack.pop_to(1), "nothing above the target to pop");
+        assert!(stack.pop_to(0));
+        assert_eq!(stack.page_count(), 1);
+
+        assert_eq!(
+            *events.lock().unwrap(),
+            vec![
+                NavigationEvent::Pushed,
+                NavigationEvent::Pushed,
+                NavigationEvent::Popped,
+                NavigationEvent::PoppedToRoot,
+            ]
+        );
     }
 }

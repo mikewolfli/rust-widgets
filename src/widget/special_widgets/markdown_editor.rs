@@ -2498,9 +2498,8 @@ impl Draw for MarkdownEditor {
         // blue, which measured 1.51:1 — the very line the caret is on became the least
         // readable line in the editor. `legible_on` keeps the hue and guarantees the ratio.
         let header_ink = ink.blend(&surface, 0.35);
-        let cursor_ink = crate::style::theme_manager()
-            .current_theme()
-            .map(|active| active.colors.primary.legible_on(surface, 4.5))
+        let cursor_ink = crate::style::palette_shared()
+            .map(|colors| colors.primary.legible_on(surface, 4.5))
             .unwrap_or_else(|| ink.contrast_color());
 
         context.face_with_gradient_corners(

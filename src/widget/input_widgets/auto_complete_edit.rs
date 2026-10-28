@@ -172,6 +172,15 @@ pub struct AutoCompleteEdit {
     /// Defaults to empty: the field used to hardcode "Type to search...", which a host could
     /// neither replace nor switch off.
     placeholder: String,
+    /// Whether the field owns keyboard focus, which drives the caret blink (X-003).
+    focused: bool,
+    /// The caret's blink state, advanced by [`AutoCompleteEdit::tick`].
+    cursor_blink: crate::style::CursorBlink,
+    /// The host's available area, which makes the drop-down flip measurable (I-009).
+    ///
+    /// `None` keeps the historical "always below the field" placement. With a viewport, the list
+    /// flips above when there is no room below and is clamped into the supplied rectangle.
+    viewport: Option<Rect>,
     /// Bumped whenever the value's bytes change, so the memoised measurement below is keyed on
     /// something that cannot go stale (I-P03).
     text_revision: u64,
@@ -210,6 +219,9 @@ impl AutoCompleteEdit {
             history_target: Rc::new(RefCell::new(String::new())),
             restoring_history: false,
             placeholder: String::new(),
+            focused: false,
+            cursor_blink: crate::style::CursorBlink::new(),
+            viewport: None,
             text_revision: 0,
             measure_cache: RefCell::new((0, None, Vec::new())),
         }
@@ -797,6 +809,126 @@ impl AutoCompleteEdit {
         }
     }
 
+    /// Whether the field owns keyboard focus.
+    pub fn is_focused(&self) -> bool {
+        self.focused
+    }
+
+    /// Sets the focus flag and starts or stops the caret blink with it.
+    pub fn set_focused(&mut self, focused: bool) {
+        if self.focused == focused {
+            return;
+        }
+        self.focused = focused;
+        if focused {
+            self.cursor_blink.start();
+        } else {
+            self.cursor_blink.stop();
+        }
+        self.base.request_redraw();
+    }
+
+    /// Advances the caret's blink, reporting whether another frame is due.
+    pub fn tick(&mut self, delta_ms: u32) -> bool {
+        if !self.focused {
+            return false;
+        }
+        let running = self.cursor_blink.tick(delta_ms);
+        if running {
+            self.base.request_redraw();
+        }
+        running
+    }
+
+    /// Supplies the host's available area, which is what makes the drop-down flip measurable.
+    pub fn set_viewport(&mut self, viewport: Option<Rect>) {
+        if self.viewport == viewport {
+            return;
+        }
+        self.viewport = viewport;
+        self.base.request_redraw();
+    }
+
+    /// The host's available area, if one was supplied.
+    pub fn viewport(&self) -> Option<Rect> {
+        self.viewport
+    }
+
+    /// One drop-down row's height, derived from the effective font.
+    fn dropdown_row_height(&self) -> u32 {
+        crate::widget::input_widgets::popup_support::row_height_for(effective_font(self.style()))
+    }
+
+    /// The drop-down box: below the field, flipped above when the viewport has no room, and
+    /// clamped into the viewport on every side (I-009).
+    ///
+    /// The placement rule is the one `SuggestionPopup` uses: measure the rows, prefer the space
+    /// under the anchor, flip when that does not fit, then clamp the result.
+    fn dropdown_rect(&self) -> Rect {
+        let rect = self.geometry();
+        let visible = self.filtered_suggestions.len().min(self.max_visible).max(1);
+        let height = self.dropdown_row_height().saturating_mul(visible as u32);
+        let below = rect.y + rect.height as i32;
+        let fits_below = self
+            .viewport
+            .is_none_or(|viewport| below + height as i32 <= viewport.y + viewport.height as i32);
+        let y = if fits_below { below } else { rect.y - height as i32 };
+        let placed = Rect::new(rect.x, y, rect.width, height);
+        match self.viewport {
+            Some(viewport) => {
+                crate::widget::input_widgets::popup_support::clamp_rect_into(placed, viewport)
+            }
+            None => placed,
+        }
+    }
+
+    /// The advance of `text[..end]`, read from the shared `measure_cache` (IP-005).
+    ///
+    /// The cache is keyed by the text revision and font, so the draw path and the click hit test
+    /// share one table. A miss rebuilds it with the same per-character estimate the hit test uses.
+    fn cached_prefix_advance(&self, font: &Font, end: usize) -> i32 {
+        let end =
+            crate::widget::text_utils::floor_char_boundary(&self.text, end.min(self.text.len()));
+        let mut cache = self.measure_cache.borrow_mut();
+        if cache.0 != self.text_revision || cache.1.as_ref() != Some(font) {
+            let mut cuts = Vec::with_capacity(self.text.len() + 1);
+            cuts.push((0usize, 0i32));
+            let mut advance = 0i32;
+            for (start, ch) in self.text.char_indices() {
+                advance = advance.saturating_add(crate::widget::metrics::estimate_text_width(
+                    &self.text[start..start + ch.len_utf8()],
+                    font,
+                    1.0,
+                ) as i32);
+                cuts.push((start + ch.len_utf8(), advance));
+            }
+            cache.0 = self.text_revision;
+            cache.1 = Some(font.clone());
+            cache.2 = cuts;
+        }
+        cache
+            .2
+            .iter()
+            .find(|(offset, _)| *offset >= end)
+            .map(|(_, advance)| *advance)
+            .unwrap_or_else(|| cache.2.last().map(|(_, advance)| *advance).unwrap_or(0))
+    }
+
+    /// The caret's window rectangle and byte offset, as a native IME asks for them (X-001).
+    fn caret_query(&self) -> crate::widget::widget_trait::InputMethodQuery {
+        let rect = self.geometry();
+        let font = effective_font(self.style());
+        let caret = crate::widget::text_utils::floor_char_boundary(&self.text, self.cursor);
+        let padding = 6i32;
+        let x = rect.x + padding + self.cached_prefix_advance(font, caret);
+        let height = font.effective_line_height().max(1.0) as u32;
+        let y = rect.y + ((rect.height.saturating_sub(height)) / 2) as i32;
+        crate::widget::widget_trait::InputMethodQuery {
+            caret_rect: Rect::new(x.min(rect.x + rect.width as i32 - 1).max(rect.x), y, 1, height),
+            caret_byte: Some(caret),
+        }
+    }
+
     /// Returns how many rows the dropdown will show at once.
     pub fn max_visible(&self) -> usize {
         self.max_visible
@@ -832,6 +964,25 @@ impl Widget for AutoCompleteEdit {
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
+
+    /// Advances the caret blink, so the host keeps scheduling frames only while it cycles.
+    fn tick(&mut self, delta_ms: u32) -> bool {
+        AutoCompleteEdit::tick(self, delta_ms)
+    }
+
+    fn is_animating(&self) -> bool {
+        self.focused
+    }
+
+    /// Reports the caret rectangle an IME candidate window anchors to (X-001).
+    fn input_method_query(&self) -> Option<crate::widget::widget_trait::InputMethodQuery> {
+        Some(self.caret_query())
+    }
+
+    /// Reports whether the suggestion list is open (X-002).
+    fn has_open_popup(&self) -> bool {
+        self.show_dropdown
+    }
     /// Resolves a published event name to the control's own signal.
     ///
     /// # Why this is explicit per control
@@ -1107,7 +1258,7 @@ impl Draw for AutoCompleteEdit {
         // Inline completion: the completed remainder follows the caret, dimmed, so the
         // suggestion is readable at the insertion point rather than only in the list.
         if !self.text.is_empty() {
-            let font_width = context.measure_text(&self.text, font).width as i32;
+            let font_width = self.cached_prefix_advance(font, self.text.len());
             if !self.inline_suffix.is_empty() {
                 context.draw_text(
                     Point::new(text_x + font_width, text_y),
@@ -1119,9 +1270,9 @@ impl Draw for AutoCompleteEdit {
             }
             // The caret at its own byte offset, for the same reason the other fields draw one:
             // a focused text entry with no visible insertion point does not say where typing lands.
-            if self.base.draws_focus_ring() {
+            if self.focused && self.cursor_blink.is_visible() {
                 let caret = crate::widget::text_utils::floor_char_boundary(&self.text, self.cursor);
-                let caret_x = text_x + context.measure_text(&self.text[..caret], font).width as i32;
+                let caret_x = text_x + self.cached_prefix_advance(font, caret);
                 context.draw_line(
                     Point::new(caret_x, text_y),
                     Point::new(caret_x, text_y + input_line.height as i32),
@@ -1135,11 +1286,9 @@ impl Draw for AutoCompleteEdit {
             return;
         }
 
-        let drop_down_y = rect.y + rect.height as i32;
-        let item_height = 24u32;
         let visible_count = self.filtered_suggestions.len().min(self.max_visible);
-        let drop_down_height = item_height * visible_count as u32;
-        let drop_rect = Rect::new(rect.x, drop_down_y, rect.width, drop_down_height);
+        let item_height = self.dropdown_row_height();
+        let drop_rect = self.dropdown_rect();
 
         // Dropdown background
         context.fill_rounded_rect(drop_rect, 2, dropdown_background);
@@ -1152,9 +1301,9 @@ impl Draw for AutoCompleteEdit {
 
         for i in 0..visible_count {
             let item_rect = Rect::new(
-                rect.x + 1,
-                drop_down_y + (i as i32) * (item_height as i32),
-                rect.width.saturating_sub(2),
+                drop_rect.x + 1,
+                drop_rect.y + (i as i32) * (item_height as i32),
+                drop_rect.width.saturating_sub(2),
                 item_height,
             );
 
@@ -1192,25 +1341,23 @@ impl EventHandler for AutoCompleteEdit {
         match event {
             Event::MousePress { pos, button, .. } if *button == 1 => {
                 let rect = self.geometry();
-                // Check if click is inside the text field area
+                // A press on the field focuses it and places the caret; the caret blink follows
+                // the same flag the paint reads (X-003).
                 if rect.contains_point(*pos) {
-                    // Place the caret where the press landed, then offer the list.
+                    self.set_focused(true);
                     self.cursor = self.byte_index_at_x(pos.x);
                     self.selection_anchor = None;
                     self.show_dropdown();
                 }
-                // Check if click is on a dropdown item
+                // Check if click is on a dropdown item. The box comes from the shared placement
+                // rule, so the row the pointer hits is the row the paint drew (I-009).
                 if self.show_dropdown {
-                    let item_height = 24i32;
-                    let drop_down_y = rect.y + rect.height as i32;
-                    let visible_count = self.filtered_suggestions.len().min(self.max_visible);
-                    let drop_down_height = item_height * visible_count as i32;
-                    let drop_rect =
-                        Rect::new(rect.x, drop_down_y, rect.width, drop_down_height as u32);
+                    let drop_rect = self.dropdown_rect();
+                    let item_height = self.dropdown_row_height() as i32;
 
                     if drop_rect.contains_point(*pos) {
-                        let rel_y = pos.y - drop_down_y;
-                        let idx = (rel_y / item_height) as usize;
+                        let rel_y = pos.y - drop_rect.y;
+                        let idx = (rel_y / item_height).max(0) as usize;
                         if idx < self.filtered_suggestions.len() {
                             self.selected_suggestion = Some(idx);
                             self.select_highlighted();
@@ -1218,6 +1365,8 @@ impl EventHandler for AutoCompleteEdit {
                     }
                 }
             }
+            Event::FocusGained { .. } => self.set_focused(true),
+            Event::FocusLost => self.set_focused(false),
             Event::KeyPress { key, modifiers } => {
                 if *key == key_codes::ENTER {
                     if self.show_dropdown {

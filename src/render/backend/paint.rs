@@ -150,6 +150,58 @@ pub trait PaintBackend {
             gradient: Arc::new(gradient.clone()),
         });
     }
+
+    /// Paints a path straight from borrowed vertices (G-802).
+    ///
+    /// The region recorder resolves its arena slice into this call, so recording a path costs no
+    /// owning command payload. The default reproduces the owning behaviour for a deferred
+    /// backend; an immediate backend overrides it and draws from the slice.
+    fn draw_path_ref(
+        &mut self,
+        points: &[crate::core::Point],
+        closed: bool,
+        color: Color,
+        filled: bool,
+        width: u32,
+    ) {
+        self.execute_command(&RenderCommand::DrawPath {
+            points: crate::compat::Arc::from(points),
+            closed,
+            color,
+            filled,
+            width,
+        });
+    }
+
+    /// Paints a dashed path straight from borrowed vertices (G-802).
+    fn draw_path_dashed_ref(
+        &mut self,
+        points: &[crate::core::Point],
+        closed: bool,
+        color: Color,
+        width: u32,
+        dash: crate::render::core::command::DashPattern,
+    ) {
+        self.execute_command(&RenderCommand::DrawPathDashed {
+            points: crate::compat::Arc::from(points),
+            closed,
+            color,
+            width,
+            dash,
+        });
+    }
+
+    /// Fills a compound path straight from borrowed geometry (G-802).
+    fn fill_path_non_zero_ref(
+        &mut self,
+        points: &[crate::core::Point],
+        contours: &[(usize, usize)],
+        color: Color,
+    ) {
+        if let Ok(path) = crate::render::CompoundPath::new(points.to_vec(), contours.to_vec()) {
+            self.execute_command(&RenderCommand::FillPathNonZero { path, color });
+        }
+    }
     /// Returns the size of the target surface in logical (DPI-independent)
     /// units.
     fn size(&self) -> Size;
@@ -314,6 +366,15 @@ impl SoftwarePaintBackend {
     pub fn into_frame_rgba(self) -> crate::compat::Vec<u8> {
         self.surface.into_frame_rgba()
     }
+
+    /// Moves the presented frame out and leaves the backend ready for another frame.
+    ///
+    /// [`Self::into_frame_rgba`] consumes the backend, which frees the back buffer it was
+    /// holding; the frame paths in `widget::runtime` paint one frame after another at the same
+    /// size, so they use this form and return the backend to a size-keyed pool instead.
+    pub fn take_frame_rgba(&mut self) -> crate::compat::Vec<u8> {
+        self.surface.take_frame_rgba()
+    }
 }
 impl PaintBackend for SoftwarePaintBackend {
     fn begin_frame(&mut self, clear: Color) {
@@ -369,6 +430,45 @@ impl PaintBackend for SoftwarePaintBackend {
         alignment: crate::core::HorizontalAlignment,
     ) {
         self.surface.draw_text(origin, text, font, color, alignment);
+    }
+
+    /// Paints recorded path vertices without building an owning command (G-802).
+    fn draw_path_ref(
+        &mut self,
+        points: &[crate::core::Point],
+        closed: bool,
+        color: Color,
+        filled: bool,
+        width: u32,
+    ) {
+        self.surface.draw_path(points, closed, color, filled, width);
+    }
+
+    /// Paints recorded dashed-path vertices without building an owning command (G-802).
+    fn draw_path_dashed_ref(
+        &mut self,
+        points: &[crate::core::Point],
+        closed: bool,
+        color: Color,
+        width: u32,
+        dash: crate::render::core::command::DashPattern,
+    ) {
+        for (from, to) in crate::render::backend::surface::dash_line_segments(points, closed, dash)
+        {
+            self.surface.draw_line_with_width(from, to, color, width);
+        }
+    }
+
+    /// Paints recorded compound geometry; the path object is built once per touched region.
+    fn fill_path_non_zero_ref(
+        &mut self,
+        points: &[crate::core::Point],
+        contours: &[(usize, usize)],
+        color: Color,
+    ) {
+        if let Ok(path) = crate::render::CompoundPath::new(points.to_vec(), contours.to_vec()) {
+            self.surface.fill_path_non_zero(&path, color);
+        }
     }
     /// Fills `rect` with `gradient` without owning a copy of it.
     ///
@@ -619,6 +719,17 @@ pub(super) fn route_command_to_surface(surface: &mut SoftwareSurface, command: &
         }
         RenderCommand::DrawArc { center, radius, start_angle, end_angle, color, filled } => {
             surface.draw_arc(*center, *radius, *start_angle, *end_angle, *color, *filled);
+        }
+        // Recorder-owned payloads are resolved by `RegionBuckets::flush` through the by-reference
+        // entry points; reaching a backend means the recorder leaked a command, which is a bug.
+        RenderCommand::DrawPathRecorded { .. }
+        | RenderCommand::DrawPathDashedRecorded { .. }
+        | RenderCommand::FillPathNonZeroRecorded { .. }
+        | RenderCommand::DrawTextRecorded { .. } => {
+            debug_assert!(
+                false,
+                "a recorded command must be resolved by the region flusher, not executed",
+            );
         }
         RenderCommand::DrawPath { points, closed, color, filled, width } => {
             surface.draw_path(points, *closed, *color, *filled, *width);

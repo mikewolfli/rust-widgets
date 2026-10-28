@@ -1310,9 +1310,8 @@ impl EventHandler for ScrollBar {
 /// a surface of its own, so painting it verbatim would make the control the window. Keeping
 /// the query in one place means the guard reads the same fact every control does.
 fn color_theme_window_fill() -> Color {
-    crate::style::theme_manager()
-        .current_theme()
-        .map(|theme| theme.colors.background)
+    crate::style::palette_shared()
+        .map(|theme| theme.background)
         .unwrap_or(Color::rgb(240, 240, 240))
 }
 

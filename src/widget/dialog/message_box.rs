@@ -1256,20 +1256,21 @@ impl Draw for MessageBox {
         // title bar and the buttons were literals, so a light/dark switch left them
         // unchanged and the census reported the control as theme-blind.
         //
-        // The theme reads take and release the global manager's lock internally, so no
-        // guard is held across the draw (the mutex is not re-entrant).
+        // The theme reads are the cached shared snapshots, so no manager lock is held across
+        // the draw (the mutex is not re-entrant).
         let style = self.base.style();
         let theme = crate::style::resolved_theme_style_shared("message_box");
+        // One palette-snapshot read supplies the window fill and the primary button colour below;
+        // the previous path took the manager lock once for each.
+        let palette = crate::style::palette_shared();
         // `message_box` is absent from `WidgetRole::for_kind_name`'s table — the variant
         // spells as `message_box`, but only `errordialog` is classified — so it resolves to
         // `theme.colors.background`: the colour the window behind it is already filled with.
         // A frame painted in that colour would be indistinguishable from the window, so a
         // resolved surface equal to the window fill is re-derived a visible step away from
         // it, the same distinction `Colors::input_background` draws for a field.
-        let window_fill = {
-            let manager = crate::style::theme_manager();
-            manager.current_theme().map(|active| active.colors.background).unwrap_or(Color::WHITE)
-        };
+        let window_fill =
+            { palette.as_ref().map(|colors| colors.background).unwrap_or(Color::WHITE) };
         let ink = style
             .text_color
             .or_else(|| theme.as_ref().and_then(|t| t.text_color))
@@ -1298,13 +1299,8 @@ impl Draw for MessageBox {
         // the frame behind it and the census sample showed no primary button at all. `primary` is
         // the token every other dialog's accept button uses.
         let button_fill = action_button_fill(surface, ink);
-        let primary = {
-            let manager = crate::style::theme_manager();
-            manager
-                .current_theme()
-                .map(|active| active.colors.primary)
-                .unwrap_or(Color::rgb(0, 120, 215))
-        };
+        let primary =
+            { palette.as_ref().map(|colors| colors.primary).unwrap_or(Color::rgb(0, 120, 215)) };
         let primary_ink = primary.contrast_color();
 
         // A dialog is a normal widget: every element it emits has to stay inside its own

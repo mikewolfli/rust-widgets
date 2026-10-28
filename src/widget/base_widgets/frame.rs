@@ -1181,9 +1181,10 @@ impl Draw for Frame {
         // scrim (BLUE21 B23); see [`dimensions::DISABLED_VEIL_ALPHA`].
         if !self.base.is_enabled() {
             let rect = self.geometry();
-            let surface = self.style().background_color.or_else(|| {
-                crate::style::theme_manager().current_theme().map(|active| active.colors.background)
-            });
+            let surface = self
+                .style()
+                .background_color
+                .or_else(|| crate::style::palette_shared().map(|active| active.background));
             match surface {
                 Some(surface) => {
                     context.fill_rect(rect, surface.with_alpha(dimensions::DISABLED_VEIL_ALPHA))
@@ -1490,9 +1491,8 @@ mod tests {
             let mut frame = Frame::new(rect);
             frame.set_frame_shape(FrameShape::Panel);
             crate::theme::apply_theme_to_widget(&mut frame);
-            let surface = crate::style::theme_manager()
-                .current_theme()
-                .map(|active| active.colors.background)
+            let surface = crate::style::palette_shared()
+                .map(|colors| colors.background)
                 .expect("a preset is active");
             let svg = crate::widget::svg::render_widget_to_svg_on(&mut frame, rect, surface);
             // The panel's fill is the first `fill="rgba(` after the backdrop.
@@ -1863,9 +1863,8 @@ mod tests {
         frame.set_frame_shadow(FrameShadow::Raised);
         frame.set_theme_bevel(true);
         crate::theme::apply_theme_to_widget(&mut frame);
-        let background = crate::style::theme_manager()
-            .current_theme()
-            .map(|active| active.colors.background)
+        let background = crate::style::palette_shared()
+            .map(|colors| colors.background)
             .expect("a preset is active");
 
         let mut backend = SoftwarePaintBackend::new(Size::new(24, 20), 1.0);

@@ -395,21 +395,18 @@ impl Draw for CupertinoAlertDialog {
         // mutex is not re-entrant.
         let style = self.base.style();
         let theme = crate::style::resolved_theme_style_shared("cupertino_alert_dialog");
-        // Read as its own lock acquisition and copied out as values, so the guard is dropped
-        // before anything else touches the theme. The dialog is not in the role table, so it
+        // Read from the shared palette snapshot, which is revision-cached and applies the
+        // crossfade/high-contrast resolution the draw should use, so this does not take the
+        // manager lock. The dialog is not in the role table, so it
         // classifies as `Surface` and its resolved background is the window fill itself; the
         // panel below therefore derives its own distinct surface rather than painting the
         // window's. The confirm/cancel actions are the dialog's accent-coloured affordances,
         // so they read the theme's primary token rather than iOS blue.
         let (window_fill, foreground, primary, background) = {
-            let manager = crate::style::theme_manager();
-            match manager.current_theme() {
-                Some(active) => (
-                    active.colors.background,
-                    active.colors.foreground,
-                    active.colors.primary,
-                    active.colors.background,
-                ),
+            match crate::style::palette_shared() {
+                Some(colors) => {
+                    (colors.background, colors.foreground, colors.primary, colors.background)
+                }
                 None => (
                     Color::rgb(240, 240, 240),
                     Color::BLACK,
@@ -856,21 +853,18 @@ impl Draw for CupertinoSlider {
         // mutex is not re-entrant.
         let style = self.base.style();
         let theme = crate::style::resolved_theme_style_shared("cupertino_slider");
-        // Read as its own lock acquisition and copied out as values, so the guard is dropped
-        // before anything else touches the theme. `cupertino_slider` is not in the role
+        // Read from the shared palette snapshot, which is revision-cached and applies the
+        // crossfade/high-contrast resolution the draw should use, so this does not take the
+        // manager lock. `cupertino_slider` is not in the role
         // table, so it classifies as `Surface` and its resolved background is the window
         // fill itself; the surface below therefore derives its own distinct colour rather
         // than painting the window's. The filled run of the track is a value indicator, the
         // same role `Slider`'s own fill plays, so it reads the theme's accent.
         let (window_fill, foreground, accent, muted) = {
-            let manager = crate::style::theme_manager();
-            match manager.current_theme() {
-                Some(active) => (
-                    active.colors.background,
-                    active.colors.foreground,
-                    active.colors.accent,
-                    active.colors.secondary,
-                ),
+            match crate::style::palette_shared() {
+                Some(colors) => {
+                    (colors.background, colors.foreground, colors.accent, colors.secondary)
+                }
                 None => (
                     Color::rgb(240, 240, 240),
                     Color::BLACK,

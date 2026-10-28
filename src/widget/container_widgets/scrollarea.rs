@@ -1062,28 +1062,29 @@ impl ScrollArea {
     ///
     /// `self.widget` keeps its own placement derivation (`content_child_rect`, which already
     /// includes the scroll offset), so only its descendants are translated here. Every other
-    /// direct child is content the host mounted itself and is translated as a whole. The list
-    /// was flattened when the tree was mounted, so a step performs no allocations.
+    /// direct child is content the host mounted itself and is translated as a whole.
     ///
-    /// # C-P03: what is still per-node, and why
+    /// # C-P03 / CP-001: one backend call, not a read/write pair per descendant
     ///
-    /// Each descendant costs one global geometry read and one write. A true bulk primitive —
-    /// "read-modify-write this whole id list under one lock" — belongs at the crate's runtime
-    /// geometry layer, outside this module; the second route the issue offers (stop moving the
-    /// subtree and apply one viewport offset in the painter) would change the geometry contract
-    /// every host and hit test currently relies on. The step is therefore left as an accurate
-    /// per-node translation, with the flattened list (no tree walk, no allocation) as the part
-    /// this control can own. Recorded here rather than silently claimed as closed.
+    /// The step used to interleave a global geometry read with a global geometry write for every
+    /// id, then batched the two phases locally. It now hands the flat `content_descendants` list
+    /// to [`ControlBackend::translate_widget_geometries`], which is the geometry layer's bulk
+    /// primitive: a backend with a native window can send one batched message, and the default
+    /// body keeps the exact read-then-write semantics for every other backend. The geometry
+    /// contract every host and hit test relies on is unchanged.
     #[cfg(not(alloc_frugal))]
     fn move_content_children(&self, dx: i32, dy: i32) {
         if dx == 0 && dy == 0 {
             return;
         }
-        for &id in &self.content_descendants {
-            if let Some((x, y, width, height)) = crate::widget_geometry(id) {
-                crate::set_widget_geometry(id, x - dx, y - dy, width, height);
-            }
-        }
+        let mut moved = 0usize;
+        crate::control_backend::get_control_backend().translate_widget_geometries(
+            &self.content_descendants,
+            -dx,
+            -dy,
+            &mut moved,
+        );
+        let _ = moved;
     }
 
     /// Sets the total content size (used for AsNeeded scroll bar calculation).
@@ -1585,6 +1586,11 @@ impl ScrollArea {
 /// crate reads them: `Left`/`Right` and `Top`/`Bottom` move one axis each, `Center` moves both, and
 /// a variant that names the *other* axis than the one being resolved leaves it alone. That is why
 /// one `match` returns both offsets rather than two `match`es returning one each.
+/// Applies the scroll translation to the content child's frame.
+///
+/// `dx`/`dy` are not involved here: this is the placement derivation the scroll offset is
+/// subtracted from by [`ScrollArea::content_child_rect`]. Split out so the layout rule is a plain
+/// function the placement tests can exercise without a platform geometry backend.
 fn content_frame(
     viewport: Rect,
     content_size: Size,

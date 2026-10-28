@@ -373,6 +373,7 @@ impl SuggestionPopup {
     /// a tag field's suggestions), so it needs the original index of each painted row rather than
     /// a copy of the labels. Exposing the map is what lets the host paint from its own storage
     /// while the filter and window stay here (I-129).
+    #[cfg(full_widgets)]
     pub(crate) fn visible_indices(&self) -> &[usize] {
         &self.visible
     }
@@ -740,10 +741,7 @@ impl Draw for SuggestionPopup {
         let border = style.border_color.unwrap_or_else(|| surface.blend(&ink, 0.25));
         let accent = crate::style::resolved_theme_style_shared("suggestion_popup")
             .and_then(|resolved| resolved.background_color)
-            .or_else(|| {
-                let manager = crate::style::theme_manager();
-                manager.current_theme().map(|theme| theme.colors.primary)
-            })
+            .or_else(|| crate::style::palette_shared().map(|colors| colors.primary))
             .unwrap_or(Color::PRIMARY);
 
         context.fill_rounded_rect(popup, 2, surface);

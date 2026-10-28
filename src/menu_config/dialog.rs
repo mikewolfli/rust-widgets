@@ -348,9 +348,8 @@ impl Draw for MenuConfigPanel {
         let style = self.base.style();
         let surface = style.background_color.unwrap_or(Color::rgb(245, 245, 245));
         let ink = style.text_color.unwrap_or_else(|| surface.contrast_color());
-        let accent = crate::style::theme_manager()
-            .current_theme()
-            .map(|theme| theme.colors.primary)
+        let accent = crate::style::palette_shared()
+            .map(|colors| colors.primary)
             .unwrap_or(Color::rgb(0, 120, 215));
         context.fill_rounded_rect(geom, 4, surface);
         context.draw_rounded_rect_stroke(geom, 4, surface.blend(&ink, 0.3), 1);

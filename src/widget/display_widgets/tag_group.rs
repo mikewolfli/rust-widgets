@@ -265,33 +265,45 @@ impl TagGroup {
     /// Each tag's own `size_hint` is the cell, so a group never invents a size the tag would not
     /// declare. Wrapping is row-major and the last row's height is not reserved.
     fn layout_tags(&mut self) {
-        // Ask each child for its cell first: `Tag::size_hint` revalidates its own cache and
-        // bumps its revision if a measurement input changed, so this read is what makes a
-        // face or text change visible to the group's own cache.
-        let revisions: Vec<u64> = self
-            .tags
-            .iter()
-            .map(|tag| {
-                let _ = tag.size_hint();
-                tag.size_hint_revision()
-            })
-            .collect();
+        // Compare the cached revision list **in place** rather than collecting a fresh Vec on every
+        // call. The steady state is the common one — `draw` and the event path both call this — and
+        // it must not allocate. `size_hint` still runs for each child first, because that read is
+        // what revalidates a child's own cache and bumps its revision when a measurement input
+        // changed; only the comparison is now borrowed.
         let rect = self.geometry();
-        let fresh = self.layout_cache.borrow().as_ref().is_some_and(|cache| {
-            cache.rect == rect
-                && cache.wrap == self.wrap
-                && cache.spacing == self.spacing
-                && cache.revisions == revisions
-        });
-        if fresh {
+        let cache_matches = {
+            let cache = self.layout_cache.borrow();
+            match cache.as_ref() {
+                Some(cache)
+                    if cache.rect == rect
+                        && cache.wrap == self.wrap
+                        && cache.spacing == self.spacing
+                        && cache.revisions.len() == self.tags.len() =>
+                {
+                    let mut matches = true;
+                    for (tag, revision) in self.tags.iter().zip(cache.revisions.iter()) {
+                        let _ = tag.size_hint();
+                        if tag.size_hint_revision() != *revision {
+                            matches = false;
+                            break;
+                        }
+                    }
+                    matches
+                }
+                _ => false,
+            }
+        };
+        if cache_matches {
             return;
         }
         let spacing = self.spacing as i32;
         let mut x = rect.x;
         let mut y = rect.y;
         let mut row_height = 0u32;
+        let mut revisions = Vec::with_capacity(self.tags.len());
         for tag in &mut self.tags {
             let hint = tag.size_hint();
+            revisions.push(tag.size_hint_revision());
             let width = hint.width.max(1);
             let height = hint.height.max(1);
             if self.wrap && x > rect.x && x + width as i32 > rect.x + rect.width as i32 {
@@ -586,6 +598,35 @@ mod tests {
         group.tags[0].set_text("a much longer label".to_string());
         group.layout_tags();
         assert_eq!(group.layout_epoch.get(), first + 2, "a child measurement change rebuilds");
+    }
+
+    /// BP-002: a steady layout reuses the cached revision list without allocating a new one.
+    #[test]
+    fn a_steady_layout_reuses_the_cached_revision_list() {
+        let mut group = TagGroup::new(Rect::new(0, 0, 300, 40));
+        group.add_tag("alpha");
+        group.add_tag("beta");
+        group.layout_tags();
+        let (ptr, capacity, length) = {
+            let cache = group.layout_cache.borrow();
+            let revisions = &cache.as_ref().expect("the first layout fills the cache").revisions;
+            (revisions.as_ptr(), revisions.capacity(), revisions.len())
+        };
+        assert_eq!(length, 2);
+
+        group.layout_tags();
+        let cache = group.layout_cache.borrow();
+        let revisions = &cache.as_ref().unwrap().revisions;
+        assert_eq!(revisions.as_ptr(), ptr, "the cached revision list is compared in place");
+        assert_eq!(revisions.capacity(), capacity, "no fresh Vec is allocated on a hit");
+        assert_eq!(revisions.len(), length);
+        drop(cache);
+
+        // A child measurement change still rebuilds, so the in-place comparison is not blind.
+        group.tags[0].set_text("a much longer label".to_string());
+        group.layout_tags();
+        let cache = group.layout_cache.borrow();
+        assert_eq!(cache.as_ref().unwrap().revisions.len(), 2);
     }
 
     #[test]

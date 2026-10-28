@@ -732,11 +732,8 @@ impl Draw for Accordion {
         let style = self.base.style();
         let themed = crate::style::resolved_theme_style_shared("accordion");
         let (window_background, window_foreground, accent) = {
-            let manager = crate::style::theme_manager();
-            match manager.current_theme() {
-                Some(theme) => {
-                    (theme.colors.background, theme.colors.foreground, theme.colors.primary)
-                }
+            match crate::style::palette_shared() {
+                Some(colors) => (colors.background, colors.foreground, colors.primary),
                 None => (Color::WHITE, Color::BLACK, Color::PRIMARY),
             }
         };

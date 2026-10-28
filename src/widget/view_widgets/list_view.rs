@@ -23,6 +23,7 @@ use crate::widget::capability::coercion::{
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::companions::{ListState, ListStateHost};
 use crate::widget::metrics::{dimensions, effective_font, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
@@ -547,6 +548,21 @@ pub struct ListView {
     type_ahead_buffer: String,
     /// When the last type-ahead character arrived; a gap over 800 ms starts a new search.
     type_ahead_last: Option<Instant>,
+    /// Per-item tooltip source (V-005); `None` keeps the historical no-tooltip behaviour.
+    item_tooltip: Option<Arc<dyn Fn(usize) -> Option<String> + Send + Sync>>,
+    /// The state surface this list keeps in step, when one is attached.
+    list_state: Option<ListStateBinding>,
+}
+
+/// The live link between a [`ListView`] and a [`ListStateHost`].
+///
+/// The list owns the host and pushes the state its row count implies: no rows is
+/// [`ListState::Empty`], rows is [`ListState::Idle`]. `Loading` and `Error` belong to the loader and
+/// are never overwritten by a row-count poll. `ListStateHost` has no row-count, selection or hover
+/// setters, so those facts are reported but not pushed.
+struct ListStateBinding {
+    /// The state surface kept in step with the list's row count.
+    host: ListStateHost,
 }
 
 /// Bounded cache of measured trailing-text widths (F-P09).
@@ -583,6 +599,8 @@ impl ListView {
             trailing_width_cache: std::cell::RefCell::new(TrailingWidthCache::default()),
             type_ahead_buffer: String::new(),
             type_ahead_last: None,
+            item_tooltip: None,
+            list_state: None,
         }
     }
     /// Binds an external list model.
@@ -600,6 +618,76 @@ impl ListView {
         self.normalize_projection_state();
         self.base.request_layout();
         self.base.request_redraw();
+    }
+
+    /// Follows a [`ListStateHost`] with this list's row count.
+    ///
+    /// This is the companion binding for COMP-A8. The host's four states are about rows that do
+    /// not exist yet, so the list reports the one transition it owns: an empty model is
+    /// [`ListState::Empty`] and a non-empty one is [`ListState::Idle`]. `Loading` and `Error` are
+    /// left to the loader, because a row-count poll cannot tell "still loading" from "failed".
+    /// Attaching adopts the current row count immediately; [`Self::poll_list_state_host`] repeats
+    /// the comparison on every paint and event. Attaching replaces any previous host.
+    pub fn attach_list_state_host(&mut self, mut host: ListStateHost) {
+        let rows = self.row_count();
+        let bound = self.has_model();
+        Self::push_list_state(&mut host, rows, bound);
+        self.list_state = Some(ListStateBinding { host });
+        self.base.request_redraw();
+    }
+
+    /// Stops following the attached state surface and returns it.
+    pub fn detach_list_state_host(&mut self) -> Option<ListStateHost> {
+        let binding = self.list_state.take()?;
+        self.base.request_redraw();
+        Some(binding.host)
+    }
+
+    /// Whether a [`ListStateHost`] is attached.
+    pub fn is_list_state_host_attached(&self) -> bool {
+        self.list_state.is_some()
+    }
+
+    /// The attached state surface, if any.
+    pub fn list_state_host(&self) -> Option<&ListStateHost> {
+        self.list_state.as_ref().map(|binding| &binding.host)
+    }
+
+    /// The attached state surface for editing, if any.
+    pub fn list_state_host_mut(&mut self) -> Option<&mut ListStateHost> {
+        self.list_state.as_mut().map(|binding| &mut binding.host)
+    }
+
+    /// Applies the state implied by the current row count to the attached host.
+    ///
+    /// Returns whether the host's state changed; a second call with the same row count returns
+    /// `false`.
+    pub fn poll_list_state_host(&mut self) -> bool {
+        let rows = self.row_count();
+        let bound = self.has_model();
+        let Some(binding) = self.list_state.as_mut() else {
+            return false;
+        };
+        Self::push_list_state(&mut binding.host, rows, bound)
+    }
+
+    /// Writes the row-count-derived state into `host`.
+    ///
+    /// A list with no model is [`ListState::Idle`] (nothing has been asked for yet); a bound empty
+    /// model is [`ListState::Empty`]; bound rows are [`ListState::Idle`]. `Loading` and `Error` are
+    /// loader-owned and are never overwritten.
+    fn push_list_state(host: &mut ListStateHost, rows: usize, bound: bool) -> bool {
+        let desired = match (bound, rows, host.state()) {
+            (false, _, ListState::Idle | ListState::Empty) => ListState::Idle,
+            (true, 0, ListState::Idle | ListState::Empty) => ListState::Empty,
+            (true, rows, ListState::Empty) if rows > 0 => ListState::Idle,
+            (_, _, current) => current,
+        };
+        if host.state() == desired {
+            return false;
+        }
+        host.set_state(desired);
+        true
     }
     /// Returns whether a model is currently bound.
     pub fn has_model(&self) -> bool {
@@ -1061,6 +1149,24 @@ impl ListView {
         self.item_delegate.as_deref()
     }
 
+    /// Installs the per-item tooltip source. The callback runs only for the hovered item.
+    pub fn set_item_tooltip(&mut self, source: Arc<dyn Fn(usize) -> Option<String> + Send + Sync>) {
+        self.item_tooltip = Some(source);
+        self.base.request_redraw();
+    }
+
+    /// Removes the tooltip source.
+    pub fn clear_item_tooltip(&mut self) {
+        if self.item_tooltip.take().is_some() {
+            self.base.request_redraw();
+        }
+    }
+
+    /// The tooltip text for item `row`, from the installed source.
+    pub fn item_tooltip(&self, row: usize) -> Option<String> {
+        self.item_tooltip.as_ref().and_then(|source| source(row))
+    }
+
     /// The band item `index` occupies: its column's slice of its row.
     ///
     /// In a one-column mode this is the row's own band, so [`Self::row_rect`] and this agree exactly
@@ -1319,6 +1425,9 @@ impl WidgetProperties for ListView {
 
 impl Draw for ListView {
     fn draw(&mut self, context: &mut RenderContext) {
+        // The row-count state surface is a shared write, drained before painting so the frame
+        // that follows a model change already reflects it.
+        let _ = self.poll_list_state_host();
         let rect = self.base.geometry();
 
         // Chrome colours resolve explicit style first, then the theme's resolved style for
@@ -1326,8 +1435,9 @@ impl Draw for ListView {
         // switch visible; the surface, the border, the focused-row highlight and the text
         // colour used to be hardcoded literals, so light and dark rendered identically.
         //
-        // The theme reads take and release the global manager's lock internally, so no guard
-        // is held across the draw (the mutex is not re-entrant).
+        // The theme read takes and releases the global manager's lock internally, and the palette
+        // comes from the shared snapshot, so no guard is held across the draw (the mutex is not
+        // re-entrant).
         let style = self.base.style();
         let theme = crate::style::resolved_theme_style_shared("list_view");
         let surface = style
@@ -1345,10 +1455,8 @@ impl Draw for ListView {
             .unwrap_or_else(|| surface.blend(&ink, 0.20));
         // The focused row is a selection state, so it reads the theme's accent token rather
         // than a second literal blue, and is laid over the surface so it stays legible.
-        let accent = crate::style::theme_manager()
-            .current_theme()
-            .map(|active| active.colors.primary)
-            .unwrap_or(Color::PRIMARY);
+        let accent =
+            crate::style::palette_shared().map(|colors| colors.primary).unwrap_or(Color::PRIMARY);
         let focused_bg = surface.blend(&accent, 0.30);
         // A hovered row is the same accent at a **lighter** weight than the focused row: it is a
         // pointer position rather than a committed selection, so it has to read as "this is the row a
@@ -1531,10 +1639,42 @@ impl Draw for ListView {
                 }
             }
         }
+
+        // ── Hover tooltip (V-005) ──
+        //
+        // The callback runs only for the hovered item, so a large model costs one lookup per frame
+        // at most. The bubble is anchored to the item's own band, from the same `item_rect` the hit
+        // test reads.
+        if let Some(row) = self.hovered_row {
+            if let Some(text) = self.item_tooltip(row).filter(|text| !text.is_empty()) {
+                if let Some(band) = self.item_rect(row) {
+                    let style = self.base.style();
+                    let font = effective_font(style);
+                    let surface = style.background_color.unwrap_or(Color::WHITE);
+                    let ink = style.text_color.unwrap_or(Color::BLACK);
+                    let tip_height = band.height.max(1);
+                    let tip_y = (band.y + band.height as i32 + 2)
+                        .min(rect.y + rect.height as i32 - tip_height as i32)
+                        .max(rect.y);
+                    let tip =
+                        Rect::new(band.x, tip_y, band.width.max(80).min(rect.width), tip_height);
+                    context.fill_rect(tip, surface.blend(&ink, 0.06));
+                    context.draw_rect(tip, surface.blend(&ink, 0.2));
+                    context.draw_text_fitted_cow(
+                        context.text_line(tip, font),
+                        &text,
+                        font,
+                        ink,
+                        HorizontalAlignment::Left,
+                    );
+                }
+            }
+        }
     }
 }
 impl crate::event::EventHandler for ListView {
     fn handle_event(&mut self, event: &crate::event::Event) {
+        let _ = self.poll_list_state_host();
         // The base keeps the control-level facts (`hovered`, `pressed`, `focus_reason`), and its
         // `MouseEnter`/`MouseLeave` arms are what make `widget_state()` answer `Hover` for this
         // control. This handler did not forward to it at all, so the theme's `"list_view:hover"`
@@ -2227,5 +2367,40 @@ mod tests {
 
         view.handle_event(&crate::event::Event::KeyPress { key: b'r' as u32, modifiers: 0 });
         assert_eq!(view.focused_row(), Some(2), "'br' continues to bravo");
+    }
+
+    /// The attached state surface follows the row count and a detached one stops following it.
+    #[test]
+    fn the_list_state_host_follows_the_row_count() {
+        let mut view = ListView::new(Rect::new(0, 0, 320, 240));
+        view.attach_list_state_host(ListStateHost::new(Rect::new(0, 0, 320, 120)));
+        assert!(view.is_list_state_host_attached());
+        assert_eq!(
+            view.list_state_host().expect("attached").state(),
+            ListState::Idle,
+            "attach leaves an unbound list idle"
+        );
+        assert!(!view.poll_list_state_host(), "an unchanged row count is not re-applied");
+
+        view.set_model(Arc::new(VecListModel::new(Vec::new())));
+        assert!(view.poll_list_state_host(), "a bound empty model is the empty state");
+        assert_eq!(view.list_state_host().expect("attached").state(), ListState::Empty);
+
+        view.set_model(Arc::new(VecListModel::new(vec!["one".to_string()])));
+        assert!(view.poll_list_state_host(), "new rows leave the empty state");
+        assert_eq!(view.list_state_host().expect("attached").state(), ListState::Idle);
+        assert!(!view.poll_list_state_host(), "the second poll has nothing to do");
+
+        // A loader-owned state is not a fact the row count can resolve, so it is preserved.
+        view.list_state_host_mut().expect("attached").set_state(ListState::Loading);
+        assert!(!view.poll_list_state_host(), "loading is not overwritten by a row count");
+        assert_eq!(view.list_state_host().expect("attached").state(), ListState::Loading);
+        view.list_state_host_mut().expect("attached").set_state(ListState::Idle);
+
+        let host = view.detach_list_state_host().expect("detached");
+        assert!(!view.is_list_state_host_attached());
+        view.set_model(Arc::new(VecListModel::new(Vec::new())));
+        assert!(!view.poll_list_state_host(), "a detached host is not polled");
+        assert_eq!(host.state(), ListState::Idle, "detach stops updates");
     }
 }

@@ -858,6 +858,80 @@ pub enum RenderCommand {
     PopMatte,
     /// Composite the matted layer through the mask and restore the backdrop.
     EndMatte,
+
+    // ── Recorder-owned payloads (G-802) ──
+    //
+    // These four variants are produced **only** by `RenderContext`'s region recorder. Their
+    // payloads live in the recorder's frame arenas, so recording a path or a label allocates
+    // nothing; `RegionBuckets::flush` resolves each slice and calls the backend's by-reference
+    // entry point. They never reach a backend's `execute_command`, which is why the arms there
+    // assert rather than paint.
+    /// A [`RenderCommand::DrawPath`] whose vertices are `path_arena[start..start + len]`.
+    DrawPathRecorded {
+        /// First index into the recorder's point arena.
+        start: usize,
+        /// Number of vertices.
+        len: usize,
+        /// Bounds computed while recording, so region replay needs no second scan.
+        bounds: Rect,
+        /// Connects the last point back to the first when stroking.
+        closed: bool,
+        /// Stroke color, or fill color when `filled` is true.
+        color: Color,
+        /// Fills the polygon instead of stroking it.
+        filled: bool,
+        /// Stroke width in pixels.
+        width: u32,
+    },
+    /// A [`RenderCommand::DrawPathDashed`] whose vertices are in the recorder's arena.
+    DrawPathDashedRecorded {
+        /// First index into the recorder's point arena.
+        start: usize,
+        /// Number of vertices.
+        len: usize,
+        /// Bounds computed while recording.
+        bounds: Rect,
+        /// Connects the last point back to the first before dashing.
+        closed: bool,
+        /// Stroke color.
+        color: Color,
+        /// Stroke width in pixels.
+        width: u32,
+        /// Alternating mark/gap lengths in pixels.
+        dash: DashPattern,
+    },
+    /// A [`RenderCommand::FillPathNonZero`] whose payload is in the recorder's arenas.
+    FillPathNonZeroRecorded {
+        /// First index into the recorder's point arena.
+        point_start: usize,
+        /// Number of vertices.
+        point_len: usize,
+        /// First index into the recorder's contour arena.
+        contour_start: usize,
+        /// Number of contours.
+        contour_len: usize,
+        /// Bounds computed while recording.
+        bounds: Rect,
+        /// Fill colour.
+        color: Color,
+    },
+    /// A [`RenderCommand::DrawText`] whose text is `text_arena[text_start..text_start + text_len]`.
+    DrawTextRecorded {
+        /// Baseline start, per `alignment`.
+        origin: Point,
+        /// First byte index into the recorder's text arena.
+        text_start: usize,
+        /// Byte length.
+        text_len: usize,
+        /// Bounds computed while recording.
+        bounds: Rect,
+        /// The face the text is painted with.
+        font: Font,
+        /// Text colour.
+        color: Color,
+        /// Horizontal placement relative to `origin`.
+        alignment: HorizontalAlignment,
+    },
     /// Draw a conic (angular/sweep) gradient (BLUE11 R5.7).
     DrawConicGradient {
         /// Center point of the gradient.
@@ -951,6 +1025,10 @@ impl RenderCommand {
                 Some(bounds_of_points(points, *width))
             }
             Self::FillPathNonZero { path, .. } => Some(bounds_of_points(path.points(), 0)),
+            Self::DrawPathRecorded { bounds, .. }
+            | Self::DrawPathDashedRecorded { bounds, .. }
+            | Self::FillPathNonZeroRecorded { bounds, .. }
+            | Self::DrawTextRecorded { bounds, .. } => Some(*bounds),
             Self::ClipPath { points } => Some(bounds_of_points(points, 0)),
             // State commands, and conic gradients whose extent comes from the clip rather than
             // from the command. Replayed in every region.
@@ -981,7 +1059,7 @@ fn bounds_of_corners(corners: &[Point; 4]) -> Rect {
 }
 
 /// The bounding box of `points`, expanded by `stroke` pixels on each side.
-fn bounds_of_points(points: &[Point], stroke: u32) -> Rect {
+pub(crate) fn bounds_of_points(points: &[Point], stroke: u32) -> Rect {
     let Some(first) = points.first() else {
         return Rect::new(0, 0, 0, 0);
     };
@@ -1022,7 +1100,12 @@ fn bounds_around_point(center: Point, radius: u32) -> Rect {
 /// text and, because it is only used to decide which region a command is replayed into, erring
 /// large is safe: the command may be replayed by one extra region, never omitted from one it
 /// touches.
-fn bounds_of_text(origin: Point, text: &str, font: &Font, alignment: HorizontalAlignment) -> Rect {
+pub(crate) fn bounds_of_text(
+    origin: Point,
+    text: &str,
+    font: &Font,
+    alignment: HorizontalAlignment,
+) -> Rect {
     let em = font.size().max(1.0);
     let scalars = text.chars().count().max(1) as f32;
     let width = (scalars * em + em * 2.0).round().max(1.0) as u32;

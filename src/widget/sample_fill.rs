@@ -58,9 +58,14 @@ use crate::widget::advanced_widgets::dial::Dial;
 use crate::widget::advanced_widgets::pie_menu::PieMenu;
 use crate::widget::advanced_widgets::ribbon_bar::RibbonBar;
 use crate::widget::advanced_widgets::tab_bar::TabBar;
+use crate::widget::chart_widgets::{ChartReferenceLine, LineChart, ReferenceLineSpec};
+use crate::widget::media_widgets::chapter_list_panel::ChapterListPanel;
+use crate::widget::media_widgets::video_player::VideoChapter;
 use crate::widget::companions::{
-    DrawerSectionHeader, LayerEntry, LayerPanel, Legend, LegendEntry, MenuPanel, MenuPanelItem,
-    PlaylistPanel, SpeedDial, SpeedDialAction, SwipeAction, SwipeActions,
+    CommandPaletteHost, DragGhostLayer, DrawerSectionHeader, DropDownPopupHost, FindReplaceBar,
+    HeaderMenu, LayerEntry, LayerPanel, Legend, LegendEntry, ListState, ListStateHost, MenuPanel,
+    MenuPanelItem, PaletteEntryRef, PlaylistPanel, PopupItem, SpeedDial, SpeedDialAction,
+    SwipeAction, SwipeActions,
 };
 use crate::widget::container_widgets::carousel::Carousel;
 use crate::widget::container_widgets::groupbox::GroupBox;
@@ -94,6 +99,7 @@ use crate::widget::menu_toolbar::menu::Menu;
 use crate::widget::menu_toolbar::menu_bar::MenuBar;
 use crate::widget::menu_toolbar::menu_button::{MenuButton, MenuItem};
 use crate::widget::menu_toolbar::tool_bar::ToolBar;
+use crate::widget::misc_widgets::avatar::{Avatar, GroupAvatar};
 use crate::widget::misc_widgets::date_range_picker::{RangePreset, RangePresetBar};
 use crate::widget::misc_widgets::segmented_button::{Segment, SegmentedButton};
 use crate::widget::nav_widgets::bottom_navigation_bar::BottomNavigationBar;
@@ -115,11 +121,13 @@ use crate::widget::special_widgets::finance::{Bar, BookLevel, OrderBook, PriceSe
 use crate::widget::special_widgets::gantt_widget::{GanttTask, GanttWidget};
 use crate::widget::special_widgets::grid::GridWidget;
 use crate::widget::special_widgets::kanban_board::{KanbanBoard, KanbanCard, KanbanColumn};
+use crate::widget::special_widgets::map_attribution::MapAttributionOverlay;
 use crate::widget::special_widgets::notification_center::{
     NotificationCenter, NotificationItem, NotificationLevel,
 };
 use crate::widget::special_widgets::segmented_control::{SegmentItem, SegmentedControl};
 use crate::widget::special_widgets::snackbar::Snackbar;
+use crate::widget::special_widgets::terminal_find_bar::TerminalFindBar;
 use crate::widget::special_widgets::timeline_widget::{TimelineItem, TimelineWidget};
 use crate::widget::special_widgets::toast::{ToastItem, ToastLevel, ToastStack};
 use crate::widget::view_widgets::data_grid::DataGrid;
@@ -1179,6 +1187,128 @@ pub fn apply(name: &str, widget: &mut dyn Widget) -> bool {
                 bar.open();
                 bar.set_query("widget");
                 bar.set_match_progress(2, 7);
+                true
+            }
+            None => false,
+        },
+        // ── Hosts whose content is mounted, not owned ──
+        //
+        // Each of these paints only once a host has opened it and given it rows, exactly the way
+        // a dialog paints only once something opens it. The fill is what puts them in that state
+        // for the snapshot: without it the picture is an empty frame and every branch inside
+        // `draw` (pop-up scrim, palette rows, ghost proxy) belongs to no artefact at all.
+        "find_replace_bar" => match widget_as_mut::<FindReplaceBar>(widget) {
+            Some(bar) => {
+                bar.set_query("widget");
+                bar.set_replacement("control");
+                bar.open();
+                true
+            }
+            None => false,
+        },
+        "drop_down_popup_host" => match widget_as_mut::<DropDownPopupHost>(widget) {
+            Some(host) => {
+                host.set_items(vec![
+                    PopupItem::new("copy", "Copy"),
+                    PopupItem::new("paste", "Paste"),
+                    PopupItem::new("delete", "Delete").with_enabled(false),
+                ]);
+                let anchor = host.geometry();
+                host.open_at(anchor);
+                true
+            }
+            None => false,
+        },
+        "command_palette_host" => match widget_as_mut::<CommandPaletteHost>(widget) {
+            Some(host) => {
+                host.set_entries(vec![
+                    PaletteEntryRef::new("format", "Format Document"),
+                    PaletteEntryRef::new("save", "Save All").with_hint("Ctrl+K S"),
+                ]);
+                host.open();
+                true
+            }
+            None => false,
+        },
+        "header_menu" => match widget_as_mut::<HeaderMenu>(widget) {
+            Some(menu) => {
+                let anchor = menu.geometry();
+                menu.open_for("name", anchor);
+                true
+            }
+            None => false,
+        },
+        "list_state_host" => match widget_as_mut::<ListStateHost>(widget) {
+            Some(host) => {
+                host.set_empty_content(None, "No results", "Try a different filter");
+                host.set_state(ListState::Empty);
+                true
+            }
+            None => false,
+        },
+        "drag_ghost_layer" => match widget_as_mut::<DragGhostLayer>(widget) {
+            Some(layer) => {
+                let origin = layer.geometry();
+                layer.begin(origin, "Row 3");
+                true
+            }
+            None => false,
+        },
+        "group_avatar" => match widget_as_mut::<GroupAvatar>(widget) {
+            Some(group) => {
+                let mut first = Avatar::new(Rect::new(0, 0, 40, 40));
+                first.set_text("AL");
+                first.set_bg_color(Color::rgb(63, 81, 181));
+                let mut second = Avatar::new(Rect::new(0, 0, 40, 40));
+                second.set_text("MK");
+                second.set_bg_color(Color::rgb(0, 150, 136));
+                let mut third = Avatar::new(Rect::new(0, 0, 40, 40));
+                third.set_text("RJ");
+                third.set_bg_color(Color::rgb(255, 152, 0));
+                group.set_avatars(vec![first, second, third]);
+                // Two visible of three, so the overflow badge is in the picture as well.
+                group.set_max_visible(2);
+                true
+            }
+            None => false,
+        },
+        // A reference line needs both an annotation and a value range; the range comes from the
+        // chart it annotates, so the fill attaches a seeded chart rather than only setting lines.
+        "chart_reference_line" => match widget_as_mut::<ChartReferenceLine>(widget) {
+            Some(line) => {
+                let mut chart = LineChart::new(Rect::new(0, 0, 200, 120));
+                chart.set_data(vec![(0.0, 10.0), (1.0, 40.0), (2.0, 25.0), (3.0, 60.0)]);
+                line.add_line(ReferenceLineSpec::new(30.0).with_label("Target"));
+                line.attach_line_chart(&chart);
+                true
+            }
+            None => false,
+        },
+        "terminal_find_bar" => match widget_as_mut::<TerminalFindBar>(widget) {
+            Some(bar) => {
+                bar.set_query("widget");
+                bar.set_match_count(3, 1);
+                bar.open();
+                true
+            }
+            None => false,
+        },
+        "chapter_list_panel" => match widget_as_mut::<ChapterListPanel>(widget) {
+            Some(panel) => {
+                panel.set_chapters(vec![
+                    VideoChapter::new("Intro", 0.0),
+                    VideoChapter::new("Main topic", 90.0),
+                    VideoChapter::new("Wrap-up", 240.0),
+                ]);
+                panel.set_position_ms(95_000);
+                true
+            }
+            None => false,
+        },
+        "map_attribution" => match widget_as_mut::<MapAttributionOverlay>(widget) {
+            Some(overlay) => {
+                overlay.add_entry("Map data (c) OpenStreetMap contributors", None::<&str>);
+                overlay.add_entry("Tiles (c) CARTO", None::<&str>);
                 true
             }
             None => false,

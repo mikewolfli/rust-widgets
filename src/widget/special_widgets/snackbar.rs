@@ -793,18 +793,15 @@ impl Draw for Snackbar {
         // One theme read for every derived colour, including the semantic progress token. The
         // previous form took the manager lock three separate times and pulled the same palette
         // apart in each (SP-P73).
-        let theme = {
-            let manager = crate::style::theme_manager();
-            manager.current_theme().map(|active| {
-                (
-                    active.colors.background,
-                    active.colors.foreground,
-                    active.colors.inverse_surface,
-                    active.colors.on_inverse_surface,
-                    active.colors.success,
-                )
-            })
-        };
+        let theme = crate::style::palette_shared().map(|colors| {
+            (
+                colors.background,
+                colors.foreground,
+                colors.inverse_surface,
+                colors.on_inverse_surface,
+                colors.success,
+            )
+        });
         // `Snackbar` is built on `WidgetKind::StatusBar` and classifies as
         // `Surface`, whose background is `theme.colors.background` — byte-identical
         // to the window behind it. The panel's own fill is therefore a step toward

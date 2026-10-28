@@ -921,10 +921,9 @@ impl Draw for Breadcrumb {
         // theme step a light/dark switch would change nothing on screen because
         // every colour below was previously hardcoded.
         //
-        // The theme reads are separate manager locks, each taken and released inside
-        // `resolved_theme_style` (or the scoped block below), so none is held across
-        // the draw or across another accessor — the global manager's mutex is not
-        // re-entrant.
+        // The theme reads happen inside `resolved_theme_style`, or as the palette snapshot
+        // below, so none is held across the draw or across another accessor — the global
+        // manager's mutex is not re-entrant.
         // The layout is resolved before the style borrow because `ensure_layout` writes the
         // cache; everything after this line only reads, so the style can be borrowed rather than
         // cloned, and one font serves every label (SP-P75).
@@ -936,10 +935,8 @@ impl Draw for Breadcrumb {
         // surface — a text control sits on whatever it was placed on. So the surface
         // comes from the theme's own background, which is what
         // `apply_active_theme` could not supply and what a light/dark switch changes
-        // most. The guard is scoped to this expression and released before any other
-        // theme accessor runs.
-        let theme_surface =
-            crate::style::theme_manager().current_theme().map(|theme| theme.colors.background);
+        // most. The read is a snapshot, so no manager guard survives this expression.
+        let theme_surface = crate::style::palette_shared().map(|colors| colors.background);
         let background = style
             .background_color
             .or_else(|| theme.as_ref().and_then(|t| t.background_color))

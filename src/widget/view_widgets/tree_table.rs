@@ -298,8 +298,14 @@ pub struct TreeTable {
     loading_paths: Vec<Vec<usize>>,
     /// Emitted when [`TreeTable::fetch_more`] asks the model for `path`.
     pub fetch_started: Signal1<Vec<usize>>,
-    /// Emitted when a fetch for `path` finishes; the `bool` is whether the model grew.
+    /// Emitted when the model answers a fetch: the path and whether children were found.
     pub fetch_finished: Signal1<(Vec<usize>, bool)>,
+    /// Per-column cell alignment (V-001); an absent entry means `Left`.
+    column_alignments: HashMap<usize, HorizontalAlignment>,
+    /// The first scrolling column after the frozen tree column (V-006).
+    scroll_column: usize,
+    /// Expansion snapshot replayed after a model reset (V-004).
+    saved_expansion: Vec<Vec<usize>>,
 }
 
 impl TreeTable {
@@ -344,6 +350,9 @@ impl TreeTable {
             loading_paths: Vec::new(),
             fetch_started: Signal1::new(),
             fetch_finished: Signal1::new(),
+            column_alignments: HashMap::new(),
+            scroll_column: 1,
+            saved_expansion: Vec::new(),
         }
     }
 
@@ -376,6 +385,9 @@ impl TreeTable {
         self.sort_key_cache.clear();
         self.sort_key_generation = self.data_generation.load(Ordering::Relaxed);
         self.expanded_paths.clear();
+        // The snapshot is model-relative, so it can be replayed against the replacement model
+        // rather than lost with the old model's indices (V-004).
+        self.restore_saved_expansion();
         // A new model invalidates the old selection: the visible rows no longer refer to the same
         // nodes. The clear is captured before it happens so it can be **announced** afterwards
         // (BLUE-issue E-20): a subscriber must see the selection go from its old value to `None`, not
@@ -476,13 +488,71 @@ impl TreeTable {
         self.base.request_redraw();
     }
 
-    /// The x offset and width of `column` in the table's own coordinates.
-    fn column_span(&self, column: usize) -> (i32, u32) {
-        let mut x = self.base.geometry().x;
-        for index in 0..column {
-            x = x.saturating_add(self.column_width_at(index) as i32);
+    /// The alignment `column` paints its cells with (V-001).
+    pub fn column_alignment(&self, column: usize) -> HorizontalAlignment {
+        self.column_alignments.get(&column).copied().unwrap_or(HorizontalAlignment::Left)
+    }
+
+    /// Sets one column's cell alignment, returning whether the column exists (V-001).
+    pub fn set_column_alignment(&mut self, column: usize, alignment: HorizontalAlignment) -> bool {
+        if column >= self.column_count() {
+            return false;
         }
-        (x, self.column_width_at(column))
+        if alignment == HorizontalAlignment::Left {
+            self.column_alignments.remove(&column);
+        } else {
+            self.column_alignments.insert(column, alignment);
+        }
+        self.base.request_redraw();
+        true
+    }
+
+    // ── Horizontal scrolling (V-006) ──
+
+    /// The first scrolling column after the frozen tree column.
+    pub fn scroll_column(&self) -> usize {
+        self.scroll_column
+    }
+
+    /// Sets the first scrolling column.
+    ///
+    /// Column `0` is always pinned as the tree column, so the value is clamped to `1..column_count`;
+    /// a wide table can therefore be read with its hierarchy visible at the leading edge.
+    pub fn set_scroll_column(&mut self, column: usize) {
+        let max = self.column_count().saturating_sub(1).max(1);
+        let next = column.clamp(1, max);
+        if self.scroll_column == next {
+            return;
+        }
+        self.scroll_column = next;
+        self.base.request_redraw();
+    }
+
+    /// The frozen prefix: column `0`, which carries the disclosure glyph and the label.
+    fn frozen_columns(&self) -> usize {
+        self.column_count().min(1)
+    }
+
+    /// The x offset and width of `column` in the table's own coordinates (V-006).
+    ///
+    /// The frozen tree column is pinned at the leading edge; a scrolling column travels by the
+    /// prefix before it, offset by the prefix before [`Self::scroll_column`]. The draw loops and
+    /// the header hit test share this one derivation, so a press cannot name a column other than
+    /// the one it is over.
+    fn column_span(&self, column: usize) -> (i32, u32) {
+        let rect = self.base.geometry();
+        let width = self.column_width_at(column);
+        let frozen = self.frozen_columns();
+        let prefix = |upto: usize| -> i32 {
+            (0..upto).map(|index| self.column_width_at(index) as i32).sum()
+        };
+        if column < frozen {
+            return (rect.x.saturating_add(prefix(column)), width);
+        }
+        let frozen_width = prefix(frozen);
+        let start = self.scroll_column.max(frozen);
+        let x = rect.x.saturating_add(frozen_width).saturating_add(prefix(column)) - prefix(start);
+        (x, width)
     }
 
     /// Returns the node path for visible row.
@@ -705,6 +775,39 @@ impl TreeTable {
             self.base.request_redraw();
         }
         changed
+    }
+
+    // ── Expansion persistence (V-004) ──
+
+    /// Every expanded branch, keyed by its model path.
+    ///
+    /// The paths are the same ones [`TreeTableModel`] addresses its nodes with, so they survive a
+    /// model reload that renumbers the visible rows.
+    pub fn expanded_paths(&self) -> Vec<Vec<usize>> {
+        self.expanded_paths.iter().cloned().collect()
+    }
+
+    /// Restores an expansion snapshot captured by [`Self::expanded_paths`].
+    ///
+    /// The snapshot replaces the current state. It is retained, so [`Self::set_model`] replays it
+    /// after a model reset: a host can restore once and keep it across reloads.
+    pub fn restore_expanded_paths(&mut self, paths: &[Vec<usize>]) {
+        self.saved_expansion = paths.to_vec();
+        self.expanded_paths.clear();
+        self.expanded_paths.extend(paths.iter().cloned());
+        self.rebuild_projection();
+        self.base.request_layout();
+        self.base.request_redraw();
+    }
+
+    /// Replays the retained snapshot against the current model.
+    fn restore_saved_expansion(&mut self) {
+        let saved = self.saved_expansion.clone();
+        for path in saved {
+            if self.path_has_children(&path) || (self.lazy_loading && self.can_fetch_more(&path)) {
+                self.expanded_paths.insert(path);
+            }
+        }
     }
 
     /// Collects every node path in model order, depth-first.
@@ -1636,11 +1739,13 @@ impl Draw for TreeTable {
         if self.show_header {
             let columns = self.column_count();
             let model_names = self.model.as_ref();
-            let mut x = rect.x;
             for col in 0..columns {
-                let width = self.column_width_at(col);
+                let (x, width) = self.column_span(col);
                 if x >= rect.x + rect.width as i32 {
                     break;
+                }
+                if x.saturating_add(width as i32) <= rect.x {
+                    continue;
                 }
                 let band = Rect::new(x, rect.y, width, self.row_height);
                 context.fill_rect(band, surface.blend(&ink, 0.08));
@@ -1682,7 +1787,6 @@ impl Draw for TreeTable {
                     };
                     crate::widget::draw_icon_at(context, icon_rect, ink, icon);
                 }
-                x = x.saturating_add(width as i32);
             }
         }
 
@@ -1704,12 +1808,15 @@ impl Draw for TreeTable {
                 );
             }
 
-            let mut x = rect.x;
             for col in 0..columns {
-                let width = self.column_width_at(col);
-                if x >= rect.x + rect.width as i32 {
+                let (span_x, width) = self.column_span(col);
+                if span_x >= rect.x + rect.width as i32 {
                     break;
                 }
+                if span_x.saturating_add(width as i32) <= rect.x {
+                    continue;
+                }
+                let x = span_x;
 
                 context.draw_rect(Rect::new(x, y, width, self.row_height), cell_border);
 
@@ -1760,10 +1867,13 @@ impl Draw for TreeTable {
                         &cell_text,
                         cell_font,
                         ink,
-                        HorizontalAlignment::Left,
+                        if col == 0 {
+                            HorizontalAlignment::Left
+                        } else {
+                            self.column_alignment(col)
+                        },
                     );
                 }
-                x = x.saturating_add(width as i32);
             }
         }
 
@@ -1869,6 +1979,15 @@ impl crate::event::EventHandler for TreeTable {
                 let scroll = crate::event::WheelScroll::from_event(*delta, *modifiers, 1);
                 let next = self.scroll_row as isize - scroll.lines_y as isize;
                 self.set_scroll_row(next.max(0) as usize);
+                // A horizontal notch, and Shift+wheel, move the scrolling column band (V-006).
+                let shift = crate::shortcut::Modifiers::from_event_bits(*modifiers)
+                    .contains(crate::shortcut::Modifiers::SHIFT);
+                let columns =
+                    scroll.columns_x as isize + if shift { -(scroll.lines_y as isize) } else { 0 };
+                if columns != 0 {
+                    let next = self.scroll_column.saturating_add_signed(columns);
+                    self.set_scroll_column(next);
+                }
             }
             Event::KeyPress { key, .. } if self.base.focus_reason().is_some() => {
                 let page = (self.base.geometry().height / self.row_height.max(1)) as usize;

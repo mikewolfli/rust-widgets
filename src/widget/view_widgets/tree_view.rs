@@ -15,6 +15,7 @@ use crate::widget::capability::properties_trait::{base_property_get, base_proper
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::{effective_font, ControlMetrics};
+use crate::widget::view_widgets::data_grid::ColumnWidthMode;
 use crate::widget::view_widgets::list_view::SelectionMode;
 use crate::widget::view_widgets::table_widget::ItemDelegate;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
@@ -49,6 +50,9 @@ const TREE_INDENT: i32 = 15;
 
 /// The width of a disclosure glyph's box, in pixels.
 const TREE_DISCLOSURE_SIZE: i32 = 6;
+
+/// The height of the multi-column header band, in pixels (V-003).
+const TREE_HEADER_HEIGHT: i32 = 24;
 
 /// Half-open point-in-rect test, matching the convention the rest of the widget layer uses.
 fn point_in_rect(point: Point, rect: Rect) -> bool {
@@ -129,12 +133,20 @@ pub struct TreeColumn {
     pub title: String,
     /// Width in logical pixels.
     pub width: u32,
+    /// How the column's cell text is aligned (V-001).
+    pub alignment: HorizontalAlignment,
 }
 
 impl TreeColumn {
     /// A column with a title and a width of at least one pixel.
     pub fn new(title: impl Into<String>, width: u32) -> Self {
-        Self { title: title.into(), width: width.max(1) }
+        Self { title: title.into(), width: width.max(1), alignment: HorizontalAlignment::Left }
+    }
+
+    /// Sets the column's alignment.
+    pub fn with_alignment(mut self, alignment: HorizontalAlignment) -> Self {
+        self.alignment = alignment;
+        self
     }
 }
 
@@ -426,6 +438,20 @@ pub struct TreeView {
     pub row_move_requested: Signal1<(usize, usize)>,
     /// Emitted with the effect of a drag that began in this tree (V-016).
     pub drag_finished: Signal1<DropEffect>,
+    /// Whether the multi-column header band is painted (V-003).
+    header_visible: bool,
+    /// The column whose header shows the sort indicator (V-003).
+    sort_column: Option<usize>,
+    /// Whether the sorted column runs descending (V-003).
+    sort_descending: bool,
+    /// How the multi-column header decides its section widths (V-003).
+    section_resize_mode: ColumnWidthMode,
+    /// Emitted with the column index when a header section is clicked (V-003).
+    pub on_header_clicked: Signal1<usize>,
+    /// Per-node tooltip source (V-005); `None` keeps the historical no-tooltip behaviour.
+    node_tooltip: Option<Arc<dyn Fn(usize) -> Option<String> + Send + Sync>>,
+    /// Expansion snapshot replayed after a model reset (V-004).
+    saved_expansion: Vec<Vec<usize>>,
 }
 impl TreeView {
     /// Creates an empty tree view.
@@ -473,6 +499,13 @@ impl TreeView {
             columns: Vec::new(),
             row_move_requested: Signal1::new(),
             drag_finished: Signal1::new(),
+            header_visible: true,
+            sort_column: None,
+            sort_descending: false,
+            section_resize_mode: ColumnWidthMode::Fixed,
+            on_header_clicked: Signal1::new(),
+            node_tooltip: None,
+            saved_expansion: Vec::new(),
         }
     }
     /// Binds an external tree model.
@@ -493,6 +526,9 @@ impl TreeView {
         }
         self.model = Some(model);
         self.expanded_override.clear();
+        // Expansion paths are model-relative, so a replacement model can replay the snapshot the
+        // host captured with `expanded_paths` (V-004).
+        self.restore_saved_expansion();
         self.editing = None;
         self.normalize_projection_state();
         self.data_generation.fetch_add(1, Ordering::Relaxed);
@@ -1119,14 +1155,281 @@ impl TreeView {
     /// Column `0` carries the disclosure glyph and the label; each later column reads
     /// [`TreeModel::node_column_text`]. An empty list restores the single-label presentation.
     pub fn set_columns(&mut self, columns: Vec<TreeColumn>) {
-        let columns: Vec<TreeColumn> =
-            columns.into_iter().map(|column| TreeColumn::new(column.title, column.width)).collect();
+        let columns: Vec<TreeColumn> = columns
+            .into_iter()
+            .map(|column| {
+                let mut rebuilt = TreeColumn::new(column.title, column.width);
+                rebuilt.alignment = column.alignment;
+                rebuilt
+            })
+            .collect();
         if columns == self.columns {
             return;
         }
         self.columns = columns;
         self.base.request_layout();
         self.base.request_redraw();
+    }
+
+    // ── Header band and sort indicator (V-003) ──
+
+    /// Whether the multi-column header band is painted.
+    pub fn header_visible(&self) -> bool {
+        self.header_visible
+    }
+
+    /// Shows or hides the multi-column header band.
+    ///
+    /// A tree with no columns never paints one, regardless of this flag, because there is no
+    /// header to name.
+    pub fn set_header_visible(&mut self, visible: bool) {
+        if self.header_visible == visible {
+            return;
+        }
+        self.header_visible = visible;
+        self.base.request_layout();
+        self.base.request_redraw();
+    }
+
+    /// The column whose header currently carries the sort indicator.
+    pub fn sort_column(&self) -> Option<usize> {
+        self.sort_column
+    }
+
+    /// Whether the sorted column runs descending.
+    pub fn sort_descending(&self) -> bool {
+        self.sort_descending
+    }
+
+    /// Sets the sorted column, keeping the current direction, or clears the indicator.
+    pub fn set_sort_column(&mut self, column: Option<usize>) {
+        if column.is_some_and(|column| column >= self.columns.len()) {
+            return;
+        }
+        if self.sort_column == column {
+            return;
+        }
+        self.sort_column = column;
+        if column.is_some() {
+            self.sort_descending = false;
+        }
+        self.base.request_redraw();
+    }
+
+    /// Advances `column`'s sort state: unsorted → ascending → descending → unsorted.
+    pub fn toggle_sort_column(&mut self, column: usize) -> Option<bool> {
+        if column >= self.columns.len() {
+            return None;
+        }
+        let next = match self.sort_column {
+            Some(current) if current == column => {
+                if self.sort_descending {
+                    self.sort_column = None;
+                    None
+                } else {
+                    self.sort_descending = true;
+                    Some(true)
+                }
+            }
+            _ => {
+                self.sort_column = Some(column);
+                self.sort_descending = false;
+                Some(false)
+            }
+        };
+        self.base.request_redraw();
+        next
+    }
+
+    /// How the header decides its section widths.
+    pub fn section_resize_mode(&self) -> ColumnWidthMode {
+        self.section_resize_mode
+    }
+
+    /// Sets how the header decides its section widths.
+    pub fn set_section_resize_mode(&mut self, mode: ColumnWidthMode) {
+        if self.section_resize_mode == mode {
+            return;
+        }
+        self.section_resize_mode = mode;
+        self.base.request_layout();
+        self.base.request_redraw();
+    }
+
+    /// The width painted for column `column` under the current resize mode.
+    pub fn column_width_at(&self, column: usize) -> u32 {
+        let Some(descriptor) = self.columns.get(column) else {
+            return 0;
+        };
+        let width = descriptor.width.max(1);
+        let content_width = ControlMetrics::band_inset(self.base.geometry(), TREE_INSET).width;
+        match self.section_resize_mode {
+            ColumnWidthMode::Fixed | ColumnWidthMode::Interactive => width,
+            ColumnWidthMode::Stretch => {
+                let count = self.columns.len().max(1) as u32;
+                (content_width / count).max(1)
+            }
+            ColumnWidthMode::StretchLast => {
+                if column + 1 != self.columns.len() {
+                    return width;
+                }
+                let used: u32 = (0..column).map(|index| self.columns[index].width.max(1)).sum();
+                content_width.saturating_sub(used).max(1)
+            }
+        }
+    }
+
+    /// Sets one column's cell alignment, returning whether the column exists.
+    pub fn set_column_alignment(&mut self, column: usize, alignment: HorizontalAlignment) -> bool {
+        let Some(descriptor) = self.columns.get_mut(column) else {
+            return false;
+        };
+        if descriptor.alignment == alignment {
+            return true;
+        }
+        descriptor.alignment = alignment;
+        self.base.request_redraw();
+        true
+    }
+
+    /// The alignment column `column` paints its cells with.
+    pub fn column_alignment(&self, column: usize) -> HorizontalAlignment {
+        self.columns.get(column).map_or(HorizontalAlignment::Left, |column| column.alignment)
+    }
+
+    /// The height the header band reserves above the rows, or `0` when no header is painted.
+    fn header_offset(&self) -> i32 {
+        if self.header_visible && !self.columns.is_empty() {
+            TREE_HEADER_HEIGHT
+        } else {
+            0
+        }
+    }
+
+    /// The header band, when one is painted.
+    fn header_band(&self) -> Option<Rect> {
+        let offset = self.header_offset();
+        if offset == 0 {
+            return None;
+        }
+        let content = ControlMetrics::band_inset(self.base.geometry(), TREE_INSET);
+        Some(Rect::new(content.x, content.y, content.width, offset as u32))
+    }
+
+    /// The header column under `point`, for the press and resize paths (V-003).
+    fn header_column_at(&self, point: Point) -> Option<usize> {
+        let band = self.header_band()?;
+        if !band.contains_point(point) {
+            return None;
+        }
+        let mut x = band.x;
+        for column in 0..self.columns.len() {
+            x = x.saturating_add(self.column_width_at(column) as i32);
+            if point.x < x {
+                return Some(column);
+            }
+        }
+        None
+    }
+
+    // ── Per-node tooltip (V-005) ──
+
+    /// Installs the per-node tooltip source. The callback runs only for the hovered row.
+    pub fn set_node_tooltip(&mut self, source: Arc<dyn Fn(usize) -> Option<String> + Send + Sync>) {
+        self.node_tooltip = Some(source);
+        self.base.request_redraw();
+    }
+
+    /// Removes the tooltip source.
+    pub fn clear_node_tooltip(&mut self) {
+        if self.node_tooltip.take().is_some() {
+            self.base.request_redraw();
+        }
+    }
+
+    /// The tooltip text for **model** index `index`, from the installed source.
+    pub fn node_tooltip(&self, index: usize) -> Option<String> {
+        self.node_tooltip.as_ref().and_then(|source| source(index))
+    }
+
+    // ── Expansion persistence (V-004) ──
+
+    /// Every expanded branch, keyed by its path in the model.
+    ///
+    /// A path is the chain of sibling ordinals from the root, so it survives the model-index
+    /// renumbering a reload causes. Leaves are omitted: an expansion state that cannot be shown
+    /// is not state.
+    pub fn expanded_paths(&self) -> Vec<Vec<usize>> {
+        if self.model.is_none() {
+            return Vec::new();
+        }
+        self.model_path_table()
+            .into_iter()
+            .filter(|(index, _, has_children)| *has_children && self.is_expanded(*index))
+            .map(|(_, path, _)| path)
+            .collect()
+    }
+
+    /// Restores an expansion snapshot captured by [`Self::expanded_paths`].
+    ///
+    /// The snapshot replaces the current expansion state: a branch is open exactly when its path
+    /// appears in `paths`. The snapshot is also retained, so [`Self::set_model`] replays it after
+    /// a model reset.
+    pub fn restore_expanded_paths(&mut self, paths: &[Vec<usize>]) {
+        self.saved_expansion = paths.to_vec();
+        let table = self.model_path_table();
+        self.expanded_override.clear();
+        for (index, path, has_children) in table {
+            if has_children {
+                self.expanded_override.insert(index, paths.contains(&path));
+            }
+        }
+        self.normalize_projection_state();
+        self.rebuild_projection();
+        self.base.request_layout();
+        self.base.request_redraw();
+    }
+
+    /// Replays the retained snapshot against the current model, expanding only the paths it names.
+    fn restore_saved_expansion(&mut self) {
+        if self.saved_expansion.is_empty() {
+            return;
+        }
+        let saved = self.saved_expansion.clone();
+        let table = self.model_path_table();
+        for (index, path, has_children) in table {
+            if has_children && saved.contains(&path) {
+                self.expanded_override.insert(index, true);
+            }
+        }
+    }
+
+    /// Every model node with the path that identifies it, in model order.
+    fn model_path_table(&self) -> Vec<(usize, Vec<usize>, bool)> {
+        let Some(model) = self.model.as_ref() else {
+            return Vec::new();
+        };
+        let count = model.node_count();
+        let mut out = Vec::with_capacity(count);
+        let mut counters: Vec<usize> = Vec::new();
+        let mut path: Vec<usize> = Vec::new();
+        for index in 0..count {
+            let Some(node) = model.node(index) else { continue };
+            let depth = node.depth;
+            counters.truncate(depth.saturating_add(1));
+            while counters.len() <= depth {
+                counters.push(0);
+            }
+            path.truncate(depth);
+            while path.len() < depth {
+                path.push(0);
+            }
+            let ordinal = counters[depth];
+            counters[depth] = ordinal.saturating_add(1);
+            path.push(ordinal);
+            out.push((index, path.clone(), node.has_children));
+        }
+        out
     }
 
     /// Returns the label of the visible row `index`.
@@ -1371,7 +1674,9 @@ impl TreeView {
         // visible position. Reject an index that cannot be represented before multiplying; such an
         // index is far past any renderable row, so `None` is the honest answer.
         let row_offset = i32::try_from(line).ok()?;
-        let y = content.y + TREE_ROW_HEIGHT.saturating_mul(row_offset);
+        // The header band is part of the content box, so a row starts below it when one is painted.
+        let header = self.header_offset();
+        let y = content.y + header + TREE_ROW_HEIGHT.saturating_mul(row_offset);
         // A row that would extend past the content box is not shown, matching the draw loop's own
         // bound so the row the pointer can hit is exactly the row that was painted.
         if y + TREE_ROW_HEIGHT > content.y + content.height as i32 {
@@ -1383,10 +1688,11 @@ impl TreeView {
     /// The visible row at a screen point, or `None` when the point is not over a painted row.
     pub fn node_at(&self, pos: crate::core::Point) -> Option<usize> {
         let content = ControlMetrics::band_inset(self.base.geometry(), TREE_INSET);
-        if pos.y < content.y || pos.y >= content.y + content.height as i32 {
+        let top = content.y + self.header_offset();
+        if pos.y < top || pos.y >= content.y + content.height as i32 {
             return None;
         }
-        let index = ((pos.y - content.y) / TREE_ROW_HEIGHT).max(0) as usize + self.scroll_row;
+        let index = ((pos.y - top) / TREE_ROW_HEIGHT).max(0) as usize + self.scroll_row;
         // A single-row lookup, not the whole projection: this runs on every pointer move, and
         // counting or materialising the document made hover cost follow the model size.
         self.visible_index_at(index).map(|_| index)
@@ -1619,6 +1925,11 @@ impl Widget for TreeView {
     fn event_signal_dyn(&self, name: &str) -> Option<crate::signal::EventSignalRef> {
         use crate::signal::EventSignalRef;
         match name {
+            "header_clicked" | "on_header_clicked" => {
+                Some(EventSignalRef::mapped("header_clicked", &self.on_header_clicked, |column| {
+                    CapabilityValue::UInt(*column as u64)
+                }))
+            }
             "selection_changed" => {
                 Some(EventSignalRef::mapped("selection_changed", &self.selection_changed, |v| {
                     CapabilityValue::UInt(*v as u64)
@@ -1926,9 +2237,9 @@ impl Draw for TreeView {
         // colour used to be hardcoded literals, so light and dark rendered identically.
         //
         // `tree_view` reaches the theme through the `TreeView` classification, which is
-        // `Input` — a scrolling field whose whole rectangle is the control. The theme reads
-        // take and release the global manager's lock internally, so no guard is held across
-        // the draw (the mutex is not re-entrant).
+        // `Input` — a scrolling field whose whole rectangle is the control. The theme read takes
+        // and releases the global manager's lock internally, and the palette comes from the
+        // shared snapshot, so no guard is held across the draw (the mutex is not re-entrant).
         let style = self.base.style();
         let theme = crate::style::resolved_theme_style_shared("tree_view");
         let surface = style
@@ -1946,10 +2257,8 @@ impl Draw for TreeView {
             .unwrap_or_else(|| surface.blend(&ink, 0.20));
         // The focused node is a selection state, so it reads the theme's accent token and is
         // laid over the surface, which keeps it legible in either appearance.
-        let accent = crate::style::theme_manager()
-            .current_theme()
-            .map(|active| active.colors.primary)
-            .unwrap_or(Color::PRIMARY);
+        let accent =
+            crate::style::palette_shared().map(|colors| colors.primary).unwrap_or(Color::PRIMARY);
         let focused_bg = surface.blend(&accent, 0.30);
         let selected_bg = surface.blend(&accent, 0.30);
 
@@ -1995,11 +2304,51 @@ impl Draw for TreeView {
             // content box can hold plus one (the loop stops at the first row that does not
             // fit), so the projection stops as soon as painting will.
             let content = ControlMetrics::band_inset(rect, TREE_INSET);
-            let row_capacity = (content.height / TREE_ROW_HEIGHT as u32) as usize + 1;
+            let header = self.header_offset();
+            let row_capacity = (content.height.saturating_sub(header as u32)
+                / TREE_ROW_HEIGHT as u32) as usize
+                + 1;
             // Start the cursor at the first visible row: the prefix above the viewport is never
             // materialised, however deep the scroll is (V-010).
             let rows = self.visible_indices_from(self.scroll_row, row_capacity);
             let font = effective_font(style);
+            // The multi-column header band (V-003). It is painted before the rows and its height is
+            // part of `node_row_rect`, so the rows below it cannot paint over it.
+            if let Some(band) = self.header_band() {
+                context.fill_rect(band, surface.blend(&ink, 0.08));
+                let mut x = band.x;
+                for (column, descriptor) in self.columns.iter().enumerate() {
+                    let width = self.column_width_at(column);
+                    if x >= band.x + band.width as i32 {
+                        break;
+                    }
+                    let cell = Rect::new(x, band.y, width.min(band.width), band.height);
+                    context.draw_text_fitted_cow(
+                        context.text_line(cell, font),
+                        &descriptor.title,
+                        font,
+                        ink,
+                        descriptor.alignment,
+                    );
+                    if self.sort_column == Some(column) {
+                        let side = cell.height.min(10);
+                        let icon_rect = Rect::new(
+                            cell.x + cell.width as i32 - side as i32 - 3,
+                            cell.y + (cell.height as i32 - side as i32) / 2,
+                            side,
+                            side,
+                        );
+                        let icon = if self.sort_descending {
+                            crate::widget::IconName::ArrowDown
+                        } else {
+                            crate::widget::IconName::ArrowUp
+                        };
+                        crate::widget::draw_icon_at(context, icon_rect, ink, icon);
+                    }
+                    x = x.saturating_add(width as i32);
+                }
+                context.draw_rect(band, surface.blend(&ink, 0.14));
+            }
             let reveal = self.expansion_progress();
             for (offset, &model_index) in rows.iter().enumerate() {
                 let visible = self.scroll_row + offset;
@@ -2098,7 +2447,7 @@ impl Draw for TreeView {
                     // describe a column answers `None` and simply paints nothing there.
                     let mut column_x = row.x;
                     for (column, descriptor) in self.columns.iter().enumerate() {
-                        let width = descriptor.width.max(1);
+                        let width = self.column_width_at(column);
                         if column == 0 {
                             let cell_width = width.saturating_sub(indent.max(0) as u32);
                             if cell_width > 0 && !node.label.is_empty() {
@@ -2113,7 +2462,7 @@ impl Draw for TreeView {
                                     &node.label,
                                     font,
                                     row_ink,
-                                    HorizontalAlignment::Left,
+                                    descriptor.alignment,
                                 );
                             }
                         } else if let Some(text) = model.node_column_text(model_index, column) {
@@ -2129,7 +2478,7 @@ impl Draw for TreeView {
                                     &text,
                                     font,
                                     row_ink,
-                                    HorizontalAlignment::Left,
+                                    descriptor.alignment,
                                 );
                             }
                         }
@@ -2152,7 +2501,7 @@ impl Draw for TreeView {
                         Some(_) => 0,
                         None => self.visible_row_count().saturating_sub(self.scroll_row),
                     };
-                    let y = content.y + slot as i32 * TREE_ROW_HEIGHT;
+                    let y = content.y + self.header_offset() + slot as i32 * TREE_ROW_HEIGHT;
                     if y + TREE_ROW_HEIGHT <= content.bottom() {
                         let band = Rect::new(content.x, y, content.width, TREE_ROW_HEIGHT as u32);
                         context.fill_rect(band, surface.blend(&accent, 0.06));
@@ -2169,6 +2518,36 @@ impl Draw for TreeView {
                             "Loading...",
                             font,
                             ink.with_alpha_f32(0.65),
+                            HorizontalAlignment::Left,
+                        );
+                    }
+                }
+            }
+        }
+
+        // ── Hover tooltip (V-005) ──
+        //
+        // The callback runs only for the hovered node, so a large model costs one lookup per frame
+        // at most. The bubble is anchored to the row the pointer is over, from the same row
+        // derivation the hit test uses.
+        if let Some(model_index) = self.hovered_node {
+            if let Some(text) = self.node_tooltip(model_index).filter(|text| !text.is_empty()) {
+                if let Some(visible) = self.visible_position_of(model_index) {
+                    if let Some(row) = self.node_row_rect(visible) {
+                        let font = effective_font(style);
+                        let tip_height = TREE_ROW_HEIGHT.max(1) as u32;
+                        let tip_y = (row.y + row.height as i32 + 2)
+                            .min(rect.y + rect.height as i32 - tip_height as i32)
+                            .max(rect.y);
+                        let tip =
+                            Rect::new(row.x, tip_y, row.width.max(80).min(rect.width), tip_height);
+                        context.fill_rect(tip, surface.blend(&ink, 0.06));
+                        context.draw_rect(tip, border);
+                        context.draw_text_fitted_cow(
+                            context.text_line(tip, font),
+                            &text,
+                            font,
+                            ink,
                             HorizontalAlignment::Left,
                         );
                     }
@@ -2210,6 +2589,13 @@ impl crate::event::EventHandler for TreeView {
         }
         match event {
             crate::event::Event::MousePress { pos, button, modifiers } if *button == 1 => {
+                // A press on the header band names a section rather than a row (V-003): it emits
+                // `on_header_clicked` and advances that column's sort state.
+                if let Some(column) = self.header_column_at(*pos) {
+                    self.on_header_clicked.emit(column);
+                    let _ = self.toggle_sort_column(column);
+                    return;
+                }
                 // The same index derivation the draw uses, so the row a click selects is the row
                 // the user pointed at.
                 if let Some(index) = self.node_at(*pos) {
@@ -3105,7 +3491,8 @@ mod tests {
         assert_eq!(view.columns().len(), 2);
         let multi = crate::widget::svg::render_to_svg(&mut view);
         let multi_boxes = crate::widget::svg::text_ink_boxes(&multi).len();
-        assert_eq!(multi_boxes, single_boxes * 2, "one extra text run per node");
+        // Two nodes × two columns, plus the two column captions the header band paints (V-003).
+        assert_eq!(multi_boxes, single_boxes * 2 + 2, "one extra text run per node plus captions");
 
         view.set_columns(Vec::new());
         assert!(view.columns().is_empty());

@@ -16,6 +16,8 @@ pub mod gantt_widget;
 pub mod grid;
 pub mod heatmap;
 pub mod kanban_board;
+pub mod map_attribution;
+pub mod map_overview;
 pub mod map_view;
 pub mod markdown_editor;
 pub mod media_player;
@@ -25,6 +27,7 @@ pub mod segmented_control;
 pub mod signature_pad;
 pub mod snackbar;
 pub mod split_button;
+pub mod terminal_find_bar;
 pub mod terminal_view;
 pub mod timeline_widget;
 pub mod toast;
@@ -46,6 +49,8 @@ pub use heatmap::{Heatmap, HeatmapCell};
 pub use kanban_board::{
     CardPosition, KanbanBoard, KanbanCard, KanbanCardView, KanbanColumn, KanbanColumnHeader,
 };
+pub use map_attribution::{AttributionEntry, Corner, MapAttributionOverlay};
+pub use map_overview::{CenterMarkerStyle, MapOverviewPanel};
 pub use map_view::{
     Compass, MapMarker, MapView, ScaleBar, ScaleBarStyle, ScaleUnits, TileKey, TileLoadError,
     TileLoader, TileRequest, TileViewport, ZoomButton, ZoomControl,
@@ -58,6 +63,7 @@ pub use segmented_control::{SegmentItem, SegmentedControl};
 pub use signature_pad::{SignaturePad, SignatureStroke};
 pub use snackbar::Snackbar;
 pub use split_button::{SplitAction, SplitButton};
+pub use terminal_find_bar::{TerminalFindBar, REGEX_SUPPORTED};
 pub use terminal_view::TerminalView;
 pub use timeline_widget::{TimelineItem, TimelineWidget};
 pub use toast::{Toast, ToastItem, ToastLevel, ToastStack};

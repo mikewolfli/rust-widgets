@@ -122,6 +122,14 @@ PRODUCER_ELSEWHERE: dict[str, tuple[str, str]] = {
         "KeySequenceEdit",
         "the chord recorder publishes its capability under the longer canonical name",
     ),
+    "map_attribution": (
+        "MapAttributionOverlay",
+        "the map attribution overlay publishes its capability under the shorter name",
+    ),
+    "map_overview": (
+        "MapOverviewPanel",
+        "the overview panel publishes its capability under the shorter name",
+    ),
     "password_edit": (
         "LineEdit",
         "the password field is a `LineEdit` in password echo mode",

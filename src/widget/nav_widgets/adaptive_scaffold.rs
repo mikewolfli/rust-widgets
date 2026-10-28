@@ -17,6 +17,7 @@ use crate::widget::capability::coercion::{expect_f32, expect_string};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::cupertino::MaterialNavigationRail;
 use crate::widget::menu_toolbar::popup_reveal::PopupReveal;
 use crate::widget::metrics::role_font;
 use crate::widget::nav_widgets::app_bar::AppBar;
@@ -48,6 +49,22 @@ const SNACKBAR_HEIGHT: u32 = 48;
 /// Margin between the snackbar and the scaffold's edges.
 const SNACKBAR_MARGIN: i32 = 8;
 
+/// Width of the leading band a navigation rail occupies, in logical pixels.
+///
+/// `MaterialNavigationRail` paints a fixed-width strip of its own; the band handed to it matches
+/// that width so the scaffold's content inset and the painted strip cannot disagree. The value is
+/// repeated here because the rail's own spelling is private to its module.
+const NAVIGATION_RAIL_WIDTH: u32 = 80;
+
+/// Largest window width, in logical pixels, that still uses the bottom bar.
+///
+/// The default is Material's compact/medium boundary: `0..=599` is compact, `600..=839` is medium
+/// and `840` upward is expanded.
+const DEFAULT_NARROW_MAX_WIDTH: u32 = 599;
+
+/// Smallest window width, in logical pixels, that uses the drawer.
+const DEFAULT_WIDE_MIN_WIDTH: u32 = 840;
+
 /// Which implementation paints the scaffold's bottom navigation bar.
 ///
 /// [`Self::Classic`] is the scaffold's own compact M2-style strip and is the default,
@@ -63,6 +80,22 @@ pub enum ScaffoldBottomNavStyle {
     Classic,
     /// A real [`BottomNavigationBar`] with its sliding M3 pill.
     Material3,
+}
+
+/// Which navigation surface the scaffold uses for its current width.
+///
+/// The form is derived from the scaffold's own geometry width through
+/// [`AdaptiveScaffold::navigation_form_for`], so a host that resizes the window does not have to
+/// tell the scaffold which surface to use.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ScaffoldNavigationForm {
+    /// Narrow windows: the bottom navigation bar.
+    #[default]
+    BottomBar,
+    /// Medium windows: the leading navigation rail, when one is installed.
+    Rail,
+    /// Wide windows: the navigation drawer.
+    Drawer,
 }
 
 /// How a navigation item's badge is painted.
@@ -126,6 +159,12 @@ pub struct AdaptiveScaffold {
     selected_nav_index: usize,
     /// Which bottom-bar implementation paints the band.
     bottom_nav_style: ScaffoldBottomNavStyle,
+    /// The leading rail painted in the medium breakpoint, when the host installed one.
+    navigation_rail: Option<MaterialNavigationRail>,
+    /// Largest width (inclusive) that uses the bottom bar.
+    narrow_max: u32,
+    /// Smallest width (inclusive) that uses the drawer.
+    wide_min: u32,
     /// The delegate that paints [`ScaffoldBottomNavStyle::Material3`].
     ///
     /// Materialised when the style is selected (and rebuilt whenever the item list or the
@@ -204,6 +243,9 @@ impl AdaptiveScaffold {
             nav_item_icon_sources: Vec::new(),
             selected_nav_index: 0,
             bottom_nav_style: ScaffoldBottomNavStyle::Classic,
+            navigation_rail: None,
+            narrow_max: DEFAULT_NARROW_MAX_WIDTH,
+            wide_min: DEFAULT_WIDE_MIN_WIDTH,
             m3_bar: None,
             nav_bodies: Vec::new(),
             fab: None,
@@ -504,6 +546,108 @@ impl AdaptiveScaffold {
         self.bottom_nav_style
     }
 
+    /// Installs (or removes) the navigation rail used by the medium form.
+    ///
+    /// The rail is the `MaterialNavigationRail` the host already builds for tablet widths; the
+    /// scaffold only gives it the leading band its form owns and paints it there, so the rail's
+    /// destinations, indicator and hit tests stay the rail's own. The rail's items are the host's
+    /// to populate; the scaffold mirrors the selection both ways, so the rail's indicator follows
+    /// the bar (and the reverse) and a press on the rail emits `nav_selected`. The bottom bar keeps
+    /// its historical behaviour in the narrow and wide forms. Passing `None` restores the
+    /// two-form behaviour exactly.
+    pub fn set_navigation_rail(&mut self, rail: Option<MaterialNavigationRail>) {
+        self.navigation_rail = rail;
+        if let Some(rail) = self.navigation_rail.as_mut() {
+            rail.set_selected(self.selected_nav_index);
+        }
+        self.base.request_redraw();
+    }
+
+    /// Returns the installed navigation rail, when there is one.
+    pub fn navigation_rail(&self) -> Option<&MaterialNavigationRail> {
+        self.navigation_rail.as_ref()
+    }
+
+    /// Returns the installed navigation rail for editing, when there is one.
+    pub fn navigation_rail_mut(&mut self) -> Option<&mut MaterialNavigationRail> {
+        self.navigation_rail.as_mut()
+    }
+
+    /// Sets the two width breakpoints that select the navigation form.
+    ///
+    /// `narrow_max` is the widest window (inclusive) that uses the bottom bar; `wide_min` is the
+    /// narrowest window (inclusive) that uses the drawer. Widths between the two use the rail.
+    /// A `wide_min` that would leave the medium band empty is raised to `narrow_max + 1`, so the
+    /// three forms always partition the width axis.
+    pub fn set_navigation_breakpoints(&mut self, narrow_max: u32, wide_min: u32) {
+        let wide_min = wide_min.max(narrow_max.saturating_add(1));
+        if self.narrow_max == narrow_max && self.wide_min == wide_min {
+            return;
+        }
+        self.narrow_max = narrow_max;
+        self.wide_min = wide_min;
+        self.base.request_layout();
+        self.base.request_redraw();
+    }
+
+    /// Returns `(narrow_max, wide_min)`, the breakpoints in force.
+    pub fn navigation_breakpoints(&self) -> (u32, u32) {
+        (self.narrow_max, self.wide_min)
+    }
+
+    /// The navigation form a window `width` logical pixels wide uses.
+    ///
+    /// The bands are: `width <= narrow_max` -> bottom bar, `width >= wide_min` -> drawer, and the
+    /// medium gap between them -> rail. This is the pure width lookup; [`Self::navigation_form`]
+    /// additionally accounts for whether a rail is actually installed.
+    pub fn navigation_form_for(&self, width: u32) -> ScaffoldNavigationForm {
+        if width <= self.narrow_max {
+            ScaffoldNavigationForm::BottomBar
+        } else if width >= self.wide_min {
+            ScaffoldNavigationForm::Drawer
+        } else {
+            ScaffoldNavigationForm::Rail
+        }
+    }
+
+    /// The navigation form the scaffold paints at its current width.
+    ///
+    /// A medium width with no rail installed reports [`ScaffoldNavigationForm::BottomBar`]: the
+    /// scaffold keeps its historical behaviour rather than claiming a rail it has not got.
+    pub fn navigation_form(&self) -> ScaffoldNavigationForm {
+        self.effective_navigation_form()
+    }
+
+    /// The navigation form after the "no rail installed" fallback.
+    fn effective_navigation_form(&self) -> ScaffoldNavigationForm {
+        let form = self.navigation_form_for(self.geometry().width);
+        if form == ScaffoldNavigationForm::Rail && self.navigation_rail.is_none() {
+            ScaffoldNavigationForm::BottomBar
+        } else {
+            form
+        }
+    }
+
+    /// The band the navigation rail occupies, when the medium form is active.
+    fn navigation_rail_rect(&self) -> Option<Rect> {
+        if self.effective_navigation_form() != ScaffoldNavigationForm::Rail {
+            return None;
+        }
+        self.navigation_rail.as_ref()?;
+        let rect = self.geometry();
+        let top = self.app_bar_height();
+        let width = NAVIGATION_RAIL_WIDTH.min(rect.width);
+        Some(Rect::new(rect.x, rect.y + top as i32, width, rect.height.saturating_sub(top)))
+    }
+
+    /// Whether the bottom bar is the scaffold's active navigation surface.
+    ///
+    /// A rail in the medium form replaces the bottom bar, so the band, its reserved space and
+    /// its hit targets disappear together instead of disagreeing about which form is on screen.
+    fn bottom_nav_visible(&self) -> bool {
+        self.show_bottom_nav && !self.nav_items.is_empty() && self.navigation_rail_rect().is_none()
+    }
+
     /// Advances the delegated bottom bar's pill and the scaffold's own transitions.
     pub fn tick(&mut self, delta_ms: u32) -> bool {
         let mut moving = self.m3_bar.as_mut().is_some_and(|bar| bar.tick(delta_ms));
@@ -719,6 +863,11 @@ impl AdaptiveScaffold {
             if let Some(bar) = self.m3_bar.as_mut() {
                 bar.set_selected_index(clamped);
             }
+            // The rail is a second view of the same selection, so a destination chosen through
+            // the bottom bar moves the rail's indicator as well.
+            if let Some(rail) = self.navigation_rail.as_mut() {
+                rail.set_selected(clamped);
+            }
             // A destination change is a page *arrival*: the new page slides in and fades up
             // from the scaffold's own background, so a switch is visible as a direction rather
             // than as an instantaneous swap.
@@ -745,22 +894,24 @@ impl AdaptiveScaffold {
             + self.app_bar.bottom_widget().map(|widget| widget.size_hint().height).unwrap_or(0)
     }
 
-    /// Returns the content area rect (between AppBar and bottom nav).
+    /// Returns the content area rect (between AppBar and bottom nav, beside the rail).
     fn content_rect(&self) -> Rect {
         let rect = self.geometry();
         let top_offset: i32 = self.app_bar_height() as i32;
-        let bottom_offset: i32 = if self.show_bottom_nav { BOTTOM_NAV_HEIGHT as i32 } else { 0 };
+        let rail_inset = self.navigation_rail_rect().map(|rail| rail.width as i32).unwrap_or(0);
+        let bottom_offset: i32 =
+            if self.bottom_nav_visible() { BOTTOM_NAV_HEIGHT as i32 } else { 0 };
         Rect::new(
-            rect.x,
+            rect.x + rail_inset,
             rect.y + top_offset,
-            rect.width,
+            (rect.width as i32 - rail_inset).max(0) as u32,
             (rect.height as i32 - top_offset - bottom_offset).max(0) as u32,
         )
     }
 
     /// Returns the bottom nav bar rect.
     fn bottom_nav_rect(&self) -> Option<Rect> {
-        if !self.show_bottom_nav || self.nav_items.is_empty() {
+        if !self.bottom_nav_visible() {
             return None;
         }
         let rect = self.geometry();
@@ -881,6 +1032,16 @@ impl AdaptiveScaffold {
             }
         }
 
+        if let Some(band) = self.navigation_rail_rect() {
+            if band.contains_point(pos) {
+                if let Some(rail) = self.navigation_rail.as_mut() {
+                    rail.set_geometry(band);
+                    rail.handle_event(event);
+                }
+                return true;
+            }
+        }
+
         let app_bar_band = Rect::new(rect.x, rect.y, rect.width, self.app_bar_height());
         if app_bar_band.contains_point(pos) {
             self.app_bar.handle_event(event);
@@ -947,11 +1108,7 @@ impl AdaptiveScaffold {
     fn fab_rect(&self) -> Option<Rect> {
         self.fab.as_ref()?;
         let rect = self.geometry();
-        let bottom_inset = if self.show_bottom_nav && !self.nav_items.is_empty() {
-            BOTTOM_NAV_HEIGHT as i32
-        } else {
-            0
-        };
+        let bottom_inset = if self.bottom_nav_visible() { BOTTOM_NAV_HEIGHT as i32 } else { 0 };
         Some(Rect::new(
             rect.x + rect.width as i32 - FAB_SLOT_SIZE as i32 - FAB_SLOT_MARGIN,
             rect.y + rect.height as i32 - FAB_SLOT_SIZE as i32 - bottom_inset - FAB_SLOT_MARGIN,
@@ -996,11 +1153,7 @@ impl AdaptiveScaffold {
     /// Returns the snackbar's rectangle, sitting above the bottom navigation band.
     fn snackbar_rect(&self) -> Rect {
         let rect = self.geometry();
-        let bottom_inset = if self.show_bottom_nav && !self.nav_items.is_empty() {
-            BOTTOM_NAV_HEIGHT as i32
-        } else {
-            0
-        };
+        let bottom_inset = if self.bottom_nav_visible() { BOTTOM_NAV_HEIGHT as i32 } else { 0 };
         Rect::new(
             rect.x + SNACKBAR_MARGIN,
             rect.y + rect.height as i32 - bottom_inset - SNACKBAR_HEIGHT as i32 - SNACKBAR_MARGIN,
@@ -1167,6 +1320,20 @@ impl Draw for AdaptiveScaffold {
         self.app_bar.set_geometry(Rect::new(rect.x, rect.y, rect.width, self.app_bar_height()));
         self.app_bar.draw(context);
 
+        // ── Navigation rail (medium form) ──
+        //
+        // The rail is the widget the host installed, not a copy of its arithmetic: the scaffold
+        // gives it the leading band and paints it. The content band is inset by the same width
+        // (`content_rect`), so the rail and the page never overlap.
+        if let Some(band) = self.navigation_rail_rect() {
+            if let Some(rail) = self.navigation_rail.as_mut() {
+                rail.set_geometry(band);
+                if let Some(drawable) = crate::widget::draw_bridge::draw_of(rail) {
+                    drawable.draw(context);
+                }
+            }
+        }
+
         // ── Body content area ──
         //
         // The selected destination's page is painted into the content band. A shared fallback
@@ -1225,6 +1392,11 @@ impl Draw for AdaptiveScaffold {
                     self.draw_bottom_nav(context, nav_rect, style, theme.as_deref())
                 }
                 ScaffoldBottomNavStyle::Material3 => {
+                    // A rail in the medium form hides the bar, and the delegated bar is rebuilt
+                    // from the scaffold's items when the window returns to a form that shows it.
+                    if self.m3_bar.is_none() {
+                        self.sync_m3_bar();
+                    }
                     if let Some(mut bar) = self.m3_bar.take() {
                         bar.set_geometry(nav_rect);
                         bar.draw(context);
@@ -1590,6 +1762,25 @@ impl EventHandler for AdaptiveScaffold {
                 let rect = self.geometry();
                 let app_bar_height: i32 = self.app_bar_height() as i32;
 
+                // Navigation rail zone (medium form). The rail owns its destination bands and
+                // updates its own selection on release; the scaffold adopts that selection so
+                // `nav_selected` reports a rail choice exactly as it reports a bar choice.
+                if let Some(band) = self.navigation_rail_rect() {
+                    if band.contains_point(*pos) {
+                        let selected = self.navigation_rail.as_mut().map(|rail| {
+                            rail.set_geometry(band);
+                            rail.handle_event(event);
+                            rail.selected()
+                        });
+                        if let Some(index) = selected {
+                            if matches!(event, Event::MouseRelease { .. }) {
+                                self.set_selected_nav_index(index);
+                            }
+                        }
+                        return;
+                    }
+                }
+
                 // AppBar zone (top)
                 if pos.y >= rect.y && pos.y < rect.y + app_bar_height {
                     // The AppBar's signals are mirrored onto this scaffold at construction,
@@ -1599,7 +1790,7 @@ impl EventHandler for AdaptiveScaffold {
                 }
 
                 // Bottom nav zone
-                if self.show_bottom_nav && !self.nav_items.is_empty() {
+                if self.bottom_nav_visible() {
                     let nav_top = rect.y + rect.height as i32 - BOTTOM_NAV_HEIGHT as i32;
                     if pos.y >= nav_top && pos.y <= rect.y + rect.height as i32 {
                         // Hit-test bottom nav items
@@ -2241,5 +2432,112 @@ mod tests {
             0,
             "a settled Classic bar must not reach the backend to measure text"
         );
+    }
+
+    /// COMP-C1: the width breakpoints select the bottom bar, rail or drawer band.
+    #[test]
+    fn navigation_form_follows_the_breakpoints() {
+        let scaffold = make_scaffold();
+        assert_eq!(scaffold.navigation_breakpoints(), (599, 840));
+        // Just below, at and above the bottom-bar boundary.
+        assert_eq!(scaffold.navigation_form_for(598), ScaffoldNavigationForm::BottomBar);
+        assert_eq!(scaffold.navigation_form_for(599), ScaffoldNavigationForm::BottomBar);
+        assert_eq!(scaffold.navigation_form_for(600), ScaffoldNavigationForm::Rail);
+        // Just below, at and above the drawer boundary.
+        assert_eq!(scaffold.navigation_form_for(839), ScaffoldNavigationForm::Rail);
+        assert_eq!(scaffold.navigation_form_for(840), ScaffoldNavigationForm::Drawer);
+        assert_eq!(scaffold.navigation_form_for(841), ScaffoldNavigationForm::Drawer);
+    }
+
+    /// Custom breakpoints keep all three bands reachable.
+    #[test]
+    fn custom_breakpoints_partition_the_width_axis() {
+        let mut scaffold = make_scaffold();
+        scaffold.set_navigation_breakpoints(400, 700);
+        assert_eq!(scaffold.navigation_form_for(400), ScaffoldNavigationForm::BottomBar);
+        assert_eq!(scaffold.navigation_form_for(401), ScaffoldNavigationForm::Rail);
+        assert_eq!(scaffold.navigation_form_for(699), ScaffoldNavigationForm::Rail);
+        assert_eq!(scaffold.navigation_form_for(700), ScaffoldNavigationForm::Drawer);
+
+        // A wide breakpoint inside the narrow band would leave the rail unreachable, so it is
+        // raised to the first width after the narrow band.
+        scaffold.set_navigation_breakpoints(400, 200);
+        assert_eq!(scaffold.navigation_breakpoints(), (400, 401));
+        assert_eq!(scaffold.navigation_form_for(401), ScaffoldNavigationForm::Drawer);
+    }
+
+    /// COMP-C1: the medium form paints the installed rail and insets the page beside it.
+    #[test]
+    fn the_medium_form_draws_the_installed_rail_and_insets_the_page() {
+        let mut scaffold = make_scaffold();
+        let mut rail = MaterialNavigationRail::new(Rect::new(0, 0, 0, 0));
+        rail.add_item("home", "Home");
+        rail.add_item("search", "Search");
+        scaffold.set_navigation_rail(Some(rail));
+        scaffold.set_geometry(Rect::new(0, 0, 700, 800));
+
+        assert_eq!(scaffold.navigation_form(), ScaffoldNavigationForm::Rail);
+        let svg = render_to_svg(&mut scaffold);
+        // The rail's captions are glyph outlines, so the paint is checked as text runs: the rail
+        // band is 80 px wide, and a run whose ink ends inside it can only be a rail label.
+        let runs = crate::widget::svg::text_ink_boxes(&svg);
+        assert!(
+            runs.iter().any(|(left, _, right, _)| *left >= 0 && *right <= 80),
+            "the medium form paints the rail's destinations inside its band: {runs:?}"
+        );
+
+        let band = scaffold.navigation_rail().expect("the rail is installed").geometry();
+        assert_eq!(band, Rect::new(0, 56, 80, 744));
+        assert_eq!(scaffold.content_rect(), Rect::new(80, 56, 620, 744));
+        assert!(
+            scaffold.bottom_nav_rect().is_none(),
+            "the rail replaces the bottom bar in the medium form"
+        );
+
+        // A narrow window returns to the bottom bar and gives the rail's band back to the page.
+        scaffold.set_geometry(Rect::new(0, 0, 500, 800));
+        let _ = render_to_svg(&mut scaffold);
+        assert_eq!(scaffold.navigation_form(), ScaffoldNavigationForm::BottomBar);
+        assert_eq!(scaffold.content_rect(), Rect::new(0, 56, 500, 688));
+        assert!(scaffold.bottom_nav_rect().is_some());
+    }
+
+    /// The historical two-form behaviour is untouched when no rail is installed.
+    #[test]
+    fn a_medium_width_without_a_rail_keeps_the_bottom_bar() {
+        let mut scaffold = make_scaffold();
+        scaffold.set_geometry(Rect::new(0, 0, 700, 800));
+        assert_eq!(scaffold.navigation_form_for(700), ScaffoldNavigationForm::Rail);
+        assert_eq!(scaffold.navigation_form(), ScaffoldNavigationForm::BottomBar);
+        assert!(scaffold.bottom_nav_rect().is_some());
+        assert_eq!(scaffold.content_rect(), Rect::new(0, 56, 700, 688));
+    }
+
+    /// A destination chosen on the rail is the scaffold's selection too.
+    #[test]
+    fn a_rail_destination_selects_the_matching_scaffold_destination() {
+        let mut scaffold = make_scaffold();
+        let mut rail = MaterialNavigationRail::new(Rect::new(0, 0, 0, 0));
+        for (icon, label) in [("home", "Home"), ("search", "Search"), ("star", "Favorites")] {
+            rail.add_item(icon, label);
+        }
+        scaffold.set_navigation_rail(Some(rail));
+        scaffold.set_geometry(Rect::new(0, 0, 700, 800));
+
+        let captured = Arc::new(AtomicUsize::new(usize::MAX));
+        let c = Arc::clone(&captured);
+        scaffold.nav_selected.connect(move |index: Arc<usize>| {
+            c.store(*index, Ordering::SeqCst);
+        });
+
+        // The rail's own destination pitch is 72; the second band starts one pitch below the
+        // rail's top edge, which is where the app bar ends.
+        let band = scaffold.navigation_rail_rect().expect("the medium form owns a rail band");
+        let pos = Point::new(band.x + 20, band.y + 72 + 20);
+        scaffold.handle_event(&Event::MouseRelease { pos, button: 1 });
+
+        assert_eq!(captured.load(Ordering::SeqCst), 1);
+        assert_eq!(scaffold.selected_nav_index(), 1);
+        assert_eq!(scaffold.navigation_rail().expect("installed").selected(), 1);
     }
 }

@@ -2004,6 +2004,51 @@ impl WidgetFactory {
             "header_menu" => {
                 self::coercion::widget_as::<crate::widget::companions::HeaderMenu>(widget).is_some()
             }
+            // COMP-A1..A7: each of these shares a kind with the control it accompanies, so each
+            // needs its own row or the lookup hands it a sibling's schema (or the sibling's caller
+            // an empty one). `chart_reference_line` shares `LineChart`, `terminal_find_bar` shares
+            // `SearchBar`, `gantt_task_grid` shares `Chart`, `web_history_panel` shares
+            // `WebEngineView`, `chapter_list_panel` shares `VideoPlayer`, and both map companions
+            // share `Canvas`.
+            "chart_reference_line" => self::coercion::widget_as::<
+                crate::widget::chart_widgets::ChartReferenceLine,
+            >(widget)
+            .is_some(),
+            "terminal_find_bar" => {
+                self::coercion::widget_as::<crate::widget::special_widgets::TerminalFindBar>(widget)
+                    .is_some()
+            }
+            "map_attribution" => self::coercion::widget_as::<
+                crate::widget::special_widgets::MapAttributionOverlay,
+            >(widget)
+            .is_some(),
+            "gantt_task_grid" => self::coercion::widget_as::<
+                crate::widget::special_widgets::gantt_widget::GanttTaskGrid,
+            >(widget)
+            .is_some(),
+            "web_history_panel" => {
+                self::coercion::widget_as::<crate::widget::web_widgets::WebHistoryPanel>(widget)
+                    .is_some()
+            }
+            "chapter_list_panel" => {
+                self::coercion::widget_as::<crate::widget::media_widgets::ChapterListPanel>(widget)
+                    .is_some()
+            }
+            "map_overview" => self::coercion::widget_as::<
+                crate::widget::special_widgets::MapOverviewPanel,
+            >(widget)
+            .is_some(),
+            // The owners of the companions above now share their kinds with a second capability,
+            // so each owner needs its own row as well — without one, `every_shared_kind_has_a_tie_break`
+            // fails and a live owner instance would resolve to the companion's capability.
+            "line_chart" => {
+                self::coercion::widget_as::<crate::widget::chart_widgets::LineChart>(widget)
+                    .is_some()
+            }
+            "video_player" => {
+                self::coercion::widget_as::<crate::widget::media_widgets::VideoPlayer>(widget)
+                    .is_some()
+            }
             "snackbar" => self::coercion::widget_as::<Snackbar>(widget).is_some(),
             // `WidgetKind::Canvas`
             "canvas" => self::coercion::widget_as::<Canvas>(widget).is_some(),

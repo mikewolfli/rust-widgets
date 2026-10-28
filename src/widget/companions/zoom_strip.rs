@@ -21,7 +21,7 @@
 //! contains `1.0`, and to `min` otherwise. Infinite values take the normal clamp path (`+inf`
 //! becomes `max`, `-inf` becomes `min`). Invalid bounds or steps are refused rather than stored.
 
-use crate::compat::{format, String, ToString};
+use crate::compat::{format, lock, Arc, Mutex, String, ToString};
 use crate::core::{HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::impl_draw_bridge;
@@ -65,6 +65,8 @@ pub struct ZoomStrip {
     step: f32,
     show_percentage: bool,
     fit_actions: bool,
+    /// Writer end of a chart-side level queue, when a chart is attached (COMP-A8).
+    pending_zoom: Option<Arc<Mutex<Option<f32>>>>,
     /// Emitted with the new zoom after a zoom action changed it.
     pub zoom_requested: Signal1<f32>,
     /// Emitted with the requested fit mode when the optional Fit segment is activated.
@@ -82,6 +84,7 @@ impl ZoomStrip {
             step: 0.25,
             show_percentage: true,
             fit_actions: true,
+            pending_zoom: None,
             zoom_requested: Signal1::new(),
             fit_requested: Signal1::new(),
         }
@@ -103,6 +106,41 @@ impl ZoomStrip {
             self.zoom_level = zoom_level;
             self.base.request_redraw();
             self.zoom_requested.emit(zoom_level);
+        }
+    }
+
+    /// Accepts a chart-side level queue (COMP-A8).
+    ///
+    /// The chart keeps the write end and this strip drains it through
+    /// [`Self::sync_zoom_updates`], which the paint and event paths call. A mirrored level updates
+    /// the readout without emitting [`Self::zoom_requested`]: it reports where the chart already
+    /// is, not a new user request, so a wheel zoom mirrored back cannot bounce.
+    pub(crate) fn accept_zoom_updates(&mut self, source: Arc<Mutex<Option<f32>>>) {
+        self.pending_zoom = Some(source);
+        self.base.request_redraw();
+    }
+
+    /// Absorbs the level a paired chart pushed since the last call.
+    ///
+    /// Returns whether a level was applied. The value is resolved and clamped exactly as
+    /// [`Self::set_zoom`] resolves it, but emits nothing; see [`Self::accept_zoom_updates`].
+    pub fn sync_zoom_updates(&mut self) -> bool {
+        let Some(source) = self.pending_zoom.as_ref() else {
+            return false;
+        };
+        let Some(level) = lock(source).take() else {
+            return false;
+        };
+        self.mirror_zoom(level);
+        true
+    }
+
+    /// Writes a level that came from the paired chart, without announcing a request.
+    fn mirror_zoom(&mut self, zoom_level: f32) {
+        let zoom_level = self.resolved_zoom(zoom_level);
+        if self.zoom_level != zoom_level {
+            self.zoom_level = zoom_level;
+            self.base.request_redraw();
         }
     }
 
@@ -255,6 +293,8 @@ impl ZoomStrip {
 
 impl EventHandler for ZoomStrip {
     fn handle_event(&mut self, event: &Event) {
+        // A chart-side mirror is drained before routing, so a click already sees the new label.
+        self.sync_zoom_updates();
         self.base.handle_event(event);
         if !self.base.is_enabled() {
             return;
@@ -276,6 +316,8 @@ impl EventHandler for ZoomStrip {
 
 impl Draw for ZoomStrip {
     fn draw(&mut self, context: &mut RenderContext) {
+        // Drain a level the paired chart pushed, so this frame paints it.
+        self.sync_zoom_updates();
         let rect = self.geometry();
         let style = self.style();
         let (surface, ink) = surface_ink(style);

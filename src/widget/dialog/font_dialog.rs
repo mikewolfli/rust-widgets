@@ -960,19 +960,17 @@ impl Draw for FontDialog {
         // stayed a hardcoded blue in either appearance, and the render census reported
         // the whole control as theme-blind.
         //
-        // The theme read is a separate manager lock, taken and released inside
-        // `resolved_theme_style`, so it is not held across the draw — the global
-        // manager's mutex is not re-entrant.
-        // One theme-manager read supplies the window fill, accent and fallback ink; the old
+        // The theme reads are the cached shared snapshots, so no manager lock is held across
+        // the draw — the global manager's mutex is not re-entrant.
+        // One palette-snapshot read supplies the window fill, accent and fallback ink; the old
         // path resolved a widget style and then took the manager lock again (G-P13).
         let (window_fill, accent, theme_ink, theme_border) = {
-            let manager = crate::style::theme_manager();
-            match manager.current_theme() {
-                Some(active) => (
-                    active.colors.background,
-                    active.colors.primary,
-                    Some(active.colors.foreground),
-                    Some(active.colors.outline),
+            match crate::style::palette_shared() {
+                Some(colors) => (
+                    colors.background,
+                    colors.primary,
+                    Some(colors.foreground),
+                    Some(colors.outline),
                 ),
                 None => (Color::WHITE, Color::rgb(0, 120, 215), None, None),
             }

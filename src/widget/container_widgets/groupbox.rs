@@ -977,9 +977,8 @@ impl Draw for GroupBox {
                         crate::style::layer_color(crate::style::LayerColor::SurfaceContainer)
                     })
                     .unwrap_or_else(|| {
-                        crate::style::theme_manager()
-                            .current_theme()
-                            .map(|active| active.colors.background)
+                        crate::style::palette_shared()
+                            .map(|colors| colors.background)
                             .unwrap_or(Color::rgb(255, 255, 255))
                     }),
             );
@@ -1389,9 +1388,8 @@ mod tests {
             let backdrop = {
                 crate::theme::global_theme_manager()
                     .set_appearance(appearance.expect("an appearance"));
-                crate::theme::global_theme_manager()
-                    .current_theme()
-                    .map(|active| active.colors.background)
+                crate::style::palette_shared()
+                    .map(|colors| colors.background)
                     .unwrap_or(Color::WHITE)
             };
             #[cfg(not(device_profile))]

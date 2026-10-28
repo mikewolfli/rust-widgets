@@ -104,23 +104,24 @@ pub(crate) struct MacPalette {
 ///
 /// Five controls that each resolved their own colours could disagree about what "surface"
 /// means — the exact drift the crate's rendering census reports as a theme-blind control. One
-/// resolver keeps them in step, and it takes the manager lock and releases it inside this
-/// function, so no caller holds the lock across a draw.
+/// resolver keeps them in step, and it reads the shared palette snapshot (revision-cached,
+/// crossfade/high-contrast resolved) instead of taking the manager lock, so no caller takes the
+/// lock across a draw.
 pub(crate) fn palette() -> MacPalette {
-    let manager = crate::style::theme_manager();
-    match manager.current_theme() {
-        Some(theme) => MacPalette {
-            surface: theme.colors.surface_container,
-            raised: theme.colors.surface_container_high,
-            ink: theme.colors.foreground,
-            accent: theme.colors.primary,
-            separator: theme.colors.outline,
-            muted: theme.colors.secondary,
-            close: theme.colors.error,
-            minimize: theme.colors.warning,
-            zoom: theme.colors.success,
-            inactive_surface: theme.colors.surface_container.blend(&theme.colors.foreground, 0.05),
-            inactive_ink: theme.colors.foreground.blend(&theme.colors.surface_container, 0.42),
+    let palette = crate::style::palette_shared();
+    match palette.as_ref() {
+        Some(colors) => MacPalette {
+            surface: colors.surface_container,
+            raised: colors.surface_container_high,
+            ink: colors.foreground,
+            accent: colors.primary,
+            separator: colors.outline,
+            muted: colors.secondary,
+            close: colors.error,
+            minimize: colors.warning,
+            zoom: colors.success,
+            inactive_surface: colors.surface_container.blend(&colors.foreground, 0.05),
+            inactive_ink: colors.foreground.blend(&colors.surface_container, 0.42),
         },
         None => MacPalette {
             surface: Color::rgb(236, 236, 238),

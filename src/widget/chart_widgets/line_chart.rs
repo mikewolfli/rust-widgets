@@ -20,12 +20,13 @@
 #[cfg(not(feature = "chart"))]
 use core::fmt::Write as _;
 
+use crate::compat::{lock, Arc, Mutex};
 #[cfg(feature = "chart")]
 use crate::core::Font;
 use crate::core::{Color, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
-use crate::signal::Signal1;
+use crate::signal::{ConnectionScope, Signal1};
 use crate::style::{MotionSlot, PropertyDriver};
 use crate::widget::capability::coercion::expect_f32;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
@@ -40,7 +41,9 @@ use crate::widget::chart_widgets::charts::{
 };
 use crate::widget::chart_widgets::charts::{AxisConfig, AxisScale};
 use crate::widget::chart_widgets::{finite_samples, is_finite_sample};
-use crate::widget::companions::{Legend, LegendEntry};
+use crate::widget::companions::{
+    AxisEdge, AxisPicker, ChartDataTable, Legend, LegendEntry, ZoomStrip,
+};
 #[cfg(not(feature = "chart"))]
 use crate::widget::metrics::role_font;
 // Shared with the engine-backed path so the `not(feature = "chart")` fallback cannot
@@ -120,6 +123,45 @@ struct SeriesExtents {
     y_min: f64,
     y_max: f64,
     valid: bool,
+}
+
+/// A chart data snapshot: `(name, points)` series and the indices to show.
+type ChartSeriesSnapshot = (Vec<(String, Vec<(f64, f64)>)>, Vec<usize>);
+
+/// Ties an attached [`ChartDataTable`] to this chart (COMP-A8).
+struct ChartDataTableBinding {
+    /// Writer end of the table's snapshot queue; the table drains it in its own paint/event path.
+    snapshots: Arc<Mutex<Option<ChartSeriesSnapshot>>>,
+    /// Series indices the table toggled since the last poll.
+    toggles: Arc<Mutex<Vec<usize>>>,
+    /// The snapshot last pushed, so an unchanged chart does not rebuild the table.
+    last_snapshot: ChartSeriesSnapshot,
+    /// The subscription, dropped with the binding so a detached chart leaves no slot behind.
+    _scope: ConnectionScope,
+}
+
+/// Ties an attached [`ZoomStrip`] to this chart (COMP-A8).
+struct ZoomStripBinding {
+    /// Levels the strip requested since the last poll.
+    requests: Arc<Mutex<Option<f32>>>,
+    /// Whether the strip's Fit segment was activated since the last poll.
+    fit_requests: Arc<Mutex<bool>>,
+    /// Writer end of the strip's mirror queue; the strip drains it to follow a chart gesture.
+    mirror: Arc<Mutex<Option<f32>>>,
+    /// The factor last written to `mirror`, so a wheel zoom is forwarded once.
+    last_pushed: f32,
+    /// The subscription, dropped with the binding so a detached chart leaves no slot behind.
+    _scope: ConnectionScope,
+}
+
+/// Ties an attached [`AxisPicker`] to this chart (COMP-A8).
+struct AxisPickerBinding {
+    /// Assignments reported since the last poll.
+    assignments: Arc<Mutex<Vec<(usize, AxisEdge)>>>,
+    /// The assignment the chart actually honoured, if any.
+    applied: Option<(usize, AxisEdge)>,
+    /// The subscription, dropped with the binding so a detached chart leaves no slot behind.
+    _scope: ConnectionScope,
 }
 
 /// A 2D line chart widget for visualizing (x, y) data series.
@@ -225,6 +267,12 @@ pub struct LineChart {
     pub point_clicked: Signal1<(usize, usize)>,
     /// Emitted with `(series, visible)` after a legend click or [`Self::set_series_visible`].
     pub series_toggled: Signal1<(usize, bool)>,
+    /// The attached chart data table binding (COMP-A8).
+    chart_data_table: Option<ChartDataTableBinding>,
+    /// The attached zoom strip binding (COMP-A8).
+    zoom_strip: Option<ZoomStripBinding>,
+    /// The attached axis picker binding (COMP-A8).
+    axis_picker: Option<AxisPickerBinding>,
 }
 
 /// The key that makes the projection cache valid for exactly one view.
@@ -339,6 +387,9 @@ impl LineChart {
             point_unhovered: Signal1::new(),
             point_clicked: Signal1::new(),
             series_toggled: Signal1::new(),
+            chart_data_table: None,
+            zoom_strip: None,
+            axis_picker: None,
         }
     }
 
@@ -613,6 +664,43 @@ impl LineChart {
         self.view_x
     }
 
+    /// The plot rectangle the last paint drew into, or `None` before the first paint.
+    ///
+    /// A companion that maps a value to a pixel must invert the same rectangle the chart
+    /// used; recomputing the margins elsewhere would drift from the engine's layout.
+    pub fn last_plot_area(&self) -> Option<Rect> {
+        self.last_plot_area
+    }
+
+    /// The X-axis range the current paint maps data into, or `None` when neither the data
+    /// nor an explicit axis range defines one.
+    ///
+    /// A zoom window wins over the data range, exactly as it does in the painted axis.
+    pub fn x_range(&self) -> Option<(f64, f64)> {
+        if self.view_x.is_some() {
+            return self.view_x;
+        }
+        if self.x_min.is_some() && self.x_max.is_some() {
+            return Some(self.resolve_x_range());
+        }
+        if !self.extents().valid {
+            return None;
+        }
+        Some(self.resolve_x_range())
+    }
+
+    /// The value-axis range the current paint maps data into, or `None` when neither the
+    /// data nor an explicit axis range defines one.
+    pub fn value_range(&self) -> Option<(f64, f64)> {
+        if self.y_min.is_some() && self.y_max.is_some() {
+            return Some(self.resolve_y_range());
+        }
+        if !self.extents().valid {
+            return None;
+        }
+        Some(self.resolve_y_range())
+    }
+
     /// Sets an explicit X window. The range is normalised and must be finite and non-degenerate.
     pub fn set_view_range(&mut self, range: Option<(f64, f64)>) {
         self.view_x = range.map(|(low, high)| if low <= high { (low, high) } else { (high, low) });
@@ -814,6 +902,11 @@ impl LineChart {
         if let Some((min, max)) = self.view_x {
             return (min, max);
         }
+        self.data_x_range()
+    }
+
+    /// The X range the data and explicit axis settings define, ignoring any zoom window.
+    fn data_x_range(&self) -> (f64, f64) {
         match (self.x_min, self.x_max) {
             (Some(min), Some(max)) => (min, max),
             _ => {
@@ -1073,6 +1166,325 @@ impl LineChart {
         self.legend
             .as_ref()
             .is_some_and(|legend| legend.is_visible() && legend.geometry().contains_point(pos))
+    }
+
+    // ── COMP-A8 companion wiring ──
+
+    /// Follows `table` as this chart's data table (COMP-A8).
+    ///
+    /// Data flows chart → table: the current series are written into
+    /// [`ChartDataTable::set_from_series`] immediately, and [`Self::poll_chart_data_table`]
+    /// re-pushes the snapshot whenever the series change, so the host does not copy values by
+    /// hand. Toggles flow table → chart: a row click emits `series_toggled`, which the poll
+    /// applies through [`Self::set_series_visible`].
+    ///
+    /// The snapshot carries the chart's visibility too. [`ChartDataTable::set_from_series`] seeds
+    /// every series visible, so a hidden series would otherwise reappear in the table on the next
+    /// data change. Attaching replaces any previous table; after
+    /// [`Self::detach_chart_data_table`] the table keeps the last snapshot it was given.
+    pub fn attach_chart_data_table(&mut self, table: &mut ChartDataTable) {
+        let snapshots = Arc::new(Mutex::new(None));
+        table.accept_series_updates(Arc::clone(&snapshots));
+
+        let toggles = Arc::new(Mutex::new(Vec::new()));
+        let scope = ConnectionScope::new();
+        let sink = Arc::clone(&toggles);
+        let redraw = self.base.redraw_requested_signal().clone();
+        table.series_toggled.connect_scoped(&scope, move |index| {
+            lock(&sink).push(*index);
+            // A table edit redraws the chart, so the poll that applies it happens next frame.
+            redraw.emit();
+        });
+
+        let snapshot = self.chart_data_snapshot();
+        table.set_from_series(&snapshot.0);
+        table.set_visible_series(snapshot.1.clone());
+        self.chart_data_table = Some(ChartDataTableBinding {
+            snapshots,
+            toggles,
+            last_snapshot: snapshot,
+            _scope: scope,
+        });
+        self.base.request_redraw();
+    }
+
+    /// Stops following the attached data table; its last snapshot stays.
+    pub fn detach_chart_data_table(&mut self) {
+        if self.chart_data_table.take().is_some() {
+            self.base.request_redraw();
+        }
+    }
+
+    /// Whether a [`ChartDataTable`] is attached.
+    pub fn is_chart_data_table_attached(&self) -> bool {
+        self.chart_data_table.is_some()
+    }
+
+    /// Applies the table's toggles and refreshes its rows when the chart's series changed.
+    ///
+    /// Called from `draw` and `handle_event`. Returns whether a toggle was applied or a new
+    /// snapshot was queued; an unchanged chart and an idle table return `false`.
+    pub fn poll_chart_data_table(&mut self) -> bool {
+        let toggles = match self.chart_data_table.as_ref() {
+            Some(binding) => core::mem::take(&mut *lock(&binding.toggles)),
+            None => return false,
+        };
+        let mut changed = false;
+        for index in toggles {
+            let next = !self.is_series_visible(index);
+            changed |= self.set_series_visible(index, next);
+        }
+        let current = self.chart_data_snapshot();
+        let differs =
+            self.chart_data_table.as_ref().is_some_and(|binding| current != binding.last_snapshot);
+        if differs {
+            if let Some(binding) = self.chart_data_table.as_mut() {
+                *lock(&binding.snapshots) = Some(current.clone());
+                binding.last_snapshot = current;
+            }
+            changed = true;
+        }
+        changed
+    }
+
+    /// Follows `strip` as this chart's zoom control (COMP-A8).
+    ///
+    /// Intent flows strip → chart: `zoom_requested` and `fit_requested` are queued and applied by
+    /// [`Self::poll_zoom_strip`]. A requested level is absolute over the unzoomed data range —
+    /// the window becomes `data_span / level`, centred on the current view — and Fit restores the
+    /// auto range. The readout flows chart → strip: a wheel zoom or pan changes the view factor,
+    /// and the poll mirrors that factor back so the percentage follows the chart. The mirror write
+    /// is queued for the strip's own drain path; it is never performed from this event handler.
+    pub fn attach_zoom_strip(&mut self, strip: &mut ZoomStrip) {
+        let requests = Arc::new(Mutex::new(None));
+        let fit_requests = Arc::new(Mutex::new(false));
+        let mirror = Arc::new(Mutex::new(None));
+        let scope = ConnectionScope::new();
+        let redraw = self.base.redraw_requested_signal().clone();
+
+        // Mirror the chart's current view before subscribing: a level pushed now must not come
+        // back as a fresh request.
+        let factor = self.zoom_factor();
+        strip.set_zoom(factor);
+        strip.accept_zoom_updates(Arc::clone(&mirror));
+
+        let request_sink = Arc::clone(&requests);
+        let request_redraw = redraw.clone();
+        strip.zoom_requested.connect_scoped(&scope, move |level| {
+            *lock(&request_sink) = Some(*level);
+            // A strip click redraws the chart, so the poll that applies it happens next frame.
+            request_redraw.emit();
+        });
+        let fit_sink = Arc::clone(&fit_requests);
+        strip.fit_requested.connect_scoped(&scope, move |_mode| {
+            *lock(&fit_sink) = true;
+            redraw.emit();
+        });
+
+        self.zoom_strip = Some(ZoomStripBinding {
+            requests,
+            fit_requests,
+            mirror,
+            last_pushed: factor,
+            _scope: scope,
+        });
+        self.base.request_redraw();
+    }
+
+    /// Stops following the attached strip; the last applied view stays.
+    pub fn detach_zoom_strip(&mut self) {
+        if self.zoom_strip.take().is_some() {
+            self.base.request_redraw();
+        }
+    }
+
+    /// Whether a [`ZoomStrip`] is attached.
+    pub fn is_zoom_strip_attached(&self) -> bool {
+        self.zoom_strip.is_some()
+    }
+
+    /// Applies what the attached strip requested and mirrors the resulting factor back.
+    ///
+    /// Called from `draw` and `handle_event`. Returns whether a request was consumed or the
+    /// mirrored factor changed.
+    pub fn poll_zoom_strip(&mut self) -> bool {
+        let (request, fit) = {
+            let Some(binding) = self.zoom_strip.as_ref() else {
+                return false;
+            };
+            (
+                lock(&binding.requests).take(),
+                core::mem::replace(&mut *lock(&binding.fit_requests), false),
+            )
+        };
+        let mut changed = fit || request.is_some();
+        if fit {
+            self.reset_view();
+        }
+        if let Some(level) = request {
+            let _ = self.apply_zoom_level(level);
+        }
+        let factor = self.zoom_factor();
+        if let Some(binding) = self.zoom_strip.as_mut() {
+            if (factor - binding.last_pushed).abs() > f32::EPSILON {
+                *lock(&binding.mirror) = Some(factor);
+                binding.last_pushed = factor;
+                changed = true;
+            }
+        }
+        changed
+    }
+
+    /// Follows `picker` as this chart's series-to-edge list (COMP-A8).
+    ///
+    /// On attach the picker receives this chart's series names. Assignments flow picker → chart
+    /// and are applied by [`Self::poll_axis_picker`]; because a [`LineChart`] has one X and one Y
+    /// axis it cannot honour a per-series edge, so the assignment is recorded as `None` rather
+    /// than mapped onto a model the chart does not have (see [`Self::axis_assignment`]).
+    pub fn attach_axis_picker(&mut self, picker: &mut AxisPicker) {
+        picker.set_series(self.chart_series_names());
+
+        let assignments = Arc::new(Mutex::new(Vec::new()));
+        let scope = ConnectionScope::new();
+        let sink = Arc::clone(&assignments);
+        let redraw = self.base.redraw_requested_signal().clone();
+        picker.axis_assigned.connect_scoped(&scope, move |value| {
+            lock(&sink).push(*value);
+            // A picker click redraws the chart, so the poll that applies it happens next frame.
+            redraw.emit();
+        });
+
+        self.axis_picker = Some(AxisPickerBinding { assignments, applied: None, _scope: scope });
+        self.base.request_redraw();
+    }
+
+    /// Stops following the attached picker; the last recorded assignment stays.
+    pub fn detach_axis_picker(&mut self) {
+        if self.axis_picker.take().is_some() {
+            self.base.request_redraw();
+        }
+    }
+
+    /// Whether an [`AxisPicker`] is attached.
+    pub fn is_axis_picker_attached(&self) -> bool {
+        self.axis_picker.is_some()
+    }
+
+    /// Consumes the assignments the attached picker reported.
+    ///
+    /// Called from `draw` and `handle_event`. Returns whether any assignment was consumed. A
+    /// consumed assignment is recorded through [`Self::axis_assignment`], which stays `None` for
+    /// this single-axis chart.
+    pub fn poll_axis_picker(&mut self) -> bool {
+        let pending: Vec<(usize, AxisEdge)> = {
+            let Some(binding) = self.axis_picker.as_ref() else {
+                return false;
+            };
+            core::mem::take(&mut *lock(&binding.assignments))
+        };
+        if pending.is_empty() {
+            return false;
+        }
+        let mut applied = None;
+        for (series, edge) in pending {
+            if let Some(result) = self.apply_axis_assignment(series, edge) {
+                applied = Some(result);
+            }
+        }
+        if let Some(binding) = self.axis_picker.as_mut() {
+            binding.applied = applied;
+        }
+        true
+    }
+
+    /// The `(series, edge)` the attached picker last assigned, or `None`.
+    ///
+    /// Always `None` here: a [`LineChart`] has a single X axis and a single Y axis, so it has no
+    /// per-series edge to move a series to. The report is drained and recorded honestly instead
+    /// of being mapped onto an axis model the chart does not have.
+    pub fn axis_assignment(&self) -> Option<(usize, AxisEdge)> {
+        self.axis_picker.as_ref().and_then(|binding| binding.applied)
+    }
+
+    /// Applies one picker assignment, returning the pair when the chart honoured it.
+    ///
+    /// A single-axis chart cannot honour one, so this returns `None` and changes nothing. Hiding
+    /// a series when the picker moved it to Top or Bottom would invent an axis model; a future
+    /// multi-axis chart would map `edge` here.
+    fn apply_axis_assignment(
+        &mut self,
+        _series: usize,
+        _edge: AxisEdge,
+    ) -> Option<(usize, AxisEdge)> {
+        None
+    }
+
+    /// The label one series is known by: its name, or the legend's `Series N` fallback.
+    fn series_name(&self, index: usize) -> String {
+        match self.series.get(index) {
+            Some(series) if !series.name.is_empty() => series.name.clone(),
+            _ => format!("Series {}", index + 1),
+        }
+    }
+
+    /// The chart's series and visibility as the data table's snapshot.
+    fn chart_data_snapshot(&self) -> ChartSeriesSnapshot {
+        let series = (0..self.series.len())
+            .map(|index| (self.series_name(index), self.series[index].points.clone()))
+            .collect();
+        let visible =
+            (0..self.series.len()).filter(|&index| self.is_series_visible(index)).collect();
+        (series, visible)
+    }
+
+    /// The series labels the axis picker lists.
+    fn chart_series_names(&self) -> Vec<String> {
+        (0..self.series.len()).map(|index| self.series_name(index)).collect()
+    }
+
+    /// The chart's current X zoom as a factor over the unzoomed data range.
+    fn zoom_factor(&self) -> f32 {
+        let (base_low, base_high) = self.data_x_range();
+        let base_span = base_high - base_low;
+        let (low, high) = self.resolve_x_range();
+        let span = high - low;
+        if !base_span.is_finite() || base_span <= 0.0 || !span.is_finite() || span <= 0.0 {
+            return 1.0;
+        }
+        let factor = (base_span / span) as f32;
+        if factor.is_finite() {
+            factor
+        } else {
+            1.0
+        }
+    }
+
+    /// Sets the X window to `data_span / level`, centred on the current view.
+    ///
+    /// Returns whether the view moved. A non-positive or non-finite level, or a chart with no
+    /// usable X range, is refused.
+    fn apply_zoom_level(&mut self, level: f32) -> bool {
+        let level = f64::from(level);
+        if !level.is_finite() || level <= 0.0 {
+            return false;
+        }
+        let (base_low, base_high) = self.data_x_range();
+        let base_span = base_high - base_low;
+        if !base_span.is_finite() || base_span <= 0.0 {
+            return false;
+        }
+        let (low, high) = self.resolve_x_range();
+        let centre = low + (high - low) * 0.5;
+        let half = base_span / level * 0.5;
+        let next = (centre - half, centre + half);
+        let tolerance = base_span * 1e-9;
+        if self.view_x.is_some_and(|(old_low, old_high)| {
+            (old_low - next.0).abs() <= tolerance && (old_high - next.1).abs() <= tolerance
+        }) {
+            return false;
+        }
+        self.set_view_range(Some(next));
+        true
     }
 
     /// Delegates the hover read-out to a host-owned tooltip when `external` is set.
@@ -1483,6 +1895,10 @@ impl WidgetProperties for LineChart {
 
 impl Draw for LineChart {
     fn draw(&mut self, context: &mut RenderContext) {
+        // Drain shared writes the attached companions reported, so this frame paints them.
+        self.poll_chart_data_table();
+        self.poll_zoom_strip();
+        self.poll_axis_picker();
         self.sync_legend();
         let rect = self.base.geometry();
         if rect.width == 0 || rect.height == 0 {
@@ -2081,6 +2497,11 @@ impl LineChart {
 
 impl EventHandler for LineChart {
     fn handle_event(&mut self, event: &Event) {
+        // Companion reports are shared writes, drained before routing so the frame that follows
+        // the click already reflects them.
+        self.poll_chart_data_table();
+        self.poll_zoom_strip();
+        self.poll_axis_picker();
         self.base.handle_event(event);
         if !self.base.is_enabled() {
             return;
@@ -2787,5 +3208,127 @@ mod tests {
         lc.handle_event(&Event::mouse_press(10, 10, 1));
         assert!(!lc.is_series_visible(0));
         assert!(!lc.legend().expect("attached").entries()[0].visible);
+    }
+
+    /// COMP-A8: attaching a data table pushes the chart's current series immediately.
+    #[test]
+    fn attaching_a_chart_data_table_pushes_the_current_series() {
+        let mut lc = LineChart::new(Rect::new(0, 0, 320, 220));
+        lc.set_series(vec![
+            LineSeries::new("alpha", vec![(0.0, 1.0), (1.0, 2.0)]),
+            LineSeries::new("beta", vec![(0.0, 2.0)]),
+        ]);
+        let mut table = ChartDataTable::new(Rect::new(0, 0, 240, 120));
+        lc.attach_chart_data_table(&mut table);
+        assert!(lc.is_chart_data_table_attached());
+        assert_eq!(table.series_count(), 2, "both series reach the table");
+        assert_eq!(table.rows().len(), 3, "one row per point");
+        assert_eq!(table.rows()[0][0], "alpha");
+        assert_eq!(table.rows()[2][0], "beta");
+        assert!(table.series_visible(0) && table.series_visible(1));
+    }
+
+    /// COMP-A8: a changed chart refreshes the table on the next poll, and an unchanged one does
+    /// not; detaching leaves the table's last snapshot in place.
+    #[test]
+    fn polling_a_chart_data_table_refreshes_only_after_a_data_change() {
+        let mut lc = LineChart::new(Rect::new(0, 0, 320, 220));
+        lc.set_series(vec![LineSeries::new("alpha", vec![(0.0, 1.0)])]);
+        let mut table = ChartDataTable::new(Rect::new(0, 0, 240, 120));
+        lc.attach_chart_data_table(&mut table);
+        assert!(!lc.poll_chart_data_table(), "an unchanged chart pushes nothing");
+
+        lc.set_series(vec![LineSeries::new("alpha", vec![(0.0, 1.0), (1.0, 2.0)])]);
+        assert!(lc.poll_chart_data_table(), "the changed series are queued");
+        assert_eq!(table.rows().len(), 1, "the table drains on its own paint path");
+        assert!(table.sync_series_updates());
+        assert_eq!(table.rows().len(), 2, "the new point reached the table");
+        assert!(!lc.poll_chart_data_table(), "the same snapshot is not re-pushed");
+
+        lc.detach_chart_data_table();
+        assert!(!lc.is_chart_data_table_attached());
+        lc.set_series(vec![LineSeries::new("alpha", Vec::new())]);
+        assert!(!lc.poll_chart_data_table(), "a detached table receives nothing");
+        assert_eq!(table.rows().len(), 2, "the last state stays");
+    }
+
+    /// COMP-A8: a table row click toggles the same series on the chart.
+    #[test]
+    fn a_chart_data_table_toggle_hides_the_series_in_the_chart() {
+        let mut lc = LineChart::new(Rect::new(0, 0, 320, 220));
+        lc.set_series(vec![
+            LineSeries::new("alpha", vec![(0.0, 1.0)]),
+            LineSeries::new("beta", vec![(0.0, 2.0)]),
+        ]);
+        let mut table = ChartDataTable::new(Rect::new(0, 0, 240, 120));
+        lc.attach_chart_data_table(&mut table);
+        assert!(table.toggle_series(0), "the table hides the first series");
+        assert!(lc.poll_chart_data_table(), "the toggle is applied");
+        assert!(!lc.is_series_visible(0), "the chart hides the same series");
+        assert!(table.sync_series_updates());
+        assert!(!table.series_visible(0), "the refresh keeps the table's state");
+        assert!(lc.is_series_visible(1), "the other series is untouched");
+    }
+
+    /// COMP-A8: a strip level sets the window by `data_span / level` around the current centre.
+    #[test]
+    fn a_zoom_strip_request_sets_the_view_around_the_current_centre() {
+        let mut lc = LineChart::new(Rect::new(0, 0, 320, 220));
+        lc.set_data(vec![(0.0, 0.0), (10.0, 1.0)]);
+        lc.set_view_range(Some((4.0, 6.0)));
+        let mut strip = ZoomStrip::new(Rect::new(0, 0, 240, 28));
+        lc.attach_zoom_strip(&mut strip);
+        assert!(lc.is_zoom_strip_attached());
+        assert!(strip.zoom_level() > 1.0, "attaching mirrors the current factor");
+
+        strip.set_zoom(3.0);
+        assert!(lc.poll_zoom_strip(), "the strip request is applied");
+        let (low, high) = lc.view_range().expect("a zoom window is installed");
+        assert!(((low + high) * 0.5 - 5.0).abs() < 1e-6, "the view keeps its centre");
+        assert!((high - low - 4.0).abs() < 1e-6, "span = padded data span / level");
+    }
+
+    /// COMP-A8: Fit restores the auto range and the mirrored readout returns to 100%.
+    #[test]
+    fn a_zoom_strip_fit_request_restores_the_auto_range() {
+        let mut lc = LineChart::new(Rect::new(0, 0, 320, 220));
+        lc.set_data(vec![(0.0, 0.0), (10.0, 1.0)]);
+        lc.set_view_range(Some((4.0, 6.0)));
+        let mut strip = ZoomStrip::new(Rect::new(0, 0, 240, 28));
+        lc.attach_zoom_strip(&mut strip);
+
+        strip.fit_requested.emit(crate::widget::companions::ZoomMode::FitWidth);
+        assert!(lc.poll_zoom_strip(), "the fit request is applied");
+        assert_eq!(lc.view_range(), None, "the auto range is restored");
+        assert!(strip.sync_zoom_updates());
+        assert!((strip.zoom_level() - 1.0).abs() < 1e-6, "the readout follows the reset");
+        assert!(!lc.poll_zoom_strip(), "an idle strip reports nothing");
+    }
+
+    /// COMP-A8: the picker receives the series names, and its assignments are recorded as ignored
+    /// rather than mapped onto an axis model this chart does not have.
+    #[test]
+    fn an_axis_picker_assignment_is_recorded_but_not_invented() {
+        let mut lc = LineChart::new(Rect::new(0, 0, 320, 220));
+        lc.set_series(vec![
+            LineSeries::new("alpha", vec![(0.0, 1.0)]),
+            LineSeries::new("beta", vec![(0.0, 2.0)]),
+        ]);
+        let mut picker = AxisPicker::new(Rect::new(0, 0, 220, 120));
+        lc.attach_axis_picker(&mut picker);
+        assert!(lc.is_axis_picker_attached());
+        assert_eq!(picker.series_names().len(), 2);
+        assert_eq!(picker.series_names()[0], "alpha");
+
+        assert!(picker.assign(0, AxisEdge::Right));
+        assert!(lc.poll_axis_picker(), "the report is consumed");
+        assert!(lc.is_series_visible(0), "a single-axis chart does not hide the series");
+        assert_eq!(lc.axis_assignment(), None, "the assignment is recorded as ignored");
+        assert!(!lc.poll_axis_picker(), "an unchanged picker reports nothing");
+
+        lc.detach_axis_picker();
+        assert!(!lc.is_axis_picker_attached());
+        assert!(picker.assign(0, AxisEdge::Top));
+        assert!(!lc.poll_axis_picker(), "a detached picker reports nothing");
     }
 }

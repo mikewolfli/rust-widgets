@@ -475,12 +475,11 @@ impl Draw for ImePreedit {
         // mutex is not re-entrant.
         let style = self.base.style();
         let theme = crate::style::resolved_theme_style_shared("ime_preedit");
-        // Read as its own lock acquisition and copied out as values, so the guard is dropped
-        // before anything else touches the theme.
+        // Read from the shared palette snapshot and copied out as values, so no manager guard is
+        // held while anything else touches the theme.
         let (window_fill, foreground) = {
-            let manager = crate::style::theme_manager();
-            match manager.current_theme() {
-                Some(active) => (active.colors.background, active.colors.foreground),
+            match crate::style::palette_shared() {
+                Some(colors) => (colors.background, colors.foreground),
                 None => (Color::rgb(240, 240, 240), Color::BLACK),
             }
         };

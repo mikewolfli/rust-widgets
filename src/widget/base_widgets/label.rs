@@ -2345,9 +2345,8 @@ mod tests {
             // The theme is applied the way the runtime applies it, so this reads the same style a
             // real window would.
             crate::theme::apply_theme_to_widget(&mut label);
-            let surface = crate::style::theme_manager()
-                .current_theme()
-                .map(|active| active.colors.background)
+            let surface = crate::style::palette_shared()
+                .map(|colors| colors.background)
                 .expect("a preset is active");
             let svg = crate::widget::svg::render_widget_to_svg_on(
                 &mut label,
@@ -2396,9 +2395,8 @@ mod tests {
             crate::theme::apply_theme_to_widget(&mut disabled);
             disabled.set_enabled(false);
 
-            let surface = crate::style::theme_manager()
-                .current_theme()
-                .map(|active| active.colors.background)
+            let surface = crate::style::palette_shared()
+                .map(|colors| colors.background)
                 .expect("a preset is active");
             let rect = Rect::new(0, 0, 200, 30);
             let live_svg = crate::widget::svg::render_widget_to_svg_on(&mut enabled, rect, surface);

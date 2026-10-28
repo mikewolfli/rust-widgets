@@ -7,8 +7,9 @@
 //!
 //! The payload is a binary `include_bytes!` rather than a Rust array: 36 KB written as `0x00,`
 //! literals would be ~150 KB of source, which is a worse artifact than the binary it describes.
-//! Each module's header records where the bytes came from and under which licence — see the
-//! repository-root `NOTICE`, which `tools/check_font_licenses.sh` requires this to agree with.
+//! Each module's header records where the bytes came from and under which licence — see
+//! `crates/rust-widgets-font/NOTICE`, which `tools/check_font_licenses.sh` requires this to agree
+//! with.
 //!
 //! # Why nothing here is named after the upstream font
 //!

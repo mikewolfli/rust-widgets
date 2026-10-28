@@ -17,17 +17,29 @@
 //! stage-fitting preview — and the preview target changes with the zoom level. A cache keyed on
 //! the image alone could only hold one of them; the target is part of what identifies the bitmap.
 
+use crate::compat::{BTreeMap, Rc};
 use crate::core::{Rect, Size};
 use crate::image::{resize, ImageData};
 use crate::signal::Signal1;
+
+/// The thumbnail cache key: `(image key, target width, target height)`.
+type ThumbnailKey = (u64, u32, u32);
+/// The LRU index key: `(stamp, thumbnail key)`.
+type LruKey = (u64, ThumbnailKey);
+/// The cache map.
+type EntryMap = HashMap<ThumbnailKey, Entry>;
+/// The LRU index.
+type LruIndex = BTreeMap<LruKey, ()>;
 use crate::widget::{BaseWidget, Widget, WidgetKind};
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 
 /// One cached bitmap and the order entry that keeps it alive.
 struct Entry {
-    data: ImageData,
-    /// Logical insertion/use order; the front of `order` is the eviction candidate.
+    /// The cached pixels. Shared with the draw path, so a hit is a refcount bump rather than a
+    /// full-bitmap copy (VP-001).
+    data: Rc<ImageData>,
+    /// The logical last-use stamp; the smallest live stamp is the eviction candidate.
     stamp: u64,
 }
 
@@ -37,8 +49,10 @@ pub struct ThumbnailCache {
     /// Capacity; interior-mutable so `thumbnail_for` can evict through `&self`.
     max_entries: Cell<usize>,
     target_size: Cell<(u32, u32)>,
-    entries: RefCell<HashMap<(u64, u32, u32), Entry>>,
-    order: RefCell<Vec<(u64, u32, u32)>>,
+    entries: RefCell<EntryMap>,
+    /// Live `(stamp, key)` pairs, kept in lockstep with `entries`. A `BTreeMap` gives O(log C)
+    /// least-stamp lookup and removal, replacing the linear scan (VP-005).
+    order: RefCell<LruIndex>,
     next_stamp: Cell<u64>,
     /// Emitted with the key whenever a bitmap is generated (a cache miss).
     pub thumbnail_ready: Signal1<u64>,
@@ -52,7 +66,7 @@ impl ThumbnailCache {
             max_entries: Cell::new(256),
             target_size: Cell::new((96, 96)),
             entries: RefCell::new(HashMap::new()),
-            order: RefCell::new(Vec::new()),
+            order: RefCell::new(BTreeMap::new()),
             next_stamp: Cell::new(0),
             thumbnail_ready: Signal1::new(),
         }
@@ -98,7 +112,7 @@ impl ThumbnailCache {
         key: u64,
         source: &ImageData,
         source_size: (u32, u32),
-    ) -> ImageData {
+    ) -> Rc<ImageData> {
         self.thumbnail_for_sized(key, source, source_size, self.target_size.get())
     }
 
@@ -113,27 +127,40 @@ impl ThumbnailCache {
         source: &ImageData,
         source_size: (u32, u32),
         target: (u32, u32),
-    ) -> ImageData {
+    ) -> Rc<ImageData> {
         let target = (target.0.max(1), target.1.max(1));
         let cache_key = (key, target.0, target.1);
-        let stamp = self.next_stamp.get().wrapping_add(1);
-        self.next_stamp.set(stamp);
+        let stamp = self.tick_stamp();
         if let Some(entry) = self.entries.borrow_mut().get_mut(&cache_key) {
+            let previous = entry.stamp;
             entry.stamp = stamp;
-            return entry.data.clone();
+            let data = Rc::clone(&entry.data);
+            // Move the key's order entry to the new stamp. A hit is therefore a refcount bump plus
+            // one O(log C) index update, with no pixel copy (VP-001).
+            let mut order = self.order.borrow_mut();
+            order.remove(&(previous, cache_key));
+            order.insert((stamp, cache_key), ());
+            return data;
         }
-        let data = fit_resample(source, source_size, target);
-        self.entries.borrow_mut().insert(cache_key, Entry { data: data.clone(), stamp });
-        self.order.borrow_mut().push(cache_key);
+        let data = Rc::new(fit_resample(source, source_size, target));
+        self.entries.borrow_mut().insert(cache_key, Entry { data: Rc::clone(&data), stamp });
+        self.order.borrow_mut().insert((stamp, cache_key), ());
         self.evict_to_capacity();
         self.thumbnail_ready.emit(key);
         data
     }
 
+    /// Advances the monotonic use stamp.
+    fn tick_stamp(&self) -> u64 {
+        let stamp = self.next_stamp.get().wrapping_add(1);
+        self.next_stamp.set(stamp);
+        stamp
+    }
+
     /// Drops every cached bitmap for `key`, across all target sizes.
     pub fn invalidate(&self, key: u64) {
         self.entries.borrow_mut().retain(|(cached_key, _, _), _| *cached_key != key);
-        self.order.borrow_mut().retain(|(cached_key, _, _)| *cached_key != key);
+        self.order.borrow_mut().retain(|(_, (cached_key, _, _)), _| *cached_key != key);
     }
 
     /// Drops every cached bitmap.
@@ -143,26 +170,17 @@ impl ThumbnailCache {
     }
 
     /// Evicts least-recently-used entries until the cache is within its bound.
+    ///
+    /// The order map names the smallest live stamp, so each eviction is one `BTreeMap` lookup and
+    /// removal rather than a scan of every key (VP-005).
     fn evict_to_capacity(&self) {
-        loop {
-            let len = self.entries.borrow().len();
-            if len <= self.max_entries.get() {
-                break;
-            }
-            let oldest = {
-                let entries = self.entries.borrow();
-                self.order
-                    .borrow()
-                    .iter()
-                    .copied()
-                    .filter(|key| entries.contains_key(key))
-                    .min_by_key(|key| entries.get(key).map(|entry| entry.stamp).unwrap_or(0))
-            };
-            let Some(oldest) = oldest else {
+        while self.entries.borrow().len() > self.max_entries.get() {
+            let oldest = self.order.borrow().keys().next().copied();
+            let Some(entry) = oldest else {
                 break;
             };
-            self.entries.borrow_mut().remove(&oldest);
-            self.order.borrow_mut().retain(|key| *key != oldest);
+            self.order.borrow_mut().remove(&entry);
+            self.entries.borrow_mut().remove(&entry.1);
         }
     }
 }
@@ -180,7 +198,7 @@ fn fit_resample(source: &ImageData, source_size: (u32, u32), target: (u32, u32))
     if dst_w == source_w && dst_h == source_h {
         return source.clone();
     }
-    resize(source.clone(), source_w, source_h, dst_w, dst_h).unwrap_or_else(|_| source.clone())
+    resize(source, source_w, source_h, dst_w, dst_h).unwrap_or_else(|_| source.clone())
 }
 
 impl Widget for ThumbnailCache {
@@ -233,7 +251,7 @@ mod tests {
             1,
             "a cache hit does not regenerate"
         );
-        match first {
+        match &*first {
             ImageData::Rgba8(bytes) => {
                 // 64x32 fitted into 96x96 is 96x48 at most; the target is square, so 96x48.
                 assert_eq!(bytes.len(), 96 * 48 * 4);
@@ -254,7 +272,7 @@ mod tests {
         let _ = cache.thumbnail_for(1, &source, (8, 8));
         let _ = cache.thumbnail_for(3, &source, (8, 8));
         assert_eq!(cache.len(), 2);
-        assert_eq!(cache.thumbnail_for(1, &source, (8, 8)), rgba(96, 96, 10));
+        assert_eq!(*cache.thumbnail_for(1, &source, (8, 8)), rgba(96, 96, 10));
 
         cache.invalidate(1);
         assert_eq!(cache.len(), 1);

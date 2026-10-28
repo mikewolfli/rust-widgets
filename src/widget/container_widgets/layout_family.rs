@@ -332,9 +332,8 @@ fn wrapper_palette(base: &BaseWidget, role: &str) -> WrapperPalette {
     let style = base.style();
     let themed = crate::style::resolved_theme_style_shared(role);
     let (theme_background, theme_foreground, theme_accent) = {
-        let manager = crate::style::theme_manager();
-        match manager.current_theme() {
-            Some(theme) => (theme.colors.background, theme.colors.foreground, theme.colors.accent),
+        match crate::style::palette_shared() {
+            Some(colors) => (colors.background, colors.foreground, colors.accent),
             None => (Color::WHITE, Color::BLACK, Color::PRIMARY),
         }
     };

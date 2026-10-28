@@ -9,8 +9,8 @@
 //     https://raw.githubusercontent.com/google/fonts/main/ofl/notonaskharabic/NotoNaskhArabic%5Bwght%5D.ttf
 //     SHA-256 (upstream .ttf): 67b5a525a661b607971fbd3f96a81b89d3a768e74534fca84f18ac97e6fab72f
 //
-// Licence of the glyph outlines: SIL Open Font License 1.1. See the repository-root `NOTICE`,
-// which records this file by name together with the facts above. The subset is a Modified
+// Licence of the glyph outlines: SIL Open Font License 1.1. See this crate's `NOTICE`, which
+// records this file by name together with the facts above. The subset is a Modified
 // Version under the OFL and is renamed: it does not use the upstream Reserved Font Name.
 //
 // The subset is 70576 bytes (566 glyphs, layout tables: GSUB, GPOS),

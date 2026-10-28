@@ -18,7 +18,7 @@ use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
-use crate::widget::media_widgets::video_player::{MediaStatus, VideoPlayer};
+use crate::widget::media_widgets::video_player::{MediaStatus, TransportRequest, VideoPlayer};
 use crate::widget::metrics::role_font;
 use crate::widget::{draw_icon_at, BaseWidget, Draw, IconName, Widget, WidgetKind};
 
@@ -56,6 +56,8 @@ pub struct MediaTransportBar {
     show_volume: bool,
     show_fullscreen: bool,
     show_timecode: bool,
+    /// Whether the previous/next-track controls are shown (MW-001).
+    show_next_previous: bool,
     accent: Option<Color>,
     /// Whether the progress track is being dragged.
     scrubbing: bool,
@@ -67,6 +69,14 @@ pub struct MediaTransportBar {
     volume_rect: Option<Rect>,
     /// The fullscreen button from the last paint.
     fullscreen_rect: Option<Rect>,
+    /// The previous-track button from the last paint (MW-001).
+    previous_rect: Option<Rect>,
+    /// The next-track button from the last paint (MW-001).
+    next_rect: Option<Rect>,
+    /// Emitted when the previous-track control is activated.
+    pub previous_track_requested: GenericSignal,
+    /// Emitted when the next-track control is activated.
+    pub next_track_requested: GenericSignal,
     /// Emitted with the new desired playing state.
     pub play_toggled: Signal1<bool>,
     /// Emitted with the requested position as a `0.0..=1.0` fraction.
@@ -95,6 +105,11 @@ struct TransportMirror {
 struct TransportBinding {
     mirror: Arc<Mutex<TransportMirror>>,
     _scope: ConnectionScope,
+    /// The connections that forward this bar's requests into an attached player (MW-001).
+    ///
+    /// Kept beside the mirror subscriptions rather than inside `_scope` so `attach_video_player`
+    /// can replace the forwarding without disturbing the state mirror.
+    requests: Option<ConnectionScope>,
 }
 
 impl MediaTransportBar {
@@ -114,12 +129,17 @@ impl MediaTransportBar {
             show_volume: true,
             show_fullscreen: true,
             show_timecode: true,
+            show_next_previous: false,
             accent: None,
             scrubbing: false,
             track_rect: None,
             play_rect: None,
             volume_rect: None,
             fullscreen_rect: None,
+            previous_rect: None,
+            next_rect: None,
+            previous_track_requested: GenericSignal::new(),
+            next_track_requested: GenericSignal::new(),
             play_toggled: Signal1::new(),
             seek_requested: Signal1::new(),
             volume_changed: Signal1::new(),
@@ -202,7 +222,70 @@ impl MediaTransportBar {
             }
         });
 
-        self.binding = Some(TransportBinding { mirror, _scope: scope });
+        self.binding = Some(TransportBinding { mirror, _scope: scope, requests: None });
+        self.target_kind = MediaTargetKind::VideoPlayer;
+        self.base.request_redraw();
+    }
+
+    /// Attaches this bar to `player`: follows its state **and** forwards the bar's own requests
+    /// back to it (MW-001).
+    ///
+    /// [`Self::follow_video_player`] only mirrors the player, which left the round trip to the
+    /// host: every intent was a signal and nothing on this side ever reached the player. This
+    /// method closes that loop with the same shared-queue mechanism the chapter list uses
+    /// (`VideoPlayer::accept_transport_requests`): the bar writes a [`TransportRequest`], the
+    /// player drains it on its next paint or interaction. The signals still fire, so a host that
+    /// wants to observe or veto an intent can connect to them as before.
+    ///
+    /// Calling this again replaces the previous attachment, subscriptions included.
+    pub fn attach_video_player(&mut self, player: &mut VideoPlayer) {
+        self.follow_video_player(player);
+
+        let queue: Arc<Mutex<crate::compat::Vec<TransportRequest>>> =
+            Arc::new(Mutex::new(crate::compat::Vec::new()));
+        let redraw = player.accept_transport_requests(Arc::clone(&queue));
+        let scope = ConnectionScope::new();
+
+        let sink = Arc::clone(&queue);
+        let wake = redraw.clone();
+        self.play_toggled.connect_ref_scoped(&scope, move |playing| {
+            let request =
+                if *playing { TransportRequest::Play } else { TransportRequest::Pause };
+            crate::compat::lock(&sink).push(request);
+            wake.emit();
+        });
+
+        let sink = Arc::clone(&queue);
+        let wake = redraw.clone();
+        self.seek_requested.connect_ref_scoped(&scope, move |fraction| {
+            crate::compat::lock(&sink).push(TransportRequest::Seek(*fraction));
+            wake.emit();
+        });
+
+        let sink = Arc::clone(&queue);
+        let wake = redraw.clone();
+        self.volume_changed.connect_ref_scoped(&scope, move |volume| {
+            crate::compat::lock(&sink).push(TransportRequest::Volume(*volume));
+            wake.emit();
+        });
+
+        let sink = Arc::clone(&queue);
+        let wake = redraw.clone();
+        self.previous_track_requested.connect_scoped(&scope, move || {
+            crate::compat::lock(&sink).push(TransportRequest::PreviousTrack);
+            wake.emit();
+        });
+
+        let sink = Arc::clone(&queue);
+        let wake = redraw.clone();
+        self.next_track_requested.connect_scoped(&scope, move || {
+            crate::compat::lock(&sink).push(TransportRequest::NextTrack);
+            wake.emit();
+        });
+
+        if let Some(binding) = self.binding.as_mut() {
+            binding.requests = Some(scope);
+        }
         self.target_kind = MediaTargetKind::VideoPlayer;
         self.base.request_redraw();
     }
@@ -382,6 +465,24 @@ impl MediaTransportBar {
         self.base.request_redraw();
     }
 
+    /// Shows or hides the previous/next-track controls (MW-001).
+    ///
+    /// The bar cannot hold the player (a binding is a one-way mirror), so the controls emit
+    /// [`Self::previous_track_requested`] / [`Self::next_track_requested`]; the host connects
+    /// them to `VideoPlayer::previous_track` / `VideoPlayer::next_track`.
+    pub fn set_show_next_previous(&mut self, show: bool) {
+        if self.show_next_previous == show {
+            return;
+        }
+        self.show_next_previous = show;
+        self.base.request_redraw();
+    }
+
+    /// Whether the previous/next-track controls are shown.
+    pub fn show_next_previous(&self) -> bool {
+        self.show_next_previous
+    }
+
     /// Hides or shows the fullscreen control.
     pub fn set_show_fullscreen(&mut self, show: bool) {
         if self.show_fullscreen == show {
@@ -492,12 +593,18 @@ impl Draw for MediaTransportBar {
         }
 
         let button = strip.height.saturating_sub(8).min(24);
-        let play = Rect::new(
-            strip.x + 4,
-            strip.y + (strip.height as i32 - button as i32) / 2,
-            button,
-            button,
-        );
+        let button_y = strip.y + (strip.height as i32 - button as i32) / 2;
+        let mut left = strip.x + 4;
+        if self.show_next_previous {
+            let previous = Rect::new(left, button_y, button, button);
+            left = previous.right() + 6;
+            draw_icon_at(context, previous, Color::WHITE, IconName::ArrowLeft);
+            self.previous_rect = Some(previous);
+        } else {
+            self.previous_rect = None;
+        }
+        let play = Rect::new(left, button_y, button, button);
+        left = play.right() + 6;
         self.play_rect = Some(play);
         draw_icon_at(
             context,
@@ -505,6 +612,13 @@ impl Draw for MediaTransportBar {
             Color::WHITE,
             if self.current_playing() { IconName::Pause } else { IconName::Play },
         );
+        if self.show_next_previous {
+            let next = Rect::new(left, button_y, button, button);
+            draw_icon_at(context, next, Color::WHITE, IconName::ArrowRight);
+            self.next_rect = Some(next);
+        } else {
+            self.next_rect = None;
+        }
 
         // Right-hand controls are laid out from the trailing edge first.
         let mut right = strip.right() - 4;
@@ -589,6 +703,14 @@ impl EventHandler for MediaTransportBar {
                     return;
                 }
                 self.notify_pointer_activity();
+                if self.previous_rect.is_some_and(|rect| rect.contains_point(*pos)) {
+                    self.previous_track_requested.emit();
+                    return;
+                }
+                if self.next_rect.is_some_and(|rect| rect.contains_point(*pos)) {
+                    self.next_track_requested.emit();
+                    return;
+                }
                 if self.play_rect.is_some_and(|rect| rect.contains_point(*pos)) {
                     let playing = !self.current_playing();
                     self.set_playing(playing);
@@ -718,5 +840,54 @@ mod tests {
         bar.stop_following_player();
         assert!(!bar.is_following_player());
         assert_eq!(bar.position(), (30_000, 60_000));
+    }
+
+    /// MW-001: an attached bar closes the loop through the player's request queue.
+    ///
+    /// `follow_video_player` only mirrors the player, so before this the round trip was the host's
+    /// to build. This asserts the attached form end to end: each control's signal queues a
+    /// [`TransportRequest`], and the player applies it through the same public method a host would
+    /// call.
+    #[test]
+    fn an_attached_bar_drives_the_player_through_its_queue() {
+        let mut player = VideoPlayer::new(Rect::new(0, 0, 320, 240));
+        player.set_playlist(vec![
+            "a.mp4".to_string(),
+            "b.mp4".to_string(),
+            "c.mp4".to_string(),
+        ]);
+        player.load("a.mp4");
+        player.set_duration(60.0);
+        let mut bar = MediaTransportBar::new(Rect::new(0, 0, 320, 40));
+        bar.attach_video_player(&mut player);
+        assert!(bar.is_following_player(), "the bar mirrors the player it forwards to");
+
+        bar.play_toggled.emit(true);
+        assert_eq!(player.apply_pending_transport_requests(), 1);
+        assert!(player.is_playing(), "the play request reaches the player");
+
+        assert_eq!(player.playlist_index(), Some(0), "the loaded source is the first entry");
+
+        bar.next_track_requested.emit();
+        assert_eq!(player.apply_pending_transport_requests(), 1);
+        assert_eq!(player.playlist_index(), Some(1));
+
+        bar.next_track_requested.emit();
+        assert_eq!(player.apply_pending_transport_requests(), 1);
+        assert_eq!(player.playlist_index(), Some(2));
+
+        bar.previous_track_requested.emit();
+        assert_eq!(player.apply_pending_transport_requests(), 1);
+        assert_eq!(player.playlist_index(), Some(1), "previous returns to the entry it left");
+
+        bar.seek_requested.emit(0.5);
+        assert_eq!(player.apply_pending_transport_requests(), 1);
+        assert_eq!(player.current_time(), 30.0, "the fraction is resolved against the duration");
+
+        bar.volume_changed.emit(0.25);
+        assert_eq!(player.apply_pending_transport_requests(), 1);
+        assert!((player.volume() - 0.25).abs() < f32::EPSILON);
+
+        assert_eq!(player.apply_pending_transport_requests(), 0, "the queue is drained");
     }
 }

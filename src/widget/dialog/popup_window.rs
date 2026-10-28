@@ -507,19 +507,14 @@ impl Draw for PopupWindow {
         // a light/dark switch left the popup and its title bar unchanged — the rendering
         // census reported the control as theme-blind.
         //
-        // The theme reads take and release the global manager's lock internally, so no guard
-        // is held across the draw (the mutex is not re-entrant).
+        // The theme reads are the cached shared snapshots, so no manager lock is held across
+        // the draw (the mutex is not re-entrant).
         let style = self.base.style();
-        // One theme-manager read supplies the window fill and the fallback ink/border; the old
+        // One palette-snapshot read supplies the window fill and the fallback ink/border; the old
         // path resolved a widget style and then took the manager lock again (G-P13).
         let (window_fill, theme_ink, theme_border) = {
-            let manager = crate::style::theme_manager();
-            match manager.current_theme() {
-                Some(active) => (
-                    active.colors.background,
-                    Some(active.colors.foreground),
-                    Some(active.colors.outline),
-                ),
+            match crate::style::palette_shared() {
+                Some(colors) => (colors.background, Some(colors.foreground), Some(colors.outline)),
                 None => (Color::WHITE, None, None),
             }
         };

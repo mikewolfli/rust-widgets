@@ -21,6 +21,9 @@ use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 use std::cell::{Ref, RefCell};
 use std::collections::HashMap;
+use std::sync::Arc;
+
+use super::property_grid::{PropertyEditorDelegate, PropertyItem, PropertyItemKind};
 
 /// How a property is represented and edited inside a [`PropertiesPanel`].
 ///
@@ -447,6 +450,10 @@ pub struct PropertiesPanel {
     /// editing capability files). Rust hosts can subscribe directly; `connect_event` cannot reach
     /// it until the schema adds `file_picker_requested`.
     pub file_picker_requested: Signal1<String>,
+    /// Per-entry custom editors (V-008).
+    entry_delegates: HashMap<usize, Arc<dyn PropertyEditorDelegate>>,
+    /// An editor a delegate built and the panel is holding for the host (V-008).
+    delegate_editor: Option<(usize, Box<dyn Widget>)>,
 }
 
 impl PropertiesPanel {
@@ -471,6 +478,8 @@ impl PropertiesPanel {
             choice_popup: None,
             color_popup: None,
             file_picker_requested: Signal1::new(),
+            entry_delegates: HashMap::new(),
+            delegate_editor: None,
         }
     }
 
@@ -1134,6 +1143,9 @@ impl PropertiesPanel {
     }
 
     /// Starts editing an entry with its current text.
+    ///
+    /// An installed [`PropertyEditorDelegate`] is consulted first (V-008): it builds the editor
+    /// and the plain-text path is skipped. Without one the historical inline buffer is used.
     pub fn begin_edit(&mut self, index: usize, text: String) {
         let Some(entry) = self.properties.get(index) else { return };
         if !entry.editable {
@@ -1141,6 +1153,16 @@ impl PropertiesPanel {
         }
         self.choice_popup = None;
         self.color_popup = None;
+        if let Some(delegate) = self.entry_delegates.get(&index).cloned() {
+            let item = Self::entry_as_item(entry);
+            let editor = delegate.make_editor(&item);
+            self.delegate_editor = Some((index, editor));
+            self.editing = None;
+            self.focused_entry = Some(index);
+            self.emit_editor_opened(index);
+            self.base.request_redraw();
+            return;
+        }
         self.editing = Some(PropertyEdit::new(index, text));
         self.focused_entry = Some(index);
         self.emit_editor_opened(index);
@@ -1149,6 +1171,25 @@ impl PropertiesPanel {
 
     /// Commits the open editor, parsing a number or a colour when the entry holds one.
     pub fn commit_edit(&mut self) -> bool {
+        // A custom editor commits through its own delegate rather than the text buffer (V-008).
+        if let Some((index, editor)) = self.delegate_editor.take() {
+            let Some(delegate) = self.entry_delegates.get(&index).cloned() else {
+                return false;
+            };
+            let Some(entry) = self.properties.get(index).cloned() else {
+                return false;
+            };
+            let item = Self::entry_as_item(&entry);
+            let Some(text) = delegate.commit_value(&item, editor.as_ref()) else {
+                return false;
+            };
+            let value = Self::coerce_text_value(&entry.value, &text);
+            if let Some(value) = value {
+                self.commit_value(index, value);
+                return true;
+            }
+            return false;
+        }
         let Some(edit) = self.editing.take() else {
             return false;
         };
@@ -1156,35 +1197,88 @@ impl PropertiesPanel {
             return false;
         };
         let text = edit.buffer;
-        let value = match entry.value {
-            PropertyValue::Number(_) => match text.trim().parse::<f64>() {
-                Ok(number) => PropertyValue::Number(number),
-                // A value that does not parse is refused rather than coerced to zero.
-                Err(_) => return false,
-            },
-            PropertyValue::Color(_) => match Color::parse_hex(&text) {
-                Some(color) => PropertyValue::Color(color),
-                // A malformed colour is refused for the same reason a malformed number is:
-                // silently keeping the old value would look like the edit had applied.
-                None => return false,
-            },
-            PropertyValue::File(_) => PropertyValue::File(text),
-            _ => PropertyValue::Text(text),
+        let Some(value) = Self::coerce_text_value(&entry.value, &text) else {
+            return false;
         };
         self.commit_value(edit.index, value);
         true
     }
 
+    /// Parses `text` for a value of `current`'s kind, or `None` when it is invalid.
+    fn coerce_text_value(current: &PropertyValue, text: &str) -> Option<PropertyValue> {
+        match current {
+            PropertyValue::Number(_) => text.trim().parse::<f64>().ok().map(PropertyValue::Number),
+            PropertyValue::Color(_) => Color::parse_hex(text).map(PropertyValue::Color),
+            PropertyValue::File(_) => Some(PropertyValue::File(text.to_string())),
+            _ => Some(PropertyValue::Text(text.to_string())),
+        }
+    }
+
     /// Cancels the open editor, discarding its buffer.
     pub fn cancel_edit(&mut self) {
-        if self.editing.take().is_some() {
+        let had_delegate_editor = self.delegate_editor.take().is_some();
+        if self.editing.take().is_some() || had_delegate_editor {
             self.base.request_redraw();
         }
     }
 
     /// Whether an editor is open.
     pub fn editing_entry(&self) -> Option<usize> {
+        if let Some((index, _)) = self.delegate_editor.as_ref() {
+            return Some(*index);
+        }
         self.editing.as_ref().map(|edit| edit.index)
+    }
+
+    // ── Custom editors (V-008) ──
+
+    /// Installs a custom editor for the entry at `index`.
+    pub fn set_entry_delegate(
+        &mut self,
+        index: usize,
+        delegate: Arc<dyn PropertyEditorDelegate>,
+    ) -> bool {
+        if index >= self.properties.len() {
+            return false;
+        }
+        self.entry_delegates.insert(index, delegate);
+        true
+    }
+
+    /// Removes the custom editor for `index`.
+    pub fn clear_entry_delegate(&mut self, index: usize) -> bool {
+        self.entry_delegates.remove(&index).is_some()
+    }
+
+    /// The custom editor installed for `index`, if any.
+    pub fn entry_delegate(&self, index: usize) -> Option<&Arc<dyn PropertyEditorDelegate>> {
+        self.entry_delegates.get(&index)
+    }
+
+    /// Takes the editor the delegate built, so the host can mount it.
+    pub fn take_delegate_editor(&mut self) -> Option<(usize, Box<dyn Widget>)> {
+        self.delegate_editor.take()
+    }
+
+    /// Converts a panel entry to the grid vocabulary the delegate trait speaks.
+    fn entry_as_item(entry: &PropertyEntry) -> PropertyItem {
+        let kind = match &entry.value {
+            PropertyValue::Text(_) => PropertyItemKind::Text,
+            PropertyValue::Number(_) => PropertyItemKind::Number,
+            PropertyValue::Bool(_) => PropertyItemKind::Bool,
+            PropertyValue::Color(_) => PropertyItemKind::Color,
+            PropertyValue::Choice { options, .. } => PropertyItemKind::Choice(options.clone()),
+            PropertyValue::File(_) => PropertyItemKind::File,
+        };
+        let mut item = PropertyItem::new(
+            entry.name.clone(),
+            Self::value_display_text(&entry.value),
+            entry.editable,
+        );
+        item.kind = kind;
+        item.editable = entry.editable;
+        item.category = entry.category.clone();
+        item
     }
 
     /// The open editor's caret position, in characters from the start of its buffer.

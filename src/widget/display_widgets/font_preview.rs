@@ -442,17 +442,9 @@ impl FontPreview {
         // The guard is released before `self.style()` is read below: `theme_manager()` is a
         // non-reentrant mutex, so the theme facts are copied out of it in one scope and the rest of
         // the resolution happens without holding it.
-        let themed = {
-            let manager = crate::style::theme_manager();
-            manager.current_theme().map(|theme| {
-                (
-                    theme.colors.surface_container,
-                    theme.colors.foreground,
-                    theme.colors.secondary,
-                    theme.colors.outline_variant,
-                )
-            })
-        };
+        let themed = crate::style::palette_shared().map(|theme| {
+            (theme.surface_container, theme.foreground, theme.secondary, theme.outline_variant)
+        });
         let (t_surface, t_ink, t_muted, t_separator) = themed.unwrap_or((
             Color::WHITE,
             Color::BLACK,
@@ -764,9 +756,8 @@ mod tests {
 
         let panel_pixel = |appearance| -> [u8; 4] {
             crate::theme::global_theme_manager().set_appearance(appearance);
-            let backdrop = crate::style::theme_manager()
-                .current_theme()
-                .map(|active| active.colors.background)
+            let backdrop = crate::style::palette_shared()
+                .map(|colors| colors.background)
                 .expect("a preset is active");
             let mut fp = FontPreview::new("Arial", rect);
             crate::theme::apply_theme_to_widget(&mut fp);

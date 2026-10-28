@@ -452,12 +452,26 @@ impl Popover {
     }
 
     /// Sets the anchor rectangle.
+    ///
+    /// The card's placement is derived from the anchor at paint time, so moving the anchor and
+    /// calling this is enough for the popover to follow it — no `show` call is required (DLG-003).
     pub fn set_anchor_rect(&mut self, rect: Rect) {
         if self.anchor_rect == rect {
             return;
         }
         self.anchor_rect = rect;
         self.base.request_redraw();
+    }
+
+    /// Re-derives the card rectangle from the current anchor and requests a repaint (DLG-003).
+    ///
+    /// [`Self::set_anchor_rect`] already invalidates the paint, so this is the explicit spelling
+    /// for a host that changed the anchor control's geometry and wants one call that says so.
+    /// It does nothing while the popover is hidden, matching the paint path.
+    pub fn refresh_placement(&mut self) {
+        if self.visible {
+            self.base.request_redraw();
+        }
     }
 
     /// Computes the popover body rectangle beside the anchor and the arrow's tip.
@@ -756,8 +770,8 @@ impl Draw for Popover {
         // and the whole card used to be skipped unless the popover was already showing — so
         // the census reported `ink = 0` *and* no response to a light/dark switch.
         //
-        // The theme reads take and release the global manager's lock internally, so no
-        // guard is held across the draw (the mutex is not re-entrant).
+        // The theme reads are the cached shared snapshots, so no manager lock is held across
+        // the draw (the mutex is not re-entrant).
         let style = self.base.style();
         let theme = crate::style::resolved_theme_style_shared("popover");
         // `popover` is absent from `WidgetRole::for_kind_name`'s table, so it classifies as
@@ -766,8 +780,7 @@ impl Draw for Popover {
         // surface equal to the window fill is re-derived a visible step away from it, the same
         // distinction `Colors::input_background` draws for a field.
         let window_fill = {
-            let manager = crate::style::theme_manager();
-            manager.current_theme().map(|active| active.colors.background).unwrap_or(Color::WHITE)
+            crate::style::palette_shared().map(|colors| colors.background).unwrap_or(Color::WHITE)
         };
         let ink = style
             .text_color

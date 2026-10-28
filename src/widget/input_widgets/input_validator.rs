@@ -341,6 +341,100 @@ impl Validator for RangeValidator {
     }
 }
 
+/// A character-count rule for a text field (I-011).
+///
+/// Counts **characters**, not bytes, so a value of CJK text is judged by what the user sees and
+/// what the field's own counter reports. `new(min, max)` swaps inverted bounds rather than
+/// rejecting them, matching [`RangeValidator`]'s constructor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LengthValidator {
+    minimum: usize,
+    maximum: usize,
+}
+
+impl LengthValidator {
+    /// Creates an inclusive character-length rule.
+    pub fn new(minimum: usize, maximum: usize) -> Self {
+        Self { minimum: minimum.min(maximum), maximum: maximum.max(minimum) }
+    }
+
+    /// The lowest accepted character count.
+    pub fn minimum(&self) -> usize {
+        self.minimum
+    }
+
+    /// The highest accepted character count.
+    pub fn maximum(&self) -> usize {
+        self.maximum
+    }
+}
+
+impl Validator for LengthValidator {
+    /// Empty is intermediate when a minimum is set, acceptable when the field may stay empty;
+    /// a non-empty value outside the bounds is invalid.
+    fn state(&self, text: &str) -> ValidationState {
+        let count = text.chars().count();
+        if count == 0 {
+            return if self.minimum == 0 {
+                ValidationState::Acceptable
+            } else {
+                ValidationState::Intermediate
+            };
+        }
+        if (self.minimum..=self.maximum).contains(&count) {
+            ValidationState::Acceptable
+        } else {
+            ValidationState::Invalid
+        }
+    }
+
+    fn message(&self) -> &'static str {
+        "Enter a value of the required length"
+    }
+
+    fn message_for(&self, text: &str) -> Cow<'_, str> {
+        let count = text.chars().count();
+        Cow::Owned(format!("{count} characters is outside {}..={}", self.minimum, self.maximum))
+    }
+
+    /// Truncates an over-long value to the maximum; a short value cannot be repaired.
+    fn fixup(&self, text: &str) -> Option<String> {
+        let count = text.chars().count();
+        if count <= self.maximum {
+            return None;
+        }
+        Some(text.chars().take(self.maximum).collect())
+    }
+}
+
+/// A non-empty rule for a text field (I-011).
+///
+/// Whitespace-only input counts as empty: a value a form would store as a blank string is not a
+/// value the user supplied. The message is the conventional form refusal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct RequiredValidator;
+
+impl RequiredValidator {
+    /// Creates a required/non-empty rule.
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Validator for RequiredValidator {
+    fn state(&self, text: &str) -> ValidationState {
+        if text.trim().is_empty() {
+            ValidationState::Invalid
+        } else {
+            ValidationState::Acceptable
+        }
+    }
+
+    fn message(&self) -> &'static str {
+        "This field is required"
+    }
+}
+
 /// A small regular-expression rule.
 ///
 /// # Supported syntax

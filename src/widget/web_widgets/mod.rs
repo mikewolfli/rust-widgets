@@ -4,6 +4,7 @@
 //! Web-related widgets: web engines, web views, etc.
 pub mod find_bar;
 pub mod web_engine;
+pub mod web_history_panel;
 pub mod web_view;
 pub use find_bar::WebFindBar;
 pub use web_engine::WebEngineView as WebEngine;
@@ -13,4 +14,5 @@ pub use web_engine::{
     WebEngineFindTextResult, WebEngineNotification, WebEnginePage, WebEngineScriptDialog,
     WebEngineSettings, WebEngineView, WebEngineWebChannel,
 };
+pub use web_history_panel::{WebHistoryPanel, WebHistoryRecord};
 pub use web_view::WebView;

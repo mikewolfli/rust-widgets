@@ -101,6 +101,13 @@ struct ActionBoxesCache {
 /// exactly this tall, which is the height every existing picture was drawn at.
 const APP_BAR_MIN_HEIGHT: u32 = 56;
 
+/// The extra height a bar with a subtitle asks for (N-001).
+///
+/// The subtitle is a second text line inside the main band, so the bar's implicit height has to
+/// grow by roughly one line when one is present. A caller that ignores the hint still gets both
+/// lines fitted into whatever height it gave the bar.
+const APP_BAR_SUBTITLE_HEIGHT: u32 = 20;
+
 /// AppBar / Top Bar widget — mobile-style top navigation bar.
 ///
 /// Displays a title centered in the bar, an optional back arrow in the bar's
@@ -111,6 +118,8 @@ pub struct AppBar {
     base: BaseWidget,
     /// The title text centered in the bar.
     title: String,
+    /// An optional second line under the title (N-001).
+    subtitle: Option<String>,
     /// Whether to show the back arrow in the bar's leading zone.
     show_back: bool,
     /// Optional action text displayed in the bar's trailing zone.
@@ -169,6 +178,7 @@ impl AppBar {
         Self {
             base: BaseWidget::new(WidgetKind::AppBar, geometry, "AppBar"),
             title: title.to_string(),
+            subtitle: None,
             show_back: false,
             action_text: String::new(),
             direction: TextDirection::default(),
@@ -199,6 +209,30 @@ impl AppBar {
     /// Returns the current title text.
     pub fn title(&self) -> &str {
         &self.title
+    }
+
+    /// Sets an optional subtitle drawn as a second line under the title (N-001).
+    ///
+    /// `None` or an empty string removes the line and restores the single-line bar. The
+    /// subtitle shares the title's centring reserves and font-cache path, so both lines clear
+    /// the same affordances and are measured the same way.
+    pub fn set_subtitle(&mut self, subtitle: Option<String>) {
+        let subtitle = subtitle.filter(|text| !text.is_empty());
+        if self.subtitle == subtitle {
+            return;
+        }
+        self.subtitle = subtitle;
+        self.base.request_redraw();
+    }
+
+    /// Returns the subtitle, when one is set.
+    pub fn subtitle(&self) -> Option<&str> {
+        self.subtitle.as_deref()
+    }
+
+    /// Whether the bar currently draws a second line.
+    fn has_subtitle(&self) -> bool {
+        self.subtitle.as_deref().is_some_and(|subtitle| !subtitle.is_empty())
     }
 
     /// Sets whether the back arrow is shown in the bar's leading zone.
@@ -310,7 +344,16 @@ impl AppBar {
 
     /// The height a host should give this bar so its bottom slot is fully visible.
     pub fn preferred_height(&self) -> u32 {
-        APP_BAR_MIN_HEIGHT + self.bottom_height()
+        APP_BAR_MIN_HEIGHT + self.subtitle_height() + self.bottom_height()
+    }
+
+    /// The extra height the subtitle line asks for, zero when there is none.
+    fn subtitle_height(&self) -> u32 {
+        if self.has_subtitle() {
+            APP_BAR_SUBTITLE_HEIGHT
+        } else {
+            0
+        }
     }
 
     /// The height of the bottom slot's band, zero when there is no slot.
@@ -494,7 +537,7 @@ impl Widget for AppBar {
     }
 
     fn size_hint(&self) -> crate::core::Size {
-        crate::core::Size::new(400, 56)
+        crate::core::Size::new(400, APP_BAR_MIN_HEIGHT + self.subtitle_height())
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
@@ -660,6 +703,8 @@ impl Draw for AppBar {
         let text_scale = crate::platform::profile::text_scale();
         let title_font_size =
             (bar_height as f32 * 0.38 * text_scale).clamp(14.0, 22.0 * text_scale);
+        let subtitle_font_size =
+            (bar_height as f32 * 0.26 * text_scale).clamp(11.0, 16.0 * text_scale);
         let action_font_size =
             (bar_height as f32 * 0.32 * text_scale).clamp(12.0, 18.0 * text_scale);
 
@@ -711,7 +756,7 @@ impl Draw for AppBar {
         // through the direction together with everything else, so an RTL bar reserves the same total
         // width on the same sides its affordances actually occupy. A centered box is unaffected by the
         // direction, which is why an unmirrored title on an unmirrored bar went unnoticed.
-        if !self.title.is_empty() {
+        if !self.title.is_empty() || self.has_subtitle() {
             // Derive the title's face from the **effective font** — the theme's family/weight/leading —
             // and scale the role-derived title size by the same factor, so a text-scale preference
             // reaches the title (D09-STYLE-01).
@@ -734,42 +779,87 @@ impl Draw for AppBar {
                     APP_BAR_TITLE_TRAILING_RESERVE
                 },
             );
-            let title_width = metrics.width as i32;
-            // Overflow falls back to "left-align inside the leading reserve", which in RTL means the
-            // title grows from its right edge — the same rule read in the other direction.
-            let overflow_x = if self.direction.is_right_to_left() {
-                rect.right() - leading_reserve - title_width
-            } else {
-                rect.x + leading_reserve
-            };
             let available_width = rect.width as i32 - leading_reserve - trailing_reserve;
-            let title_x = if title_width > available_width {
-                overflow_x
-            } else {
-                rect.x + (rect.width as i32 / 2) - (title_width / 2)
-            };
-            let title_y = rect.y + (bar_height as i32 - metrics.height as i32) / 2;
-
-            // Fitted between the two reserves. The overflow branch used to move the *origin* and
-            // then draw the full width, so a long localised title still ran under the trailing
-            // action.
-            //
-            // The band is widened by the fitted draw's own inset so a title that fits starts at
-            // `title_x` (and therefore stays centred) instead of three pixels to its right; only
-            // the elided case uses the extra room.
             let fit_inset = crate::render::TEXT_FIT_MARGIN as i32;
-            context.draw_text_fitted_cow(
-                Rect::new(
-                    title_x - fit_inset,
-                    title_y,
-                    (available_width + 2 * fit_inset).max(1) as u32,
-                    metrics.height.max(1),
-                ),
-                &self.title,
-                &title_font,
-                text_color,
-                HorizontalAlignment::Left,
-            );
+            // The x a text line of `width` takes: centred while it fits, and left-aligned inside
+            // the leading reserve when it does not. In RTL the overflow grows from its right edge.
+            let line_x = |width: i32| {
+                if width > available_width {
+                    if self.direction.is_right_to_left() {
+                        rect.right() - leading_reserve - width
+                    } else {
+                        rect.x + leading_reserve
+                    }
+                } else {
+                    rect.x + (rect.width as i32 / 2) - (width / 2)
+                }
+            };
+
+            if !self.has_subtitle() {
+                let title_width = metrics.width as i32;
+                let title_y = rect.y + (bar_height as i32 - metrics.height as i32) / 2;
+                // Fitted between the two reserves. The overflow branch used to move the *origin*
+                // and then draw the full width, so a long localised title still ran under the
+                // trailing action. The band is widened by the fitted draw's own inset so a title
+                // that fits starts at its computed x instead of three pixels to its right.
+                context.draw_text_fitted_cow(
+                    Rect::new(
+                        line_x(title_width) - fit_inset,
+                        title_y,
+                        (available_width + 2 * fit_inset).max(1) as u32,
+                        metrics.height.max(1),
+                    ),
+                    &self.title,
+                    &title_font,
+                    text_color,
+                    HorizontalAlignment::Left,
+                );
+            } else {
+                let subtitle_text = self.subtitle.as_deref().unwrap_or_default();
+                let subtitle_font = role_font(style, subtitle_font_size);
+                let subtitle_metrics = crate::widget::base_widgets::measure_cache::measure_text(
+                    context,
+                    subtitle_text,
+                    &subtitle_font,
+                );
+                let title_height = if self.title.is_empty() { 0 } else { metrics.height };
+                let total_height = title_height + subtitle_metrics.height;
+                let top = rect.y + ((bar_height as i32 - total_height as i32) / 2).max(0);
+
+                if !self.title.is_empty() {
+                    let title_width = metrics.width as i32;
+                    context.draw_text_fitted_cow(
+                        Rect::new(
+                            line_x(title_width) - fit_inset,
+                            top,
+                            (available_width + 2 * fit_inset).max(1) as u32,
+                            metrics.height.max(1),
+                        ),
+                        &self.title,
+                        &title_font,
+                        text_color,
+                        HorizontalAlignment::Left,
+                    );
+                }
+                // The second line is deliberately dimmer than the title: it is supporting text,
+                // and the step toward the bar's own surface keeps the two lines legible in both
+                // appearances without introducing a literal grey.
+                let subtitle_color =
+                    if is_enabled { text_color.blend(&background, 0.35) } else { text_color };
+                let subtitle_width = subtitle_metrics.width as i32;
+                context.draw_text_fitted_cow(
+                    Rect::new(
+                        line_x(subtitle_width) - fit_inset,
+                        top + title_height as i32,
+                        (available_width + 2 * fit_inset).max(1) as u32,
+                        subtitle_metrics.height.max(1),
+                    ),
+                    subtitle_text,
+                    &subtitle_font,
+                    subtitle_color,
+                    HorizontalAlignment::Left,
+                );
+            }
         }
 
         // ── Action text (the bar's trailing zone) ──
@@ -1481,5 +1571,25 @@ mod tests {
         bar.handle_event(&Event::MouseRelease { pos, button: 1 });
         assert_eq!(bar.widget_state(), WidgetState::Normal);
         assert!(bar.pressed_zone().is_none(), "the release clears the feedback");
+    }
+
+    /// N-001: a subtitle is a second line and the bar's implicit height accounts for it.
+    #[test]
+    fn a_subtitle_adds_a_second_line_and_grows_the_hint() {
+        let mut bar = make_app_bar();
+        assert_eq!(bar.subtitle(), None);
+        assert_eq!(bar.size_hint().height, APP_BAR_MIN_HEIGHT);
+        let single_line = render_to_svg(&mut bar);
+
+        bar.set_subtitle(Some("Workspace".to_string()));
+        assert_eq!(bar.subtitle(), Some("Workspace"));
+        assert_eq!(bar.size_hint().height, APP_BAR_MIN_HEIGHT + APP_BAR_SUBTITLE_HEIGHT);
+        assert_eq!(bar.preferred_height(), APP_BAR_MIN_HEIGHT + APP_BAR_SUBTITLE_HEIGHT);
+        let two_lines = render_to_svg(&mut bar);
+        assert_ne!(single_line, two_lines, "the subtitle must reach the pixels");
+
+        bar.set_subtitle(Some(String::new()));
+        assert_eq!(bar.subtitle(), None, "an empty subtitle is the same as none");
+        assert_eq!(bar.size_hint().height, APP_BAR_MIN_HEIGHT);
     }
 }

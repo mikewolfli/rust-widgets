@@ -69,8 +69,11 @@ const SWEEP_HALF_EXTENT: f32 = std::f32::consts::FRAC_1_SQRT_2;
 /// Meter (gauge) widget — displays a value on an arc with a needle indicator.
 pub struct Meter {
     base: BaseWidget,
-    /// Current displayed value.
-    value: u32,
+    /// Current displayed value, kept exact.
+    ///
+    /// The integer projection is [`Meter::value`]; the fraction is what the needle, the arc and
+    /// the readout use, so a gauge can show `12.5` without forcing its host to scale the range.
+    value: f32,
     /// Minimum value of the range.
     min: u32,
     /// Maximum value of the range.
@@ -120,7 +123,7 @@ struct TickLabelCache {
 
 /// The reading at the gauge's foot and its measured bounds.
 struct ValueTextCache {
-    value: u32,
+    value: f32,
     unit: String,
     dpi_scale_bits: u32,
     text: String,
@@ -136,7 +139,7 @@ impl Meter {
     pub fn new(rect: Rect) -> Self {
         Self {
             base: BaseWidget::new(WidgetKind::Meter, rect, "Meter"),
-            value: 0,
+            value: 0.0,
             min: 0,
             max: 100,
             tick_count: 5,
@@ -154,12 +157,20 @@ impl Meter {
         }
     }
 
-    /// Returns the current value.
+    /// Returns the current value, rounded to a whole unit.
+    ///
+    /// The projection, not the whole story: a meter holding `12.5` reads as `13` here while
+    /// [`Meter::value_exact`] reports the fraction the needle and the readout use.
     pub fn value(&self) -> u32 {
+        self.value.round() as u32
+    }
+
+    /// Returns the current value as a fraction of a unit.
+    pub fn value_exact(&self) -> f32 {
         self.value
     }
 
-    /// Sets the value, clamped between min and max.
+    /// Sets the value to whole units, clamped between min and max.
     ///
     /// Emits `changed` signal when the value actually changes.
     ///
@@ -168,13 +179,28 @@ impl Meter {
     /// signal its host uses to follow that data. See `Arc::set_value` for the full
     /// reasoning.
     pub fn set_value(&mut self, v: u32) {
-        let clamped = ordered_clamp_u32(v, self.min, self.max);
-        if self.value == clamped {
+        self.set_value_exact(v as f32);
+    }
+
+    /// Sets the value exactly, keeping the fraction for the paint path.
+    ///
+    /// The value is clamped to `[minimum, maximum]` and a non-finite write is ignored, so a NaN
+    /// cannot make every subsequent comparison false. `changed` fires only when the whole-unit
+    /// projection actually moves, which keeps an existing subscriber's meaning: it is told about
+    /// the reading it can see, not about every sub-unit step that produced it.
+    pub fn set_value_exact(&mut self, v: f32) {
+        if !v.is_finite() {
             return;
         }
-        self.value = clamped;
-        self.base.changed.emit();
-        self.base.request_redraw();
+        let clamped = v.clamp(self.min as f32, self.max as f32);
+        let whole_before = self.value();
+        if self.value != clamped {
+            self.value = clamped;
+            if self.value() != whole_before {
+                self.base.changed.emit();
+            }
+            self.base.request_redraw();
+        }
     }
 
     /// Sets both minimum and maximum values in one call.
@@ -185,10 +211,13 @@ impl Meter {
     pub fn set_range(&mut self, min: u32, max: u32) {
         self.min = min.min(max);
         self.max = max.max(min);
-        let clamped = ordered_clamp_u32(self.value, self.min, self.max);
+        let whole_before = self.value();
+        let clamped = self.value.clamp(self.min as f32, self.max as f32);
         if self.value != clamped {
             self.value = clamped;
-            self.base.changed.emit();
+            if self.value() != whole_before {
+                self.base.changed.emit();
+            }
         }
         self.base.request_redraw();
     }
@@ -374,7 +403,7 @@ impl Meter {
         if self.max <= self.min {
             return 0.0;
         }
-        (self.value - self.min) as f32 / (self.max - self.min) as f32
+        (self.value - self.min as f32) / (self.max as f32 - self.min as f32)
     }
 
     /// Normalizes an arbitrary value in the meter's range to [0.0, 1.0].
@@ -768,7 +797,7 @@ impl EventHandler for Meter {
                     return;
                 }
                 let step = self.wheel_step() as i64;
-                let next = (self.value as i64 - scroll.lines_y as i64 * step)
+                let next = (self.value() as i64 - scroll.lines_y as i64 * step)
                     .clamp(self.min as i64, self.max as i64) as u32;
                 self.set_value(next);
             }
@@ -881,13 +910,9 @@ impl Draw for Meter {
         //
         // The meter paints no panel of its own — the arcs sit on the control's backdrop — so the
         // surface to measure against is the window fill.
-        let meter_surface = {
-            let manager = crate::style::theme_manager();
-            manager
-                .current_theme()
-                .map(|active| active.colors.background)
-                .unwrap_or(Color::rgb(240, 240, 240))
-        };
+        let meter_surface = crate::style::palette_shared()
+            .map(|active| active.background)
+            .unwrap_or(Color::rgb(240, 240, 240));
         let needle_color = Meter::needle_color_on(&accent, &meter_surface);
         let tick_color = Meter::tick_color_on(&accent, &meter_surface);
 
@@ -945,7 +970,7 @@ impl Draw for Meter {
         // what keeps it concentric with the track it is drawn over; its end is snapped onto the
         // same grid for the reason at the bands above.
         let value_end = Self::snap_to_grid(value_angle, start_angle);
-        if self.value > self.min && (value_end - start_angle).abs() > 0.001 {
+        if self.value > self.min as f32 && (value_end - start_angle).abs() > 0.001 {
             Self::drag_sweep(
                 &mut self.sweep_points,
                 context,
@@ -1164,6 +1189,38 @@ mod tests {
     use super::*;
     use crate::core::{Color, Rect, Size};
     use crate::render::{PaintBackend, RenderContext, SoftwarePaintBackend};
+
+    /// D-005: the exact value drives the fill and the readout, while `value()` stays integral.
+    #[test]
+    fn the_exact_value_keeps_the_integer_projection_and_drives_the_fill() {
+        let mut meter = Meter::new(Rect::new(0, 0, 200, 200));
+        assert_eq!(meter.value(), 0);
+        assert_eq!(meter.value_exact(), 0.0);
+
+        meter.set_value_exact(12.5);
+        assert_eq!(meter.value_exact(), 12.5, "the fraction is stored");
+        assert_eq!(meter.value(), 13, "the integer accessor is the rounded projection");
+        assert_eq!(meter.value_text(), "12.5", "the readout keeps the fraction");
+
+        // A value below the integer projection still moves the arc, which is the whole point of
+        // storing the exact number: the fill must not round it back down to zero.
+        meter.set_value_exact(0.4);
+        assert_eq!(meter.value(), 0);
+        assert!(meter.normalized_value() > 0.0, "the fill uses the exact value");
+
+        // Out-of-range and non-finite writes are clamped/ignored rather than poisoning the meter.
+        meter.set_value_exact(-5.0);
+        assert_eq!(meter.value_exact(), 0.0);
+        meter.set_value_exact(150.0);
+        assert_eq!(meter.value_exact(), 100.0);
+        meter.set_value_exact(f32::NAN);
+        assert_eq!(meter.value_exact(), 100.0, "a NaN write is ignored");
+
+        // The integer setter still works and lands on a whole exact value.
+        meter.set_value(20);
+        assert_eq!(meter.value(), 20);
+        assert_eq!(meter.value_exact(), 20.0);
+    }
 
     #[test]
     fn meter_creation() {
@@ -1427,9 +1484,8 @@ mod tests {
         let tick_rgb = {
             let accent = crate::style::semantic_color(crate::style::SemanticColor::Info)
                 .unwrap_or(Color::rgb(0, 120, 215));
-            let surface = crate::style::theme_manager()
-                .current_theme()
-                .map(|active| active.colors.background)
+            let surface = crate::style::palette_shared()
+                .map(|colors| colors.background)
                 .unwrap_or(Color::rgb(240, 240, 240));
             let color = Meter::tick_color_on(&accent, &surface);
             (color.r, color.g, color.b)
@@ -1559,9 +1615,8 @@ mod tests {
         let needle = Meter::needle_color_on(
             &crate::style::semantic_color(crate::style::SemanticColor::Info)
                 .unwrap_or(Color::rgb(0, 120, 215)),
-            &crate::style::theme_manager()
-                .current_theme()
-                .map(|active| active.colors.background)
+            &crate::style::palette_shared()
+                .map(|colors| colors.background)
                 .unwrap_or(Color::rgb(240, 240, 240)),
         );
         assert!(count_near(&rgba, (needle.r, needle.g, needle.b)) > 0);

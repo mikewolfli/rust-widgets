@@ -994,10 +994,8 @@ mod tests {
         // The fallback mirrors the draw's own: a theme with no container role falls back to a step
         // away from the window fill, which is one of that role's defaults.
         let theme = crate::style::resolved_theme_style_shared("collapsible_pane");
-        let window_fill = crate::style::theme_manager()
-            .current_theme()
-            .map(|active| active.colors.background)
-            .unwrap_or(Color::WHITE);
+        let window_fill =
+            crate::style::palette_shared().map(|colors| colors.background).unwrap_or(Color::WHITE);
         let text_color = theme.as_ref().and_then(|t| t.text_color).unwrap_or(Color::rgb(0, 0, 0));
         let header_expected = theme
             .as_ref()

@@ -754,11 +754,10 @@ impl Draw for InplaceEditor {
         let theme = crate::style::resolved_theme_style_shared("inplace_editor");
         // One palette read for the whole frame (I-P07): the window fill and the accent used to
         // take the theme manager's lock in two separate calls after the resolved style. The
-        // palette is copied out as values so the guard is released before anything is painted.
+        // palette is copied out as values so no manager guard is held while anything is painted.
         let (window_fill, accent) = {
-            let manager = crate::style::theme_manager();
-            match manager.current_theme() {
-                Some(active) => (active.colors.background, active.colors.primary),
+            match crate::style::palette_shared() {
+                Some(colors) => (colors.background, colors.primary),
                 None => (Color::WHITE, Color::rgb(0, 120, 255)),
             }
         };

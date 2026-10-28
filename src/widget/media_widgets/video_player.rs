@@ -12,7 +12,7 @@
 use core::cell::Cell;
 use core::fmt::Write as _;
 
-use crate::compat::{Arc, Vec};
+use crate::compat::{Arc, Mutex, Vec};
 use crate::core::{Color, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::impl_widget_property_hooks;
@@ -44,6 +44,48 @@ impl SubtitleCue {
     pub fn new(start: f64, end: f64, text: impl Into<String>) -> Self {
         Self { start, end, text: text.into() }
     }
+}
+
+/// A chapter marker on the playback timeline (MW-002).
+#[derive(Debug, Clone, PartialEq)]
+pub struct VideoChapter {
+    /// The chapter's title, shown by a chapter list or the scrubber's readout.
+    pub title: String,
+    /// Where the chapter starts, in seconds from the beginning of the media.
+    pub start_seconds: f64,
+}
+
+impl VideoChapter {
+    /// A chapter titled `title` starting at `start_seconds`.
+    pub fn new(title: impl Into<String>, start_seconds: f64) -> Self {
+        Self { title: title.into(), start_seconds }
+    }
+}
+
+/// An intent a transport bar queues for its player (MW-001).
+///
+/// A widget cannot hold a borrow of another, so a paired [`MediaTransportBar`] writes intents into
+/// the player's shared queue and the player drains them on its next paint or interaction. Each
+/// variant goes through the same public method a host would call, so the bar cannot bypass the
+/// player's own validation.
+///
+/// [`MediaTransportBar`]: crate::widget::media_widgets::media_transport::MediaTransportBar
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum TransportRequest {
+    /// Start playback.
+    Play,
+    /// Stop playback.
+    Pause,
+    /// Flip the current playback state.
+    TogglePlay,
+    /// Seek to `fraction` of the duration, clamped to `0.0..=1.0`.
+    Seek(f32),
+    /// Set the output volume, clamped by the player.
+    Volume(f32),
+    /// Load the next queue entry.
+    NextTrack,
+    /// Load the previous queue entry.
+    PreviousTrack,
 }
 
 /// The pixel layout of a decoded video frame.
@@ -269,6 +311,21 @@ pub struct VideoPlayer {
     pub time_updated: Signal1<f64>,
     /// Subtitle cues, sorted by start time when set.
     subtitles: Vec<SubtitleCue>,
+    /// Chapter markers, sorted by start time when set (MW-002).
+    chapters: Vec<VideoChapter>,
+    /// The chapter the playback clock is currently inside, when any.
+    current_chapter: Option<usize>,
+    /// Seek requests queued by an attached chapter list (COMP-A6).
+    ///
+    /// A widget cannot hold a borrow of another, so the list writes a chapter start time into
+    /// this shared queue and wakes the player; [`Self::apply_pending_chapter_seeks`] drains it
+    /// on the next paint or interaction, mirroring the `ColorWell`/`ColorHistory` pairing.
+    pending_chapter_seeks: Option<Arc<Mutex<Vec<f64>>>>,
+    /// Intents queued by an attached transport bar (MW-001). Same contract as the chapter seeks
+    /// above: the bar writes, this player drains in its paint and event paths.
+    pending_transport_requests: Option<Arc<Mutex<Vec<TransportRequest>>>>,
+    /// A scrubber kept in step with the chapter model and the playback clock.
+    scrubber: Option<crate::widget::media_widgets::media_scrubber::MediaScrubber>,
     /// Whether cues are painted.
     subtitles_enabled: bool,
     /// Whether the player is in fullscreen presentation.
@@ -301,6 +358,8 @@ pub struct VideoPlayer {
     /// rest of the playback clock; a subscriber that needs the frame's own `pts_ms` reads it from
     /// [`Self::video_frame`].
     pub frame_presented: Signal1<f64>,
+    /// Emitted with the chapter index when playback crosses into a new chapter (MW-002).
+    pub on_chapter_entered: Signal1<usize>,
     /// Emitted when the host replaces the container metadata.
     pub metadata_changed: GenericSignal,
     /// Whether playback loops at the end instead of stopping.
@@ -392,6 +451,11 @@ impl VideoPlayer {
             playback_ended: GenericSignal::new(),
             time_updated: Signal1::new(),
             subtitles: Vec::new(),
+            chapters: Vec::new(),
+            current_chapter: None,
+            pending_chapter_seeks: None,
+            pending_transport_requests: None,
+            scrubber: None,
             subtitles_enabled: true,
             fullscreen: false,
             buffered: 0.0,
@@ -406,6 +470,7 @@ impl VideoPlayer {
             duration_changed: Signal1::new(),
             frame_available: Signal1::new(),
             frame_presented: Signal1::new(),
+            on_chapter_entered: Signal1::new(),
             metadata_changed: GenericSignal::new(),
             looping: false,
             back: None,
@@ -775,6 +840,167 @@ impl VideoPlayer {
         self.base.request_redraw();
     }
 
+    /// Replaces the chapter markers (MW-002).
+    ///
+    /// Non-finite or negative starts are dropped, and the rest are sorted, so
+    /// [`Self::chapter_at`] can search the timeline with one reverse scan. An attached scrubber
+    /// receives the same markers as fractions of the duration.
+    pub fn set_chapters(&mut self, chapters: Vec<VideoChapter>) {
+        let mut chapters: Vec<VideoChapter> = chapters
+            .into_iter()
+            .filter(|chapter| chapter.start_seconds.is_finite() && chapter.start_seconds >= 0.0)
+            .collect();
+        chapters.sort_by(|left, right| left.start_seconds.total_cmp(&right.start_seconds));
+        self.chapters = chapters;
+        self.sync_scrubber_chapters();
+        self.current_chapter = None;
+        self.sync_chapter();
+        self.base.request_redraw();
+    }
+
+    /// The chapter markers currently installed.
+    pub fn chapters(&self) -> &[VideoChapter] {
+        &self.chapters
+    }
+
+    /// Accepts the seek stream of a paired chapter list (COMP-A6).
+    ///
+    /// The list keeps the write end; this player drains it through
+    /// [`Self::apply_pending_chapter_seeks`], which the paint and event paths already call.
+    /// The returned signal is this player's own redraw request, so a queued seek repaints even
+    /// when it did not originate from a player gesture.
+    pub(crate) fn accept_chapter_seeks(&mut self, seeks: Arc<Mutex<Vec<f64>>>) -> GenericSignal {
+        self.pending_chapter_seeks = Some(seeks);
+        self.base.request_redraw();
+        self.base.redraw_requested_signal().clone()
+    }
+
+    /// Accepts a transport bar's request queue and returns the redraw signal that wakes this
+    /// player when a request is queued.
+    pub(crate) fn accept_transport_requests(
+        &mut self,
+        requests: Arc<Mutex<Vec<TransportRequest>>>,
+    ) -> GenericSignal {
+        self.pending_transport_requests = Some(requests);
+        self.base.request_redraw();
+        self.base.redraw_requested_signal().clone()
+    }
+
+    /// Applies every transport request a paired bar has queued since the last call.
+    ///
+    /// Returns the number of requests consumed. Each one runs through the public method a host
+    /// would call ([`Self::play`], [`Self::seek`], [`Self::set_volume`], [`Self::next_track`],
+    /// [`Self::previous_track`]), so the bar cannot bypass this player's clamping and queue rules.
+    pub fn apply_pending_transport_requests(&mut self) -> usize {
+        let Some(queue) = self.pending_transport_requests.as_ref() else {
+            return 0;
+        };
+        let requests: Vec<TransportRequest> = {
+            let mut guard = crate::compat::lock(queue);
+            core::mem::take(&mut *guard)
+        };
+        let count = requests.len();
+        for request in requests {
+            match request {
+                TransportRequest::Play => self.play(),
+                TransportRequest::Pause => self.pause(),
+                TransportRequest::TogglePlay => {
+                    if self.is_playing() {
+                        self.pause();
+                    } else {
+                        self.play();
+                    }
+                }
+                TransportRequest::Seek(fraction) => {
+                    let target = f64::from(fraction.clamp(0.0, 1.0)) * self.duration;
+                    self.seek(target);
+                }
+                TransportRequest::Volume(volume) => self.set_volume(volume),
+                TransportRequest::NextTrack => {
+                    self.next_track();
+                }
+                TransportRequest::PreviousTrack => {
+                    self.previous_track();
+                }
+            }
+        }
+        count
+    }
+
+    /// Applies every seek a paired chapter list has queued since the last call.
+    ///
+    /// Returns the number of requests consumed. A request is a chapter start time in seconds,
+    /// so [`Self::seek`] still owns the rules (clamping, non-finite rejection and chapter-entry
+    /// reporting).
+    pub fn apply_pending_chapter_seeks(&mut self) -> usize {
+        let Some(queue) = self.pending_chapter_seeks.as_ref() else {
+            return 0;
+        };
+        let seeks: Vec<f64> = {
+            let mut guard = crate::compat::lock(queue);
+            core::mem::take(&mut *guard)
+        };
+        let count = seeks.len();
+        for time in seeks {
+            self.seek(time);
+        }
+        count
+    }
+
+    /// The chapter containing `time`, or `None` before the first marker.
+    pub fn chapter_at(&self, time: f64) -> Option<usize> {
+        if !time.is_finite() {
+            return None;
+        }
+        self.chapters.iter().rposition(|chapter| chapter.start_seconds <= time)
+    }
+
+    /// The chapter the playback clock is currently inside.
+    pub fn current_chapter(&self) -> Option<usize> {
+        self.current_chapter
+    }
+
+    /// Attaches a scrubber, pushing the chapter markers into it (MW-002).
+    pub fn attach_scrubber(
+        &mut self,
+        scrubber: Option<crate::widget::media_widgets::media_scrubber::MediaScrubber>,
+    ) -> bool {
+        self.scrubber = scrubber;
+        self.sync_scrubber_chapters();
+        self.scrubber.is_some()
+    }
+
+    /// The attached scrubber, if any.
+    pub fn scrubber(&self) -> Option<&crate::widget::media_widgets::media_scrubber::MediaScrubber> {
+        self.scrubber.as_ref()
+    }
+
+    /// Emits `on_chapter_entered` when the clock crosses a marker.
+    fn sync_chapter(&mut self) {
+        let next = self.chapter_at(self.current_time);
+        if next == self.current_chapter {
+            return;
+        }
+        self.current_chapter = next;
+        if let Some(index) = next {
+            self.on_chapter_entered.emit(index);
+        }
+    }
+
+    /// Pushes the chapter model to the attached scrubber as duration fractions.
+    fn sync_scrubber_chapters(&mut self) {
+        let Some(scrubber) = self.scrubber.as_mut() else {
+            return;
+        };
+        let duration = self.duration.max(f64::EPSILON);
+        scrubber.set_chapters(
+            self.chapters
+                .iter()
+                .map(|chapter| (chapter.start_seconds / duration).clamp(0.0, 1.0))
+                .collect(),
+        );
+    }
+
     /// The attached caption companion, if any.
     pub fn subtitle_bar(&self) -> Option<&SubtitleBar> {
         self.subtitle_companion.as_deref()
@@ -1075,6 +1301,7 @@ impl VideoPlayer {
         }
         self.current_time = time.clamp(0.0, self.duration.max(0.0));
         self.subtitle_cursor.set(0);
+        self.sync_chapter();
         self.time_updated.emit(self.current_time);
         self.base.request_redraw();
     }
@@ -1346,6 +1573,7 @@ impl VideoPlayer {
                 self.current_time = 0.0;
                 self.subtitle_cursor.set(0);
                 self.pipeline = VideoPipelineState::Decoding;
+                self.sync_chapter();
                 self.time_updated.emit(self.current_time);
                 self.base.request_redraw();
                 return false;
@@ -1355,11 +1583,13 @@ impl VideoPlayer {
             self.pipeline = VideoPipelineState::Ended;
             self.set_status(MediaStatus::Ended);
             self.playback_ended.emit();
+            self.sync_chapter();
             self.time_updated.emit(self.current_time);
             self.base.request_redraw();
             return true;
         }
 
+        self.sync_chapter();
         self.time_updated.emit(self.current_time);
         self.base.request_redraw();
         false
@@ -1433,6 +1663,11 @@ impl Widget for VideoPlayer {
         #[allow(unused_imports)]
         use crate::widget::capability::CapabilityValue;
         match name {
+            "chapter_entered" | "on_chapter_entered" => Some(EventSignalRef::mapped(
+                "chapter_entered",
+                &self.on_chapter_entered,
+                |index| CapabilityValue::UInt(*index as u64),
+            )),
             "playback_started" => {
                 Some(EventSignalRef::unit("playback_started", &self.playback_started))
             }
@@ -1595,6 +1830,10 @@ impl WidgetProperties for VideoPlayer {
 
 impl Draw for VideoPlayer {
     fn draw(&mut self, context: &mut RenderContext) {
+        // A chapter-list press queues its seek and wakes this player; the paint is the first
+        // point after that wake where the clock can be moved safely (COMP-A6).
+        self.apply_pending_chapter_seeks();
+        self.apply_pending_transport_requests();
         let rect = self.geometry();
         let is_enabled = self.base.is_enabled();
 
@@ -1613,14 +1852,10 @@ impl Draw for VideoPlayer {
         //     fill or a progress bar's is. It was a fixed `rgb(60,140,240)` that no theme could
         //     move.
         let (accent, placeholder, placeholder_ink, window_fill) = {
-            let manager = crate::style::theme_manager();
-            match manager.current_theme() {
-                Some(active) => (
-                    active.colors.primary,
-                    active.colors.surface_container,
-                    active.colors.secondary,
-                    active.colors.background,
-                ),
+            match crate::style::palette_shared() {
+                Some(colors) => {
+                    (colors.primary, colors.surface_container, colors.secondary, colors.background)
+                }
                 None => (
                     Color::rgba(60, 140, 240, 230),
                     Color::rgba(30, 30, 30, 255),
@@ -1913,6 +2148,8 @@ impl EventHandler for VideoPlayer {
         if !self.base.is_enabled() {
             return;
         }
+        self.apply_pending_chapter_seeks();
+        self.apply_pending_transport_requests();
         match event {
             Event::MouseMove { pos } => {
                 let bar_top = self.geometry().bottom()
@@ -2089,9 +2326,8 @@ mod tests {
 
         let centre = |appearance| -> [u8; 4] {
             crate::theme::global_theme_manager().set_appearance(appearance);
-            let backdrop = crate::style::theme_manager()
-                .current_theme()
-                .map(|active| active.colors.background)
+            let backdrop = crate::style::palette_shared()
+                .map(|colors| colors.background)
                 .expect("a preset is active");
             let mut vp = VideoPlayer::new(rect);
             crate::theme::apply_theme_to_widget(&mut vp);

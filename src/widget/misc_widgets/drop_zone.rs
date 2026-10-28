@@ -180,6 +180,13 @@ pub struct DropZone {
     pub drop_rejected: GenericSignal,
     /// Emitted, with the accepted payload, when a drop is committed onto the zone.
     pub payload_dropped: Signal1<DragPayload>,
+    /// Emitted when the user presses the zone, so the host can open a file chooser.
+    ///
+    /// A zone is otherwise reachable only through a drag payload, which leaves touch-only
+    /// platforms and keyboard users with no way to choose a file. The zone does not open a
+    /// dialog itself — it has no window handle and no policy about filters — so the press is
+    /// announced and the host answers it, exactly as it answers `dropped`.
+    pub browse_requested: GenericSignal,
 }
 
 impl DropZone {
@@ -207,6 +214,7 @@ impl DropZone {
             dropped: Signal1::new(),
             drop_rejected: GenericSignal::new(),
             payload_dropped: Signal1::new(),
+            browse_requested: GenericSignal::new(),
         }
     }
 
@@ -559,6 +567,10 @@ impl Widget for DropZone {
     fn event_signal_dyn(&self, name: &str) -> Option<crate::signal::EventSignalRef> {
         use crate::signal::EventSignalRef;
         match name {
+            "browse_requested" => {
+                Some(EventSignalRef::unit("browse_requested", &self.browse_requested))
+            }
+
             "payload_dropped" => {
                 Some(EventSignalRef::mapped("payload_dropped", &self.payload_dropped, |v| {
                     CapabilityValue::String(format!("{v:?}"))
@@ -686,9 +698,11 @@ impl EventHandler for DropZone {
         if !self.base.is_enabled() {
             return;
         }
-        // The drop itself is driven by `DropTarget` through the drag session; here
-        // the zone only needs to clear its hover state when the pointer leaves.
+        // The drop itself is driven by `DropTarget` through the drag session; here the zone
+        // clears its hover state when the pointer leaves and announces a press so a host can
+        // offer the browse path a drag-only control would otherwise not have (M-001).
         match event {
+            Event::MousePress { button: 1, .. } => self.browse_requested.emit(),
             Event::MouseLeave { .. } => self.clear_hover(),
             _ => { /* Other events are not relevant */ }
         }
@@ -1125,6 +1139,30 @@ mod tests {
         let mut z = DropZone::new(Rect::new(0, 0, 200, 120), "file");
         z.on_drop(&DragPayload::new("file", "only.txt").with_label("only.txt"), Point::new(0, 0));
         assert_eq!(z.dropped_files(), &["only.txt".to_string()]);
+    }
+
+    /// A press asks the host to browse; only the primary button and only while enabled (M-001).
+    #[test]
+    fn a_press_asks_the_host_to_browse() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let mut z = zone();
+        let asked = Arc::new(AtomicUsize::new(0));
+        let sink = Arc::clone(&asked);
+        z.browse_requested.connect(move || {
+            sink.fetch_add(1, Ordering::SeqCst);
+        });
+
+        z.handle_event(&Event::MousePress { pos: Point::new(10, 10), button: 1, modifiers: 0 });
+        assert_eq!(asked.load(Ordering::SeqCst), 1, "a primary press is a browse request");
+
+        z.handle_event(&Event::MousePress { pos: Point::new(10, 10), button: 2, modifiers: 0 });
+        assert_eq!(asked.load(Ordering::SeqCst), 1, "a secondary press is not");
+
+        z.set_enabled(false);
+        z.handle_event(&Event::MousePress { pos: Point::new(10, 10), button: 1, modifiers: 0 });
+        assert_eq!(asked.load(Ordering::SeqCst), 1, "a disabled zone stays silent");
     }
 
     /// The well names what landed, folding several files into `first +N` (MISC-10).

@@ -306,6 +306,16 @@ pub trait FileEntrySource {
         let _ = path;
         false
     }
+
+    /// Creates directory `name` inside `parent` (DLG-002).
+    ///
+    /// The default reports that the source cannot create directories rather than silently
+    /// pretending to: a listing that re-reads unchanged entries is the one outcome a caller
+    /// cannot distinguish from a successful empty folder.
+    fn create_dir(&self, parent: &str, name: &str) -> Result<(), String> {
+        let _ = (parent, name);
+        Err("this entry source does not support creating directories".to_string())
+    }
 }
 
 /// `FileDialog`'s list top gap below the title bar.
@@ -405,8 +415,12 @@ pub struct FileDialog {
     /// The file-name field's edit buffer (DLG-05). Empty until the user types or a selection
     /// seeds it; [`Self::name_editing`] says which of the two the paint should read.
     name_edit: String,
-    /// Whether the file-name field is in edit mode.
+    /// Whether the buffer holds an edit rather than the selection.
     name_editing: bool,
+    /// The new-folder name being typed, or `None` when the prompt is closed (DLG-002).
+    new_folder_name: Option<String>,
+    /// Why the last new-folder request failed, shown in the prompt until it is dismissed.
+    new_folder_error: Option<String>,
     /// Whether the current sort column runs descending (DLG-07).
     sort_descending: bool,
     /// The column the current order was produced by, for the header's indicator (DLG-08).
@@ -466,6 +480,8 @@ impl FileDialog {
             pending_overwrite: None,
             name_edit: String::new(),
             name_editing: false,
+            new_folder_name: None,
+            new_folder_error: None,
             sort_descending: false,
             sort_column: None,
             visible_cache: RefCell::new(None),
@@ -763,6 +779,79 @@ impl FileDialog {
         if let Some(column) = self.sort_column {
             self.order_entries(column);
         }
+    }
+
+    /// The new-folder button's box in the title bar's trailing corner (DLG-002).
+    pub fn new_folder_rect(&self) -> Rect {
+        let rect = self.frame_rect();
+        const SIZE: i32 = 18;
+        Rect::new(
+            rect.x + rect.width as i32 - SIZE - 8,
+            rect.y + (dimensions::DIALOG_TITLE_BAR_HEIGHT as i32 - SIZE) / 2,
+            SIZE as u32,
+            SIZE as u32,
+        )
+    }
+
+    /// Opens the new-folder naming prompt (DLG-002).
+    ///
+    /// The prompt names a child of the current directory; `Enter` creates it, `Escape` cancels.
+    /// Validation and the filesystem write go through [`Self::create_folder`].
+    pub fn begin_new_folder(&mut self) {
+        self.new_folder_name = Some(String::new());
+        self.new_folder_error = None;
+        self.base.request_redraw();
+    }
+
+    /// The name currently being typed, or `None` when the prompt is closed.
+    pub fn new_folder_name(&self) -> Option<&str> {
+        self.new_folder_name.as_deref()
+    }
+
+    /// Closes the naming prompt without creating anything.
+    pub fn cancel_new_folder(&mut self) {
+        if self.new_folder_name.take().is_some() {
+            self.new_folder_error = None;
+            self.base.request_redraw();
+        }
+    }
+
+    /// Creates directory `name` inside the current directory and re-reads the listing (DLG-002).
+    ///
+    /// A path separator is refused rather than resolved: the prompt names one folder, and a
+    /// value that escapes the current directory is a different operation the caller did not ask
+    /// for. The write goes through [`FileEntrySource::create_dir`], so a source that cannot create
+    /// directories reports that instead of the dialog claiming success.
+    pub fn create_folder(&mut self, name: &str) -> Result<(), String> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err("folder name must not be empty".to_string());
+        }
+        if name.contains('/') || name.contains('\\') {
+            return Err("folder name must not contain a path separator".to_string());
+        }
+        let Some(source) = self.source.as_ref() else {
+            return Err("no entry source installed".to_string());
+        };
+        source.create_dir(&self.directory, name)?;
+        self.refresh_entries();
+        self.base.request_redraw();
+        Ok(())
+    }
+
+    /// Commits the prompt's current text through [`Self::create_folder`].
+    fn commit_new_folder(&mut self) {
+        let Some(name) = self.new_folder_name.clone() else {
+            return;
+        };
+        match self.create_folder(&name) {
+            Ok(()) => {
+                self.new_folder_name = None;
+                self.new_folder_error = None;
+            }
+            Err(error) => self.new_folder_error = Some(error),
+        }
+        self.base.request_redraw();
     }
 
     /// The label painted beside the file-name strip, or `""` when the catalogue string is used.
@@ -1391,6 +1480,15 @@ impl EventHandler for FileDialog {
         }
         match event {
             Event::MousePress { pos, button: 1, modifiers } => {
+                // A press outside the naming prompt dismisses it before any other hit test, so
+                // the prompt cannot outlive the interaction that started it (DLG-002).
+                if self.new_folder_name.is_some() && !self.new_folder_rect().contains_point(*pos) {
+                    self.cancel_new_folder();
+                }
+                if self.new_folder_rect().contains_point(*pos) {
+                    self.begin_new_folder();
+                    return;
+                }
                 // A press's own Ctrl/Shift wins; a plain press leaves a modifier a host set
                 // through `set_selection_modifier` in place for the row interaction that
                 // follows. The row handler consumes it and restores `Replace`.
@@ -1474,6 +1572,14 @@ impl EventHandler for FileDialog {
                 }
             }
             Event::TextInput { text } | Event::ImeCommit { text } => {
+                // The folder prompt is a separate naming flow: text goes to the folder name and
+                // never to the file-name field while it is open (DLG-002).
+                if let Some(name) = self.new_folder_name.as_mut() {
+                    name.extend(text.chars().filter(|ch| !ch.is_control()));
+                    self.new_folder_error = None;
+                    self.base.request_redraw();
+                    return;
+                }
                 // The file-name field accepts committed text; the desktop backends deliver
                 // printable characters and IME commits here, not as key codes (DLG-05).
                 if !self.name_editing {
@@ -1484,6 +1590,19 @@ impl EventHandler for FileDialog {
                 self.base.request_redraw();
             }
             Event::KeyPress { key, .. } => {
+                if self.new_folder_name.is_some() {
+                    if *key == key_codes::ENTER {
+                        self.commit_new_folder();
+                    } else if *key == key_codes::ESCAPE {
+                        self.cancel_new_folder();
+                    } else if *key == key_codes::BACKSPACE || *key == key_codes::DELETE {
+                        if let Some(name) = self.new_folder_name.as_mut() {
+                            name.pop();
+                        }
+                        self.base.request_redraw();
+                    }
+                    return;
+                }
                 if *key == key_codes::ENTER {
                     self.accept();
                 } else if *key == key_codes::ESCAPE {
@@ -1929,17 +2048,15 @@ impl Draw for FileDialog {
         // stayed a hardcoded blue in either appearance, and the render census reported
         // the whole control as theme-blind.
         //
-        // The theme read is a separate manager lock, taken and released inside
-        // `resolved_theme_style`, so it is not held across the draw — the global
-        // manager's mutex is not re-entrant.
+        // The theme reads are the cached palette/style snapshots, so no manager lock is held
+        // across the draw — the global manager's mutex is not re-entrant.
         let (window_fill, accent, theme_ink, theme_border) = {
-            let manager = crate::style::theme_manager();
-            match manager.current_theme() {
-                Some(active) => (
-                    active.colors.background,
-                    active.colors.primary,
-                    Some(active.colors.foreground),
-                    Some(active.colors.outline),
+            match crate::style::palette_shared() {
+                Some(colors) => (
+                    colors.background,
+                    colors.primary,
+                    Some(colors.foreground),
+                    Some(colors.outline),
                 ),
                 None => (Color::WHITE, Color::rgb(0, 120, 215), None, None),
             }
@@ -1990,19 +2107,31 @@ impl Draw for FileDialog {
         let title_bar = surface.blend(&ink, 0.08);
         let title_bar_band = ControlMetrics::top_band(rect, dimensions::DIALOG_TITLE_BAR_HEIGHT);
         context.fill_rect(title_bar_band, title_bar);
-        if !self.title.is_empty() {
+        // The new-folder affordance lives in the title bar's trailing corner: it is a directory
+        // action, and the title bar is the one band that is always laid out (DLG-002).
+        let folder_button = self.new_folder_rect();
+        context.fill_rounded_rect(folder_button, 4, field);
+        crate::widget::draw_icon_centered(context, folder_button, 12, ink, IconName::Folder);
+        let trailing = folder_button.width + 12;
+        let title_width = rect.width.saturating_sub(16 + trailing);
+        let caption = match (&self.new_folder_error, &self.new_folder_name) {
+            (Some(error), _) => error.clone(),
+            (None, Some(name)) => format!("New folder: {name}"),
+            (None, None) => self.title.clone(),
+        };
+        if !caption.is_empty() {
             let title_font = font;
             let title_line = context.text_line(title_bar_band, title_font);
+            let caption_ink = if self.new_folder_error.is_some() {
+                crate::style::semantic_color(crate::style::SemanticColor::Error).unwrap_or(ink)
+            } else {
+                ink
+            };
             context.draw_text_fitted_cow(
-                Rect::new(
-                    rect.x + 8,
-                    title_line.y,
-                    rect.width.saturating_sub(16),
-                    title_line.height.max(1),
-                ),
-                &self.title,
+                Rect::new(rect.x + 8, title_line.y, title_width, title_line.height.max(1)),
+                &caption,
                 title_font,
-                ink,
+                caption_ink,
                 HorizontalAlignment::Left,
             );
         }

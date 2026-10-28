@@ -97,21 +97,18 @@ impl EditorChrome {
 
         // The accent is the theme's `primary`: the hue a theme is expected to vary most,
         // which is what makes the caret and the selection follow the appearance. The same
-        // lock acquisition reads the raised surface the document is written on: a window
-        // background is the *window's* colour, and painting the buffer with it makes the
-        // light appearance read as a grey slab (measured in the demo screenshot) while
+        // palette snapshot also carries the raised surface the document is written on: a
+        // window background is the *window's* colour, and painting the buffer with it makes
+        // the light appearance read as a grey slab (measured in the demo screenshot) while
         // Zed's buffer sits on a lighter card. When the theme distinguishes the two, the
         // container wins; when it does not, there is one surface and it is used as-is.
-        let (accent, themed_surface) = crate::style::theme_manager()
-            .current_theme()
-            .map(|active| {
-                (
-                    active.colors.primary,
-                    (active.colors.surface_container != active.colors.background)
-                        .then_some(active.colors.surface_container),
-                )
-            })
-            .unwrap_or((editor.palette.bracket_color, None));
+        let (accent, themed_surface) = match crate::style::palette_shared() {
+            Some(colors) => (
+                colors.primary,
+                (colors.surface_container != colors.background).then_some(colors.surface_container),
+            ),
+            None => (editor.palette.bracket_color, None),
+        };
 
         // A surface the **caller** set wins; a surface the *theme* derived from this
         // control's role does not.
@@ -130,7 +127,7 @@ impl EditorChrome {
         let ink = pick(style.text_color, themed_ink, editor.palette.color_for(TokenKind::Plain));
         let border = pick(style.border_color, themed_border, editor.palette.border_color);
 
-        // The accent was read with the surface above (one lock acquisition).
+        // The accent was read with the surface above (one palette snapshot).
 
         // Search highlights and the error-tinted frame are semantic: they mean "this is
         // the hit you are on" and "this is an error", so they read the theme's semantic

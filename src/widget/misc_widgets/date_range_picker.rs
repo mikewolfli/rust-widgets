@@ -74,6 +74,12 @@ pub struct DateRangePicker {
     start_date: Option<(i32, u32, u32)>,
     end_date: Option<(i32, u32, u32)>,
     hover_date: Option<(i32, u32, u32)>,
+    /// The day the grid's first column belongs to.
+    ///
+    /// The grid offset and the weekday header are derived from this one field, so they cannot
+    /// disagree about which column a day sits in. The default is Sunday, the order
+    /// [`DAY_NAMES`] is written in and the behaviour before this was configurable.
+    first_day_of_week: chrono::Weekday,
     /// Preset chips offered above the grid.
     presets: Vec<DatePreset>,
     /// The index of the preset last applied, when the selection came from one.
@@ -148,6 +154,7 @@ impl DateRangePicker {
             start_date: None,
             end_date: None,
             hover_date: None,
+            first_day_of_week: chrono::Weekday::Sun,
             presets: Vec::new(),
             selected_preset: None,
             preset_bar: None,
@@ -656,6 +663,24 @@ impl DateRangePicker {
         self.display_month
     }
 
+    /// Returns the day the grid's week starts on.
+    pub fn first_day_of_week(&self) -> chrono::Weekday {
+        self.first_day_of_week
+    }
+
+    /// Sets the day the grid's week starts on.
+    ///
+    /// The grid offset and the weekday header rotate together, so a Monday-first locale sees
+    /// Monday in the first column and January 2025's Wednesday 1st in column 2. A same-value
+    /// write is a no-op, like the advanced calendar's setter.
+    pub fn set_first_day_of_week(&mut self, weekday: chrono::Weekday) {
+        if self.first_day_of_week == weekday {
+            return;
+        }
+        self.first_day_of_week = weekday;
+        self.base.request_redraw();
+    }
+
     /// Emits the `range_changed` signal with current start/end.
     fn emit_range_changed(&self) {
         self.range_changed.emit((self.start_date, self.end_date));
@@ -667,21 +692,36 @@ impl DateRangePicker {
         days_in_month(year, month)
     }
 
-    /// Returns the day of week for the 1st of the displayed month.
+    /// Returns the day of week for the 1st of the displayed month (Sunday-first).
     #[cfg(test)]
-    fn first_day_of_week(&self) -> u32 {
+    fn first_day_of_week_index(&self) -> u32 {
         day_of_week(self.display_year, self.display_month, 1)
     }
 
-    /// Returns the day of week for the 1st of panel `panel`'s month.
+    /// Returns the day of week for the 1st of panel `panel`'s month (Sunday-first).
     fn first_day_of_panel(&self, panel: usize) -> u32 {
         let (year, month) = self.panel_month(panel);
         day_of_week(year, month, 1)
     }
 
+    /// The blank cells before day 1 of panel `panel`'s month, rotated by `first_day_of_week`.
+    ///
+    /// `day_of_week` answers Sunday-first; a grid that starts on another weekday needs the same
+    /// value measured from that day, which is the subtraction here.
+    fn leading_blanks(&self, panel: usize) -> u32 {
+        let first = self.first_day_of_panel(panel);
+        (first + 7 - self.first_day_of_week.num_days_from_sunday()) % 7
+    }
+
+    /// The weekday names in the order the header paints them.
+    fn weekday_header(&self) -> [&'static str; 7] {
+        let first = self.first_day_of_week.num_days_from_sunday() as usize;
+        core::array::from_fn(|index| DAY_NAMES[(first + index) % 7])
+    }
+
     /// Returns the day, month, year for a cell in panel `panel`'s grid.
     fn date_at_panel_cell(&self, panel: usize, cell_index: usize) -> Option<(i32, u32, u32)> {
-        let first_dow = self.first_day_of_panel(panel) as usize;
+        let first_dow = self.leading_blanks(panel) as usize;
         let total_days = self.days_in_panel_month(panel) as usize;
         if cell_index < first_dow || cell_index >= first_dow + total_days {
             return None;
@@ -814,7 +854,7 @@ impl DateRangePicker {
         let panel_width = rect.width / panels.max(1);
         let panel_x = rect.x + (panel as u32 * panel_width) as i32;
         let total_days = self.days_in_panel_month(panel) as usize;
-        let first_dow = self.first_day_of_panel(panel) as usize;
+        let first_dow = self.leading_blanks(panel) as usize;
         let rows = ((first_dow + total_days).div_ceil(7) as u32).max(1);
         let grid_left = panel_x + GRID_LEFT_INSET;
         let preset = self.preset_height() as i32;
@@ -1200,7 +1240,7 @@ fn draw_month_panel(
     let metrics = picker.digit_metrics(dow_font, day_font, context);
     let dow_height = metrics.header_height;
     let margin = TEXT_FIT_MARGIN as i32;
-    for (i, day_name) in DAY_NAMES.iter().enumerate() {
+    for (i, day_name) in picker.weekday_header().iter().enumerate() {
         let cell_x = grid_left + (i as u32 * column_pitch) as i32;
         let cell_y = grid_top - DAY_HEADER_HEIGHT as i32;
         context.draw_text_fitted_cow(
@@ -1995,10 +2035,60 @@ mod tests {
         // to the right of the weekday printed above it.
         assert_eq!(day_of_week(2025, 1, 1), 3);
         let picker = make_picker();
-        assert_eq!(picker.first_day_of_week(), 3);
+        assert_eq!(picker.first_day_of_week_index(), 3);
         assert_eq!(picker.date_at_cell(2), None);
         assert_eq!(picker.date_at_cell(3), Some((2025, 1, 1)));
         assert_eq!(picker.date_at_cell(9), Some((2025, 1, 7)));
+    }
+
+    /// A Monday-first week rotates both the grid offset and the header, and a click still lands
+    /// on the day painted in that cell (M-003).
+    #[test]
+    fn a_monday_first_week_rotates_the_grid_and_the_header() {
+        let mut picker = make_picker();
+        assert_eq!(picker.first_day_of_week(), chrono::Weekday::Sun);
+        assert_eq!(picker.date_at_cell(3), Some((2025, 1, 1)));
+
+        picker.set_first_day_of_week(chrono::Weekday::Mon);
+        assert_eq!(picker.first_day_of_week(), chrono::Weekday::Mon);
+        assert_eq!(picker.leading_blanks(0), 2, "Wednesday is column 2 of a Monday-first week");
+        assert_eq!(picker.date_at_cell(1), None);
+        assert_eq!(picker.date_at_cell(2), Some((2025, 1, 1)));
+        assert_eq!(picker.date_at_cell(8), Some((2025, 1, 7)));
+        assert_eq!(
+            picker.weekday_header(),
+            ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"],
+            "the header rotates with the same first day"
+        );
+
+        let mut clicked = make_picker();
+        clicked.set_first_day_of_week(chrono::Weekday::Mon);
+        clicked.handle_event(&Event::MousePress {
+            pos: cell_centre(&clicked, 2, 0),
+            button: 1,
+            modifiers: 0,
+        });
+        assert_eq!(
+            clicked.start_date(),
+            Some((2025, 1, 1)),
+            "the cell under the pointer is still the day painted there"
+        );
+
+        // A same-value write changes nothing.
+        clicked.set_first_day_of_week(chrono::Weekday::Mon);
+        assert_eq!(clicked.first_day_of_week(), chrono::Weekday::Mon);
+    }
+
+    /// Every weekday is a valid start, not only Sunday and Monday: a Saturday-first grid offsets
+    /// January 2025 by four blanks (M-003 boundary).
+    #[test]
+    fn every_weekday_can_start_the_week() {
+        let mut picker = make_picker();
+        picker.set_first_day_of_week(chrono::Weekday::Sat);
+        assert_eq!(picker.leading_blanks(0), 4);
+        assert_eq!(picker.date_at_cell(3), None);
+        assert_eq!(picker.date_at_cell(4), Some((2025, 1, 1)));
+        assert_eq!(picker.weekday_header(), ["Sa", "Su", "Mo", "Tu", "We", "Th", "Fr"]);
     }
 
     #[test]
@@ -2008,7 +2098,7 @@ mod tests {
         // agreed with each other but disagreed with the painted weekday, because the offset
         // itself was a day off.
         let picker = make_picker();
-        let offset = picker.first_day_of_week();
+        let offset = picker.leading_blanks(0);
         for day in [1u32, 7, 15, 22, 31] {
             let index = offset + day - 1;
             let (col, row) = (index % 7, index / 7);
@@ -2032,7 +2122,7 @@ mod tests {
     #[test]
     fn hover_tracks_the_day_under_the_pointer_and_clears_on_leave() {
         let mut picker = make_picker();
-        let offset = picker.first_day_of_week();
+        let offset = picker.leading_blanks(0);
         let index = offset + 14; // day 15
         let (col, row) = (index % 7, index / 7);
 

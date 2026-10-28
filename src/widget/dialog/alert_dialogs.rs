@@ -70,21 +70,14 @@ struct CardPalette {
 
 /// Resolves the card palette from the control's style and the active theme.
 ///
-/// The theme read holds the manager's lock, so the guard is confined to the block that copies
-/// the colours out — a guard held across the drawing calls would deadlock the first time a
-/// primitive took it again.
+/// The palette is read from the shared snapshot once per draw, so no manager lock is held
+/// across the drawing calls.
 fn card_palette(base: &BaseWidget, role: &str) -> CardPalette {
     let style = base.style();
     let themed = crate::style::resolved_theme_style_shared(role);
     let (window_background, window_foreground, accent, outline) = {
-        let manager = crate::style::theme_manager();
-        match manager.current_theme() {
-            Some(theme) => (
-                theme.colors.background,
-                theme.colors.foreground,
-                theme.colors.primary,
-                theme.colors.outline,
-            ),
+        match crate::style::palette_shared() {
+            Some(colors) => (colors.background, colors.foreground, colors.primary, colors.outline),
             None => (Color::WHITE, Color::BLACK, Color::PRIMARY, Color::rgb(190, 190, 190)),
         }
     };

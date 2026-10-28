@@ -1222,13 +1222,10 @@ impl Draw for ToggleButton {
         // same non-reentrant lock themselves — so holding it here and calling one of them deadlocks.
         // The crate's own doc says a guard must not be held across a draw; this is that rule.
         let (outline, outline_variant, disabled) = {
-            let manager = crate::style::theme_manager();
-            match manager.current_theme() {
-                Some(active) => (
-                    Some(active.colors.outline),
-                    Some(active.colors.outline_variant),
-                    Some(active.colors.disabled),
-                ),
+            match crate::style::palette_shared() {
+                Some(active) => {
+                    (Some(active.outline), Some(active.outline_variant), Some(active.disabled))
+                }
                 None => (None, None, None),
             }
         };

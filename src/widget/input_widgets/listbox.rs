@@ -915,6 +915,9 @@ impl ListBox {
     /// helper falls back to the whole-control request, which is the historical
     /// behaviour (I-132).
     fn request_rows_repaint(&self, rows: &[Option<usize>]) {
+        // A frugal build has no damage tracking, so the row list has no reader here.
+        #[cfg(alloc_frugal)]
+        let _ = rows;
         #[cfg(not(alloc_frugal))]
         {
             if let Some(id) = crate::widget::runtime::registry_id_of(self.id()) {
@@ -1848,12 +1851,11 @@ impl Draw for ListBox {
         // hovered row lighter still — a pointer position rather than a selection, so it must read
         // as "a click would land here" without competing with the row actually chosen.
         //
-        // The palette is the frame's **one** manager lock (I-P07); `resolved_theme_style_shared`
-        // above is a thread-local cache hit after the first frame and takes none.
-        let accent = crate::style::theme_manager()
-            .current_theme()
-            .map(|active| active.colors.primary)
-            .unwrap_or(Color::PRIMARY);
+        // The palette comes from the shared snapshot, not the manager lock (I-P07);
+        // `resolved_theme_style_shared` above is a thread-local cache hit after the first frame
+        // and takes none.
+        let accent =
+            crate::style::palette_shared().map(|colors| colors.primary).unwrap_or(Color::PRIMARY);
         let selected_bg = surface.blend(&accent, 0.85);
         let focused_bg = surface.blend(&accent, 0.30);
         let hovered_bg = surface.blend(&accent, 0.12);

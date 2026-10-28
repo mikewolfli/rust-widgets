@@ -113,11 +113,46 @@ impl EmojiGlyph {
         if needle.is_empty() {
             return true;
         }
-        let needle = needle.to_lowercase();
-        self.symbol.to_lowercase().contains(&needle)
-            || self.id.to_lowercase().contains(&needle)
-            || self.keywords.iter().any(|keyword| keyword.to_lowercase().contains(&needle))
+        self.matches_lowercase(&needle.to_lowercase())
     }
+
+    /// The same match with the needle already lowercased.
+    ///
+    /// Production search lowercases its needle **once** per projection and calls this, which is
+    /// what stops a grid of N glyphs from performing N+1 lowercasing allocations per keystroke.
+    /// The haystack is lowercased lazily and only when the allocation-free ASCII path cannot
+    /// answer: see [`contains_lowercase`].
+    fn matches_lowercase(&self, needle_lower: &str) -> bool {
+        if needle_lower.is_empty() {
+            return true;
+        }
+        contains_lowercase(&self.symbol, needle_lower)
+            || contains_lowercase(&self.id, needle_lower)
+            || self.keywords.iter().any(|keyword| contains_lowercase(keyword, needle_lower))
+    }
+}
+
+/// Case-insensitive substring search with an allocation-free ASCII path.
+///
+/// `needle_lower` must already be lowercased. When both sides are ASCII, Unicode lowercasing is
+/// exactly ASCII lowercasing, so the byte scan is semantically identical to
+/// `haystack.to_lowercase().contains(needle_lower)` and allocates nothing. Any non-ASCII byte
+/// falls back to the allocating form, which keeps the result identical for every script.
+fn contains_lowercase(haystack: &str, needle_lower: &str) -> bool {
+    if needle_lower.is_empty() {
+        return true;
+    }
+    if haystack.is_ascii() && needle_lower.is_ascii() {
+        let hay = haystack.as_bytes();
+        let needle = needle_lower.as_bytes();
+        if needle.len() > hay.len() {
+            return false;
+        }
+        return hay.windows(needle.len()).any(|window| {
+            window.iter().zip(needle).all(|(hay, needle)| hay.to_ascii_lowercase() == *needle)
+        });
+    }
+    haystack.to_lowercase().contains(needle_lower)
 }
 
 /// The declared shape of one emoji glyph, as a record (BLUE26 B26.09).
@@ -235,6 +270,8 @@ pub struct EmojiPicker {
     active_tab: usize,
     /// The current search text.
     search: String,
+    /// The search text lowercased once, so a projection does not lowercase per glyph.
+    search_lower: String,
     /// Recently chosen glyph ids, most recent first.
     recent: Vec<String>,
     /// How many recent ids the control remembers.
@@ -247,6 +284,17 @@ pub struct EmojiPicker {
     /// The visible count and whether it needs recomputing.
     visible_dirty: Cell<bool>,
     visible_count_cache: Cell<usize>,
+    /// A monotonic stamp bumped by every filter input that can change the projection.
+    ///
+    /// [`Self::refresh_visible_indices`] compares this with the stamp the cached buffer was built
+    /// at; a match means the projection is still valid and the call returns without allocating.
+    visible_revision: Cell<u64>,
+    /// The revision [`Self::visible_indices`] was last built at.
+    visible_indices_revision: u64,
+    /// How many times the projection buffer has actually been rebuilt. Test-only evidence that a
+    /// matching revision returns early.
+    #[cfg(test)]
+    visible_epoch: Cell<u64>,
     /// Measured cell-text extents, keyed by glyph index and device scale.
     glyph_metrics: RefCell<GlyphMetricsCache>,
     /// The grid index the keyboard cursor is on, if any.
@@ -304,11 +352,18 @@ impl EmojiPicker {
             categories: Vec::new(),
             active_tab: 0,
             search: String::new(),
+            search_lower: String::new(),
             recent: Vec::new(),
             recent_capacity: MAX_RECENT,
             glyph_index: HashMap::new(),
             visible_dirty: Cell::new(true),
             visible_count_cache: Cell::new(0),
+            // Start one revision ahead of the (empty) buffer's stamp, so the first projection
+            // always builds rather than trusting an empty Vec that was never computed.
+            visible_revision: Cell::new(1),
+            visible_indices_revision: 0,
+            #[cfg(test)]
+            visible_epoch: Cell::new(0),
             glyph_metrics: RefCell::new(GlyphMetricsCache {
                 dpi_scale_bits: 0,
                 entries: HashMap::new(),
@@ -431,6 +486,7 @@ impl EmojiPicker {
         }
         self.active_tab = index;
         self.search.clear();
+        self.search_lower.clear();
         self.cursor = None;
         self.hovered = None;
         self.invalidate_visible();
@@ -448,6 +504,7 @@ impl EmojiPicker {
             return;
         }
         self.search = search.to_string();
+        self.search_lower = search.to_lowercase();
         self.cursor = None;
         self.hovered = None;
         self.invalidate_visible();
@@ -537,7 +594,9 @@ impl EmojiPicker {
     /// projection by table order), which is why it is not folded in here.
     fn glyph_is_visible(&self, glyph: &EmojiGlyph) -> bool {
         if !self.search.is_empty() {
-            return glyph.matches(&self.search);
+            // `search_lower` is maintained by `set_search`, so this is the once-per-projection
+            // lowercasing rather than one allocation per glyph and keyword.
+            return glyph.matches_lowercase(&self.search_lower);
         }
         if self.recent_tab_active() {
             return self.recent.iter().any(|id| &glyph.id == id);
@@ -565,9 +624,13 @@ impl EmojiPicker {
         self.glyphs.iter().filter(|glyph| self.glyph_is_visible(glyph)).nth(index)
     }
 
-    /// Marks the cached visible count stale; the next `visible_len` recomputes it once.
+    /// Marks the cached visible count stale and invalidates the projection.
+    ///
+    /// One entry point for "a filter input changed": it bumps [`Self::visible_revision`], which
+    /// is what [`Self::refresh_visible_indices`] compares against.
     fn invalidate_visible(&self) {
         self.visible_dirty.set(true);
+        self.visible_revision.set(self.visible_revision.get().wrapping_add(1));
     }
 
     /// The number of glyphs the grid currently shows, without materialising the projection.
@@ -593,6 +656,12 @@ impl EmojiPicker {
     /// The order matches [`Self::visible_glyphs`]: recency order for the recent tab, table order
     /// otherwise.
     fn refresh_visible_indices(&mut self) -> usize {
+        let revision = self.visible_revision.get();
+        // The buffer is already the answer for this revision: a steady frame or a pointer move
+        // with no filter change returns without walking the glyph table or allocating.
+        if self.visible_indices_revision == revision {
+            return self.visible_indices.len();
+        }
         let mut indices = core::mem::take(&mut self.visible_indices);
         indices.clear();
         if self.recent_tab_active() {
@@ -611,6 +680,9 @@ impl EmojiPicker {
             );
         }
         self.visible_indices = indices;
+        self.visible_indices_revision = revision;
+        #[cfg(test)]
+        self.visible_epoch.set(self.visible_epoch.get().wrapping_add(1));
         self.visible_indices.len()
     }
 
@@ -1033,10 +1105,9 @@ impl EmojiPicker {
         // it. A window-fill resolution is treated as "no answer" and stepped away from, the
         // same guard `drop_zone` and `otp_input` use, so a theme that genuinely wants the panel
         // flush with the page can still set `background_color` explicitly.
-        let window_fill = {
-            let manager = crate::style::theme_manager();
-            manager.current_theme().map(|active| active.colors.background).unwrap_or(Color::WHITE)
-        };
+        let window_fill = crate::style::palette_shared()
+            .map(|active| active.background)
+            .unwrap_or(Color::WHITE);
         let panel = style
             .background_color
             .filter(|resolved| *resolved != window_fill)
@@ -1129,9 +1200,8 @@ impl EmojiPicker {
         );
         // Resolved once per frame, outside the loop: only one tab is active, but the
         // theme lookup used to sit inside the loop body and run once per tab.
-        let accent = crate::style::theme_manager()
-            .current_theme()
-            .map(|active| active.colors.primary)
+        let accent = crate::style::palette_shared()
+            .map(|active| active.primary)
             .unwrap_or_else(|| ink.legible_on(panel, 3.0));
         // Indexed in place; see `tab_label` for why `tabs()` is not called here.
         for index in 0..self.tab_count() {
@@ -2042,6 +2112,70 @@ mod tests {
         p.set_recent_capacity(1);
         assert_eq!(p.recent(), &["tick".to_string()]);
         assert_eq!(p.get("recent_capacity").unwrap(), CapabilityValue::UInt(1));
+    }
+
+    /// DP-001: a matching revision returns early, and every filter input bumps it.
+    #[test]
+    fn the_visible_projection_is_rebuilt_only_when_its_revision_changes() {
+        let mut p = picker();
+        let first_len = p.refresh_visible_indices();
+        assert!(first_len > 0);
+        let epoch = p.visible_epoch.get();
+        let revision = p.visible_revision.get();
+
+        assert_eq!(p.refresh_visible_indices(), first_len);
+        assert_eq!(p.visible_epoch.get(), epoch, "a matching revision returns without rebuilding");
+
+        // The needle is lowercased for the projection, and an uppercase query matches the same
+        // keywords the lowercase spelling did.
+        p.set_search("TICK");
+        assert_ne!(p.visible_revision.get(), revision, "a search change bumps the revision");
+        assert_eq!(p.refresh_visible_indices(), 1);
+        assert_eq!(p.visible_epoch.get(), epoch + 1, "the changed revision rebuilds once");
+        assert_eq!(p.visible_indices, vec![2]);
+
+        // The same search text is a no-op, so the cached projection survives.
+        let epoch = p.visible_epoch.get();
+        p.set_search("TICK");
+        assert_eq!(p.refresh_visible_indices(), 1);
+        assert_eq!(p.visible_epoch.get(), epoch);
+
+        // A tab change clears the search and bumps the revision.
+        p.set_active_tab(1);
+        assert!(p.search().is_empty());
+        let _ = p.refresh_visible_indices();
+        assert_eq!(p.visible_epoch.get(), epoch + 1);
+
+        // Replacing the glyph table and changing the recents are filter inputs too.
+        let epoch = p.visible_epoch.get();
+        p.set_glyphs(glyphs());
+        let _ = p.refresh_visible_indices();
+        assert_eq!(p.visible_epoch.get(), epoch + 1, "set_glyphs rebuilds the projection");
+        let epoch = p.visible_epoch.get();
+        p.choose("tick");
+        let _ = p.refresh_visible_indices();
+        assert_eq!(p.visible_epoch.get(), epoch + 1, "a new recent entry rebuilds the projection");
+    }
+
+    /// DP-001: matching is still case-insensitive on every field, without per-glyph allocation.
+    #[test]
+    fn glyph_matching_lowercases_the_needle_once_and_keeps_its_semantics() {
+        let glyph = EmojiGlyph::new("Smile", ":-)", "faces").keywords(&["Happy", "Cheer"]);
+        assert!(glyph.matches("SMILE"), "the id matches case-insensitively");
+        assert!(glyph.matches("happy"), "a keyword matches case-insensitively");
+        assert!(glyph.matches("CHEER"), "every keyword is searched");
+        assert!(!glyph.matches("sad"));
+        assert!(glyph.matches(""), "an empty needle matches everything");
+
+        // The ASCII fast path and the allocating fallback agree on a non-ASCII haystack.
+        let unicode = EmojiGlyph::new("grin", "Ünïcode", "faces").keyword("Gesicht");
+        assert!(unicode.matches("üNÏ"));
+        assert!(unicode.matches("GESICHT"));
+        assert!(!unicode.matches("smile"));
+
+        // The lowercased-needle entry point is the one the projection uses.
+        assert!(glyph.matches_lowercase("smile"));
+        assert!(!glyph.matches_lowercase("sad"));
     }
 
     /// The visible count is computed once per filter change, not on every pointer move.

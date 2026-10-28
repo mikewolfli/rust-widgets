@@ -1182,18 +1182,15 @@ impl Draw for MediaPlayer {
         //
         // Precedence mirrors every other panel in the crate: an explicit style, then the active
         // theme's roles, then the literal as the last resort for a build with no theme.
-        let themed = {
-            let manager = crate::style::theme_manager();
-            manager.current_theme().map(|active| {
-                (
-                    active.colors.surface_container,
-                    active.colors.outline_variant,
-                    active.colors.foreground,
-                    active.colors.secondary,
-                    active.colors.primary,
-                )
-            })
-        };
+        let themed = crate::style::palette_shared().map(|colors| {
+            (
+                colors.surface_container,
+                colors.outline_variant,
+                colors.foreground,
+                colors.secondary,
+                colors.primary,
+            )
+        });
         let (surface, divider, ink, muted, accent) = themed.unwrap_or((
             Color::rgb(24, 28, 36),
             Color::rgb(72, 84, 102),

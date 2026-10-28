@@ -382,6 +382,13 @@ pub struct WebEngineView {
     /// Emitted with the target URL when the pointer enters a link, and with an empty string when
     /// it leaves (the standard wiring point for a status-bar URL readout).
     pub link_hovered: Signal1<String>,
+    /// Emitted with the URL of an activated link that navigates in this view.
+    pub link_activated: Signal1<String>,
+    /// Emitted with the URL when a page asks for a new window (`target="_blank"`).
+    ///
+    /// The view cannot create a platform window, so the request is reported and the host decides
+    /// whether to call [`Self::create_page`] or refuse it (WEB-001).
+    pub on_window_requested: Signal1<String>,
     /// Emitted with a host-supplied reason when the render process exits abnormally.
     pub render_process_crashed: Signal1<String>,
     /// Emitted when a deferred JavaScript evaluation finishes, with `(ok, payload)`.
@@ -857,6 +864,8 @@ impl WebEngineView {
             load_progress_changed: Signal1::new(),
             channel_message: Signal1::new(),
             link_hovered: Signal1::new(),
+            link_activated: Signal1::new(),
+            on_window_requested: Signal1::new(),
             render_process_crashed: Signal1::new(),
             js_evaluated: Signal1::new(),
             user_agent: DEFAULT_USER_AGENT.to_string(),
@@ -1198,6 +1207,16 @@ impl WebEngineView {
     /// The page's vertical scroll offset in logical pixels.
     pub fn scroll_offset(&self) -> i32 {
         self.scroll_offset
+    }
+
+    /// The address bar's rectangle from the last paint, when the view has painted once.
+    ///
+    /// A companion anchored to the browser chrome — the history drop-down, for one — reads this
+    /// rather than re-deriving the band from the view's geometry. `None` means the view has not
+    /// painted yet; the caller can then fall back to the same derivation the view itself uses in
+    /// [`ControlMetrics::top_band`] over [`Widget::geometry`].
+    pub fn url_bar_rect(&self) -> Option<Rect> {
+        self.url_bar_rect
     }
 
     /// Scrolls the page, clamped to the content the last frame measured.
@@ -1959,6 +1978,28 @@ impl WebEngineView {
         self.link_hovered.emit(url.into());
     }
 
+    /// Reports that a link asked for a new window (`target="_blank"`).
+    ///
+    /// This is the signal half of the request: the view has no platform window to open, so the
+    /// host decides whether to call [`Self::create_page`] or refuse it (WEB-001).
+    pub fn request_new_window(&mut self, url: impl Into<String>) {
+        self.on_window_requested.emit(url.into());
+    }
+
+    /// Resolves a link activation against its `target` attribute.
+    ///
+    /// `target` is the raw attribute value. `_blank` is reported through
+    /// [`Self::on_window_requested`]; any other target is an ordinary navigation and is reported
+    /// through [`Self::link_activated`] for the host to perform.
+    pub fn activate_link(&mut self, url: impl Into<String>, target: Option<&str>) {
+        let url = url.into();
+        if target == Some("_blank") {
+            self.on_window_requested.emit(url);
+        } else {
+            self.link_activated.emit(url);
+        }
+    }
+
     /// Reports that the render process exited abnormally, emitting
     /// [`Self::render_process_crashed`].
     ///
@@ -2098,6 +2139,16 @@ impl Widget for WebEngineView {
                     crate::widget::capability::CapabilityValue::String((*v).clone())
                 }))
             }
+            "link_activated" => {
+                Some(EventSignalRef::mapped("link_activated", &self.link_activated, |v| {
+                    crate::widget::capability::CapabilityValue::String((*v).clone())
+                }))
+            }
+            "on_window_requested" => Some(EventSignalRef::mapped(
+                "on_window_requested",
+                &self.on_window_requested,
+                |v| crate::widget::capability::CapabilityValue::String((*v).clone()),
+            )),
             "render_process_crashed" => Some(EventSignalRef::mapped(
                 "render_process_crashed",
                 &self.render_process_crashed,
@@ -2376,17 +2427,13 @@ impl Draw for WebEngineView {
         // is not re-entrant.
         let style = self.base.style();
         let theme = crate::style::resolved_theme_style_shared("web_engine_view");
-        // Read as its own lock acquisition and copied out as values, so the guard is dropped
-        // before anything else touches the theme.
+        // Read from the shared palette snapshot (the revision-cached accessor), which returns the
+        // same draw-time `Colors` without taking the global manager lock.
         let (window_fill, foreground, secondary, accent) = {
-            let manager = crate::style::theme_manager();
-            match manager.current_theme() {
-                Some(active) => (
-                    active.colors.background,
-                    active.colors.foreground,
-                    active.colors.secondary,
-                    active.colors.primary,
-                ),
+            match crate::style::palette_shared() {
+                Some(active) => {
+                    (active.background, active.foreground, active.secondary, active.primary)
+                }
                 None => (
                     Color::rgb(240, 240, 240),
                     Color::BLACK,

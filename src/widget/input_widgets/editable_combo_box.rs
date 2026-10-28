@@ -806,10 +806,9 @@ impl Draw for EditableComboBox {
         // `resolved_theme_style`, so it is not held across the draw — the global
         // manager's mutex is not re-entrant.
         let style = self.base.style();
-        // One palette read for the whole frame: the highlight used to take the manager lock a
-        // second time, after the resolved style already had (I-P07).
-        let palette_primary =
-            crate::style::theme_manager().current_theme().map(|active| active.colors.primary);
+        // One palette read for the whole frame through the revision-validated cache, so the
+        // highlight does not take the manager lock a second time (I-P07).
+        let palette_primary = crate::style::palette_shared().map(|colors| colors.primary);
         let theme = crate::style::resolved_theme_style_shared("editable_combo_box");
         let themed_ink = theme.as_ref().and_then(|t| t.text_color);
         let themed_border = theme.as_ref().and_then(|t| t.border_color);

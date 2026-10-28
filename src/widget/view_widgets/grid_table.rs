@@ -174,6 +174,8 @@ pub struct GridTableWidget {
     column_widths: Vec<u32>,
     /// Bumped by every column-width mutation; keys [`ColumnSpanCache`].
     column_width_revision: u64,
+    /// Per-column cell alignment (V-001); an absent entry means `Left`.
+    column_alignments: std::collections::HashMap<usize, HorizontalAlignment>,
     /// The cached column run shared by the painter and the hit tests (F-P05).
     span_cache: RefCell<Option<ColumnSpanCache>>,
 
@@ -273,6 +275,7 @@ impl GridTableWidget {
             hovered_row: None,
             column_widths: Vec::new(),
             column_width_revision: 0,
+            column_alignments: std::collections::HashMap::new(),
             span_cache: RefCell::new(None),
             sort_specs: Vec::new(),
             sorting_enabled: true,
@@ -849,6 +852,25 @@ impl GridTableWidget {
             .copied()
             .unwrap_or_else(|| self.default_column_width())
             .max(self.min_column_width)
+    }
+
+    /// The alignment column `col` paints its cells with (V-001).
+    pub fn column_alignment(&self, col: usize) -> HorizontalAlignment {
+        self.column_alignments.get(&col).copied().unwrap_or(HorizontalAlignment::Left)
+    }
+
+    /// Sets one column's cell alignment, returning whether the column exists (V-001).
+    pub fn set_column_alignment(&mut self, col: usize, alignment: HorizontalAlignment) -> bool {
+        if col >= self.column_count() {
+            return false;
+        }
+        if alignment == HorizontalAlignment::Left {
+            self.column_alignments.remove(&col);
+        } else {
+            self.column_alignments.insert(col, alignment);
+        }
+        self.base.request_redraw();
+        true
     }
 
     // -----------------------------------------------------------------------
@@ -1656,8 +1678,9 @@ impl Draw for GridTableWidget {
         // four text colours used to be hardcoded literals, so light and dark rendered
         // identically.
         //
-        // The theme reads take and release the global manager's lock internally, so no guard
-        // is held across the draw (the mutex is not re-entrant).
+        // The theme read takes and releases the global manager's lock internally, and the palette
+        // comes from the shared snapshot, so no guard is held across the draw (the mutex is not
+        // re-entrant).
         // `WidgetStyle` carries a font-family `String` and a gradient `Vec`; cloning it to read
         // two `Copy` colour fields allocated both on every frame (WDGT-08). Copy the fields
         // under one short borrow instead.
@@ -1677,19 +1700,15 @@ impl Draw for GridTableWidget {
         // painted in that colour would be byte-identical to the frame behind it, so a resolved
         // surface equal to the window fill is re-derived a visible step away from it, the same
         // distinction `Colors::input_background` draws for a field.
-        let window_fill = crate::style::theme_manager()
-            .current_theme()
-            .map(|active| active.colors.background)
-            .unwrap_or(Color::WHITE);
+        // One palette snapshot read for the window fill and the accent below.
+        let palette = crate::style::palette_shared();
+        let window_fill = palette.as_ref().map(|colors| colors.background).unwrap_or(Color::WHITE);
         if surface == window_fill {
             surface = window_fill.blend(&ink, 0.08);
         }
         // The accent is the theme's `primary`, used both for the selection fill and for the
         // resting header text; the surface and the ink supply everything else.
-        let accent = crate::style::theme_manager()
-            .current_theme()
-            .map(|active| active.colors.primary)
-            .unwrap_or(Color::PRIMARY);
+        let accent = palette.as_ref().map(|colors| colors.primary).unwrap_or(Color::PRIMARY);
         // Each cached appearance field is used only while it still holds its constructor
         // literal, i.e. while no caller set it explicitly. The explicit setters keep their
         // meaning; only the untouched default now follows the appearance.
@@ -1931,7 +1950,7 @@ impl Draw for GridTableWidget {
                         &cell_text,
                         font,
                         cell_text_color,
-                        HorizontalAlignment::Left,
+                        self.column_alignment(ci),
                     );
                 }
 

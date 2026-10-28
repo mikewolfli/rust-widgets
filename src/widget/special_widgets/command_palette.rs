@@ -195,6 +195,8 @@ pub struct CommandPalette {
     pub command_activated: Signal1<String>,
     /// Emitted when query changes. Payload is current query.
     pub query_changed: Signal1<String>,
+    /// The painted prompt line, rebuilt only when `query` changes (VP-006).
+    prompt_buffer: String,
 }
 
 impl CommandPalette {
@@ -221,6 +223,7 @@ impl CommandPalette {
             hint_text: String::new(),
             command_activated: Signal1::new(),
             query_changed: Signal1::new(),
+            prompt_buffer: String::from("> "),
         }
     }
 
@@ -280,9 +283,18 @@ impl CommandPalette {
             return;
         }
         self.query = next;
+        self.rebuild_prompt_buffer();
         self.refresh_filter();
         self.query_changed.emit(self.query.clone());
         self.base.request_redraw();
+    }
+
+    /// Rebuilds the painted `> {query}` line into the reused buffer (VP-006).
+    fn rebuild_prompt_buffer(&mut self) {
+        use core::fmt::Write as _;
+        self.prompt_buffer.clear();
+        self.prompt_buffer.push_str("> ");
+        let _ = write!(self.prompt_buffer, "{}", self.query);
     }
 
     /// Clears current query.
@@ -470,6 +482,7 @@ impl CommandPalette {
             return;
         }
         self.query.push_str(text);
+        self.rebuild_prompt_buffer();
         self.refresh_filter();
         self.query_changed.emit(self.query.clone());
         self.base.request_redraw();
@@ -672,6 +685,7 @@ impl CommandPalette {
         if let Some(ch) = char::from_u32(key) {
             if ch.is_ascii_graphic() || ch == ' ' {
                 self.query.push(ch);
+                self.rebuild_prompt_buffer();
                 self.refresh_filter();
                 self.query_changed.emit(self.query.clone());
                 self.base.request_redraw();
@@ -681,6 +695,7 @@ impl CommandPalette {
 
     fn backspace_query(&mut self) {
         if self.query.pop().is_some() {
+            self.rebuild_prompt_buffer();
             self.refresh_filter();
             self.query_changed.emit(self.query.clone());
             self.base.request_redraw();
@@ -1076,7 +1091,7 @@ impl Draw for CommandPalette {
                 header.width.saturating_sub(16),
                 query_h,
             ),
-            &format!("> {}", self.query),
+            &self.prompt_buffer,
             query_font,
             text_color,
             HorizontalAlignment::Left,

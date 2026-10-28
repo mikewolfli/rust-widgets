@@ -1161,6 +1161,60 @@ pub fn create_header_menu(geometry: Rect, text: &str) -> Box<dyn Widget> {
 }
 
 #[cfg(full_widgets)]
+/// Creates a chart reference line with no annotations attached (COMP-A1). `text` is applied as
+/// the control's label; the lines themselves are added with `add_line`.
+pub fn create_chart_reference_line(geometry: Rect, text: &str) -> Box<dyn Widget> {
+    label(geometry, text, Box::new(crate::widget::chart_widgets::ChartReferenceLine::new(geometry)))
+}
+
+#[cfg(full_widgets)]
+/// Creates a closed terminal find bar with no query (COMP-A2). `text` is applied as the control's
+/// label, not as the query.
+pub fn create_terminal_find_bar(geometry: Rect, text: &str) -> Box<dyn Widget> {
+    label(geometry, text, Box::new(crate::widget::special_widgets::TerminalFindBar::new(geometry)))
+}
+
+#[cfg(full_widgets)]
+/// Creates an empty map attribution overlay (COMP-A3). `text` is applied as the control's label.
+pub fn create_map_attribution(geometry: Rect, text: &str) -> Box<dyn Widget> {
+    label(
+        geometry,
+        text,
+        Box::new(crate::widget::special_widgets::MapAttributionOverlay::new(geometry)),
+    )
+}
+
+#[cfg(full_widgets)]
+/// Creates a gantt task column with no tasks (COMP-A4). `text` is applied as the control's label.
+pub fn create_gantt_task_grid(geometry: Rect, text: &str) -> Box<dyn Widget> {
+    label(
+        geometry,
+        text,
+        Box::new(crate::widget::special_widgets::gantt_widget::GanttTaskGrid::new(geometry)),
+    )
+}
+
+#[cfg(full_widgets)]
+/// Creates a web history panel with no entries (COMP-A5). `text` is applied as the control's label.
+pub fn create_web_history_panel(geometry: Rect, text: &str) -> Box<dyn Widget> {
+    label(geometry, text, Box::new(crate::widget::web_widgets::WebHistoryPanel::new(geometry)))
+}
+
+#[cfg(full_widgets)]
+/// Creates a media chapter list with no chapters (COMP-A6). `text` is applied as the control's
+/// label.
+pub fn create_chapter_list_panel(geometry: Rect, text: &str) -> Box<dyn Widget> {
+    label(geometry, text, Box::new(crate::widget::media_widgets::ChapterListPanel::new(geometry)))
+}
+
+#[cfg(full_widgets)]
+/// Creates an uncollapsed map overview with no map attached (COMP-A7). `text` is applied as the
+/// control's label.
+pub fn create_map_overview(geometry: Rect, text: &str) -> Box<dyn Widget> {
+    label(geometry, text, Box::new(crate::widget::special_widgets::MapOverviewPanel::new(geometry)))
+}
+
+#[cfg(full_widgets)]
 /// Creates a chip input: a text line whose committed tokens become chips (SP-121).
 ///
 /// `text` is applied as the control's label, the same convention every `create_*` entry uses.

@@ -12,6 +12,7 @@ use crate::widget::capability::properties_trait::{base_property_get, base_proper
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::effective_font;
+use crate::widget::save_state::SaveState;
 use crate::widget::IconSource;
 #[cfg(feature = "image")]
 use crate::widget::Image;
@@ -27,6 +28,13 @@ pub struct MdiArea {
     subwindows: Vec<MdiSubWindow>,
     active_subwindow: Option<usize>,
     view_mode: ViewMode,
+    /// The edge the `TabbedView` tab strip occupies (C-003).
+    tab_strip_position: TabStripPosition,
+    /// The tab whose close button is under the pointer, when there is one (C-002).
+    ///
+    /// Hover is presentation state for a drawn affordance: without it the ✕ on every tab is
+    /// indistinguishable from the tab's own border until it is clicked.
+    hovered_tab_close: Option<usize>,
     background: Background,
     activation_order: ActivationOrder,
     /// Emitted with the child `ObjectId` whenever a sub-window becomes active,
@@ -128,6 +136,15 @@ pub enum ViewMode {
     SubWindowView,
     /// Tabbed view
     TabbedView,
+}
+/// Where the `TabbedView` tab strip sits inside the area (C-003).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TabStripPosition {
+    /// The strip occupies the area's top edge, with the body below it.
+    #[default]
+    North,
+    /// The strip occupies the area's bottom edge, with the body above it.
+    South,
 }
 /// MDI background.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -315,6 +332,8 @@ impl MdiArea {
             subwindows: Vec::new(),
             active_subwindow: None,
             view_mode: ViewMode::SubWindowView,
+            tab_strip_position: TabStripPosition::North,
+            hovered_tab_close: None,
             background: Background::Plain,
             activation_order: ActivationOrder::StackingOrder,
             subwindow_activated: Signal1::new(),
@@ -437,6 +456,103 @@ impl MdiArea {
         count
     }
 
+    /// Serialises the window layout: the view mode, every sub-window's geometry and its
+    /// z-order (C-001).
+    ///
+    /// A sub-window is a record rather than a mounted control, so the format is a compact
+    /// position-indexed table instead of a tree walk. Entries follow [`Self::subwindows`]
+    /// order; a restore applies to the same number of windows the caller re-added, exactly as
+    /// [`super::splitter::Splitter::restore_state`] refuses a different pane count.
+    pub fn save_state(&self) -> Vec<u8> {
+        let count = self.subwindows.len();
+        let mut out = Vec::with_capacity(MDI_STATE_HEADER + count * MDI_STATE_ENTRY);
+        out.extend_from_slice(MDI_STATE_MAGIC);
+        out.push(MDI_STATE_VERSION);
+        out.push(match self.view_mode {
+            ViewMode::SubWindowView => 0,
+            ViewMode::TabbedView => 1,
+        });
+        out.extend_from_slice(&(count as u32).to_le_bytes());
+        for subwindow in &self.subwindows {
+            let geometry = subwindow.geometry;
+            out.extend_from_slice(&geometry.x.to_le_bytes());
+            out.extend_from_slice(&geometry.y.to_le_bytes());
+            out.extend_from_slice(&geometry.width.to_le_bytes());
+            out.extend_from_slice(&geometry.height.to_le_bytes());
+            out.extend_from_slice(&subwindow.z_order.to_le_bytes());
+        }
+        out
+    }
+
+    /// Restores a blob produced by [`Self::save_state`] (C-001).
+    ///
+    /// Returns `false` for a malformed blob, an unknown version or a window count that no
+    /// longer matches, leaving the area untouched. The table is parsed completely before any
+    /// field is written, so a rejected blob can never half-restore.
+    pub fn restore_state(&mut self, state: &[u8]) -> bool {
+        if state.len() < MDI_STATE_HEADER || &state[..4] != MDI_STATE_MAGIC {
+            return false;
+        }
+        if state[4] != MDI_STATE_VERSION {
+            return false;
+        }
+        let view_mode = match state[5] {
+            0 => ViewMode::SubWindowView,
+            1 => ViewMode::TabbedView,
+            _ => return false,
+        };
+        let count = u32::from_le_bytes([state[6], state[7], state[8], state[9]]) as usize;
+        if state.len() != MDI_STATE_HEADER + count * MDI_STATE_ENTRY
+            || count != self.subwindows.len()
+        {
+            return false;
+        }
+        let mut parsed = Vec::with_capacity(count);
+        for index in 0..count {
+            let base = MDI_STATE_HEADER + index * MDI_STATE_ENTRY;
+            let x = i32::from_le_bytes([
+                state[base],
+                state[base + 1],
+                state[base + 2],
+                state[base + 3],
+            ]);
+            let y = i32::from_le_bytes([
+                state[base + 4],
+                state[base + 5],
+                state[base + 6],
+                state[base + 7],
+            ]);
+            let width = u32::from_le_bytes([
+                state[base + 8],
+                state[base + 9],
+                state[base + 10],
+                state[base + 11],
+            ]);
+            let height = u32::from_le_bytes([
+                state[base + 12],
+                state[base + 13],
+                state[base + 14],
+                state[base + 15],
+            ]);
+            let z_order = i32::from_le_bytes([
+                state[base + 16],
+                state[base + 17],
+                state[base + 18],
+                state[base + 19],
+            ]);
+            parsed.push((Rect::new(x, y, width, height), z_order));
+        }
+        self.view_mode = view_mode;
+        self.hovered_tab_close = None;
+        for (subwindow, (geometry, z_order)) in self.subwindows.iter_mut().zip(parsed) {
+            subwindow.geometry = geometry;
+            subwindow.z_order = z_order;
+        }
+        self.scroll_offset = self.clamp_scroll_offset(self.scroll_offset);
+        self.base.request_redraw();
+        true
+    }
+
     /// Replaces the title of the sub-window hosting `widget`.
     ///
     /// Returns `false` when no sub-window hosts `widget`, so a caller cannot mistake a dropped
@@ -532,6 +648,26 @@ impl MdiArea {
             return;
         }
         self.view_mode = mode;
+        if mode != ViewMode::TabbedView {
+            self.hovered_tab_close = None;
+        }
+        self.base.request_redraw();
+    }
+
+    /// The edge the `TabbedView` tab strip occupies.
+    pub fn tab_strip_position(&self) -> TabStripPosition {
+        self.tab_strip_position
+    }
+
+    /// Moves the `TabbedView` tab strip to `position`.
+    ///
+    /// The strip and the body are one derivation ([`Self::tab_strip_rect`] and
+    /// [`Self::subwindow_placement`]), so moving the strip moves the body it leaves behind.
+    pub fn set_tab_strip_position(&mut self, position: TabStripPosition) {
+        if self.tab_strip_position == position {
+            return;
+        }
+        self.tab_strip_position = position;
         self.base.request_redraw();
     }
 
@@ -542,12 +678,12 @@ impl MdiArea {
     /// `list_view` -- two independent derivations that drift.
     fn tab_strip_rect(&self) -> Rect {
         let rect = self.geometry();
-        Rect::new(
-            rect.x,
-            rect.y,
-            rect.width,
-            TAB_STRIP_HEIGHT.min(rect.height as i32).max(0) as u32,
-        )
+        let height = TAB_STRIP_HEIGHT.min(rect.height as i32).max(0) as u32;
+        let y = match self.tab_strip_position {
+            TabStripPosition::North => rect.y,
+            TabStripPosition::South => rect.y + rect.height as i32 - height as i32,
+        };
+        Rect::new(rect.x, y, rect.width, height)
     }
 
     /// Tab `index`'s own box, or `None` when it is past the strip's trailing edge.
@@ -625,17 +761,17 @@ impl MdiArea {
                 }
                 let rect = self.geometry();
                 let strip = self.tab_strip_rect();
-                // The body is the work area below the strip. Both edges are taken from the same
+                // The body is the work area the strip leaves. Both edges are taken from the same
                 // `geometry()` the strip was, so a strip clamped to a short area cannot leave the
-                // body starting *above* the strip's bottom edge.
-                let top = strip.y + strip.height as i32;
+                // body crossing the strip's own edge.
+                let (top, bottom) = match self.tab_strip_position {
+                    TabStripPosition::North => {
+                        (strip.y + strip.height as i32, rect.y + rect.height as i32)
+                    }
+                    TabStripPosition::South => (rect.y, strip.y),
+                };
                 Some(SubwindowPlacement {
-                    frame: Rect::new(
-                        rect.x,
-                        top,
-                        rect.width,
-                        (rect.y + rect.height as i32 - top).max(0) as u32,
-                    ),
+                    frame: Rect::new(rect.x, top, rect.width, (bottom - top).max(0) as u32),
                     title_bar: false,
                 })
             }
@@ -1128,12 +1264,15 @@ impl MdiArea {
         self.subwindow_tab_moved.emit((from, to));
         self.base.request_redraw();
     }
-    /// The index of the sub-window whose close button is under `pos`, topmost first.
+    /// The index of the sub-window whose close button is under `pos` (C-002).
     ///
-    /// The button is chrome of a *frame*, so the test walks the frames in paint order (highest
-    /// z-order first) exactly as [`Self::sub_window_at_position`] does, and skips a sub-window
-    /// whose frame draws no title bar (a `TabbedView` frame names itself through the tab strip).
+    /// In `SubWindowView` the button is chrome of a *frame*, so the test walks the frames in
+    /// paint order (highest z-order first). In `TabbedView` there is no per-frame title bar;
+    /// the affordance is the ✕ drawn on each drawn tab, so that path is answered first.
     fn close_button_at(&self, pos: Point) -> Option<usize> {
+        if self.view_mode == ViewMode::TabbedView {
+            return self.tab_close_button_at(pos);
+        }
         for index in self.z_order_indices().iter().rev().copied() {
             if !self.subwindows[index].closable {
                 continue;
@@ -1150,6 +1289,20 @@ impl MdiArea {
         }
         None
     }
+
+    /// The tab whose drawn close button is under `pos` (C-002).
+    ///
+    /// Built on [`Self::tab_rect`], the same forward geometry the paint uses, so the ✕ a user
+    /// sees is the ✕ that hit-tests. A non-closable window's tab carries no button.
+    fn tab_close_button_at(&self, pos: Point) -> Option<usize> {
+        if self.view_mode != ViewMode::TabbedView {
+            return None;
+        }
+        (0..self.subwindows.len()).find(|index| {
+            self.subwindows[*index].closable
+                && self.tab_rect(*index).is_some_and(|tab| tab_close_rect(tab).contains_point(pos))
+        })
+    }
     /// Returns sub-window at position.
     fn sub_window_at_position(&self, pos: Point) -> Option<usize> {
         // Check from top (highest z-order) to bottom
@@ -1162,6 +1315,20 @@ impl MdiArea {
         None
     }
 }
+impl SaveState for MdiArea {
+    fn state_version(&self) -> u16 {
+        MDI_STATE_VERSION as u16
+    }
+
+    fn save_state(&self) -> Vec<u8> {
+        MdiArea::save_state(self)
+    }
+
+    fn restore_state(&mut self, state: &[u8]) -> bool {
+        MdiArea::restore_state(self, state)
+    }
+}
+
 // Implement Widget trait
 impl Widget for MdiArea {
     fn base(&self) -> &BaseWidget {
@@ -1173,6 +1340,14 @@ impl Widget for MdiArea {
 
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
+    }
+
+    fn save_state_dyn(&self) -> Option<&dyn SaveState> {
+        Some(self)
+    }
+
+    fn save_state_dyn_mut(&mut self) -> Option<&mut dyn SaveState> {
+        Some(self)
     }
 
     /// Moves the work area and keeps a maximized sub-window filling it (C-007).
@@ -1362,7 +1537,13 @@ impl EventHandler for MdiArea {
                 // tab first is what makes the strip interactive rather than decorative -- a mode
                 // whose tabs cannot be clicked is the dead state this whole change closes.
                 if self.view_mode == ViewMode::TabbedView {
-                    if let Some(index) = self.tab_at_point(*pos) {
+                    // C-002: the ✕ drawn on a tab is checked before the tab itself. Closing is
+                    // the press's whole effect; arming a tab-reorder or activating the tab would
+                    // be the wrong gesture for a click on the close affordance.
+                    if let Some(index) = self.close_button_at(*pos) {
+                        let widget = self.subwindows[index].widget;
+                        self.remove_sub_window(widget);
+                    } else if let Some(index) = self.tab_at_point(*pos) {
                         hit_subwindow = true;
                         self.set_active_sub_window(self.subwindows[index].widget);
                         // C-17: a press on a tab also arms a reorder. The reorder only begins once
@@ -1430,6 +1611,16 @@ impl EventHandler for MdiArea {
                 }
             }
         } else if let Event::MouseMove { pos } = event {
+            // C-002: track which tab's close button the pointer is over, so the drawn ✕ can
+            // show its hover state. While a tab is being carried the strip's own reorder
+            // feedback owns the picture, so hover is left alone.
+            if self.view_mode == ViewMode::TabbedView && self.tab_drag.is_none() {
+                let hovered = self.tab_close_button_at(*pos);
+                if hovered != self.hovered_tab_close {
+                    self.hovered_tab_close = hovered;
+                    self.base.request_redraw();
+                }
+            }
             if self.resize_drag.is_some() {
                 self.drag_resize(*pos);
                 gesture_consumed = true;
@@ -1456,6 +1647,12 @@ impl EventHandler for MdiArea {
                 if self.tab_drag.take().is_some() {
                     gesture_consumed = true;
                 }
+            }
+        } else if let Event::MouseLeave { .. } = event {
+            // Leaving the area ends the hover, so a ✕ cannot stay highlighted after the pointer
+            // has gone somewhere else.
+            if self.hovered_tab_close.take().is_some() {
+                self.base.request_redraw();
             }
         } else if let Event::Wheel { delta, .. } = event {
             // C-16: the wheel pans the work area, the same viewport offset the public `scroll_by`
@@ -1515,6 +1712,21 @@ fn close_button_rect(frame: Rect) -> Rect {
     )
 }
 
+/// The close button's box inside a `TabbedView` tab (C-002).
+///
+/// Shared by the painter and [`MdiArea::tab_close_button_at`], so the glyph and its click area
+/// cannot drift. It reuses the frame button's side and inset, which keeps the two presentations
+/// of a close affordance visually consistent.
+fn tab_close_rect(tab: Rect) -> Rect {
+    let y = tab.y + (tab.height as i32 - CLOSE_SIZE) / 2;
+    Rect::new(
+        tab.x + tab.width as i32 - CLOSE_SIZE - CLOSE_BUTTON_INSET,
+        y,
+        CLOSE_SIZE as u32,
+        CLOSE_SIZE as u32,
+    )
+}
+
 /// Side of the minimize/restore button, in logical pixels (C-15).
 const MINIMIZE_SIZE: i32 = 12;
 /// Pixels the work area pans per wheel notch (C-16).
@@ -1547,6 +1759,15 @@ const MIN_SUBWINDOW_WIDTH: u32 = 60;
 
 /// The shortest a sub-window may become through an edge drag, in logical pixels.
 const MIN_SUBWINDOW_HEIGHT: u32 = 40;
+
+/// Magic marker of the blob produced by [`MdiArea::save_state`] (C-001).
+const MDI_STATE_MAGIC: &[u8; 4] = b"MDI1";
+/// Version tag of that blob.
+const MDI_STATE_VERSION: u8 = 1;
+/// `magic(4) + version(1) + view mode(1) + count(4)`.
+const MDI_STATE_HEADER: usize = 10;
+/// `geometry(16) + z-order(4)` per sub-window.
+const MDI_STATE_ENTRY: usize = 20;
 
 /// Which edges of a sub-window an in-progress drag is moving.
 #[derive(Debug, Clone, Copy, Default)]
@@ -1957,9 +2178,15 @@ impl MdiArea {
     ) {
         let strip = self.tab_strip_rect();
         context.fill_rect(strip, area.blend(ink, 0.06));
+        // The rule sits on the edge the body is on, so a south strip separates from the body
+        // above it rather than painting a line along the control's outer edge.
+        let rule_y = match self.tab_strip_position {
+            TabStripPosition::North => strip.y + strip.height as i32 - 1,
+            TabStripPosition::South => strip.y,
+        };
         context.draw_line(
-            Point::new(strip.x, strip.y + strip.height as i32 - 1),
-            Point::new(strip.x + strip.width as i32, strip.y + strip.height as i32 - 1),
+            Point::new(strip.x, rule_y),
+            Point::new(strip.x + strip.width as i32, rule_y),
             *border,
         );
         // The **effective font** — the resolved theme/caller font — for the tab labels
@@ -1999,6 +2226,11 @@ impl MdiArea {
                 label.x += (SUBWINDOW_ICON_SIDE + SUBWINDOW_ICON_GAP) as i32;
                 label.width = label.width.saturating_sub(SUBWINDOW_ICON_SIDE + SUBWINDOW_ICON_GAP);
             }
+            // C-002: a closable tab reserves the close glyph's own band at its trailing edge,
+            // so the label is elided before it can run under the ✕.
+            if subwindow.closable {
+                label.width = label.width.saturating_sub(CLOSE_SIZE_SUM);
+            }
             context.draw_text_fitted_cow(
                 context.text_line(label, font),
                 &subwindow.title,
@@ -2006,6 +2238,29 @@ impl MdiArea {
                 text_color,
                 HorizontalAlignment::Center,
             );
+            // C-002: the per-tab close affordance. The same derivation serves the paint and
+            // `tab_close_button_at`; the hovered tab's ✕ gets a filled backing so the target
+            // reads before it is clicked.
+            if subwindow.closable {
+                let close = tab_close_rect(tab);
+                let hovered = self.hovered_tab_close == Some(index);
+                if hovered {
+                    context.fill_rect(close, text_color.with_alpha_f32(0.22));
+                }
+                let close_color = if hovered { text_color } else { text_color.blend(&fill, 0.35) };
+                let (close_x, close_y) = (close.x + 3, close.y + 3);
+                let close_side = CLOSE_SIZE - 6;
+                context.draw_line(
+                    Point::new(close_x, close_y),
+                    Point::new(close_x + close_side, close_y + close_side),
+                    close_color,
+                );
+                context.draw_line(
+                    Point::new(close_x + close_side, close_y),
+                    Point::new(close_x, close_y + close_side),
+                    close_color,
+                );
+            }
         }
     }
 }
@@ -3173,5 +3428,85 @@ mod tests {
         area.add_sub_window(id, Rect::new(10, 10, 100, 80));
         assert_eq!(area.size_hint(), expected);
         let _ = crate::widget::runtime::unregister(id);
+    }
+
+    /// C-001: the view mode, geometries and z-orders round-trip through a saved blob.
+    #[test]
+    fn the_window_layout_round_trips_through_saved_state() {
+        let mut area = MdiArea::new(Rect::new(0, 0, 600, 400));
+        area.add_sub_window(widget_id_1(), Rect::new(10, 20, 120, 90));
+        area.add_sub_window(widget_id_2(), Rect::new(200, 30, 140, 100));
+        area.sub_window_mut(0).expect("window").set_z_order(7);
+        area.sub_window_mut(1).expect("window").set_z_order(3);
+        area.set_view_mode(ViewMode::TabbedView);
+        let saved = area.save_state();
+
+        let mut restored = MdiArea::new(Rect::new(0, 0, 600, 400));
+        restored.add_sub_window(widget_id_1(), Rect::new(0, 0, 10, 10));
+        restored.add_sub_window(widget_id_2(), Rect::new(0, 0, 10, 10));
+        assert!(restored.restore_state(&saved));
+        assert_eq!(restored.view_mode(), ViewMode::TabbedView);
+        assert_eq!(restored.sub_window(0).unwrap().geometry(), Rect::new(10, 20, 120, 90));
+        assert_eq!(restored.sub_window(1).unwrap().geometry(), Rect::new(200, 30, 140, 100));
+        assert_eq!(restored.sub_window(0).unwrap().z_order(), 7);
+        assert_eq!(restored.sub_window(1).unwrap().z_order(), 3);
+
+        // A window-count mismatch and a malformed blob are refused without touching the area.
+        let mut different = MdiArea::new(Rect::new(0, 0, 600, 400));
+        different.add_sub_window(widget_id_1(), Rect::new(0, 0, 10, 10));
+        assert!(!different.restore_state(&saved));
+        assert_eq!(different.sub_window(0).unwrap().geometry(), Rect::new(0, 0, 10, 10));
+        assert!(!restored.restore_state(b"MDI1"));
+        assert_eq!(restored.view_mode(), ViewMode::TabbedView, "a rejected blob applies nothing");
+    }
+
+    /// C-002: a tab's drawn close button closes the document it belongs to and tracks hover.
+    #[test]
+    fn a_tab_close_button_closes_the_document_under_it() {
+        let mut area = MdiArea::new(Rect::new(0, 0, 600, 400));
+        area.add_sub_window(widget_id_1(), Rect::new(0, 0, 100, 100));
+        area.add_sub_window(widget_id_2(), Rect::new(0, 0, 100, 100));
+        area.set_view_mode(ViewMode::TabbedView);
+        let tab = area.tab_rect(0).expect("the first tab is drawn");
+        let close = tab_close_rect(tab);
+        let pos = Point::new(close.x + close.width as i32 / 2, close.y + close.height as i32 / 2);
+        assert_eq!(area.tab_close_button_at(pos), Some(0), "the ✕ hit-tests where it is drawn");
+
+        area.handle_event(&Event::MouseMove { pos });
+        assert_eq!(area.hovered_tab_close, Some(0), "hovering the ✕ is tracked for the paint");
+        area.handle_event(&Event::MouseLeave { pos });
+        assert_eq!(area.hovered_tab_close, None, "leaving clears the hover state");
+
+        area.handle_event(&Event::MousePress { pos, button: 1, modifiers: 0 });
+        assert_eq!(area.sub_window_count(), 1, "the ✕ closes its own document");
+        assert_eq!(area.sub_window(0).map(|window| window.widget()), Some(widget_id_2()));
+    }
+
+    /// C-003: a south strip sits on the bottom edge and the body takes the space above it.
+    #[test]
+    fn a_south_tab_strip_places_the_body_above_it() {
+        let mut area = MdiArea::new(Rect::new(0, 0, 600, 400));
+        area.add_sub_window(widget_id_1(), Rect::new(0, 0, 100, 100));
+        area.set_view_mode(ViewMode::TabbedView);
+        assert_eq!(area.tab_strip_position(), TabStripPosition::North);
+        let north_strip = area.tab_strip_rect();
+        let north_body = area.subwindow_placement(0).expect("placed").frame;
+        assert_eq!(north_strip.y, 0);
+        assert_eq!(north_body.y, north_strip.height as i32);
+
+        area.set_tab_strip_position(TabStripPosition::South);
+        assert_eq!(area.tab_strip_position(), TabStripPosition::South);
+        let south_strip = area.tab_strip_rect();
+        let south_body = area.subwindow_placement(0).expect("placed").frame;
+        assert_eq!(south_strip.y + south_strip.height as i32, 400);
+        assert_eq!(south_body.y, 0, "the body starts at the top edge");
+        assert_eq!(
+            south_body.y + south_body.height as i32,
+            south_strip.y,
+            "and ends where the strip begins"
+        );
+        // A click still resolves the tab on the edge it is painted on.
+        let tab = area.tab_rect(0).expect("tab");
+        assert_eq!(area.tab_at_point(Point::new(tab.x + tab.width as i32 / 2, tab.y + 2)), Some(0));
     }
 }

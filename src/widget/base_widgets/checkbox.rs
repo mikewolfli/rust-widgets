@@ -1526,9 +1526,8 @@ mod tests {
             cb.set_checked(true);
             crate::theme::apply_active_theme(&mut cb);
 
-            let page = crate::style::theme_manager()
-                .current_theme()
-                .map(|active| active.colors.background)
+            let page = crate::style::palette_shared()
+                .map(|colors| colors.background)
                 .expect("a preset is active");
             let svg = crate::widget::svg::render_widget_to_svg(&mut cb, Rect::new(0, 0, 200, 24));
             let ink = label_ink(&svg).unwrap_or_else(|| {

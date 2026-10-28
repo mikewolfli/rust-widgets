@@ -1184,10 +1184,8 @@ impl Draw for WizardDialog {
         // behind it, so a resolved surface equal to the window fill is re-derived a visible
         // step away from it, the same distinction `Colors::input_background` draws for a
         // field.
-        let window_fill = {
-            let manager = crate::style::theme_manager();
-            manager.current_theme().map(|active| active.colors.background).unwrap_or(Color::WHITE)
-        };
+        let palette = crate::style::palette_shared();
+        let window_fill = palette.as_ref().map(|active| active.background).unwrap_or(Color::WHITE);
         let ink = style
             .text_color
             .or_else(|| theme.as_ref().and_then(|t| t.text_color))
@@ -1225,9 +1223,9 @@ impl Draw for WizardDialog {
         //
         // `primary` is read from the theme directly, the same way `fab` reads it: an action
         // colour is what the token is for, and no state override exists for it.
-        let primary = crate::style::theme_manager()
-            .current_theme()
-            .map(|active| active.colors.primary)
+        let primary = palette
+            .as_ref()
+            .map(|active| active.primary)
             .or_else(|| style.background_color.filter(|resolved| *resolved != window_fill))
             .unwrap_or_else(|| surface.blend(&ink, 0.5));
         let primary_ink = primary.contrast_color();

@@ -21,7 +21,7 @@
 //! There is no font API here — no parsing, no shaping, no fallback. Each module is one
 //! `pub const FONT: &[u8]` holding the bytes, exactly as the generated wrapper in `rust_widgets`
 //! held them before the split. The licence record (upstream project, URL, SHA-256, generator)
-//! stays in each module's header, where it always was, and `NOTICE` repeats it.
+//! stays in each module's header, where it always was, and this crate's `NOTICE` repeats it.
 //!
 //! # Why one feature per face
 //!

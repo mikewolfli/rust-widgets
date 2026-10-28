@@ -137,7 +137,7 @@ impl Image {
     /// Resize the image to new dimensions.
     pub fn resize(&self, width: u32, height: u32) -> Result<Self, String> {
         let rgba = self.to_rgba8();
-        let resized = transform::resize(rgba, self.inner.width, self.inner.height, width, height)?;
+        let resized = transform::resize(&rgba, self.inner.width, self.inner.height, width, height)?;
         Ok(Self::from_raw(resized, width, height))
     }
 

@@ -754,14 +754,11 @@ impl Draw for FindReplaceDialog {
             .or(themed_border)
             .filter(|resolved| *resolved != surface)
             .unwrap_or_else(|| surface.blend(&ink, 0.25));
-        // The entry fields and the accent are read as their own lock acquisition and copied
-        // out as values, so the guard is dropped before anything else touches the theme.
+        // The entry fields and the accent come from the shared palette snapshot, so no manager
+        // guard is held while the bar is drawn.
         let (window_fill, accent, muted) = {
-            let manager = crate::style::theme_manager();
-            match manager.current_theme() {
-                Some(active) => {
-                    (active.colors.background, active.colors.primary, active.colors.secondary)
-                }
+            match crate::style::palette_shared() {
+                Some(colors) => (colors.background, colors.primary, colors.secondary),
                 None => (Color::BACKGROUND, Color::PRIMARY, Color::SECONDARY),
             }
         };

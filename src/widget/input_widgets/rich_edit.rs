@@ -313,6 +313,8 @@ pub struct RichEdit {
     /// hit test and one preview rule. The editor applies a pressed action itself, so the strip
     /// is functional without host wiring; `format_requested` still fires for observers.
     format_toolbar: Option<FormatToolbar>,
+    /// The caret's blink phase (X-003). Advanced once per frame while the editor is focused.
+    cursor_blink: crate::style::CursorBlink,
 }
 
 struct VisualRowsCache {
@@ -361,7 +363,23 @@ impl RichEdit {
             line_starts_cache: RefCell::new(None),
             typing_run: None,
             format_toolbar: None,
+            cursor_blink: crate::style::CursorBlink::new(),
         }
+    }
+
+    /// Advances the caret blink by `delta_ms` and reports whether another frame is needed.
+    ///
+    /// The crate-wide `tick(delta_ms) -> bool` convention (I-116/X-003): the host owns the clock,
+    /// and a blurred or read-only document never asks for a frame.
+    pub fn tick(&mut self, delta_ms: u32) -> bool {
+        if !self.focused || self.read_only {
+            return false;
+        }
+        let running = self.cursor_blink.tick(delta_ms);
+        if running {
+            self.base.request_redraw();
+        }
+        running
     }
 
     /// Whether a formatting strip is shown above the document.
@@ -1316,6 +1334,47 @@ impl Widget for RichEdit {
         &mut self.base
     }
 
+    // Trait-visible so a host holding `&mut dyn Widget` can advance the caret blink (X-003).
+    fn tick(&mut self, delta_ms: u32) -> bool {
+        RichEdit::tick(self, delta_ms)
+    }
+
+    fn is_animating(&self) -> bool {
+        self.focused && !self.read_only
+    }
+
+    /// Reports the caret rectangle so an IME candidate window can anchor to it (X-001).
+    fn input_method_query(&self) -> Option<crate::widget::widget_trait::InputMethodQuery> {
+        if self.read_only {
+            return None;
+        }
+        let body = self.body_rect();
+        let font = effective_font(self.style());
+        let line_height = font.effective_line_height().max(1.0) as i32;
+        let padding = 2i32;
+        let cursor = floor_char_boundary(&self.text, self.extend_caret.min(self.text.len()));
+        let rows = self.visual_rows();
+        let (row_index, row_start) = rows
+            .iter()
+            .enumerate()
+            .find(|(_, (start, end))| cursor >= *start && cursor <= *end)
+            .map(|(index, (start, _))| (index, *start))
+            .unwrap_or_else(|| (rows.len().saturating_sub(1), self.text.len()));
+        let advance =
+            estimate_text_width(&self.text[row_start..cursor.max(row_start)], font, 1.0) as i32;
+        let visible_row = row_index.saturating_sub(self.first_visible_line);
+        let top = body.y + padding + line_height * visible_row as i32 + 2;
+        Some(crate::widget::widget_trait::InputMethodQuery {
+            caret_rect: Rect::new(
+                body.x + padding + advance,
+                top,
+                1,
+                (line_height - 2).max(1) as u32,
+            ),
+            caret_byte: Some(cursor),
+        })
+    }
+
     /// A document asks for the width of its widest line and the height of its rows.
     ///
     /// The editor used to fall back to whatever default the trait supplied, which ignored the
@@ -1478,12 +1537,10 @@ impl Draw for RichEdit {
         // `richedit` is, and resolves to the editable interior plus the theme's foreground.
         let theme = crate::style::resolved_theme_style_shared("rich_edit")
             .or_else(|| crate::style::resolved_theme_style_shared("richedit"));
-        // The window fill, read as its own lock acquisition and copied out as a value, so the
-        // guard is dropped before anything else touches the theme.
-        let window_fill = {
-            let manager = crate::style::theme_manager();
-            manager.current_theme().map(|active| active.colors.background).unwrap_or(Color::WHITE)
-        };
+        // The window fill, read from the shared palette snapshot, so no manager guard is held
+        // while anything else touches the theme.
+        let window_fill =
+            crate::style::palette_shared().map(|colors| colors.background).unwrap_or(Color::WHITE);
         let paper_from_theme =
             theme.as_ref().and_then(|t| t.background_color).unwrap_or(Color::rgb(255, 255, 255));
         // The filter is on the **resolved** value, not only on the theme's: a control absent from
@@ -1650,6 +1707,7 @@ impl Draw for RichEdit {
             // a logical line's own start is still included (the newline separates the offsets).
             let wrapped_continuation = row_idx > 0 && rows[row_idx - 1].1 == row_start;
             if !self.read_only
+                && self.cursor_blink.is_visible()
                 && cursor_before >= row_start
                 && cursor_before <= row_end
                 && !(cursor_before == row_start && wrapped_continuation)
@@ -1786,10 +1844,12 @@ impl crate::event::EventHandler for RichEdit {
         match event {
             crate::event::Event::FocusGained { .. } => {
                 self.focused = true;
+                self.cursor_blink.start();
                 self.base.request_redraw();
             }
             crate::event::Event::FocusLost => {
                 self.focused = false;
+                self.cursor_blink.stop();
                 self.base.request_redraw();
             }
             crate::event::Event::MousePress { pos, button, .. } if *button == 1 => {

@@ -3719,10 +3719,7 @@ mod tests {
             assert!(manager.set_theme("default"), "the default theme must be selectable");
         }
 
-        let theme_front = {
-            let manager = global_theme_manager();
-            manager.current_theme().expect("an active theme").colors.foreground
-        };
+        let theme_front = { crate::style::palette_shared().expect("an active theme").foreground };
         assert_eq!(
             crate::theme::resolved_theme_style("label").expect("theme resolves").text_color,
             Some(theme_front),
@@ -3803,10 +3800,7 @@ mod tests {
         let _guard = crate::style::theme_test_guard();
         let _sheet_guard = crate::style::stylesheet_test_guard();
         global_stylesheet_manager().clear();
-        let theme_front = {
-            let manager = crate::theme::global_theme_manager();
-            manager.current_theme().expect("active theme").colors.foreground
-        };
+        let theme_front = { crate::style::palette_shared().expect("active theme").foreground };
         // Pick a colour the theme's foreground is guaranteed not to be.
         let explicit = if theme_front == crate::core::Color::rgb(1, 2, 3) {
             crate::core::Color::rgb(4, 5, 6)

@@ -73,6 +73,21 @@ macro_rules! impl_properties_media {
             PropertySchema::new("pipeline", PropertyValueKind::String, true, false),
         ];
 
+        /// Media chapter list (COMP-A6). `position_ms` comes from the attached player, so it is
+        /// read-only here; the row metrics are the list's own.
+        #[cfg(not(alloc_frugal))]
+        pub(crate) const CHAPTER_LIST_PANEL_PROPERTIES: &[PropertySchema] = &[
+            PropertySchema::new("row_height", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("active_highlight", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("show_thumbnails", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("chapters", PropertyValueKind::UInt, true, false),
+            PropertySchema::new("position_ms", PropertyValueKind::UInt, true, false),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+        ];
+
         #[cfg(not(alloc_frugal))]
         pub(crate) const AUDIO_VISUALIZER_PROPERTIES: &[PropertySchema] = &[
             PropertySchema::new("bar_count", PropertyValueKind::UInt, true, true),

@@ -37,6 +37,13 @@ const DEFAULT_ROW_HEIGHT: u32 = dimensions::PICKER_ROW_HEIGHT;
 /// Width reserved at the leading edge for the up/down hints, so they never share pixels with a
 /// row's value.
 const ARROW_GUTTER: u32 = 8;
+/// Speed the sub-row offset eases back to the row grid at, in pixels per millisecond.
+///
+/// The snap to a whole row happens on release; this only carries the leftover fraction of a row
+/// into place, so the wheel comes to rest instead of jumping the last few pixels. A fixed rate
+/// (rather than an ease) keeps `tick` frame-rate independent and the settle time bounded by half
+/// a row.
+const SETTLE_PX_PER_MS: f32 = 0.35;
 
 /// One wheel column: a vertical list of values with the selected row held in the middle.
 pub struct DrumColumn {
@@ -56,6 +63,15 @@ pub struct DrumColumn {
     highlight_color: Option<Color>,
     /// Explicit row ink, or the theme's foreground.
     ink: Option<Color>,
+    /// The y of the last drag sample, while a press is dragging the wheel.
+    ///
+    /// `mobile_date_picker` keeps the same fact in its private `DragScroll`; that type is not
+    /// exported, so the column holds the one sample it needs rather than copying the struct
+    /// (M-002).
+    drag_y: Option<i32>,
+    /// Sub-row displacement of the painted wheel, in pixels: positive means the wheel was dragged
+    /// down and shows earlier rows. Kept below one row by consuming whole rows into the selection.
+    drag_offset: f32,
     /// Emitted with the new index when the selection moves.
     pub selection_changed: Signal1<usize>,
 }
@@ -77,6 +93,8 @@ impl DrumColumn {
             divider_color: None,
             highlight_color: None,
             ink: None,
+            drag_y: None,
+            drag_offset: 0.0,
             selection_changed: Signal1::new(),
         }
     }
@@ -239,6 +257,77 @@ impl DrumColumn {
         Some((row as usize).min(self.visible_rows as usize - 1))
     }
 
+    /// Arms a pointer drag at `pos`; the wheel then follows the pointer until release.
+    fn begin_drag(&mut self, pos: Point) {
+        self.drag_y = Some(pos.y);
+    }
+
+    /// Moves the active drag to `pos`, turning whole rows of travel into selection steps.
+    ///
+    /// The leftover fraction stays in [`Self::drag_offset`] and is painted, which is what makes
+    /// the wheel follow the finger instead of jumping row by row.
+    fn drag_to(&mut self, pos: Point) {
+        let Some(last_y) = self.drag_y else {
+            return;
+        };
+        self.drag_y = Some(pos.y);
+        let travel = (last_y - pos.y) as f32;
+        if travel == 0.0 {
+            return;
+        }
+        // A pointer moving up carries the wheel's content up, which is a negative painted shift.
+        self.drag_offset -= travel;
+        self.consume_drag_rows();
+        self.base.request_redraw();
+    }
+
+    /// Snaps the released wheel to its nearest row and leaves the remainder for [`Widget::tick`].
+    fn settle_drag(&mut self) {
+        let row_height = self.effective_row_height(self.drum_rect()).max(1) as f32;
+        let half = row_height / 2.0;
+        let delta = if self.drag_offset <= -half {
+            1
+        } else if self.drag_offset >= half {
+            -1
+        } else {
+            0
+        };
+        if delta != 0 {
+            // An end has no row to step onto, so the over-drag is discarded rather than left
+            // hanging off the band.
+            if self.scroll_by(delta) {
+                self.drag_offset += delta as f32 * row_height;
+            } else {
+                self.drag_offset = 0.0;
+            }
+        }
+        if self.drag_offset.abs() < 0.5 {
+            self.drag_offset = 0.0;
+        }
+        self.drag_y = None;
+        self.base.request_redraw();
+    }
+
+    /// Steps the selection by every whole row the drag offset now covers.
+    fn consume_drag_rows(&mut self) {
+        let row_height = self.effective_row_height(self.drum_rect()).max(1) as f32;
+        let rows = (self.drag_offset / row_height).trunc() as i32;
+        if rows == 0 {
+            return;
+        }
+        // Advancing the selection moves every painted row up by one row, so the offset gains the
+        // same amount back. Dragging up (a negative offset) therefore advances the selection.
+        let delta = -rows;
+        if self.scroll_by(delta) {
+            // Advancing by `delta` rows moves the paint origin the same distance, so the
+            // leftover is the travel the selection did **not** absorb. `rows` is negative for an
+            // upward drag, so adding `rows * row_height` back is what leaves `-8`, not `-72`.
+            self.drag_offset -= rows as f32 * row_height;
+        } else {
+            self.drag_offset = 0.0;
+        }
+    }
+
     /// The largest valid index, or `0` for an empty list.
     fn max_index(&self) -> usize {
         self.items.len().saturating_sub(1)
@@ -315,6 +404,33 @@ impl Widget for DrumColumn {
     fn is_focusable(&self) -> bool {
         true
     }
+
+    /// Carries a released drag's leftover fraction of a row into place; `true` while it moves.
+    ///
+    /// A drag that is still held is not an animation: the pointer owns the offset, so ticking it
+    /// would make the wheel drift away from the finger.
+    fn tick(&mut self, delta_ms: u32) -> bool {
+        if self.drag_y.is_some() || self.drag_offset == 0.0 {
+            return false;
+        }
+        let step = SETTLE_PX_PER_MS * delta_ms as f32;
+        if step <= 0.0 {
+            return true;
+        }
+        if step >= self.drag_offset.abs() {
+            self.drag_offset = 0.0;
+        } else {
+            let direction = if self.drag_offset < 0.0 { -1.0 } else { 1.0 };
+            self.drag_offset -= step * direction;
+        }
+        self.base.request_redraw();
+        self.drag_offset != 0.0
+    }
+
+    /// Whether a released drag is still settling onto a row.
+    fn is_animating(&self) -> bool {
+        self.drag_y.is_none() && self.drag_offset != 0.0
+    }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
 }
@@ -343,6 +459,22 @@ impl EventHandler for DrumColumn {
                     } else {
                         self.scroll_by(1);
                     }
+                }
+                // The same press arms a drag, so a user can pull the wheel farther than the
+                // one-row click (M-002).
+                self.begin_drag(*pos);
+            }
+            Event::MouseMove { pos } => self.drag_to(*pos),
+            Event::MouseRelease { button: 1, .. } => {
+                if self.drag_y.is_some() {
+                    self.settle_drag();
+                }
+            }
+            // A release that lands outside the control never reaches the arm above, so the drag
+            // is ended here too rather than staying armed and scrolling on the next hover.
+            Event::MouseLeave { .. } => {
+                if self.drag_y.is_some() {
+                    self.settle_drag();
                 }
             }
             Event::KeyPress { key, .. } => match *key {
@@ -380,6 +512,10 @@ impl Draw for DrumColumn {
             Rect::new(drum_rect.x + 4, highlight_y, drum_rect.width.saturating_sub(8), row_height);
         context.fill_rounded_rect(highlight_rect, 6, chrome.highlight);
 
+        // The wheel follows a drag by the leftover fraction of a row; the bar stays put, which is
+        // what makes the values appear to slide under the centre selection (M-002).
+        let drag_px = self.drag_offset.round() as i32;
+
         // The visible window, centred on the selection.
         let centre = self.visible_rows / 2;
         for row in 0..self.visible_rows {
@@ -390,8 +526,15 @@ impl Draw for DrumColumn {
             let Some(text) = self.items.get(index) else {
                 continue;
             };
-            let row_y = drum_rect.y + (row * row_height) as i32;
+            let row_y = drum_rect.y + (row * row_height) as i32 + drag_px;
             let text_y = row_y + (row_height as i32 - text_height as i32) / 2;
+            // A row dragged entirely out of the band would paint outside the drum, where nothing
+            // clips it in the SVG backend.
+            if text_y + text_height as i32 <= drum_rect.y
+                || text_y >= drum_rect.y + drum_rect.height as i32
+            {
+                continue;
+            }
             let color = if row == centre { chrome.selected_ink } else { chrome.row_ink };
             // The value is painted in the column minus the arrow gutter; the up/down hints below
             // used to be drawn over the first and last row because a full drum leaves no spare
@@ -573,5 +716,101 @@ mod tests {
         column.set_selected_index(4);
         column.set_items(vec!["only".to_string()]);
         assert_eq!(column.selected_index(), 0);
+    }
+
+    /// A pointer drag pulls whole rows through the same clamp the wheel uses, and the leftover
+    /// fraction is kept so the wheel follows the pointer (M-002).
+    #[test]
+    fn a_pointer_drag_pulls_whole_rows_and_keeps_the_fraction() {
+        let mut column = column();
+        column.set_selected_index(2);
+
+        // Pressing the lower half steps one row forward (the historical click rule) and arms the
+        // drag.
+        column.handle_event(&Event::MousePress {
+            pos: Point::new(40, 170),
+            button: 1,
+            modifiers: 0,
+        });
+        assert_eq!(column.selected_index(), 3);
+        assert_eq!(column.drag_y, Some(170));
+
+        // Dragging up 40 px is one 32 px row plus 8 px of travel.
+        column.handle_event(&Event::MouseMove { pos: Point::new(40, 130) });
+        assert_eq!(column.selected_index(), 4);
+        assert!((column.drag_offset + 8.0).abs() < 1e-4, "the 8 px remainder is painted");
+
+        // Moving back down 20 px nets 12 px of downward travel, which is less than a row.
+        column.handle_event(&Event::MouseMove { pos: Point::new(40, 150) });
+        assert_eq!(column.selected_index(), 4);
+        assert!((column.drag_offset - 12.0).abs() < 1e-4);
+
+        // A held drag is not an animation, so the bus must not tick it away from the finger.
+        assert!(!column.tick(100));
+        assert!((column.drag_offset - 12.0).abs() < 1e-4);
+    }
+
+    /// Release snaps to the nearest row at once, and `tick` eases the fraction into place (M-002).
+    #[test]
+    fn releasing_past_half_a_row_snaps_and_tick_settles_the_rest() {
+        let mut column = column();
+        column.set_selected_index(2);
+        column.handle_event(&Event::MousePress {
+            pos: Point::new(40, 170),
+            button: 1,
+            modifiers: 0,
+        });
+        assert_eq!(column.selected_index(), 3);
+
+        // 20 px down: less than a row but more than half of one, so the nearest row is row 2.
+        column.handle_event(&Event::MouseMove { pos: Point::new(40, 190) });
+        assert!((column.drag_offset - 20.0).abs() < 1e-4);
+        column.handle_event(&Event::MouseRelease { pos: Point::new(40, 190), button: 1 });
+        assert_eq!(column.selected_index(), 2, "the snap picks the nearest row");
+        assert!((column.drag_offset + 12.0).abs() < 1e-4, "the remaining 12 px is animated");
+        assert!(column.is_animating());
+
+        // A zero-length tick cannot finish the settle, and a real one carries it home.
+        assert!(column.tick(0));
+        assert!(column.tick(10));
+        assert!(!column.tick(100), "the settle finished");
+        assert_eq!(column.drag_offset, 0.0);
+        assert!(!column.is_animating());
+    }
+
+    /// Dragging past an end discards the over-drag instead of leaving the wheel hanging off the
+    /// band, and no settle is owed (M-002 boundary).
+    #[test]
+    fn a_drag_past_an_end_discards_the_overdrag() {
+        let mut column = column();
+        column.set_selected_index(0);
+
+        // Pressing the upper half steps back, which is already clamped at the first item.
+        column.handle_event(&Event::MousePress {
+            pos: Point::new(40, 30),
+            button: 1,
+            modifiers: 0,
+        });
+        assert_eq!(column.selected_index(), 0);
+
+        // 50 px down asks for a row before the first one, which does not exist.
+        column.handle_event(&Event::MouseMove { pos: Point::new(40, 80) });
+        assert_eq!(column.selected_index(), 0);
+        assert_eq!(column.drag_offset, 0.0);
+        column.handle_event(&Event::MouseRelease { pos: Point::new(40, 80), button: 1 });
+        assert_eq!(column.drag_offset, 0.0);
+        assert!(!column.is_animating());
+    }
+
+    /// The wheel and arrow keys keep their existing one-row semantics (M-002 keeps them).
+    #[test]
+    fn the_wheel_and_arrows_still_step_the_column() {
+        let mut column = column();
+        column.handle_event(&Event::Wheel { delta: Point::new(0, 1), modifiers: 0 });
+        assert_eq!(column.selected_index(), 1);
+        column.handle_event(&Event::KeyPress { key: crate::event::key_codes::DOWN, modifiers: 0 });
+        assert_eq!(column.selected_index(), 2);
+        column.handle_event(&Event::KeyPress { key: crate::event::key_codes::UP, modifiers: 0 });
+        assert_eq!(column.selected_index(), 1);
     }
 }

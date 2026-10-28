@@ -1080,12 +1080,10 @@ impl Draw for Dialog {
         // with. Painting the frame in it would make the dialog indistinguishable from the
         // window, so the surface is tinted one step toward the foreground: the same
         // distinction `Colors::input_background` makes for a field, applied to a panel.
-        // The window fill is read as its own lock acquisition and copied out as a value, so
-        // the guard is dropped before anything else touches the theme — the global
-        // manager's mutex is not re-entrant.
+        // The window fill is read from the shared palette snapshot, so no manager guard is held
+        // while the rest of the frame is drawn.
         let window_fill = {
-            let manager = crate::style::theme_manager();
-            manager.current_theme().map(|active| active.colors.background).unwrap_or(Color::WHITE)
+            crate::style::palette_shared().map(|colors| colors.background).unwrap_or(Color::WHITE)
         };
         let themed_surface = theme.as_ref().and_then(|t| t.background_color);
         let themed_ink = theme.as_ref().and_then(|t| t.text_color);
@@ -1582,11 +1580,9 @@ mod tests {
         for appearance in [crate::theme::AppearanceMode::Light, crate::theme::AppearanceMode::Dark]
         {
             crate::theme::global_theme_manager().set_appearance(appearance);
-            let page = crate::style::theme_manager()
-                .current_theme()
-                .expect("a preset is active")
-                .colors
-                .background;
+            let page = crate::style::palette_shared()
+                .map(|colors| colors.background)
+                .expect("a preset is active");
             let scrim = crate::style::layer_color(LayerColor::Scrim)
                 .expect("the preset defines a scrim role");
             let composited = page.blend(&scrim, scrim.a as f32 / 255.0);

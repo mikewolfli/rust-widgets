@@ -9,7 +9,9 @@
 # Font data is the one dependency in this crate whose licence is *not* the crate's own, and it
 # ships inside a generated source file rather than beside the code. So the check is structural:
 # a generated font table must declare its provenance in its own header, and every fact in that
-# header must be repeated in the repository-root `NOTICE`.
+# header must be repeated in a `NOTICE`. The records are split by ownership: the repository-root
+# `NOTICE` covers non-font material, and `crates/rust-widgets-font/NOTICE` covers the font
+# payloads, so both files are read together.
 #
 # Prints one `finding: ...` line per problem, then a `checked=N failed=M` summary line.
 # Exit status is always 0; the shell wrapper makes the pass/fail judgement, so the exit code and
@@ -21,6 +23,14 @@ import re
 import sys
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
+
+# The records live where the material lives. Both are read for every table, because the shard
+# index (`src/render/text/font_assets/cjk_shards.rs`) is library code whose payloads — and whose
+# licence record — belong to `rust-widgets-font`.
+DEFAULT_NOTICES = (
+    REPO_ROOT / "NOTICE",
+    REPO_ROOT / "crates" / "rust-widgets-font" / "NOTICE",
+)
 
 # ── How a generated font table identifies itself ────────────────────────────────────────────────
 # Two markers, both required: the file must say it is generated (so nobody hand-edits glyph bits
@@ -109,14 +119,26 @@ def main(argv=None) -> int:
                         help="a directory to scan (repeatable); defaults to `src`")
     parser.add_argument("--inject", default=None,
                         help="treat this extra file as font data, to prove the scan looks")
-    parser.add_argument("--notice", default=str(REPO_ROOT / "NOTICE"))
+    parser.add_argument("--notice", action="append", default=None,
+                        help="a NOTICE file to read (repeatable); defaults to the repository "
+                             "root NOTICE and the `rust-widgets-font` crate's NOTICE")
     args = parser.parse_args(argv)
 
     roots = args.root or [str(REPO_ROOT / "src")]
-    notice_path = pathlib.Path(args.notice)
-    notice = notice_path.read_text(encoding="utf-8") if notice_path.exists() else ""
-    if not notice:
-        print(f"finding: {notice_path} is missing or empty; bundled font data has no licence record")
+    notice_paths = (
+        [pathlib.Path(path) for path in args.notice]
+        if args.notice
+        else list(DEFAULT_NOTICES)
+    )
+    missing = [path for path in notice_paths if not path.exists()]
+    if missing:
+        for path in missing:
+            print(f"finding: {path} is missing; bundled font data has no licence record")
+        print("checked=0 failed=1")
+        return 0
+    notice = "\n".join(path.read_text(encoding="utf-8") for path in notice_paths)
+    if not notice.strip():
+        print("finding: the NOTICE files are empty; bundled font data has no licence record")
         print("checked=0 failed=1")
         return 0
 

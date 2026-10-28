@@ -1139,17 +1139,13 @@ impl Draw for SplitButton {
         // the user's text scale (D09-STYLE-01).
         let font = effective_font(style);
         let theme = crate::style::resolved_theme_style_shared("split_button");
-        // Read as its own lock acquisition and copied out as values, so the guard is dropped
-        // before anything else touches the theme.
+        // Read once from the palette snapshot and copied out as values; `palette_shared()` holds
+        // no manager guard, so the manager is free for the rest of the draw.
         let (window_fill, foreground, secondary, primary) = {
-            let manager = crate::style::theme_manager();
-            match manager.current_theme() {
-                Some(active) => (
-                    active.colors.background,
-                    active.colors.foreground,
-                    active.colors.secondary,
-                    active.colors.primary,
-                ),
+            match crate::style::palette_shared() {
+                Some(colors) => {
+                    (colors.background, colors.foreground, colors.secondary, colors.primary)
+                }
                 None => (
                     Color::rgb(240, 240, 240),
                     Color::BLACK,

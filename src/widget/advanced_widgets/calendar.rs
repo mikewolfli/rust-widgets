@@ -4,10 +4,11 @@
 //! Calendar widget.
 use core::fmt::Write as _;
 
+use crate::compat::{lock, Arc, Mutex};
 use crate::core::{Color, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
-use crate::signal::Signal1;
+use crate::signal::{ConnectionScope, Signal1};
 use crate::widget::capability::access::weekday_to_str;
 use crate::widget::capability::coercion::{
     expect_bool, expect_naive_date, expect_string, expect_string_list, expect_weekday,
@@ -16,6 +17,7 @@ use crate::widget::capability::coercion::{
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::companions::CalendarMarkLayer;
 use crate::widget::metrics::{dimensions, effective_font, role_font};
 use crate::widget::{BaseWidget, Draw, IconName, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
@@ -291,6 +293,22 @@ pub struct Calendar {
     /// borrow of `self` for the rest of the pass — the same reason `ToolBar` caches its item
     /// bands this way.
     day_line_cache: crate::compat::RefCell<DayLineCache>,
+    /// The mark layer whose month follows this calendar, when one is attached.
+    mark_layer: Option<CalendarMarkBinding>,
+}
+
+/// The live link between a [`Calendar`] and a [`CalendarMarkLayer`].
+///
+/// The calendar owns the layer so it can write the displayed month into it; the layer's
+/// `mark_activated` stream is parked in the shared cell and drained by
+/// [`Calendar::poll_calendar_mark_layer`], which republishes it on [`Calendar::activated`].
+struct CalendarMarkBinding {
+    /// The layer kept in step with the calendar's displayed page.
+    layer: CalendarMarkLayer,
+    /// The `(year, month, day)` a mark click reported since the last poll.
+    activation: Arc<Mutex<Option<(i32, u32, u32)>>>,
+    /// The subscription, dropped with the binding so a detach leaves no slot behind.
+    _scope: ConnectionScope,
 }
 impl Calendar {
     /// Creates a calendar widget.
@@ -333,6 +351,7 @@ impl Calendar {
             title_cache: crate::compat::RefCell::new(MonthTitleCache::default()),
             year_menu_cache: crate::compat::RefCell::new(YearMenuCache::default()),
             day_line_cache: crate::compat::RefCell::new(DayLineCache::default()),
+            mark_layer: None,
         }
     }
     /// Returns the date this calendar paints as "today".
@@ -490,6 +509,81 @@ impl Calendar {
         }
         self.show_page(date);
     }
+
+    /// Follows a [`CalendarMarkLayer`]'s month and activation stream.
+    ///
+    /// This is the companion binding for COMP-A8. The calendar owns the layer because only a
+    /// mutable owner can keep the layer's month in step; the layer's current month is pushed
+    /// immediately, and [`Self::poll_calendar_mark_layer`] compares it with the displayed page on
+    /// every paint and event so month navigation reaches the layer without host bookkeeping.
+    ///
+    /// The reverse direction is the layer's `mark_activated` stream: a click on a mark is parked
+    /// in the binding and republished from `poll_calendar_mark_layer` as [`Self::activated`], the
+    /// calendar's existing commit signal, rather than inventing a second activation surface.
+    /// Attaching replaces any previous layer, so calling this twice leaves one subscription.
+    pub fn attach_calendar_mark_layer(&mut self, mut layer: CalendarMarkLayer) {
+        let activation = Arc::new(Mutex::new(None));
+        let sink = Arc::clone(&activation);
+        let scope = ConnectionScope::new();
+        let redraw = self.base.redraw_requested_signal().clone();
+        layer.mark_activated.connect_scoped(&scope, move |reported| {
+            *lock(&sink) = Some((reported.0, reported.1, reported.2));
+            // A mark click is a layer edit, so the poll that republishes it runs next frame.
+            redraw.emit();
+        });
+        // Adopt the displayed page now, so attaching does not wait for navigation.
+        let displayed = self.display_month;
+        layer.set_month(displayed.year(), displayed.month());
+        self.mark_layer = Some(CalendarMarkBinding { layer, activation, _scope: scope });
+        self.base.request_redraw();
+    }
+
+    /// Stops following the attached mark layer and returns it.
+    ///
+    /// The last month written into the layer stays; the layer is detached, not reset.
+    pub fn detach_calendar_mark_layer(&mut self) -> Option<CalendarMarkLayer> {
+        let binding = self.mark_layer.take()?;
+        self.base.request_redraw();
+        Some(binding.layer)
+    }
+
+    /// Whether a [`CalendarMarkLayer`] is attached.
+    pub fn is_calendar_mark_layer_attached(&self) -> bool {
+        self.mark_layer.is_some()
+    }
+
+    /// The attached mark layer, if any.
+    pub fn calendar_mark_layer(&self) -> Option<&CalendarMarkLayer> {
+        self.mark_layer.as_ref().map(|binding| &binding.layer)
+    }
+
+    /// The attached mark layer for editing, if any.
+    pub fn calendar_mark_layer_mut(&mut self) -> Option<&mut CalendarMarkLayer> {
+        self.mark_layer.as_mut().map(|binding| &mut binding.layer)
+    }
+
+    /// Applies the displayed month to the attached mark layer and republishes a pending mark
+    /// click.
+    ///
+    /// Called from `draw` and `handle_event`; returns whether the layer's month moved or an
+    /// activation was emitted. A second call with nothing pending returns `false`.
+    pub fn poll_calendar_mark_layer(&mut self) -> bool {
+        let Some(binding) = self.mark_layer.as_mut() else {
+            return false;
+        };
+        let displayed = self.display_month;
+        let mut changed = false;
+        if binding.layer.year() != displayed.year() || binding.layer.month() != displayed.month() {
+            changed |= binding.layer.set_month(displayed.year(), displayed.month());
+        }
+        if let Some((year, month, day)) = lock(&binding.activation).take() {
+            if let Some(date) = chrono::NaiveDate::from_ymd_opt(year, month, day) {
+                self.activated.emit(date);
+                changed = true;
+            }
+        }
+        changed
+    }
     /// Moves the displayed page to `date`'s month, emitting `current_page_changed` when the
     /// `(year, month)` pair actually changed.
     ///
@@ -559,6 +653,70 @@ impl Calendar {
         }
         self.show_page(date);
         self.selection_changed.emit(date);
+        self.damage_dates(previous.iter().chain(self.selected_dates.iter()).copied());
+    }
+
+    /// Replaces the selected set, for multi and range modes (ADV-001).
+    ///
+    /// Out-of-range dates are dropped, duplicates collapse and the list is sorted — the invariant
+    /// [`Calendar::selected_dates`] publishes. The primary [`Calendar::selected_date`] becomes the
+    /// latest surviving date, and the set change goes through the same `damage_dates` path a click
+    /// uses, so only the cells whose selection actually changed are repainted. One call emits one
+    /// `selection_changed`.
+    ///
+    /// In `Single` mode the mode's own invariant wins: the latest date becomes the single
+    /// selection, because a set is something that mode could never paint or click consistently.
+    pub fn set_selected_dates(&mut self, dates: &[chrono::NaiveDate]) {
+        let mut next: Vec<chrono::NaiveDate> = dates
+            .iter()
+            .copied()
+            .filter(|date| *date >= self.minimum_date && *date <= self.maximum_date)
+            .collect();
+        next.sort_unstable();
+        next.dedup();
+        if self.selection_mode == CalendarSelectionMode::Single {
+            match next.last().copied() {
+                Some(date) => self.set_selected_date(date),
+                None => self.clear_selection(),
+            }
+            return;
+        }
+        self.replace_selected_dates(next);
+    }
+
+    /// Replaces the selection with the inclusive range `start..=end` (ADV-001).
+    ///
+    /// The endpoints may be given in either order. Dates outside [`Calendar::minimum_date`] or
+    /// [`Calendar::maximum_date`] are dropped, so a range wholly outside the bounds clears the
+    /// selection. A completed range has no pending anchor, so the next click starts a new range
+    /// instead of completing this one.
+    pub fn set_selected_range(&mut self, start: chrono::NaiveDate, end: chrono::NaiveDate) {
+        let (start, end) = if start <= end { (start, end) } else { (end, start) };
+        if self.selection_mode == CalendarSelectionMode::Single {
+            // `Single` cannot paint a range; the range's end is the value it reports.
+            self.set_selected_date(end);
+            return;
+        }
+        let dates: Vec<chrono::NaiveDate> = range_between(start, end)
+            .into_iter()
+            .filter(|date| *date >= self.minimum_date && *date <= self.maximum_date)
+            .collect();
+        self.replace_selected_dates(dates);
+    }
+
+    /// Installs a pre-filtered, sorted set and damages only the cells whose selection changed.
+    fn replace_selected_dates(&mut self, next: Vec<chrono::NaiveDate>) {
+        let primary = next.last().copied();
+        if self.selected_dates == next && primary.is_none_or(|date| date == self.selected_date) {
+            return;
+        }
+        self.selection_anchor = None;
+        let previous = core::mem::replace(&mut self.selected_dates, next);
+        if let Some(primary) = primary {
+            self.selected_date = primary;
+            self.show_page(primary);
+            self.selection_changed.emit(primary);
+        }
         self.damage_dates(previous.iter().chain(self.selected_dates.iter()).copied());
     }
 
@@ -1557,6 +1715,9 @@ impl WidgetProperties for Calendar {
 
 impl EventHandler for Calendar {
     fn handle_event(&mut self, event: &Event) {
+        // A mark click is a shared write from the attached layer, drained before routing so the
+        // frame that follows it already reflects the activation.
+        let _ = self.poll_calendar_mark_layer();
         self.base.handle_event(event);
         if !self.base.is_enabled() {
             return;
@@ -1740,6 +1901,9 @@ impl EventHandler for Calendar {
 
 impl Draw for Calendar {
     fn draw(&mut self, context: &mut RenderContext) {
+        // Keep the attached mark layer on the displayed page; navigation may have happened since
+        // the previous frame without an event that reached the layer.
+        let _ = self.poll_calendar_mark_layer();
         let rect = self.geometry();
         let enabled = self.base.is_enabled();
         // The day painted as "today" is the control's own field, not a clock read: see its field
@@ -3089,6 +3253,77 @@ mod tests {
         );
     }
 
+    /// A host can restore a multi-selection; the set is filtered, sorted, primary-dated and
+    /// announced once, through the same damage path a click uses (ADV-001).
+    #[test]
+    fn a_programmatic_multi_selection_restores_the_set() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let mut cal = Calendar::new(Rect::new(0, 0, 280, 240));
+        cal.set_selection_mode(CalendarSelectionMode::Multi);
+        cal.clear_selection();
+        let emitted = Arc::new(AtomicUsize::new(0));
+        let sink = Arc::clone(&emitted);
+        cal.selection_changed.connect(move |_| {
+            sink.fetch_add(1, Ordering::SeqCst);
+        });
+
+        cal.set_selected_dates(&[
+            date(2026, 6, 3),
+            date(2026, 6, 1),
+            date(2026, 6, 3),
+            date(1800, 1, 1),
+        ]);
+        assert_eq!(cal.selected_dates(), &[date(2026, 6, 1), date(2026, 6, 3)]);
+        assert_eq!(cal.selected_date(), date(2026, 6, 3), "the latest date is primary");
+        assert!(cal.is_date_selected(date(2026, 6, 1)));
+        assert_eq!(emitted.load(Ordering::SeqCst), 1, "one restore is one announcement");
+
+        // Restoring the same set changes nothing and announces nothing.
+        cal.set_selected_dates(&[date(2026, 6, 1), date(2026, 6, 3)]);
+        assert_eq!(emitted.load(Ordering::SeqCst), 1);
+    }
+
+    /// A range restore covers every day inclusively and leaves no pending anchor, so the next
+    /// click starts a new range (ADV-001).
+    #[test]
+    fn a_programmatic_range_restores_every_day_and_clears_the_anchor() {
+        let mut cal = Calendar::new(Rect::new(0, 0, 280, 240));
+        cal.set_selection_mode(CalendarSelectionMode::Range);
+
+        // Reversed endpoints describe the same inclusive range.
+        cal.set_selected_range(date(2026, 6, 5), date(2026, 6, 4));
+        assert_eq!(cal.selected_dates(), &[date(2026, 6, 4), date(2026, 6, 5)]);
+        assert_eq!(cal.selected_date(), date(2026, 6, 5));
+
+        // The restored range is complete, so the next click starts a new one rather than
+        // stretching across the gap to July.
+        cal.set_selected_date(date(2026, 7, 1));
+        assert_eq!(cal.selected_dates(), &[date(2026, 7, 1)]);
+    }
+
+    /// Dates outside the configured bounds are dropped, a wholly out-of-bounds range clears, and
+    /// single mode keeps its one-date invariant (ADV-001 boundaries).
+    #[test]
+    fn a_programmatic_selection_drops_dates_outside_the_bounds() {
+        let mut cal = Calendar::new(Rect::new(0, 0, 280, 240));
+        cal.set_selection_mode(CalendarSelectionMode::Multi);
+        cal.set_selected_dates(&[date(1899, 12, 31), date(2026, 6, 1), date(3001, 1, 1)]);
+        assert_eq!(cal.selected_dates(), &[date(2026, 6, 1)]);
+
+        cal.set_selected_range(date(1800, 1, 1), date(1800, 1, 5));
+        assert!(cal.selected_dates().is_empty(), "a range outside the bounds selects nothing");
+
+        // Single mode cannot hold a set: the latest restored date wins.
+        cal.set_selection_mode(CalendarSelectionMode::Single);
+        cal.set_selected_dates(&[date(2026, 6, 1), date(2026, 6, 2)]);
+        assert_eq!(cal.selected_dates(), &[date(2026, 6, 2)]);
+        cal.set_selected_range(date(2026, 8, 1), date(2026, 8, 9));
+        assert_eq!(cal.selected_date(), date(2026, 8, 9));
+        assert_eq!(cal.selected_dates(), &[date(2026, 8, 9)]);
+    }
+
     #[test]
     fn the_week_number_property_addresses_the_gutter() {
         let mut cal = Calendar::new(Rect::new(0, 0, 280, 240));
@@ -3129,5 +3364,54 @@ mod tests {
         let after = crate::widget::svg::render_to_svg(&mut cal);
         assert_ne!(before, after, "the header/title text comes from the names layer");
         assert_eq!(cal.month_name(1), "Januar");
+    }
+
+    /// The attached mark layer follows the displayed page and a detached one stops following it.
+    #[test]
+    fn the_mark_layer_follows_the_displayed_month() {
+        let mut cal = Calendar::new(Rect::new(0, 0, 300, 250));
+        cal.set_display_month(date(2026, 6, 1));
+        cal.attach_calendar_mark_layer(CalendarMarkLayer::new(Rect::new(0, 0, 280, 240)));
+        assert!(cal.is_calendar_mark_layer_attached());
+        let layer = cal.calendar_mark_layer().expect("attached");
+        assert_eq!((layer.year(), layer.month()), (2026, 6), "attach pushes the page");
+        assert!(!cal.poll_calendar_mark_layer(), "an unchanged page is not re-applied");
+
+        cal.show_next_month();
+        assert!(cal.poll_calendar_mark_layer(), "navigation reaches the layer");
+        let layer = cal.calendar_mark_layer().expect("attached");
+        assert_eq!((layer.year(), layer.month()), (2026, 7));
+        assert!(!cal.poll_calendar_mark_layer(), "the second poll has nothing to do");
+
+        let detached = cal.detach_calendar_mark_layer().expect("detached");
+        assert!(!cal.is_calendar_mark_layer_attached());
+        cal.show_next_month();
+        assert!(!cal.poll_calendar_mark_layer(), "a detached layer is not polled");
+        assert_eq!((detached.year(), detached.month()), (2026, 7), "detach stops updates");
+    }
+
+    /// A click on a mark is republished through the calendar's existing `activated` signal.
+    #[test]
+    fn a_mark_activation_is_republished_as_the_calendar_activation() {
+        let mut cal = Calendar::new(Rect::new(0, 0, 300, 250));
+        let seen = Arc::new(Mutex::new(None));
+        let sink = Arc::clone(&seen);
+        cal.activated.connect(move |value| {
+            *lock(&sink) = Some(*value);
+        });
+        cal.attach_calendar_mark_layer(CalendarMarkLayer::new(Rect::new(0, 0, 280, 240)));
+        cal.calendar_mark_layer_mut().expect("attached").mark_activated.emit((
+            2026,
+            6,
+            3,
+            crate::widget::companions::CalendarMark::new(
+                Color::rgb(40, 90, 200),
+                crate::widget::companions::CalendarMarkShape::Dot,
+            ),
+        ));
+
+        assert!(cal.poll_calendar_mark_layer(), "a pending activation is applied");
+        assert_eq!(*lock(&seen), Some(date(2026, 6, 3)));
+        assert!(!cal.poll_calendar_mark_layer(), "the activation is drained once");
     }
 }

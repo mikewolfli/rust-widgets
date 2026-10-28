@@ -11,9 +11,9 @@ For each declared face, two files:
     crates/rust-widgets-font/src/<id>.rs    a one-line `include_bytes!` with a provenance header
 
 The header repeats the upstream project, the upstream URL, the SHA-256 of the *upstream* file
-and the licence, because `tools/font_license_scan.py` requires exactly those facts and `NOTICE`
-must repeat them. Keeping the header generated rather than hand-written is what makes the two
-impossible to disagree.
+and the licence, because `tools/font_license_scan.py` requires exactly those facts and the
+crate's `NOTICE` must repeat them. Keeping the header generated rather than hand-written is what
+makes the two impossible to disagree.
 
 # The licence gate, and why it is first
 
@@ -339,8 +339,8 @@ def wrapper_source(face_id, face, license_id, payload_len, glyphs, has_gsub, has
 //     {face["url"]}
 //     SHA-256 (upstream .ttf): {face["sha256"]}
 //
-// Licence of the glyph outlines: {LICENSES[license_id]}. See the repository-root `NOTICE`,
-// which records this file by name together with the facts above. The subset is a Modified
+// Licence of the glyph outlines: {LICENSES[license_id]}. See this crate's `NOTICE`, which
+// records this file by name together with the facts above. The subset is a Modified
 // Version under the OFL and is renamed: it does not use the upstream Reserved Font Name.
 //
 // The subset is {payload_len} bytes ({glyphs} glyphs, layout tables: {", ".join(features) or "none"}),

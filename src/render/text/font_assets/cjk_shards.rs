@@ -15,8 +15,8 @@
 //     https://raw.githubusercontent.com/notofonts/noto-cjk/main/Sans/SubsetOTF/SC/NotoSansSC-Regular.otf
 //     SHA-256 (upstream .otf): faa6c9df652116dde789d351359f3d7e5d2285a2b2a1f04a2d7244df706d5ea9
 //
-// Licence of the glyph outlines: SIL Open Font License, Version 1.1. The repository-root
-// `NOTICE` records this file by name together with the facts above.
+// Licence of the glyph outlines: SIL Open Font License, Version 1.1. See
+// `crates/rust-widgets-font/NOTICE`, which records this file by name together with the facts above.
 //
 // The union of the shards equals `tools/cjk_vector_codepoints.txt` (the `fonts-cjk` face's
 // coverage), asserted by `tools/check_cjk_shards_cover_the_face.sh`.

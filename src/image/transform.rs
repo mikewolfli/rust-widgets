@@ -6,8 +6,11 @@
 use crate::image::format::ImageData;
 
 /// Resize RGBA image using bilinear interpolation.
+///
+/// Takes the source by reference: every caller passed a fresh clone only because the parameter
+/// was owned, while the body only reads it (VP-004).
 pub fn resize(
-    data: ImageData,
+    data: &ImageData,
     src_w: u32,
     src_h: u32,
     dst_w: u32,
@@ -22,7 +25,7 @@ pub fn resize(
         .checked_mul(dst_h as usize)
         .and_then(|px| px.checked_mul(4))
         .ok_or("resize target dimensions overflow")?;
-    let pixels = match &data {
+    let pixels = match data {
         ImageData::Rgba8(d) => d,
         _ => {
             return Err(format!(
@@ -376,7 +379,7 @@ mod tests {
     #[test]
     fn test_resize_downscale() {
         let data = make_test_data(10, 10);
-        let result = resize(data, 10, 10, 5, 5).unwrap();
+        let result = resize(&data, 10, 10, 5, 5).unwrap();
         if let ImageData::Rgba8(r) = result {
             assert_eq!(r.len(), 5 * 5 * 4);
         }
@@ -385,7 +388,7 @@ mod tests {
     #[test]
     fn test_resize_upscale() {
         let data = make_test_data(5, 5);
-        let result = resize(data, 5, 5, 10, 10).unwrap();
+        let result = resize(&data, 5, 5, 10, 10).unwrap();
         if let ImageData::Rgba8(r) = result {
             assert_eq!(r.len(), 10 * 10 * 4);
         }
@@ -455,13 +458,13 @@ mod tests {
     #[test]
     fn test_resize_zero_error() {
         let data = make_test_data(10, 10);
-        assert!(resize(data, 10, 10, 0, 0).is_err());
+        assert!(resize(&data, 10, 10, 0, 0).is_err());
     }
 
     #[test]
     fn test_transforms_reject_short_rgba_data() {
         let short = ImageData::Rgba8(vec![0; 3]);
-        assert!(resize(short.clone(), 1, 1, 2, 2).is_err());
+        assert!(resize(&short, 1, 1, 2, 2).is_err());
         assert!(crop(short.clone(), 1, 1, 0, 0, 1, 1).is_err());
         assert!(rotate(short.clone(), 1, 1, 90).is_err());
         assert!(flip_horizontal(short.clone(), 1, 1).is_err());

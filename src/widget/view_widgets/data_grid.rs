@@ -14,7 +14,7 @@ use crate::event::{Event, WheelScroll};
 use crate::impl_widget_property_hooks;
 use crate::property_names_of;
 use crate::render::RenderContext;
-use crate::signal::{ConnectionHandle, ConnectionScope, Signal1};
+use crate::signal::{ConnectionHandle, ConnectionScope, GenericSignal, Signal1};
 use crate::widget::capability::access::{column_filters_to_string, sort_specs_to_string};
 use crate::widget::capability::coercion::{
     expect_bool, expect_column_filters, expect_sort_specs, expect_string_list,
@@ -23,7 +23,10 @@ use crate::widget::capability::coercion::{
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
-use crate::widget::companions::FilterRow;
+use crate::widget::companions::{
+    ColumnAggregate, ColumnAggregateKind, FilterRow, GridStatusBar, HeaderMenu, SortState,
+    SummaryRow,
+};
 use crate::widget::metrics::{effective_font, ControlMetrics};
 use crate::widget::nav_widgets::pagination::Pagination;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
@@ -153,7 +156,7 @@ pub(crate) fn compare_sort_keys(
     left.0.cmp(&right.0)
 }
 
-use super::filter_expr::{FilterCondition, FilterExpr};
+use super::filter_expr::{FilterCondition, FilterExpr, FilterOperator};
 
 /// Rows after filtering and sorting, holding one optional cell per source column.
 ///
@@ -358,6 +361,14 @@ pub struct DataGrid {
     pagination_applied_page: usize,
     /// The `FilterRow` this grid follows, when one is attached (chapter 3, gap 2).
     filter_row: Option<FilterBinding>,
+    /// The `GridStatusBar` this grid follows, when one is attached (COMP-A8).
+    grid_status_bar: Option<GridStatusBarBinding>,
+    /// The `SummaryRow` this grid follows, when one is attached (COMP-A8).
+    summary_row: Option<SummaryRowBinding>,
+    /// The `HeaderMenu` this grid follows, when one is attached (COMP-A8).
+    header_menu: Option<HeaderMenuBinding>,
+    /// Whether the attached header menu asked the host to open a column chooser (COMP-A8).
+    column_chooser_requested: bool,
     /// Emitted when the selection changes; query [`DataGrid::selected_cells`] for the units.
     selection_changed: Signal1<()>,
     /// Emitted with the cell keyboard navigation moved to.
@@ -427,6 +438,17 @@ pub struct DataGrid {
     cell_tooltip: Option<Arc<dyn Fn(usize, usize) -> Option<String> + Send + Sync>>,
     /// Per-cell paint delegate; `None` draws every cell directly (V-014).
     cell_delegate: Option<Arc<dyn DataGridCellDelegate>>,
+    /// Per-column cell alignment (V-001); an absent entry means `Left`.
+    column_alignments: HashMap<usize, HorizontalAlignment>,
+    /// The cell an in-place edit is open on, if any (V-002).
+    editing: Option<(usize, usize)>,
+    /// Detail text source for expanded rows (V-009).
+    row_detail_provider: Option<RowDetailProvider>,
+    /// Rows whose detail band is open (V-009).
+    expanded_detail_rows: BTreeSet<usize>,
+    /// Explicit detail-band heights (V-009); a row without one uses
+    /// [`DEFAULT_ROW_DETAIL_HEIGHT`].
+    detail_heights: HashMap<usize, u32>,
 }
 
 /// How a data grid decides column widths.
@@ -488,6 +510,11 @@ pub struct ColumnSpec {
     pub filterable: bool,
     /// Whether the section's right edge may be dragged.
     pub resizable: bool,
+    /// How the column's values are aligned in their cells (V-001).
+    ///
+    /// The default is [`HorizontalAlignment::Left`], the historical paint behaviour, so a
+    /// column that never asks for an alignment keeps its original pixels.
+    pub alignment: HorizontalAlignment,
 }
 
 impl ColumnSpec {
@@ -499,6 +526,7 @@ impl ColumnSpec {
             sortable: false,
             filterable: false,
             resizable: true,
+            alignment: HorizontalAlignment::Left,
         }
     }
 
@@ -520,21 +548,32 @@ impl ColumnSpec {
         self
     }
 
-    /// The published property spelling: `title|width|sortable|filterable|resizable`.
+    /// Sets the column's cell alignment (V-001).
+    pub fn with_alignment(mut self, alignment: HorizontalAlignment) -> Self {
+        self.alignment = alignment;
+        self
+    }
+
+    /// The published property spelling:
+    /// `title|width|sortable|filterable|resizable|alignment`.
+    ///
+    /// The trailing alignment field was appended, so a token written by an older build (five
+    /// fields) still parses and means `Left`.
     pub fn to_token(&self) -> String {
         format!(
-            "{}|{}|{}|{}|{}",
+            "{}|{}|{}|{}|{}|{}",
             self.title,
             self.width,
             u8::from(self.sortable),
             u8::from(self.filterable),
-            u8::from(self.resizable)
+            u8::from(self.resizable),
+            alignment_token(self.alignment)
         )
     }
 
     /// Parses [`Self::to_token`]; flags are `0`/`1`.
     pub fn from_token(token: &str) -> Option<Self> {
-        let mut parts = token.splitn(5, '|');
+        let mut parts = token.splitn(6, '|');
         let title = parts.next()?.to_string();
         let width = parts.next()?.trim().parse::<u32>().ok()?.max(1);
         let flag = |text: Option<&str>| matches!(text.map(str::trim), Some("1" | "true"));
@@ -544,7 +583,30 @@ impl ColumnSpec {
             sortable: flag(parts.next()),
             filterable: flag(parts.next()),
             resizable: parts.next().is_none_or(|text| !matches!(text.trim(), "0" | "false")),
+            alignment: parts
+                .next()
+                .and_then(|text| alignment_from_token(text.trim()))
+                .unwrap_or(HorizontalAlignment::Left),
         })
+    }
+}
+
+/// The token spelling of a `HorizontalAlignment`, used by [`ColumnSpec::to_token`].
+fn alignment_token(alignment: HorizontalAlignment) -> &'static str {
+    match alignment {
+        HorizontalAlignment::Left => "left",
+        HorizontalAlignment::Center => "center",
+        HorizontalAlignment::Right => "right",
+    }
+}
+
+/// Parses [`alignment_token`]'s spelling.
+fn alignment_from_token(token: &str) -> Option<HorizontalAlignment> {
+    match token {
+        "left" | "l" => Some(HorizontalAlignment::Left),
+        "center" | "centre" | "c" => Some(HorizontalAlignment::Center),
+        "right" | "r" => Some(HorizontalAlignment::Right),
+        _ => None,
     }
 }
 
@@ -636,8 +698,84 @@ pub trait DataGridCellDelegate: Send + Sync {
     }
 }
 
+/// The plain single-line editor [`DataGrid::begin_edit`] hands back (V-002).
+///
+/// It owns the text a cell edit starts with, so a host can place it over the cell and read the
+/// committed value back through [`DataGrid::commit_edit`] without knowing which control the grid
+/// chose. It draws its own frame and value, which makes it a complete widget rather than a
+/// container the host has to populate.
+pub struct DataGridCellEditor {
+    base: BaseWidget,
+    text: String,
+}
+
+impl DataGridCellEditor {
+    /// Creates an editor seeded with `text` and placed at `geometry`.
+    pub fn new(geometry: Rect, text: impl Into<String>) -> Self {
+        Self {
+            base: BaseWidget::new(WidgetKind::LineEdit, geometry, "DataGridCellEditor"),
+            text: text.into(),
+        }
+    }
+
+    /// The text the editor currently holds.
+    pub fn text(&self) -> &str {
+        &self.text
+    }
+
+    /// Replaces the editor's text.
+    pub fn set_text(&mut self, text: impl Into<String>) {
+        self.text = text.into();
+        self.base.request_redraw();
+    }
+}
+
+impl Widget for DataGridCellEditor {
+    fn base(&self) -> &BaseWidget {
+        &self.base
+    }
+    fn set_state_theme_hook(&mut self) {
+        crate::style::reapply_active_theme_state(self);
+    }
+    fn base_mut(&mut self) -> &mut BaseWidget {
+        &mut self.base
+    }
+    impl_draw_bridge!();
+}
+
+impl Draw for DataGridCellEditor {
+    fn draw(&mut self, context: &mut RenderContext) {
+        let rect = self.base.geometry();
+        let ink = self.base.style().text_color.unwrap_or(Color::BLACK);
+        context.fill_rect(rect, Color::WHITE);
+        context.draw_rect(rect, ink);
+        let font = effective_font(self.base.style());
+        context.draw_text_fitted_cow(
+            context.text_line(rect, font),
+            &self.text,
+            font,
+            ink,
+            HorizontalAlignment::Left,
+        );
+    }
+}
+
+impl crate::event::EventHandler for DataGridCellEditor {
+    fn handle_event(&mut self, _event: &Event) {
+        // The host owns the platform text input; the grid only owns the edit lifecycle.
+    }
+}
+
+/// Source of the detail text shown under an expanded data-grid row (V-009).
+///
+/// The provider is asked once per painted detail band, so a caller that cannot answer cheaply can
+/// return `None` and keep the row collapsed.
+pub type RowDetailProvider = Arc<dyn Fn(usize) -> Option<String> + Send + Sync>;
+
 /// The height of a header strip: 28 px, one row of titles.
 const HEADER_STRIP_HEIGHT: u32 = 28;
+/// The default detail-band height an expanded row uses (V-009).
+const DEFAULT_ROW_DETAIL_HEIGHT: u32 = 48;
 /// How close to a section's right edge a press must land to start a resize.
 const HEADER_RESIZE_GRAB: i32 = 4;
 /// The side of a sort arrow or filter glyph.
@@ -1188,6 +1326,134 @@ struct ColumnChooserBinding {
     _scope: ConnectionScope,
 }
 
+/// The live link between a [`DataGrid`] and a [`GridStatusBar`] (COMP-A8).
+///
+/// The strip consumes no grid signal, so the link has no subscription to hold; it keeps the
+/// shared count cell, the repaint request, and the counts last written. The last-write record is
+/// what makes the poll idempotent: a second poll with unchanged rows and selection returns
+/// `false` instead of re-requesting a repaint.
+struct GridStatusBarBinding {
+    /// The count cell the strip reads through [`GridStatusBar::row_count`].
+    counts: Arc<Mutex<(u64, u64)>>,
+    /// The strip's paint request, emitted after a write.
+    redraw: GenericSignal,
+    /// The `(rows, selected)` pair last written.
+    pushed: (u64, u64),
+    /// The subscription scope. The strip owns no grid-facing signal, so it holds no connection;
+    /// the scope is kept so the binding has the same shape as every other companion link.
+    _scope: ConnectionScope,
+}
+
+/// The live link between a [`DataGrid`] and a [`SummaryRow`] (COMP-A8).
+///
+/// The grid computes the aggregates from its projected rows and writes the row's shared value
+/// cell, so the row repaints without the host copying numbers. `key` records the projection the
+/// values describe, which is what keeps a steady frame from re-reading the model.
+struct SummaryRowBinding {
+    /// The value cell the row reads through [`SummaryRow::value`].
+    values: Arc<Mutex<Vec<(String, f64)>>>,
+    /// The row's paint request, emitted after a write.
+    redraw: GenericSignal,
+    /// The aggregates copied from the row at attach time.
+    aggregates: Vec<ColumnAggregate>,
+    /// The projection the stored values were computed from, or `None` before the first push.
+    key: Option<SummaryProjectionKey>,
+    /// The subscription scope; a summary row owns no grid-facing signal.
+    _scope: ConnectionScope,
+}
+
+/// The inputs that decide a summary row's numbers.
+///
+/// A data change, a filter edit or a sort edit all move the projected rows, and the aggregate
+/// list itself decides which cells are reported. Comparing this key is how
+/// [`DataGrid::poll_summary_row`] tells "the projection moved" from "the frame is steady" without
+/// walking the model.
+#[derive(Clone, PartialEq)]
+struct SummaryProjectionKey {
+    /// The source revision, or the grid's own generation when the source has none.
+    revision: u64,
+    /// The filter in force.
+    filter: FilterExpr,
+    /// The sort order in force.
+    sorts: Vec<SortSpec>,
+    /// The aggregate list being reported.
+    aggregates: Vec<ColumnAggregate>,
+}
+
+/// One intent reported by an attached [`HeaderMenu`] (COMP-A8).
+#[derive(Clone, Debug, PartialEq)]
+enum HeaderMenuRequest {
+    /// Sort `column` in `state`; `None` clears the column's sort.
+    Sort { column: usize, state: SortState },
+    /// Filter `column` with `operator` against `operand`.
+    Filter { column: usize, operator: FilterOperator, operand: String },
+    /// Hide `column`.
+    Hide { column: usize },
+    /// Open a column chooser for `column`, when its token resolved.
+    Choose { column: Option<usize> },
+}
+
+/// The live link between a [`DataGrid`] and a [`HeaderMenu`] (COMP-A8).
+///
+/// The menu reports intents; the link resolves its column tokens against the grid's header at
+/// attach time and parks the resolved requests in a shared queue. [`DataGrid::poll_header_menu`]
+/// drains that queue, the same host-free shape the chooser and filter-row links use.
+struct HeaderMenuBinding {
+    /// The requests reported since the last poll.
+    requests: Arc<Mutex<Vec<HeaderMenuRequest>>>,
+    /// The subscriptions, dropped with the binding so a re-attach leaves no slot behind.
+    _scope: ConnectionScope,
+}
+
+/// What [`DataGrid::poll_header_menu`] did, or why it could not do something (COMP-A8).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum HeaderMenuPoll {
+    /// The menu reported nothing since the last poll.
+    Idle,
+    /// At least one sort, filter or hide request was applied to the grid.
+    Applied,
+    /// A filter request named an operator this grid's filter path cannot express. The operator is
+    /// reported rather than dropped; the other queued requests were still applied.
+    UnsupportedFilterOperator(FilterOperator),
+    /// The menu asked the host to open a column chooser. No grid state changed; the request is
+    /// also kept for [`DataGrid::take_column_chooser_request`].
+    ColumnChooserRequested,
+}
+
+impl HeaderMenuPoll {
+    /// Whether the menu reported nothing.
+    pub fn is_idle(&self) -> bool {
+        matches!(self, Self::Idle)
+    }
+
+    /// Whether a grid state change was applied.
+    pub fn changed(&self) -> bool {
+        matches!(self, Self::Applied)
+    }
+}
+
+/// Whether the grid's filter path can express `operator`.
+///
+/// Every [`FilterOperator`] the expression model publishes today is accepted by
+/// [`FilterCondition`]. The predicate is written out rather than assumed so a future operator that
+/// only some surfaces understand is reported through
+/// [`HeaderMenuPoll::UnsupportedFilterOperator`] instead of being silently ignored.
+fn filter_operator_supported(operator: FilterOperator) -> bool {
+    matches!(
+        operator,
+        FilterOperator::Contains
+            | FilterOperator::Equals
+            | FilterOperator::StartsWith
+            | FilterOperator::EndsWith
+            | FilterOperator::NotContains
+            | FilterOperator::EqualsNumber
+            | FilterOperator::GreaterThan
+            | FilterOperator::GreaterOrEqual
+            | FilterOperator::LessThan
+            | FilterOperator::LessOrEqual
+    )
+}
+
 /// Resolves a chooser token to the grid's source column.
 ///
 /// The exact token is preferred; when a width or capability differs between the two controls, the
@@ -1248,6 +1514,10 @@ impl DataGrid {
             pagination: None,
             pagination_applied_page: 0,
             filter_row: None,
+            grid_status_bar: None,
+            summary_row: None,
+            header_menu: None,
+            column_chooser_requested: false,
             selection_changed: Signal1::new(),
             current_changed: Signal1::new(),
             cell_clicked: Signal1::new(),
@@ -1277,6 +1547,11 @@ impl DataGrid {
             extra_header_rows: Vec::new(),
             cell_tooltip: None,
             cell_delegate: None,
+            column_alignments: HashMap::new(),
+            editing: None,
+            row_detail_provider: None,
+            expanded_detail_rows: BTreeSet::new(),
+            detail_heights: HashMap::new(),
         }
     }
 
@@ -1303,6 +1578,12 @@ impl DataGrid {
     pub fn set_header(&mut self, header: &GridViewHeader) {
         self.header_columns = header.columns().to_vec();
         self.header_labels = header.columns().iter().map(|spec| spec.title.clone()).collect();
+        self.column_alignments.clear();
+        for (column, spec) in self.header_columns.iter().enumerate() {
+            if spec.alignment != HorizontalAlignment::Left {
+                self.column_alignments.insert(column, spec.alignment);
+            }
+        }
         self.header_filter_visible = header.filter_icon_visible();
         self.sort_indicator_visible = header.sort_indicator_visible();
         // The header's `Fixed` means "each section fixed at its own spec width"; the grid's
@@ -2185,6 +2466,490 @@ impl DataGrid {
         (tokens, titles)
     }
 
+    // ── Companion wiring (COMP-A8) ──
+
+    /// Attaches `bar` to this grid (COMP-A8).
+    ///
+    /// The strip learns the grid's current row and selection counts immediately and then follows
+    /// them: both are facts the grid already maintains, so there is no signal to subscribe to and
+    /// no work for the host between frames. [`Self::poll_grid_status_bar`] compares the grid's
+    /// counts with the last push and writes only when they move.
+    ///
+    /// Attaching replaces any previous strip, so calling this twice leaves one link rather than
+    /// two. The strip's own `status_clicked` signal is a strip-to-host fact; the grid neither
+    /// consumes nor forwards it.
+    pub fn attach_grid_status_bar(&mut self, bar: &GridStatusBar) {
+        let (counts, redraw) = bar.counts_handle();
+        let current = self.grid_status_counts();
+        {
+            let mut guard = counts.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            *guard = current;
+        }
+        // The strip is a different control, so it needs its own paint request; the grid's redraw
+        // does not cover it.
+        redraw.emit();
+        self.grid_status_bar = Some(GridStatusBarBinding {
+            counts,
+            redraw,
+            pushed: current,
+            _scope: ConnectionScope::new(),
+        });
+        self.base.request_redraw();
+    }
+
+    /// Stops following the attached strip; the counts it last showed stay.
+    pub fn detach_grid_status_bar(&mut self) {
+        if self.grid_status_bar.take().is_some() {
+            self.base.request_redraw();
+        }
+    }
+
+    /// Whether a [`GridStatusBar`] is attached.
+    pub fn is_grid_status_bar_attached(&self) -> bool {
+        self.grid_status_bar.is_some()
+    }
+
+    /// Writes the grid's current counts into the attached strip when they moved.
+    ///
+    /// Called from `draw` and `handle_event`, so a row-count or selection change is reflected by
+    /// the next frame or interaction without the host forwarding it. Returns whether a write
+    /// happened.
+    pub fn poll_grid_status_bar(&mut self) -> bool {
+        let current = self.grid_status_counts();
+        let Some(binding) = self.grid_status_bar.as_mut() else {
+            return false;
+        };
+        if binding.pushed == current {
+            return false;
+        }
+        binding.pushed = current;
+        {
+            let mut guard = binding.counts.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            *guard = current;
+        }
+        binding.redraw.emit();
+        true
+    }
+
+    /// The `(row count, selected count)` pair a [`GridStatusBar`] displays.
+    fn grid_status_counts(&self) -> (u64, u64) {
+        let rows = self.row_count() as u64;
+        let selected = (self.selected_indexes().len() as u64).min(rows);
+        (rows, selected)
+    }
+
+    /// Attaches `row` to this grid (COMP-A8).
+    ///
+    /// The grid computes each configured aggregate from its **projected** rows — the rows left by
+    /// the current filter, in the current sort order — and writes the result through the row's
+    /// shared value cell. The aggregate list is copied from the row at attach time: a widget cannot
+    /// hold a borrow of another, so a later [`SummaryRow::set_aggregates`] needs a re-attach, the
+    /// same rule `set_pagination` documents for the bar's page size.
+    ///
+    /// `Sum`, `Min`, `Max`, `Count` and `Average` are computed here. [`ColumnAggregateKind::Custom`]
+    /// is deliberately not: it means a host-defined aggregate, and the row's `set_value` remains
+    /// the path for that number. Cells are read as display text; a non-numeric cell contributes to
+    /// `Count` but not to a numeric aggregate.
+    pub fn attach_summary_row(&mut self, row: &SummaryRow) {
+        let (values, redraw) = row.values_handle();
+        let aggregates = row.aggregates().to_vec();
+        self.summary_row = Some(SummaryRowBinding {
+            values,
+            redraw,
+            aggregates,
+            key: None,
+            _scope: ConnectionScope::new(),
+        });
+        // Adopt the grid's current numbers now, so attaching does not wait for a frame.
+        self.apply_summary_row();
+        self.base.request_redraw();
+    }
+
+    /// Stops following the attached summary row; the values it last showed stay.
+    pub fn detach_summary_row(&mut self) {
+        if self.summary_row.take().is_some() {
+            self.base.request_redraw();
+        }
+    }
+
+    /// Whether a [`SummaryRow`] is attached.
+    pub fn is_summary_row_attached(&self) -> bool {
+        self.summary_row.is_some()
+    }
+
+    /// Recomputed the attached row's aggregates when the projection moved.
+    ///
+    /// Called from `draw` and `handle_event`. Returns whether the row was written.
+    pub fn poll_summary_row(&mut self) -> bool {
+        let Some(binding) = self.summary_row.as_ref() else {
+            return false;
+        };
+        let key = self.summary_projection_key();
+        if binding.key.as_ref() == Some(&key) {
+            return false;
+        }
+        self.apply_summary_row();
+        true
+    }
+
+    /// The projection the attached row's numbers depend on, or a key that never matches when no
+    /// row is attached.
+    fn summary_projection_key(&self) -> SummaryProjectionKey {
+        SummaryProjectionKey {
+            revision: self.data_projection_revision(),
+            filter: self.filter_expr.clone(),
+            sorts: self.sort_specs.clone(),
+            aggregates: self
+                .summary_row
+                .as_ref()
+                .map(|binding| binding.aggregates.clone())
+                .unwrap_or_default(),
+        }
+    }
+
+    /// The revision that changes whenever the source's contents may have moved.
+    fn data_projection_revision(&self) -> u64 {
+        let revision = self.data_source.as_ref().map_or(0, |source| source.revision());
+        if revision > 0 {
+            revision
+        } else {
+            self.data_generation.load(Ordering::Relaxed)
+        }
+    }
+
+    /// Computes the attached row's aggregates and writes them into its shared cell.
+    fn apply_summary_row(&mut self) {
+        let Some(binding) = self.summary_row.as_ref() else {
+            return;
+        };
+        let aggregates = binding.aggregates.clone();
+        let values = Arc::clone(&binding.values);
+        let redraw = binding.redraw.clone();
+        let key = SummaryProjectionKey {
+            revision: self.data_projection_revision(),
+            filter: self.filter_expr.clone(),
+            sorts: self.sort_specs.clone(),
+            aggregates: aggregates.clone(),
+        };
+        let computed = self.compute_summary_values(&aggregates);
+        {
+            let mut guard = values.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            *guard = computed;
+        }
+        redraw.emit();
+        if let Some(binding) = self.summary_row.as_mut() {
+            binding.key = Some(key);
+        }
+    }
+
+    /// Aggregates `aggregates` over the projected rows.
+    ///
+    /// Reads the source one cell at a time through [`IncrementalTableDataSource::data`] in
+    /// projected order. The projection (`index_projection`) is already cached by the source
+    /// revision, so this walk is what a steady frame avoids rather than what it repeats.
+    fn compute_summary_values(&mut self, aggregates: &[ColumnAggregate]) -> Vec<(String, f64)> {
+        let Some(source) = self.data_source.clone() else {
+            return Vec::new();
+        };
+        let order = self.index_projection();
+        let (tokens, titles) = self.column_token_lookup();
+        let mut values = Vec::new();
+        for aggregate in aggregates {
+            // A custom aggregate is host-defined; the grid has no rule to apply to it.
+            if aggregate.kind == ColumnAggregateKind::Custom {
+                continue;
+            }
+            let Some(column) = resolve_column_token(&aggregate.column_token, &tokens, &titles)
+            else {
+                continue;
+            };
+            let mut populated = 0usize;
+            let mut numeric = 0usize;
+            let mut sum = 0.0f64;
+            let mut min = f64::INFINITY;
+            let mut max = f64::NEG_INFINITY;
+            for &row in order.iter() {
+                let Some(cell) = source.data(row, column) else {
+                    continue;
+                };
+                let cell = cell.trim();
+                if cell.is_empty() {
+                    continue;
+                }
+                populated += 1;
+                let Ok(number) = cell.parse::<f64>() else {
+                    continue;
+                };
+                if !number.is_finite() {
+                    continue;
+                }
+                numeric += 1;
+                sum += number;
+                min = min.min(number);
+                max = max.max(number);
+            }
+            let value = match aggregate.kind {
+                ColumnAggregateKind::Sum => Some(sum),
+                ColumnAggregateKind::Min => (numeric > 0).then_some(min),
+                ColumnAggregateKind::Max => (numeric > 0).then_some(max),
+                ColumnAggregateKind::Count => Some(populated as f64),
+                ColumnAggregateKind::Average => (numeric > 0).then_some(sum / numeric as f64),
+                ColumnAggregateKind::Custom => None,
+            };
+            if let Some(value) = value.filter(|value| value.is_finite()) {
+                values.push((aggregate.column_token.clone(), value));
+            }
+        }
+        values
+    }
+
+    /// The token and title maps built from this grid's header columns and labels.
+    ///
+    /// Tokens are the published `ColumnSpec::to_token` spelling, which is what a `ColumnChooser`
+    /// and this grid's header both report. Titles are kept as a fallback so a token written with a
+    /// different width or capability still finds its column.
+    fn column_token_lookup(&self) -> (HashMap<String, usize>, HashMap<String, usize>) {
+        let mut tokens = HashMap::new();
+        let mut titles = HashMap::new();
+        for index in 0..self.column_count() {
+            if let Some(spec) = self.header_columns.get(index) {
+                tokens.insert(spec.to_token(), index);
+            }
+            let title = self
+                .header_columns
+                .get(index)
+                .map(|spec| spec.title.clone())
+                .or_else(|| self.header_labels.get(index).cloned());
+            if let Some(title) = title {
+                titles.entry(title).or_insert(index);
+            }
+        }
+        (tokens, titles)
+    }
+
+    /// Attaches `menu` to this grid (COMP-A8).
+    ///
+    /// The menu's four request signals are subscribed; each resolved request is parked in a shared
+    /// queue and drained by [`Self::poll_header_menu`]. Column tokens are resolved against the
+    /// column set present at attach time, so a token this grid does not know is ignored rather than
+    /// guessed at (the rule the chooser link documents). `filter_requested` carries only an
+    /// operator, so the column and operand come from the menu's shared context at signal time.
+    pub fn attach_header_menu(&mut self, menu: &HeaderMenu) {
+        let (tokens, titles) = self.column_token_lookup();
+        let tokens = Arc::new(tokens);
+        let titles = Arc::new(titles);
+        let context = menu.context_handle();
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let scope = ConnectionScope::new();
+        let redraw = self.base.redraw_requested_signal().clone();
+
+        let sink = Arc::clone(&requests);
+        let lookup_tokens = Arc::clone(&tokens);
+        let lookup_titles = Arc::clone(&titles);
+        let request_redraw = redraw.clone();
+        menu.sort_requested.connect_scoped(&scope, move |reported| {
+            let (token, state) = &*reported;
+            let Some(column) = resolve_column_token(token, &lookup_tokens, &lookup_titles) else {
+                return;
+            };
+            sink.lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .push(HeaderMenuRequest::Sort { column, state: *state });
+            request_redraw.emit();
+        });
+
+        let sink = Arc::clone(&requests);
+        let lookup_tokens = Arc::clone(&tokens);
+        let lookup_titles = Arc::clone(&titles);
+        let filter_context = Arc::clone(&context);
+        let request_redraw = redraw.clone();
+        menu.filter_requested.connect_scoped(&scope, move |operator| {
+            let (token, operand) = {
+                let guard = filter_context.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                (guard.0.clone(), guard.1.clone())
+            };
+            let Some(column) = resolve_column_token(&token, &lookup_tokens, &lookup_titles) else {
+                return;
+            };
+            sink.lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .push(HeaderMenuRequest::Filter { column, operator: *operator, operand });
+            request_redraw.emit();
+        });
+
+        let sink = Arc::clone(&requests);
+        let lookup_tokens = Arc::clone(&tokens);
+        let lookup_titles = Arc::clone(&titles);
+        let request_redraw = redraw.clone();
+        menu.hide_column_requested.connect_scoped(&scope, move |token| {
+            let Some(column) = resolve_column_token(token.as_str(), &lookup_tokens, &lookup_titles)
+            else {
+                return;
+            };
+            sink.lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .push(HeaderMenuRequest::Hide { column });
+            request_redraw.emit();
+        });
+
+        let sink = Arc::clone(&requests);
+        let request_redraw = redraw;
+        menu.column_chooser_requested.connect_scoped(&scope, move |token| {
+            let column = resolve_column_token(token.as_str(), &tokens, &titles);
+            sink.lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .push(HeaderMenuRequest::Choose { column });
+            request_redraw.emit();
+        });
+
+        self.header_menu = Some(HeaderMenuBinding { requests, _scope: scope });
+        self.base.request_redraw();
+    }
+
+    /// Stops following the attached header menu; the state its last requests produced stays.
+    pub fn detach_header_menu(&mut self) {
+        if self.header_menu.take().is_some() {
+            self.base.request_redraw();
+        }
+    }
+
+    /// Whether a [`HeaderMenu`] is attached.
+    pub fn is_header_menu_attached(&self) -> bool {
+        self.header_menu.is_some()
+    }
+
+    /// Drops the queued column-chooser request, returning whether the menu asked for one.
+    ///
+    /// The grid does not own a chooser, so the intent is left to the host. Both this flag and the
+    /// poll's [`HeaderMenuPoll::ColumnChooserRequested`] report it; neither opens a chooser by
+    /// itself.
+    pub fn take_column_chooser_request(&mut self) -> bool {
+        core::mem::take(&mut self.column_chooser_requested)
+    }
+
+    /// Applies every header-menu request reported since the last poll (COMP-A8).
+    ///
+    /// Called from `draw` and `handle_event`, so a menu activation takes effect on the next frame
+    /// or interaction. Returns [`HeaderMenuPoll::Idle`] when nothing was queued; a filter operator
+    /// the filter path cannot express is reported rather than dropped.
+    pub fn poll_header_menu(&mut self) -> HeaderMenuPoll {
+        let Some(binding) = self.header_menu.as_ref() else {
+            return HeaderMenuPoll::Idle;
+        };
+        let requests: Vec<HeaderMenuRequest> = {
+            let mut guard =
+                binding.requests.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            core::mem::take(&mut *guard)
+        };
+        if requests.is_empty() {
+            return HeaderMenuPoll::Idle;
+        }
+        let mut changed = false;
+        let mut unsupported = None;
+        let mut chooser = false;
+        for request in requests {
+            match request {
+                HeaderMenuRequest::Sort { column, state } => {
+                    changed |= self.apply_header_sort(column, state);
+                }
+                HeaderMenuRequest::Filter { column, operator, operand } => {
+                    if !filter_operator_supported(operator) {
+                        unsupported = Some(operator);
+                        continue;
+                    }
+                    changed |= self.apply_header_filter(column, operator, operand);
+                }
+                HeaderMenuRequest::Hide { column } => {
+                    if column < self.column_count() && !self.is_column_hidden(column) {
+                        self.set_column_hidden(column, true);
+                        changed = true;
+                    }
+                }
+                HeaderMenuRequest::Choose { .. } => {
+                    self.column_chooser_requested = true;
+                    chooser = true;
+                }
+            }
+        }
+        if let Some(operator) = unsupported {
+            return HeaderMenuPoll::UnsupportedFilterOperator(operator);
+        }
+        if changed {
+            return HeaderMenuPoll::Applied;
+        }
+        if chooser {
+            return HeaderMenuPoll::ColumnChooserRequested;
+        }
+        HeaderMenuPoll::Idle
+    }
+
+    /// Applies one menu sort request, returning whether the sort order moved.
+    fn apply_header_sort(&mut self, column: usize, state: SortState) -> bool {
+        if column >= self.column_count() {
+            return false;
+        }
+        match state {
+            SortState::None => {
+                let before = self.sort_specs.len();
+                self.sort_specs.retain(|spec| spec.column != column);
+                if self.sort_specs.len() == before {
+                    return false;
+                }
+                self.invalidate_projection_cache();
+                self.clear_cache();
+                self.base.request_redraw();
+                true
+            }
+            SortState::Asc | SortState::Desc => {
+                let descending = state == SortState::Desc;
+                let specs = Vec::from([SortSpec { column, descending }]);
+                if self.sort_specs == specs {
+                    return false;
+                }
+                self.set_sort_specs(specs);
+                // The same fact a header click announces, so a host listening to `sort_changed`
+                // sees menu and header sorting through one channel.
+                self.sort_changed.emit((column, descending));
+                true
+            }
+        }
+    }
+
+    /// Applies one menu filter request, returning whether the filter expression moved.
+    ///
+    /// The column's previous condition is replaced; conditions on other columns stay, which is
+    /// what [`FilterExpr::without_column`] exists for. The flat `filters` mirror is rebuilt from
+    /// the resulting tree so `summary_text` and the `filters` property agree with it.
+    fn apply_header_filter(
+        &mut self,
+        column: usize,
+        operator: FilterOperator,
+        operand: String,
+    ) -> bool {
+        if column >= self.column_count() {
+            return false;
+        }
+        let condition = FilterCondition::new(column, operator, operand);
+        let remaining = self.filter_expr.without_column(column);
+        let expr = match remaining {
+            FilterExpr::MatchAll => FilterExpr::Predicate(condition),
+            remaining => FilterExpr::and(vec![remaining, FilterExpr::Predicate(condition)]),
+        };
+        if expr == self.filter_expr {
+            return false;
+        }
+        self.filters = expr
+            .conditions()
+            .into_iter()
+            .map(|condition| ColumnFilter {
+                column: condition.column,
+                query: condition.operand.clone(),
+            })
+            .collect();
+        self.set_filter_expr(expr);
+        true
+    }
+
     // ── Merged cells (V-014) ──
 
     /// The configured spans, in insertion order.
@@ -2309,6 +3074,186 @@ impl DataGrid {
     /// Whether a paint delegate is installed.
     pub fn has_cell_delegate(&self) -> bool {
         self.cell_delegate.is_some()
+    }
+
+    // ── Column alignment (V-001) ──
+
+    /// The alignment `column` paints its values with.
+    ///
+    /// A column with no explicit alignment answers `Left`, the historical behaviour, so setting
+    /// alignment on one numeric column leaves the rest unchanged.
+    pub fn column_alignment(&self, column: usize) -> HorizontalAlignment {
+        self.column_alignments.get(&column).copied().unwrap_or(HorizontalAlignment::Left)
+    }
+
+    /// Sets `column`'s cell alignment, returning whether the column exists.
+    ///
+    /// This is the per-column counterpart of the header spec's
+    /// [`ColumnSpec::alignment`]: the grid paints it and the header only carries it.
+    pub fn set_column_alignment(&mut self, column: usize, alignment: HorizontalAlignment) -> bool {
+        if column >= self.column_count() {
+            return false;
+        }
+        if alignment == HorizontalAlignment::Left {
+            self.column_alignments.remove(&column);
+        } else {
+            self.column_alignments.insert(column, alignment);
+        }
+        self.base.request_redraw();
+        true
+    }
+
+    // ── In-place editing (V-002) ──
+
+    /// Begins an in-place edit of `(row, column)` and returns the editor.
+    ///
+    /// The grid owns the *lifecycle* — which cell is open, and what a commit means — while the
+    /// host owns the gesture. [`EditTriggers`] and `edit_requested` remain the way a gesture is
+    /// reported; a host that wants a built-in editor answers the signal with this call. The
+    /// returned editor is seeded with the cell's current text and placed over the cell's box, so
+    /// placing it needs no second geometry derivation.
+    ///
+    /// Returns `None` when the coordinate is outside the model: three ways for the request to be
+    /// meaningless rather than errors.
+    pub fn begin_edit(&mut self, row: usize, column: usize) -> Option<Box<dyn Widget>> {
+        if row >= self.row_count() || column >= self.column_count() {
+            return None;
+        }
+        let mut text = String::new();
+        if let Some(source) = self.data_source.as_ref() {
+            let _ = source.fill_cell(row, column, &mut text);
+        }
+        self.editing = Some((row, column));
+        self.base.request_redraw();
+        let editor = DataGridCellEditor::new(self.cell_rect(row, column), text);
+        Some(Box::new(editor))
+    }
+
+    /// Reads the editor's text back and closes the edit, returning the committed value.
+    ///
+    /// Returns `None` when no edit is open or `editor` was not built by [`Self::begin_edit`].
+    pub fn commit_edit(&mut self, editor: &dyn Widget) -> Option<String> {
+        let editor = (editor as &dyn core::any::Any).downcast_ref::<DataGridCellEditor>()?;
+        self.editing.take()?;
+        let text = editor.text().to_string();
+        self.base.request_redraw();
+        Some(text)
+    }
+
+    /// Closes the open edit without committing it.
+    pub fn cancel_edit(&mut self) {
+        if self.editing.take().is_some() {
+            self.base.request_redraw();
+        }
+    }
+
+    /// The cell currently being edited, if any.
+    pub fn editing_cell(&self) -> Option<(usize, usize)> {
+        self.editing
+    }
+
+    // ── Row detail (V-009) ──
+
+    /// Installs the detail-text source shown under an expanded row.
+    pub fn set_row_detail_provider(&mut self, provider: RowDetailProvider) {
+        self.row_detail_provider = Some(provider);
+        self.base.request_redraw();
+    }
+
+    /// Removes the detail-text source; expanded rows keep their reserved band.
+    pub fn clear_row_detail_provider(&mut self) {
+        if self.row_detail_provider.take().is_some() {
+            self.base.request_redraw();
+        }
+    }
+
+    /// The detail text for `row`, from the installed provider, or `None`.
+    pub fn row_detail_text(&self, row: usize) -> Option<String> {
+        self.row_detail_provider.as_ref().and_then(|provider| provider(row))
+    }
+
+    /// Sets the height of `row`'s detail band when it is open.
+    ///
+    /// A height of zero is clamped to one pixel: an expanded row that reserves no room would be
+    /// indistinguishable from a collapsed one.
+    pub fn set_detail_height(&mut self, row: usize, height: u32) {
+        let height = height.max(1);
+        if self.detail_heights.insert(row, height) == Some(height) {
+            return;
+        }
+        if self.expanded_detail_rows.contains(&row) {
+            self.base.request_layout();
+            self.base.request_redraw();
+        }
+    }
+
+    /// The height of `row`'s detail band when it is open.
+    pub fn detail_height(&self, row: usize) -> u32 {
+        self.detail_heights.get(&row).copied().unwrap_or(DEFAULT_ROW_DETAIL_HEIGHT)
+    }
+
+    /// Whether `row`'s detail band is open.
+    pub fn is_row_detail_expanded(&self, row: usize) -> bool {
+        self.expanded_detail_rows.contains(&row)
+    }
+
+    /// Opens or closes `row`'s detail band, returning the new state.
+    ///
+    /// Returns `false` when `row` is outside the model; a toggle that changes nothing would claim
+    /// a state the grid cannot paint.
+    pub fn toggle_row_detail(&mut self, row: usize) -> bool {
+        if row >= self.row_count() {
+            return false;
+        }
+        let expanded = if self.expanded_detail_rows.remove(&row) {
+            false
+        } else {
+            self.expanded_detail_rows.insert(row);
+            true
+        };
+        self.base.request_layout();
+        self.base.request_redraw();
+        expanded
+    }
+
+    /// The height of `row` including its open detail band.
+    pub fn row_height_at(&self, row: usize) -> u32 {
+        if self.expanded_detail_rows.contains(&row) {
+            self.row_height.saturating_add(self.detail_height(row))
+        } else {
+            self.row_height
+        }
+    }
+
+    /// The top of `row` relative to the first visible row, accumulating every open detail band
+    /// between the scroll position and the row (V-009).
+    fn row_view_offset(&self, row: usize) -> i32 {
+        let rows = row.saturating_sub(self.scroll_row) as u64;
+        let mut offset = rows.saturating_mul(self.row_height as u64);
+        for detail_row in self.expanded_detail_rows.range(self.scroll_row..row) {
+            offset = offset.saturating_add(self.detail_height(*detail_row) as u64);
+        }
+        offset.min(i32::MAX as u64) as i32
+    }
+
+    /// The projected row whose band contains `dy`, or `None` past the model.
+    fn row_at_dy(&self, dy: i32) -> Option<usize> {
+        if dy < 0 {
+            return None;
+        }
+        let mut row = self.scroll_row;
+        let mut top = 0i64;
+        let target = dy as i64;
+        let count = self.row_count();
+        while row < count {
+            let height = self.row_height_at(row) as i64;
+            if target < top.saturating_add(height) {
+                return Some(row);
+            }
+            top = top.saturating_add(height);
+            row += 1;
+        }
+        None
     }
 
     /// Whether the filter and sort projection covers the whole model.
@@ -3205,15 +4150,16 @@ impl DataGrid {
         let cells = self.cells_box();
         // The row also travels the scroll: `row` is a **global** projected index, so its screen y is
         // measured from the current scroll row, the same way the column is measured from
-        // `scroll_column`. Before this the row was used raw, so the first window row always painted
-        // at the top of the grid regardless of scroll (D09-VIEW-01).
-        let row = row.saturating_sub(self.scroll_row);
+        // `scroll_column`. The offset accumulates every open detail band between the scroll
+        // position and the row (V-009), so an expanded row shifts its followers down by exactly
+        // the room its detail band takes.
+        let row = self.row_view_offset(row);
         // A frozen column is pinned to the leading edge by its **own** index. The scrolling band
         // starts after the frozen prefix, and each column travels by the sum of the widths before
         // it — not by `index * width`, which is only true while every column is the same size.
         Rect::new(
             cells.x + self.column_view_x(column),
-            cells.y + row as i32 * self.row_height as i32,
+            cells.y + row,
             self.column_width_at(column),
             self.row_height,
         )
@@ -3230,6 +4176,7 @@ impl DataGrid {
         value: Option<&String>,
         cell_border: Color,
         ink: Color,
+        alignment: HorizontalAlignment,
     ) {
         context.draw_rect(cell_rect, cell_border);
         let Some(text) = value else {
@@ -3250,7 +4197,7 @@ impl DataGrid {
             text,
             font,
             ink,
-            HorizontalAlignment::Left,
+            alignment,
         );
     }
 
@@ -3273,7 +4220,7 @@ impl DataGrid {
                 return;
             }
         }
-        self.paint_cell(context, cell_rect, value, cell_border, ink);
+        self.paint_cell(context, cell_rect, value, cell_border, ink, self.column_alignment(column));
     }
 
     /// The union box of a merged run (V-014).
@@ -3340,7 +4287,7 @@ impl DataGrid {
             return None;
         }
         let column = self.column_at_dx(dx)?;
-        let row = self.scroll_row + dy as usize / self.row_height.max(1) as usize;
+        let row = self.row_at_dy(dy)?;
         if column >= self.column_count() || row >= self.row_count() {
             return None;
         }
@@ -3716,6 +4663,12 @@ impl Draw for DataGrid {
         self.poll_column_chooser();
         // A bound filter row reports through the same shared-cell route (chapter 3, gap 2).
         self.poll_filter_row();
+        // The companion links below are poll-only writes (COMP-A8): the strip's counts, the
+        // summary row's aggregates and any queued header-menu intent are applied before the frame
+        // that shows their effect.
+        self.poll_grid_status_bar();
+        self.poll_summary_row();
+        self.poll_header_menu();
         let rect = self.base.geometry();
 
         // Chrome colours resolve explicit style first, then the theme's resolved style for
@@ -4041,6 +4994,37 @@ impl Draw for DataGrid {
             }
         }
 
+        // ── Row detail bands (V-009) ──
+        //
+        // An expanded row reserves its detail height in the row geometry, so this pass only has
+        // to paint the reserved band. The text comes from the provider once per painted band,
+        // which keeps a collapsed or off-screen row free of calls.
+        for row_idx in 0..window_view.len() {
+            let global_row = row_origin + row_idx;
+            if !self.expanded_detail_rows.contains(&global_row) {
+                continue;
+            }
+            let row_rect = self.cell_rect(global_row, 0);
+            let detail_top = row_rect.y + self.row_height as i32;
+            if detail_top >= cells_bottom {
+                break;
+            }
+            let height = self.detail_height(global_row);
+            let band = Rect::new(cells.x, detail_top, cells.width, height);
+            context.fill_rect(band, surface.blend(&ink, 0.04));
+            context.draw_rect(band, cell_border);
+            if let Some(text) = self.row_detail_text(global_row).filter(|text| !text.is_empty()) {
+                let font = effective_font(self.style());
+                context.draw_text_fitted_cow(
+                    context.text_line(band, font),
+                    &text,
+                    font,
+                    ink.blend(&surface, 0.2),
+                    HorizontalAlignment::Left,
+                );
+            }
+        }
+
         // ── Selection and hover, painted **over** the cells ──
         //
         // The selection was stored and never drawn: a press set `self.selection`, re-requested a
@@ -4131,6 +5115,11 @@ impl crate::event::EventHandler for DataGrid {
         self.poll_column_chooser();
         // A filter-row edit is a shared write as well (chapter 3, gap 2).
         self.poll_filter_row();
+        // A companion request is likewise a shared write, so it is drained before the event is
+        // routed and the frame that follows already reflects it (COMP-A8).
+        self.poll_grid_status_bar();
+        self.poll_summary_row();
+        self.poll_header_menu();
         // The base keeps the control-level hover/press facts and answers `widget_state()`. This
         // handler did not forward to it, so `"data_grid:hover"` could never fire.
         self.base.handle_event(event);
@@ -4354,6 +5343,65 @@ mod tests {
             data: (0..rows).map(|r| (0..cols).map(|c| format!("{r}:{c}")).collect()).collect(),
         }));
         grid
+    }
+
+    /// V-002: `begin_edit`'s editor is a mounted, painted control, not just a value carrier.
+    ///
+    /// `DataGridCellEditor` is built only by [`DataGrid::begin_edit`] and read back only by
+    /// [`DataGrid::commit_edit`], and no test exercised either: the registration and contract gates
+    /// passed for a control that nothing ever mounted. This mounts it, paints it, and commits
+    /// through it, so the three facts a host relies on — it lands on the cell, it draws, and the
+    /// committed value is the cell's text — are asserted rather than assumed.
+    #[test]
+    fn the_cell_editor_paints_its_box_and_commits_its_text() {
+        use crate::core::Size;
+        use crate::render::{PaintBackend, RenderContext, SoftwarePaintBackend};
+        use crate::widget::draw_bridge::draw_of;
+
+        // The two halves of this control's lifecycle: built directly, and built by the grid.
+        let mut direct = DataGridCellEditor::new(Rect::new(0, 0, 60, 20), "seed");
+        assert_eq!(direct.text(), "seed", "the constructor seeds the value it was given");
+        direct.set_text("typed");
+        assert_eq!(direct.text(), "typed", "a replacement is read back verbatim");
+
+        let mut grid = static_grid(2, 2);
+        let mut editor = grid.begin_edit(1, 0).expect("the coordinate is inside the model");
+        assert_eq!(grid.editing_cell(), Some((1, 0)));
+        // Naming the concrete type here is also what the control-coverage gate reads: the editor
+        // is the widget `begin_edit` hands back, so this is the downcast a host performs.
+        let seeded = (editor.as_ref() as &dyn core::any::Any)
+            .downcast_ref::<DataGridCellEditor>()
+            .expect("begin_edit builds a DataGridCellEditor")
+            .text()
+            .to_string();
+        assert_eq!(seeded, "1:0", "the editor is seeded with the cell's current text");
+        let cell = editor.geometry();
+        assert_eq!(cell, grid.cell_rect(1, 0), "the editor is placed over the cell it edits");
+
+        // The editor is positioned in the grid's coordinates, so the backend has to cover the
+        // grid rather than only the cell — a cell-sized frame would clip the paint at its origin
+        // and report an empty `draw`.
+        let size = Size::new(600, 300);
+        let mut backend = SoftwarePaintBackend::new(size, 1.0);
+        let probe = Color { r: 255, g: 0, b: 255, a: 255 };
+        backend.begin_frame(probe);
+        {
+            let drawable = draw_of(editor.as_mut()).expect("the editor is a drawable widget");
+            let mut context = RenderContext::new(&mut backend);
+            drawable.draw(&mut context);
+        }
+        backend.end_frame();
+        let painted = backend
+            .frame_rgba()
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .any(|px| (px[0], px[1], px[2]) != (probe.r, probe.g, probe.b));
+        assert!(painted, "a `draw` that paints nothing is an empty implementation");
+
+        let committed = grid.commit_edit(editor.as_ref()).expect("the edit is open");
+        assert_eq!(committed, "1:0", "the editor is seeded with the cell's current text");
+        assert_eq!(grid.editing_cell(), None, "committing closes the edit");
     }
 
     /// V-015: a chooser toggle reaches the grid's hidden-column state.
@@ -5633,5 +6681,181 @@ mod tests {
         assert!(calls.load(Ordering::Relaxed) > 0, "the delegate is called by the paint path");
         grid.clear_cell_delegate();
         assert!(!grid.has_cell_delegate());
+    }
+
+    // ─── COMP-A8: companion wiring ───
+
+    fn header_with_titles(titles: &[&str]) -> GridViewHeader {
+        let mut header = GridViewHeader::new(Rect::new(0, 0, 600, 22));
+        header.set_columns(
+            titles.iter().map(|title| ColumnSpec::new(*title, 120)).collect::<Vec<_>>(),
+        );
+        header
+    }
+
+    /// COMP-A8: attaching pushes the counts, a later move is polled in, and detaching stops the
+    /// link without rewinding the strip.
+    #[test]
+    fn the_status_bar_follows_the_grids_counts() {
+        use crate::widget::companions::GridStatusBar;
+
+        let mut grid = static_grid(4, 2);
+        let bar = GridStatusBar::new(Rect::new(0, 0, 300, 28));
+        grid.attach_grid_status_bar(&bar);
+        assert!(grid.is_grid_status_bar_attached());
+        assert_eq!(bar.row_count(), 4, "attach pushes the current row count");
+        assert_eq!(bar.selected_count(), 0);
+        assert!(!grid.poll_grid_status_bar(), "a steady grid changes nothing");
+
+        grid.select_all();
+        assert!(grid.poll_grid_status_bar(), "the selection moved");
+        assert_eq!(bar.selected_count(), 4);
+        assert!(!grid.poll_grid_status_bar(), "the second poll has nothing to do");
+
+        grid.detach_grid_status_bar();
+        assert!(!grid.is_grid_status_bar_attached());
+        grid.set_data_source(Arc::new(StaticSource {
+            rows: 9,
+            cols: 2,
+            data: (0..9).map(|r| (0..2).map(|c| format!("{r}:{c}")).collect()).collect(),
+        }));
+        assert!(!grid.poll_grid_status_bar(), "a detached bar is not polled");
+        assert_eq!(bar.row_count(), 4, "detach leaves the last counts");
+    }
+
+    /// COMP-A8: the row's aggregates come from the projected rows and follow a filter.
+    #[test]
+    fn the_summary_row_follows_the_projected_rows() {
+        use crate::widget::companions::{ColumnAggregate, ColumnAggregateKind, SummaryRow};
+
+        let mut grid = DataGrid::new(Rect::new(0, 0, 600, 300));
+        grid.set_data_source(Arc::new(StaticSource {
+            rows: 3,
+            cols: 2,
+            data: vec![
+                vec!["1".to_string(), "10".to_string()],
+                vec!["2".to_string(), "20".to_string()],
+                vec!["3".to_string(), "30".to_string()],
+            ],
+        }));
+        let header = header_with_titles(&["Qty", "Price"]);
+        grid.set_header(&header);
+        let qty = ColumnSpec::new("Qty", 120).to_token();
+        let price = ColumnSpec::new("Price", 120).to_token();
+
+        let mut row = SummaryRow::new(Rect::new(0, 0, 400, 32));
+        row.set_aggregates(vec![
+            ColumnAggregate::new(qty.clone(), ColumnAggregateKind::Sum, "Qty"),
+            ColumnAggregate::new(price.clone(), ColumnAggregateKind::Average, "Price"),
+        ]);
+
+        grid.attach_summary_row(&row);
+        assert!(grid.is_summary_row_attached());
+        assert_eq!(row.value(&qty), Some(6.0), "attach pushes the current sum");
+        assert_eq!(row.value(&price), Some(20.0), "and the current average");
+        assert!(!grid.poll_summary_row(), "a steady projection is not recomputed");
+
+        grid.set_filters(vec![ColumnFilter { column: 0, query: "1".to_string() }]);
+        assert!(grid.poll_summary_row(), "the filter moved the projection");
+        assert_eq!(row.value(&qty), Some(1.0), "the sum follows the visible rows");
+        assert_eq!(row.value(&price), Some(10.0));
+        assert!(!grid.poll_summary_row(), "the second poll has nothing to do");
+
+        grid.detach_summary_row();
+        assert!(!grid.is_summary_row_attached());
+        grid.set_filters(Vec::new());
+        assert!(!grid.poll_summary_row(), "a detached row is not polled");
+        assert_eq!(row.value(&qty), Some(1.0), "detach leaves the last values");
+    }
+
+    /// COMP-A8: sort, filter, hide and chooser requests are applied by the poll.
+    #[test]
+    fn the_header_menu_requests_reach_the_grid() {
+        use crate::widget::companions::{Direction, HeaderMenu};
+
+        let mut grid = static_grid(4, 2);
+        let header = header_with_titles(&["First", "Second"]);
+        grid.set_header(&header);
+        let first = header.columns()[0].to_token();
+        let anchor = Rect::new(100, 0, 120, 22);
+        let mut menu = HeaderMenu::new(Rect::new(0, 0, 320, 240));
+
+        grid.attach_header_menu(&menu);
+        assert!(grid.is_header_menu_attached());
+        assert_eq!(grid.poll_header_menu(), HeaderMenuPoll::Idle, "nothing is queued");
+
+        // Row 0 is "Sort ascending" while no sort is active.
+        menu.open_for(first.clone(), anchor);
+        assert!(menu.activate_selected());
+        assert_eq!(grid.poll_header_menu(), HeaderMenuPoll::Applied);
+        let specs = grid.sort_specs();
+        assert_eq!(specs.len(), 1);
+        assert_eq!(specs[0], SortSpec { column: 0, descending: false });
+        assert_eq!(grid.poll_header_menu(), HeaderMenuPoll::Idle, "the queue is drained");
+
+        // With a sort active the rows are Asc, Desc, Clear, Filter, Hide, Choose.
+        menu.open_for(first.clone(), anchor);
+        menu.set_filter_text("1");
+        for _ in 0..3 {
+            menu.move_selection(Direction::Next);
+        }
+        assert!(menu.activate_selected());
+        assert_eq!(grid.poll_header_menu(), HeaderMenuPoll::Applied);
+        assert_eq!(grid.fetch_visible_cells().len(), 1, "only the row containing 1 survives");
+
+        menu.open_for(first.clone(), anchor);
+        for _ in 0..4 {
+            menu.move_selection(Direction::Next);
+        }
+        assert!(menu.activate_selected());
+        assert_eq!(grid.poll_header_menu(), HeaderMenuPoll::Applied);
+        assert!(grid.is_column_hidden(0), "Hide column reaches the grid");
+
+        menu.open_for(first.clone(), anchor);
+        for _ in 0..5 {
+            menu.move_selection(Direction::Next);
+        }
+        assert!(menu.activate_selected());
+        assert_eq!(grid.poll_header_menu(), HeaderMenuPoll::ColumnChooserRequested);
+        assert!(grid.take_column_chooser_request(), "the host can drain the chooser intent");
+        assert!(!grid.take_column_chooser_request(), "the intent is reported once");
+
+        grid.detach_header_menu();
+        assert!(!grid.is_header_menu_attached());
+        assert!(!menu.activate_selected(), "the menu is closed already");
+        menu.open_for(first, anchor);
+        assert!(menu.activate_selected());
+        assert_eq!(
+            grid.poll_header_menu(),
+            HeaderMenuPoll::Idle,
+            "a detached menu reports nothing"
+        );
+        assert!(grid.is_column_hidden(0), "the last applied hide stays");
+    }
+
+    /// COMP-A8: the menu's operator reaches the grid's filter expression unchanged.
+    #[test]
+    fn a_header_menu_filter_keeps_its_operator() {
+        use crate::widget::companions::HeaderMenu;
+
+        let mut grid = DataGrid::new(Rect::new(0, 0, 300, 200));
+        grid.set_data_source(Arc::new(StaticSource {
+            rows: 4,
+            cols: 1,
+            data: (1..=4).map(|value| vec![value.to_string()]).collect(),
+        }));
+        let header = header_with_titles(&["N"]);
+        grid.set_header(&header);
+        let token = header.columns()[0].to_token();
+        let mut menu = HeaderMenu::new(Rect::new(0, 0, 320, 240));
+        grid.attach_header_menu(&menu);
+
+        menu.open_for(token, Rect::new(0, 0, 100, 22));
+        menu.set_filter_text("2");
+        menu.filter_requested.emit(FilterOperator::GreaterThan);
+        assert_eq!(grid.poll_header_menu(), HeaderMenuPoll::Applied);
+        let rows = grid.fetch_visible_cells();
+        assert_eq!(rows.len(), 2, "greater than 2 keeps 3 and 4");
+        assert_eq!(rows[0][0], Some("3".to_string()));
     }
 }

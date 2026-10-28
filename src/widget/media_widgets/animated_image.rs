@@ -802,10 +802,8 @@ impl Draw for AnimatedImage {
             // it sits on; it cannot recede toward its own contrast colour the way ink does,
             // because that would make it stand out *more* against the page.
             let window_fill = {
-                let manager = crate::style::theme_manager();
-                manager
-                    .current_theme()
-                    .map(|active| active.colors.background)
+                crate::style::palette_shared()
+                    .map(|colors| colors.background)
                     .unwrap_or(Color::WHITE)
             };
             let border_color =

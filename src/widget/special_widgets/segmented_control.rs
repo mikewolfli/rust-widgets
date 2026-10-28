@@ -1017,17 +1017,13 @@ impl Draw for SegmentedControl {
         // control itself is not a filled call to action, so the role's primary fill is not used.
         // Its accent serves the selection instead, and the bar derives its own surface below.
         let theme = crate::style::resolved_theme_style_shared("segmented_control");
-        // Read as its own lock acquisition and copied out as values, so the guard is dropped
-        // before anything else touches the theme.
+        // Read once from the palette snapshot and copied out as values; `palette_shared()` holds
+        // no manager guard, so the manager is free for the rest of the draw.
         let (window_fill, foreground, primary, muted) = {
-            let manager = crate::style::theme_manager();
-            match manager.current_theme() {
-                Some(active) => (
-                    active.colors.background,
-                    active.colors.foreground,
-                    active.colors.primary,
-                    active.colors.secondary,
-                ),
+            match crate::style::palette_shared() {
+                Some(colors) => {
+                    (colors.background, colors.foreground, colors.primary, colors.secondary)
+                }
                 None => (
                     Color::rgb(240, 240, 240),
                     Color::BLACK,

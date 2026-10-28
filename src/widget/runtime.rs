@@ -765,6 +765,13 @@ pub fn unregister(id: ObjectId) -> bool {
     // A host observer of this widget's IME pre-edit would otherwise outlive the control it
     // observes and keep its captured state alive for the rest of the thread.
     clear_ime_preedit_callbacks(id);
+    // A host-registered repeating timer would otherwise outlive the control: the worker would
+    // keep waking and posting `Event::Timer` to an id that no longer resolves. The loop owns the
+    // timer set, so the purge goes through the shared registry rather than a manager method
+    // (G-901). The dialog/full-widget profiles compile `runtime` but not the purge registry's
+    // profile, so the call is gated to the profile that owns both.
+    #[cfg(full_widgets)]
+    let _ = crate::event::timer::stop_timers_for_target_everywhere(id);
     // And it must not keep pointer capture: routing would send every subsequent
     // pointer event to an id that resolves to nothing.
     let _ = CAPTURE.try_with(|capture| {
@@ -5604,6 +5611,57 @@ fn recycle_layer_pixels(pixels: Rc<Vec<u8>>) {
     }
 }
 
+thread_local! {
+    /// Software backends retained between whole-frame paints (G-801).
+    ///
+    /// The three frame entry points used to build a fresh [`SoftwarePaintBackend`] per frame,
+    /// which allocated and zero-filled both halves of its double buffer (16.6 MB at 1080p).
+    /// The same size-keyed take/return discipline as [`LAYER_BACKEND_POOL`] keeps the back
+    /// buffer across frames; only the buffer handed to the caller is allocated anew.
+    #[allow(clippy::missing_const_for_thread_local)]
+    static FRAME_BACKEND_POOL: RefCell<Vec<(Size, SoftwarePaintBackend)>> = RefCell::new(Vec::new());
+}
+
+/// How many whole-frame backends the pool retains; beyond it a backend is dropped, which is the
+/// pre-pool behaviour for that frame.
+const MAX_POOLED_FRAME_BACKENDS: usize = 4;
+
+/// Takes a backend ready to paint a whole frame of `size`.
+fn take_frame_backend(size: Size) -> SoftwarePaintBackend {
+    FRAME_BACKEND_POOL.with(|pool| {
+        let reused = {
+            let mut pool = pool.borrow_mut();
+            pool.iter()
+                .position(|(pooled_size, _)| *pooled_size == size)
+                .map(|index| pool.swap_remove(index))
+        };
+        match reused {
+            Some((_, mut backend)) => {
+                // A reused backend must not answer with layer state captured for different
+                // content, and an unbalanced clip push from a previous paint must not survive.
+                backend.clear_layer_cache();
+                backend.surface_mut().clip_stack.clear();
+                backend
+            }
+            None => SoftwarePaintBackend::new(size, 1.0),
+        }
+    })
+}
+
+/// Returns a whole-frame backend to the pool for the next frame at its size.
+///
+/// The caller has already moved the frame out with
+/// [`SoftwarePaintBackend::take_frame_rgba`], so what is returned here is the buffer pair — the
+/// allocation this pool exists to keep.
+fn return_frame_backend(backend: SoftwarePaintBackend, size: Size) {
+    let _ = FRAME_BACKEND_POOL.try_with(|pool| {
+        let mut pool = pool.borrow_mut();
+        if pool.len() < MAX_POOLED_FRAME_BACKENDS {
+            pool.push((size, backend));
+        }
+    });
+}
+
 // Test-only count of layer replays, so a regression test can prove a clean control returned its
 // cached pixels instead of running `draw` (and therefore instead of shaping or rasterising text).
 #[cfg(test)]
@@ -6000,7 +6058,7 @@ fn render_frame_incremental_cow(
         return Some(carried?.into_owned());
     }
 
-    let mut backend = SoftwarePaintBackend::new(size, 1.0);
+    let mut backend = take_frame_backend(size);
     // Seed the backend with the previous frame so the regions this pass does not
     // touch keep their pixels. An owned buffer becomes the target; a borrowed one is copied in.
     let seeded = match carried? {
@@ -6070,11 +6128,15 @@ fn render_frame_incremental_cow(
         // instead of as the previous frame.
         backend.end_frame();
         true
-    })?;
+    })
+    .unwrap_or(false);
     if !painted {
+        return_frame_backend(backend, size);
         return None;
     }
-    Some(backend.into_frame_rgba())
+    let frame = backend.take_frame_rgba();
+    return_frame_backend(backend, size);
+    Some(frame)
 }
 
 /// Renders a widget tree, reusing the previous frame when nothing that affects it has changed.
@@ -6449,7 +6511,7 @@ pub fn render_frame(id: ObjectId, size: Size, clear: crate::core::Color) -> Opti
     // The frame is the control's own box, so it has to be drawn at the box's origin
     // rather than at the control's absolute position.
     let origin = frame_origin(id);
-    let mut backend = SoftwarePaintBackend::new(size, 1.0);
+    let mut backend = take_frame_backend(size);
     let painted = with_widget_mut(id, |widget| {
         let Some(drawable) = widget.as_draw_mut() else {
             return false;
@@ -6463,11 +6525,15 @@ pub fn render_frame(id: ObjectId, size: Size, clear: crate::core::Color) -> Opti
         }
         backend.end_frame();
         true
-    })?;
+    })
+    .unwrap_or(false);
     if !painted {
+        return_frame_backend(backend, size);
         return None;
     }
-    Some(backend.into_frame_rgba())
+    let frame = backend.take_frame_rgba();
+    return_frame_backend(backend, size);
+    Some(frame)
 }
 
 /// Renders one frame of a mounted widget using its own geometry as the size.
@@ -6600,7 +6666,7 @@ pub fn render_frame_tree(id: ObjectId, size: Size, clear: crate::core::Color) ->
     let global_epoch = global_repaint_generation();
     let origin = frame_origin(id);
     let frame_bounds = Rect::new(origin.0, origin.1, size.width, size.height);
-    let mut backend = SoftwarePaintBackend::new(size, 1.0);
+    let mut backend = take_frame_backend(size);
 
     // The root's own painting is part of the frame: a window draws its background and
     // chrome, which the children then sit on top of. Its descendant clip and child list are
@@ -6664,6 +6730,23 @@ pub fn render_frame_tree(id: ObjectId, size: Size, clear: crate::core::Color) ->
                 painted = true;
             }
         }
+        // ── Window-level modal scrim (DLG-001) ──
+        //
+        // A modal mounted as its own surface is not one of this frame's painted children, so its
+        // own `draw` never runs here and the window it dims would keep its full brightness. When
+        // the owning modal is painted by this frame, its own scrim already covers the page; the
+        // window pass is therefore only owed when it is not among the visited subtrees.
+        #[cfg(full_widgets)]
+        if let Some(owner) = crate::widget::dialog::scrim_owner_for_root(id) {
+            let painted_here = metrics.contains_key(&owner) || root_children.contains(&owner);
+            if !painted_here {
+                let mut context = RenderContext::new(&mut backend);
+                context.fill_rect(
+                    Rect::new(0, 0, size.width, size.height),
+                    crate::widget::dialog::scrim_plane_color(),
+                );
+            }
+        }
         TREE_METRICS.with(|slot| {
             let mut slot = slot.borrow_mut();
             if metrics.capacity() > slot.capacity() {
@@ -6681,10 +6764,13 @@ pub fn render_frame_tree(id: ObjectId, size: Size, clear: crate::core::Color) ->
     });
 
     if !painted {
+        return_frame_backend(backend, size);
         return None;
     }
     backend.end_frame();
-    Some(backend.into_frame_rgba())
+    let frame = backend.take_frame_rgba();
+    return_frame_backend(backend, size);
+    Some(frame)
 }
 
 /// Bounds and painting facts for one widget subtree, computed once per frame.
@@ -7207,8 +7293,7 @@ mod tests {
         drive_frame(0);
 
         let dark_primary = {
-            let manager = crate::theme::global_theme_manager();
-            manager.current_theme().expect("an active theme").colors.primary
+            crate::style::palette_shared().expect("an active theme").primary
         };
         assert_ne!(fill(), before, "the frame drained the notification into a restyle");
         assert_eq!(

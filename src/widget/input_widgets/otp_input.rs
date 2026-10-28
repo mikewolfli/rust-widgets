@@ -457,6 +457,28 @@ impl Widget for OtpInput {
         &mut self.base
     }
 
+    /// Reports the active box as the IME candidate anchor (X-001).
+    ///
+    /// An OTP field's insertion point is a **box**, not a free-form caret: the anchor is the
+    /// focused cell's rectangle, clamped to the last cell when the focus has advanced past it.
+    fn input_method_query(&self) -> Option<crate::widget::widget_trait::InputMethodQuery> {
+        if self.length == 0 {
+            return None;
+        }
+        let index = self.focused_index.min(self.length.saturating_sub(1));
+        let cell = self.box_rect(index);
+        let caret_byte = self
+            .value
+            .iter()
+            .take(self.focused_index.min(self.value.len()))
+            .map(|ch| ch.len_utf8())
+            .sum();
+        Some(crate::widget::widget_trait::InputMethodQuery {
+            caret_rect: Rect::new(cell.x + 4, cell.y + 2, 1, cell.height.saturating_sub(4).max(1)),
+            caret_byte: Some(caret_byte),
+        })
+    }
+
     fn size_hint(&self) -> Size {
         Size::new(self.length as u32 * 32, 40)
     }
@@ -820,10 +842,8 @@ impl Draw for OtpInput {
         // field. The cell face is therefore derived one step from the window fill, which is
         // what makes all six boxes visible at rest. A colour the caller set explicitly still
         // wins over the derived one.
-        let window_fill = {
-            let manager = crate::style::theme_manager();
-            manager.current_theme().map(|active| active.colors.background).unwrap_or(Color::WHITE)
-        };
+        let window_fill =
+            crate::style::palette_shared().map(|colors| colors.background).unwrap_or(Color::WHITE);
         let background = match style.background_color {
             Some(resolved) if resolved != window_fill => resolved,
             _ => window_fill.blend(&text_color, 0.10),

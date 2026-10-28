@@ -18,19 +18,19 @@
 //!     frame duration per sample and has no equivalent, so stage attribution would be lost.
 //!   * `frame_timer` is the timer for the profiles where the `gpu` module does not compile
 //!     (`mini`, `embedded`). `gpu::performance` cannot serve those hosts at all.
-//!   * `batcher` is a *policy* (timeout + count), not a second merge: `flush` hands its rects to
-//!     `region::DirtyRegionTracker`, so the merge arithmetic exists once. The frame loop's own
-//!     coalescing (`FrameStats::repaints_coalesced`) is per-surface, not per-rectangle, so it
-//!     does not replace the timeout budget a host may want for incremental painting.
+//!   * `frame_timer` / `profiler` — a frame-timing toolkit with no caller **inside** the crate.
+//!     The open question was whether `gpu::performance` (`AdaptivePerformanceMonitor`,
+//!     `PerformanceStats`, consumed by `src/gpu/adapter.rs`) covers them. Measured answer: it
+//!     does not. `profiler` measures **named stages** inside a frame, while `gpu::performance`
+//!     records one frame duration per sample; `frame_timer` is the timer for the profiles where
+//!     the `gpu` module does not compile (`mini`, `embedded`). They therefore stay as
+//!     **host-facing utilities** — a complete capability the crate does not consume, which a host
+//!     drives directly — and each is covered by tests (`frame_timer` 8, `profiler` 6).
 //!
-//!   They therefore stay as **host-facing utilities** — the same deliberate shape as
-//!   `AnimationGroup`/`ParallelAnimation` (a complete capability the crate does not consume, which
-//!   a host drives directly) — and each group is covered by tests (`frame_timer` 8, `profiler` 6,
-//!   `batcher` 5), which is what separates "retained capability" from "declared and not
-//!   delivered". What would change the decision: a `profiler`-shaped stage record inside
-//!   `gpu::performance`, or a `frame_timer`/`AdaptivePerformanceMonitor` rolling-stat primitive
-//!   shared by both layers.
-//! * `dirty` / `region` / `render_dirty` — **not duplicated anywhere**: this is the
+//!   `batcher` (`UpdateBatcher`) was removed in this round: unlike the two above it duplicated
+//!   the timeout/count policy of the frame loop's own coalescing while having no caller at all,
+//!   so it was a second, drifting entry point rather than a retained capability (APP-801).
+//! * `region` / `render_dirty` — **not duplicated anywhere**: this is the
 //!   only damage-region implementation in the crate, and `README.md` advertises
 //!   "Partial Refresh" on the strength of it. **Now wired** (BLUE16 phase F):
 //!   `widget::runtime` holds a per-widget `DirtyRegionTracker`, `mark_dirty_rect`
@@ -43,7 +43,7 @@
 //!   stand again, with the caveat that damage tracking is a *choice*: a caller that
 //!   leaves the mode at `Full` gets exactly the old behaviour.
 //!
-//! So this module is not dead weight: `dirty` / `region` / `render_dirty` are a
+//! So this module is not dead weight: `region` / `render_dirty` are a
 //! live, wired feature — `render_dirty_regions` is called from
 //! `src/widget/runtime.rs` — and the frame-timing group is a tested, documented
 //! host-facing capability rather than a reservation.
@@ -74,10 +74,6 @@
 //! only on the GPU side. Neither side feeds the other, so observing a frame still
 //! requires both outputs — by design, because each covers a metric the other cannot
 //! produce.
-/// Coalesces repaint requests so a burst of invalidations costs one frame.
-pub mod batcher;
-/// Tracks the union of regions that need repainting.
-pub mod dirty;
 /// Frame timing and frame-rate statistics.
 pub mod frame_timer;
 mod profiler;
@@ -85,8 +81,6 @@ mod profiler;
 pub mod region;
 /// Turns widget-level repaint requests into renderer-level dirty regions.
 pub mod render_dirty;
-pub use batcher::*;
-pub use dirty::*;
 pub use frame_timer::*;
 pub use profiler::*;
 pub use region::*;
@@ -211,43 +205,5 @@ mod tests {
         assert_eq!(call_count, 1, "frame-sized damage collapses to one pass");
         assert!(tracker.is_empty());
         backend.end_frame();
-    }
-
-    #[test]
-    fn test_update_batcher() {
-        let mut batcher = UpdateBatcher::new(100);
-        batcher.add(Rect::new(0, 0, 10, 10));
-        batcher.add(Rect::new(20, 20, 10, 10));
-        assert_eq!(batcher.len(), 2);
-        let rects = batcher.flush();
-        assert!(!rects.is_empty());
-        assert!(batcher.is_empty());
-    }
-
-    /// A single rect added to a fresh batcher must still be delivered once its timeout
-    /// elapses, even though the count threshold is never reached.
-    ///
-    /// The timer used to start only after the first flush, so a fresh batcher receiving one
-    /// rect (and nothing else) had no elapsed baseline and `should_flush` stayed `false`
-    /// forever — a small first batch could wait indefinitely.
-    #[test]
-    fn a_small_first_batch_flushes_within_the_timeout() {
-        let mut batcher = UpdateBatcher::new(100);
-        batcher.add(Rect::new(0, 0, 10, 10));
-
-        // A single rect is under the count threshold, and the budget has not elapsed yet.
-        assert!(!batcher.should_flush(), "a single fresh rect must not flush immediately");
-
-        // Once the budget elapses the same single rect must be delivered.
-        std::thread::sleep(std::time::Duration::from_millis(250));
-        assert!(
-            batcher.should_flush(),
-            "the first small batch must flush within its timeout budget"
-        );
-
-        // Flushing drains the batch and leaves nothing pending.
-        assert!(!batcher.flush().is_empty());
-        assert!(batcher.is_empty());
-        assert!(!batcher.should_flush());
     }
 }

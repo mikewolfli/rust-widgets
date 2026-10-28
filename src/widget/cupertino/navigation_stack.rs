@@ -28,9 +28,13 @@ pub struct CupertinoNavigationStack {
     base: BaseWidget,
     /// Page titles, root first. Always has at least one entry.
     titles: Vec<String>,
+    /// Page content slots, parallel to `titles` (CB-001). A title-only page has `None`.
+    pages: Vec<Option<Box<dyn Widget>>>,
     animated: bool,
     /// Emitted with the title that was popped.
     pub popped: Signal1<String>,
+    /// Emitted with the title that was pushed (CB-001).
+    pub pushed: Signal1<String>,
     /// Emitted with the new depth after a push or pop.
     pub stack_changed: Signal1<usize>,
 }
@@ -45,8 +49,10 @@ impl CupertinoNavigationStack {
                 "CupertinoNavigationStack",
             ),
             titles: vec![root.into()],
+            pages: vec![None],
             animated: true,
             popped: Signal1::new(),
+            pushed: Signal1::new(),
             stack_changed: Signal1::new(),
         }
     }
@@ -79,8 +85,77 @@ impl CupertinoNavigationStack {
     /// Pushes a new page title onto the stack.
     pub fn push(&mut self, title: &str) {
         self.titles.push(title.to_string());
+        self.pages.push(None);
+        self.base.request_redraw();
+        self.pushed.emit(title.to_string());
+        self.stack_changed.emit(self.titles.len());
+    }
+
+    /// Pushes a page with its content widget (CB-001).
+    pub fn push_with_widget(&mut self, title: &str, widget: Box<dyn Widget>) {
+        self.titles.push(title.to_string());
+        self.pages.push(Some(widget));
+        self.base.request_redraw();
+        self.pushed.emit(title.to_string());
+        self.stack_changed.emit(self.titles.len());
+    }
+
+    /// Installs the content widget of the topmost page titled `title` (CB-001).
+    ///
+    /// Returns `false` when no page carries that title, so a caller cannot silently attach
+    /// content to a page that is not on the stack.
+    pub fn set_page_widget(&mut self, title: &str, widget: Box<dyn Widget>) -> bool {
+        let Some(index) = self.titles.iter().rposition(|candidate| candidate == title) else {
+            return false;
+        };
+        if let Some(slot) = self.pages.get_mut(index) {
+            *slot = Some(widget);
+            self.base.request_redraw();
+            return true;
+        }
+        false
+    }
+
+    /// The content widget of page `index`, if it has one.
+    pub fn page_widget(&self, index: usize) -> Option<&dyn Widget> {
+        self.pages.get(index).and_then(|slot| slot.as_deref())
+    }
+
+    /// Removes and returns the content widget of page `index`.
+    pub fn take_page_widget(&mut self, index: usize) -> Option<Box<dyn Widget>> {
+        self.pages.get_mut(index).and_then(Option::take)
+    }
+
+    /// Replaces the top page's title and content in one step (CB-001).
+    ///
+    /// This is the "login page replaced by the home page" transition: the depth does not change,
+    /// so no `popped`/`pushed` pair is emitted; observers see `stack_changed` once.
+    pub fn replace_top(&mut self, title: &str, widget: Box<dyn Widget>) -> bool {
+        let Some(index) = self.titles.len().checked_sub(1) else {
+            return false;
+        };
+        self.titles[index] = title.to_string();
+        self.pages[index] = Some(widget);
         self.base.request_redraw();
         self.stack_changed.emit(self.titles.len());
+        true
+    }
+
+    /// Pops pages until `index` is the top page (CB-001).
+    ///
+    /// The root (index 0) is the deepest target; an out-of-range index, or the current top, is a
+    /// no-op. Returns whether anything was removed.
+    pub fn pop_to(&mut self, index: usize) -> bool {
+        if index >= self.titles.len().saturating_sub(1) {
+            return false;
+        }
+        let top = self.titles.last().cloned().unwrap_or_default();
+        self.titles.truncate(index + 1);
+        self.pages.truncate(index + 1);
+        self.base.request_redraw();
+        self.popped.emit(top);
+        self.stack_changed.emit(self.titles.len());
+        true
     }
 
     /// Pops the top page, returning whether anything was removed.
@@ -94,6 +169,7 @@ impl CupertinoNavigationStack {
         let Some(title) = self.titles.pop() else {
             return false;
         };
+        self.pages.pop();
         self.base.request_redraw();
         self.popped.emit(title);
         self.stack_changed.emit(self.titles.len());
@@ -107,6 +183,7 @@ impl CupertinoNavigationStack {
         }
         let top = self.titles.last().cloned().unwrap_or_default();
         self.titles.truncate(1);
+        self.pages.truncate(1);
         self.base.request_redraw();
         self.popped.emit(top);
         self.stack_changed.emit(self.titles.len());

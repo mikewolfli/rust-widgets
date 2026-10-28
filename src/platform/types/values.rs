@@ -164,6 +164,7 @@ impl PrintProbe {
 /// [`crate::platform::runtime::init`] calls this once. Asking lazily from a print dialog would
 /// work, but the first ask would then still be answered from "not proved yet" — and a host that
 /// offers a print action at startup would hide it for that first moment.
+#[cfg(not(alloc_frugal))]
 pub(crate) fn warm_print_probes() {
     if cfg!(target_os = "windows") {
         let _ = windows_shell_spawnable();

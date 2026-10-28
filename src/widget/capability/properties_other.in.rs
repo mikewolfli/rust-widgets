@@ -1871,6 +1871,92 @@ macro_rules! impl_properties_other {
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
         ];
 
+        /// Chart reference line (COMP-A1). `line_count` is a read-only summary of the
+        /// annotations the host attached; the rest are the line's own paint switches.
+        #[cfg(not(alloc_frugal))]
+        pub(crate) const CHART_REFERENCE_LINE_PROPERTIES: &[PropertySchema] = &[
+            PropertySchema::new("line_count", PropertyValueKind::UInt, true, false),
+            PropertySchema::new("label_visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("hit_target", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+        ];
+
+        /// Terminal scrollback find bar (COMP-A2). The match count is produced by a scan of the
+        /// attached terminal, so it is read-only; `visible` is the bar's own open/close flag.
+        #[cfg(not(alloc_frugal))]
+        pub(crate) const TERMINAL_FIND_BAR_PROPERTIES: &[PropertySchema] = &[
+            PropertySchema::new("query", PropertyValueKind::String, true, true),
+            PropertySchema::new("case_sensitive", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("use_regex", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("wrap_search", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("match_count", PropertyValueKind::UInt, true, false),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+        ];
+
+        /// Map attribution overlay (COMP-A3). The entries are the text the tile source requires,
+        /// so only their count is published; `corner` selects the placement.
+        #[cfg(not(alloc_frugal))]
+        pub(crate) const MAP_ATTRIBUTION_PROPERTIES: &[PropertySchema] = &[
+            PropertySchema::new("entry_count", PropertyValueKind::UInt, true, false),
+            PropertySchema::new("corner", PropertyValueKind::String, true, true),
+            PropertySchema::new("background_opacity", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("font_scale", PropertyValueKind::Float, true, true),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+        ];
+
+        /// Gantt task column (COMP-A4). The derived counts are read-only; the row metrics and the
+        /// header switch are the column's own settings.
+        #[cfg(not(alloc_frugal))]
+        pub(crate) const GANTT_TASK_GRID_PROPERTIES: &[PropertySchema] = &[
+            PropertySchema::new("row_height", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("indent_step", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("header_visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("columns", PropertyValueKind::UInt, true, false),
+            PropertySchema::new("tasks", PropertyValueKind::UInt, true, false),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+        ];
+
+        /// Web history panel (COMP-A5). `visible_count` is what the current prefix filter leaves
+        /// on screen; the rest are the list's own settings.
+        #[cfg(not(alloc_frugal))]
+        pub(crate) const WEB_HISTORY_PANEL_PROPERTIES: &[PropertySchema] = &[
+            PropertySchema::new("max_entries", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("show_timestamps", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("group_by_day", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("row_height", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("filter_prefix", PropertyValueKind::String, true, true),
+            PropertySchema::new("visible_count", PropertyValueKind::UInt, true, false),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+        ];
+
+        /// Map overview (COMP-A7). The overview mirrors an attached map, so `map_view_attached`
+        /// reports that connection rather than being a setting.
+        #[cfg(not(alloc_frugal))]
+        pub(crate) const MAP_OVERVIEW_PROPERTIES: &[PropertySchema] = &[
+            PropertySchema::new("viewport_ratio", PropertyValueKind::Float, true, true),
+            PropertySchema::new("collapsed", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("map_view_attached", PropertyValueKind::Bool, true, false),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+        ];
+
         /// Find/replace strip beside an editor (`COMP-16`).
         #[cfg(not(alloc_frugal))]
         pub(crate) const FIND_BAR_PROPERTIES: &[PropertySchema] = &[

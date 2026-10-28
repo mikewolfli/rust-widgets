@@ -41,6 +41,12 @@ pub struct Divider {
     /// [`LineStyle`] rather than each declaring a three-variant copy (principle #54). The default
     /// is `Plain`, which is exactly the single-line picture this control always painted.
     style: LineStyle,
+    /// How far the drawn line is held back from each end of the control.
+    ///
+    /// `0` is the default and paints the full chord, which is the historical picture. A positive
+    /// value leaves the same gap at the leading and trailing ends, which is what aligns a divider
+    /// with the content inset of the card it separates.
+    inset: u32,
 }
 
 impl Divider {
@@ -53,6 +59,7 @@ impl Divider {
             color: Color::rgba(180, 180, 180, 200),
             color_is_explicit: false,
             style: LineStyle::Plain,
+            inset: 0,
         }
     }
 
@@ -82,6 +89,51 @@ impl Divider {
         }
         self.thickness = thickness;
         self.base.request_redraw();
+    }
+
+    /// How far the line is held back from each end of the control, in pixels.
+    pub fn inset(&self) -> u32 {
+        self.inset
+    }
+
+    /// Sets the end inset, in pixels.
+    ///
+    /// The drawn line is shortened by this much at both ends — left and right for a horizontal
+    /// divider, top and bottom for a vertical one. A value larger than half the span is clamped to
+    /// half, so the segment collapses to nothing instead of inverting. The default is `0`, which
+    /// keeps the full-width picture.
+    pub fn set_inset(&mut self, inset: u32) {
+        if self.inset == inset {
+            return;
+        }
+        self.inset = inset;
+        self.base.request_redraw();
+    }
+
+    /// The rectangle the line is drawn in, with the end inset applied.
+    ///
+    /// Split out from `draw` so the inset arithmetic has one home and a test can read the same
+    /// rectangle the paint path uses. The inset is clamped to half the span, which is what keeps
+    /// the segment from inverting when the caller asks for more than the control can hold.
+    fn inset_rect(&self) -> Rect {
+        let rect = self.geometry();
+        if self.vertical {
+            let inset = self.inset.min(rect.height / 2);
+            Rect::new(
+                rect.x,
+                rect.y + inset as i32,
+                rect.width,
+                rect.height.saturating_sub(inset.saturating_mul(2)),
+            )
+        } else {
+            let inset = self.inset.min(rect.width / 2);
+            Rect::new(
+                rect.x + inset as i32,
+                rect.y,
+                rect.width.saturating_sub(inset.saturating_mul(2)),
+                rect.height,
+            )
+        }
     }
 
     /// The divider's shading style.
@@ -148,9 +200,7 @@ impl Divider {
             // resolved for it, which on several presets is the *same* colour a focused control
             // draws its ring in: the two separated quantities had one value.
             .or_else(|| {
-                crate::style::theme_manager()
-                    .current_theme()
-                    .map(|active| active.colors.outline_variant)
+                crate::style::palette_shared().map(|active| active.outline_variant)
             })
             .unwrap_or(self.color)
     }
@@ -270,7 +320,7 @@ impl WidgetProperties for Divider {
 
 impl Draw for Divider {
     fn draw(&mut self, context: &mut RenderContext) {
-        let rect = self.geometry();
+        let rect = self.inset_rect();
         let color = self.line_color();
         match self.style {
             LineStyle::Plain => draw_line(context, rect, self.vertical, self.thickness, color),
@@ -360,6 +410,35 @@ mod tests {
         let geom = div.geometry();
         assert_eq!(geom.width, 100);
         assert_eq!(geom.height, 10);
+    }
+
+    /// D-004: the inset is zero by default, shrinks both ends, and clamps before inverting.
+    #[test]
+    fn the_inset_shortens_the_line_at_both_ends_and_clamps() {
+        let mut div = Divider::new(Rect::new(0, 0, 100, 10));
+        assert_eq!(div.inset(), 0, "the default paints the full chord");
+        assert_eq!(div.inset_rect(), div.geometry());
+
+        div.set_inset(10);
+        let horizontal = div.inset_rect();
+        assert_eq!(horizontal.x, 10, "the left end is held back");
+        assert_eq!(horizontal.width, 80, "both ends lose the inset");
+
+        let mut vertical = Divider::new(Rect::new(0, 0, 10, 100));
+        vertical.set_vertical(true);
+        vertical.set_inset(10);
+        let rect = vertical.inset_rect();
+        assert_eq!(rect.y, 10, "the top end is held back");
+        assert_eq!(rect.height, 80, "both ends lose the inset");
+
+        // More inset than the span allows collapses the segment instead of inverting it.
+        vertical.set_inset(1000);
+        let collapsed = vertical.inset_rect();
+        assert_eq!(collapsed.height, 0, "the segment never inverts");
+        assert_eq!(collapsed.y, 50, "the inset is clamped to half the span");
+
+        div.set_inset(0);
+        assert_eq!(div.inset_rect(), div.geometry(), "clearing restores the full chord");
     }
 
     /// The divider publishes the same three-state shading vocabulary as `Line`, and the two

@@ -265,9 +265,8 @@ fn render_one(widget: &mut dyn Widget, fill: Color) -> AppearanceCensus {
 
 /// The background the active theme declares.
 fn active_background() -> Color {
-    global_theme_manager()
-        .current_theme()
-        .map(|theme| theme.colors.background)
+    crate::style::palette_shared()
+        .map(|colors| colors.background)
         .unwrap_or(Color::WHITE)
 }
 

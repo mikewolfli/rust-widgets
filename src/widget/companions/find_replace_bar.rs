@@ -14,7 +14,7 @@
 //! reports both the total and the current index. This keeps the strip independent of the
 //! search engine and lets the host update the counts after every navigation.
 
-use crate::compat::String;
+use crate::compat::{lock, Arc, Mutex, String};
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::key_codes::{BACKSPACE, ENTER, ESCAPE, LINE_FEED};
 use crate::event::{Event, EventHandler};
@@ -87,8 +87,19 @@ pub struct FindReplaceBar {
     replacement: String,
     match_case: bool,
     use_regex: bool,
-    match_count: usize,
-    current_match: usize,
+    /// The reported `(total, current)` match counters, shared with a bound editor (COMP-A8).
+    ///
+    /// An editor attaches with `&FindReplaceBar` and cannot call [`Self::set_match_count`], which
+    /// needs `&mut self`. The editor writes this cell, and the accessors read it, so the counts it
+    /// pushes are visible immediately.
+    match_counts: Arc<Mutex<(usize, usize)>>,
+    /// The `(query, replacement, match_case, use_regex)` inputs a bound editor reads when it
+    /// applies a reported intent.
+    ///
+    /// The find/navigation signals carry no payload, so this mirror is how the host learns what to
+    /// search for. It is kept in step by the setters and by [`Self::handle_event`], which owns the
+    /// keyboard edits to the two text buffers.
+    context: Arc<Mutex<(String, String, bool, bool)>>,
     replace_visible: bool,
     open: bool,
     active_field: Option<BarField>,
@@ -113,8 +124,8 @@ impl FindReplaceBar {
             replacement: String::new(),
             match_case: false,
             use_regex: false,
-            match_count: 0,
-            current_match: 0,
+            match_counts: Arc::new(Mutex::new((0, 0))),
+            context: Arc::new(Mutex::new((String::new(), String::new(), false, false))),
             replace_visible: false,
             open: false,
             active_field: None,
@@ -162,6 +173,7 @@ impl FindReplaceBar {
             return;
         }
         self.query = query;
+        self.sync_context();
         self.base.request_redraw();
     }
 
@@ -172,6 +184,7 @@ impl FindReplaceBar {
             return;
         }
         self.replacement = replacement;
+        self.sync_context();
         self.base.request_redraw();
     }
 
@@ -181,6 +194,7 @@ impl FindReplaceBar {
             return;
         }
         self.match_case = match_case;
+        self.sync_context();
         self.base.request_redraw();
     }
 
@@ -190,6 +204,7 @@ impl FindReplaceBar {
             return;
         }
         self.use_regex = use_regex;
+        self.sync_context();
         self.base.request_redraw();
     }
 
@@ -200,12 +215,36 @@ impl FindReplaceBar {
     /// answers from a search that has finished.
     pub fn set_match_count(&mut self, match_count: usize, current_match: usize) {
         let current_match = if match_count == 0 { 0 } else { current_match.min(match_count - 1) };
-        if self.match_count == match_count && self.current_match == current_match {
-            return;
+        {
+            let mut counts = lock(&self.match_counts);
+            if *counts == (match_count, current_match) {
+                return;
+            }
+            *counts = (match_count, current_match);
         }
-        self.match_count = match_count;
-        self.current_match = current_match;
         self.base.request_redraw();
+    }
+
+    /// The shared match counters a bound editor writes, plus the signal that repaints this strip.
+    ///
+    /// The pair is `(total, current)` with `current` zero-based. A writer emits the returned signal
+    /// so a reported count becomes visible without the host forwarding a frame.
+    pub fn match_counts_handle(&self) -> (Arc<Mutex<(usize, usize)>>, GenericSignal) {
+        (Arc::clone(&self.match_counts), self.base.redraw_requested_signal().clone())
+    }
+
+    /// The shared `(query, replacement, match_case, use_regex)` inputs a bound editor reads.
+    ///
+    /// The navigation signals carry no payload, so this is how an attached editor learns what to
+    /// search for. It reflects the values in force when the signal was emitted.
+    pub fn context_handle(&self) -> Arc<Mutex<(String, String, bool, bool)>> {
+        Arc::clone(&self.context)
+    }
+
+    /// Mirrors the two text buffers and the two match policies into the shared cell.
+    fn sync_context(&self) {
+        let mut context = lock(&self.context);
+        *context = (self.query.clone(), self.replacement.clone(), self.match_case, self.use_regex);
     }
 
     /// Shows or hides the replacement row.
@@ -242,12 +281,12 @@ impl FindReplaceBar {
 
     /// Returns the reported total match count.
     pub fn match_count(&self) -> usize {
-        self.match_count
+        lock(&self.match_counts).0
     }
 
     /// Returns the zero-based current match.
     pub fn current_match(&self) -> usize {
-        self.current_match
+        lock(&self.match_counts).1
     }
 
     /// Returns whether the replacement row is shown.
@@ -425,6 +464,9 @@ impl EventHandler for FindReplaceBar {
             }
             _ => {}
         }
+        // The keyboard edits above write the buffers directly, so the shared mirror is refreshed
+        // after every event rather than only in the `&mut self` setters.
+        self.sync_context();
     }
 }
 
@@ -554,8 +596,8 @@ impl WidgetProperties for FindReplaceBar {
             "replacement" => Ok(CapabilityValue::String(self.replacement.clone())),
             "match_case" => Ok(CapabilityValue::Bool(self.match_case)),
             "use_regex" => Ok(CapabilityValue::Bool(self.use_regex)),
-            "match_count" => Ok(CapabilityValue::UInt(self.match_count as u64)),
-            "current_match" => Ok(CapabilityValue::UInt(self.current_match as u64)),
+            "match_count" => Ok(CapabilityValue::UInt(self.match_count() as u64)),
+            "current_match" => Ok(CapabilityValue::UInt(self.current_match() as u64)),
             "replace_visible" => Ok(CapabilityValue::Bool(self.replace_visible)),
             "open" => Ok(CapabilityValue::Bool(self.open)),
             _ => base_property_get(self, name),
@@ -582,12 +624,12 @@ impl WidgetProperties for FindReplaceBar {
             }
             "match_count" => {
                 let count = expect_usize(value)?;
-                self.set_match_count(count, self.current_match);
+                self.set_match_count(count, self.current_match());
                 Ok(())
             }
             "current_match" => {
                 let current = expect_usize(value)?;
-                self.set_match_count(self.match_count, current);
+                self.set_match_count(self.match_count(), current);
                 Ok(())
             }
             "replace_visible" => {

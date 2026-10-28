@@ -911,19 +911,11 @@ impl RadarChart {
     /// theme's roles, then the literal as the last resort for a build with no theme.
     fn chrome_colors(&self) -> RadarChrome {
         let style = self.style();
-        // The guard is released before `self.style()` is consumed below — `theme_manager()` is a
-        // non-reentrant mutex, so the theme facts are copied out in one scope.
-        let themed = {
-            let manager = crate::style::theme_manager();
-            manager.current_theme().map(|theme| {
-                (
-                    theme.colors.surface_container,
-                    theme.colors.outline_variant,
-                    theme.colors.foreground,
-                    theme.colors.secondary,
-                )
-            })
-        };
+        // `palette_shared()` returns a snapshot rather than taking the manager mutex, so there is
+        // no guard to hold when `self.style()` is consumed below.
+        let themed = crate::style::palette_shared().map(|colors| {
+            (colors.surface_container, colors.outline_variant, colors.foreground, colors.secondary)
+        });
         let (surface, divider, ink, muted) = themed.unwrap_or((
             Color::rgb(255, 255, 255),
             Color::rgb(200, 200, 200),

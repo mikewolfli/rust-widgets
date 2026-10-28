@@ -103,11 +103,35 @@
       "g": 29,
       "b": 31,
       "a": 255
+    },
+    "link": {
+      "r": 10,
+      "g": 132,
+      "b": 255,
+      "a": 255
+    },
+    "link_visited": {
+      "r": 94,
+      "g": 92,
+      "b": 230,
+      "a": 255
+    },
+    "placeholder_text": {
+      "r": 142,
+      "g": 142,
+      "b": 147,
+      "a": 255
+    },
+    "bright_text": {
+      "r": 255,
+      "g": 255,
+      "b": 255,
+      "a": 255
     }
   },
   "fonts": {
     "regular": {
-      "family": "SF Pro",
+      "family": "Arial",
       "size": 14.0,
       "weight": 400,
       "bold": false,
@@ -117,7 +141,7 @@
       "line_height": 0.0
     },
     "bold": {
-      "family": "SF Pro",
+      "family": "Arial",
       "size": 14.0,
       "weight": 700,
       "bold": true,
@@ -127,7 +151,7 @@
       "line_height": 0.0
     },
     "italic": {
-      "family": "SF Pro",
+      "family": "Arial",
       "size": 14.0,
       "weight": 400,
       "bold": false,
@@ -147,7 +171,7 @@
       "line_height": 0.0
     },
     "caption": {
-      "family": "SF Pro",
+      "family": "Arial",
       "size": 11.0,
       "weight": 400,
       "bold": false,
@@ -157,7 +181,7 @@
       "line_height": 0.0
     },
     "body": {
-      "family": "SF Pro",
+      "family": "Arial",
       "size": 14.0,
       "weight": 400,
       "bold": false,
@@ -167,7 +191,7 @@
       "line_height": 0.0
     },
     "title": {
-      "family": "SF Pro",
+      "family": "Arial",
       "size": 16.0,
       "weight": 700,
       "bold": true,
@@ -177,7 +201,7 @@
       "line_height": 0.0
     },
     "headline": {
-      "family": "SF Pro",
+      "family": "Arial",
       "size": 20.0,
       "weight": 700,
       "bold": true,
@@ -187,7 +211,7 @@
       "line_height": 0.0
     },
     "display": {
-      "family": "SF Pro",
+      "family": "Arial",
       "size": 28.0,
       "weight": 700,
       "bold": true,
@@ -648,6 +672,7 @@
     "normal": 220,
     "slow": 300,
     "easing": "EaseOut",
-    "curve": "Easing"
+    "curve": "Easing",
+    "cursor_blink_half": 500
   }
 }
