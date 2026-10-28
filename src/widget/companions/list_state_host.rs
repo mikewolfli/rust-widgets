@@ -44,8 +44,7 @@ const SKELETON_INSET: u32 = 12;
 const ICON_BADGE: i32 = 32;
 
 /// The four states a list surface can be in.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ListState {
     /// Nothing has been asked for yet; the host paints nothing.
     #[default]
@@ -57,7 +56,6 @@ pub enum ListState {
     /// Loading failed; the host paints the error text.
     Error,
 }
-
 
 impl ListState {
     /// The token used by the property contract.
@@ -440,7 +438,11 @@ impl Widget for ListStateHost {
         &mut self.base
     }
     fn size_hint(&self) -> Size {
-        Size::new(320, 240)
+        crate::widget::metrics::ControlMetrics::implicit_size(
+            Size::new(0, 0),
+            crate::style::EdgeOffsets::all(0),
+            Size::new(320, 240),
+        )
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();

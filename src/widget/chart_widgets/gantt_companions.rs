@@ -1366,7 +1366,11 @@ impl Widget for GanttTaskGrid {
     }
 
     fn size_hint(&self) -> crate::core::Size {
-        crate::core::Size::new(220, 200)
+        crate::widget::metrics::ControlMetrics::implicit_size(
+            crate::core::Size::new(0, 0),
+            crate::style::EdgeOffsets::all(0),
+            crate::core::Size::new(220, 200),
+        )
     }
 
     impl_draw_bridge!();

@@ -1106,52 +1106,6 @@ impl Platform for MacOSObjc2Platform {
         existed
     }
 
-    // ---- Window creation ----
-    // Create a new window with the given title and geometry; this is the entry point for
-    // window lifecycle parity tests.
-    /// This preview backend presents no native picker, so the creator answers the same `0` the
-    /// `file_dialog: false` capability states (P-204).
-    fn create_file_dialog(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
-        let _ = (parent, x, y, width, height);
-        log::debug!(
-            "[macos-objc2] create_file_dialog: no native picker in this backend; returning 0"
-        );
-        0
-    }
-
-    /// Message boxes are painted by the library; this backend creates no native one.
-    #[allow(clippy::too_many_arguments)]
-    fn create_message_box(
-        &self,
-        parent: u64,
-        title: &str,
-        text: &str,
-        x: i32,
-        y: i32,
-        width: u32,
-        height: u32,
-    ) -> u64 {
-        let _ = (parent, title, text, x, y, width, height);
-        log::debug!("[macos-objc2] create_message_box: no native message-box control; returning 0");
-        0
-    }
-
-    /// Colour choosers are painted by the library; this backend creates no native one.
-    fn create_color_dialog(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
-        let _ = (parent, x, y, width, height);
-        log::debug!(
-            "[macos-objc2] create_color_dialog: no native colour-dialog control; returning 0"
-        );
-        0
-    }
-
-    /// Font choosers are painted by the library; this backend creates no native one.
-    fn create_font_dialog(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
-        let _ = (parent, x, y, width, height);
-        log::debug!("[macos-objc2] create_font_dialog: no native font-dialog control; returning 0");
-        0
-    }
-
     /// Create a new window with the given title and geometry.
     ///
     /// Returns a unique window id; this is the entry point for window lifecycle parity tests.

@@ -616,7 +616,11 @@ impl Widget for CommandPaletteHost {
     }
     fn size_hint(&self) -> Size {
         let rows = self.visible_count().clamp(1, PALETTE_DEFAULT_ROWS) as u32;
-        Size::new(480, PALETTE_HEADER_HEIGHT + rows * PALETTE_ROW_HEIGHT)
+        crate::widget::metrics::ControlMetrics::implicit_size(
+            Size::new(0, 0),
+            crate::style::EdgeOffsets::all(0),
+            Size::new(480, PALETTE_HEADER_HEIGHT + rows * PALETTE_ROW_HEIGHT),
+        )
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();

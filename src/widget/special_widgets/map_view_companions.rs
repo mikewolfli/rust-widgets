@@ -3,6 +3,14 @@
 
 //! Map companion controls (COMP-13): tile loading, zoom strip, scale bar and compass.
 
+//!
+//! # `enabled`
+//!
+//! `tile_loaded` / `tile_failed` report an **asynchronous platform fact**, and `redraw` /
+//! `zoom_requested` are chrome plumbing; all four are **deliberately not gated** by `enabled`. A
+//! disabled map still shows the tiles that arrived, and the host still owns the request/answer
+//! pair it started.
+
 use crate::compat::{lock, Arc, HashMap, Mutex};
 use crate::core::{Color, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};

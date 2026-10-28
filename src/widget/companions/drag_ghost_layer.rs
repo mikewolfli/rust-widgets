@@ -315,7 +315,11 @@ impl Widget for DragGhostLayer {
         &mut self.base
     }
     fn size_hint(&self) -> Size {
-        Size::new(200, 32)
+        crate::widget::metrics::ControlMetrics::implicit_size(
+            Size::new(0, 0),
+            crate::style::EdgeOffsets::all(0),
+            Size::new(200, 32),
+        )
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();

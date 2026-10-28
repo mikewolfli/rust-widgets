@@ -37,8 +37,7 @@ const GUTTER_INSET: u32 = 6;
 const MARKER_BAR_WIDTH: u32 = 3;
 
 /// Which edge a number is aligned to.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum LineNumberAlign {
     /// Numbers hug the left edge, as in a log with a leading timestamp column.
     Left,
@@ -46,7 +45,6 @@ pub enum LineNumberAlign {
     #[default]
     Right,
 }
-
 
 impl LineNumberAlign {
     /// The token used by the property contract.
@@ -362,7 +360,11 @@ impl Widget for LineNumberGutter {
     }
     fn size_hint(&self) -> Size {
         let rows = self.visible_count.min(u32::MAX as u64) as u32;
-        Size::new(48, rows.saturating_mul(20).max(20))
+        crate::widget::metrics::ControlMetrics::implicit_size(
+            Size::new(0, 0),
+            crate::style::EdgeOffsets::all(0),
+            Size::new(48, rows.saturating_mul(20).max(20)),
+        )
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();

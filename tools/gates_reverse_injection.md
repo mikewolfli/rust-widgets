@@ -473,3 +473,9 @@ than inventing an injection that was never run.
 | `check_profile_target_matrix.sh` | — | — |
 | `check_redox_cross.sh` | — | — |
 | `check_target_backend_selection.sh` | — | — |
+
+## Round 11 (2026-10-28) — gates that had no record
+
+| gate | injected | reported |
+|---|---|---|
+| `check_profile_builds.sh` | appended a profile-gated compile error to `src/lib.rs`: `#[cfg(feature = "mini")] compile_error!("reverse-injection probe: the mini profile must not compile");` — the reduced profile is the last arm the gate reaches, so this also proves the desktop/tablet/mobile/embedded arms ran first | `── mini: check` / `error: reverse-injection probe: the mini profile must not compile` / `3672 \| compile_error!("reverse-injection probe: the mini profile must not compile");` / `❌ mini: check failed: cargo check --lib --no-default-features --features mini` |

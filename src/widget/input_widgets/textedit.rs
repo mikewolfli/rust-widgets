@@ -2,6 +2,9 @@
 // SPDX-License-Identifier: MIT
 
 //! Multi-line text edit widget.
+// The only users are the COMP-A8 find/replace binding below: the shared queue is an
+// `Arc<Mutex<..>>` so the bar and the editor can both reach it.
+#[cfg(full_widgets)]
 use crate::compat::{lock, Arc, Mutex};
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::dnd::{DragPayload, DragSource, DropEffect};
@@ -10,7 +13,9 @@ use crate::event::{Event, EventHandler};
 use crate::impl_widget_property_hooks;
 use crate::property_names_of;
 use crate::render::RenderContext;
-use crate::signal::{ConnectionScope, GenericSignal, Signal1};
+#[cfg(full_widgets)]
+use crate::signal::ConnectionScope;
+use crate::signal::{GenericSignal, Signal1};
 use crate::undo::{CommandDescription, CommandId, UndoCommand, UndoStack};
 use crate::widget::capability::coercion::{
     expect_horizontal_alignment, horizontal_alignment_to_str,
@@ -18,6 +23,7 @@ use crate::widget::capability::coercion::{
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+#[cfg(full_widgets)]
 use crate::widget::companions::FindReplaceBar;
 use crate::widget::metrics::{dimensions, effective_font};
 use crate::widget::text_utils::floor_char_boundary;
@@ -278,6 +284,7 @@ pub struct TextEdit {
     cursor_blink: crate::style::CursorBlink,
     /// Horizontal scroll offset in pixels, for an unwrapped row wider than the field (I-122).
     scroll_x: i32,
+    #[cfg(full_widgets)]
     /// The `FindReplaceBar` this editor follows, when one is attached (COMP-A8).
     find_replace: Option<FindReplaceBinding>,
 }
@@ -339,6 +346,7 @@ struct FormatRunCache {
 
 /// One intent reported by an attached [`FindReplaceBar`] (COMP-A8).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg(full_widgets)]
 enum FindReplaceIntent {
     /// Move to the next match.
     Next,
@@ -356,6 +364,7 @@ enum FindReplaceIntent {
 /// [`TextEdit::poll_find_replace_bar`] applies them. The query, replacement and match policy are
 /// read from the bar's shared context at apply time, and the match counters are written back
 /// through the bar's shared cell so the strip can show "3 of 7" without the host forwarding it.
+#[cfg(full_widgets)]
 struct FindReplaceBinding {
     /// The intents reported since the last poll.
     intents: Arc<Mutex<Vec<FindReplaceIntent>>>,
@@ -408,6 +417,7 @@ impl TextEdit {
             marker_advance_cache: RefCell::new(None),
             cursor_blink: crate::style::CursorBlink::new(),
             scroll_x: 0,
+            #[cfg(full_widgets)]
             find_replace: None,
         }
     }
@@ -1731,6 +1741,7 @@ impl TextEdit {
     ///
     /// The bar exposes a `use_regex` flag, but this crate has no regular-expression engine, so a
     /// regex query is searched literally. `match_case` is honoured.
+    #[cfg(full_widgets)]
     pub fn attach_find_replace_bar(&mut self, bar: &FindReplaceBar) {
         let intents = Arc::new(Mutex::new(Vec::new()));
         let scope = ConnectionScope::new();
@@ -1778,6 +1789,7 @@ impl TextEdit {
     }
 
     /// Stops following the attached find/replace bar; the last reported counts stay.
+    #[cfg(full_widgets)]
     pub fn detach_find_replace_bar(&mut self) {
         if self.find_replace.take().is_some() {
             self.base.request_redraw();
@@ -1785,6 +1797,7 @@ impl TextEdit {
     }
 
     /// Whether a [`FindReplaceBar`] is attached.
+    #[cfg(full_widgets)]
     pub fn is_find_replace_bar_attached(&self) -> bool {
         self.find_replace.is_some()
     }
@@ -1794,6 +1807,7 @@ impl TextEdit {
     /// Called from `draw` and `handle_event`, so a strip click reaches the document on the next
     /// frame or interaction. Returns whether the document or the selection moved. A bar with no
     /// query reports zero matches and changes nothing.
+    #[cfg(full_widgets)]
     pub fn poll_find_replace_bar(&mut self) -> bool {
         let Some(binding) = self.find_replace.as_ref() else {
             return false;
@@ -1823,6 +1837,7 @@ impl TextEdit {
     }
 
     /// The attached bar's `(query, replacement, match_case, use_regex)`, or empty defaults.
+    #[cfg(full_widgets)]
     fn find_replace_context(&self) -> (String, String, bool, bool) {
         match self.find_replace.as_ref() {
             Some(binding) => lock(&binding.context).clone(),
@@ -1834,6 +1849,7 @@ impl TextEdit {
     ///
     /// Returns whether the selection moved. The search starts outside the current selection, so
     /// pressing "next" twice visits two different matches rather than re-selecting the first.
+    #[cfg(full_widgets)]
     fn find_replace_step(&mut self, query: &str, match_case: bool, forward: bool) -> bool {
         if query.is_empty() {
             self.write_find_replace_counts(0, 0);
@@ -1860,6 +1876,7 @@ impl TextEdit {
     }
 
     /// Replaces the current match, or the next one when the selection is not a match.
+    #[cfg(full_widgets)]
     fn find_replace_one(&mut self, query: &str, replacement: &str, match_case: bool) -> bool {
         if self.read_only || query.is_empty() {
             self.report_find_replace_matches(query, match_case);
@@ -1892,6 +1909,7 @@ impl TextEdit {
     }
 
     /// Replaces every match in one edit, which is one undo step through the editor's own path.
+    #[cfg(full_widgets)]
     fn find_replace_all(&mut self, query: &str, replacement: &str, match_case: bool) -> bool {
         if self.read_only || query.is_empty() {
             self.report_find_replace_matches(query, match_case);
@@ -1918,6 +1936,7 @@ impl TextEdit {
     }
 
     /// Selects one match without going through a movement gesture.
+    #[cfg(full_widgets)]
     fn select_find_match(&mut self, start: usize, end: usize) {
         self.selection_anchor = Some(start);
         self.cursor = end;
@@ -1927,6 +1946,7 @@ impl TextEdit {
     }
 
     /// Counts the matches of `query` and writes `(total, current)` into the attached bar.
+    #[cfg(full_widgets)]
     fn report_find_replace_matches(&self, query: &str, match_case: bool) {
         let matches = self.find_replace_matches(query, match_case);
         let anchor = self.selection_range().map_or(self.cursor, |(start, _)| start);
@@ -1935,6 +1955,7 @@ impl TextEdit {
     }
 
     /// Writes the reported counters into the attached bar's shared cell.
+    #[cfg(full_widgets)]
     fn write_find_replace_counts(&self, total: usize, current: usize) {
         let Some(binding) = self.find_replace.as_ref() else {
             return;
@@ -1955,6 +1976,7 @@ impl TextEdit {
     /// Matching is literal: the bar's `use_regex` flag is not honoured because the crate has no
     /// regular-expression engine. A case-insensitive comparison folds one character at a time, so
     /// offsets stay on character boundaries for multi-byte text.
+    #[cfg(full_widgets)]
     fn find_replace_matches(&self, query: &str, match_case: bool) -> Vec<(usize, usize)> {
         let mut matches = Vec::new();
         if query.is_empty() {
@@ -1981,6 +2003,7 @@ impl TextEdit {
 /// A character-wise comparison keeps the answer on a character boundary for multi-byte text. Case
 /// folding is per character, which is the honest limit of a comparison done without the Unicode
 /// multi-character case tables.
+#[cfg(full_widgets)]
 fn match_query_at(haystack: &str, start: usize, query: &str, match_case: bool) -> Option<usize> {
     if !haystack.is_char_boundary(start) {
         return None;
@@ -2252,6 +2275,7 @@ impl EventHandler for TextEdit {
     fn handle_event(&mut self, event: &Event) {
         // A queued find/replace intent is a shared write, so it is applied before the event is
         // routed and the frame that follows the strip click already reflects it (COMP-A8).
+        #[cfg(full_widgets)]
         self.poll_find_replace_bar();
         self.base.handle_event(event);
         if !self.base.is_enabled() {
@@ -2528,6 +2552,7 @@ impl Draw for TextEdit {
     fn draw(&mut self, context: &mut RenderContext) {
         // Drain a queued find/replace intent first, so the caret and the selection this frame
         // paints are the ones the strip asked for (COMP-A8).
+        #[cfg(full_widgets)]
         self.poll_find_replace_bar();
         // Draw base widget
         let rect = self.geometry();
@@ -4054,6 +4079,7 @@ mod tests {
 
     /// COMP-A8: attaching reports the current query's matches and queues nothing.
     #[test]
+    #[cfg(full_widgets)]
     fn the_find_bar_counts_matches_when_attached() {
         let mut te = editor("one two one two one");
         let mut bar = FindReplaceBar::new(Rect::new(0, 0, 400, 32));
@@ -4067,6 +4093,7 @@ mod tests {
 
     /// COMP-A8: a queued navigation intent moves the editor's selection on the next poll.
     #[test]
+    #[cfg(full_widgets)]
     fn a_find_intent_moves_the_selection_on_poll() {
         let mut te = editor("one two one two one");
         te.set_cursor(0);
@@ -4092,6 +4119,7 @@ mod tests {
 
     /// COMP-A8: replace and replace-all go through the editor's own edit path.
     #[test]
+    #[cfg(full_widgets)]
     fn replace_intents_go_through_the_editors_edit_path() {
         let mut te = editor("one two one");
         let mut bar = FindReplaceBar::new(Rect::new(0, 0, 400, 32));
@@ -4115,6 +4143,7 @@ mod tests {
 
     /// COMP-A8: detaching stops the link and keeps the last reported state.
     #[test]
+    #[cfg(full_widgets)]
     fn a_detached_find_bar_is_not_polled() {
         let mut te = editor("aaa");
         let mut bar = FindReplaceBar::new(Rect::new(0, 0, 400, 32));

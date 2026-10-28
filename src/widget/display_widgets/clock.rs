@@ -17,6 +17,12 @@
 //! write (hour into `0..24`, minute and second into `0..60`), so a caller that passes `90`
 //! minutes gets `1:30` rather than an error or a hand pointing into space.
 
+//!
+//! # `enabled`
+//!
+//! `tick` is **deliberately not gated** by `enabled`: it is the clock's readout, not an action.
+//! A disabled clock still shows the time, so stopping the signal would freeze it.
+
 use core::fmt::Write as _;
 
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};

@@ -25,12 +25,11 @@ include = [
     # Consequence, stated plainly because `cargo package` says it 68 times: each test file
     # is an auto-discovered target, so cargo prints
     # `warning: ignoring test \`foo_test\` as \`tests/foo_test.rs\` is not included in the
-    # published package` while packaging. No *declared* target is affected — the four
-    # `tools/` paths below are the declared ones and they ship — so
+    # published package` while packaging. No *declared* target is affected: the declared
+    # `tools/` and `examples/` paths below ship as individual entries, so
     # `tools/check_declared_targets_ship.sh` still passes. Dropping this line without
     # shrinking ~250 KB elsewhere re-breaks publishing.
     # "benches/**/*",
-    # "examples/**/*",
     "language/**/*",
     # `crates/` holds nested packages — `rust-widgets-font` (the `fonts-*` payloads) and
     # `mobile-services`. Cargo skips a nested package in the parent's tarball by itself; the
@@ -53,6 +52,21 @@ include = [
     # the tarball has the `designer` feature and the `designer_generate` binary it
     # documents, but not the target that writes a project's committed sources.
     "tools/designer_generate.rs",
+    # The declared `[[example]]` targets. Same rule as the `tools/` paths above, and the
+    # reason this list is per-file rather than `"examples/**/*"`: the directory is 552 KB,
+    # the ten declared targets are 100 KB of it, and the tarball has a hard 10 MiB ceiling.
+    # An example left out of the package is a target a consumer cannot build from the
+    # tarball even though `Cargo.toml` announces it.
+    "examples/view_counter.rs",
+    "examples/view_adaptive.rs",
+    "examples/control_rendering_census.rs",
+    "examples/export_control_svgs.rs",
+    "examples/icon_census.rs",
+    "examples/export_icon_sheet.rs",
+    "examples/probe_draw_only.rs",
+    "examples/platform_diagnostics.rs",
+    "examples/verify_batch3.rs",
+    "examples/embedded_host.rs",
     # The entries below are **anchored** with a leading `/`. That is not cosmetic.
     #
     # An unanchored `"README.md"` / `"LICENSE"` / `"CHANGELOG.md"` is a gitignore-style

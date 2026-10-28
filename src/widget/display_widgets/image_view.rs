@@ -2,6 +2,13 @@
 // SPDX-License-Identifier: MIT
 
 //! ImageView widget — displays an Image as a widget (BLUE13 R2.12).
+
+//!
+//! # `enabled`
+//!
+//! `redraw` / `zoom_redraw` from `attach_zoom_pan` are **deliberately not gated** by `enabled`: a
+//! disabled view is still painted, so the companion's change must repaint it. They announce no
+//! user action.
 #[cfg(full_widgets)]
 use crate::compat::{lock, Arc, Mutex};
 use crate::compat::{String, Vec};

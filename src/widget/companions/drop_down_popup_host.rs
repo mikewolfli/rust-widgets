@@ -72,8 +72,7 @@ pub enum Direction {
 }
 
 /// Where a pop-up is placed relative to its anchor.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum PopupPlacement {
     /// Always open below the anchor, then clamp into the viewport.
     Below,
@@ -83,7 +82,6 @@ pub enum PopupPlacement {
     #[default]
     Automatic,
 }
-
 
 impl PopupPlacement {
     /// The token used by the property contract.
@@ -656,7 +654,11 @@ impl Widget for DropDownPopupHost {
     }
     fn size_hint(&self) -> Size {
         let rows = self.visible_rows().max(1) as u32;
-        Size::new(self.anchor_rect.width.max(POPUP_MIN_WIDTH), rows * POPUP_ROW_HEIGHT)
+        crate::widget::metrics::ControlMetrics::implicit_size(
+            Size::new(0, 0),
+            crate::style::EdgeOffsets::all(0),
+            Size::new(self.anchor_rect.width.max(POPUP_MIN_WIDTH), rows * POPUP_ROW_HEIGHT),
+        )
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();

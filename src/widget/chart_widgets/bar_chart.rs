@@ -18,6 +18,15 @@
 //! deliberately small so the two never diverge in the parts that matter: both
 //! use the same bar geometry, labels and colors.
 
+//!
+//! # `enabled` and the chrome signals
+//!
+//! The `redraw` / `request_redraw` emits in the `attach_*` methods are **deliberately not gated**
+//! by `enabled`: a disabled chart is still painted (greyed), so a companion that changed the model
+//! still needs the surface repainted, and a repaint announces no user action. The model signals —
+//! `series_toggled` and the zoom set — *are* gated in the mutators that emit them, so a host that
+//! disabled the control hears nothing it cannot reach.
+
 use crate::compat::{lock, Arc, Mutex};
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
@@ -649,7 +658,11 @@ impl BarChart {
         series.visible = visible;
         self.revalidate_hover();
         self.sync_legend();
-        self.series_toggled.emit((index, visible));
+        // A disabled chart still applies the toggle and repaints; it must not announce a series
+        // the user cannot reach (the `StackedWidget` shape this gate exists for).
+        if self.base.is_enabled() {
+            self.series_toggled.emit((index, visible));
+        }
         self.base.request_redraw();
         true
     }

@@ -19,10 +19,11 @@
 //!
 //! [`set_entries`]: WebHistoryPanel::set_entries
 
+use crate::web_engine::{HistoryEntry, WebEngineView};
 use rust_widgets::compat::{format, String, ToString, Vec};
-use rust_widgets::impl_draw_bridge;
 use rust_widgets::core::{Color, HorizontalAlignment, Point, Rect, Size};
 use rust_widgets::event::{Event, EventHandler};
+use rust_widgets::impl_draw_bridge;
 use rust_widgets::impl_widget_property_hooks;
 use rust_widgets::property_names_of;
 use rust_widgets::render::RenderContext;
@@ -34,7 +35,6 @@ use rust_widgets::widget::capability::properties_trait::{base_property_get, base
 use rust_widgets::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use rust_widgets::widget::capability::WidgetProperties;
 use rust_widgets::widget::metrics::{dimensions, role_font, ControlMetrics};
-use crate::web_engine::{HistoryEntry, WebEngineView};
 use rust_widgets::widget::{BaseWidget, Draw, Widget, WidgetKind};
 
 /// Height of one history row when the host does not choose one, in logical pixels.
@@ -382,7 +382,14 @@ impl Widget for WebHistoryPanel {
 
     fn size_hint(&self) -> Size {
         let row_height = self.row_height.max(1);
-        Size::new(320, (self.visible_count() as u32).saturating_mul(row_height).max(row_height))
+        rust_widgets::widget::metrics::ControlMetrics::implicit_size(
+            Size::new(0, 0),
+            rust_widgets::style::EdgeOffsets::all(0),
+            Size::new(
+                320,
+                (self.visible_count() as u32).saturating_mul(row_height).max(row_height),
+            ),
+        )
     }
 
     impl_draw_bridge!();

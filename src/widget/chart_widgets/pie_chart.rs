@@ -306,7 +306,11 @@ impl PieChart {
         self.angles_dirty = true;
         self.revalidate_hover();
         self.sync_legend();
-        self.series_toggled.emit((index, visible));
+        // A disabled chart still applies the toggle and repaints; it must not announce a series
+        // the user cannot reach (the `StackedWidget` shape this gate exists for).
+        if self.base.is_enabled() {
+            self.series_toggled.emit((index, visible));
+        }
         self.base.request_redraw();
         true
     }

@@ -377,7 +377,11 @@ impl Widget for MapOverviewPanel {
     }
 
     fn size_hint(&self) -> Size {
-        Size::new(160, 120)
+        crate::widget::metrics::ControlMetrics::implicit_size(
+            Size::new(0, 0),
+            crate::style::EdgeOffsets::all(0),
+            Size::new(160, 120),
+        )
     }
 
     impl_draw_bridge!();

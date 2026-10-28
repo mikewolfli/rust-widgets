@@ -23,6 +23,13 @@
 //! delegation is gated: a build without that module keeps the manager's own simple bubble. That
 //! is one renderer **per build**, not two at once — the two arms never compile together.
 
+//!
+//! # `enabled`
+//!
+//! `tooltip_shown` / `tooltip_hidden` are **deliberately not gated** by `enabled`. The manager is
+//! host-driven (`note_hover` / `note_leave` / `show_now` are its API), and the signal reports what
+//! the *bubble* did, not an action taken on this control.
+
 use crate::compat::{String, Vec};
 use crate::core::{ObjectId, Point, Rect, Size};
 use crate::event::{Event, EventHandler};

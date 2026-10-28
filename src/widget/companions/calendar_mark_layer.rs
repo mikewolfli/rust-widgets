@@ -380,7 +380,11 @@ impl Widget for CalendarMarkLayer {
         &mut self.base
     }
     fn size_hint(&self) -> Size {
-        Size::new(280, 240)
+        crate::widget::metrics::ControlMetrics::implicit_size(
+            Size::new(0, 0),
+            crate::style::EdgeOffsets::all(0),
+            Size::new(280, 240),
+        )
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();

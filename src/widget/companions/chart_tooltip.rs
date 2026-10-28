@@ -1,5 +1,11 @@
 //! `ChartTooltip` — a floating, chart-positioned tooltip bubble.
 
+//!
+//! # `enabled`
+//!
+//! `shown` / `hidden` are **deliberately not gated** by `enabled`: the chart shows and hides this
+//! overlay, and the signal reports the overlay's own visibility rather than a user action.
+
 use crate::compat::{String, Vec};
 use crate::core::{Color, Point, Rect, Size};
 use crate::event::{Event, EventHandler};

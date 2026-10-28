@@ -573,7 +573,11 @@ impl Widget for FindReplaceBar {
         &mut self.base
     }
     fn size_hint(&self) -> Size {
-        Size::new(420, if self.replace_visible { 64 } else { 32 })
+        crate::widget::metrics::ControlMetrics::implicit_size(
+            Size::new(0, 0),
+            crate::style::EdgeOffsets::all(0),
+            Size::new(420, if self.replace_visible { 64 } else { 32 }),
+        )
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();

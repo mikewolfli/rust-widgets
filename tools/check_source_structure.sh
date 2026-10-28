@@ -57,6 +57,9 @@ MOD_RS_PENDING: dict[str, str] = {
     "src/menu_config/mod.rs": "the JSON converters → `menu_config/json.rs`",
     "src/widget/base_widgets/mod.rs": "`AutoRepeat` and its helpers → `base_widgets/auto_repeat.rs`",
     "src/widget/chart_widgets/finance/mod.rs": "`sync_view_range` → `finance/view_range.rs`",
+    # Recorded 2026-10-28 (round 11): the two `mod.rs` files that still define items.
+    "src/designer/mod.rs": "`DocumentEditCommand` / `DesignerHistory` → `designer/history.rs` (mod.rs keeps the declarations and re-exports)",
+    "src/json/mod.rs": "`MAX_DEPTH` → `json/limits.rs`",
 }
 
 # ── Check 2 ─────────────────────────────────────────────────────────────────────
@@ -118,6 +121,21 @@ TOO_LONG_PENDING = {
     "src/widget/view_widgets/grid_table.rs": "span layout vs selection vs paint → `grid_table/{layout,paint}.rs`",
     "src/widget/view_widgets/properties_panel.rs": "property rows vs editors vs paint → `properties_panel/{rows,paint}.rs`",
     "src/widget/view_widgets/tree_view.rs": "projection/index vs selection vs paint → `tree_view/{model,paint}.rs`",
+    # Recorded 2026-10-28 (round 11): the files the gate named that had no row. Each seam is the
+    # split that removes the finding; the row must disappear with it.
+    "src/platform/linux/platform_impl.rs": "window/menu/dialog creation vs input vs surface/monitor → `linux/impl/{create,input,display}.rs`",
+    "src/platform/windows/platform_impl.rs": "window/menu/dialog creation vs input vs display → `windows/impl/{create,input,display}.rs`",
+    "src/style/css.rs": "selector model vs declaration parse vs cascade/lookup caches → `style/css/{selector,parse,cascade}.rs`",
+    "src/wgpu_backend/raster.rs": "the command walk vs the CPU raster kernels → `raster/{walk,fills,text}.rs`",
+    "src/widget/capability/properties_other.in.rs": "an `include!`d table: one file per widget family, mirroring `properties_base.in.rs` / `properties_menu.in.rs`",
+    "src/widget/chart_widgets/bar_chart.rs": "series model vs axes/plot paint vs legend/hover → `bar_chart/{model,paint}.rs`",
+    "src/widget/chart_widgets/gantt_widget.rs": "task model vs axis/row paint vs interaction → `gantt/{model,paint,events}.rs`",
+    "src/widget/chart_widgets/line_chart.rs": "series model vs plot paint vs hover → `line_chart/{model,paint}.rs`",
+    "src/widget/container_widgets/mdiarea.rs": "child-window model vs tile/cascade layout vs paint → `mdiarea/{model,layout,paint}.rs`",
+    "src/widget/input_widgets/listbox.rs": "item model vs selection vs row paint → `listbox/{model,selection,paint}.rs`",
+    "src/widget/input_widgets/rich_edit.rs": "document model vs format spans vs paint → `rich_edit/{model,formats,paint}.rs`",
+    "src/widget/media_widgets/video_player.rs": "playback state vs transport/controls chrome vs paint → `video_player/{model,controls,paint}.rs`",
+    "src/widget/view_widgets/tree_table.rs": "tree index vs column layout vs paint → `tree_table/{model,columns,paint}.rs`",
 }
 
 

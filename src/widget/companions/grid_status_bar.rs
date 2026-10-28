@@ -199,7 +199,11 @@ impl Widget for GridStatusBar {
         &mut self.base
     }
     fn size_hint(&self) -> Size {
-        Size::new(240, 28)
+        crate::widget::metrics::ControlMetrics::implicit_size(
+            Size::new(0, 0),
+            crate::style::EdgeOffsets::all(0),
+            Size::new(240, 28),
+        )
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();

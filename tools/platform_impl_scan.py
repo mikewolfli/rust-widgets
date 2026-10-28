@@ -43,7 +43,18 @@ fn_re = re.compile(r"\bfn\s+(create_[a-z0-9_]+)\s*\(")
 any_fn_re = re.compile(r"\bfn\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(")
 delegate_re = re.compile(r"\bself\.([A-Za-z_][A-Za-z0-9_]*)\s*\(")
 free_call_re = re.compile(r"\b([A-Za-z_][A-Za-z0-9_]*)\s*\(self\b")
-state_insert_re = re.compile(r"(?:state\.)?create_widget\(|insert_widget\(")
+# A logical state row, under each of the three names the backends use for it:
+#
+#   * `state.create_widget(..)` / `insert_widget(..)` — the Windows/Linux/Wayland/Android spelling;
+#   * `register_state_only_handle(..)` — the AppKit spelling (`macos`, `macos_objc2`), which
+#     records the same kind of row without constructing an `NSWindow`/panel.
+#
+# The AppKit name was missing, so `macos:create_file_dialog` was reported Unclassifiable even
+# though its body is exactly "record a logical handle and return it" — the same shape the other
+# backends get graded StateBacked for.
+state_insert_re = re.compile(
+    r"(?:state\.)?create_widget\(|insert_widget\(|register_state_only_handle\("
+)
 
 # Per-OS native-creation signals (tokens inside a method body or a followed
 # delegate chain indicate a real native/FFI object is created). Intentionally

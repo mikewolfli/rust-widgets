@@ -746,50 +746,6 @@ impl Platform for MacOSPlatform {
         self.register_state_only_handle(HandleKind::FileDialog, "Open File", x, y, width, height)
     }
 
-    /// Message boxes are painted by the library; this backend creates no native one.
-    #[allow(clippy::too_many_arguments)]
-    fn create_message_box(
-        &self,
-        parent: ObjectId,
-        title: &str,
-        text: &str,
-        x: i32,
-        y: i32,
-        width: u32,
-        height: u32,
-    ) -> u64 {
-        let _ = (parent, title, text, x, y, width, height);
-        log::debug!(
-            "[macos] create_message_box: no native message-box control; the library paints it"
-        );
-        0
-    }
-
-    /// Colour choosers are painted by the library; AppKit's panel is not a per-window control.
-    fn create_color_dialog(
-        &self,
-        parent: ObjectId,
-        x: i32,
-        y: i32,
-        width: u32,
-        height: u32,
-    ) -> u64 {
-        let _ = (parent, x, y, width, height);
-        log::debug!(
-            "[macos] create_color_dialog: no native colour-dialog control; the library paints it"
-        );
-        0
-    }
-
-    /// Font choosers are painted by the library; AppKit's panel is not a per-window control.
-    fn create_font_dialog(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> u64 {
-        let _ = (parent, x, y, width, height);
-        log::debug!(
-            "[macos] create_font_dialog: no native font-dialog control; the library paints it"
-        );
-        0
-    }
-
     fn create_window(&self, title: &str, x: i32, y: i32, width: u32, height: u32) -> u64 {
         // Off-main (e.g. the C ABI called from a worker thread or unit tests),
         // never construct `NSWindow`: AppKit raises a foreign exception that

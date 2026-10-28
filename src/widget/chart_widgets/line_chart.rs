@@ -7,6 +7,15 @@
 //! under the line, and a line connecting data points with configurable stroke.
 //! Axis ranges can be set manually or auto-computed from the data.
 
+//!
+//! # `enabled` and the chrome signals
+//!
+//! The `redraw` / `request_redraw` emits in the `attach_*` methods are **deliberately not gated**
+//! by `enabled`: a disabled chart is still painted (greyed), so a companion that changed the model
+//! still needs the surface repainted, and a repaint announces no user action. `series_toggled` is
+//! gated in the mutator that emits it, so a host that disabled the control hears nothing it cannot
+//! reach.
+
 //! LineChart widget — a 2D line chart with optional area fill and grid.
 //!
 //! # Rendering path
@@ -1085,7 +1094,11 @@ impl LineChart {
         self.invalidate_data_cache();
         self.revalidate_hover();
         self.sync_legend();
-        self.series_toggled.emit((index, visible));
+        // A disabled chart still applies the toggle and repaints; it must not announce a series
+        // the user cannot reach (the `StackedWidget` shape this gate exists for).
+        if self.base.is_enabled() {
+            self.series_toggled.emit((index, visible));
+        }
         self.base.request_redraw();
         true
     }

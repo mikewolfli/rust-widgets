@@ -1003,7 +1003,8 @@ impl Platform for LinuxPlatform {
     ///
     /// [`Self::choose_path`] is the native picker this capability describes; the library paints
     /// the chooser control itself, so this records a handle rather than constructing a second GTK
-    /// dialog object. The `0` on a non-GTK build is consistent with `file_dialog: false` there.
+    /// dialog object. A non-GTK build inherits the trait's default `0`, which is consistent with
+    /// `file_dialog: false` there.
     #[cfg(all(unix_desktop, feature = "gtk-native"))]
     fn create_file_dialog(
         &self,
@@ -1014,70 +1015,6 @@ impl Platform for LinuxPlatform {
         height: u32,
     ) -> crate::core::ObjectId {
         self.insert_widget(LinuxHandleKind::FileDialog, "Open File", x, y, width, height)
-    }
-
-    #[cfg(not(all(unix_desktop, feature = "gtk-native")))]
-    fn create_file_dialog(
-        &self,
-        parent: crate::core::ObjectId,
-        x: i32,
-        y: i32,
-        width: u32,
-        height: u32,
-    ) -> crate::core::ObjectId {
-        let _ = (parent, x, y, width, height);
-        0
-    }
-
-    /// Message boxes are painted by the library; this backend creates no native one.
-    #[allow(clippy::too_many_arguments)]
-    fn create_message_box(
-        &self,
-        parent: crate::core::ObjectId,
-        title: &str,
-        text: &str,
-        x: i32,
-        y: i32,
-        width: u32,
-        height: u32,
-    ) -> crate::core::ObjectId {
-        let _ = (parent, title, text, x, y, width, height);
-        log::debug!(
-            "[linux] create_message_box: no native message-box control; the library paints it"
-        );
-        0
-    }
-
-    /// Colour choosers are painted by the library; this backend creates no native one.
-    fn create_color_dialog(
-        &self,
-        parent: crate::core::ObjectId,
-        x: i32,
-        y: i32,
-        width: u32,
-        height: u32,
-    ) -> crate::core::ObjectId {
-        let _ = (parent, x, y, width, height);
-        log::debug!(
-            "[linux] create_color_dialog: no native colour-dialog control; the library paints it"
-        );
-        0
-    }
-
-    /// Font choosers are painted by the library; this backend creates no native one.
-    fn create_font_dialog(
-        &self,
-        parent: crate::core::ObjectId,
-        x: i32,
-        y: i32,
-        width: u32,
-        height: u32,
-    ) -> crate::core::ObjectId {
-        let _ = (parent, x, y, width, height);
-        log::debug!(
-            "[linux] create_font_dialog: no native font-dialog control; the library paints it"
-        );
-        0
     }
 
     /// Creates a top-level window, with a real GTK toplevel on the toolkit thread.

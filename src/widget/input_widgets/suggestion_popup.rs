@@ -373,7 +373,10 @@ impl SuggestionPopup {
     /// a tag field's suggestions), so it needs the original index of each painted row rather than
     /// a copy of the labels. Exposing the map is what lets the host paint from its own storage
     /// while the filter and window stay here (I-129).
-    #[cfg(full_widgets)]
+    // `widgets_unstripped`, not `full_widgets`: the caller is `editable_combo_box`, which is
+    // compiled whenever the widget set is unstripped. A device profile is not part of what this
+    // method needs — it only reads the filtered row map.
+    #[cfg(widgets_unstripped)]
     pub(crate) fn visible_indices(&self) -> &[usize] {
         &self.visible
     }

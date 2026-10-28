@@ -26,6 +26,7 @@ item setter | set_item_icon_source | src/widget/nav_widgets/bottom_navigation_ba
 item setter | set_item_icon_source | src/widget/nav_widgets/navigation_drawer.rs | - | index
 item setter | set_item_icon_source | src/widget/special_widgets/chip.rs | - | text id
 published property | icon_name | src/widget/capability/properties_other.in.rs | - | icon
+published property | icon_rotation | src/widget/capability/properties_other.in.rs | - | icon
 published property | icon_side | src/widget/capability/properties_other.in.rs | - | swipe_actions
 published property | icon_size | src/widget/capability/properties_base.in.rs | - | button
 published property | icon_size | src/widget/capability/properties_menu.in.rs | - | tool_bar
@@ -43,6 +44,8 @@ typed content api | icon_source | src/widget/advanced_widgets/pie_menu.rs | - | 
 typed content api | icon_source | src/widget/advanced_widgets/ribbon_bar.rs | - | -
 typed content api | icon_source | src/widget/advanced_widgets/tab_bar.rs | - | -
 typed content api | icon_source | src/widget/base_widgets/button.rs | - | -
+typed content api | icon_source | src/widget/base_widgets/checkbox.rs | - | -
+typed content api | icon_source | src/widget/base_widgets/radiobutton.rs | - | -
 typed content api | icon_source | src/widget/base_widgets/toggle_button.rs | - | -
 typed content api | icon_source | src/widget/container_widgets/mdiarea.rs | - | -
 typed content api | icon_source | src/widget/container_widgets/tabwidget.rs | - | -
@@ -58,6 +61,8 @@ typed content api | set_icon_source | src/widget/advanced_widgets/pie_menu.rs | 
 typed content api | set_icon_source | src/widget/advanced_widgets/ribbon_bar.rs | - | -
 typed content api | set_icon_source | src/widget/advanced_widgets/tab_bar.rs | - | -
 typed content api | set_icon_source | src/widget/base_widgets/button.rs | - | -
+typed content api | set_icon_source | src/widget/base_widgets/checkbox.rs | - | -
+typed content api | set_icon_source | src/widget/base_widgets/radiobutton.rs | - | -
 typed content api | set_icon_source | src/widget/base_widgets/toggle_button.rs | - | -
 typed content api | set_icon_source | src/widget/container_widgets/mdiarea.rs | - | -
 typed content api | set_icon_source | src/widget/container_widgets/tabwidget.rs | - | -

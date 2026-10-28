@@ -595,7 +595,11 @@ impl Widget for HeaderMenu {
         &mut self.base
     }
     fn size_hint(&self) -> Size {
-        Size::new(HEADER_MENU_MIN_WIDTH, self.items().len().max(1) as u32 * HEADER_ROW_HEIGHT)
+        crate::widget::metrics::ControlMetrics::implicit_size(
+            Size::new(0, 0),
+            crate::style::EdgeOffsets::all(0),
+            Size::new(HEADER_MENU_MIN_WIDTH, self.items().len().max(1) as u32 * HEADER_ROW_HEIGHT),
+        )
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();

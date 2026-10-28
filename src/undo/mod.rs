@@ -11,11 +11,16 @@
 mod command;
 mod stack;
 mod types;
-#[cfg(full_widgets)]
+// `ValueCommand` is the shared plumbing behind the six value-editing inputs, and those inputs are
+// compiled whenever the widget set is unstripped (`widgets_unstripped`) — not only on a device
+// profile. Gating the provider on `full_widgets` was one term narrower than its consumers, so an
+// unstripped build with no device profile (the `desktop-runtime,controls-custom` set the
+// cross-target gates use) failed with `unresolved import crate::undo::ValueCommand`.
+#[cfg(widgets_unstripped)]
 mod value_command;
 
 pub use command::*;
 pub use stack::*;
 pub use types::*;
-#[cfg(full_widgets)]
+#[cfg(widgets_unstripped)]
 pub(crate) use value_command::ValueCommand;

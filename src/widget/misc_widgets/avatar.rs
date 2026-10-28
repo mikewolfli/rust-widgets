@@ -883,7 +883,11 @@ impl Widget for GroupAvatar {
         let shown = self.visible_count() + usize::from(self.overflow_count() > 0);
         let step = self.step(side);
         let width = side as i32 + step * shown.saturating_sub(1) as i32;
-        crate::core::Size::new(width.max(1) as u32, side)
+        crate::widget::metrics::ControlMetrics::implicit_size(
+            crate::core::Size::new(0, 0),
+            crate::style::EdgeOffsets::all(0),
+            crate::core::Size::new(width.max(1) as u32, side),
+        )
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();

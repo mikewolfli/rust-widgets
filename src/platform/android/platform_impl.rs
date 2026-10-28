@@ -611,41 +611,6 @@ impl Platform for AndroidPlatform {
         }
     }
 
-    /// Message boxes are painted by the library; Android exposes no standalone message-box View.
-    #[allow(clippy::too_many_arguments)]
-    fn create_message_box(
-        &self,
-        parent: u64,
-        title: &str,
-        text: &str,
-        x: i32,
-        y: i32,
-        width: u32,
-        height: u32,
-    ) -> u64 {
-        let _ = (parent, title, text, x, y, width, height);
-        log::debug!(
-            "[android] create_message_box: no native message-box control; the library paints it"
-        );
-        0
-    }
-
-    /// Colour choosers are painted by the library; Android ships no system colour picker.
-    fn create_color_dialog(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
-        let _ = (parent, x, y, width, height);
-        log::debug!(
-            "[android] create_color_dialog: no system colour picker; the library paints it"
-        );
-        0
-    }
-
-    /// Font choosers are painted by the library; Android ships no system font picker.
-    fn create_font_dialog(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
-        let _ = (parent, x, y, width, height);
-        log::debug!("[android] create_font_dialog: no system font picker; the library paints it");
-        0
-    }
-
     fn create_window(&self, title: &str, x: i32, y: i32, width: u32, height: u32) -> u64 {
         if self.state.count_kind(AndroidHandleKind::Window) > 0 {
             log::warn!(

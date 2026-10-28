@@ -106,3 +106,20 @@ src/widget/media_widgets/rive_widget.rs    not a duration at all: `RIV_ANIMATION
 src/widget/menu_toolbar/effects.rs    the hover dwell before a submenu opens, not the submenu's transition
 src/widget/view_widgets/list_view.rs    the double-click grouping window the host must match to the OS, not a transition
 src/widget/view_widgets/properties_panel.rs    the hover dwell before a property tooltip appears, not the tooltip's transition
+
+# ── Not durations at all: rates and clocks ──
+#
+# These three were reported by the name heuristic (`…_MS` / `…PER_MS`) rather than by
+# being a transition. A rate is a speed, not a length of time: scaling it by a theme's
+# motion token would change how *fast* the pointer outruns the surface instead of how
+# long a movement takes, so it has no place in `motion`.
+src/widget/cupertino/date_picker.rs    `FLING_DECAY_PER_MS` is a decay rate per millisecond (0.03), not a duration: it is the exponential factor the fling velocity is multiplied by each millisecond
+src/widget/misc_widgets/drum_column.rs    `SETTLE_PX_PER_MS` is a settle speed in pixels per millisecond (0.35), not a duration: the column's remaining distance divided by it gives the time, and a theme token there would re-price the distance
+src/widget/input_widgets/input_companions.rs    `NOMINAL_FRAME_MS` is the animation clock's nominal frame period (16.0 ms, i.e. 60 Hz) used to advance progress by whole frames, not a transition duration
+
+# ── Dwell timings ──
+#
+# Same distinction as the tooltip/scrollbar entries above: how long the user's hand
+# must rest before the surface appears is a behavioural setting of the control, and it
+# is deliberately not repriced by a theme's motion scale.
+src/widget/display_widgets/image_view.rs    `WHEEL_PREVIEW_HOLD_MS` is the dwell the wheel-zoom preview stays on screen after the wheel stops, not a transition

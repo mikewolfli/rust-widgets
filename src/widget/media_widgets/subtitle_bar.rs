@@ -10,6 +10,13 @@
 //! Registration surface (out of scope for this file): canonical name `subtitle_bar`, kind
 //! [`WidgetKind::Label`].
 
+//!
+//! # `enabled`
+//!
+//! `text_changed` is **deliberately not gated** by `enabled`: `set_text` is the host's readout
+//! update, and a disabled caption band still displays the cue it was given. The signal reports
+//! what the bar shows, not an action.
+
 use crate::compat::{Arc, Mutex, Vec};
 use crate::core::{Color, HorizontalAlignment, Rect, Size};
 use crate::event::{Event, EventHandler};

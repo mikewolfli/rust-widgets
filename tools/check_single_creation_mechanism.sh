@@ -68,6 +68,22 @@ while IFS= read -r hit; do
   # Extract the function name from the matched line.
   fn="$(printf '%s' "$hit" | sed -n 's/.*fn \(create_[A-Za-z0-9_]*\).*/\1/p')"
   [[ -z "$fn" ]] && continue
+  # `create_file_dialog` has one legitimate override shape: a *logical state handle*.
+  #
+  # P-204 requires the id to be non-zero exactly when the `file_dialog` capability is
+  # advertised, and the library paints the chooser itself — so the backend records a state row
+  # and returns it instead of constructing a native dialog. No control exists, only the id the
+  # capability promised.
+  #
+  # This is checked on the *body* rather than by adding the name to ALLOWED: an override that
+  # built a real dialog control would still fail here, on every backend including these.
+  if [[ "$fn" == "create_file_dialog" ]]; then
+      fn_body="$(awk -v start="$line" 'NR >= start { print; if (NR > start && $0 == "    }") exit }' "$file")"
+      if printf '%s' "$fn_body" | grep -qE 'insert_widget|register_state_only_handle|state\.create_widget'; then
+          echo "  ✅ $file:$line create_file_dialog records a logical state handle (P-204), not a control"
+          continue
+      fi
+  fi
   if ! printf '%s' "$fn" | grep -Eq "$ALLOWED"; then
     echo "  ❌ $file:$line overrides $fn — the host must create no per-kind control"
     violations=$((violations + 1))

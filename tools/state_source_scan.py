@@ -16,10 +16,10 @@ the base's, and `draws_focus_ring()` would then answer differently at two call s
 
 This scan is lexical and build-free. It reports:
   * a `hovered: bool` / `pressed: bool` / `grabbed: bool` field declared outside
-    `src/widget/base.rs` (part-hover like `hovered_tab`, data-hover like
-    `hovered_item`, and `is_hovered` on a non-widget struct are not fields of this
-    shape and are not matched);
-  * a `focus_reason: FocusReason` field declared outside `src/widget/base.rs`.
+    `src/widget/base.rs` **in a struct that owns a `BaseWidget`** (part-hover like `hovered_tab`,
+    data-hover like `hovered_item`, and paint-input structs like `ActionButtonPaint` are not
+    fields of this shape and are not matched);
+  * a `focus_reason: FocusReason` field in such a struct, declared outside `src/widget/base.rs`.
 
 Run with `--inject` to prove the search actually reads the tree: the injection adds a
 private field to a named widget and the scan must then report it.
@@ -49,7 +49,57 @@ FIELD_PATTERNS = [
     ),
 ]
 
-INJECTION = "\n    /// Injected by --inject: a second, private hover source.\n    hovered: bool,\n"
+INJECTION = (
+    "\n/// Injected by --inject: a control-shaped probe with a second, private hover source.\n"
+    "///\n"
+    "/// The `base` field is what makes it a *control* rather than a transfer struct: the scan\n"
+    "/// only reads the bodies of structs that own a `BaseWidget`, which is the state the rule is\n"
+    "/// about.\n"
+    "pub struct InjectedHoverProbe {\n"
+    "    #[allow(dead_code)]\n"
+    "    base: BaseWidget,\n"
+    "    #[allow(dead_code)]\n"
+    "    hovered: bool,\n"
+    "}\n"
+)
+
+STRUCT_HEADER = re.compile(
+    r"^\s*(?:pub(?:\([^)]*\))?\s+)?struct\s+(?P<name>\w+)[^;{]*\{\s*$", re.MULTILINE
+)
+OWNS_A_BASE = re.compile(r"^\s*(?:pub(?:\([^)]*\))?\s+)?base\s*:\s*BaseWidget\b", re.MULTILINE)
+
+
+def control_struct_bodies(text: str) -> list[tuple[int, str]]:
+    """`(offset, body)` for every struct that owns a `BaseWidget`.
+
+    # Why the scan is scoped to these structs
+
+    The rule is about **widget-level** state: a control that keeps its own `hovered` beside the
+    base's. A transfer struct — `ActionButtonPaint { armed, hovered, is_enabled, ink, surface }` in
+    `empty_state.rs` — is the *opposite* shape: it carries the base's answer into the painter and
+    owns no state at all. The un-scoped scan reported that field as a second source, which is a
+    false failure whose printed remedy ("delete the private field and read the base accessor")
+    would have deleted the parameter the painter reads.
+
+    `base: BaseWidget` is the discriminator rather than a naming convention because it is the
+    `Widget` contract: every control that can be hovered stores its base, and a struct that does
+    not cannot answer `is_hovered()` at all.
+    """
+    bodies: list[tuple[int, str]] = []
+    for header in STRUCT_HEADER.finditer(text):
+        open_at = text.rfind("{", header.start(), header.end())
+        depth = 0
+        for index in range(open_at, len(text)):
+            if text[index] == "{":
+                depth += 1
+            elif text[index] == "}":
+                depth -= 1
+                if depth == 0:
+                    body = text[open_at : index + 1]
+                    if OWNS_A_BASE.search(body):
+                        bodies.append((open_at, body))
+                    break
+    return bodies
 
 
 def scanned_files() -> list[pathlib.Path]:
@@ -70,10 +120,11 @@ def scan(files: list[pathlib.Path]) -> list[str]:
         # second production source of state.
         if "#[cfg(test)]" in text:
             text = text.split("#[cfg(test)]")[0]
-        for pattern in FIELD_PATTERNS:
-            for match in pattern.finditer(text):
-                line = text[: match.start()].count("\n") + 1
-                findings.append(f"{path.relative_to(ROOT)}:{line}: {match.group('name')}")
+        for offset, body in control_struct_bodies(text):
+            for pattern in FIELD_PATTERNS:
+                for match in pattern.finditer(body):
+                    line = text[: offset + match.start()].count("\n") + 1
+                    findings.append(f"{path.relative_to(ROOT)}:{line}: {match.group('name')}")
     return findings
 
 

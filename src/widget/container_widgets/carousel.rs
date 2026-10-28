@@ -268,7 +268,27 @@ const BAR_WIDTH: u32 = 10;
 /// Thickness of a `Bars` mark across the strip.
 const BAR_HEIGHT: u32 = 3;
 /// Duration of the programmatic page slide, in milliseconds (C-010).
-const PAGE_TRANSITION_MS: u32 = 200;
+///
+/// Read from `theme.motion.normal`, the same token every other transition uses, so a
+/// reduced-motion preference or a re-tempoed theme shortens the slide without this control
+/// knowing about either. `200` is the no-theme fallback the default preset produces.
+fn page_transition_ms() -> u32 {
+    // A device profile is what has a theme to read; the unstripped-but-profile-less build (the
+    // `desktop-runtime,controls-custom` set) has the control but no `Theme::motion`, so it keeps
+    // the preset's 200 ms.
+    #[cfg(full_widgets)]
+    {
+        crate::style::theme_manager()
+            .current_theme()
+            .map(|theme| theme.motion.normal)
+            .unwrap_or(200)
+            .max(1)
+    }
+    #[cfg(not(full_widgets))]
+    {
+        200
+    }
+}
 
 /// A programmatic page change in flight (C-010).
 ///
@@ -517,7 +537,7 @@ impl Carousel {
     /// Sets the current page by index. Clamped to valid range.
     /// Emits `page_changed` if the index actually changes.
     ///
-    /// A programmatic change slides over [`PAGE_TRANSITION_MS`] unless
+    /// A programmatic change slides over [`page_transition_ms`] unless
     /// [`Self::set_page_transition`] turned the slide off (C-010). The index itself changes
     /// immediately, so `selected_index` is the destination for the whole animation.
     pub fn set_current(&mut self, index: usize) {
@@ -911,7 +931,7 @@ impl Widget for Carousel {
         let mut sliding = false;
         if let Some(mut slide) = self.slide {
             slide.elapsed_ms = slide.elapsed_ms.saturating_add(delta_ms);
-            if slide.elapsed_ms >= PAGE_TRANSITION_MS {
+            if slide.elapsed_ms >= page_transition_ms() {
                 self.slide = None;
             } else {
                 self.slide = Some(slide);
@@ -1174,7 +1194,7 @@ impl Draw for Carousel {
         // already names the destination, so the indicator and any subscriber are in their final
         // state while the pixels are still moving.
         if let Some(slide) = self.slide {
-            let progress = (slide.elapsed_ms as f32 / PAGE_TRANSITION_MS as f32).clamp(0.0, 1.0);
+            let progress = (slide.elapsed_ms as f32 / page_transition_ms() as f32).clamp(0.0, 1.0);
             let stride = self.page_stride() as f32;
             let forward = slide.to >= slide.from;
             let travelled = (progress * stride).round() as i32;
@@ -2619,7 +2639,7 @@ mod tests {
         // An autoplay advance is a programmatic page change, so it slides (C-010). Let the
         // slide finish first: while it is in flight it owes frames of its own, which would
         // make the "no autoplay, no repaint" assertion below test the wrong thing.
-        c.tick(PAGE_TRANSITION_MS);
+        c.tick(page_transition_ms());
 
         // Turning autoplay off stops it owing frames at all.
         c.set_autoplay(None);

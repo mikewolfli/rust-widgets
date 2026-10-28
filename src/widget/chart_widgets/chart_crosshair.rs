@@ -24,6 +24,14 @@
 //! `position_changed`) is kept alongside the companion surface (`show_at_data`, `mode`,
 //! `crosshair_moved`).
 
+//!
+//! # `enabled`
+//!
+//! `position_changed` and `crosshair_moved` are **deliberately not gated** by `enabled`: the
+//! crosshair is a readout the chart drives to the position it is about to paint, so suppressing
+//! them would leave the drawn position and the host's model disagreeing. The control has no action
+//! of its own, which is why it is allowlisted as a passive overlay.
+
 use crate::core::{Color, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;

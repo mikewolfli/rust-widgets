@@ -1977,57 +1977,6 @@ impl Platform for WindowsPlatform {
         self.state.create_widget(WindowsHandleKind::FileDialog, "Open File", x, y, width, height)
     }
 
-    /// Message boxes are painted by the library; this backend creates no native one.
-    #[allow(clippy::too_many_arguments)]
-    fn create_message_box(
-        &self,
-        parent: ObjectId,
-        title: &str,
-        text: &str,
-        x: i32,
-        y: i32,
-        width: u32,
-        height: u32,
-    ) -> ObjectId {
-        let _ = (parent, title, text, x, y, width, height);
-        log::debug!(
-            "[windows] create_message_box: no native message-box control; the library paints it"
-        );
-        0
-    }
-
-    /// Colour choosers are painted by the library; this backend creates no native one.
-    fn create_color_dialog(
-        &self,
-        parent: ObjectId,
-        x: i32,
-        y: i32,
-        width: u32,
-        height: u32,
-    ) -> ObjectId {
-        let _ = (parent, x, y, width, height);
-        log::debug!(
-            "[windows] create_color_dialog: no native colour-dialog control; the library paints it"
-        );
-        0
-    }
-
-    /// Font choosers are painted by the library; this backend creates no native one.
-    fn create_font_dialog(
-        &self,
-        parent: ObjectId,
-        x: i32,
-        y: i32,
-        width: u32,
-        height: u32,
-    ) -> ObjectId {
-        let _ = (parent, x, y, width, height);
-        log::debug!(
-            "[windows] create_font_dialog: no native font-dialog control; the library paints it"
-        );
-        0
-    }
-
     fn create_window(&self, title: &str, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
         #[cfg(target_os = "windows")]
         {

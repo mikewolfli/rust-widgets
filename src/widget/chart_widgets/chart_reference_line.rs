@@ -467,7 +467,11 @@ impl Widget for ChartReferenceLine {
     }
 
     fn size_hint(&self) -> crate::core::Size {
-        crate::core::Size::new(160, 120)
+        crate::widget::metrics::ControlMetrics::implicit_size(
+            crate::core::Size::new(0, 0),
+            crate::style::EdgeOffsets::all(0),
+            crate::core::Size::new(160, 120),
+        )
     }
 
     crate::impl_draw_bridge!();

@@ -426,7 +426,11 @@ impl Widget for TerminalFindBar {
     }
 
     fn size_hint(&self) -> Size {
-        Size::new(320, 30)
+        crate::widget::metrics::ControlMetrics::implicit_size(
+            Size::new(0, 0),
+            crate::style::EdgeOffsets::all(0),
+            Size::new(320, 30),
+        )
     }
 
     impl_draw_bridge!();

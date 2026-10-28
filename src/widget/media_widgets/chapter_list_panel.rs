@@ -385,7 +385,11 @@ impl Widget for ChapterListPanel {
     }
 
     fn size_hint(&self) -> Size {
-        Size::new(220, 180)
+        crate::widget::metrics::ControlMetrics::implicit_size(
+            Size::new(0, 0),
+            crate::style::EdgeOffsets::all(0),
+            Size::new(220, 180),
+        )
     }
 
     impl_draw_bridge!();

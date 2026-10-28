@@ -466,7 +466,11 @@ impl Widget for ChartDataTable {
     }
     fn size_hint(&self) -> Size {
         let rows = self.max_rows.min(8) as u32;
-        Size::new(320, HEADER_HEIGHT + rows * ROW_HEIGHT + TABLE_INSET * 2)
+        crate::widget::metrics::ControlMetrics::implicit_size(
+            Size::new(0, 0),
+            crate::style::EdgeOffsets::all(0),
+            Size::new(320, HEADER_HEIGHT + rows * ROW_HEIGHT + TABLE_INSET * 2),
+        )
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();

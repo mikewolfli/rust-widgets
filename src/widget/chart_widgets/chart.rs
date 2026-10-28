@@ -504,8 +504,12 @@ impl ChartWidget {
         }
         self.zoom_x = range;
         let (start, end) = self.zoom_bounds();
-        self.zoom_changed.emit(range);
-        self.viewport_changed.emit((start, end));
+        // A disabled chart still applies the window and repaints; it must not announce a view
+        // the user cannot reach (the `StackedWidget` shape this gate exists for).
+        if self.base.is_enabled() {
+            self.zoom_changed.emit(range);
+            self.viewport_changed.emit((start, end));
+        }
         self.base.request_redraw();
     }
 
@@ -531,7 +535,10 @@ impl ChartWidget {
             return;
         }
         self.zoom_y = range;
-        self.zoom_y_changed.emit(range);
+        // See `set_zoom_range`: the window applies, the announcement does not.
+        if self.base.is_enabled() {
+            self.zoom_y_changed.emit(range);
+        }
         self.base.request_redraw();
     }
 
@@ -554,7 +561,10 @@ impl ChartWidget {
         self.series_visible[index] = visible;
         self.visibility_generation = self.visibility_generation.wrapping_add(1);
         self.sync_legend();
-        self.series_toggled.emit((index, visible));
+        // See `set_zoom_range`: the toggle applies, the announcement does not.
+        if self.base.is_enabled() {
+            self.series_toggled.emit((index, visible));
+        }
         self.base.request_redraw();
         true
     }
