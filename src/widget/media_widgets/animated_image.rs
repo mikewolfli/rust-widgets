@@ -29,6 +29,14 @@ use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 
 use super::pixels::nearest_scale;
 
+/// Default number of provider frames kept resident.
+///
+/// Provider mode used to default to `0` (unbounded), so a long animation accumulated every frame
+/// it had shown even though [`AnimatedImage::set_frame_provider`] promises a bounded cache. A host
+/// that wants a different bound calls [`AnimatedImage::set_frame_cache_limit`]; `0` still means
+/// explicit unbounded.
+pub const MAX_PROVIDER_CACHE_FRAMES: usize = 32;
+
 /// A single frame of animation data.
 pub struct AnimatedFrame {
     /// Raw RGBA pixel data for this frame (width * height * 4 bytes).
@@ -135,7 +143,7 @@ pub struct AnimatedImage {
     provider_count: usize,
     /// Frames fetched from the provider, in least-recently-used-first order.
     provider_cache: Vec<(usize, AnimatedFrame)>,
-    /// Upper bound on [`Self::provider_cache`] entries; `0` means unbounded.
+    /// Upper bound on [`Self::provider_cache`] entries; `0` means explicit unbounded.
     frame_cache_limit: usize,
     /// Cached result of the nearest-neighbour resample used by the fit modes.
     scale_cache: Option<ScaledFrame>,
@@ -169,7 +177,7 @@ impl AnimatedImage {
             frame_provider: None,
             provider_count: 0,
             provider_cache: Vec::new(),
-            frame_cache_limit: 0,
+            frame_cache_limit: MAX_PROVIDER_CACHE_FRAMES,
             scale_cache: None,
             frame_delays: Vec::new(),
             counter_text: String::new(),
@@ -239,7 +247,9 @@ impl AnimatedImage {
         self.frame_provider.is_some()
     }
 
-    /// The maximum number of provider frames kept resident; `0` means unbounded.
+    /// The maximum number of provider frames kept resident.
+    ///
+    /// Defaults to [`MAX_PROVIDER_CACHE_FRAMES`]; `0` means explicit unbounded.
     pub fn frame_cache_limit(&self) -> usize {
         self.frame_cache_limit
     }
@@ -287,18 +297,27 @@ impl AnimatedImage {
     }
 
     /// Drops cached provider frames beyond [`Self::frame_cache_limit`], never the current one.
+    ///
+    /// One `retain` pass over the least-recently-shown-first cache: the previous loop removed a
+    /// single victim and rescanned the whole cache for every one dropped, which was O(n²) when a
+    /// limit was lowered over a large cache.
     fn evict_provider_cache(&mut self) {
-        if self.frame_cache_limit == 0 {
+        let limit = self.frame_cache_limit;
+        if limit == 0 || self.provider_cache.len() <= limit {
             return;
         }
-        while self.provider_cache.len() > self.frame_cache_limit {
-            let evictable = self
-                .provider_cache
-                .iter()
-                .position(|(slot, _)| *slot != self.current_frame)
-                .unwrap_or(0);
-            self.provider_cache.remove(evictable);
-        }
+        let current = self.current_frame;
+        // Remove exactly `len - limit` entries, skipping the current frame wherever it sits; the
+        // oldest entries go first because the cache is recency-ordered.
+        let mut to_remove = self.provider_cache.len() - limit;
+        self.provider_cache.retain(|(slot, _)| {
+            if to_remove > 0 && *slot != current {
+                to_remove -= 1;
+                false
+            } else {
+                true
+            }
+        });
     }
 
     /// The resident frame `index`, without fetching it.
@@ -1066,6 +1085,47 @@ mod tests {
         img.load_frames(two_test_frames()).unwrap();
         assert!(!img.has_frame_provider());
         assert_eq!(img.frame_count(), 2);
+    }
+
+    /// Provider mode is bounded by default, so a long animation does not accumulate every
+    /// displayed frame (MX-X03).
+    #[test]
+    fn a_frame_provider_cache_is_bounded_by_default() {
+        struct Provider;
+        impl AnimatedFrameProvider for Provider {
+            fn frame_count(&self) -> usize {
+                MAX_PROVIDER_CACHE_FRAMES * 4
+            }
+            fn frame(&self, index: usize) -> Option<AnimatedFrame> {
+                Some(AnimatedFrame {
+                    data: vec![index as u8; 16],
+                    width: 2,
+                    height: 2,
+                    delay_ms: 1,
+                })
+            }
+        }
+
+        let mut img = AnimatedImage::new(Rect::new(0, 0, 200, 200));
+        assert_eq!(
+            img.frame_cache_limit(),
+            MAX_PROVIDER_CACHE_FRAMES,
+            "the documented bound must hold without a caller setting one"
+        );
+        img.set_frame_provider(Box::new(Provider));
+        img.play();
+        for _ in 0..(MAX_PROVIDER_CACHE_FRAMES * 4) {
+            img.tick(1);
+        }
+        assert!(
+            img.memory_usage() <= MAX_PROVIDER_CACHE_FRAMES * 16,
+            "the default bound must cap resident frames, got {}",
+            img.memory_usage()
+        );
+
+        // `0` remains the explicit unbounded opt-out.
+        img.set_frame_cache_limit(0);
+        assert_eq!(img.frame_cache_limit(), 0);
     }
 
     #[test]

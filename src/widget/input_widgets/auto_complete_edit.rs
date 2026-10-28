@@ -576,6 +576,9 @@ impl AutoCompleteEdit {
         let match_mode = self.match_mode;
         let Self { suggestions, filtered_suggestions, .. } = self;
         let mut kept = 0usize;
+        // The pattern engine matches on characters. One buffer for the whole pass means a
+        // candidate is copied into it rather than a fresh `Vec` being collected per suggestion.
+        let mut pattern_chars: crate::compat::Vec<char> = crate::compat::Vec::new();
         for suggestion in suggestions.iter() {
             let candidate: &str = suggestion;
             let matched = if case_sensitive {
@@ -588,7 +591,9 @@ impl AutoCompleteEdit {
                     }
                     // The suggestion is the subject and the typed prefix is the pattern.
                     CompletionMatchMode::RegExp => {
-                        compiled.as_ref().is_some_and(|pattern| pattern.is_match(candidate))
+                        pattern_chars.clear();
+                        pattern_chars.extend(candidate.chars());
+                        compiled.as_ref().is_some_and(|pattern| pattern.is_match(&pattern_chars))
                     }
                 }
             } else {
@@ -599,7 +604,9 @@ impl AutoCompleteEdit {
                     CompletionMatchMode::EndsWith => fold::ends_with(candidate, &needle),
                     CompletionMatchMode::FixedString => fold::contains_word(candidate, &needle),
                     CompletionMatchMode::RegExp => {
-                        compiled.as_ref().is_some_and(|pattern| pattern.is_match(candidate))
+                        pattern_chars.clear();
+                        pattern_chars.extend(candidate.chars());
+                        compiled.as_ref().is_some_and(|pattern| pattern.is_match(&pattern_chars))
                     }
                 }
             };

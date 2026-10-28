@@ -14,7 +14,7 @@
 use crate::compat::{String, ToString, Vec};
 use crate::i18n::global::get_manager;
 use crate::i18n::types::ReloadEvent;
-use crossbeam_channel::{bounded, Receiver, Sender};
+use crossbeam_channel::{bounded, Receiver, Sender, TrySendError};
 use notify::{Event, EventKind, RecursiveMode, Watcher};
 use std::collections::VecDeque;
 use std::path::Path;
@@ -106,10 +106,11 @@ impl I18nFileWatcher {
     pub fn watch_directory(&mut self, dir: &Path) -> Result<(), String> {
         let sender = self.reload_sender.clone();
         let receiver = self.reload_receiver.clone();
-        // Pending languages for the coalescing flush, in insertion order for
-        // deterministic delivery. Owned by the callback, which runs on the notify
-        // backend thread (D09-WATCH-01).
-        let mut pending: VecDeque<String> = VecDeque::new();
+        // Pending events for the coalescing flush, in insertion order for deterministic
+        // delivery. Owned by the callback, which runs on the notify backend thread
+        // (D09-WATCH-01). Holds at most one entry per (kind, language): a pending announcement
+        // collapses a repeat of the same language, and a diagnostic error is kept separately.
+        let mut pending: VecDeque<ReloadEvent> = VecDeque::new();
         let mut watcher = notify::recommended_watcher(move |res: Result<Event, _>| match res {
             Ok(event) => {
                 // Every path the event carries is mapped to its language identity, not
@@ -118,26 +119,31 @@ impl I18nFileWatcher {
                 // `languages_for_event` owns that mapping so it can be unit-tested.
                 for language in languages_for_event(&event.kind, &event.paths) {
                     // Skip a language already pending in this callback's buffer.
-                    if pending.iter().any(|queued| queued == &language) {
+                    if pending_has_translation_reload(&pending, &language) {
                         continue;
                     }
                     // Skip a language already queued on the channel: re-reading the
                     // same file again before the consumer has applied it would only
                     // produce the same result, so the duplicate announcement is the
                     // one thing safe to drop (D09-WATCH-01).
-                    if channel_already_holds_language(&sender, &receiver, &language) {
+                    if channel_already_holds_language(&sender, &receiver, &language, &mut pending) {
                         continue;
                     }
-                    if !sender
-                        .try_send(ReloadEvent::TranslationReloaded {
-                            language: language.clone(),
-                            timestamp: SystemTime::now(),
-                        })
-                        .is_ok()
-                    {
-                        // The channel is full: keep the language pending so a later
-                        // callback retries it rather than losing the change.
-                        pending.push_back(language);
+                    let event = ReloadEvent::TranslationReloaded {
+                        language: language.clone(),
+                        timestamp: SystemTime::now(),
+                    };
+                    if let Err(error) = sender.try_send(event) {
+                        match error {
+                            // The channel is full: keep the event pending so a later callback
+                            // retries it rather than losing the change.
+                            TrySendError::Full(event) => pending_admit(&mut pending, event),
+                            // No consumer is left to observe anything.
+                            TrySendError::Disconnected(_) => {
+                                pending.clear();
+                                break;
+                            }
+                        }
                     }
                 }
                 flush_pending(&sender, &receiver, &mut pending);
@@ -210,12 +216,18 @@ crate::impl_default_via_new!(I18nFileWatcher);
 /// queued needs no second announcement. Only `TranslationReloaded` is matched —
 /// `ReloadError` events are diagnostics and are never coalesced. `receiver` is a
 /// clone of the channel that `sender` feeds, and `try_recv` removes the events it
-/// sees; the caller re-queues every probed event immediately, so nothing is lost.
-/// The channel is small, so a scan over its buffered messages is cheap.
+/// sees; the caller re-queues every probed event immediately.
+///
+/// Re-queueing **can** fail: `I18nManager::enable_hot_reload` hands a clone of the same
+/// sender to the manager, whose `announce_reload` can fill the channel between the drain and
+/// the re-queue. An event that does not fit is merged into `pending` (one entry per kind and
+/// language) so [`flush_pending`] retries it on a later callback; only `Disconnected` — no
+/// consumer left — abandons the drained events.
 fn channel_already_holds_language(
     sender: &Sender<ReloadEvent>,
     receiver: &Receiver<ReloadEvent>,
     language: &str,
+    pending: &mut VecDeque<ReloadEvent>,
 ) -> bool {
     let mut found = false;
     let mut requeue: VecDeque<ReloadEvent> = VecDeque::new();
@@ -227,43 +239,82 @@ fn channel_already_holds_language(
         requeue.push_back(event);
     }
     for event in requeue {
-        if sender.try_send(event).is_err() {
-            // The channel holds exactly the messages just drained, so re-queueing
-            // them cannot fail unless the receiver was dropped concurrently; in
-            // that case there is no consumer left to observe them anyway.
-            break;
+        if let Err(error) = sender.try_send(event) {
+            match error {
+                TrySendError::Full(event) => pending_admit(pending, event),
+                TrySendError::Disconnected(_) => {
+                    // No consumer left to observe the rest of the drained events.
+                    pending.clear();
+                    break;
+                }
+            }
         }
     }
     found
 }
 
-/// Flush coalesced pending languages to the bounded channel (D09-WATCH-01).
+/// Whether one pending announcement for `language` is already buffered.
+fn pending_has_translation_reload(pending: &VecDeque<ReloadEvent>, language: &str) -> bool {
+    pending.iter().any(
+        |queued| matches!(queued, ReloadEvent::TranslationReloaded { language: seen, .. } if seen == language),
+    )
+}
+
+/// Adds `event` to `pending` unless an event of the same kind for the same language is already
+/// there. One entry per (kind, language) is what bounds the buffer: a burst of changes to one
+/// locale collapses to one announcement, and distinct diagnostics are not collapsed into a
+/// reload announcement.
+fn pending_admit(pending: &mut VecDeque<ReloadEvent>, event: ReloadEvent) {
+    let duplicate = pending.iter().any(|queued| match (queued, &event) {
+        (
+            ReloadEvent::TranslationReloaded { language: queued, .. },
+            ReloadEvent::TranslationReloaded { language: incoming, .. },
+        ) => queued == incoming,
+        (
+            ReloadEvent::ReloadError { language: queued, error: queued_error },
+            ReloadEvent::ReloadError { language: incoming, error: incoming_error },
+        ) => queued == incoming && queued_error == incoming_error,
+        _ => false,
+    });
+    if !duplicate {
+        pending.push_back(event);
+    }
+}
+
+/// Flush coalesced pending events to the bounded channel (D09-WATCH-01).
 ///
-/// A language already queued (checked at send time) is dropped as a duplicate; a
-/// language that does not fit stays pending so it is retried by a later callback
-/// rather than lost. There is at most one pending entry per language.
+/// A language already queued (checked at send time) is dropped as a duplicate; an event that
+/// does not fit stays pending so it is retried by a later callback rather than lost. There is at
+/// most one pending entry per (kind, language).
 fn flush_pending(
     sender: &Sender<ReloadEvent>,
     receiver: &Receiver<ReloadEvent>,
-    pending: &mut VecDeque<String>,
+    pending: &mut VecDeque<ReloadEvent>,
 ) {
     let mut index = 0usize;
     while index < pending.len() {
-        let language = pending[index].clone();
-        if channel_already_holds_language(sender, receiver, &language) {
-            // Already queued: this pending copy is a duplicate.
-            pending.remove(index);
-            continue;
+        let event = pending[index].clone();
+        if let ReloadEvent::TranslationReloaded { language, .. } = &event {
+            if channel_already_holds_language(sender, receiver, language, pending) {
+                // Already queued: this pending copy is a duplicate.
+                pending.remove(index);
+                continue;
+            }
         }
-        if sender
-            .try_send(ReloadEvent::TranslationReloaded { language, timestamp: SystemTime::now() })
-            .is_ok()
-        {
-            pending.remove(index);
-            continue;
+        match sender.try_send(event) {
+            Ok(()) => {
+                pending.remove(index);
+            }
+            // Channel full: leave the entry pending and try again on the next flush.
+            Err(TrySendError::Full(_)) => {
+                index += 1;
+            }
+            // No consumer left; a later flush has nothing to deliver either.
+            Err(TrySendError::Disconnected(_)) => {
+                pending.clear();
+                break;
+            }
         }
-        // Channel full: leave the entry pending and try again on the next flush.
-        index += 1;
     }
 }
 
@@ -478,6 +529,55 @@ mod tests {
         assert_eq!(language_from_path(Path::new("/some/dir/de.json")).as_deref(), Some("de"));
         assert_eq!(language_from_path(Path::new("no-extension")).as_deref(), Some("no-extension"));
         assert_eq!(language_from_path(Path::new("")), None);
+    }
+
+    /// One pending announcement per language.
+    fn reload(language: &str) -> ReloadEvent {
+        ReloadEvent::TranslationReloaded {
+            language: language.to_string(),
+            timestamp: SystemTime::now(),
+        }
+    }
+
+    /// LYT-X05: the pending set holds one announcement per language, so a burst of changes to one
+    /// catalogue cannot grow it, and a flush with room delivers every entry.
+    #[test]
+    fn pending_announcements_collapse_by_language_and_flush_when_there_is_room() {
+        let (sender, receiver) = bounded(4);
+        let mut pending: VecDeque<ReloadEvent> = VecDeque::new();
+        pending_admit(&mut pending, reload("en"));
+        pending_admit(&mut pending, reload("en"));
+        pending_admit(&mut pending, reload("de"));
+        assert_eq!(pending.len(), 2, "a language already pending is not added twice");
+
+        flush_pending(&sender, &receiver, &mut pending);
+        assert!(pending.is_empty(), "a channel with room takes every pending event");
+        let mut delivered = Vec::new();
+        while let Ok(event) = receiver.try_recv() {
+            delivered.push(event);
+        }
+        assert_eq!(delivered.len(), 2);
+    }
+
+    /// LYT-X05: a re-queue that cannot fit must not be dropped. The event stays pending and a later
+    /// flush delivers it once the channel has room — this is the path the old `break` truncated.
+    #[test]
+    fn a_pending_announcement_survives_a_full_channel() {
+        let (sender, receiver) = bounded(1);
+        sender.try_send(reload("occupied")).expect("the single slot is free");
+        let mut pending: VecDeque<ReloadEvent> = VecDeque::new();
+        pending_admit(&mut pending, reload("en"));
+
+        flush_pending(&sender, &receiver, &mut pending);
+        assert_eq!(pending.len(), 1, "a full channel leaves the event pending, not lost");
+
+        let _ = receiver.try_recv();
+        flush_pending(&sender, &receiver, &mut pending);
+        assert!(pending.is_empty(), "the freed slot takes the pending event");
+        assert!(matches!(
+            receiver.try_recv(),
+            Ok(ReloadEvent::TranslationReloaded { language, .. }) if language == "en"
+        ));
     }
 
     /// N-S-69: every relevant path in an event is mapped, so an atomic save that puts

@@ -829,6 +829,43 @@ impl GridLayout {
         let available_width = inner_width.saturating_sub(spacing_x * (self.cols - 1));
         let available_height = inner_height.saturating_sub(spacing_y * (self.rows - 1));
 
+        {
+            // Compare against the cached key without building one: a hit is the common case,
+            // so it must not allocate six vectors just to prove equality. Every field is
+            // compared against a local or a borrowed `self` field (`hint_floors` arrives as a
+            // slice, so the floors need no copy either).
+            let cache = self.allocation.borrow();
+            if let Some((cached, allocation)) = cache.as_ref() {
+                if cached.width == rect.width
+                    && cached.height == rect.height
+                    && cached.rows == self.rows
+                    && cached.cols == self.cols
+                    && cached.margin == self.margin
+                    && cached.margins == self.margins
+                    && cached.spacing_x == spacing_x
+                    && cached.spacing_y == spacing_y
+                    && cached.available_width == available_width
+                    && cached.available_height == available_height
+                    && cached.row_sizing == self.row_sizing
+                    && cached.column_stretches == self.column_stretches
+                    && cached.row_stretches == self.row_stretches
+                    && cached.column_minimums == self.column_minimums
+                    && cached.row_minimums == self.row_minimums
+                    && cached.hint_column_floors.as_deref() == hint_floors.map(|(cols, _)| cols)
+                    && cached.hint_row_floors.as_deref() == hint_floors.map(|(_, rows)| rows)
+                {
+                    return Arc::clone(allocation);
+                }
+            }
+        }
+        let allocation = Arc::new(self.compute_allocation(
+            spacing_x,
+            spacing_y,
+            available_width,
+            available_height,
+            hint_floors,
+        ));
+        // Only the miss path pays for the owned key.
         let key = GridAllocationKey {
             width: rect.width,
             height: rect.height,
@@ -848,40 +885,6 @@ impl GridLayout {
             hint_column_floors: hint_floors.map(|(cols, _)| cols.to_vec()),
             hint_row_floors: hint_floors.map(|(_, rows)| rows.to_vec()),
         };
-        {
-            // Compare against the borrowed key without rebuilding it: a hit is the common
-            // case, so it must not allocate four vectors just to prove equality.
-            let cache = self.allocation.borrow();
-            if let Some((cached, allocation)) = cache.as_ref() {
-                if cached.width == key.width
-                    && cached.height == key.height
-                    && cached.rows == key.rows
-                    && cached.cols == key.cols
-                    && cached.margin == key.margin
-                    && cached.margins == key.margins
-                    && cached.spacing_x == key.spacing_x
-                    && cached.spacing_y == key.spacing_y
-                    && cached.available_width == key.available_width
-                    && cached.available_height == key.available_height
-                    && cached.row_sizing == key.row_sizing
-                    && cached.column_stretches == self.column_stretches
-                    && cached.row_stretches == self.row_stretches
-                    && cached.column_minimums == self.column_minimums
-                    && cached.row_minimums == self.row_minimums
-                    && cached.hint_column_floors.as_deref() == hint_floors.map(|(cols, _)| cols)
-                    && cached.hint_row_floors.as_deref() == hint_floors.map(|(_, rows)| rows)
-                {
-                    return Arc::clone(allocation);
-                }
-            }
-        }
-        let allocation = Arc::new(self.compute_allocation(
-            spacing_x,
-            spacing_y,
-            available_width,
-            available_height,
-            hint_floors,
-        ));
         *self.allocation.borrow_mut() = Some((key, Arc::clone(&allocation)));
         allocation
     }

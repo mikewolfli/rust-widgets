@@ -20,6 +20,7 @@ use crate::widget::companions::{Legend, LegendEntry};
 use crate::widget::metrics::role_font;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
+use core::cell::RefCell;
 
 /// A single slice in the pie chart.
 #[derive(Clone, Debug)]
@@ -67,6 +68,10 @@ struct LegendArea {
     row_height: i32,
     rows: usize,
 }
+
+/// The cached hover tooltip: `(slice index, values revision)` followed by the text and its
+/// measured size.
+type ReadoutCache = ((usize, u64), String, u32, u32);
 
 /// A circular pie chart widget with colored sectors.
 ///
@@ -118,6 +123,12 @@ pub struct PieChart {
     legend_events: crate::compat::Arc<crate::compat::Mutex<crate::compat::Vec<(usize, bool)>>>,
     /// The last pointer position, used to decide whether a wheel belongs to the legend.
     last_pointer: Option<Point>,
+    /// Bumped whenever the slices or their visibility change, so the hover tooltip cache cannot
+    /// describe stale data.
+    values_revision: u64,
+    /// The hovered slice's tooltip text and measured size, keyed by
+    /// `(slice index, values revision)`.
+    readout_cache: RefCell<Option<ReadoutCache>>,
     /// Emitted with `(slice, visible)` after a legend click or [`Self::set_series_visible`].
     pub series_toggled: Signal1<(usize, bool)>,
     /// Emitted with the slice index when hover enters a slice.
@@ -161,6 +172,8 @@ impl PieChart {
                 crate::compat::Vec::new(),
             )),
             last_pointer: None,
+            values_revision: 0,
+            readout_cache: RefCell::new(None),
             series_toggled: Signal1::new(),
             slice_hovered: Signal1::new(),
             slice_unhovered: Signal1::new(),
@@ -177,6 +190,7 @@ impl PieChart {
         };
         self.slices = entries;
         self.angles_dirty = true;
+        self.values_revision = self.values_revision.wrapping_add(1);
         self.sync_explode_progress();
         self.install_transition(from);
         self.revalidate_hover();
@@ -188,6 +202,7 @@ impl PieChart {
     pub fn add_slice(&mut self, slice: PieSlice) {
         self.slices.push(slice);
         self.angles_dirty = true;
+        self.values_revision = self.values_revision.wrapping_add(1);
         self.sync_explode_progress();
         self.clear_transition();
         self.sync_legend();
@@ -200,6 +215,7 @@ impl PieChart {
         if index < self.slices.len() {
             self.slices.remove(index);
             self.angles_dirty = true;
+            self.values_revision = self.values_revision.wrapping_add(1);
             self.sync_explode_progress();
             self.clear_transition();
             self.revalidate_hover();
@@ -216,6 +232,7 @@ impl PieChart {
         self.slices.clear();
         self.angle_cache.clear();
         self.angles_dirty = true;
+        self.values_revision = self.values_revision.wrapping_add(1);
         self.explode_progress.clear();
         self.clear_transition();
         self.legend_scroll = 0;
@@ -262,6 +279,9 @@ impl PieChart {
     fn clear_transition(&mut self) {
         self.transition.jump_to(1.0);
         self.from_values.clear();
+        // A read-out captured while easing would keep a mid-transition percentage after the
+        // values have already landed.
+        *self.readout_cache.borrow_mut() = None;
     }
 
     /// The transition progress, or `None` when no transition is running.
@@ -304,6 +324,7 @@ impl PieChart {
         }
         slice.visible = visible;
         self.angles_dirty = true;
+        self.values_revision = self.values_revision.wrapping_add(1);
         self.revalidate_hover();
         self.sync_legend();
         // A disabled chart still applies the toggle and repaints; it must not announce a series
@@ -1057,6 +1078,7 @@ impl Widget for PieChart {
                 self.from_values.clear();
                 self.transition.jump_to(1.0);
                 self.angles_dirty = true;
+                *self.readout_cache.borrow_mut() = None;
             }
         }
         if moving {
@@ -1339,30 +1361,51 @@ impl Draw for PieChart {
                     let mid = start_angle + sweep * 0.5;
                     let anchor = Self::point_on_circle(center, outer_radius * 0.65, mid);
                     let pct = if total > 0.0 { slice.value / total * 100.0 } else { 0.0 };
-                    let text = std::format!("{}  {:.1} ({:.0}%)", slice.label, slice.value, pct);
                     let font = role_font(self.base.style(), 10.0);
-                    let metrics = context.measure_text(&text, &font);
-                    let width = metrics.width as i32 + 8;
-                    let height = metrics.height.max(1) as i32 + 8;
-                    let mut x = anchor.x + 8;
-                    let mut y = anchor.y - height / 2;
-                    if x + width > rect.x + rect.width as i32 {
-                        x = anchor.x - width - 8;
+                    // The percentage is derived from the eased total, so it changes during a
+                    // value transition even though the slice's own value does not.
+                    let tweening = self.animation_progress().is_some();
+                    let revision = self.values_revision;
+                    let mut cache = self.readout_cache.borrow_mut();
+                    let fresh = !tweening
+                        && matches!(
+                            cache.as_ref(),
+                            Some(((cached_index, cached_revision), _, _, _))
+                                if *cached_index == index && *cached_revision == revision
+                        );
+                    if !fresh {
+                        let text =
+                            std::format!("{}  {:.1} ({:.0}%)", slice.label, slice.value, pct);
+                        let metrics = context.measure_text(&text, &font);
+                        *cache =
+                            Some(((index, revision), text, metrics.width, metrics.height.max(1)));
                     }
-                    x = x.max(rect.x);
-                    y = y.max(rect.y).min(rect.y + rect.height as i32 - height);
-                    let box_rect = Rect::new(x, y, width.max(1) as u32, height.max(1) as u32);
-                    let surface = crate::widget::chart_widgets::charts::axis_chrome_color(0.96);
-                    let tooltip_ink = surface.contrast_color();
-                    context.fill_rect(box_rect, surface);
-                    context.draw_rect(box_rect, tooltip_ink.with_alpha_f32(0.35));
-                    context.draw_text_line_cow(
-                        box_rect,
-                        &text,
-                        &font,
-                        tooltip_ink,
-                        HorizontalAlignment::Center,
-                    );
+                    let cached = cache
+                        .as_ref()
+                        .map(|((_, _), text, width, height)| (text.as_str(), *width, *height));
+                    if let Some((text, cached_width, cached_height)) = cached {
+                        let width = cached_width as i32 + 8;
+                        let height = cached_height as i32 + 8;
+                        let mut x = anchor.x + 8;
+                        let mut y = anchor.y - height / 2;
+                        if x + width > rect.x + rect.width as i32 {
+                            x = anchor.x - width - 8;
+                        }
+                        x = x.max(rect.x);
+                        y = y.max(rect.y).min(rect.y + rect.height as i32 - height);
+                        let box_rect = Rect::new(x, y, width.max(1) as u32, height.max(1) as u32);
+                        let surface = crate::widget::chart_widgets::charts::axis_chrome_color(0.96);
+                        let tooltip_ink = surface.contrast_color();
+                        context.fill_rect(box_rect, surface);
+                        context.draw_rect(box_rect, tooltip_ink.with_alpha_f32(0.35));
+                        context.draw_text_line_cow(
+                            box_rect,
+                            text,
+                            &font,
+                            tooltip_ink,
+                            HorizontalAlignment::Center,
+                        );
+                    }
                 }
             }
         }

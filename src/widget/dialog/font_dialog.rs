@@ -9,7 +9,7 @@ use crate::event::{Event, EventHandler};
 use crate::platform::SystemFont;
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
-use crate::tr;
+use crate::tr_into;
 
 use crate::impl_widget_property_hooks;
 use crate::property_names_of;
@@ -500,10 +500,16 @@ impl FontDialog {
         if let Some(labels) = self.label_cache.borrow().as_ref() {
             return Rc::clone(labels);
         }
-        let labels = Rc::new(vec![
-            super::localized_label("dialog.ok", "OK"),
-            super::localized_label("dialog.cancel", "Cancel"),
-        ]);
+        // Appended in place by the catalogue, so the labels are built once without a
+        // `localized_label` temporary (LYT-X04).
+        let mut labels = Vec::with_capacity(2);
+        let mut label = String::new();
+        super::localized_label_into("dialog.ok", "OK", &mut label);
+        labels.push(label);
+        let mut label = String::new();
+        super::localized_label_into("dialog.cancel", "Cancel", &mut label);
+        labels.push(label);
+        let labels = Rc::new(labels);
         *self.label_cache.borrow_mut() = Some(Rc::clone(&labels));
         labels
     }
@@ -1020,7 +1026,9 @@ impl Draw for FontDialog {
         let title_bar_band = ControlMetrics::top_band(rect, dimensions::DIALOG_TITLE_BAR_HEIGHT);
         context.fill_rect(title_bar_band, accent);
         let title_font = font;
-        let title_label = tr!("dialog.font.select_font");
+        // One buffer for the painted title instead of a fresh `String` per frame (LYT-X04).
+        let mut title_label = String::new();
+        tr_into!("dialog.font.select_font", &mut title_label);
         let title_line = context.text_line(title_bar_band, title_font);
         context.draw_text_fitted_cow(
             Rect::new(
@@ -1048,16 +1056,20 @@ impl Draw for FontDialog {
         let header_top = (list_y - 2 - header_h).max(rect.y);
         // Family, Style, Size columns. Each column's box is derived from the frame's own
         // padding plus its index, so the third column cannot leave the frame; the label is
-        // fitted to its column and centred on the header row's band.
-        let col_labels =
-            [tr!("dialog.font.font_family"), tr!("dialog.font.style"), tr!("dialog.font.size")];
+        // fitted to its column and centred on the header row's band. The three labels share one
+        // reused buffer, so a paint does not allocate per column (LYT-X04).
+        const COLUMN_KEYS: [&str; 3] =
+            ["dialog.font.font_family", "dialog.font.style", "dialog.font.size"];
         let header_band = Rect::new(rect.x, header_top, rect.width, header_h as u32);
         let header_line = context.text_line(header_band, font);
-        for (column, label) in col_labels.iter().enumerate() {
+        let mut col_label = String::new();
+        for (column, key) in COLUMN_KEYS.iter().enumerate() {
+            col_label.clear();
+            tr_into!(*key, &mut col_label);
             let col_x = rect.x + 4 + column as i32 * (col_w as i32 + COL_GAP);
             context.draw_text_fitted_cow(
                 Rect::new(col_x, header_line.y, col_w, header_line.height.max(1)),
-                label.as_str(),
+                col_label.as_str(),
                 font,
                 ink,
                 HorizontalAlignment::Left,

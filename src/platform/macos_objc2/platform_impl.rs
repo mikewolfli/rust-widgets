@@ -800,19 +800,32 @@ impl Platform for MacOSObjc2Platform {
     /// the real view when it reaches the main thread. On the main thread there is no
     /// such fallback: the real view is created or the call reports `false`.
     fn mount_surface(&self, parent: ObjectId, id: ObjectId, rect: crate::core::Rect) -> bool {
-        let recorded = self.state.mount_surface_record(id, rect);
+        // A surface must belong to a widget somebody knows about, and there are two registries:
+        // this backend's own table (`create_*` made the control) and `widget::runtime` (the
+        // public `mount_widget_object` path registers there). Gating on the state record alone
+        // refused every surface the public path mounted; gating on the runtime alone refused the
+        // backend-created ones. Both are honest sources, so either is enough.
+        #[cfg(not(alloc_frugal))]
+        let known_to_runtime = crate::widget::runtime::is_mounted(id);
+        #[cfg(alloc_frugal)]
+        let known_to_runtime = false;
+        if !known_to_runtime && !self.state.has_widget(id) {
+            log::debug!("[macos-objc2] mount_surface: id={id} names no live widget");
+            return false;
+        }
+        // Bookkeeping, not a gate: the rect is what resize and repaint routing read.
+        self.state.record_surface_rect(id, rect);
         #[cfg(all(target_os = "macos", feature = "macos"))]
         {
             if super::native::on_main_thread() {
-                return recorded
-                    && super::native::mount_surface_native(
-                        parent,
-                        id,
-                        rect.x,
-                        rect.y,
-                        rect.width,
-                        rect.height,
-                    );
+                return super::native::mount_surface_native(
+                    parent,
+                    id,
+                    rect.x,
+                    rect.y,
+                    rect.width,
+                    rect.height,
+                );
             }
             log::debug!(
                 "[macos-objc2] mount_surface: id={id} recorded off the main thread \
@@ -826,7 +839,7 @@ impl Platform for MacOSObjc2Platform {
         {
             let _ = parent;
         }
-        recorded
+        true
     }
 
     /// Resizes the mounted surface `id` and asks AppKit to redraw it.

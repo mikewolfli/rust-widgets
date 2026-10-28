@@ -29,6 +29,7 @@ use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
+use core::cell::RefCell;
 
 /// Where the dial's sweep starts: 135° clockwise from 3 o'clock is the lower-left of the dial,
 /// which is what makes the gap sit at the bottom where the readout goes.
@@ -150,6 +151,11 @@ pub struct Gauge {
     animate: bool,
     /// The displayed fraction, advanced by [`Widget::tick`] while `animate` is set.
     display: PropertyDriver,
+    /// The readout text, keyed by the bits of the value it was formatted from.
+    ///
+    /// The readout prints `value` rather than the eased display fraction, so an animation leaves
+    /// it unchanged; the key keeps that animation, and every still repaint, allocation-free.
+    readout_cache: RefCell<Option<(u32, String)>>,
 }
 
 impl Gauge {
@@ -174,6 +180,7 @@ impl Gauge {
             band_clicked: Signal1::new(),
             animate: false,
             display: PropertyDriver::at(0.0, MotionSlot::Normal),
+            readout_cache: RefCell::new(None),
         }
     }
 
@@ -337,6 +344,7 @@ impl Gauge {
         }
         self.unit = label.clone();
         self.unit_label = label;
+        *self.readout_cache.borrow_mut() = None;
         self.base.request_redraw();
     }
 
@@ -444,6 +452,7 @@ impl Gauge {
             return;
         }
         self.unit = unit;
+        *self.readout_cache.borrow_mut() = None;
         self.base.request_redraw();
     }
 
@@ -820,11 +829,15 @@ impl Draw for Gauge {
         // The readout: the value with its unit, and the caption beneath it. Both are bounded to
         // the inner square, so a long unit cannot run past the dial.
         let font = style.font.clone().unwrap_or_else(|| Font::simple("Arial", 12.0));
-        let readout = if self.unit.is_empty() {
-            format_number(self.value)
-        } else {
-            format!("{} {}", format_number(self.value), self.unit)
-        };
+        let mut cache = self.readout_cache.borrow_mut();
+        if cache.as_ref().is_none_or(|(bits, _)| *bits != self.value.to_bits()) {
+            let readout = if self.unit.is_empty() {
+                format_number(self.value)
+            } else {
+                format!("{} {}", format_number(self.value), self.unit)
+            };
+            *cache = Some((self.value.to_bits(), readout));
+        }
         let inner = radius * 1.2;
         let readout_band = Rect::new(
             (center.x as f32 - inner / 2.0).round() as i32,
@@ -832,7 +845,9 @@ impl Draw for Gauge {
             inner.round().max(1.0) as u32,
             (inner / 2.0).round().max(1.0) as u32,
         );
-        ctx.draw_text_line_cow(readout_band, &readout, &font, ink, HorizontalAlignment::Center);
+        if let Some((_, readout)) = cache.as_ref() {
+            ctx.draw_text_line_cow(readout_band, readout, &font, ink, HorizontalAlignment::Center);
+        }
 
         if !self.label.is_empty() {
             let label_band = Rect::new(

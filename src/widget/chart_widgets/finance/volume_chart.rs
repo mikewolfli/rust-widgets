@@ -439,15 +439,17 @@ impl Draw for VolumeChart {
             );
             // The quantity that gridline stands for, so the bars have a readable scale.
             let value = max_volume * (1.0 - fraction);
-            let text = alloc::format!("{value:.0}");
-            let line_height = context.measure_text(&text, &axis_font).height.max(1);
-            context.draw_text_fitted_cow(
-                Rect::new(label_left, y - line_height as i32 / 2, label_width, line_height),
-                &text,
-                &axis_font,
-                chrome.ink.with_alpha(190),
-                crate::core::HorizontalAlignment::Right,
-            );
+            with_axis_label(|text| {
+                let _ = core::fmt::Write::write_fmt(&mut *text, format_args!("{value:.0}"));
+                let line_height = context.measure_text(text, &axis_font).height.max(1);
+                context.draw_text_fitted_cow(
+                    Rect::new(label_left, y - line_height as i32 / 2, label_width, line_height),
+                    text,
+                    &axis_font,
+                    chrome.ink.with_alpha(190),
+                    crate::core::HorizontalAlignment::Right,
+                );
+            });
         }
 
         for (offset, bar) in visible.iter().enumerate() {
@@ -472,9 +474,11 @@ impl Draw for VolumeChart {
             &area,
             start,
             end,
-            |index| match self.series.label_at(index) {
-                Some(label) => alloc::string::String::from(label),
-                None => alloc::format!("{index}"),
+            |index, label| match self.series.label_at(index) {
+                Some(text) => label.push_str(text),
+                None => {
+                    let _ = core::fmt::Write::write_fmt(&mut *label, format_args!("{index}"));
+                }
             },
             &axis_font,
             chrome.ink.with_alpha(190),
@@ -493,6 +497,29 @@ impl Draw for VolumeChart {
     }
 }
 
+thread_local! {
+    /// One reused label buffer for the finance panes' axis labels.
+    ///
+    /// Every grid line and every index tick formats a label on every frame, and a live feed
+    /// redraws these panes continuously, so a fresh `String` per label was an allocation on
+    /// the frame path. The grid loop and the index axis never run inside each other, so one
+    /// buffer serves both and the steady state allocates nothing.
+    static AXIS_LABEL: crate::compat::RefCell<alloc::string::String> =
+        const { crate::compat::RefCell::new(alloc::string::String::new()) };
+}
+
+/// Runs `draw` with the shared axis-label buffer, cleared.
+///
+/// Callers write into the buffer with `core::fmt::Write` or `push_str`, so formatting a
+/// label reuses the existing allocation instead of building a new `String`.
+pub(crate) fn with_axis_label(draw: impl FnOnce(&mut alloc::string::String)) {
+    AXIS_LABEL.with(|label| {
+        let mut label = label.borrow_mut();
+        label.clear();
+        draw(&mut label);
+    });
+}
+
 /// Draws an index axis under a time-series pane.
 ///
 /// The bars are the x axis, and a chart with no labels under it cannot answer "when was
@@ -503,12 +530,17 @@ impl Draw for VolumeChart {
 ///
 /// One implementation for the K-line, volume and indicator panes: they share the index
 /// mapping, so a tick drawn by one must be under the same bar as in the others.
+///
+/// `label_at` writes the label for a tick into the buffer it is handed rather than
+/// returning a fresh `String`: these panes redraw on every live push, and the buffer is
+/// the shared thread-local one, so a tick that falls back to its index number allocates
+/// nothing in the steady state.
 pub(crate) fn draw_index_ticks(
     context: &mut RenderContext,
     area: &PlotArea,
     start: usize,
     end: usize,
-    label_at: impl Fn(usize) -> alloc::string::String,
+    label_at: impl Fn(usize, &mut alloc::string::String),
     font: &crate::core::Font,
     ink: Color,
 ) {
@@ -527,14 +559,16 @@ pub(crate) fn draw_index_ticks(
     let mut index = start;
     while index < end {
         let x = axis.center_for(index - start);
-        let text = label_at(index);
-        context.draw_text_fitted_cow(
-            Rect::new(x - band_width as i32 / 2, y, band_width, height),
-            &text,
-            font,
-            ink,
-            crate::core::HorizontalAlignment::Center,
-        );
+        with_axis_label(|text| {
+            label_at(index, text);
+            context.draw_text_fitted_cow(
+                Rect::new(x - band_width as i32 / 2, y, band_width, height),
+                text,
+                font,
+                ink,
+                crate::core::HorizontalAlignment::Center,
+            );
+        });
         index += step;
     }
 }

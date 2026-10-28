@@ -3,6 +3,7 @@
 
 //! CommandPalette productivity widget.
 
+use crate::compat::HashMap;
 use crate::core::{Color, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
@@ -13,6 +14,13 @@ use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::effective_font;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
+
+/// How many recently used ids a palette remembers.
+///
+/// The MRU sits in the sort key of every keystroke, so an unbounded list is both a memory leak
+/// for a host that records arbitrary ids and a direct multiplier on the filter cost. An id past
+/// the bound ranks exactly like one that was never used (`usize::MAX`).
+const MRU_LIMIT: usize = 128;
 
 /// Single command entry displayed in command palette.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -457,6 +465,8 @@ impl CommandPalette {
         let id = id.into();
         self.mru.retain(|existing| existing != &id);
         self.mru.insert(0, id);
+        // Evicted ids behave exactly like ids that were never used: they sort last.
+        self.mru.truncate(MRU_LIMIT);
         self.refresh_filter();
         self.base.request_redraw();
     }
@@ -466,7 +476,10 @@ impl CommandPalette {
         if self.mru == ids {
             return;
         }
+        // The bound is a property of the stored list, not of how it was filled, so a host that
+        // passes an oversized history is clipped here as well.
         self.mru = ids;
+        self.mru.truncate(MRU_LIMIT);
         self.refresh_filter();
         self.base.request_redraw();
     }
@@ -551,10 +564,18 @@ impl CommandPalette {
         // recently-used command jumped ahead of every command that was not in the MRU list — a
         // worse textual match beat a better one, the exact opposite of what its own comment
         // claimed (SP-63).
+        // The rank table is built once per refresh (O(m)); the comparator used to scan the MRU
+        // list with `position()` for every comparison, which made a keystroke O(n log n * m)
+        // string comparisons (SPX-X09).
+        let mut mru_rank: HashMap<&str, usize> = HashMap::new();
+        for (rank, id) in self.mru.iter().enumerate() {
+            // First occurrence wins, matching the `position()` scan this replaces.
+            mru_rank.entry(id.as_str()).or_insert(rank);
+        }
         let rank = |index: usize| {
             self.entries
                 .get(index)
-                .and_then(|entry| self.mru.iter().position(|id| id == &entry.id))
+                .and_then(|entry| mru_rank.get(entry.id.as_str()).copied())
                 .unwrap_or(usize::MAX)
         };
         scored.sort_by(|a, b| {
@@ -1525,5 +1546,21 @@ mod tests {
         palette.set_query("op");
         assert_eq!(palette.entry_masks, mask_before);
         assert_eq!(palette.display_texts, text_before);
+    }
+
+    /// SPX-X09: the MRU is bounded to the most recently used ids, however it is filled.
+    #[test]
+    fn the_mru_is_bounded_and_keeps_the_most_recent_ids() {
+        let mut palette = CommandPalette::new(Rect::new(0, 0, 320, 240));
+        for index in 0..(MRU_LIMIT + 40) {
+            palette.record_use(format!("cmd{index}"));
+        }
+        assert_eq!(palette.mru().len(), MRU_LIMIT);
+        assert_eq!(palette.mru().first().map(String::as_str), Some("cmd167"));
+        assert_eq!(palette.mru().last().map(String::as_str), Some("cmd40"));
+
+        // A host-supplied history is clipped to the same bound.
+        palette.set_mru((0..(MRU_LIMIT * 2)).map(|index| format!("x{index}")).collect());
+        assert_eq!(palette.mru().len(), MRU_LIMIT);
     }
 }

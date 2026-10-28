@@ -39,6 +39,7 @@ use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 #[cfg(feature = "chart")]
 use crate::widget::chart_widgets::adapter::ChartContextAdapter;
+use core::cell::RefCell;
 // `AxisConfig` / `AxisScale` are the chart's own axis model, not engine-only types: a
 // `not(feature = "chart")` build still stores one (the backdrop path runs
 // `AxisConfig::default()`), so they must not sit behind the engine gate. They were imported with
@@ -201,6 +202,10 @@ struct AxisPickerBinding {
     _scope: ConnectionScope,
 }
 
+/// The cached hover overlay: `(category index, data revision, font size bits)` followed by the
+/// formatted lines (text and ink) and their widest measured width.
+type HoverReadout = (usize, u64, u32, Vec<(String, Color)>, i32);
+
 /// A vertical bar chart widget for categorical data.
 pub struct BarChart {
     base: BaseWidget,
@@ -250,6 +255,12 @@ pub struct BarChart {
     last_pointer: Option<Point>,
     /// The legend column's clickable rows from the last paint.
     last_legend_area: Option<LegendArea>,
+    /// Bumped whenever the bars, series, category labels or a series' visibility change, so the
+    /// hover read-out cache cannot describe stale data.
+    data_revision: u64,
+    /// The hover tooltip's formatted lines and their widest measured width, keyed by
+    /// `(category index, data revision, font size bits)`.
+    hover_readout: RefCell<Option<HoverReadout>>,
     /// Cached y-axis label width; `None` until the first measured paint.
     #[cfg(feature = "chart")]
     y_label_cache: Option<YAxisLabelCache>,
@@ -408,6 +419,8 @@ impl BarChart {
             pan_origin: None,
             last_pointer: None,
             last_legend_area: None,
+            data_revision: 0,
+            hover_readout: RefCell::new(None),
             #[cfg(feature = "chart")]
             y_label_cache: None,
             bar_hovered: Signal1::new(),
@@ -470,6 +483,7 @@ impl BarChart {
             self.category_labels = category_labels;
             self.restart_growth();
         }
+        self.data_revision = self.data_revision.wrapping_add(1);
         self.revalidate_hover();
         self.sync_legend();
         self.base.request_redraw();
@@ -656,6 +670,7 @@ impl BarChart {
             return true;
         }
         series.visible = visible;
+        self.data_revision = self.data_revision.wrapping_add(1);
         self.revalidate_hover();
         self.sync_legend();
         // A disabled chart still applies the toggle and repaints; it must not announce a series
@@ -1454,6 +1469,7 @@ impl BarChart {
             self.bars = next;
             self.restart_growth();
         }
+        self.data_revision = self.data_revision.wrapping_add(1);
         self.revalidate_hover();
         self.base.request_redraw();
     }
@@ -1472,6 +1488,7 @@ impl BarChart {
         }
         self.clear_value_transition();
         self.bars.push(entry);
+        self.data_revision = self.data_revision.wrapping_add(1);
         self.base.request_redraw();
     }
 
@@ -1481,6 +1498,7 @@ impl BarChart {
         if index < self.bars.len() {
             self.clear_value_transition();
             self.bars.remove(index);
+            self.data_revision = self.data_revision.wrapping_add(1);
             self.base.request_redraw();
             true
         } else {
@@ -1492,6 +1510,7 @@ impl BarChart {
     pub fn clear_bars(&mut self) {
         self.clear_value_transition();
         self.bars.clear();
+        self.data_revision = self.data_revision.wrapping_add(1);
         self.base.request_redraw();
     }
 
@@ -2314,42 +2333,60 @@ impl BarChart {
         if !self.show_tooltip {
             return;
         }
-        let category_label = self
-            .category_labels
-            .get(index)
-            .cloned()
-            .or_else(|| self.bars.get(index).map(|bar| bar.label.clone()))
-            .unwrap_or_else(|| index.to_string());
         let font = role_font(self.base.style(), 10.0);
         let surface = self.base.style().background_color.unwrap_or_else(|| axis_chrome_color(0.96));
         let ink = surface.contrast_color();
-        // Multi-series charts show one line per series, each in its series colour (CH-03); a
-        // single-series chart keeps the historical one-line label.
-        let mut lines: Vec<(String, Color)> = Vec::new();
-        if self.series.is_empty() {
-            lines.push((category_label, ink));
-        } else {
-            lines.push((category_label, ink));
-            for (series_index, series) in self.series.iter().enumerate() {
-                if !series.visible {
-                    continue;
+        let font_size_bits = font.size().to_bits();
+        let revision = self.data_revision;
+        let mut cache = self.hover_readout.borrow_mut();
+        let fresh = matches!(
+            cache.as_ref(),
+            Some((cached_index, cached_revision, cached_font, _, _))
+                if *cached_index == index
+                    && *cached_revision == revision
+                    && *cached_font == font_size_bits
+        );
+        if !fresh {
+            let category_label = self
+                .category_labels
+                .get(index)
+                .cloned()
+                .or_else(|| self.bars.get(index).map(|bar| bar.label.clone()))
+                .unwrap_or_else(|| index.to_string());
+            // Multi-series charts show one line per series, each in its series colour (CH-03); a
+            // single-series chart keeps the historical one-line label.
+            let mut lines: Vec<(String, Color)> = Vec::new();
+            if self.series.is_empty() {
+                lines.push((category_label, ink));
+            } else {
+                lines.push((category_label, ink));
+                for (series_index, series) in self.series.iter().enumerate() {
+                    if !series.visible {
+                        continue;
+                    }
+                    let value = series.values.get(index).copied().unwrap_or(0.0);
+                    let name = if series.name.is_empty() {
+                        std::format!("Series {}", series_index + 1)
+                    } else {
+                        series.name.clone()
+                    };
+                    lines.push((std::format!("{name}: {value}"), self.series_color(series_index)));
                 }
-                let value = series.values.get(index).copied().unwrap_or(0.0);
-                let name = if series.name.is_empty() {
-                    std::format!("Series {}", series_index + 1)
-                } else {
-                    series.name.clone()
-                };
-                lines.push((std::format!("{name}: {value}"), self.series_color(series_index)));
             }
+            // The widest line is part of the layout, so it is measured once with the text it
+            // describes instead of on every repaint of an unchanged hover.
+            let widest = lines
+                .iter()
+                .map(|(line, _)| context.measure_text(line, &font).width as i32)
+                .max()
+                .unwrap_or(0);
+            *cache = Some((index, revision, font_size_bits, lines, widest));
         }
+        let Some((_, _, _, lines, widest)) = cache.as_ref() else {
+            return;
+        };
         let line_height = context.measure_text("0", &font).height.max(1) as i32 + 2;
-        let widest = lines
-            .iter()
-            .map(|(line, _)| context.measure_text(line, &font).width as i32)
-            .max()
-            .unwrap_or(0);
-        let width = widest + 8;
+        let width = *widest + 8;
         let height = line_height * lines.len() as i32 + 8;
         let mut x = band.x + 6;
         let mut y = band.y + 6;

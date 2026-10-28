@@ -62,16 +62,21 @@ const STRIKE_CACHE_LIMIT: usize = 16;
 /// the cached bytes are already scaled to it.
 type ColorGlyphKey = (usize, usize, u16, u32, u32);
 
+/// FIFO order plus contents of the decoded colour-glyph cache.
+type ColorGlyphCache = (VecDeque<ColorGlyphKey>, HashMap<ColorGlyphKey, Rc<[u8]>>);
+
+/// FIFO order plus contents of the parsed-strike cache, negative results included.
+type StrikeCache = (VecDeque<(usize, usize)>, HashMap<(usize, usize), Option<Strike>>);
+
 thread_local! {
     /// Scaled colour glyphs, keyed by [`ColorGlyphKey`], oldest first.
     #[allow(clippy::missing_const_for_thread_local)]
-    static COLOR_GLYPHS: RefCell<(VecDeque<ColorGlyphKey>, HashMap<ColorGlyphKey, Rc<[u8]>>)> =
+    static COLOR_GLYPHS: RefCell<ColorGlyphCache> =
         RefCell::new((VecDeque::new(), HashMap::new()));
     /// Each face's parsed strike, showing any negative result too: a face that cannot be read must
     /// not be re-scanned for every glyph. This is the same `Option` cache `SHAPED_RUNS` uses.
     #[allow(clippy::missing_const_for_thread_local)]
-    static STRIKES: RefCell<(VecDeque<(usize, usize)>, HashMap<(usize, usize), Option<Strike>>)> =
-        RefCell::new((VecDeque::new(), HashMap::new()));
+    static STRIKES: RefCell<StrikeCache> = RefCell::new((VecDeque::new(), HashMap::new()));
 }
 
 /// The eight bytes every PNG starts with.

@@ -1013,10 +1013,16 @@ impl InputDialog {
     /// `draw` and [`InputDialog::button_at`] both call this, so a press can never resolve
     /// against a different label set than the one that was measured and painted.
     fn action_labels() -> Vec<String> {
-        vec![
-            super::localized_label("common.button.ok", "OK"),
-            super::localized_label("common.button.cancel", "Cancel"),
-        ]
+        // One buffer per label, moved into the row: the label is appended by the catalogue
+        // instead of being materialised twice by `localized_label` (LYT-X04).
+        let mut labels = Vec::with_capacity(2);
+        let mut label = crate::compat::String::new();
+        super::localized_label_into("common.button.ok", "OK", &mut label);
+        labels.push(label);
+        let mut label = crate::compat::String::new();
+        super::localized_label_into("common.button.cancel", "Cancel", &mut label);
+        labels.push(label);
+        labels
     }
 
     /// The action button rects, rebuilt from the same frame and bottom band `draw` uses.

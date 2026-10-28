@@ -58,13 +58,26 @@ fn resource_fallback(key: &str) -> Option<&'static str> {
 /// a catalogue that is initialised later still resolves correctly because the lookup happens when
 /// the label is drawn.
 pub(crate) fn localized_label(key: &str, english: &str) -> crate::compat::String {
+    let mut out = crate::compat::String::new();
+    localized_label_into(key, english, &mut out);
+    out
+}
+
+/// Appends the display label for `key` to `out`; the zero-allocation counterpart of
+/// [`localized_label`] for a draw loop that reuses one buffer.
+///
+/// Semantics are identical to [`localized_label`]: a catalogue translation wins, and an absent or
+/// untranslated key falls back to the built-in resource label and then the caller's English one.
+pub(crate) fn localized_label_into(key: &str, english: &str, out: &mut crate::compat::String) {
     #[cfg(feature = "i18n")]
     {
-        let translated = crate::i18n::translate(key);
-        if translated.is_empty() || translated == key {
-            crate::compat::String::from(resource_fallback(key).unwrap_or(english))
-        } else {
-            translated
+        let start = out.len();
+        crate::i18n::translate_into(key, out);
+        // `translate_into` appends the key itself when the catalogue has no entry; that is not a
+        // label, so the appended span is dropped and the compile-time fallback is used instead.
+        if out.len() == start || &out[start..] == key {
+            out.truncate(start);
+            out.push_str(resource_fallback(key).unwrap_or(english));
         }
     }
     #[cfg(not(feature = "i18n"))]
@@ -73,7 +86,7 @@ pub(crate) fn localized_label(key: &str, english: &str) -> crate::compat::String
         // caller's English label are the whole answer. Going through `translate` here would
         // log a warning on every frame for a case that is not a failure.
         let _ = key;
-        crate::compat::String::from(resource_fallback(key).unwrap_or(english))
+        out.push_str(resource_fallback(key).unwrap_or(english));
     }
 }
 
@@ -583,7 +596,8 @@ mod tests {
             Rect::new(0, 0, PAGE.0, PAGE.1),
         )))
         .expect("mount bare window");
-        let base = pixel(&runtime::render_frame_tree(bare, size, Color::WHITE).expect("bare frame"));
+        let base =
+            pixel(&runtime::render_frame_tree(bare, size, Color::WHITE).expect("bare frame"));
 
         let window = runtime::register(Box::new(Window::new(
             "scrim-modal".to_string(),

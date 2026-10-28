@@ -19,7 +19,7 @@
 
 use core::cell::{Cell, RefCell};
 
-use crate::compat::{format, vec, Box, HashMap, MiniToString, Rc, String, Vec};
+use crate::compat::{format, vec, Box, Cow, HashMap, MiniToString, Rc, String, Vec};
 use crate::core::Color;
 use crate::style::selector::{ElementRef, RuleIndexKey};
 use crate::style::{
@@ -73,6 +73,35 @@ struct RulesEntry {
     last_used: u64,
 }
 
+/// A resolved `var()` expansion, plus the source text it came from.
+///
+/// The source text is stored (not only hashed) for the same reason as [`DeclCacheEntry`]: a
+/// hash collision must miss rather than return a value expanded from different text.
+struct VarExpansionEntry {
+    /// The source text, compared on a hash hit.
+    text: String,
+    /// The expanded text.
+    value: String,
+    /// Monotonic use stamp; the smallest one is evicted at capacity (G-161).
+    last_used: u64,
+}
+
+/// `var()` expansions for one palette identity.
+struct VarExpansionCache {
+    /// Address of the palette `Rc` the entries were expanded against. A theme generation hands
+    /// out a new `Rc` (see [`crate::style::theme::palette_shared`]), so a different pointer means
+    /// every stored expansion is stale and the whole table is dropped.
+    palette: usize,
+    /// Expansions keyed by a hash of the source text.
+    entries: HashMap<u64, VarExpansionEntry>,
+}
+
+impl VarExpansionCache {
+    fn new() -> Self {
+        Self { palette: 0, entries: HashMap::new() }
+    }
+}
+
 thread_local! {
     // `HashMap::new` is const only under alloc_frugal (BTreeMap); the std profile cannot be const.
     #[cfg_attr(alloc_frugal, allow(clippy::missing_const_for_thread_local))]
@@ -88,7 +117,15 @@ thread_local! {
     /// used to lex and parse it once per control; a hit is now a refcount bump (G-403).
     #[cfg_attr(alloc_frugal, allow(clippy::missing_const_for_thread_local))]
     static RULES_CACHE: RefCell<HashMap<u64, RulesEntry>> = RefCell::new(HashMap::new());
+    /// Expanded `var()` texts (LYT-X03). The declaration caches above cover the *parse* of an
+    /// already-expanded text; this one covers the expansion, which runs before every parse.
+    #[cfg_attr(alloc_frugal, allow(clippy::missing_const_for_thread_local))]
+    static VAR_EXPANSION_CACHE: RefCell<VarExpansionCache> =
+        RefCell::new(VarExpansionCache::new());
 }
+
+/// How many expanded `var()` texts one thread keeps.
+const VAR_EXPANSION_CACHE_LIMIT: usize = DECL_CACHE_LIMIT;
 
 /// How many converted declaration values one thread keeps.
 const DECL_CACHE_LIMIT: usize = 512;
@@ -1505,10 +1542,49 @@ impl CssParser {
     /// declaration supplies the CSS-defined fallback.
     fn resolve_variables(value: &str) -> Result<String, String> {
         let mut resolved = String::new();
+        Self::resolve_variables_into(value, &mut resolved)?;
+        Ok(resolved)
+    }
+
+    /// Appends the expansion of `value` to `resolved`.
+    ///
+    /// A repeat of the same text against the same palette copies the stored expansion instead of
+    /// walking the declaration again. The cache is keyed by `(palette address, text hash)` and
+    /// verifies the stored source text on a hit, so a collision misses (same rule as
+    /// [`Self::cached_decl`]). Raw colours and lengths are re-derived from the palette
+    /// generation, so a palette change drops the whole table rather than editing entries.
+    fn resolve_variables_into(value: &str, resolved: &mut String) -> Result<(), String> {
+        // The palette pointer is the generation: `palette_shared` hands out an `Rc` that is
+        // rebuilt whenever the theme changes. No palette (no theme module in this profile) is
+        // recorded as 0; `var()` cannot resolve in that build anyway, so nothing is stored.
+        let palette = crate::style::theme::palette_shared()
+            .map(|palette| Rc::as_ptr(&palette) as usize)
+            .unwrap_or(0);
+        let key = declaration_hash(value);
+        let hit = VAR_EXPANSION_CACHE.with(|cache| {
+            let mut cache = cache.borrow_mut();
+            if cache.palette != palette {
+                cache.palette = palette;
+                cache.entries.clear();
+            }
+            let entry = cache.entries.get_mut(&key)?;
+            if entry.text != value {
+                // Another text hashed to the same key: miss rather than return its expansion.
+                return None;
+            }
+            entry.last_used = next_cache_tick();
+            resolved.push_str(&entry.value);
+            Some(())
+        });
+        if hit.is_some() {
+            return Ok(());
+        }
+
+        let start = resolved.len();
         let mut rest = value;
-        while let Some(start) = rest.find("var(") {
-            resolved.push_str(&rest[..start]);
-            let after_open = &rest[start + 4..];
+        while let Some(find) = rest.find("var(") {
+            resolved.push_str(&rest[..find]);
+            let after_open = &rest[find + 4..];
             // The closing `)` is the one that balances the opening `var(`, not merely the first
             // one in the text: a fallback is allowed to contain a function call such as
             // `rgb(1, 2, 3)`, and cutting at its `)` would produce a truncated value.
@@ -1549,7 +1625,32 @@ impl CssParser {
             rest = &after_open[close + 1..];
         }
         resolved.push_str(rest);
-        Ok(resolved)
+
+        // Only successful expansions are stored; an error is reported before reaching here.
+        VAR_EXPANSION_CACHE.with(|cache| {
+            let mut cache = cache.borrow_mut();
+            if cache.entries.len() >= VAR_EXPANSION_CACHE_LIMIT {
+                // Same single-coldest eviction as `cached_decl` (G-161): clearing the table on
+                // the limit-th entry would throw away every warm expansion at once.
+                let victim = cache
+                    .entries
+                    .iter()
+                    .min_by_key(|(_, entry)| entry.last_used)
+                    .map(|(key, _)| *key);
+                if let Some(victim) = victim {
+                    cache.entries.remove(&victim);
+                }
+            }
+            cache.entries.insert(
+                key,
+                VarExpansionEntry {
+                    text: String::from(value),
+                    value: String::from(&resolved[start..]),
+                    last_used: next_cache_tick(),
+                },
+            );
+        });
+        Ok(())
     }
 
     /// Resolves one variable name against the active theme's colour, spacing and border tokens.
@@ -1567,8 +1668,14 @@ impl CssParser {
         let role = name.strip_prefix("--color-").or_else(|| name.strip_prefix("--"))?;
         // CSS custom-property names are conventionally kebab-case; the theme's fields are
         // snake_case. Accepting both spellings keeps one token from having two public names.
-        let role = role.replace('_', "-");
-        Some(match role.as_str() {
+        // Only the snake_case spelling needs the rewrite, so the common (kebab) spelling borrows
+        // the input instead of allocating a second copy of it.
+        let role = if role.contains('_') {
+            Cow::Owned(role.replace('_', "-"))
+        } else {
+            Cow::Borrowed(role)
+        };
+        Some(match role.as_ref() {
             "background" => colors.background,
             "foreground" => colors.foreground,
             "primary" => colors.primary,

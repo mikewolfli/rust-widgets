@@ -589,15 +589,17 @@ impl Draw for DepthChart {
             // The quantity this gridline stands for, so a curve's height is readable.
             let fraction = 1.0 - step as f64 / 3.0;
             let value = max_cumulative * fraction;
-            let text = format!("{value:.0}");
-            let line_height = context.measure_text(&text, &axis_font).height.max(1);
-            context.draw_text_fitted_cow(
-                Rect::new(label_left, y - line_height as i32 / 2, label_width, line_height),
-                &text,
-                &axis_font,
-                chrome.ink.with_alpha(190),
-                HorizontalAlignment::Right,
-            );
+            super::volume_chart::with_axis_label(|text| {
+                let _ = core::fmt::Write::write_fmt(&mut *text, format_args!("{value:.0}"));
+                let line_height = context.measure_text(text, &axis_font).height.max(1);
+                context.draw_text_fitted_cow(
+                    Rect::new(label_left, y - line_height as i32 / 2, label_width, line_height),
+                    text,
+                    &axis_font,
+                    chrome.ink.with_alpha(190),
+                    HorizontalAlignment::Right,
+                );
+            });
         }
 
         // Bids first so the asks, drawn second, are on top where they overlap near the

@@ -58,9 +58,16 @@ use crate::widget::advanced_widgets::dial::Dial;
 use crate::widget::advanced_widgets::pie_menu::PieMenu;
 use crate::widget::advanced_widgets::ribbon_bar::RibbonBar;
 use crate::widget::advanced_widgets::tab_bar::TabBar;
+use crate::widget::chart_widgets::finance::candlestick_chart::CandlestickChart;
+use crate::widget::chart_widgets::finance::depth_chart::DepthChart;
+use crate::widget::chart_widgets::finance::indicator_chart::IndicatorChart;
+use crate::widget::chart_widgets::finance::order_book::OrderBookWidget;
+use crate::widget::chart_widgets::finance::quote_board::QuoteBoard;
+use crate::widget::chart_widgets::finance::volume_chart::VolumeChart;
+use crate::widget::chart_widgets::finance::{Bar, BookLevel, OrderBook, PriceSeries, Quote};
+use crate::widget::chart_widgets::gantt_widget::{GanttTask, GanttWidget};
+use crate::widget::chart_widgets::kanban_board::{KanbanBoard, KanbanCard, KanbanColumn};
 use crate::widget::chart_widgets::{ChartReferenceLine, LineChart, ReferenceLineSpec};
-use crate::widget::media_widgets::chapter_list_panel::ChapterListPanel;
-use crate::widget::media_widgets::video_player::VideoChapter;
 use crate::widget::companions::{
     CommandPaletteHost, DragGhostLayer, DrawerSectionHeader, DropDownPopupHost, FindReplaceBar,
     HeaderMenu, LayerEntry, LayerPanel, Legend, LegendEntry, ListState, ListStateHost, MenuPanel,
@@ -78,6 +85,7 @@ use crate::widget::cupertino::core::{MaterialNavigationRail, MaterialSnackbar};
 use crate::widget::cupertino::segmented_control::CupertinoSegmentedControl;
 use crate::widget::dialog::bottom_sheet::BottomSheet;
 use crate::widget::dialog::dialog_widget::Dialog;
+use crate::widget::dialog::font_dialog::FontDialog;
 use crate::widget::dialog::input_dialog::InputDialog;
 use crate::widget::dialog::message_box::MessageBox;
 use crate::widget::dialog::modal_bottom_sheet::ModalBottomSheet;
@@ -95,6 +103,8 @@ use crate::widget::input_widgets::font_combo_box::FontComboBox;
 use crate::widget::input_widgets::listbox::ListBox;
 use crate::widget::input_widgets::multi_select_combo_box::{MultiSelectComboBox, MultiSelectItem};
 use crate::widget::input_widgets::shortcut_editor::{ShortcutEditor, ShortcutEntry};
+use crate::widget::media_widgets::chapter_list_panel::ChapterListPanel;
+use crate::widget::media_widgets::video_player::VideoChapter;
 use crate::widget::menu_toolbar::menu::Menu;
 use crate::widget::menu_toolbar::menu_bar::MenuBar;
 use crate::widget::menu_toolbar::menu_button::{MenuButton, MenuItem};
@@ -111,16 +121,7 @@ use crate::widget::special_widgets::breadcrumb::{Breadcrumb, BreadcrumbSegment};
 use crate::widget::special_widgets::canvas::Canvas;
 use crate::widget::special_widgets::chip::{Chip, ChipItem};
 use crate::widget::special_widgets::command_palette::{CommandEntry, CommandPalette};
-use crate::widget::chart_widgets::finance::candlestick_chart::CandlestickChart;
-use crate::widget::chart_widgets::finance::depth_chart::DepthChart;
-use crate::widget::chart_widgets::finance::indicator_chart::IndicatorChart;
-use crate::widget::chart_widgets::finance::order_book::OrderBookWidget;
-use crate::widget::chart_widgets::finance::quote_board::QuoteBoard;
-use crate::widget::chart_widgets::finance::volume_chart::VolumeChart;
-use crate::widget::chart_widgets::finance::{Bar, BookLevel, OrderBook, PriceSeries, Quote};
-use crate::widget::chart_widgets::gantt_widget::{GanttTask, GanttWidget};
 use crate::widget::special_widgets::grid::GridWidget;
-use crate::widget::chart_widgets::kanban_board::{KanbanBoard, KanbanCard, KanbanColumn};
 use crate::widget::special_widgets::map_attribution::MapAttributionOverlay;
 use crate::widget::special_widgets::notification_center::{
     NotificationCenter, NotificationItem, NotificationLevel,
@@ -801,6 +802,20 @@ pub fn apply(name: &str, widget: &mut dyn Widget) -> bool {
                 dialog.set_title("Installing");
                 dialog.set_label_text("Copying files...");
                 dialog.set_value(45);
+                true
+            }
+            None => false,
+        },
+
+        // A font dialog enumerates the host's installed families in its constructor, so its
+        // snapshot used to be a picture of whichever machine generated it: the chrome matched
+        // everywhere, the family column did not. A fixed catalogue makes the committed picture
+        // reproducible; a real dialog still starts from `chooser_families`.
+        "font_dialog" => match widget_as_mut::<FontDialog>(widget) {
+            Some(dialog) => {
+                dialog.set_font_families(
+                    sample::FONT_NAMES.iter().map(|name| name.to_string()).collect(),
+                );
                 true
             }
             None => false,

@@ -3111,10 +3111,6 @@ pub(crate) fn gantt_task_grid_capability() -> WidgetCapability {
     }
 }
 
-/// Web history panel (COMP-A5).
-///
-/// It shares `WidgetKind::WebEngineView` with the web view it lists history for.
-#[cfg(not(alloc_frugal))]
 /// Media chapter list (COMP-A6).
 ///
 /// It shares `WidgetKind::VideoPlayer` with the player whose chapters it lists.
@@ -3742,8 +3738,6 @@ pub(crate) fn find_bar_capability() -> WidgetCapability {
     }
 }
 
-#[cfg(not(alloc_frugal))]
-/// `web_find_bar` — the web view's find strip (`COMP-L03`).
 #[cfg(not(alloc_frugal))]
 /// `menu_panel` — a drop-down menu panel a host anchors itself (`COMP-A01`).
 pub(crate) fn menu_panel_capability() -> WidgetCapability {

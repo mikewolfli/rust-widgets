@@ -973,16 +973,30 @@ impl WizardDialog {
         {
             return text.clone();
         }
+        // Append the catalogue label into one buffer instead of allocating it twice through
+        // `localized_label` on every paint (LYT-X04).
+        let mut label = crate::compat::String::new();
         match action {
-            NavAction::Cancel => super::localized_label("common.button.cancel", "Cancel"),
-            NavAction::Back => super::localized_label("dialog.wizard.back", "Back"),
-            NavAction::Next if self.is_last() => {
-                super::localized_label("dialog.wizard.finish", "Finish")
+            NavAction::Cancel => {
+                super::localized_label_into("common.button.cancel", "Cancel", &mut label)
             }
-            NavAction::Next => super::localized_label("dialog.wizard.next", "Next"),
-            NavAction::Help => super::localized_label("dialog.wizard.help", "Help"),
-            NavAction::Custom(index) => self.custom_buttons.get(index).cloned().unwrap_or_default(),
+            NavAction::Back => {
+                super::localized_label_into("dialog.wizard.back", "Back", &mut label)
+            }
+            NavAction::Next if self.is_last() => {
+                super::localized_label_into("dialog.wizard.finish", "Finish", &mut label)
+            }
+            NavAction::Next => {
+                super::localized_label_into("dialog.wizard.next", "Next", &mut label)
+            }
+            NavAction::Help => {
+                super::localized_label_into("dialog.wizard.help", "Help", &mut label)
+            }
+            NavAction::Custom(index) => {
+                return self.custom_buttons.get(index).cloned().unwrap_or_default()
+            }
         }
+        label
     }
 
     /// Moves the keyboard focus across the actions that are actually present.

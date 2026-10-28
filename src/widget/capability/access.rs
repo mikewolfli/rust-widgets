@@ -42,6 +42,8 @@ use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::container_widgets::scrollarea::ScrollBarPolicy;
 use crate::widget::input_widgets::listbox::SelectionMode as ListBoxSelectionMode;
 #[cfg(full_widgets)]
+use crate::widget::media_widgets::animated_image::MAX_PROVIDER_CACHE_FRAMES;
+#[cfg(full_widgets)]
 use crate::widget::menu_toolbar::tool_bar::ToolBarOrientation;
 #[cfg(full_widgets)]
 use crate::widget::view_widgets::data_grid::{ColumnFilter, SortSpec};
@@ -2410,7 +2412,7 @@ pub fn default_widget_property_default_value(
         WidgetKind::AnimatedImage => match property_name {
             "playing" => CapabilityValue::Bool(false),
             "direction" => CapabilityValue::String("forward".to_string()),
-            "frame_cache_limit" => CapabilityValue::UInt(0),
+            "frame_cache_limit" => CapabilityValue::UInt(MAX_PROVIDER_CACHE_FRAMES as u64),
             _ => return None,
         },
         WidgetKind::HeroAnimation => match property_name {

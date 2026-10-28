@@ -1472,14 +1472,40 @@ impl PrintManager {
 
     /// Cancel a queued or printing job by its ID.
     /// Returns `true` if the job was found and cancelled.
+    ///
+    /// The job's page data is released immediately: a cancelled job is never printed, so keeping
+    /// its decoded pages resident only grows a long-lived manager's memory.
     pub fn cancel_job(&mut self, job_id: u64) -> bool {
         if let Some(job) = self.jobs.get_mut(&job_id) {
             if job.status == PrintJobStatus::Queued || job.status == PrintJobStatus::Printing {
                 job.status = PrintJobStatus::Cancelled;
+                job.pages = Vec::new();
                 return true;
             }
         }
         false
+    }
+
+    /// Removes a job from the manager and returns it, or `None` when the id is unknown.
+    ///
+    /// A host that has finished with a job's record calls this instead of leaving the entry to
+    /// accumulate; [`Self::purge_finished`] drops every finished job at once.
+    pub fn remove_job(&mut self, job_id: u64) -> Option<PrintJob> {
+        self.jobs.remove(&job_id)
+    }
+
+    /// Drops every job whose status is terminal: `Completed`, `Failed` or `Cancelled`.
+    ///
+    /// In-flight jobs (`Queued`, `Printing`) are kept. This is the bulk equivalent of calling
+    /// [`Self::remove_job`] for each finished job, for a host that reuses one manager for many
+    /// print runs.
+    pub fn purge_finished(&mut self) {
+        self.jobs.retain(|_, job| {
+            !matches!(
+                job.status,
+                PrintJobStatus::Completed | PrintJobStatus::Failed | PrintJobStatus::Cancelled
+            )
+        });
     }
 
     /// Return the current status of a job.
@@ -2987,8 +3013,33 @@ mod tests {
         assert_eq!(job.id, 1);
         assert!(manager.cancel_job(1));
         assert_eq!(manager.job_status(1), Some(PrintJobStatus::Cancelled));
+        // The page data is released when the job is cancelled (MX-X07).
+        assert!(manager.get_job(1).expect("the record stays until it is removed").pages.is_empty());
         // Cancelling again should return false (already cancelled)
         assert!(!manager.cancel_job(1));
+    }
+
+    /// Finished jobs can be dropped, individually or in bulk, and page data goes with them.
+    #[test]
+    fn print_manager_removes_and_purges_finished_jobs() {
+        let mut manager = PrintManager::new();
+        let pages = vec![PrintPage::new(1, Size { width: 595, height: 842 }, Vec::new())];
+        manager.create_job(PrintSettings::new(), pages.clone(), 1);
+        manager.create_job(PrintSettings::new(), pages, 1);
+        assert!(manager.cancel_job(1));
+
+        // `purge_finished` drops the cancelled job and keeps the queued one.
+        manager.purge_finished();
+        assert_eq!(manager.job_status(1), None);
+        assert_eq!(manager.job_status(2), Some(PrintJobStatus::Queued));
+        assert_eq!(manager.all_jobs().len(), 1);
+
+        // `remove_job` returns the job so a host can inspect it before dropping it.
+        let removed = manager.remove_job(2).expect("job 2 is still tracked");
+        assert_eq!(removed.id, 2);
+        assert_eq!(removed.pages.len(), 1);
+        assert!(manager.remove_job(2).is_none());
+        assert!(manager.all_jobs().is_empty());
     }
 
     #[test]

@@ -138,6 +138,12 @@ struct ToolbarLayout {
     strip: Rect,
     icon_bits: u32,
     rects: Vec<Option<Rect>>,
+    /// The x of every slot, in item order, accumulated once while the rects are built.
+    ///
+    /// Drawing a separator used to call [`MacToolbar::slot_x`], which re-summed every preceding
+    /// slot (and scanned all items twice per flexible space) for each separator on every frame.
+    /// The rects cover only Item/WidgetSlot, so separators read this parallel list instead.
+    separator_x: Vec<i32>,
     overflow: Vec<usize>,
 }
 
@@ -345,6 +351,7 @@ impl MacToolbar {
         let flexible = self.flexible_extent();
         let mut x = strip.x + MAC_TOOLBAR_INSET;
         let mut rects = vec![None; self.items.len()];
+        let mut separator_x = Vec::with_capacity(self.items.len());
         for (index, item) in self.items.iter().enumerate() {
             let extent = match item.kind {
                 ToolbarItemKind::Separator => SEPARATOR_WIDTH,
@@ -358,6 +365,7 @@ impl MacToolbar {
                     rects[index] = Some(rect);
                 }
             }
+            separator_x.push(x);
             x += extent as i32 + SLOT_GAP;
         }
         let overflow = (0..self.items.len())
@@ -365,7 +373,7 @@ impl MacToolbar {
                 self.items[*index].kind == ToolbarItemKind::Item && rects[*index].is_none()
             })
             .collect();
-        self.layout_cache = Some(ToolbarLayout { strip, icon_bits, rects, overflow });
+        self.layout_cache = Some(ToolbarLayout { strip, icon_bits, rects, separator_x, overflow });
     }
 
     /// Installs a widget into the [`ToolbarItemKind::WidgetSlot`] at `index`.
@@ -404,6 +412,9 @@ impl MacToolbar {
     }
 
     /// The x of slot `index`, accounting for separators and flexible space.
+    ///
+    /// Kept as the fallback for callers that run before [`Self::ensure_layout`] built the
+    /// cache; the per-frame separator paint reads [`ToolbarLayout::separator_x`] instead.
     fn slot_x(&self, index: usize) -> i32 {
         let strip = self.strip();
         let mut x = strip.x + MAC_TOOLBAR_INSET;
@@ -411,6 +422,21 @@ impl MacToolbar {
             x += self.slot_extent(position) as i32 + SLOT_GAP;
         }
         x
+    }
+
+    /// The cached x of slot `index`, falling back to [`Self::slot_x`] without a current layout.
+    fn cached_slot_x(&self, index: usize) -> i32 {
+        if let Some(layout) = self.layout_cache.as_ref() {
+            if layout.icon_bits == self.icon_size.to_bits()
+                && layout.strip == self.strip()
+                && layout.separator_x.len() == self.items.len()
+            {
+                if let Some(x) = layout.separator_x.get(index) {
+                    return *x;
+                }
+            }
+        }
+        self.slot_x(index)
     }
 
     /// The width slot `index` occupies.
@@ -639,7 +665,7 @@ impl Draw for MacToolbar {
                 ToolbarItemKind::FlexibleSpace => continue,
                 ToolbarItemKind::Separator => {
                     let strip_inner = self.strip();
-                    let x = self.slot_x(index) + SEPARATOR_WIDTH as i32 / 2;
+                    let x = self.cached_slot_x(index) + SEPARATOR_WIDTH as i32 / 2;
                     context.draw_line(
                         Point::new(x, strip_inner.y + SLOT_VERTICAL_INSET as i32),
                         Point::new(x, strip_inner.bottom() - SLOT_VERTICAL_INSET as i32 - 1),

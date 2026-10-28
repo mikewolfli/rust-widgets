@@ -8,6 +8,39 @@ use crate::core::{ObjectId, Rect, Size};
 use crate::layout::hints::ChildInfo;
 use core::cell::RefCell;
 
+// Floor buffers reused across flex solves.
+//
+// The shrink branch runs on every relayout of an over-constrained row, and it used to build a
+// fresh `Vec<i32>` for the per-item floors each time. Mirror `GRID_FLOOR_SCRATCH` (LAY-801):
+// keep a small stack of buffers so a re-entrant solve (a callback that lays out another flex
+// container) cannot hand the same buffer to two live calls.
+thread_local! {
+    #[allow(clippy::missing_const_for_thread_local)]
+    static FLEX_FLOOR_SCRATCH: RefCell<Vec<Vec<i32>>> = RefCell::new(Vec::new());
+}
+
+/// Takes an empty main-axis floor buffer, keeping any capacity from a previous solve.
+fn take_flex_floors() -> Vec<i32> {
+    let mut floors = FLEX_FLOOR_SCRATCH
+        .try_with(|scratch| scratch.borrow_mut().pop())
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    floors.clear();
+    floors
+}
+
+/// Returns a floor buffer to the scratch stack, keeping its capacity.
+fn return_flex_floors(mut floors: Vec<i32>) {
+    let _ = FLEX_FLOOR_SCRATCH.try_with(|scratch| {
+        let mut scratch = scratch.borrow_mut();
+        if scratch.len() < 2 {
+            floors.clear();
+            scratch.push(floors);
+        }
+    });
+}
+
 /// Main-axis direction for flex layout.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum FlexDirection {
@@ -671,7 +704,10 @@ impl FlexLayout {
             // aspiration the packing pass never consults.
             let deficit = -remaining;
             let total_flex_shrink: f32 = items.iter().map(|i| i.flex_shrink).sum();
-            let mut floors: Vec<i32> = Vec::with_capacity(count);
+            let mut floors: Vec<i32> = take_flex_floors();
+            if floors.capacity() < count {
+                floors.reserve(count);
+            }
             for (i, item) in items.iter().enumerate() {
                 let shrink = if total_flex_shrink > 0.0 {
                     ((deficit as f32) * (item.flex_shrink / total_flex_shrink)).round() as i32
@@ -781,12 +817,14 @@ impl FlexLayout {
                 // band make `sum - leftover` negative; a negative scaled size later becomes
                 // `4_294_967_246` at the `as u32` cast. Clamp at the source.
                 let budget: i32 = (main_sizes.iter().sum::<i32>() - leftover).max(0);
-                let scaled: Vec<i32> = main_sizes
-                    .iter()
-                    .map(|size| ((*size as i64 * budget as i64) / floors_sum as i64) as i32)
-                    .collect();
-                let mut short = budget - scaled.iter().sum::<i32>();
-                main_sizes = scaled;
+                // Scale in place: each element's new value depends only on its own old value and
+                // the already-computed `budget`/`floors_sum`, so the separate `scaled` vector was
+                // a pure copy (LYT-X02).
+                let mut short = budget;
+                for size in main_sizes.iter_mut() {
+                    *size = ((*size as i64 * budget as i64) / floors_sum as i64) as i32;
+                    short -= *size;
+                }
                 for size in main_sizes.iter_mut() {
                     if short <= 0 {
                         break;
@@ -794,6 +832,9 @@ impl FlexLayout {
                     *size += 1;
                     short -= 1;
                 }
+                return_flex_floors(floors);
+            } else {
+                return_flex_floors(floors);
             }
         } else {
             main_sizes = intrinsic_main;

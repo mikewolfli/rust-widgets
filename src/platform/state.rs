@@ -303,6 +303,18 @@ where
         }
     }
 
+    /// Records a surface's rect without requiring a backend widget record for `id`.
+    ///
+    /// [`Self::mount_surface_record`] refuses an id this backend never created, which is right for
+    /// a state backend whose own `create_*` made the widget. A **self-drawn** surface is
+    /// registered with the widget runtime instead (`mount_widget_object`), so the widget record it
+    /// looks for does not exist; requiring one refused every surface the public mount path
+    /// produced. The rect is still the backend's bookkeeping — repaint routing and resize read it
+    /// — so it is written here rather than skipped.
+    pub fn record_surface_rect(&self, id: ObjectId, rect: Rect) {
+        lock(&self.surfaces).insert(id, rect_to_tuple(rect));
+    }
+
     /// Returns the rect of a mounted surface, or `None` when `id` is not mounted.
     pub fn surface_rect(&self, id: ObjectId) -> Option<Rect> {
         lock(&self.surfaces).get(&id).map(|&(x, y, width, height)| Rect::new(x, y, width, height))
@@ -521,6 +533,15 @@ where
             event.source_widget_id != widget_id && event.target_widget_id != widget_id
         });
         removed
+    }
+
+    /// Whether this backend's own table holds a widget record for `id`.
+    ///
+    /// A **mounted surface** may be known here (`create_*` made it) or only in the widget runtime
+    /// (`mount_widget_object` registered it); a backend that gates on one of the two alone refuses
+    /// half the surfaces it advertises.
+    pub fn has_widget(&self, id: ObjectId) -> bool {
+        lock(&self.widgets).contains_key(&id)
     }
 
     /// Number of live widget records. Used by tests and diagnostics to prove

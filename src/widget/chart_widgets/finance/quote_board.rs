@@ -1217,6 +1217,16 @@ impl Draw for QuoteBoard {
         // One text buffer for every cell: formatting into it reuses the allocation instead of
         // building a fresh `String` for each of the visible cells on every frame.
         let mut cell_text = String::new();
+        // One symbol index for the flash lookup. `set_quotes` rebuilds `flashes` on every push,
+        // so the old linear `find` per row cost O(rows × flashes) string comparisons a frame.
+        // Built once per frame, the row loop is a single probe; the buffer borrows the flash
+        // symbols, so it adds no field and no clone.
+        let mut flash_lookup: crate::compat::HashMap<&str, (bool, u8)> =
+            crate::compat::HashMap::new();
+        for (symbol, rising, alpha) in &self.flashes {
+            // First match wins, as `find` did, so a repeated symbol keeps its first flash.
+            flash_lookup.entry(symbol.as_str()).or_insert((*rising, *alpha));
+        }
         for (index, quote) in
             self.quotes.iter().enumerate().skip(self.scroll_offset).take(available)
         {
@@ -1233,9 +1243,7 @@ impl Draw for QuoteBoard {
                 );
             }
             // A changed price flashes in the direction it moved, fading as `tick` runs.
-            if let Some((_, rising, alpha)) =
-                self.flashes.iter().find(|(symbol, _, _)| symbol == &quote.symbol)
-            {
+            if let Some((rising, alpha)) = flash_lookup.get(quote.symbol.as_str()) {
                 let flash = if *rising { self.rising_color } else { self.falling_color };
                 context.fill_rect(
                     Rect::new(geometry.x, y, geometry.width, row_height as u32),

@@ -2243,7 +2243,7 @@ pub fn hide_widget(widget_id: crate::core::ObjectId) {
 /// widget — the same honest answer [`hide_widget`] gives by doing nothing observable.
 #[cfg(not(alloc_frugal))]
 pub fn close_widget(widget_id: crate::core::ObjectId) -> bool {
-    crate::widget::runtime::with_widget_mut(widget_id, |widget| {
+    let mounted = crate::widget::runtime::with_widget_mut(widget_id, |widget| {
         widget.base().closed.emit();
         // The published `closed`, when it is a signal of the control's own rather than the base one
         // already emitted above. `unit` refs over `base.closed` are the same signal, so re-emitting
@@ -2256,7 +2256,19 @@ pub fn close_widget(widget_id: crate::core::ObjectId) -> bool {
             reference.emit_unit();
         }
     })
-    .is_some()
+    .is_some();
+    if mounted {
+        // This is the close announcement every platform funnels through (`crate::close_widget` is
+        // the one path its own comments name), yet only the Linux backend also injected
+        // `WidgetTriggerKind::Closed` — so a window closed by `WM_CLOSE`, `windowShouldClose:`
+        // or a programmatic `WindowHandle::close` left the handle-side callback tables (and the
+        // values they capture) alive for the rest of the process. Cleaning them here gives every
+        // close path the same teardown semantics; the Linux trigger path is idempotent
+        // (LYT-X06).
+        #[cfg(full_widgets)]
+        crate::app::remove_callbacks(widget_id);
+    }
+    mounted
 }
 /// Set geometry of a widget.
 #[cfg(not(alloc_frugal))]
@@ -3269,13 +3281,21 @@ pub fn native_menu_item_icons_supported() -> bool {
 /// [`crate::shortcut::format_shortcut_for_platform`] instead.
 ///
 /// ```
-/// use rust_widgets::shortcut::{Key, Shortcut};
+/// use rust_widgets::shortcut::{
+///     format_shortcut_for_platform, Key, PlatformShortcutStyle, Shortcut,
+/// };
 ///
-/// let shown = rust_widgets::format_shortcut(&Shortcut::primary(Key::Z));
-/// #[cfg(target_os = "macos")]
-/// assert_eq!(shown, "⌘Z");
-/// #[cfg(not(target_os = "macos"))]
-/// assert_eq!(shown, "Ctrl+Z");
+/// let shortcut = Shortcut::primary(Key::Z);
+/// let mac = format_shortcut_for_platform(&shortcut, PlatformShortcutStyle::Mac);
+/// let desktop = format_shortcut_for_platform(&shortcut, PlatformShortcutStyle::Desktop);
+/// assert_eq!(mac, "⌘Z");
+/// assert_eq!(desktop, "Ctrl+Z");
+///
+/// // The host's spelling is the same table, chosen at run time: one implementation, two
+/// // notations. No `cfg(target_os)` is needed to state what this function does.
+/// let shown = rust_widgets::format_shortcut(&shortcut);
+/// assert_eq!(shown, format_shortcut_for_platform(&shortcut, PlatformShortcutStyle::current()));
+/// assert!(shown == mac || shown == desktop);
 /// ```
 #[cfg(not(alloc_frugal))]
 pub fn format_shortcut(shortcut: &crate::shortcut::Shortcut) -> String {
@@ -3636,9 +3656,6 @@ pub use deprecated::{
 #[cfg(not(alloc_frugal))]
 #[allow(deprecated)]
 pub use deprecated::native_handle;
-
-#[cfg(test)]
-mod docs_paths_tests;
 
 #[cfg(test)]
 mod compat_path_tests {

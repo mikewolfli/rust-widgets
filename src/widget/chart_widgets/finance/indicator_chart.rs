@@ -610,16 +610,19 @@ impl IndicatorChart {
             // Two decimals throughout: an indicator's own scale is not a price, so
             // inferring precision from the data would give an unbounded axis like MACD a
             // changing number of decimals as the window scrolls.
-            let text = alloc::format!("{value:.2}");
-            let line_height = context.measure_text(&text, &font).height.max(1);
-            let band = Rect::new(label_left, y - line_height as i32 / 2, label_width, line_height);
-            context.draw_text_fitted_cow(
-                band,
-                &text,
-                &font,
-                self.chrome().ink.with_alpha(190),
-                HorizontalAlignment::Right,
-            );
+            super::volume_chart::with_axis_label(|text| {
+                let _ = core::fmt::Write::write_fmt(&mut *text, format_args!("{value:.2}"));
+                let line_height = context.measure_text(text, &font).height.max(1);
+                let band =
+                    Rect::new(label_left, y - line_height as i32 / 2, label_width, line_height);
+                context.draw_text_fitted_cow(
+                    band,
+                    text,
+                    &font,
+                    self.chrome().ink.with_alpha(190),
+                    HorizontalAlignment::Right,
+                );
+            });
         }
     }
 
@@ -878,9 +881,11 @@ impl Draw for IndicatorChart {
             &area,
             start,
             end,
-            |index| match self.series.label_at(index) {
-                Some(label) => alloc::string::String::from(label),
-                None => alloc::format!("{index}"),
+            |index, label| match self.series.label_at(index) {
+                Some(text) => label.push_str(text),
+                None => {
+                    let _ = core::fmt::Write::write_fmt(&mut *label, format_args!("{index}"));
+                }
             },
             &role_font(self.style(), 10.0),
             chrome.ink.with_alpha(190),

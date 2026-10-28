@@ -10,7 +10,7 @@ const ROW_HEIGHT: i32 = 16;
 /// How much room below a row's top its height still needs.
 const ROW_BOTTOM_INSET: i32 = 14;
 
-use crate::core::{Color, HorizontalAlignment, Point, Rect};
+use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::wheel::WheelScroll;
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
@@ -27,6 +27,7 @@ use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 use std::borrow::Cow;
 use std::collections::HashMap;
+use std::fmt::Write as _;
 
 /// Diff line state.
 ///
@@ -2091,6 +2092,19 @@ impl FileDiffEntry {
 const FILE_ROW_HEIGHT: i32 = 22;
 const FILE_TOP: i32 = 6;
 
+/// One file row's `+n -m` label and the width it was measured at.
+///
+/// The label is a pure function of the entry's two counts, so those form the key and a repaint
+/// re-formats and re-measures only the rows whose counts moved. An empty label marks an entry
+/// that has never been measured: a real label always carries both signs.
+#[derive(Default)]
+struct FileCountsCache {
+    additions: u32,
+    deletions: u32,
+    text: String,
+    width: i32,
+}
+
 /// A file selector that drives a multi-file [`DiffViewer`].
 ///
 /// `DiffViewer::set_texts` compares exactly one pair of snapshots, so a review of several files
@@ -2110,6 +2124,10 @@ pub struct DiffFileList {
     selection_mode: crate::widget::view_widgets::list_view::SelectionMode,
     /// The first row the viewport paints.
     first_visible: usize,
+    /// One counts label and measured width per file row, index-aligned with `files`.
+    counts_cache: Vec<FileCountsCache>,
+    /// The font the cached widths were measured with, so a font or size change re-measures them.
+    counts_font: Option<Font>,
     /// Emitted when the selection moves, with the newly selected path.
     pub file_selected: Signal1<String>,
     /// Emitted when a file is activated by Enter or a double-click, with its path.
@@ -2125,6 +2143,8 @@ impl DiffFileList {
             selected: Vec::new(),
             selection_mode: crate::widget::view_widgets::list_view::SelectionMode::Single,
             first_visible: 0,
+            counts_cache: Vec::new(),
+            counts_font: None,
             file_selected: Signal1::new(),
             file_activated: Signal1::new(),
         }
@@ -2155,6 +2175,10 @@ impl DiffFileList {
             .into_iter()
             .filter_map(|path| self.files.iter().position(|file| file.path == path))
             .collect();
+        // Keep the counts cache index-aligned with the new list; entries are keyed by the counts
+        // themselves, so an entry that survives a reorder is reused only when it still applies.
+        self.counts_cache.truncate(self.files.len());
+        self.counts_cache.resize_with(self.files.len(), FileCountsCache::default);
         self.clamp_scroll();
         self.base.request_layout();
         self.base.request_redraw();
@@ -2504,6 +2528,19 @@ impl Draw for DiffFileList {
         );
 
         let rows = self.visible_rows();
+        // One counts buffer for every row: a cache hit builds no text at all, and a miss reuses
+        // this allocation instead of one `String` per visible row per frame.
+        let mut counts = String::new();
+        // A width belongs to the font it was measured with, so a font or size change drops the
+        // cached measurements rather than budgeting against stale advances.
+        if self.counts_font.as_ref() != Some(font) {
+            self.counts_cache.clear();
+            self.counts_cache.resize_with(self.files.len(), FileCountsCache::default);
+            self.counts_font = Some(font.clone());
+        }
+        // The character budget follows the rendered advance of one representative glyph instead
+        // of a fixed divisor, so an elided path stays inside its column at any font size.
+        let char_advance = context.measure_text("M", font).width.max(1) as i32;
         for offset in 0..rows {
             let index = self.first_visible + offset;
             let Some(file) = self.files.get(index) else {
@@ -2512,6 +2549,23 @@ impl Draw for DiffFileList {
             let Some(row) = self.row_rect(index) else {
                 break;
             };
+            // The cache stays index-aligned with `files`, so a painted row always has an entry;
+            // the guard mirrors the two lookups above rather than assuming the invariant.
+            let Some(entry) = self.counts_cache.get_mut(index) else {
+                break;
+            };
+            if entry.text.is_empty()
+                || entry.additions != file.additions
+                || entry.deletions != file.deletions
+            {
+                entry.additions = file.additions;
+                entry.deletions = file.deletions;
+                counts.clear();
+                let _ = write!(counts, "+{} -{}", file.additions, file.deletions);
+                entry.text.clear();
+                entry.text.push_str(&counts);
+                entry.width = context.measure_text(&entry.text, font).width as i32;
+            }
             if self.selected.contains(&index) {
                 context.fill_rect(row, selection);
             }
@@ -2537,11 +2591,11 @@ impl Draw for DiffFileList {
                 status_color,
                 HorizontalAlignment::Left,
             );
-            let counts = format!("+{} -{}", file.additions, file.deletions);
-            let counts_width = context.measure_text(&counts, font).width as i32;
-            let path_band = (row.width as i32 - 12 - counts_width - 8).max(24);
-            let path =
-                crate::widget::text_utils::elide_end(&file.path, (path_band / 7).max(1) as usize);
+            let path_band = (row.width as i32 - 12 - entry.width - 8).max(24);
+            let path = crate::widget::text_utils::elide_end(
+                &file.path,
+                (path_band / char_advance).max(1) as usize,
+            );
             context.draw_text(
                 Point::new(row.x + 22, row.y + 5),
                 &path,
@@ -2550,8 +2604,8 @@ impl Draw for DiffFileList {
                 HorizontalAlignment::Left,
             );
             context.draw_text(
-                Point::new(row.x + row.width as i32 - counts_width - 6, row.y + 5),
-                &counts,
+                Point::new(row.x + row.width as i32 - entry.width - 6, row.y + 5),
+                &entry.text,
                 font,
                 text_color.blend(&background, 0.45),
                 HorizontalAlignment::Left,

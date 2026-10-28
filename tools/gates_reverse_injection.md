@@ -479,3 +479,16 @@ than inventing an injection that was never run.
 | gate | injected | reported |
 |---|---|---|
 | `check_profile_builds.sh` | appended a profile-gated compile error to `src/lib.rs`: `#[cfg(feature = "mini")] compile_error!("reverse-injection probe: the mini profile must not compile");` — the reduced profile is the last arm the gate reaches, so this also proves the desktop/tablet/mobile/embedded arms ran first | `── mini: check` / `error: reverse-injection probe: the mini profile must not compile` / `3672 \| compile_error!("reverse-injection probe: the mini profile must not compile");` / `❌ mini: check failed: cargo check --lib --no-default-features --features mini` |
+
+## Round 12 (2026-10-28) — macOS canvas lifecycle (PF-X03 / PF-X06)
+
+| gate | injected | reported |
+|---|---|---|
+| `check_macos_canvas_lifecycle.sh` (A: cache reuse) | in `src/platform/macos_objc2/native.rs::cached_bitmap_context`, replaced the staleness test with `let stale = true;` so every paint rebuilds the bitmap context | `platform::macos_objc2::native::canvas_bitmap_cache_tests::a_same_size_repaint_reuses_the_cached_bitmap_context --- FAILED` / `assertion \`left == right\` failed: a same-size repaint must not build another context` / `test result: FAILED. 2 passed; 1 failed` |
+| `check_macos_canvas_lifecycle.sh` (B: lifecycle wiring) | in `src/platform/macos_objc2/platform_impl.rs::mount_surface`, restored the pre-fix gate `if !self.state.mount_surface_record(id, rect) { return false; }` — the backend widget record the public `mount_widget_object` path never creates, i.e. the exact defect the new probe found | `[3/3] objc2 surface lifecycle (2000 distinct + 200 reused ids)` / `macos_canvas_lifecycle_probe: FAIL cycle 0: mounted=false unmounted=false unregistered=true` |
+
+> Both injections were reverted immediately after capturing the output, and the gate was re-run green
+> (`PASS cycles=2000 reuse_cycles=200` on `cocoa` and on `macos-objc2-preview`). The lifecycle probe
+> deliberately does **not** assert resident memory: with this crate's bookkeeping entirely disabled a
+> bare AppKit `alloc`/`addSubview:`/`removeFromSuperview`/`release` cycle still grows peak RSS by
+> ~4 KB/cycle on macOS 15, so an RSS assertion would fail a correct build (see the gate header).

@@ -267,8 +267,8 @@ fn parse_static_cached(
     // A `&'static str`'s address is permanently stable and unique for that literal, so
     // `(address, length)` is a sound identity as well as a hash key. Unlike the old linear scan,
     // a hit is one lookup and a miss is one insertion.
-    static CACHE: OnceLock<Mutex<HashMap<(usize, usize), crate::compat::Arc<[Subpath]>>>> =
-        OnceLock::new();
+    type StaticPathCache = HashMap<(usize, usize), crate::compat::Arc<[Subpath]>>;
+    static CACHE: OnceLock<Mutex<StaticPathCache>> = OnceLock::new();
     let key = (path.as_ptr() as usize, path.len());
     if let Some(subpaths) = lock(CACHE.get_or_init(|| Mutex::new(HashMap::new()))).get(&key) {
         return Ok(subpaths.clone());

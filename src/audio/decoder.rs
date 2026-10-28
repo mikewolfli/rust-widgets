@@ -5,10 +5,14 @@
 //!
 //! - WAV is decoded natively.
 //! - MP3 is decoded with `minimp3_fixed`.
-//! - FLAC, OGG Vorbis, AAC (ADTS) and Opus are decoded by symphonia and thus
-//!   require the `symphonia-codecs` feature. Without that feature, decoding
-//!   those formats returns an explicit error — this module never fabricates
-//!   PCM samples from a compressed bitstream.
+//! - FLAC, OGG Vorbis and AAC (ADTS) are decoded by symphonia and thus require the
+//!   `symphonia-codecs` feature. Without that feature, decoding those formats returns
+//!   an explicit feature error — this module never fabricates PCM samples from a
+//!   compressed bitstream.
+//! - Opus is **recognized but not decoded**: an Ogg stream whose first packet is
+//!   `OpusHead` is reported as [`AudioFormat::Opus`] and `decode` answers with the reason
+//!   (the pinned symphonia release ships no Opus decoder), rather than misrouting it to the
+//!   Vorbis path.
 
 use crate::audio::format::{AudioFormat, SampleFormat};
 use crate::audio::samples::AudioBuffer;
@@ -23,8 +27,16 @@ pub fn detect_audio_format(data: &[u8]) -> AudioFormat {
     if data.len() >= 4 && &data[0..4] == b"fLaC" {
         return AudioFormat::Flac;
     }
-    // OGG: OggS
+    // OGG: OggS. An Ogg stream whose first packet is `OpusHead` is an Opus stream; naming it
+    // here keeps it out of the Vorbis path, where a decoder probe would report a corrupt file
+    // instead of "this build has no Opus decoder" (see `decode_opus`). The identification header
+    // sits in the first page, so the scan is bounded rather than proportional to the file.
+    const OPUS_HEADER_SCAN: usize = 4096;
     if data.len() >= 4 && &data[0..4] == b"OggS" {
+        let scan = &data[..data.len().min(OPUS_HEADER_SCAN)];
+        if scan.windows(8).any(|window| window == b"OpusHead") {
+            return AudioFormat::Opus;
+        }
         return AudioFormat::Ogg;
     }
     // MP3: ID3 tag
@@ -53,8 +65,9 @@ pub fn detect_audio_format(data: &[u8]) -> AudioFormat {
 
 /// Decode audio from bytes into an AudioBuffer.
 ///
-/// FLAC, OGG Vorbis, AAC and Opus require the `symphonia-codecs` feature;
-/// without it, decoding those formats returns an error explaining so.
+/// FLAC, OGG Vorbis and AAC require the `symphonia-codecs` feature; without it, decoding those
+/// formats returns an error explaining so. Opus is recognized ([`AudioFormat::Opus`]) but always
+/// refused with the reason — see [`decode_opus`].
 pub fn decode(data: &[u8]) -> Result<AudioBuffer, String> {
     let format = detect_audio_format(data);
     match format {
@@ -276,7 +289,7 @@ fn decode_mp3(data: &[u8]) -> Result<AudioBuffer, String> {
 }
 
 /// Decode audio data using the symphonia library (real codec decoding).
-/// Returns real PCM samples for FLAC, OGG Vorbis, AAC, and Opus.
+/// Returns real PCM samples for FLAC, OGG Vorbis and AAC.
 /// Symphonia handles all bitstream parsing, entropy decoding, and synthesis.
 #[cfg(feature = "symphonia-codecs")]
 fn decode_with_symphonia(data: &[u8], format: AudioFormat) -> Result<AudioBuffer, String> {
@@ -303,8 +316,6 @@ fn decode_with_symphonia(data: &[u8], format: AudioFormat) -> Result<AudioBuffer
         hint.with_extension("ogg");
     } else if format == AudioFormat::Aac {
         hint.with_extension("aac");
-    } else if format == AudioFormat::Opus {
-        hint.with_extension("opus");
     }
 
     let probed = symphonia::default::get_probe()
@@ -561,38 +572,21 @@ fn decode_aac(data: &[u8]) -> Result<AudioBuffer, String> {
     }
 }
 
-/// Decode Opus audio data (in an Ogg container).
+/// Reports that Opus cannot be decoded by this build.
 ///
-/// Real decoding is delegated to symphonia, so it requires the
-/// `symphonia-codecs` feature. Without that feature this function validates
-/// the container signature and the presence of the OpusHead header, then
-/// returns an explicit error; it never fabricates PCM samples from the
-/// compressed Opus bitstream.
-fn decode_opus(data: &[u8]) -> Result<AudioBuffer, String> {
-    #[cfg(feature = "symphonia-codecs")]
-    {
-        decode_with_symphonia(data, AudioFormat::Opus)
-    }
-
-    #[cfg(not(feature = "symphonia-codecs"))]
-    {
-        if data.len() < 28 || &data[0..4] != b"OggS" {
-            return Err(format!(
-                "Opus must be wrapped in an Ogg container starting with \"OggS\", but this \
-                 {}-byte input starts with {:02X?}",
-                data.len(),
-                &data[..data.len().min(4)]
-            ));
-        }
-        if !data.windows(8).any(|w| w == b"OpusHead") {
-            return Err(format!(
-                "Opus stream has no OpusHead identification header in its {} bytes: the Ogg \
-                 container holds no Opus logical bitstream",
-                data.len()
-            ));
-        }
-        Err("decoding Opus requires the `symphonia-codecs` feature".to_string())
-    }
+/// # Why this is an honest refusal rather than a decode attempt
+///
+/// Opus is recognized by [`detect_audio_format`], but the `symphonia` 0.5 release this crate
+/// pins ships **no Opus decoder** (its feature list has no `opus` and no opus codec crate), and
+/// this crate's codec set is limited to what it can really decode — see the `symphonia-codecs`
+/// notes in `Cargo.toml`. Handing the stream to symphonia would surface a probe/decoder error
+/// that reads like a corrupt file. Naming the real reason tells the caller what to do: convert to
+/// Vorbis or FLAC, or decode in the host and pass PCM samples.
+fn decode_opus(_data: &[u8]) -> Result<AudioBuffer, String> {
+    Err("Opus audio is recognized but cannot be decoded by this build: the pinned `symphonia` \
+         0.5 release ships no Opus decoder. Convert the stream to Vorbis or FLAC, or decode it \
+         in the host and pass PCM samples."
+        .to_string())
 }
 
 #[cfg(test)]
@@ -882,21 +876,18 @@ mod tests {
     #[test]
     #[cfg(not(feature = "symphonia-codecs"))]
     fn test_decode_compressed_formats_report_missing_feature() {
-        // Without the `symphonia-codecs` feature, FLAC/OGG/AAC/Opus must fail
-        // with an explicit feature error instead of fabricating samples from
-        // the compressed bitstream.
+        // Without the `symphonia-codecs` feature, FLAC/OGG/AAC must fail with an explicit
+        // feature error instead of fabricating samples from the compressed bitstream. Opus is
+        // deliberately absent: it has its own reason (see
+        // `test_opus_is_recognized_and_refused_with_its_real_reason`), which the missing-feature
+        // advice would describe wrongly.
         let mut ogg = b"OggS".to_vec();
         ogg.resize(48, 0u8);
-        let mut opus = b"OggS".to_vec();
-        opus.extend_from_slice(b"OpusHead");
-        opus.resize(48, 0u8);
-        let opus_ok = opus.clone();
         let cases = vec![
             b"fLaC".to_vec(),
             ogg,
             // Minimal valid ADTS fixed header: 44100 Hz, stereo, 7-byte frame.
             vec![0xFF, 0xF1, 0x50, 0x80, 0x00, 0xFF, 0xFC],
-            opus,
         ];
         for data in cases {
             let err = decode(&data).unwrap_err();
@@ -905,11 +896,32 @@ mod tests {
                 "expected a `symphonia-codecs` feature error, got: {err}"
             );
         }
+    }
 
-        // The Opus-specific entry point also reports the missing feature once
-        // an OpusHead header is present.
-        let err = decode_opus(&opus_ok).unwrap_err();
-        assert!(err.contains("symphonia-codecs"), "got: {err}");
+    /// An Ogg stream whose first packet is `OpusHead` is recognized as Opus, and decoding it
+    /// refuses with the real reason (the pinned symphonia has no Opus decoder) rather than
+    /// falling into the Vorbis path, whose probe error would read like a corrupt file.
+    ///
+    /// This holds with and without `symphonia-codecs`, so it is not feature-gated: the answer
+    /// does not depend on the feature.
+    #[test]
+    fn test_opus_is_recognized_and_refused_with_its_real_reason() {
+        let mut opus = b"OggS".to_vec();
+        opus.extend_from_slice(b"OpusHead");
+        opus.resize(48, 0u8);
+
+        assert_eq!(detect_audio_format(&opus), AudioFormat::Opus);
+
+        let err = decode(&opus).unwrap_err();
+        assert!(
+            err.contains("no Opus decoder"),
+            "the refusal must name the missing decoder, got: {err}"
+        );
+        assert!(!err.contains("symphonia-codecs"), "the feature is not the obstacle: {err}");
+
+        // The Opus-specific entry point answers the same way.
+        let err = decode_opus(&opus).unwrap_err();
+        assert!(err.contains("no Opus decoder"), "got: {err}");
     }
 
     #[test]

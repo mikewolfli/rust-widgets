@@ -48,6 +48,7 @@
 
 use core::cell::RefCell;
 use core::fmt::Write as _;
+use std::collections::HashSet;
 
 use crate::compat::HashMap;
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
@@ -457,6 +458,13 @@ pub struct KanbanBoard {
     card_index: RefCell<Option<HashMap<String, CardPosition>>>,
     /// Explicitly selected cards, in display order.
     selected_cards: Vec<String>,
+    /// The same selection as `selected_cards`, for O(1) membership on the paint path.
+    ///
+    /// Every card draw asked the ordered list whether it contained the card's id, which is
+    /// `O(selected)` string comparisons per card per frame. The set is rebuilt from the list
+    /// whenever the selection is mutated, so the list keeps its display-order contract
+    /// (SPX-X13).
+    selected_set: HashSet<String>,
     /// Emitted after a card moves, with the card's id and its new position.
     pub card_moved: Signal1<(String, CardPosition)>,
     /// Emitted when a card is activated (clicked without dragging), with its id.
@@ -530,6 +538,7 @@ impl KanbanBoard {
             lane_layout: RefCell::new(None),
             card_index: RefCell::new(None),
             selected_cards: Vec::new(),
+            selected_set: HashSet::new(),
             card_moved: Signal1::new(),
             card_activated: Signal1::new(),
             card_hovered: Signal1::new(),
@@ -566,12 +575,13 @@ impl KanbanBoard {
         let mut selection_touched = false;
         for card in &removed.cards {
             self.card_lanes.remove(&card.id);
-            if self.selected_cards.contains(&card.id) {
+            if self.selected_set.contains(card.id.as_str()) {
                 self.selected_cards.retain(|id| *id != card.id);
                 selection_touched = true;
             }
         }
         if selection_touched {
+            self.rebuild_selected_set();
             self.selection_changed.emit(self.selected_cards.clone());
         }
         // A drag whose origin no longer exists is abandoned, so the release does
@@ -937,8 +947,9 @@ impl KanbanBoard {
         let column = self.columns.get_mut(position.column)?;
         let card = column.cards.remove(position.card);
         self.card_lanes.remove(card_id);
-        if self.selected_cards.iter().any(|id| id == card_id) {
+        if self.selected_set.contains(card_id) {
             self.selected_cards.retain(|id| id != card_id);
+            self.rebuild_selected_set();
             self.selection_changed.emit(self.selected_cards.clone());
         }
         self.invalidate_layout();
@@ -1365,7 +1376,7 @@ impl KanbanBoard {
         if self.position_of(card_id).is_none() {
             return false;
         }
-        let present = self.selected_cards.iter().any(|id| id == card_id);
+        let present = self.selected_set.contains(card_id);
         if present == selected {
             return true;
         }
@@ -1382,7 +1393,7 @@ impl KanbanBoard {
 
     /// Toggles a card's membership in the selection.
     pub fn toggle_card_selected(&mut self, card_id: &str) -> bool {
-        let present = self.selected_cards.iter().any(|id| id == card_id);
+        let present = self.selected_set.contains(card_id);
         self.set_card_selected(card_id, !present)
     }
 
@@ -1392,24 +1403,42 @@ impl KanbanBoard {
             return;
         }
         self.selected_cards.clear();
+        self.selected_set.clear();
         self.selection_changed.emit(Vec::new());
         self.base.request_redraw();
     }
 
     /// Re-orders the selection into reading order and drops ids that no longer name a card.
     fn sort_selection(&mut self) {
-        if self.selected_cards.is_empty() {
-            return;
-        }
-        let mut ordered = Vec::with_capacity(self.selected_cards.len());
-        for column in &self.columns {
-            for card in &column.cards {
-                if self.selected_cards.contains(&card.id) {
-                    ordered.push(card.id.clone());
+        if !self.selected_cards.is_empty() {
+            // `set_card_selected` has already mutated the list but not the set, so the set is
+            // rebuilt from the list as it stands before it is consulted per card.
+            self.rebuild_selected_set();
+            let mut ordered = Vec::with_capacity(self.selected_cards.len());
+            for column in &self.columns {
+                for card in &column.cards {
+                    if self.selected_set.contains(card.id.as_str()) {
+                        ordered.push(card.id.clone());
+                    }
                 }
             }
+            self.selected_cards = ordered;
         }
-        self.selected_cards = ordered;
+        // Also the point where ids that no longer name a card are dropped, so the set is rebuilt
+        // from the list the ordering produced.
+        self.rebuild_selected_set();
+    }
+
+    /// Rebuilds `selected_set` from `selected_cards` (O(selected)).
+    ///
+    /// Called at every place the ordered selection is mutated; the paint path then tests one
+    /// card id in constant time (SPX-X13).
+    fn rebuild_selected_set(&mut self) {
+        self.selected_set.clear();
+        self.selected_set.reserve(self.selected_cards.len());
+        for id in &self.selected_cards {
+            self.selected_set.insert(id.clone());
+        }
     }
 
     /// Advances the board while a dragged card is held near/over an edge.
@@ -2795,7 +2824,7 @@ impl KanbanBoard {
         );
         // A selected card is a member of the batch a drop will move, so it reads as its own state
         // rather than as the keyboard focus ring.
-        if self.selected_cards.contains(&card.id) {
+        if self.selected_set.contains(card.id.as_str()) {
             context.draw_rounded_rect_stroke(card_rect, 6, chrome.insertion(), 2);
         }
 
@@ -4836,5 +4865,27 @@ mod issue_2_8_tests {
         assert!(!board.is_drag_ghost_layer_attached());
         assert!(!board.poll_drag_ghost_layer(), "a detached proxy is not polled");
         assert!(!layer.is_active());
+    }
+
+    /// SPX-X13: the constant-time selection set stays in step with the ordered list.
+    #[test]
+    fn the_selection_set_tracks_every_selection_mutation() {
+        let mut board = board();
+        assert!(board.set_card_selected("a", true));
+        assert!(board.set_card_selected("c", true));
+        assert_eq!(board.selected_cards(), ["a", "c"]);
+        assert_eq!(board.selected_set.len(), 2);
+
+        board.remove_card("a");
+        assert_eq!(board.selected_cards(), ["c"]);
+        assert!(!board.selected_set.contains("a"), "a removed card leaves the set");
+
+        board.add_card(0, KanbanCard::new("b", "Beta"));
+        assert!(board.toggle_card_selected("b"));
+        assert!(board.selected_set.contains("b"));
+
+        board.clear_selection();
+        assert!(board.selected_cards().is_empty());
+        assert!(board.selected_set.is_empty());
     }
 }

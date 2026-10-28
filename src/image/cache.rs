@@ -323,49 +323,39 @@ impl DecodeCache {
     /// across the maps, rather than draining one map first, is what keeps a screen that shows only
     /// images from discarding images to make room for pixels it never asked for.
     fn evict_until_fits(&mut self, incoming: usize) {
-        while self.used_bytes + incoming > self.budget_bytes {
-            let Some(victim) = self.least_recently_used() else { break };
+        if self.used_bytes + incoming <= self.budget_bytes {
+            return;
+        }
+        // Collect and order the candidates once, then evict oldest-first. The previous loop called
+        // `least_recently_used` for every victim, rescanning all three maps (and cloning every
+        // source key it considered) each time, so one insert that evicted many entries was O(n²).
+        let mut victims: Vec<(u64, Victim)> =
+            Vec::with_capacity(self.entries.len() + self.pixels.len() + self.sources.len());
+        victims
+            .extend(self.entries.iter().map(|(key, entry)| (entry.used_at, Victim::Image(*key))));
+        victims
+            .extend(self.pixels.iter().map(|(key, entry)| (entry.used_at, Victim::Pixels(*key))));
+        victims.extend(
+            self.sources.iter().map(|(key, entry)| (entry.used_at, Victim::Source(key.clone()))),
+        );
+        victims.sort_unstable_by_key(|(used_at, _)| *used_at);
+
+        for (_, victim) in victims {
+            if self.used_bytes + incoming <= self.budget_bytes {
+                break;
+            }
             let removed_bytes = match victim {
                 Victim::Image(key) => self.entries.remove(&key).map(|e| e.bytes),
                 Victim::Pixels(key) => self.pixels.remove(&key).map(|e| e.bytes),
                 Victim::Source(key) => self.sources.remove(&key).map(|e| e.size),
             };
-            match removed_bytes {
-                Some(bytes) => {
-                    self.used_bytes = self.used_bytes.saturating_sub(bytes);
-                    self.evictions += 1;
-                }
-                // The entry was already gone, which cannot happen while the lock is held; breaking
-                // rather than looping keeps a hypothetical inconsistency from spinning.
-                None => break,
+            // The entry was already gone, which cannot happen while the lock is held; skipping it
+            // rather than looping keeps a hypothetical inconsistency from spinning.
+            if let Some(bytes) = removed_bytes {
+                self.used_bytes = self.used_bytes.saturating_sub(bytes);
+                self.evictions += 1;
             }
         }
-    }
-
-    /// The single least-recently-used entry, whichever of the three maps holds it.
-    ///
-    /// One function rather than three comparisons at each call site keeps the policy in one place:
-    /// "least recently used" has to mean the same thing in the decode layer, the pixel layer and the
-    /// file layer, or the budget would be shared by three different replacement rules.
-    fn least_recently_used(&self) -> Option<Victim> {
-        let mut oldest: Option<(u64, Victim)> = None;
-        let mut consider = |used_at: u64, victim: Victim| {
-            if oldest.as_ref().is_none_or(|(t, _)| used_at < *t) {
-                oldest = Some((used_at, victim));
-            }
-        };
-
-        for (key, entry) in &self.entries {
-            consider(entry.used_at, Victim::Image(*key));
-        }
-        for (key, entry) in &self.pixels {
-            consider(entry.used_at, Victim::Pixels(*key));
-        }
-        for (key, entry) in &self.sources {
-            consider(entry.used_at, Victim::Source(key.clone()));
-        }
-
-        oldest.map(|(_, victim)| victim)
     }
 
     fn clear(&mut self) {

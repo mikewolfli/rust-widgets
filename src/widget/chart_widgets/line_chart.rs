@@ -265,6 +265,12 @@ pub struct LineChart {
     /// The last pointer position seen, used to anchor wheel zoom (the wheel event carries
     /// no position of its own).
     last_pointer: Option<Point>,
+    /// The hover read-out text and its measured size, keyed by
+    /// `(series, point, data revision, font size bits)`.
+    ///
+    /// The text is a pure function of the hovered data point, so a pointer that stays on one
+    /// point reuses the previous frame's formatting and measurement.
+    readout_cache: Option<(usize, usize, u64, u32, String, u32, u32)>,
     /// Cached y-axis label width; `None` until the first measured paint.
     #[cfg(feature = "chart")]
     y_label_cache: Option<YAxisLabelCache>,
@@ -390,6 +396,7 @@ impl LineChart {
             pan_origin: None,
             last_plot_area: None,
             last_pointer: None,
+            readout_cache: None,
             #[cfg(feature = "chart")]
             y_label_cache: None,
             point_hovered: Signal1::new(),
@@ -1155,12 +1162,43 @@ impl LineChart {
         // A toggle made on the companion programmatically (not through the chart's event path)
         // is queued by the same slot; apply it before overwriting the companion's rows.
         self.drain_legend_toggles();
+        let Some(legend) = self.legend.as_ref() else {
+            // No attached legend means there is nothing to keep in line. Building the rows anyway
+            // allocated a `Vec` plus one label per series on every paint, which is the allocation
+            // `tests/key_normalization_allocations.rs` pins this widget against.
+            return;
+        };
+        if self.legend_entries_match(legend.entries()) {
+            return;
+        }
         let desired = self.legend_entries();
         if let Some(legend) = self.legend.as_mut() {
-            if legend.entries() != desired.as_slice() {
-                legend.set_entries(desired);
-            }
+            legend.set_entries(desired);
         }
+    }
+
+    /// Whether the legend's current rows already say what [`Self::legend_entries`] would build.
+    ///
+    /// Compared field by field so the steady state does not have to build the rows (and their
+    /// labels) just to prove they are unchanged. The generated `Series N` label is compared by
+    /// parsing the number back, which avoids formatting it into a temporary `String`.
+    fn legend_entries_match(&self, entries: &[LegendEntry]) -> bool {
+        entries.len() == self.series.len()
+            && entries.iter().enumerate().all(|(index, entry)| {
+                let series = &self.series[index];
+                let label_matches = if series.name.is_empty() {
+                    entry
+                        .label
+                        .strip_prefix("Series ")
+                        .and_then(|number| number.parse::<usize>().ok())
+                        == Some(index + 1)
+                } else {
+                    entry.label == series.name
+                };
+                label_matches
+                    && entry.color == self.series_color(index)
+                    && entry.visible == self.is_series_visible(index)
+            })
     }
 
     /// Applies toggles the attached legend reported through `series_toggled`.
@@ -2171,7 +2209,7 @@ impl Draw for LineChart {
                     context.fill_circle(pixel, 3, self.series_color(series_index));
                 }
                 if self.show_tooltip && !self.hover_readout_external && is_enabled {
-                    self.draw_tooltip(context, pixel, point, series_index, plot_area);
+                    self.draw_tooltip(context, pixel, point, series_index, index, plot_area);
                 }
             }
         }
@@ -2358,28 +2396,53 @@ impl LineChart {
     /// outside the control, and it is filled from the control's resolved surface so the text
     /// keeps its contrast on either appearance.
     fn draw_tooltip(
-        &self,
+        &mut self,
         context: &mut RenderContext,
         pixel: Point,
         value: (f64, f64),
         series_index: usize,
+        point_index: usize,
         plot: Rect,
     ) {
         use crate::core::HorizontalAlignment;
         let font = crate::widget::metrics::role_font(self.base.style(), 10.0);
-        let series_name = self
-            .series
-            .get(series_index)
-            .map(|series| series.name.as_str())
-            .filter(|name| !name.is_empty());
-        let text = match series_name {
-            Some(name) => format!("{name}  {:.2}, {:.2}", value.0, value.1),
-            None => format!("{:.2}, {:.2}", value.0, value.1),
+        let font_size_bits = font.size().to_bits();
+        let revision = self.data_revision;
+        let fresh = matches!(
+            &self.readout_cache,
+            Some((cached_series, cached_point, cached_revision, cached_font, _, _, _))
+                if *cached_series == series_index
+                    && *cached_point == point_index
+                    && *cached_revision == revision
+                    && *cached_font == font_size_bits
+        );
+        if !fresh {
+            let series_name = self
+                .series
+                .get(series_index)
+                .map(|series| series.name.as_str())
+                .filter(|name| !name.is_empty());
+            let text = match series_name {
+                Some(name) => format!("{name}  {:.2}, {:.2}", value.0, value.1),
+                None => format!("{:.2}, {:.2}", value.0, value.1),
+            };
+            let metrics = context.measure_text(&text, &font);
+            self.readout_cache = Some((
+                series_index,
+                point_index,
+                revision,
+                font_size_bits,
+                text,
+                metrics.width,
+                metrics.height.max(1),
+            ));
+        }
+        let Some((_, _, _, _, text, cached_width, cached_height)) = &self.readout_cache else {
+            return;
         };
-        let metrics = context.measure_text(&text, &font);
         let padding = 4i32;
-        let width = metrics.width as i32 + padding * 2;
-        let height = metrics.height.max(1) as i32 + padding * 2;
+        let width = *cached_width as i32 + padding * 2;
+        let height = *cached_height as i32 + padding * 2;
         let mut x = pixel.x + 8;
         let mut y = pixel.y - height - 6;
         if x + width > plot.x + plot.width as i32 {
@@ -2404,7 +2467,7 @@ impl LineChart {
         };
         context.fill_rect(box_rect, surface);
         context.draw_rect(box_rect, ink.with_alpha_f32(0.35));
-        context.draw_text_line_cow(box_rect, &text, &font, ink, HorizontalAlignment::Center);
+        context.draw_text_line_cow(box_rect, text, &font, ink, HorizontalAlignment::Center);
     }
 }
 

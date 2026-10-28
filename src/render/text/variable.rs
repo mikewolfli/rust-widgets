@@ -886,33 +886,52 @@ mod tests {
         );
     }
 
-    /// The host's own system UI face, when this host has one, declares a weight axis and moves it.
+    /// The host's own variable face, when this host has one, declares a weight axis and moves it.
     ///
     /// This is the real-face counterpart of the synthetic fixture: it proves the API reads a face
-    /// the crate does not ship. A host without the file (a non-Apple machine, a trimmed system) has
-    /// nothing to test here, which is why an absent file is a pass rather than a failure.
-    #[cfg(target_os = "macos")]
+    /// the crate does not ship. The candidate comes from [`crate::platform::Platform::system_fonts`],
+    /// so this test carries no OS knowledge of its own — no `cfg(target_os)` and no system font path
+    /// (principle #36). A host that reports no variable face able to express both 400 and 700 has
+    /// nothing to test here, which is why that case is a pass rather than a failure.
     #[test]
     fn the_host_system_ui_face_declares_a_weight_axis() {
-        const CANDIDATES: [&str; 2] =
-            ["/System/Library/Fonts/SFNS.ttf", "/System/Library/Fonts/SFNSDisplay.ttf"];
-        let Some(bytes) = CANDIDATES
-            .iter()
-            .find_map(|path| std::fs::read(path).ok())
-            .filter(|bytes| !bytes.is_empty())
-        else {
+        // Probe with the parser first: the only face this test leaks is one that really can draw
+        // `A` at both weights and really moves the axis between them, so a host whose first
+        // variable family cannot outline the glyph is skipped rather than failed.
+        let found = crate::platform::get_platform()
+            .system_fonts()
+            .into_iter()
+            .filter_map(|font| font.source)
+            .find_map(|path| {
+                let bytes = std::fs::read(path).ok()?;
+                if bytes.is_empty() {
+                    return None;
+                }
+                let mut parsed = ttf_parser::Face::parse(&bytes, 0).ok()?;
+                let axis = super::find_weight_axis(&parsed)?;
+                if axis.min_value > 400.0 || axis.max_value < 700.0 {
+                    return None;
+                }
+                let glyph = parsed.glyph_index('A')?;
+                let mut regular = Recorder::default();
+                parsed.set_variation(super::WEIGHT_TAG, 400.0)?;
+                parsed.outline_glyph(glyph, &mut regular)?;
+                let mut bold = Recorder::default();
+                parsed.set_variation(super::WEIGHT_TAG, 700.0)?;
+                parsed.outline_glyph(glyph, &mut bold)?;
+                if regular.points == bold.points {
+                    return None;
+                }
+                Some(bytes)
+            });
+        let Some(bytes) = found else {
             return;
         };
         let bytes: &'static [u8] = crate::compat::Box::leak(bytes.into_boxed_slice());
         let face = VariableFace::new(FaceBytes { name: "System UI", bytes });
-        assert!(face.is_variable(), "the host system UI face is a variable face");
+        assert!(face.is_variable(), "a host face the parser reports as variable is one");
         let axis = face.weight_axis().expect("it declares a wght axis");
         assert!(axis.min < axis.max, "the weight axis has a range");
-        assert!(
-            (axis.default - 400.0).abs() < 1.0,
-            "the default instance is regular, not {}",
-            axis.default
-        );
 
         let regular = face.instantiate_at_weight(400).expect("readable");
         let bold = face.instantiate_at_weight(700).expect("readable");

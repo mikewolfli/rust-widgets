@@ -480,9 +480,14 @@ impl PatternValidator {
     }
 
     /// Whether `text` matches the pattern.
+    ///
+    /// `false` for a malformed pattern, and also when the engine's step budget ran out before it
+    /// could decide. [`Validator::state`] reports that second case as
+    /// [`ValidationState::Intermediate`], because the rule did not prove the value wrong.
     pub fn is_match(&self, text: &str) -> bool {
+        let chars: Vec<char> = text.chars().collect();
         match self.compiled.as_ref() {
-            Some(compiled) => compiled.is_match(text),
+            Some(compiled) => compiled.is_match(&chars),
             None => false,
         }
     }
@@ -492,11 +497,18 @@ impl Validator for PatternValidator {
     /// An empty value is intermediate; a non-matching value is invalid.
     fn state(&self, text: &str) -> ValidationState {
         if text.is_empty() {
-            ValidationState::Intermediate
-        } else if self.is_match(text) {
-            ValidationState::Acceptable
-        } else {
-            ValidationState::Invalid
+            return ValidationState::Intermediate;
+        }
+        let Some(compiled) = self.compiled.as_ref() else {
+            return ValidationState::Invalid;
+        };
+        let chars: Vec<char> = text.chars().collect();
+        match compiled.match_outcome(&chars) {
+            MatchOutcome::Matched => ValidationState::Acceptable,
+            MatchOutcome::NoMatch => ValidationState::Invalid,
+            // The engine stopped before deciding. Painting the value as wrong would accuse the
+            // user of a mistake the rule itself could not confirm.
+            MatchOutcome::Exhausted => ValidationState::Intermediate,
         }
     }
 
@@ -558,6 +570,9 @@ pub(crate) struct CompiledPattern {
     anchored_start: bool,
     anchored_end: bool,
     nodes: Vec<Node>,
+    /// The node count, taken once at compile time so the per-candidate step budget never walks
+    /// the tree.
+    node_count: usize,
 }
 
 impl CompiledPattern {
@@ -573,21 +588,55 @@ impl CompiledPattern {
         if next < limit {
             return None;
         }
-        Some(Self { anchored_start, anchored_end, nodes: collapse(branches) })
+        let nodes = collapse(branches);
+        let node_count = count_nodes(&nodes);
+        Some(Self { anchored_start, anchored_end, nodes, node_count })
     }
 
-    /// Whether `text` matches.
-    pub(crate) fn is_match(&self, text: &str) -> bool {
-        let chars: Vec<char> = text.chars().collect();
-        self.matches_chars(&chars)
+    /// Whether `chars` matches, with the same unanchored semantics as before.
+    pub(crate) fn is_match(&self, chars: &[char]) -> bool {
+        self.match_outcome(chars) == MatchOutcome::Matched
     }
 
-    /// Whether the character slice matches, with the same unanchored semantics as before.
-    fn matches_chars(&self, text: &[char]) -> bool {
+    /// The verdict for `chars`, including the "could not decide" case the boolean cannot carry.
+    pub(crate) fn match_outcome(&self, chars: &[char]) -> MatchOutcome {
+        let mut matcher = Matcher {
+            text: chars,
+            width: chars.len() + 1,
+            remaining: self.step_budget(chars.len()),
+        };
+        let mut starts = PositionSet::new(matcher.width);
         if self.anchored_start {
-            return accepts(&self.nodes, text, 0, self.anchored_end);
+            starts.insert(0);
+        } else {
+            // An unanchored pattern may begin anywhere. Seeding every position runs the sequence
+            // once instead of once per start offset; the fold over a position set distributes
+            // over a union of starts, so the reached set is exactly the union of what the old
+            // per-start passes produced.
+            for start in 0..=chars.len() {
+                starts.insert(start);
+            }
         }
-        (0..=text.len()).any(|start| accepts(&self.nodes, text, start, self.anchored_end))
+        let Some(ends) = matcher.ends_of(&self.nodes, starts) else {
+            return MatchOutcome::Exhausted;
+        };
+        let accepted =
+            if self.anchored_end { ends.contains(chars.len()) } else { !ends.is_empty() };
+        if accepted {
+            MatchOutcome::Matched
+        } else {
+            MatchOutcome::NoMatch
+        }
+    }
+
+    /// Steps one match may take: proportional to the value length and the pattern's node count.
+    fn step_budget(&self, text_len: usize) -> u64 {
+        let per_char = text_len.max(1) as u64;
+        let nodes = self.node_count.max(1) as u64;
+        per_char
+            .saturating_mul(nodes)
+            .saturating_mul(STEP_BUDGET_PER_CHAR_PER_NODE)
+            .min(STEP_BUDGET_CEILING)
     }
 }
 
@@ -725,97 +774,250 @@ fn compile_class(chars: &[char], start: usize) -> Option<(AtomKind, usize)> {
     None
 }
 
-/// Whether `nodes` can consume `text` from `position` and reach an accepted end.
-fn accepts(nodes: &[Node], text: &[char], position: usize, anchored_end: bool) -> bool {
-    ends_of(nodes, text, position).into_iter().any(|end| !anchored_end || end == text.len())
+/// The engine's verdict for one candidate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MatchOutcome {
+    /// The candidate does not match.
+    NoMatch,
+    /// The candidate matches.
+    Matched,
+    /// The step budget ran out before the engine could decide.
+    ///
+    /// A pattern such as `(a+)+b` makes a position simulation explore a combinatorial number of
+    /// states on adversarial input. The rule runs on the UI thread for every keystroke, so the
+    /// engine stops at a fixed cost and says it could not decide rather than blocking the frame.
+    Exhausted,
 }
 
-/// Every position `nodes` can reach from `position`, longest match first.
-fn ends_of(nodes: &[Node], text: &[char], position: usize) -> Vec<usize> {
-    let mut reached = vec![position];
-    for node in nodes {
-        let mut next: Vec<usize> = Vec::new();
-        for pos in reached {
-            for end in node_ends(node, text, pos) {
-                if !next.contains(&end) {
-                    next.push(end);
-                }
-            }
-        }
-        if next.is_empty() {
-            return next;
-        }
-        reached = next;
+/// Steps a match may take per input character and per pattern node.
+///
+/// A step is one character comparison or one reachable-position visit, so the budget bounds real
+/// work rather than recursive calls. The factor is deliberately generous: an ordinary value
+/// against an ordinary grammar uses a few hundred steps at most.
+const STEP_BUDGET_PER_CHAR_PER_NODE: u64 = 256;
+
+/// The ceiling on one match's steps, so a pasted megabyte cannot buy a megabyte of work.
+const STEP_BUDGET_CEILING: u64 = 2_000_000;
+
+/// A set of match positions, one bit per index in `0..=text.len()`.
+///
+/// The engine used to carry reachable positions in a `Vec<usize>` and dedupe with
+/// `Vec::contains`, which made every insert linear in the positions already reached. A bitmap
+/// turns that dedupe into a bit test and makes a whole-set union `text.len() / 64` words wide.
+#[derive(Debug, Clone)]
+struct PositionSet {
+    words: Vec<u64>,
+    count: usize,
+}
+
+impl PositionSet {
+    /// An empty set covering the positions `0..positions`.
+    fn new(positions: usize) -> Self {
+        Self { words: vec![0u64; positions.div_ceil(64)], count: 0 }
     }
-    reached
+
+    /// Adds `position`, ignoring one outside the set's range.
+    fn insert(&mut self, position: usize) {
+        let Some(word) = self.words.get_mut(position / 64) else {
+            return;
+        };
+        let mask = 1u64 << (position % 64);
+        if *word & mask == 0 {
+            *word |= mask;
+            self.count += 1;
+        }
+    }
+
+    /// Whether `position` is in the set.
+    fn contains(&self, position: usize) -> bool {
+        self.words.get(position / 64).is_some_and(|word| word & (1u64 << (position % 64)) != 0)
+    }
+
+    /// Whether the set holds no position.
+    fn is_empty(&self) -> bool {
+        self.count == 0
+    }
+
+    /// Removes every position, keeping the set's buffers.
+    fn clear(&mut self) {
+        self.words.fill(0);
+        self.count = 0;
+    }
+
+    /// Adds every position `other` holds.
+    fn union_with(&mut self, other: &Self) {
+        let mut count = 0usize;
+        for (word, other_word) in self.words.iter_mut().zip(other.words.iter()) {
+            *word |= *other_word;
+            count += word.count_ones() as usize;
+        }
+        self.count = count;
+    }
+
+    /// The positions held, ascending.
+    fn iter(&self) -> PositionIter<'_> {
+        PositionIter { words: &self.words, word: 0, bits: 0 }
+    }
 }
 
-/// Every position `node` can reach from `position`, longest (greediest) first.
-fn node_ends(node: &Node, text: &[char], position: usize) -> Vec<usize> {
-    match node {
-        Node::Atom { kind, min, max } => {
-            let mut ends = Vec::new();
-            if *min == 0 {
-                ends.push(position);
+/// Iterates a [`PositionSet`]'s positions, ascending.
+struct PositionIter<'a> {
+    words: &'a [u64],
+    /// The index of the next word to load.
+    word: usize,
+    /// The unconsumed bits of the last loaded word.
+    bits: u64,
+}
+
+impl Iterator for PositionIter<'_> {
+    type Item = usize;
+
+    fn next(&mut self) -> Option<usize> {
+        loop {
+            if self.bits != 0 {
+                let bit = self.bits.trailing_zeros() as usize;
+                self.bits &= self.bits - 1;
+                return Some((self.word - 1) * 64 + bit);
             }
-            let mut count = 0usize;
-            let mut pos = position;
-            let limit = max.unwrap_or(text.len().saturating_add(1));
-            while count < limit && pos < text.len() && kind.matches(text[pos]) {
-                pos += 1;
-                count += 1;
-                if count >= *min {
-                    ends.push(pos);
-                }
-            }
-            // Greedy, then backtrack: try the longest repetition first so `.*x` matches
-            // the last `x`.
-            ends.reverse();
-            ends
+            self.bits = *self.words.get(self.word)?;
+            self.word += 1;
         }
-        Node::Group(nodes) => ends_of(nodes, text, position),
-        Node::Alt(branches) => {
-            let mut ends = Vec::new();
-            for branch in branches {
-                for end in ends_of(branch, text, position) {
-                    if !ends.contains(&end) {
-                        ends.push(end);
+    }
+}
+
+/// One run of the position simulation over a candidate, with its step accounting.
+struct Matcher<'a> {
+    text: &'a [char],
+    /// `text.len() + 1`: the number of positions a [`PositionSet`] covers.
+    width: usize,
+    /// Steps left before the run reports [`MatchOutcome::Exhausted`].
+    remaining: u64,
+}
+
+impl Matcher<'_> {
+    /// Spends `steps`, reporting `None` once the budget is gone.
+    fn spend(&mut self, steps: u64) -> Option<()> {
+        if self.remaining < steps {
+            self.remaining = 0;
+            return None;
+        }
+        self.remaining -= steps;
+        Some(())
+    }
+
+    /// Every position `nodes` can reach when started from any position in `starts`.
+    fn ends_of(&mut self, nodes: &[Node], starts: PositionSet) -> Option<PositionSet> {
+        let mut reached = starts;
+        for node in nodes {
+            let mut next = PositionSet::new(self.width);
+            let mut ends = PositionSet::new(self.width);
+            for position in reached.iter() {
+                self.spend(1)?;
+                ends.clear();
+                self.node_ends(node, position, &mut ends)?;
+                next.union_with(&ends);
+            }
+            if next.is_empty() {
+                return Some(next);
+            }
+            reached = next;
+        }
+        Some(reached)
+    }
+
+    /// Adds every position `node` can reach from `position` to `out`.
+    ///
+    /// `out` belongs to the caller so one buffer serves every position of a node instead of a
+    /// fresh `Vec` per position; it must be cleared before the call.
+    fn node_ends(&mut self, node: &Node, position: usize, out: &mut PositionSet) -> Option<()> {
+        self.spend(1)?;
+        match node {
+            Node::Atom { kind, min, max } => {
+                if *min == 0 {
+                    out.insert(position);
+                }
+                let mut count = 0usize;
+                let mut pos = position;
+                let limit = max.unwrap_or(self.width);
+                while count < limit && pos < self.text.len() && kind.matches(self.text[pos]) {
+                    self.spend(1)?;
+                    pos += 1;
+                    count += 1;
+                    if count >= *min {
+                        out.insert(pos);
                     }
                 }
             }
-            ends
-        }
-        Node::Repeat { node, min, max } => {
-            let mut ends = Vec::new();
-            if *min == 0 {
-                ends.push(position);
+            Node::Group(nodes) => {
+                let mut starts = PositionSet::new(self.width);
+                starts.insert(position);
+                let ends = self.ends_of(nodes, starts)?;
+                out.union_with(&ends);
             }
-            let max_count = max.unwrap_or(text.len().saturating_add(1));
-            let mut frontier = vec![position];
-            let mut count = 0usize;
-            while count < max_count && !frontier.is_empty() {
-                let mut next: Vec<usize> = Vec::new();
-                for pos in frontier {
-                    for end in node_ends(node, text, pos) {
-                        // A repetition that does not advance would loop forever; only a step
-                        // that consumes input counts as a repetition.
-                        if end > pos && !next.contains(&end) {
-                            next.push(end);
+            Node::Alt(branches) => {
+                let mut starts = PositionSet::new(self.width);
+                starts.insert(position);
+                for branch in branches {
+                    let ends = self.ends_of(branch, starts.clone())?;
+                    out.union_with(&ends);
+                }
+            }
+            Node::Repeat { node, min, max } => {
+                if *min == 0 {
+                    out.insert(position);
+                }
+                // Every repetition step shares one frontier bitmap: a position reached twice costs
+                // one bit, so nesting a repeat is charged against the step budget instead of
+                // multiplying per-position frontier lists.
+                let max_count = max.unwrap_or(self.width);
+                let mut frontier = PositionSet::new(self.width);
+                frontier.insert(position);
+                let mut step = PositionSet::new(self.width);
+                let mut next = PositionSet::new(self.width);
+                let mut count = 0usize;
+                while count < max_count && !frontier.is_empty() {
+                    next.clear();
+                    for pos in frontier.iter() {
+                        self.spend(1)?;
+                        step.clear();
+                        self.node_ends(node, pos, &mut step)?;
+                        for end in step.iter() {
+                            // A repetition that does not advance would loop forever; only a step
+                            // that consumes input counts as a repetition.
+                            if end > pos {
+                                next.insert(end);
+                            }
                         }
                     }
-                }
-                count += 1;
-                for pos in &next {
-                    if count >= *min && !ends.contains(pos) {
-                        ends.push(*pos);
+                    count += 1;
+                    if count >= *min {
+                        out.union_with(&next);
                     }
+                    core::mem::swap(&mut frontier, &mut next);
                 }
-                frontier = next;
             }
-            ends.reverse();
-            ends
+        }
+        Some(())
+    }
+}
+
+/// The number of nodes in `nodes`, counting groups, branches and repeats once each.
+fn count_nodes(nodes: &[Node]) -> usize {
+    let mut count = 0usize;
+    for node in nodes {
+        count += 1;
+        match node {
+            Node::Atom { .. } => {}
+            Node::Group(inner) => count += count_nodes(inner),
+            Node::Alt(branches) => {
+                for branch in branches {
+                    count += count_nodes(branch);
+                }
+            }
+            Node::Repeat { node, .. } => count += count_nodes(core::slice::from_ref(node.as_ref())),
         }
     }
+    count
 }
 
 #[cfg(test)]
@@ -949,10 +1151,29 @@ mod tests {
     #[test]
     fn a_compiled_pattern_matches_many_values() {
         let compiled = CompiledPattern::compile("a|b").expect("a valid pattern");
-        assert!(compiled.is_match("a") && compiled.is_match("b"));
-        assert!(!compiled.is_match("c"));
+        assert!(compiled.is_match(&['a']) && compiled.is_match(&['b']));
+        assert!(!compiled.is_match(&['c']));
         // A malformed pattern is refused rather than matched as literals.
         assert!(CompiledPattern::compile("(a").is_none());
+    }
+
+    #[test]
+    fn a_long_value_against_an_ordinary_pattern_is_still_decided() {
+        let digits = PatternValidator::new("^[0-9]+$", "digits only");
+        let value = "7".repeat(4096);
+        assert_eq!(digits.state(&value), ValidationState::Acceptable);
+        assert!(digits.is_match(&value));
+    }
+
+    #[test]
+    fn a_pathological_pattern_reports_intermediate_instead_of_blocking() {
+        // `(a+)+b` cannot match a run of `a`, yet a simulation without a step budget explores a
+        // combinatorial number of states before saying so. The rule must answer, and the answer
+        // is "not decided" rather than an accusation the engine did not prove.
+        let rule = PatternValidator::new("^(a+)+b$", "no");
+        let value = "a".repeat(512);
+        assert_eq!(rule.state(&value), ValidationState::Intermediate);
+        assert!(!rule.is_match(&value));
     }
 
     #[test]

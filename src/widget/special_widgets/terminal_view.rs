@@ -863,6 +863,14 @@ impl TerminalView {
         &self.lines
     }
 
+    /// Returns the counter that advances on every output mutation.
+    ///
+    /// A reader that derives data from the buffer (a find bar scanning the scrollback, for
+    /// example) can use this to tell whether its own snapshot is still current.
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+
     /// Returns the raw text of one scrollback row, or `None` when `row` is out of range.
     ///
     /// The text is what [`Self::append_output`] stored, so it may still carry SGR escape

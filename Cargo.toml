@@ -67,6 +67,7 @@ include = [
     "examples/platform_diagnostics.rs",
     "examples/verify_batch3.rs",
     "examples/embedded_host.rs",
+    "examples/macos_canvas_lifecycle_probe.rs",
     # The entries below are **anchored** with a leading `/`. That is not cosmetic.
     #
     # An unanchored `"README.md"` / `"LICENSE"` / `"CHANGELOG.md"` is a gitignore-style
@@ -714,8 +715,12 @@ unstable-special-widgets = []
 
 # ── AUDIO CODEC FEATURES ──
 
-## Real audio codecs via symphonia (FLAC, OGG Vorbis, AAC, Opus).
+## Real audio codecs via symphonia (FLAC, OGG Vorbis, AAC).
 ## Enables actual PCM decoding instead of synthetic fallback data.
+##
+## Opus is deliberately absent: the pinned symphonia 0.5 release ships no Opus decoder, so the
+## format is recognized and refused with that reason (`src/audio/decoder.rs::decode_opus`)
+## rather than advertised as decodable here.
 symphonia-codecs = ["symphonia"]
 
 
@@ -876,7 +881,10 @@ image-codecs = { package = "image", version = "0.25.10", optional = true, defaul
 resvg = { version = "0.48.1", optional = true }
 jpeg-decoder = { version = "0.3", optional = true }
 symphonia = { version = "0.5", default-features = false, features = [
-    "all",
+    "flac",
+    "vorbis",
+    "aac",
+    "ogg",
 ], optional = true }
 
 
@@ -1308,6 +1316,13 @@ required-features = ["desktop"]
 # backend and the `app` module, so it is gated the same way.
 [[example]]
 name = "macos_window_state_async_probe"
+required-features = ["desktop"]
+
+# Bounded lifecycle probe for the macOS canvas surface (PF-X03): 2000 mount/unmount cycles must
+# not grow the peak RSS. `tools/check_macos_canvas_lifecycle.sh` runs it on both macOS backends.
+[[example]]
+name = "macos_canvas_lifecycle_probe"
+path = "examples/macos_canvas_lifecycle_probe.rs"
 required-features = ["desktop"]
 
 # Runtime proof that the host creates no controls and one creation mechanism

@@ -225,3 +225,36 @@ fn objc2_screen_sampling_answers_an_honest_absence_off_screen() {
         "a point outside every display has no pixel, so the read must report absence"
     );
 }
+
+/// A surface registered by the **public** path exists only in the widget runtime, so it has no
+/// `BackendState` widget record.
+///
+/// `mount_surface` used to gate on that record (`BackendState::mount_surface_record`), which
+/// refused every surface `mount_widget_object` produced — found by
+/// `examples/macos_canvas_lifecycle_probe`, whose objc2 run reported `mounted=false`. Both
+/// registries are honest sources, so either one must be enough. This runs off the AppKit main
+/// thread, where the mount is the documented state-only record, so it needs no window session.
+#[test]
+fn a_runtime_registered_surface_mounts_without_a_backend_widget_record() {
+    let backend = MacOSObjc2Platform::new();
+    let window = backend.create_window("runtime-surface", 0, 0, 320, 240);
+    let rect = crate::core::Rect::new(0, 0, 100, 40);
+    let widget = crate::widget::WidgetFactory::shared()
+        .create("label", rect, "probe")
+        .expect("the factory builds a label");
+    let id = crate::widget::runtime::register(widget).expect("the runtime registers it");
+
+    assert!(
+        backend.mount_surface(window, id, rect),
+        "a surface the widget runtime registered must mount even though this backend holds no \
+         record for it"
+    );
+    assert!(backend.resize_surface(id, crate::core::Rect::new(0, 0, 200, 80)), "resizable");
+    assert!(backend.unmount_surface(id), "releasable");
+    assert!(
+        !backend.unmount_surface(id),
+        "a second unmount must report that the surface is gone"
+    );
+
+    crate::widget::runtime::unregister(id);
+}

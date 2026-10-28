@@ -11,6 +11,20 @@ use crate::compat::{vec, Vec};
 /// buffer can actually hold.
 pub const DEFAULT_HISTORY_CAPACITY: usize = 60;
 
+/// The frame rate to divide by, repaired when the caller supplied one that has no frame duration.
+///
+/// `1.0 / 0.0` is infinite and a negative rate gives a negative duration; either one makes the
+/// degrade/upgrade comparisons in [`crate::quality::config::QualityConfig`] stop describing the
+/// display. The default rate is the only value that keeps the policy meaningful, so it is what an
+/// unusable input becomes.
+fn usable_frame_rate(frame_rate: f32) -> f32 {
+    if frame_rate.is_finite() && frame_rate > 0.0 {
+        frame_rate
+    } else {
+        60.0
+    }
+}
+
 /// Frame time monitor for tracking rendering performance with lightweight statistics.
 ///
 /// # Accepted samples
@@ -54,7 +68,7 @@ impl FrameTimeMonitor {
             frame_times: vec![0.0; capacity],
             index: 0,
             count: 0,
-            target_frame_time: 1.0 / target_frame_rate,
+            target_frame_time: 1.0 / usable_frame_rate(target_frame_rate),
         }
     }
 
@@ -193,8 +207,12 @@ impl FrameTimeMonitor {
     }
 
     /// Updates the target frame time.
+    ///
+    /// A rate that is not a positive finite number is replaced by the default 60 fps rather than
+    /// divided: `1.0 / 0.0` is infinite, which makes every degrade check false and every upgrade
+    /// check true, so the adaptive policy would silently stop adapting (LYT-X07).
     pub fn set_target_frame_rate(&mut self, frame_rate: f32) {
-        self.target_frame_time = 1.0 / frame_rate;
+        self.target_frame_time = 1.0 / usable_frame_rate(frame_rate);
     }
 
     /// Returns the target frame time.

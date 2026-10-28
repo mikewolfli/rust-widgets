@@ -60,6 +60,12 @@ pub struct SignatureStroke {
 /// it keeps the pad's configured width (D09-POINTER-01).
 const NEUTRAL_PRESSURE: f32 = 1.0;
 
+/// How many committed strokes a pad keeps by default.
+///
+/// A pad that stays open for a whole shift accumulates one stroke per pen lift with nothing
+/// releasing them, so the history needs a bound the same way an undo stack does.
+const DEFAULT_STROKE_LIMIT: usize = 1024;
+
 impl PartialEq for SignatureStroke {
     /// The smoothing cache takes no part in equality: it is derived state, and two strokes with
     /// the same recorded points are the same stroke whether or not one of them has been painted.
@@ -273,6 +279,10 @@ pub struct SignaturePad {
     smooth_strokes: bool,
     /// Strokes removed by `undo`, available to `redo`.
     redo_stack: Vec<SignatureStroke>,
+    /// How many committed strokes the pad keeps; past it the oldest stroke is evicted.
+    ///
+    /// The same bound applies to `redo_stack`, matching `Canvas::set_command_limit`.
+    stroke_limit: usize,
     /// Render-cache identity of the committed ink; a new identity rebuilds its pixels.
     ink_cache_key: u64,
     /// Emitted with no payload whenever the committed stroke set changes.
@@ -299,6 +309,7 @@ impl SignaturePad {
             tilt_affects_width: false,
             smooth_strokes: false,
             redo_stack: Vec::new(),
+            stroke_limit: DEFAULT_STROKE_LIMIT,
             ink_cache_key: next_ink_cache_key(),
             changed: GenericSignal::new(),
             stroke_completed: Signal1::new(),
@@ -352,6 +363,38 @@ impl SignaturePad {
         self.changed.emit();
         self.base.request_redraw();
         true
+    }
+
+    /// Sets how many committed strokes the pad retains (clamped to at least one).
+    ///
+    /// The undo and redo histories share the bound, so neither can grow without limit. Lowering
+    /// the limit evicts the oldest strokes immediately, and the committed ink changes with them,
+    /// so the render cache is dropped and `changed` is emitted.
+    pub fn set_stroke_limit(&mut self, limit: usize) {
+        let limit = limit.max(1);
+        if self.stroke_limit == limit {
+            return;
+        }
+        self.stroke_limit = limit;
+        let retained = self.strokes.len();
+        self.trim_stroke_history();
+        if self.strokes.len() != retained {
+            self.invalidate_ink_cache();
+            self.changed.emit();
+        }
+        self.base.request_redraw();
+    }
+
+    /// Evicts the oldest strokes and redo entries past the stroke limit.
+    fn trim_stroke_history(&mut self) {
+        if self.strokes.len() > self.stroke_limit {
+            let excess = self.strokes.len() - self.stroke_limit;
+            self.strokes.drain(..excess);
+        }
+        if self.redo_stack.len() > self.stroke_limit {
+            let excess = self.redo_stack.len() - self.stroke_limit;
+            self.redo_stack.drain(..excess);
+        }
     }
 
     /// Enables drawing through a smoothing subdivision.
@@ -727,6 +770,7 @@ impl SignaturePad {
         // Drawing again abandons the undone branch, which is the linear-history contract
         // `redo` documents.
         self.redo_stack.clear();
+        self.trim_stroke_history();
         self.invalidate_ink_cache();
         self.stroke_completed.emit(stroke);
         self.changed.emit();
@@ -985,9 +1029,8 @@ impl Draw for SignaturePad {
         // for a `Base`/`Input`-style face, so the writing area reads as a well the ink sits in.
         // A colour the caller set explicitly still wins: it is a deliberate choice, not the
         // window fill arriving through the resolver.
-        let window_fill = crate::style::palette_shared()
-            .map(|colors| colors.background)
-            .unwrap_or(Color::WHITE);
+        let window_fill =
+            crate::style::palette_shared().map(|colors| colors.background).unwrap_or(Color::WHITE);
         let text_color = style
             .text_color
             .or_else(|| theme.as_ref().and_then(|t| t.text_color))
@@ -1704,5 +1747,26 @@ mod tests {
                 "</svg>"
             )
         );
+    }
+
+    /// SPX-X10: the committed-stroke history is bounded, evicting the oldest strokes first.
+    #[test]
+    fn the_stroke_limit_evicts_the_oldest_strokes() {
+        let mut p = pad();
+        p.set_stroke_limit(2);
+        for index in 0..3 {
+            let mut stroke = SignatureStroke::new();
+            stroke.push(Point::new(index * 10, index * 10));
+            p.current = Some(stroke);
+            p.end_stroke();
+        }
+        assert_eq!(p.stroke_count(), 2);
+        assert_eq!(p.strokes()[0].points()[0], Point::new(10, 10));
+        assert_eq!(p.strokes()[1].points()[0], Point::new(20, 20));
+
+        // Lowering the limit below the current count evicts immediately.
+        p.set_stroke_limit(1);
+        assert_eq!(p.stroke_count(), 1);
+        assert_eq!(p.strokes()[0].points()[0], Point::new(20, 20));
     }
 }

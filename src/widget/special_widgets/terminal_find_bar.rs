@@ -95,6 +95,12 @@ pub struct TerminalFindBar {
     matches: Vec<(usize, usize)>,
     /// The plain text of every scrollback row at the last scan.
     rows: Vec<String>,
+    /// What [`Self::matches`] and [`Self::rows`] were scanned from: the terminal revision plus
+    /// the query, case-sensitivity, and regex flags.
+    ///
+    /// Navigation compares this key before rescanning, so a repeated next/previous over an
+    /// unchanged terminal reuses the match set instead of re-stripping every line.
+    rescan_key: Option<(u64, String, bool, bool)>,
     /// Emitted with `(total, current)` whenever a scan changes or reports the match set.
     ///
     /// `current` is zero-based and is `0` when there is no current match (including when the
@@ -120,6 +126,7 @@ impl TerminalFindBar {
             attached: false,
             matches: Vec::new(),
             rows: Vec::new(),
+            rescan_key: None,
             on_matches_changed: Signal1::new(),
         }
     }
@@ -294,14 +301,15 @@ impl TerminalFindBar {
         self.attached = false;
         self.matches.clear();
         self.rows.clear();
+        self.rescan_key = None;
         self.match_count = 0;
         self.current_match = None;
         self.emit_matches();
         self.base.request_redraw();
     }
 
-    /// Rescans `terminal` and selects the next match, wrapping when
-    /// [`Self::set_wrap_search`] is on.
+    /// Rescans `terminal` when the cached scan no longer describes it and selects the next match,
+    /// wrapping when [`Self::set_wrap_search`] is on.
     ///
     /// Returns the selected `(row, column)` or `None` when there is no match. A terminal's
     /// content is never changed.
@@ -321,8 +329,8 @@ impl TerminalFindBar {
         self.select(next)
     }
 
-    /// Rescans `terminal` and selects the previous match, wrapping when
-    /// [`Self::set_wrap_search`] is on.
+    /// Rescans `terminal` when the cached scan no longer describes it and selects the previous
+    /// match, wrapping when [`Self::set_wrap_search`] is on.
     ///
     /// With no current match the last match is selected, mirroring
     /// [`Self::find_next_in`] starting at the first.
@@ -365,8 +373,24 @@ impl TerminalFindBar {
         Rect::new(x, rect.y + inset, width, height)
     }
 
-    /// Replaces the match set and the row snapshot from `terminal`.
+    /// Replaces the match set and the row snapshot from `terminal` and returns the match count.
+    ///
+    /// The scan is skipped while the terminal revision and the query options still describe the
+    /// cached scan, which is what makes repeated navigation on a large scrollback cheap.
     fn rescan(&mut self, terminal: &TerminalView) -> usize {
+        let revision = terminal.revision();
+        // Compared field by field so a cache hit does not have to clone the query.
+        let cached = self.rescan_key.as_ref().is_some_and(
+            |(key_revision, key_query, key_case, key_regex)| {
+                *key_revision == revision
+                    && key_query == &self.query
+                    && *key_case == self.case_sensitive
+                    && *key_regex == self.use_regex
+            },
+        );
+        if cached {
+            return self.match_count;
+        }
         self.matches = terminal.find_matches(&self.query, self.case_sensitive, self.use_regex);
         self.rows.clear();
         for row in 0..terminal.lines().len() {
@@ -379,6 +403,7 @@ impl TerminalFindBar {
             Some(current) if self.match_count > 0 => Some(current.min(self.match_count - 1)),
             _ => None,
         };
+        self.rescan_key = Some((revision, self.query.clone(), self.case_sensitive, self.use_regex));
         self.match_count
     }
 
@@ -396,6 +421,8 @@ impl TerminalFindBar {
         self.match_count = 0;
         self.current_match = None;
         self.matches.clear();
+        // The cached scan describes the old query options; dropping the key forces a rescan.
+        self.rescan_key = None;
         self.base.request_redraw();
     }
 
@@ -672,6 +699,26 @@ mod tests {
         assert_eq!(bar.find_previous_in(&mut terminal), Some((0, 2)));
         assert_eq!(bar.find_previous_in(&mut terminal), Some((0, 0)));
         assert_eq!(bar.find_previous_in(&mut terminal), None);
+    }
+
+    /// A cached scan is dropped when the terminal or the query moved, so navigation never walks
+    /// a stale match set.
+    #[test]
+    fn navigation_rescans_when_the_terminal_or_query_moves() {
+        let mut terminal = terminal_with(&["a"]);
+        let mut bar = TerminalFindBar::new(Rect::new(0, 0, 320, 30));
+        bar.set_query("a");
+        bar.attach(&mut terminal);
+        assert_eq!(bar.match_count(), 1);
+
+        terminal.append_output("a");
+        assert_eq!(bar.find_next_in(&mut terminal), Some((0, 0)));
+        assert_eq!(bar.match_count(), 2, "the new row joins the set");
+        assert_eq!(bar.find_next_in(&mut terminal), Some((1, 0)));
+
+        bar.set_query("b");
+        assert_eq!(bar.find_previous_in(&mut terminal), None, "the new query rescans");
+        assert_eq!(bar.match_count(), 0);
     }
 
     /// A host-supplied count is clamped into the total, and a zero total clears the cursor.

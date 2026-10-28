@@ -230,10 +230,7 @@ fn source_geometry(source: IconRef<'_>) -> Result<SourceGeometry, IconPaintError
             if let Some(data) = name.data_opt() {
                 return Ok(SourceGeometry::Outline(data));
             }
-            match crate::widget::icon_fallback_data::ICON_FALLBACK
-                .iter()
-                .find(|entry| entry.name == name.as_str())
-            {
+            match fallback_entry(name.as_str()) {
                 // A token the generated table does not know has no geometry at all, which is a
                 // failure rather than a zero-sized success: reporting it keeps "drew nothing" from
                 // being indistinguishable from "drew an empty icon".
@@ -510,10 +507,24 @@ fn resolve_named_icon(name: &str) -> Option<NamedIcon> {
     // The generated fallback geometry is the answer on a build with no outline path, and the
     // last resort everywhere else. A name it does not know was never an icon, which is what `None`
     // reports to the caller.
-    if crate::widget::icon_fallback_data::ICON_FALLBACK.iter().any(|entry| entry.name == name) {
+    if fallback_entry(name).is_some() {
         return Some(NamedIcon::Fallback);
     }
     None
+}
+
+/// The fallback geometry for `token`, reached through the enum's declaration index.
+///
+/// `ICON_FALLBACK` is indexed by `IconName`'s declaration order, so a token that parses to a
+/// variant is one integer index away (G-38). A linear scan compared the token against all 69
+/// entries per icon per frame; the index lookup is what replaces it. The name comparison keeps
+/// that ordering a checked invariant rather than an assumption: a table that drifted out of order
+/// answers `None` here and the caller draws the placeholder rather than the wrong icon.
+fn fallback_entry(token: &str) -> Option<&'static crate::widget::icon_fallback_data::IconFallback> {
+    let name = IconName::from_name(token)?;
+    crate::widget::icon_fallback_data::ICON_FALLBACK
+        .get(name as usize)
+        .filter(|entry| entry.name == token)
 }
 
 /// Draws `name` as a **square** icon centred within `box_rect`, `side` device pixels across.
@@ -647,6 +658,46 @@ impl IconTransform {
     }
 }
 
+/// The largest point count one fallback icon expands to, taken from the table itself.
+///
+/// `draw_fallback_in` draws into fixed stack arrays, the same way the outline path does. Sizing
+/// them from the table is what makes that safe: the constant is evaluated at compile time, so a
+/// regenerated icon set cannot silently overflow the buffers. Short (fewer than three points)
+/// contours are counted even though the draw skips them, because the buffer's bound must hold
+/// for every entry, not just the ones drawn today.
+const MAX_FALLBACK_POINTS: usize = {
+    use crate::widget::icon_fallback_data::ICON_FALLBACK;
+    let mut entry = 0;
+    let mut max = 0;
+    while entry < ICON_FALLBACK.len() {
+        let mut contour = 0;
+        let mut total = 0;
+        while contour < ICON_FALLBACK[entry].contours.len() {
+            total += ICON_FALLBACK[entry].contours[contour].len();
+            contour += 1;
+        }
+        if total > max {
+            max = total;
+        }
+        entry += 1;
+    }
+    max
+};
+
+/// The largest contour count one fallback icon expands to, taken from the table itself.
+const MAX_FALLBACK_CONTOURS: usize = {
+    use crate::widget::icon_fallback_data::ICON_FALLBACK;
+    let mut entry = 0;
+    let mut max = 0;
+    while entry < ICON_FALLBACK.len() {
+        if ICON_FALLBACK[entry].contours.len() > max {
+            max = ICON_FALLBACK[entry].contours.len();
+        }
+        entry += 1;
+    }
+    max
+};
+
 /// Draws `token`'s generated fallback geometry into `rect`; unknown tokens draw nothing here
 /// (the caller falls back to the placeholder).
 fn draw_fallback_in(
@@ -656,17 +707,8 @@ fn draw_fallback_in(
     token: &str,
     transform: IconTransform,
 ) -> bool {
-    use crate::widget::icon_fallback_data::ICON_FALLBACK;
-
-    // The table is indexed by `IconName`'s declaration order, so a token that parses to a variant
-    // is one integer index away. The linear scan this replaces ran a string comparison per entry
-    // (69 of them) on every frame that drew a fallback icon (G-38). The scan remains as a
-    // defensive fallback for a table entry whose name is not reachable through `from_name`.
-    let fallback = IconName::from_name(token)
-        .and_then(|name| ICON_FALLBACK.get(name as usize))
-        .filter(|entry| entry.name == token)
-        .or_else(|| ICON_FALLBACK.iter().find(|entry| entry.name == token));
-    let Some(fallback) = fallback else {
+    // Indexed, not scanned: this runs per named icon per frame on a build with no outline path.
+    let Some(fallback) = fallback_entry(token) else {
         return false;
     };
     // The same square fit the outline path uses, so the two sources cannot land in different boxes.
@@ -674,8 +716,10 @@ fn draw_fallback_in(
     if rect.width == 0 || rect.height == 0 {
         return false;
     }
-    let mut points = crate::compat::Vec::new();
-    let mut contours = crate::compat::Vec::new();
+    let mut points = [Point::new(0, 0); MAX_FALLBACK_POINTS];
+    let mut contours = [(0usize, 0usize); MAX_FALLBACK_CONTOURS];
+    let mut point_count = 0usize;
+    let mut contour_count = 0usize;
     let grid = f32::from(fallback.grid);
     let scale = rect.width as f32 / grid;
     let origin_x = rect.x as f32;
@@ -684,21 +728,30 @@ fn draw_fallback_in(
         if contour.len() < 3 {
             continue;
         }
-        let start = points.len();
-        points.extend(contour.iter().map(|&(gx, gy)| {
-            Point::new(
+        if point_count + contour.len() > points.len() || contour_count == contours.len() {
+            // The buffers are sized from this table, so this cannot happen; stopping rather than
+            // indexing past them keeps a table that grew at runtime from being a memory error.
+            break;
+        }
+        let start = point_count;
+        for &(gx, gy) in contour.iter() {
+            points[point_count] = Point::new(
                 (origin_x + gx as f32 * scale).round() as i32,
                 (origin_y + (gy as f32 + grid) * scale).round() as i32,
-            )
-        }));
-        contours.push((start, points.len()));
+            );
+            point_count += 1;
+        }
+        contours[contour_count] = (start, point_count);
+        contour_count += 1;
     }
     let centre = Point::new(
         rect.x.saturating_add((rect.width / 2) as i32),
         rect.y.saturating_add((rect.height / 2) as i32),
     );
-    transform.apply(&mut points, centre);
-    if let Err(error) = ctx.fill_path_non_zero(&points, &contours, color) {
+    transform.apply(&mut points[..point_count], centre);
+    if let Err(error) =
+        ctx.fill_path_non_zero(&points[..point_count], &contours[..contour_count], color)
+    {
         log::error!("fallback icon '{}' could not be submitted: {error:?}", fallback.name);
     }
     true

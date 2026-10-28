@@ -154,13 +154,21 @@ fn every_published_command_is_dispatched_by_its_control() {
     // `layer_panel.set_entries` and `playlist_panel.set_tracks`, each naming its
     // payload through the Records property of the same name: 463 + 2 = 465.
     // `handled == total` still holds.
+    //
+    // The web-control withdrawal that followed removed two capability functions whose
+    // controls no longer exist: `web_view` (a WebEngineView row: `set_url`, `reload`,
+    // `go_back`, `go_forward`, `stop` — 5 names) and `web_find_bar` (`next`, `previous`,
+    // `close` — 3 names). Three names were published in their place (`commit` +
+    // `clear` on the editor's find bar, `set_text` on the inplace editor):
+    // 465 - 5 - 3 + 3 = 460. This is the *published* total, and the assertion below
+    // still forbids it from shrinking silently.
     assert_eq!(
         handled, total,
         "a control lost its `command` implementation: {handled}/{total} handled, refused: \
          {refused:?}"
     );
     assert!(
-        total >= 465,
+        total >= 460,
         "fewer commands are published than the registry declares: {total} — a capability \
          stopped advertising a list it still implements"
     );

@@ -670,9 +670,14 @@ fn capability_flags_agree_with_the_methods_they_promise() {
     assert_agrees("ios", &crate::platform::ios::IosMobilePlatform::new());
 }
 
+// The staged-loop tests below are the only users of these helpers; the gate is theirs, so a
+// profile that cannot stage them (a stripped or non-native device profile) does not compile dead
+// scaffolding.
+#[cfg(not(any(alloc_frugal, embedded_surface, feature = "tablet", feature = "mobile")))]
 use crate::compat::atomic::{AtomicBool, Ordering};
 
 /// A loop that ticks until it is asked to stop.
+#[cfg(not(any(alloc_frugal, embedded_surface, feature = "tablet", feature = "mobile")))]
 struct LoopingPlatform {
     /// Set by the loop thread once its first frame has been driven.
     ticking: AtomicBool,
@@ -680,12 +685,14 @@ struct LoopingPlatform {
     running: AtomicBool,
 }
 
+#[cfg(not(any(alloc_frugal, embedded_surface, feature = "tablet", feature = "mobile")))]
 impl LoopingPlatform {
     const fn new() -> Self {
         Self { ticking: AtomicBool::new(false), running: AtomicBool::new(false) }
     }
 }
 
+#[cfg(not(any(alloc_frugal, embedded_surface, feature = "tablet", feature = "mobile")))]
 impl Platform for LoopingPlatform {
     fn as_any(&self) -> &dyn core::any::Any {
         self
@@ -724,6 +731,7 @@ impl Platform for LoopingPlatform {
 /// (see [`crate::platform::stop::TEST_SEAM_SERIAL`]) so that the stop flag's own unit tests take
 /// the **same** lock; a per-module guard left them able to leave a pending request behind, which
 /// ended this test's loop at its first frame.
+#[cfg(not(any(alloc_frugal, embedded_surface, feature = "tablet", feature = "mobile")))]
 fn loop_seam_serial_guard() -> std::sync::MutexGuard<'static, ()> {
     crate::platform::stop::TEST_SEAM_SERIAL.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
@@ -903,6 +911,7 @@ fn work_scheduled_from_another_thread_runs_on_the_loops_thread() {
 ///
 /// `ThreadId` itself is not comparable across allocations by value in a `static`, and the tests
 /// above only need "same thread or not".
+#[cfg(not(any(alloc_frugal, embedded_surface, feature = "tablet", feature = "mobile")))]
 fn thread_id_as_u64() -> u64 {
     // `ThreadId`'s `Debug` form is the only stable accessor (`as_u64` is unstable), and it is
     // unique per thread for the process's lifetime, which is all this comparison needs.

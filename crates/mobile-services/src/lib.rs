@@ -27,6 +27,21 @@
 //! unsupported implementation on desktop and every target without a binding. Android needs the
 //! host to call [`android::attach`] with its `JavaVM` and Activity `Context`; without that
 //! attachment every action answers `Unsupported` rather than a fabricated success.
+//!
+//! # Binding-layer boundary (principle #40)
+//!
+//! This crate **is** a language-/OS-binding layer, the one category principle #40 exempts from the
+//! "no OS knowledge outside `src/platform/`" rule: every service it offers is an OS SDK call that
+//! has no GUI-core meaning (haptics, local notifications, the share sheet, safe-area insets), and
+//! the SDK types that carry those calls cannot cross into the platform trait without leaking native
+//! types into the core. The exemption is bounded, and the bounds are enforced by the test below:
+//!
+//! * backend selection is the only place a target is named, and it answers at runtime through
+//!   [`services`]; no caller ever picks a backend;
+//! * the crate performs **no OS probing** — it reads no process table or sysfs, and it invokes
+//!   no external command — so it can never fabricate a capability answer from the host;
+//! * everything it reports is a three-state [`Status`], so an absent binding answers `Unsupported`
+//!   rather than a plausible default.
 
 mod types;
 
@@ -85,5 +100,37 @@ mod tests {
         assert!(!validate_url(""));
         assert!(!validate_url("javascript:alert(1)"));
         assert!(!validate_url("https://example.com/\nnext"));
+    }
+
+    /// The binding-layer exemption is bounded as the module documentation claims: this crate
+    /// reaches its host through SDK calls only, never by reading OS state or running a command.
+    ///
+    /// The needles are assembled at run time so the scan does not match this test's own body; a
+    /// real occurrence anywhere in the crate still fails the test.
+    #[test]
+    fn the_binding_crate_contains_no_os_probing() {
+        let sources = [
+            include_str!("lib.rs"),
+            include_str!("types.rs"),
+            include_str!("unsupported.rs"),
+            include_str!("android.rs"),
+            include_str!("ios.rs"),
+            include_str!("harmony.rs"),
+        ];
+        let needles = [
+            ["/pro", "c"].concat(),
+            ["/sy", "s/"].concat(),
+            ["process::", "Command"].concat(),
+            ["Command::", "new"].concat(),
+        ];
+        for (index, source) in sources.iter().enumerate() {
+            for needle in &needles {
+                assert!(
+                    !source.contains(needle.as_str()),
+                    "source #{index} probes the host with '{needle}', which the binding-layer \
+                     exemption does not allow"
+                );
+            }
+        }
     }
 }

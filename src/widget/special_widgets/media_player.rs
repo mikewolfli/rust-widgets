@@ -215,6 +215,14 @@ pub struct MediaPlayer {
     status_cache: String,
     /// `(playing, muted, volume, fullscreen, buffering)` behind `status_cache`.
     status_key: Option<(bool, bool, u8, bool, bool)>,
+    /// The painted `position / duration` line, rebuilt only when its second boundary moves.
+    ///
+    /// The playing clock drives a repaint every frame while the readout has one-second
+    /// resolution, so the same three allocations were repeated for a string that had not changed
+    /// (SPX-X11). This mirrors `status_cache`.
+    readout_cache: String,
+    /// `(position_ms / 1000, duration_ms)` behind `readout_cache`.
+    readout_key: Option<(u64, u64)>,
     /// The rate label, built when the rate changes rather than every frame.
     rate_text: String,
     /// Emitted when the host should change the window's fullscreen state.
@@ -267,6 +275,8 @@ impl MediaPlayer {
             title_cache: String::from("No media"),
             status_cache: String::new(),
             status_key: None,
+            readout_cache: String::new(),
+            readout_key: None,
             rate_text: String::from("1.00x"),
             fullscreen_requested: Signal1::new(),
             playback_changed: Signal1::new(),
@@ -1391,14 +1401,32 @@ impl Draw for MediaPlayer {
         // The time readout is opt-in so the historical view is unchanged. Right-aligned on the
         // row above the transport rule, away from the loading text on the left (SP-106).
         if self.show_time_readout {
-            let readout = self.time_readout();
+            // Rebuilt only at a second boundary: `format_time` has one-second resolution, so the
+            // text is identical for every frame inside one second (SPX-X11).
+            let readout_key = (self.position_ms() / 1000, self.duration_ms);
+            if self.readout_key != Some(readout_key) {
+                self.readout_key = Some(readout_key);
+                self.readout_cache.clear();
+                let _ = write!(
+                    self.readout_cache,
+                    "{} / {}",
+                    Self::format_time(self.position_ms()),
+                    Self::format_time(self.duration_ms)
+                );
+            }
             let band = Rect::new(
                 (bar_rect.x + bar_rect.width as i32 - 96).max(bar_rect.x),
                 bar_rect.y - 22,
                 96.min(bar_rect.width),
                 16,
             );
-            context.draw_text_fitted_cow(band, &readout, font, muted, HorizontalAlignment::Right);
+            context.draw_text_fitted_cow(
+                band,
+                &self.readout_cache,
+                font,
+                muted,
+                HorizontalAlignment::Right,
+            );
         }
         // An active subtitle is painted over the picture area, centred above the transport rule.
         if let Some(subtitle) = self.active_subtitle() {

@@ -1144,13 +1144,17 @@ impl CandlestickChart {
         let bar = bars[index];
         let text =
             format!("O {:.2}  H {:.2}  L {:.2}  C {:.2}", bar.open, bar.high, bar.low, bar.close);
-        let width = text.len() as i32 * 7;
+        // Measured, not estimated: `len * 7` assumed a monospace advance this pane does not
+        // draw in, so on a proportional face the readout was placed inside the wrong edge
+        // and the left/right flip happened at the wrong x (J-P19, as in the indicator pane).
+        let font = role_font(self.style(), 11.0);
+        let width = context.measure_text(&text, &font).width as i32;
         let label_x = if x + 8 + width > area.right() { x - 8 - width } else { x + 8 };
         context.push_clip(area.rect.x, area.rect.y, area.rect.width, area.rect.height);
         context.draw_text(
             crate::core::Point { x: label_x.max(area.rect.x), y: area.rect.y + 2 },
             &text,
-            &role_font(self.style(), 11.0),
+            &font,
             chrome.ink,
             HorizontalAlignment::Left,
         );
@@ -1552,9 +1556,11 @@ impl Draw for CandlestickChart {
             &area,
             start,
             end,
-            |index| match self.series.label_at(index) {
-                Some(label) => label.to_string(),
-                None => alloc::format!("{index}"),
+            |index, label| match self.series.label_at(index) {
+                Some(text) => label.push_str(text),
+                None => {
+                    let _ = core::fmt::Write::write_fmt(&mut *label, format_args!("{index}"));
+                }
             },
             &role_font(self.style(), 10.0),
             chrome.ink.with_alpha(190),

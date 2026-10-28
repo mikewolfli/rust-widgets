@@ -41,6 +41,7 @@ use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
+use core::cell::RefCell;
 
 /// Which reference lines a [`ChartCrosshair`] paints.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -98,6 +99,8 @@ pub struct ChartCrosshair {
     data: Option<(f64, f64)>,
     /// Whether the anchor follows pointer motion between hovers.
     follow_pointer: bool,
+    /// The axis value chip's text, keyed by the bits of the data coordinate it spells.
+    axis_label_cache: RefCell<Option<((u64, u64), String)>>,
     /// Emitted with the anchor when the crosshair moves.
     pub position_changed: Signal1<Point>,
     /// Emitted with the data coordinate on show/move and `None` on hide.
@@ -124,6 +127,7 @@ impl ChartCrosshair {
             point: None,
             data: None,
             follow_pointer: true,
+            axis_label_cache: RefCell::new(None),
             position_changed: Signal1::new(),
             crosshair_moved: Signal1::new(),
         }
@@ -397,15 +401,22 @@ impl Draw for ChartCrosshair {
         }
         if self.show_axis_values {
             if let Some((x, y)) = self.data {
-                let label = std::format!("{x:.2}, {y:.2}");
+                let key = (x.to_bits(), y.to_bits());
                 let font = crate::widget::metrics::effective_font(self.base.style());
-                context.draw_text(
-                    Point::new(left + 2, top + 2),
-                    &label,
-                    font,
-                    color,
-                    HorizontalAlignment::Left,
-                );
+                let mut cache = self.axis_label_cache.borrow_mut();
+                let fresh = matches!(cache.as_ref(), Some((cached, _)) if *cached == key);
+                if !fresh {
+                    *cache = Some((key, std::format!("{x:.2}, {y:.2}")));
+                }
+                if let Some((_, label)) = cache.as_ref() {
+                    context.draw_text(
+                        Point::new(left + 2, top + 2),
+                        label,
+                        font,
+                        color,
+                        HorizontalAlignment::Left,
+                    );
+                }
             }
         }
     }

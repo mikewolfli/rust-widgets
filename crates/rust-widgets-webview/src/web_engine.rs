@@ -11,11 +11,25 @@
 //! evaluates scripts in a genuine embedded engine (boa_engine via
 //! `crate::SimpleJsEngine`) and returns the actual result or error.
 //! Without that feature, evaluation reports `Err` instead of faking success.
+//!
+//! # Cookie expiry units
+//!
+//! This crate holds two cookie types with *different* expiry units, and nothing converts
+//! between them implicitly:
+//!
+//! * [`Cookie`] (this module) stores [`Cookie::expires_ms`] as Unix **milliseconds**.
+//! * `crate::privacy::Cookie` stores `expires` as Unix **seconds**.
+//!
+//! A host moving data from the privacy jar to this store must multiply seconds by 1000
+//! (and divide back when moving the other way); [`Cookie::is_expired`] reads only the
+//! millisecond field.
+
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use rust_widgets::compat::{lock, Arc, Mutex, VecDeque};
-use rust_widgets::impl_draw_bridge;
 use rust_widgets::core::{Color, Font, HorizontalAlignment, ObjectId, Point, Rect};
 use rust_widgets::event::{Event, EventHandler};
+use rust_widgets::impl_draw_bridge;
 use rust_widgets::signal::Signal1;
 use rust_widgets::widget::capability::coercion::expect_string;
 use rust_widgets::widget::capability::properties_trait::{base_property_get, base_property_set};
@@ -38,6 +52,20 @@ pub const FIRST_PAGE_ID: ObjectId = 1;
 /// anywhere; it exists so a settings consumer always has a concrete value to display and pass on.
 pub const DEFAULT_USER_AGENT: &str =
     "Mozilla/5.0 (compatible; rust-widgets WebEngineView) AppleWebKit/605.1.15";
+
+/// Upper bound on this view's back/forward history entries.
+///
+/// Matches the `BrowserHistory` default in this crate (100) so both history stores share one
+/// policy. Each entry owns the page URL and title, so an unbounded history grows for the
+/// lifetime of a long browsing session.
+pub const MAX_WEB_HISTORY_ENTRIES: usize = 100;
+
+/// Upper bound on stored cookies.
+///
+/// Replacement of an existing `(name, domain, path)` entry is always allowed; the cap only
+/// decides whether a *new* entry displaces the oldest one. Without a cap every visited site's
+/// cookies accumulate for the lifetime of the view.
+pub const MAX_WEB_COOKIE_ENTRIES: usize = 256;
 
 /// A find action a companion queued for the view (MW-014).
 ///
@@ -117,6 +145,21 @@ impl Cookie {
             http_only: false,
             same_site: CookieSameSite::Unspecified,
         }
+    }
+
+    /// Reports whether the cookie is past its expiry instant.
+    ///
+    /// [`Self::expires_ms`] is compared against the wall clock in the same unit — Unix
+    /// milliseconds — so a caller that read a `crate::privacy::Cookie` expiry (**seconds**)
+    /// must convert before storing it here. A session cookie (`None`) never expires, and a
+    /// clock that reads before the epoch falls back to `0` rather than panicking.
+    pub fn is_expired(&self) -> bool {
+        let Some(expires_ms) = self.expires_ms else {
+            return false;
+        };
+        let now_ms =
+            SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as i64;
+        now_ms >= expires_ms
     }
 }
 
@@ -1131,6 +1174,9 @@ impl WebEngineView {
     }
 
     /// Appends a URL to the history, discarding any forward entries.
+    ///
+    /// The list is capped at [`MAX_WEB_HISTORY_ENTRIES`]: once it is full the oldest entry is
+    /// dropped and the current index shifts down with it, keeping back/forward semantics valid.
     fn push_history(&mut self, url: &str) {
         self.history.truncate(self.history_index + 1);
         self.history.push(HistoryEntry {
@@ -1138,6 +1184,10 @@ impl WebEngineView {
             title: self.title.clone(),
             scroll_pos: 0.0,
         });
+        if self.history.len() > MAX_WEB_HISTORY_ENTRIES {
+            self.history.remove(0);
+            self.history_index = self.history_index.saturating_sub(1);
+        }
         self.history_index = self.history.len() - 1;
     }
 
@@ -1469,6 +1519,11 @@ impl WebEngineView {
     /// Each entry is a [`Cookie`] with its path, expiry, security flags and SameSite policy, not
     /// the old `(name, value, domain)` triple. Nothing is persisted to disk automatically: the list
     /// lives with the view, and [`Self::persist_cookies`] is the serialisation a host writes itself.
+    ///
+    /// Expired cookies are never admitted: [`Self::set_cookie_entry`] drops them and also prunes
+    /// expired residents, and [`Self::load_cookies`] does the same on restore. [`Self::get_cookie`]
+    /// and [`Self::persist_cookies`] additionally skip an entry whose expiry has passed since it
+    /// was written.
     pub fn cookies(&self) -> &[Cookie] {
         &self.cookies
     }
@@ -1491,8 +1546,22 @@ impl WebEngineView {
     ///
     /// Replacement is by `(name, domain, path)`, which is the identity a browser's cookie jar uses:
     /// two cookies with the same name on different paths are distinct.
+    ///
+    /// An already-expired cookie is not stored and the call returns `false`; any stored entry it
+    /// would have replaced is removed, which is the deletion the HTTP expiry semantics imply.
+    /// A new entry past [`MAX_WEB_COOKIE_ENTRIES`] evicts the oldest one (insertion order), after
+    /// dropping expired residents first so a live cookie never displaces one that is already dead.
     pub fn set_cookie_entry(&mut self, cookie: &Cookie) -> bool {
         if self.private_browsing {
+            return false;
+        }
+        if cookie.is_expired() {
+            self.cookies.retain(|stored| {
+                !stored.is_expired()
+                    && !(stored.name == cookie.name
+                        && stored.domain == cookie.domain
+                        && stored.path == cookie.path)
+            });
             return false;
         }
         if let Some(existing) = self.cookies.iter_mut().find(|stored| {
@@ -1502,14 +1571,21 @@ impl WebEngineView {
         }) {
             *existing = cookie.clone();
         } else {
+            self.cookies.retain(|stored| !stored.is_expired());
+            if self.cookies.len() >= MAX_WEB_COOKIE_ENTRIES {
+                self.cookies.remove(0);
+            }
             self.cookies.push(cookie.clone());
         }
         true
     }
 
-    /// Returns the cookie stored under `name`, if any.
+    /// Returns the live cookie stored under `name`, if any.
+    ///
+    /// A stored cookie whose expiry has passed since it was written is skipped rather than
+    /// returned, so a lookup never hands out a retired cookie.
     pub fn get_cookie(&self, name: &str) -> Option<&Cookie> {
-        self.cookies.iter().find(|cookie| cookie.name == name)
+        self.cookies.iter().find(|cookie| cookie.name == name && !cookie.is_expired())
     }
 
     /// Alias for [`Self::get_cookie`].
@@ -1548,6 +1624,8 @@ impl WebEngineView {
         let entries: Vec<serde_json::Value> = self
             .cookies
             .iter()
+            // A persisted document must not resurrect a cookie this view would refuse to serve.
+            .filter(|cookie| !cookie.is_expired())
             .map(|cookie| {
                 serde_json::json!({
                     "name": cookie.name,
@@ -1614,6 +1692,12 @@ impl WebEngineView {
                     _ => CookieSameSite::Unspecified,
                 },
             });
+        }
+        // Restore is a write path: expired entries and anything past the total cap are dropped
+        // here, so a saved document cannot reintroduce state the live jar would not accept.
+        restored.retain(|cookie| !cookie.is_expired());
+        if restored.len() > MAX_WEB_COOKIE_ENTRIES {
+            restored.drain(..restored.len() - MAX_WEB_COOKIE_ENTRIES);
         }
         self.cookies = restored;
         Ok(())
@@ -2082,10 +2166,12 @@ impl Widget for WebEngineView {
                 // The declared shape is `Tuple2` of `Bool`, so the payload arrives as the
                 // (can_go_back, can_go_forward) pair rather than its `Debug` spelling.
                 |v| {
-                    rust_widgets::widget::capability::CapabilityValue::Tuple(rust_widgets::compat::Vec::from([
-                        rust_widgets::widget::capability::CapabilityValue::Bool(v.0),
-                        rust_widgets::widget::capability::CapabilityValue::Bool(v.1),
-                    ]))
+                    rust_widgets::widget::capability::CapabilityValue::Tuple(
+                        rust_widgets::compat::Vec::from([
+                            rust_widgets::widget::capability::CapabilityValue::Bool(v.0),
+                            rust_widgets::widget::capability::CapabilityValue::Bool(v.1),
+                        ]),
+                    )
                 },
             )),
             "page_created" => {
@@ -2104,11 +2190,13 @@ impl Widget for WebEngineView {
                     // (message, line, source) triple: the message and source are strings and the
                     // line is an unsigned count, rather than a `Debug` dump a subscriber cannot
                     // split back apart.
-                    rust_widgets::widget::capability::CapabilityValue::Tuple(rust_widgets::compat::Vec::from([
-                        rust_widgets::widget::capability::CapabilityValue::String(v.0.clone()),
-                        rust_widgets::widget::capability::CapabilityValue::UInt(v.1 as u64),
-                        rust_widgets::widget::capability::CapabilityValue::String(v.2.clone()),
-                    ]))
+                    rust_widgets::widget::capability::CapabilityValue::Tuple(
+                        rust_widgets::compat::Vec::from([
+                            rust_widgets::widget::capability::CapabilityValue::String(v.0.clone()),
+                            rust_widgets::widget::capability::CapabilityValue::UInt(v.1 as u64),
+                            rust_widgets::widget::capability::CapabilityValue::String(v.2.clone()),
+                        ]),
+                    )
                 }))
             }
             "download_requested" => {
@@ -2123,10 +2211,12 @@ impl Widget for WebEngineView {
             }
             "channel_message" => {
                 Some(EventSignalRef::mapped("channel_message", &self.channel_message, |v| {
-                    rust_widgets::widget::capability::CapabilityValue::Tuple(rust_widgets::compat::Vec::from([
-                        rust_widgets::widget::capability::CapabilityValue::String(v.0.clone()),
-                        rust_widgets::widget::capability::CapabilityValue::String(v.1.clone()),
-                    ]))
+                    rust_widgets::widget::capability::CapabilityValue::Tuple(
+                        rust_widgets::compat::Vec::from([
+                            rust_widgets::widget::capability::CapabilityValue::String(v.0.clone()),
+                            rust_widgets::widget::capability::CapabilityValue::String(v.1.clone()),
+                        ]),
+                    )
                 }))
             }
             "load_progress_changed" => Some(EventSignalRef::mapped(
@@ -2156,10 +2246,12 @@ impl Widget for WebEngineView {
             )),
             "js_evaluated" => {
                 Some(EventSignalRef::mapped("js_evaluated", &self.js_evaluated, |v| {
-                    rust_widgets::widget::capability::CapabilityValue::Tuple(rust_widgets::compat::Vec::from([
-                        rust_widgets::widget::capability::CapabilityValue::Bool(v.0),
-                        rust_widgets::widget::capability::CapabilityValue::String(v.1.clone()),
-                    ]))
+                    rust_widgets::widget::capability::CapabilityValue::Tuple(
+                        rust_widgets::compat::Vec::from([
+                            rust_widgets::widget::capability::CapabilityValue::Bool(v.0),
+                            rust_widgets::widget::capability::CapabilityValue::String(v.1.clone()),
+                        ]),
+                    )
                 }))
             }
             "download_progress_changed" => Some(EventSignalRef::mapped(
@@ -2167,10 +2259,14 @@ impl Widget for WebEngineView {
                 &self.download_progress_changed,
                 // `(download id, fraction)` — text and a float, so the declared shape is `Mixed`.
                 |v| {
-                    rust_widgets::widget::capability::CapabilityValue::Tuple(rust_widgets::compat::Vec::from([
-                        rust_widgets::widget::capability::CapabilityValue::String(v.0.clone()),
-                        rust_widgets::widget::capability::CapabilityValue::Float(f64::from(v.1)),
-                    ]))
+                    rust_widgets::widget::capability::CapabilityValue::Tuple(
+                        rust_widgets::compat::Vec::from([
+                            rust_widgets::widget::capability::CapabilityValue::String(v.0.clone()),
+                            rust_widgets::widget::capability::CapabilityValue::Float(f64::from(
+                                v.1,
+                            )),
+                        ]),
+                    )
                 },
             )),
             _ => None,
@@ -2947,7 +3043,9 @@ mod tests {
         let mut store = WebEngineCookieStore::new(Rect::new(0, 0, 300, 200));
         let mut cookie = Cookie::new("token", "abc", "example.com");
         cookie.path = "/app".to_string();
-        cookie.expires_ms = Some(1_700_000_000_000);
+        // A future instant: the store refuses an already-expired cookie (MX-X02), and the fixed
+        // 2023 timestamp this test used had since become past.
+        cookie.expires_ms = Some(4_102_444_800_000);
         cookie.secure = true;
         cookie.http_only = true;
         cookie.same_site = CookieSameSite::Strict;
@@ -3277,4 +3375,81 @@ fn a_web_channel_echoes_only_registered_names() {
     assert_eq!(view.zoom_factor(), 1.0);
     view.set_zoom_factor(2.0);
     assert_eq!(view.zoom_factor(), 2.0);
+}
+
+/// The history list is bounded: the oldest entry is dropped once the cap is reached (MX-X01).
+#[test]
+fn history_drops_the_oldest_entry_past_the_cap() {
+    let mut view = WebEngineView::new(Rect::new(0, 0, 300, 200));
+    for index in 0..=MAX_WEB_HISTORY_ENTRIES {
+        view.set_url(format!("https://example.com/{index}"));
+    }
+    assert_eq!(view.history_entries().len(), MAX_WEB_HISTORY_ENTRIES);
+    assert_eq!(
+        view.history_entries()[0].url,
+        "https://example.com/1",
+        "the first navigation was dropped, not the newest"
+    );
+    assert_eq!(view.history_index(), MAX_WEB_HISTORY_ENTRIES - 1);
+    assert_eq!(view.url(), format!("https://example.com/{MAX_WEB_HISTORY_ENTRIES}"));
+    assert!(view.can_go_back());
+    view.go_back();
+    assert_eq!(view.url(), format!("https://example.com/{}", MAX_WEB_HISTORY_ENTRIES - 1));
+}
+
+/// An expired cookie is not stored, is not returned, and is not persisted (MX-X02).
+#[test]
+fn expired_cookies_are_refused_and_never_returned() {
+    let mut view = WebEngineView::new(Rect::new(0, 0, 300, 200));
+    let mut expired = Cookie::new("stale", "x", "example.com");
+    expired.expires_ms = Some(1);
+    assert!(expired.is_expired());
+    assert!(!view.set_cookie_entry(&expired), "an expired cookie is not stored");
+    assert!(view.cookies().is_empty());
+    assert!(view.get_cookie("stale").is_none());
+
+    // Re-setting an identity with an expired value removes the live entry.
+    assert!(view.set_cookie("stale", "live", "example.com"));
+    assert!(view.get_cookie("stale").is_some());
+    assert!(!view.set_cookie_entry(&expired));
+    assert!(view.cookies().is_empty(), "the expired replacement deletes the live entry");
+
+    // A session cookie (no expiry) is never considered expired.
+    assert!(Cookie::new("session", "v", "example.com").expires_ms.is_none());
+    assert!(!Cookie::new("session", "v", "example.com").is_expired());
+}
+
+/// The cookie jar is capped; replacement does not consume a slot (MX-X02).
+#[test]
+fn the_cookie_jar_is_capped_and_replacement_keeps_the_entry() {
+    let mut view = WebEngineView::new(Rect::new(0, 0, 300, 200));
+    for index in 0..MAX_WEB_COOKIE_ENTRIES {
+        assert!(view.set_cookie(format!("c{index}"), "v", "example.com"));
+    }
+    assert_eq!(view.cookies().len(), MAX_WEB_COOKIE_ENTRIES);
+    assert!(view.cookies().iter().all(|cookie| !cookie.is_expired()));
+
+    // Replacing an existing identity does not evict anything.
+    assert!(view.set_cookie("c0", "updated", "example.com"));
+    assert_eq!(view.cookies().len(), MAX_WEB_COOKIE_ENTRIES);
+    assert_eq!(view.get_cookie("c0").map(|cookie| cookie.value.as_str()), Some("updated"));
+
+    // A new identity at the cap evicts the oldest entry.
+    assert!(view.set_cookie("newest", "v", "example.com"));
+    assert_eq!(view.cookies().len(), MAX_WEB_COOKIE_ENTRIES);
+    assert!(view.get_cookie("newest").is_some());
+}
+
+/// Restoring a persisted jar drops an entry whose expiry has already passed (MX-X02).
+#[test]
+fn loading_cookies_drops_expired_entries() {
+    let mut view = WebEngineView::new(Rect::new(0, 0, 300, 200));
+    let json = r#"[
+        {"name":"live","value":"a","domain":"example.com","path":"/"},
+        {"name":"dead","value":"b","domain":"example.com","path":"/","expires_ms":1}
+    ]"#;
+    view.load_cookies(json).expect("the document is well formed");
+    assert_eq!(view.cookies().len(), 1);
+    assert_eq!(view.cookies()[0].name, "live");
+    assert!(view.get_cookie("dead").is_none());
 }

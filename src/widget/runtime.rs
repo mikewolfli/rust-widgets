@@ -798,7 +798,7 @@ pub fn unregister(id: ObjectId) -> bool {
     // widget's last press at the same position would turn a fresh widget's first click into a
     // double-click (EV-X03). Same registry pattern as the timer purge above.
     #[cfg(full_widgets)]
-    let _ = crate::event::double_click::forget_double_click_for_target_everywhere(id);
+    crate::event::double_click::forget_double_click_for_target_everywhere(id);
     // And it must not keep pointer capture: routing would send every subsequent
     // pointer event to an id that resolves to nothing.
     let _ = CAPTURE.try_with(|capture| {

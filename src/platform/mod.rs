@@ -269,9 +269,11 @@ pub(crate) mod runtime;
 /// alpha) must not carry a rule it cannot apply, which is why this is not an unconditional module.
 /// Widening the gate is a one-line change the day a third sampler needs it.
 ///
-/// No FFI, no platform dependency: on a host that does not sample, the `test` arm still compiles
-/// it so its unit tests always run.
-#[cfg(any(target_os = "macos", test))]
+/// No FFI, no platform dependency. The gate names its two consumers — `macos/cg.rs` behind
+/// `cocoa-legacy` and `macos_objc2/native.rs` behind `macos` — so a stripped macOS profile, which
+/// compiles neither, does not publish a policy no production path can call. The `test` arm keeps
+/// the rule (and its unit tests) compiled on every host, including the stripped profiles.
+#[cfg(any(all(target_os = "macos", any(feature = "macos", feature = "cocoa-legacy")), test))]
 pub mod screen_sample;
 pub mod state;
 /// The stop request any thread may make and the frame tick that reads it.
@@ -288,6 +290,13 @@ pub mod windows_notify;
 /// Cross-backend behavioural contract tests.
 #[cfg(all(test, not(alloc_frugal)))]
 mod contract_tests;
+/// Compile-checks for the API paths promised in the 2.0.x documentation, including the
+/// per-backend construction matrix.
+///
+/// It lives here rather than at the crate root because its backend matrix necessarily names the
+/// targets each backend is compiled for, and OS knowledge belongs to this layer (principle #36).
+#[cfg(all(test, full_widgets))]
+mod docs_paths_tests;
 /// Widget teardown (`Platform::destroy_widget`) regression tests.
 #[cfg(all(test, not(alloc_frugal)))]
 mod teardown_tests;

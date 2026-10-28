@@ -27,7 +27,7 @@ use crate::event::key_codes;
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
-use crate::tr;
+use crate::{tr, tr_into};
 
 use crate::impl_widget_property_hooks;
 use crate::property_names_of;
@@ -85,28 +85,52 @@ impl std::fmt::Display for FileFilter {
     }
 }
 
-/// Whether `name` is accepted by `filter` (DLG-009).
+/// Whether `name` is accepted by a filter's normalised suffix list (DLG-009).
 ///
-/// The extension list is the one [`FileFilter::extensions`] documents: suffixes without the
-/// leading dot, with the single entry `"*"` meaning "every file". The comparison is
-/// case-insensitive and anchored at a dot, so `"png"` accepts `shot.PNG` and rejects `png.txt`;
-/// an empty list accepts no files at all (a filter that names nothing), which is why the
-/// catch-all filter spells the wildcard explicitly.
-fn filter_accepts(filter: &FileFilter, name: &str) -> bool {
-    let lower = name.to_ascii_lowercase();
+/// The suffixes come from [`normalized_filter_suffixes`]: dotted lowercase strings, with `"*"`
+/// meaning "every file". The comparison is case-insensitive and anchored at a dot, so `".png"`
+/// accepts `shot.PNG` and rejects `png.txt`; an empty list accepts no files at all (a filter that
+/// names nothing), which is why the catch-all filter spells the wildcard explicitly.
+///
+/// Comparing bytes keeps the per-entry cost allocation-free; building `format!(".{extension}")`
+/// on every entry of every filter pass was the cost this normalisation removes.
+fn filter_accepts(suffixes: &[String], name: &str) -> bool {
+    let name_bytes = name.as_bytes();
     let mut wildcard = false;
     let mut matched = false;
-    for extension in &filter.extensions {
-        let extension = extension.trim().trim_start_matches('.');
-        if extension == "*" {
+    for suffix in suffixes {
+        if suffix == "*" {
             wildcard = true;
-        } else if !extension.is_empty()
-            && lower.ends_with(&format!(".{}", extension.to_ascii_lowercase()))
+        } else if !suffix.is_empty()
+            && name_bytes.len() >= suffix.len()
+            && name_bytes[name_bytes.len() - suffix.len()..].eq_ignore_ascii_case(suffix.as_bytes())
         {
             matched = true;
         }
     }
     wildcard || matched
+}
+
+/// A filter's extensions in the form [`filter_accepts`] compares against.
+///
+/// Extension lists are normalised once, when the filter is installed on a [`FileDialog`]: the
+/// leading dot is added, the suffix is ASCII-lowercased and trimmed, an empty entry is dropped,
+/// and `"*"` stays as the wildcard marker.
+fn normalized_filter_suffixes(filter: &FileFilter) -> Vec<String> {
+    filter
+        .extensions
+        .iter()
+        .filter_map(|extension| {
+            let extension = extension.trim().trim_start_matches('.');
+            if extension.is_empty() {
+                None
+            } else if extension == "*" {
+                Some("*".to_string())
+            } else {
+                Some(format!(".{}", extension.to_ascii_lowercase()))
+            }
+        })
+        .collect()
 }
 /// One row in the host-supplied directory listing.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -348,6 +372,9 @@ pub struct FileDialog {
     directory: String,
     selected_files: Vec<String>,
     name_filters: Vec<FileFilter>,
+    /// Each filter's extensions normalised at install time, in item order, so filtering a
+    /// listing compares bytes instead of rebuilding the same suffix per row (MX-X06).
+    filter_suffixes: Vec<Vec<String>>,
     current_filter: usize,
     modal: bool,
     /// Emitted by [`FileDialog::accept`] with the full selection — every chosen
@@ -443,13 +470,16 @@ impl FileDialog {
     /// Starts in [`FileDialogMode::OpenFile`], modal, with an empty directory and
     /// selection, and a single "all files" filter selected.
     pub fn new(geometry: Rect) -> Self {
+        let name_filters = vec![FileFilter::all_files()];
+        let filter_suffixes = name_filters.iter().map(normalized_filter_suffixes).collect();
         Self {
             base: BaseWidget::new(WidgetKind::FileDialog, geometry, "FileDialog"),
             mode: FileDialogMode::OpenFile,
             title: tr!("dialog.file_dialog.open_file"),
             directory: String::new(),
             selected_files: Vec::new(),
-            name_filters: vec![FileFilter::all_files()],
+            name_filters,
+            filter_suffixes,
             current_filter: 0,
             modal: true,
             files_selected: Signal1::new(),
@@ -706,23 +736,28 @@ impl FileDialog {
     /// (DLG-009).
     fn order_entries(&mut self, column: SortColumn) {
         let descending = self.sort_descending;
-        self.entries.sort_by(|a, b| {
+        // Lowercase each name once and carry the key beside its entry. The comparator used to
+        // lowercase both names on every comparison (twice for the Type column), so an n-row sort
+        // allocated O(n log n) strings.
+        let mut keyed: Vec<(String, FileEntry)> = core::mem::take(&mut self.entries)
+            .into_iter()
+            .map(|entry| (entry.name.to_lowercase(), entry))
+            .collect();
+        keyed.sort_unstable_by(|(name_a, a), (name_b, b)| {
             let by_directory = b.is_directory.cmp(&a.is_directory);
             if by_directory != core::cmp::Ordering::Equal {
                 return by_directory;
             }
             let order = match column {
-                SortColumn::Name => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+                SortColumn::Name => name_a.cmp(name_b),
                 // `None` sorts after every reported value rather than comparing equal to 0.
                 SortColumn::Size => a.size.unwrap_or(u64::MAX).cmp(&b.size.unwrap_or(u64::MAX)),
                 SortColumn::Modified => {
                     a.modified.unwrap_or(u64::MAX).cmp(&b.modified.unwrap_or(u64::MAX))
                 }
-                SortColumn::Type => a
-                    .kind
-                    .sort_rank()
-                    .cmp(&b.kind.sort_rank())
-                    .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase())),
+                SortColumn::Type => {
+                    a.kind.sort_rank().cmp(&b.kind.sort_rank()).then_with(|| name_a.cmp(name_b))
+                }
             };
             if descending {
                 order.reverse()
@@ -730,6 +765,7 @@ impl FileDialog {
                 order
             }
         });
+        self.entries = keyed.into_iter().map(|(_, entry)| entry).collect();
     }
 
     /// Whether the listing orders the current column descending (DLG-07).
@@ -767,10 +803,10 @@ impl FileDialog {
             Some(source) => source.entries(&self.directory),
             None => Vec::new(),
         };
-        let filter = self.name_filters.get(self.current_filter).cloned();
+        let suffixes = self.filter_suffixes.get(self.current_filter);
         self.entries.retain(|entry| {
             entry.is_directory
-                || filter.as_ref().is_none_or(|filter| filter_accepts(filter, &entry.name))
+                || suffixes.is_none_or(|suffixes| filter_accepts(suffixes, &entry.name))
         });
         self.selected_rows.clear();
         self.scroll = 0;
@@ -1083,6 +1119,7 @@ impl FileDialog {
     /// lost. Passing an empty list leaves [`FileDialog::current_filter`]
     /// returning `None`.
     pub fn set_name_filters(&mut self, filters: Vec<FileFilter>) {
+        self.filter_suffixes = filters.iter().map(normalized_filter_suffixes).collect();
         self.name_filters = filters;
         self.current_filter = 0;
         // The rows on screen are the filter's answer, so a new filter list re-lists (DLG-009).
@@ -1986,12 +2023,21 @@ impl FileDialog {
     /// The accept label is mode-dependent, which is why `draw` and the hit test share this
     /// function rather than each spelling the conditional out.
     fn action_labels(&self) -> Vec<String> {
-        let ok_label = if self.mode == FileDialogMode::SaveFile {
-            super::localized_label("common.button.save", "Save")
+        // One buffer per label, moved into the row: the label is appended by the catalogue
+        // instead of being materialised twice by `localized_label` (LYT-X04).
+        let mut labels = Vec::with_capacity(2);
+        let mut label = crate::compat::String::new();
+        let key = if self.mode == FileDialogMode::SaveFile {
+            ("common.button.save", "Save")
         } else {
-            super::localized_label("common.button.open", "Open")
+            ("common.button.open", "Open")
         };
-        vec![ok_label, super::localized_label("common.button.cancel", "Cancel")]
+        super::localized_label_into(key.0, key.1, &mut label);
+        labels.push(label);
+        let mut label = crate::compat::String::new();
+        super::localized_label_into("common.button.cancel", "Cancel", &mut label);
+        labels.push(label);
+        labels
     }
 
     /// The action button rects, rebuilt from the same frame and bottom band `draw` uses.
@@ -2187,6 +2233,8 @@ impl Draw for FileDialog {
                 context.fill_rect(header, surface.blend(&ink, 0.10));
                 if let Some((name, size, modified, kind)) = Self::detail_columns(header) {
                     let header_line = context.text_line(header, font);
+                    // The four column captions share one reused buffer (LYT-X04).
+                    let mut label = crate::compat::String::new();
                     for (column, band) in [
                         (Some(SortColumn::Name), name),
                         (Some(SortColumn::Size), size),
@@ -2194,21 +2242,29 @@ impl Draw for FileDialog {
                         (Some(SortColumn::Type), kind),
                     ] {
                         let Some(column) = column else { continue };
-                        let label = match column {
-                            SortColumn::Name => {
-                                super::localized_label("dialog.file_dialog.column_name", "Name")
-                            }
-                            SortColumn::Size => {
-                                super::localized_label("dialog.file_dialog.column_size", "Size")
-                            }
-                            SortColumn::Modified => super::localized_label(
+                        label.clear();
+                        match column {
+                            SortColumn::Name => super::localized_label_into(
+                                "dialog.file_dialog.column_name",
+                                "Name",
+                                &mut label,
+                            ),
+                            SortColumn::Size => super::localized_label_into(
+                                "dialog.file_dialog.column_size",
+                                "Size",
+                                &mut label,
+                            ),
+                            SortColumn::Modified => super::localized_label_into(
                                 "dialog.file_dialog.column_modified",
                                 "Modified",
+                                &mut label,
                             ),
-                            SortColumn::Type => {
-                                super::localized_label("dialog.file_dialog.column_type", "Type")
-                            }
-                        };
+                            SortColumn::Type => super::localized_label_into(
+                                "dialog.file_dialog.column_type",
+                                "Type",
+                                &mut label,
+                            ),
+                        }
                         let active = self.sort_column == Some(column);
                         let label_ink = if active { accent } else { ink };
                         let text_band = Rect::new(
@@ -2389,7 +2445,9 @@ impl Draw for FileDialog {
             // from y=44 to 58 inside a list ending at 46 — twelve pixels of the text that
             // explains the empty list were outside the well it belongs to. Drawn only when the
             // list is non-empty, so a squeezed dialog emits no `<text …></text>`.
-            let placeholder = tr!("dialog.file_dialog.file_list_placeholder");
+            // One buffer for the placeholder instead of a fresh `String` per frame (LYT-X04).
+            let mut placeholder = crate::compat::String::new();
+            tr_into!("dialog.file_dialog.file_list_placeholder", &mut placeholder);
             let placeholder_font = font;
             if list_rect.height > 0 && !placeholder.is_empty() {
                 let placeholder_band = Rect::new(
@@ -2427,11 +2485,15 @@ impl Draw for FileDialog {
         let sel_y = button_top - sel_h - SELECTED_STRIP_GAP;
         let sel_fits = sel_y >= list_y + list_h as i32 + 4;
         if sel_fits {
-            let sel_label = if self.label_text.is_empty() {
-                tr!("dialog.file_dialog.file_name")
+            // The translated caption is appended into the buffer the painter already needs;
+            // the caller's own caption is copied into it instead of being cloned first
+            // (LYT-X04).
+            let mut sel_label = crate::compat::String::new();
+            if self.label_text.is_empty() {
+                tr_into!("dialog.file_dialog.file_name", &mut sel_label);
             } else {
-                self.label_text.clone()
-            };
+                sel_label.push_str(&self.label_text);
+            }
             let sel_label_font = font;
             let sel_band = Rect::new(rect.x + 10, sel_y, 66, sel_h as u32);
             let sel_line = context.text_line(sel_band, sel_label_font);
@@ -2834,6 +2896,31 @@ mod tests {
 
         assert!(!dialog.set_current_filter(7), "an out-of-range filter is ignored");
         assert_eq!(dialog.current_filter().map(|filter| filter.description.as_str()), Some("Text"));
+    }
+
+    /// Extensions are normalised once at install time: a dotted, padded or uppercase spelling
+    /// filters the same way, and `"*"` still keeps extensionless files (MX-X06).
+    #[test]
+    fn filter_extensions_are_normalised_once() {
+        struct Source;
+        impl FileEntrySource for Source {
+            fn entries(&self, _directory: &str) -> Vec<FileEntry> {
+                vec![
+                    FileEntry::new("photo.PNG", false),
+                    FileEntry::new("notes.txt", false),
+                    FileEntry::new("README", false),
+                ]
+            }
+        }
+
+        let mut dialog = FileDialog::new(Rect::new(0, 0, 420, 320));
+        dialog.set_source(Box::new(Source));
+        dialog.set_name_filters(vec![FileFilter::new("Images", vec![" .PnG "])]);
+        let names: Vec<&str> = dialog.entries().iter().map(|entry| entry.name.as_str()).collect();
+        assert_eq!(names, ["photo.PNG"], "a dotted, padded, mixed-case suffix still matches");
+
+        dialog.set_name_filters(vec![FileFilter::new("Everything", vec!["*"])]);
+        assert_eq!(dialog.entries().len(), 3, "the wildcard keeps extensionless files");
     }
 
     #[test]

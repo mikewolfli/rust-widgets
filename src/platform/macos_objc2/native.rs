@@ -1755,6 +1755,18 @@ thread_local! {
         std::cell::RefCell::new(HashMap::new());
 }
 
+#[cfg(all(test, widgets_unstripped))]
+thread_local! {
+    /// How many times this thread had to build (or rebuild) a cached bitmap context.
+    ///
+    /// Test-only seam: the identity of a CoreGraphics context cannot be observed after it is
+    /// freed, because the allocator may hand the next context the same address (measured:
+    /// rebuilding at a new size produced the same data pointer). The counter is what
+    /// distinguishes "reused" from "rebuilt after a free" without adding a field to the
+    /// production struct.
+    static BITMAP_BUILDS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
 /// Drops the bitmap cached for `canvas`, releasing its context exactly once.
 #[cfg(widgets_unstripped)]
 fn evict_bitmap_cache(canvas: usize) {
@@ -1800,6 +1812,35 @@ fn dirty_row_range(dirty: NSRect, width: u32, height: u32) -> Option<(usize, usi
     (first_row < last_row).then_some((first_row, last_row))
 }
 
+/// The reusable bitmap context for `canvas_key`, rebuilt only when the size changes.
+///
+/// Extracted from [`blit_rgba`] so the cache contract is directly assertable: the same canvas at
+/// the same size reuses one context, a size change replaces it, and only
+/// [`evict_bitmap_cache`] removes it. See `canvas_bitmap_cache_tests`.
+#[cfg(widgets_unstripped)]
+fn cached_bitmap_context(
+    canvas_key: usize,
+    width: u32,
+    height: u32,
+) -> Option<CFRetained<CGContext>> {
+    BITMAP_CACHE.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        let stale = slot
+            .get(&canvas_key)
+            .is_none_or(|cache| cache.width != width || cache.height != height);
+        if stale {
+            // Replacing the entry drops the old context and colour space exactly once.
+            let _ = slot.remove(&canvas_key);
+            if let Some(cache) = BitmapCache::new(width, height) {
+                slot.insert(canvas_key, cache);
+                #[cfg(all(test, widgets_unstripped))]
+                BITMAP_BUILDS.with(|builds| builds.set(builds.get() + 1));
+            }
+        }
+        slot.get(&canvas_key).map(|cache| cache.context.clone())
+    })
+}
+
 /// Blits a top-down, straight-alpha RGBA frame into a CoreGraphics context.
 ///
 /// The details the caller should not have to think about:
@@ -1841,21 +1882,7 @@ fn blit_rgba(
 
     // The reusable context is the objc2 form of `macos::cg`'s BITMAP_CACHE: keyed by the canvas,
     // rebuilt only when the size changes, and evicted when the canvas is destroyed.
-    let bitmap = BITMAP_CACHE.with(|slot| {
-        let mut slot = slot.borrow_mut();
-        let stale = slot
-            .get(&canvas_key)
-            .is_none_or(|cache| cache.width != width || cache.height != height);
-        if stale {
-            // Replacing the entry drops the old context and colour space exactly once.
-            let _ = slot.remove(&canvas_key);
-            if let Some(cache) = BitmapCache::new(width, height) {
-                slot.insert(canvas_key, cache);
-            }
-        }
-        slot.get(&canvas_key).map(|cache| cache.context.clone())
-    });
-    let Some(bitmap) = bitmap else {
+    let Some(bitmap) = cached_bitmap_context(canvas_key, width, height) else {
         log::error!(
             "[macos-objc2] canvas: could not create the bitmap context for {width}x{height}"
         );
@@ -2349,4 +2376,147 @@ fn dispatch_one_native_event(until: &NSDate) -> bool {
     // could deallocate the NSWindow before `close` returns.
     drain_pending_native_releases();
     dispatched
+}
+
+// ---------------------------------------------------------------------------
+// Bitmap-context cache contract (PF-X06)
+// ---------------------------------------------------------------------------
+
+#[cfg(all(test, widgets_unstripped))]
+mod canvas_bitmap_cache_tests {
+    use super::*;
+
+    /// The cached context's pixel buffer, which is what distinguishes "the same context" from
+    /// "a fresh context of the same size".
+    fn cached_pixels(canvas: usize) -> Option<*const core::ffi::c_void> {
+        BITMAP_CACHE.with(|slot| {
+            let slot = slot.borrow();
+            let cache = slot.get(&canvas)?;
+            // SAFETY: the context is live for as long as its cache entry is, and the data pointer
+            // is only compared, never dereferenced.
+            Some(unsafe { CGBitmapContextGetData(Some(&cache.context)) } as *const core::ffi::c_void)
+        })
+    }
+
+    /// The size the cache currently holds for `canvas`, so a stale size is directly detectable.
+    fn cached_size(canvas: usize) -> Option<(u32, u32)> {
+        BITMAP_CACHE
+            .with(|slot| slot.borrow().get(&canvas).map(|cache| (cache.width, cache.height)))
+    }
+
+    /// How many bitmap contexts this thread has built so far.
+    fn builds() -> u64 {
+        BITMAP_BUILDS.with(std::cell::Cell::get)
+    }
+
+    /// The bytes of one cached row, read through the bitmap's **own** stride: CoreGraphics may pad
+    /// rows, so `width * 4` would be the wrong offset on a padded bitmap.
+    fn cached_row(canvas: usize, row: usize) -> Vec<u8> {
+        BITMAP_CACHE.with(|slot| {
+            let slot = slot.borrow();
+            let cache = slot.get(&canvas).expect("the canvas is cached");
+            assert!(row < cache.height as usize, "row {row} is outside the cached bitmap");
+            // SAFETY: both the context and its backing buffer are live, and the row is in range.
+            let stride = unsafe { CGBitmapContextGetBytesPerRow(Some(&cache.context)) };
+            let data = unsafe { CGBitmapContextGetData(Some(&cache.context)) } as *const u8;
+            let width_bytes = cache.width as usize * 4;
+            assert!(stride >= width_bytes, "a padded stride is still at least one row wide");
+            if data.is_null() {
+                return Vec::new();
+            }
+            // SAFETY: `row * stride + width_bytes` is inside the bitmap `height` rows of `stride`.
+            unsafe { std::slice::from_raw_parts(data.add(row * stride), width_bytes).to_vec() }
+        })
+    }
+
+    /// A same-size repaint must reuse the context rather than build a new whole-frame one per
+    /// `drawRect:`, which is what made every macOS frame pay a full-frame allocation.
+    #[test]
+    fn a_same_size_repaint_reuses_the_cached_bitmap_context() {
+        let canvas = 0x5EED_1001usize;
+        evict_bitmap_cache(canvas);
+        let target = BitmapCache::new(8, 8).expect("a scratch target context");
+        let frame = vec![255u8; 16 * 12 * 4];
+
+        let before = builds();
+        assert!(blit_rgba(&target.context, canvas, 16, 12, &frame, None));
+        let first = cached_pixels(canvas).expect("the first blit caches its context");
+        assert_eq!(builds(), before + 1, "the first blit builds exactly one context");
+        assert!(blit_rgba(&target.context, canvas, 16, 12, &frame, None));
+        let second = cached_pixels(canvas).expect("the second blit keeps a context");
+        assert_eq!(builds(), before + 1, "a same-size repaint must not build another context");
+        assert_eq!(
+            first, second,
+            "a same-size repaint must reuse the cached context, not rebuild it"
+        );
+
+        // The cache is per canvas: two canvases at one size are two contexts.
+        let other_canvas = 0x5EED_1002usize;
+        evict_bitmap_cache(other_canvas);
+        assert!(blit_rgba(&target.context, other_canvas, 16, 12, &frame, None));
+        assert_eq!(builds(), before + 2, "a second canvas gets its own context");
+        let other = cached_pixels(other_canvas).expect("the other canvas caches its own context");
+        assert_ne!(first, other, "two canvases must not share one bitmap");
+
+        evict_bitmap_cache(canvas);
+        evict_bitmap_cache(other_canvas);
+    }
+
+    /// A size change rebuilds the context (the cache must never serve a stale size), and
+    /// `evict_bitmap_cache` — the unmount path — drops it entirely.
+    ///
+    /// The rebuild is asserted on the build counter and on the cached size, not on the data
+    /// pointer: CoreGraphics can hand a rebuilt context the address it just freed.
+    #[test]
+    fn a_size_change_rebuilds_and_unmount_drops_the_cached_context() {
+        let canvas = 0x5EED_1003usize;
+        evict_bitmap_cache(canvas);
+        let target = BitmapCache::new(8, 8).expect("a scratch target context");
+
+        assert!(blit_rgba(&target.context, canvas, 16, 12, &vec![255u8; 16 * 12 * 4], None));
+        assert_eq!(cached_size(canvas), Some((16, 12)));
+        let before = builds();
+
+        assert!(blit_rgba(&target.context, canvas, 20, 12, &vec![255u8; 20 * 12 * 4], None));
+        assert_eq!(builds(), before + 1, "a size change must rebuild the cached context");
+        assert_eq!(cached_size(canvas), Some((20, 12)), "the cache must not serve a stale size");
+
+        evict_bitmap_cache(canvas);
+        assert!(
+            cached_pixels(canvas).is_none(),
+            "unmount must drop the cached context, not keep a dead canvas's bitmap"
+        );
+    }
+
+    /// The opaque fast path copies bytes verbatim, and the translucent path premultiplies with the
+    /// same integer arithmetic the frame produced before the cache existed.
+    #[test]
+    fn an_opaque_row_is_copied_verbatim_and_a_translucent_pixel_is_premultiplied() {
+        let canvas = 0x5EED_1004usize;
+        evict_bitmap_cache(canvas);
+        let target = BitmapCache::new(8, 8).expect("a scratch target context");
+        // 2x2: the top row is fully opaque, the bottom row holds a cleared pixel and a half-alpha
+        // one, so both branches are exercised in one blit.
+        let frame = vec![
+            10, 20, 30, 255, 40, 50, 60, 255, // opaque
+            0, 0, 0, 0, 200, 100, 50, 128, // cleared, half alpha
+        ];
+
+        assert!(blit_rgba(&target.context, canvas, 2, 2, &frame, None));
+        assert_eq!(
+            &cached_row(canvas, 0)[..8],
+            &[10, 20, 30, 255, 40, 50, 60, 255],
+            "an opaque row is copied verbatim"
+        );
+        let bottom = cached_row(canvas, 1);
+        assert_eq!(&bottom[..4], &[0, 0, 0, 0], "a cleared pixel stays cleared");
+        // 200*128/255 = 100, 100*128/255 = 50, 50*128/255 = 25 (integer division, as before).
+        assert_eq!(
+            &bottom[4..8],
+            &[100, 50, 25, 128],
+            "a translucent pixel is premultiplied, and its alpha is kept"
+        );
+
+        evict_bitmap_cache(canvas);
+    }
 }
