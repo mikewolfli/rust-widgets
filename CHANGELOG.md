@@ -26,6 +26,19 @@ in `docs/log/log-20261027-1.md` (§15–§18).
   fields always need; `mobile` and `embedded` stop assuming a native shell for the cross-thread
   stop seam.
 
+### Packaging
+
+- The `fonts-*` payloads moved into a sibling package, `crates/rust-widgets-font`
+  (`rust-widgets-font`), and this manifest's `include` list now excludes `crates/**/*`. The
+  library package drops from 10,918,287 bytes to ~8.8 MB: 2.9.3 shipped 10,357,752 bytes — 127 KB
+  under crates.io's 10 MiB ceiling — and this round's code and tests pushed 2.9.4 over it, which
+  crates.io answered with HTTP 413.
+- Excluding the payloads *in place* does not work, and that is why they moved: they are
+  `include_bytes!`d by the default profile, so a tarball without them fails `cargo package`'s
+  verification build with `couldn't read …ttf`. Nothing about the data changed — same bytes, same
+  subsets, same upstream revisions, same `NOTICE` record — and each `fonts-*` feature now maps
+  onto one `rust-widgets-font` feature, so a build that asks for one face still gets one face.
+
 ### Platform
 
 - New `src/platform/screen_sample.rs`. A screen sample used to come back as *transparent black*
