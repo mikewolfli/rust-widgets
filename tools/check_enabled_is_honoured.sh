@@ -29,7 +29,7 @@ cd "$ROOT_DIR"
 . "$ROOT_DIR/tools/lib_python.sh"
 
 if ! "$PYTHON" tools/check_enabled_is_honoured.py; then
-    echo "FAIL: a control ignores its `enabled` state"
+    echo 'FAIL: a control ignores its `enabled` state'
     exit 1
 fi
 

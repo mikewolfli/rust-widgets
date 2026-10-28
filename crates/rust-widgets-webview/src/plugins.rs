@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
 // SPDX-License-Identifier: MIT
 
-use crate::compat::HashMap;
+use std::collections::HashMap;
 use core::any::Any;
 /// Numeric handle identifying a plugin inside a [`PluginManager`].
 ///

@@ -33,7 +33,7 @@ Open Sans — vector subset for `fonts-vector-latin`
 
 Included files
     crates/rust-widgets-font/src/latin.rs    (the provenance header and `include_bytes!`)
-    crates/rust-widgets-font/src/latin.ttf   (the subset itself)
+    crates/rust-widgets-font/assets/latin.ttf   (the subset itself)
 
 Origin
     Open Sans, by Steve Matteson and the Open Sans project (originally
@@ -70,7 +70,7 @@ Noto Naskh Arabic — vector subset for `fonts-complex`
 
 Included files
     crates/rust-widgets-font/src/arabic.rs    (the provenance header and `include_bytes!`)
-    crates/rust-widgets-font/src/arabic.ttf   (the subset itself)
+    crates/rust-widgets-font/assets/arabic.ttf   (the subset itself)
 
 Origin
     Noto Naskh Arabic, by the Noto project (Google).
@@ -106,7 +106,7 @@ Noto Color Emoji — colour bitmap subset for `fonts-emoji-color`
 
 Included files
     crates/rust-widgets-font/src/emoji.rs     (the provenance header and `include_bytes!`)
-    crates/rust-widgets-font/src/emoji.ttf    (the subset itself)
+    crates/rust-widgets-font/assets/emoji.ttf    (the subset itself)
 
 Origin
     Noto Color Emoji, by the Noto project (Google).
@@ -154,7 +154,7 @@ Noto Sans SC — scalable CJK vector subset for `fonts-cjk`
 
 Included files
     crates/rust-widgets-font/src/cjk.rs      (the provenance header and `include_bytes!`)
-    crates/rust-widgets-font/src/cjk.ttf     (the subset itself)
+    crates/rust-widgets-font/assets/cjk.ttf     (the subset itself)
 
 Origin
     Noto Sans SC, by the Noto project (Adobe and Google).
@@ -211,11 +211,16 @@ Noto Sans SC (sharded) — unicode-range subsets for `fonts-cjk-shards`
 
 Included files
     src/render/text/font_assets/cjk_shards.rs             (the shard index, generated; stays in the library)
-    crates/rust-widgets-font/src/cjk_shard_latin.rs/ttf    (the Latin shard)
-    crates/rust-widgets-font/src/cjk_shard_symbols.rs/ttf  (the CJK Symbols and Punctuation shard)
-    crates/rust-widgets-font/src/cjk_shard_kana.rs/ttf     (the kana shard)
-    crates/rust-widgets-font/src/cjk_shard_han.rs/ttf      (the Han shard)
-    crates/rust-widgets-font/src/cjk_shard_fullwidth.rs/ttf (the fullwidth-forms shard)
+    crates/rust-widgets-font/src/cjk_shard_latin.rs            (the provenance header)
+    crates/rust-widgets-font/assets/cjk_shard_latin.ttf      (the Latin shard)
+    crates/rust-widgets-font/src/cjk_shard_symbols.rs          (the provenance header)
+    crates/rust-widgets-font/assets/cjk_shard_symbols.ttf    (the CJK Symbols and Punctuation shard)
+    crates/rust-widgets-font/src/cjk_shard_kana.rs             (the provenance header)
+    crates/rust-widgets-font/assets/cjk_shard_kana.ttf       (the kana shard)
+    crates/rust-widgets-font/src/cjk_shard_han.rs              (the provenance header)
+    crates/rust-widgets-font/assets/cjk_shard_han.ttf        (the Han shard)
+    crates/rust-widgets-font/src/cjk_shard_fullwidth.rs        (the provenance header)
+    crates/rust-widgets-font/assets/cjk_shard_fullwidth.ttf   (the fullwidth-forms shard)
 
 Origin
     Noto Sans SC, by the Noto project (Adobe and Google). The **same** upstream

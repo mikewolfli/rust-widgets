@@ -78,7 +78,7 @@ factory
 | `dialog` | `src/widget/dialog/` | 17 | 模態決策與臨時面板 |
 | `special` | `src/widget/special_widgets/` | 39 | 完整應用介面及其配套控制項 |
 | `code_editor` | `src/widget/special_widgets/code_editor/` and `src/widget/special_widgets/markdown_editor.rs` | 5 | 結構化文字編輯器及其導覽外殼 |
-| `finance` | `src/widget/special_widgets/finance/` | 6 | 行情：蠟燭、深度、階梯與指標 |
+| `finance` | `src/widget/chart_widgets/finance/` | 6 | 行情：蠟燭、深度、階梯與指標 |
 | `advanced` | `src/widget/advanced_widgets/` | 10 | 日期時間、旋鈕、標籤、功能區、圓餅選單與快速鍵 |
 | `misc` | `src/widget/misc_widgets/` | 9 | 工具與行動控制項 |
 | `media` | `src/widget/media_widgets/` | 7 | 播放、動畫與攝影機預覽 |
@@ -2838,7 +2838,7 @@ toast 堆疊前的有界、會過期佇列：最大可見、最大排隊、預�
 
 | 控制項族 | 原始碼目錄 | 控制項數 |
 |---|---|---|
-| `finance` | `src/widget/special_widgets/finance/` | 6 |
+| `finance` | `src/widget/chart_widgets/finance/` | 6 |
 
 ### CandlestickChart (`candlestick_chart`)
 

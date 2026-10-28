@@ -56,7 +56,7 @@ MOD_RS_PENDING: dict[str, str] = {
     "src/data_binding/mod.rs": "the `PropertySink` trait and its adapters → `data_binding/sink.rs`",
     "src/menu_config/mod.rs": "the JSON converters → `menu_config/json.rs`",
     "src/widget/base_widgets/mod.rs": "`AutoRepeat` and its helpers → `base_widgets/auto_repeat.rs`",
-    "src/widget/special_widgets/finance/mod.rs": "`sync_view_range` → `finance/view_range.rs`",
+    "src/widget/chart_widgets/finance/mod.rs": "`sync_view_range` → `finance/view_range.rs`",
 }
 
 # ── Check 2 ─────────────────────────────────────────────────────────────────────
@@ -109,16 +109,15 @@ TOO_LONG_PENDING = {
     "src/widget/media_widgets/lottie_widget.rs": "composition model vs player vs paint → `lottie/{model,paint}.rs`",
     "src/widget/media_widgets/rive_widget.rs": "composition bounds vs playback vs paint → `rive/{model,paint}.rs`",
     "src/widget/menu_toolbar/tool_bar.rs": "item model vs band layout vs paint → `tool_bar/{model,layout,paint}.rs`",
-    "src/widget/special_widgets/chart.rs": "series model vs axes/plot paint vs legend → `chart/{model,paint}.rs`",
+    "src/widget/chart_widgets/chart.rs": "series model vs axes/plot paint vs legend → `chart/{model,paint}.rs`",
     "src/widget/special_widgets/diff_viewer.rs": "diff model vs row projection vs paint → `diff_viewer/{model,rows,paint}.rs`",
-    "src/widget/special_widgets/kanban_board.rs": "board model vs lane layout vs drag/paint → `kanban/{model,layout,drag}.rs`",
+    "src/widget/chart_widgets/kanban_board.rs": "board model vs lane layout vs drag/paint → `kanban/{model,layout,drag}.rs`",
     "src/widget/special_widgets/markdown_editor.rs": "document/line index vs find vs preview vs paint → `markdown_editor/{document,find,preview,paint}.rs`",
     "src/widget/special_widgets/terminal_view.rs": "screen buffer/ANSI model vs row paint → `terminal_view/{model,paint}.rs`",
     "src/widget/view_widgets/data_grid.rs": "projection window vs column layout vs paint → `data_grid/{projection,columns,paint}.rs`",
     "src/widget/view_widgets/grid_table.rs": "span layout vs selection vs paint → `grid_table/{layout,paint}.rs`",
     "src/widget/view_widgets/properties_panel.rs": "property rows vs editors vs paint → `properties_panel/{rows,paint}.rs`",
     "src/widget/view_widgets/tree_view.rs": "projection/index vs selection vs paint → `tree_view/{model,paint}.rs`",
-    "src/widget/web_widgets/web_engine.rs": "block renderer vs navigation/scroll vs paint → `web_engine/{render,nav,paint}.rs`",
 }
 
 

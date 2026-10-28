@@ -1663,8 +1663,8 @@ impl Widget for VideoPlayer {
         #[allow(unused_imports)]
         use crate::widget::capability::CapabilityValue;
         match name {
-            "chapter_entered" | "on_chapter_entered" => Some(EventSignalRef::mapped(
-                "chapter_entered",
+            "on_chapter_entered" => Some(EventSignalRef::mapped(
+                "on_chapter_entered",
                 &self.on_chapter_entered,
                 |index| CapabilityValue::UInt(*index as u64),
             )),

@@ -1054,59 +1054,39 @@ mod tests {
     ///
     /// # The defect this pins
     ///
-    /// `WidgetKind` is not one-to-one with capability: `WidgetKind::WebEngineView` backs both
-    /// `media_player` (5 published events) and `web_engine_view` (13). The wiring-outcome table was
-    /// keyed by kind alone and folded the two counts with `max` **independently**, so a fully-wired
-    /// `MediaPlayer` inherited `published = 13` from its larger sibling while keeping `wired = 4` of
-    /// its own — `unwired_events_for` then reported **9 unwired events that do not exist**, which is
-    /// precisely the false shortfall this query exists to make impossible.
+    /// `WidgetKind` is not one-to-one with capability: `WidgetKind::VideoPlayer` backs both
+    /// `video_player` (18 published events) and `chapter_list_panel` (1). The wiring-outcome table
+    /// was keyed by kind alone and folded the two counts with `max` **independently**, so a
+    /// `ChapterListPanel` wired from an entry that already held `video_player`'s larger
+    /// `published` reported 18 unwired events that do not exist — precisely the false shortfall
+    /// this query exists to make impossible.
     ///
-    /// `WidgetKind::Table` is the extreme case: five capabilities (2, 2, 1, 1, 1 events) share one
-    /// kind.
-    ///
-    /// The two controls must share **one binder** for the defect to appear: the table is per-binder,
-    /// so a fresh binder for each control would hide the cross-contamination entirely. That is also
-    /// what a real host looks like — one binder wires every control in a window.
-    ///
-    /// The order is the one that exposes it: the **larger** control goes first, so a smaller sibling
-    /// wired afterwards is answered from an entry that already holds the larger `published`. To make
-    /// the fold bite, the smaller control is left with a genuine shortfall — one published name
-    /// skipped — so a kind-only entry would compute `11 - 3 = 8` (the larger sibling's published
-    /// minus the smaller control's wired) instead of the true `4 - 3 = 1`.
-    ///
-    /// The shortfall is produced with [`EventSignalBinder::forward_one`] rather than a wrapper type:
-    /// the capability tie-break downcasts to the concrete control, so a wrapper would resolve no
-    /// capability at all and `forward_all` would return `0` for a reason unrelated to the keying.
-    /// Skipping one name is also exactly what a host with a hand-made exception does — the case the
-    /// single-event form exists for, and the case the count has to stay honest about.
+    /// The two controls must share **one binder** for the defect to appear: the table is
+    /// per-binder, so a fresh binder for each control would hide the cross-contamination
+    /// entirely. That is also what a real host looks like — one binder wires every control in a
+    /// window. The **larger** control goes first, which is the order that exposes it.
     #[test]
     fn a_control_on_a_shared_kind_reports_its_own_shortfall() {
         let r = Rect::new(0, 0, 100, 40);
         let hub = std::sync::Arc::new(crate::signal::hub::CustomSignalHub::new());
         let mut binder = EventSignalBinder::new(hub);
 
-        let view = crate::widget::web_widgets::web_engine::WebEngineView::new(r);
+        let player = crate::widget::media_widgets::video_player::VideoPlayer::new(r);
         assert_eq!(
-            binder.forward_all(&view),
-            19,
-            "`web_engine_view` publishes nineteen events after `link_hovered`, \
-             `link_activated`, `on_window_requested`, `render_process_crashed`, \
-             `js_evaluated` and `download_progress_changed` (MW-19/MW-24, WEB-001)"
+            binder.forward_all(&player),
+            18,
+            "`video_player` publishes eighteen events after `on_chapter_entered` (MW-002)"
         );
 
-        let player = crate::widget::special_widgets::media_player::MediaPlayer::new(r);
-        for name in ["playback_changed", "position_changed", "volume_changed"] {
-            assert!(binder.forward_one(&player, name), "`{name}` resolves on `media_player`");
-        }
-
+        let panel = crate::widget::media_widgets::chapter_list_panel::ChapterListPanel::new(r);
         assert_eq!(
-            binder.unwired_events_for(&player),
-            Some(5),
-            "the shortfall is this control's own (8 published - 3 wired), not `WebEngineView`'s \
-             extra names folded in through a shared `WidgetKind`"
+            binder.unwired_events_for(&panel),
+            Some(1),
+            "the shortfall is this control's own single event, not `video_player`'s eighteen \
+             folded in through a shared `WidgetKind`"
         );
         // The larger sibling is still fully wired; neither answer may be read off the other.
-        assert_eq!(binder.unwired_events_for(&view), Some(0));
+        assert_eq!(binder.unwired_events_for(&player), Some(0));
     }
 
     /// A reference that declares a different name than it was asked for must not wire.

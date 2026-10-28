@@ -35,7 +35,7 @@ use crate::{impl_widget_property_hooks, property_names_of};
 /// one widget is exhaustive:
 ///
 /// * **this one** — [`MiniChart`]: `Line`, `Bar`;
-/// * `crate::widget::special_widgets::chart::ChartType` — `ChartWidget`:
+/// * `crate::widget::chart_widgets::chart::ChartType` — `ChartWidget`:
 ///   `Bar`, `Line`, `Pie`, `Scatter`;
 /// * `crate::widget::chart_widgets::types::ChartType` — the drawing engine:
 ///   `Line`, `Bar`, `Pie`, `Scatter`, `Area`.

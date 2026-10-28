@@ -41,12 +41,12 @@ use crate::signal::Signal1;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
-use crate::widget::metrics::role_font;
-use crate::widget::special_widgets::finance::indicators;
-use crate::widget::special_widgets::finance::layout::{
+use crate::widget::chart_widgets::finance::indicators;
+use crate::widget::chart_widgets::finance::layout::{
     panel_colors, PanelColors, PlotArea, PANEL_MIN_CONTRAST,
 };
-use crate::widget::special_widgets::finance::types::{Bar, PriceLevelKind, PriceLine, PriceSeries};
+use crate::widget::chart_widgets::finance::types::{Bar, PriceLevelKind, PriceLine, PriceSeries};
+use crate::widget::metrics::role_font;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -748,8 +748,8 @@ impl CandlestickChart {
     fn draw_series_line(
         context: &mut RenderContext,
         values: &[f64],
-        price_axis: &crate::widget::special_widgets::finance::layout::PriceAxis,
-        index_axis: &crate::widget::special_widgets::finance::layout::IndexAxis,
+        price_axis: &crate::widget::chart_widgets::finance::layout::PriceAxis,
+        index_axis: &crate::widget::chart_widgets::finance::layout::IndexAxis,
         color: Color,
         width: u32,
         start: usize,
@@ -1693,7 +1693,7 @@ fn serialise_closes(series: &PriceSeries) -> alloc::string::String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::widget::special_widgets::finance::types::fixtures;
+    use crate::widget::chart_widgets::finance::types::fixtures;
     use alloc::sync::Arc;
     use core::sync::atomic::{AtomicUsize, Ordering};
 

@@ -1,0 +1,36 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+# SPDX-License-Identifier: MIT
+[package]
+name = "rust-widgets-webview"
+version = "3.0.0"
+edition = "2021"
+rust-version = "1.88"
+license = "MIT"
+description = "The web model behind rust_widgets' web controls: script engine, browsing history, navigation, privacy and plugins"
+authors = ["Mike Li <mikewolfli@163.com>"]
+homepage = "https://github.com/mikewolfli/rust-widgets"
+repository = "https://github.com/mikewolfli/rust-widgets"
+keywords = ["gui", "web", "javascript", "browser", "history"]
+categories = ["gui", "web-programming"]
+
+# No payloads, so `src/**/*` is the whole package. Nested inside the main crate's tree for the
+# same reason `rust-widgets-font` is: the parent package's `include` excludes `crates/**/*`, and a
+# nested package is the only form of "exclude" that still leaves a package that compiles.
+include = ["/src/**/*"]
+
+[features]
+default = []
+# The real interpreter. Off by default: `SimpleJsEngine` in `js_engine` needs no dependency, and a
+# consumer that only models a page must not pay for `boa_engine`.
+js-engine = ["dep:boa_engine"]
+web-http = ["dep:ureq"]
+
+[dependencies]
+# The widget layer this package extends. The dependency runs one way only: the parent cannot
+# depend on this crate, because Cargo rejects package cycles.
+rust_widgets = { version = "2.9.4", path = "../.." }
+# The same logging facade the parent uses; `WebViewCore` reports a load failure through it.
+log = "0.4"
+serde_json = "1.0"
+boa_engine = { version = "0.19", optional = true }
+ureq = { version = "3.0", optional = true, features = [] }

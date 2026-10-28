@@ -2655,7 +2655,7 @@ impl EventHandler for ChartWidget {
 ///
 /// This is the companion kernel itself, re-exported under the spelling the embedded chart
 /// control historically published. There is deliberately only one implementation: the
-/// `special_widgets::chart` copy used a different `WidgetKind` and a separate draw/hit path, so
+/// `chart_widgets::chart` copy used a different `WidgetKind` and a separate draw/hit path, so
 /// the two could drift apart. Both paths now paint the same lines and report through the same
 /// signals.
 pub use crate::widget::chart_widgets::chart_crosshair::ChartCrosshair;

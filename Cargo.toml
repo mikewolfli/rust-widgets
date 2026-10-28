@@ -158,7 +158,6 @@ desktop = [
     "video",
     "audio",
     "pdf-encryption",
-    "js-engine",
     # The real text and icon payloads. A desktop host has the bytes and wants the quality, so the
     # vector faces and the Material Symbols outlines ship *in the profile* rather than in `default`.
     # This is what makes `--features desktop` and the manifest's `default` render the same picture —
@@ -682,9 +681,7 @@ profile-embedded-mini = []
 # promised a rendering engine the library did not have.
 pdf-encryption = ["aes", "sha2", "cbc", "dep:getrandom"]
 audio-output = ["cpal"]
-js-engine = ["boa_engine"]
 video-codecs = ["dep:ffmpeg-next"]
-web-http = ["dep:ureq"]
 
 # Explicit feature flag so `cfg(feature = "serde")` works with `dep:serde`.
 serde = ["dep:serde"]
@@ -770,7 +767,6 @@ full = [
     "pdf-encryption",
     "symphonia-codecs",
     "audio-output",
-    "js-engine",
     "video-codecs",
 ]
 
@@ -865,7 +861,6 @@ image-codecs = { package = "image", version = "0.25.10", optional = true, defaul
 ] }
 resvg = { version = "0.48.1", optional = true }
 jpeg-decoder = { version = "0.3", optional = true }
-ureq = { version = "3.0", optional = true, features = [] }
 symphonia = { version = "0.5", default-features = false, features = [
     "all",
 ], optional = true }
@@ -884,7 +879,6 @@ getrandom = { version = "0.3", optional = true }
 # Note: On Linux, requires `libasound2-dev` package for ALSA backend.
 # On macOS, uses CoreAudio; on Windows, uses WASAPI.
 cpal = { version = "0.15", optional = true }
-boa_engine = { version = "0.19", optional = true }
 
 wgpu = { version = "30.0.1", optional = true }
 

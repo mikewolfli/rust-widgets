@@ -207,8 +207,6 @@ pub mod census;
 pub mod special_widgets;
 #[cfg(full_widgets)]
 pub mod view_widgets;
-#[cfg(full_widgets)]
-pub mod web_widgets;
 // Individual widget files (not in subfolders)
 pub mod svg;
 pub mod window;
@@ -441,9 +439,23 @@ pub use companions::{
 #[cfg(full_widgets)]
 pub use chart_widgets::bar_chart::{BarChart, BarEntry};
 #[cfg(full_widgets)]
+pub use chart_widgets::chart::ChartWidget;
+#[cfg(full_widgets)]
+pub use chart_widgets::gantt_widget::{
+    DateFormat, Dependency, DependencyEditor, GanttTask, GanttWidget, TimelineAxis,
+};
+#[cfg(full_widgets)]
+pub use chart_widgets::heatmap::{Heatmap, HeatmapCell};
+#[cfg(full_widgets)]
+pub use chart_widgets::kanban_board::{
+    CardPosition, KanbanBoard, KanbanCard, KanbanCardView, KanbanColumn, KanbanColumnHeader,
+};
+#[cfg(full_widgets)]
 pub use chart_widgets::line_chart::LineChart;
 #[cfg(full_widgets)]
 pub use chart_widgets::pie_chart::{PieChart, PieSlice};
+#[cfg(full_widgets)]
+pub use chart_widgets::radar_chart::RadarChart;
 #[cfg(full_widgets)]
 pub use chart_widgets::sparkline::Sparkline;
 // Re-export media widgets
@@ -499,20 +511,6 @@ pub use misc_widgets::mobile_date_picker::MobileDatePicker;
 pub use misc_widgets::qr_code::QRCode;
 #[cfg(full_widgets)]
 pub use misc_widgets::segmented_button::{Segment, SegmentedButton};
-// Re-export web widgets
-#[cfg(full_widgets)]
-pub use web_widgets::find_bar::WebFindBar;
-#[cfg(full_widgets)]
-pub use web_widgets::web_engine::WebEngine;
-/// Type alias for backward compatibility — `WebView` is now `WebEngineView`.
-#[cfg(full_widgets)]
-pub type WebView = WebEngineView;
-#[cfg(full_widgets)]
-pub use web_widgets::{
-    WebEngineContextMenuRequest, WebEngineCookieStore, WebEngineDownloadItem,
-    WebEngineFindTextResult, WebEngineNotification, WebEnginePage, WebEngineScriptDialog,
-    WebEngineSettings, WebEngineView, WebEngineWebChannel,
-};
 // Re-export advanced widgets
 #[cfg(full_widgets)]
 pub use advanced_widgets::{
@@ -584,17 +582,14 @@ pub use view_widgets::{
 // Re-export special widgets
 #[cfg(full_widgets)]
 pub use special_widgets::{
-    Breadcrumb, BreadcrumbSegment, Canvas, ChartWidget, Chip, ChipItem, CodeEditor, ColorPicker,
-    CommandEntry, CommandPalette, Compass, DateFormat, Dependency, DependencyEditor,
-    DiagnosticMarker, DiffFileList, DiffKind, DiffLine, DiffViewer, FindBar, FreeformShapeWidget,
-    GanttTask, GanttWidget, GridWidget, Heatmap, HeatmapCell, KanbanBoard, KanbanCard,
-    KanbanCardView, KanbanColumn, KanbanColumnHeader, MapMarker, MapView, MarkdownEditor,
+    Breadcrumb, BreadcrumbSegment, Canvas, Chip, ChipItem, CodeEditor, ColorPicker, CommandEntry,
+    CommandPalette, Compass, DiagnosticMarker, DiffFileList, DiffKind, DiffLine, DiffViewer,
+    FindBar, FreeformShapeWidget, GridWidget, MapMarker, MapView, MarkdownEditor,
     MarkdownOutlinePanel, MarkerSeverity, MediaPlayer, NotificationCenter, NotificationItem,
-    NotificationLevel, RadarChart, ScaleBar, ScaleBarStyle, ScaleUnits, SegmentItem,
-    SegmentedControl, ShapeCanvas, SignaturePad, SignatureStroke, Snackbar, SplitAction,
-    SplitButton, TerminalView, TileKey, TileLoadError, TileLoader, TileRequest, TileViewport,
-    TimelineAxis, TimelineItem, TimelineWidget, Toast, ToastItem, ToastLevel, ToastStack,
-    ZoomButton, ZoomControl,
+    NotificationLevel, ScaleBar, ScaleBarStyle, ScaleUnits, SegmentItem, SegmentedControl,
+    ShapeCanvas, SignaturePad, SignatureStroke, Snackbar, SplitAction, SplitButton, TerminalView,
+    TileKey, TileLoadError, TileLoader, TileRequest, TileViewport, TimelineItem, TimelineWidget,
+    Toast, ToastItem, ToastLevel, ToastStack, ZoomButton, ZoomControl,
 };
 /// Alias for [`ProgressBar`], naming an indicator use case.
 /// This is a plain progress bar: it does not animate on its own.

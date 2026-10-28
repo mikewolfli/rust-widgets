@@ -17,7 +17,7 @@ rust-widgets 提供一整套金融交易控件：K 线图、成交量副图、�
 一根 OHLCV K 线，是金融图表的基本单位：
 
 ```rust
-use rust_widgets::widget::special_widgets::finance::Bar;
+use rust_widgets::widget::chart_widgets::finance::Bar;
 
 // open, high, low, close, volume
 let bar = Bar::new(100.0, 103.5, 99.2, 102.8, 1_250_000.0);
@@ -38,7 +38,7 @@ let flat = Bar::flat(101.0, 500.0);
 由 K 线与其坐标轴标签组成：
 
 ```rust
-use rust_widgets::widget::special_widgets::finance::{Bar, PriceSeries};
+use rust_widgets::widget::chart_widgets::finance::{Bar, PriceSeries};
 
 let mut series = PriceSeries::new();
 series.push(Bar::new(100.0, 103.0, 99.0, 102.0, 1_000.0));
@@ -61,7 +61,7 @@ K 线与标签存放在同一个类型中，而非两个向量，因为「索引
 ### `OrderBook` 与 `Quote`
 
 ```rust
-use rust_widgets::widget::special_widgets::finance::{BookLevel, OrderBook, Quote};
+use rust_widgets::widget::chart_widgets::finance::{BookLevel, OrderBook, Quote};
 
 let mut book = OrderBook::new();
 book.set_bids(vec![BookLevel::new(99.9, 300.0), BookLevel::new(99.8, 500.0)]);
@@ -88,7 +88,7 @@ assert!(quote.is_up());
 而绘制则保持在消费它们的图表控件中，只实现一次。
 
 ```rust
-use rust_widgets::widget::special_widgets::finance::indicators::{
+use rust_widgets::widget::chart_widgets::finance::indicators::{
     sma, ema, rsi, macd, bollinger_bands, atr, vwap, stochastic, donchian_channel,
     money_flow_index, on_balance_volume,
 };
@@ -107,7 +107,7 @@ let (lower, middle, upper) = bollinger_bands(&closes, 20, 2.0);
 **每个函数返回与输入等长的向量**，尚不可计算的位置填 `NAN`：
 
 ```rust
-# use rust_widgets::widget::special_widgets::finance::indicators::sma;
+# use rust_widgets::widget::chart_widgets::finance::indicators::sma;
 let values = [1.0, 2.0, 3.0, 4.0, 5.0];
 let result = sma(&values, 3);
 
@@ -134,7 +134,7 @@ assert_eq!(result[4], 4.0);   // 3、4、5 的均值
 ### 成交量加权指标
 
 ```rust
-# use rust_widgets::widget::special_widgets::finance::indicators::{vwap, money_flow_index, on_balance_volume};
+# use rust_widgets::widget::chart_widgets::finance::indicators::{vwap, money_flow_index, on_balance_volume};
 # let highs = vec![101.0; 60];
 # let lows = vec![99.0; 60];
 # let closes = vec![100.0; 60];
@@ -153,7 +153,7 @@ let balance = on_balance_volume(&closes, &volumes);                 // 累加值
 
 ```rust
 use rust_widgets::core::Rect;
-use rust_widgets::widget::special_widgets::finance::{
+use rust_widgets::widget::chart_widgets::finance::{
     CandlestickChart, Overlay, PriceLevelKind, PriceLine, PriceSeries,
 };
 
@@ -186,7 +186,7 @@ chart.add_price_line(PriceLine::new(120.0, PriceLevelKind::Resistance));
 
 ```rust
 # use rust_widgets::core::Rect;
-# use rust_widgets::widget::special_widgets::finance::CandlestickChart;
+# use rust_widgets::widget::chart_widgets::finance::CandlestickChart;
 # let mut chart = CandlestickChart::new(Rect::new(0, 0, 900, 420));
 chart.bar_hovered.connect(|index| { /* *index */ });
 chart.bar_clicked.connect(|index| { /* *index */ });
@@ -209,7 +209,7 @@ let bar = chart.hovered_bar();
 
 ```rust
 use rust_widgets::core::Rect;
-use rust_widgets::widget::special_widgets::finance::{
+use rust_widgets::widget::chart_widgets::finance::{
     CandlestickChart, IndicatorChart, IndicatorMode, PriceSeries, VolumeChart,
 };
 
@@ -230,7 +230,7 @@ momentum.set_mode(IndicatorMode::Macd);
 
 ```rust
 # use rust_widgets::core::Rect;
-# use rust_widgets::widget::special_widgets::finance::{IndicatorChart, IndicatorMode};
+# use rust_widgets::widget::chart_widgets::finance::{IndicatorChart, IndicatorMode};
 # let mut momentum = IndicatorChart::new(Rect::new(0, 0, 900, 150));
 momentum.set_mode(IndicatorMode::Rsi);
 momentum.set_period(14);
@@ -256,9 +256,9 @@ let values = momentum.compute();
 ### 成交量面板
 
 ```rust
-use rust_widgets::widget::special_widgets::finance::VolumeColorMode;
+use rust_widgets::widget::chart_widgets::finance::VolumeColorMode;
 # use rust_widgets::core::Rect;
-# use rust_widgets::widget::special_widgets::finance::VolumeChart;
+# use rust_widgets::widget::chart_widgets::finance::VolumeChart;
 # let mut volume = VolumeChart::new(Rect::new(0, 0, 900, 100));
 volume.set_color_mode(VolumeColorMode::Direction);  // 涨绿跌红
 volume.set_headroom(0.92);                          // 最高柱占面板高度的比例
@@ -275,9 +275,9 @@ volume.set_headroom(0.92);                          // 最高柱占面板高度�
 
 ```rust
 use rust_widgets::core::Rect;
-use rust_widgets::widget::special_widgets::finance::{DepthChart, OrderBookWidget, BookSide};
+use rust_widgets::widget::chart_widgets::finance::{DepthChart, OrderBookWidget, BookSide};
 
-# let book = rust_widgets::widget::special_widgets::finance::OrderBook::new();
+# let book = rust_widgets::widget::chart_widgets::finance::OrderBook::new();
 let mut ladder = OrderBookWidget::new(Rect::new(0, 0, 320, 260));
 ladder.set_book(book.clone());     // 两侧均按最优价优先排序
 ladder.set_depth(5);               // 每侧五档，常见的披露档位
@@ -304,7 +304,7 @@ for point in depth.curve() {
 
 ```rust
 use rust_widgets::core::Rect;
-use rust_widgets::widget::special_widgets::finance::{Quote, QuoteBoard, QuoteColumn, QuoteSort};
+use rust_widgets::widget::chart_widgets::finance::{Quote, QuoteBoard, QuoteColumn, QuoteSort};
 
 # let quotes: Vec<Quote> = Vec::new();
 let mut board = QuoteBoard::new(Rect::new(0, 0, 760, 300));
@@ -346,7 +346,7 @@ board.selection_changed.connect(|symbol| { /* Option<String> */ });
 use rust_widgets::widget::capability::CapabilityValue;
 use rust_widgets::widget::capability::properties_trait::{widget_property_get, widget_property_set};
 
-# let mut chart = rust_widgets::widget::special_widgets::finance::CandlestickChart::new(
+# let mut chart = rust_widgets::widget::chart_widgets::finance::CandlestickChart::new(
 #     rust_widgets::core::Rect::new(0, 0, 900, 420));
 // 逗号分隔的价格序列会被转换为平价 K 线
 widget_property_set(&mut chart, "series", CapabilityValue::String("100,101.5,99,102".into())).unwrap();

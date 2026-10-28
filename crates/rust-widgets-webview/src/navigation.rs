@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 //! Web navigation types: entries, history, resources, settings.
-use alloc::collections::VecDeque;
+use std::collections::VecDeque;
 const MAX_HISTORY_SIZE: usize = 100;
 /// An entry in the navigation history (session-based back/forward).
 #[derive(Debug, Clone)]

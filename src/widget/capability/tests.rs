@@ -140,7 +140,11 @@ fn default_factory_registers_core_capabilities() {
     assert!(factory.capability("dockwidget").is_some());
     assert!(factory.capability("mdiarea").is_some());
     assert!(factory.capability("textedit").is_some());
-    assert!(factory.capability("webview").is_some());
+    // The web controls (`webview`/`webengineview`/`webfindbar`/`pagefindbar`) are **not** root
+    // capabilities: they live in `rust-widgets-webview`, whose `install` registers them. Asserting
+    // the absence keeps the move visible here instead of leaving a silent gap where the old
+    // registration used to be.
+    assert!(factory.capability("webview").is_none());
     assert!(factory.capability("piemenu").is_some());
     assert!(factory.capability("datetimepicker").is_some());
 }
@@ -309,9 +313,6 @@ fn factory_creates_registered_widgets_by_alias() {
     let text_edit =
         factory.create("textedit", rect, "").expect("text edit must be created via alias");
     assert_eq!(text_edit.kind(), WidgetKind::TextEdit);
-
-    let web = factory.create("webview", rect, "").expect("web view must be created via alias");
-    assert_eq!(web.kind(), WidgetKind::WebEngineView);
 
     let pie_menu = factory.create("piemenu", rect, "").expect("pie menu must be created via alias");
     assert_eq!(pie_menu.kind(), WidgetKind::PieMenu);

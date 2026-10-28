@@ -5,8 +5,8 @@
 
 # What this produces
 
-    crates/rust-widgets-font/src/emoji.ttf   the subset, byte-for-byte from fontTools
-    crates/rust-widgets-font/src/emoji.rs    a one-line `include_bytes!` with a provenance header
+    crates/rust-widgets-font/assets/emoji.ttf   the subset, byte-for-byte from fontTools
+    crates/rust-widgets-font/src/emoji.rs       a one-line `include_bytes!` with a provenance header
 
 The header repeats the upstream project, the upstream URL, the SHA-256 of the *upstream* file and
 the licence, because `tools/font_license_scan.py` requires exactly those facts and the crate's
@@ -66,7 +66,8 @@ import urllib.request
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-OUT_DIR = REPO_ROOT / "crates" / "rust-widgets-font" / "src"
+SRC_DIR = REPO_ROOT / "crates" / "rust-widgets-font" / "src"
+ASSET_DIR = REPO_ROOT / "crates" / "rust-widgets-font" / "assets"
 CACHE_DIR = REPO_ROOT / "target" / "font-cache"
 CODEPOINT_LIST = REPO_ROOT / "tools" / "emoji_subset_codepoints.txt"
 
@@ -246,7 +247,7 @@ def header(face_id, face, payload_len, glyph_count, digest):
 // binary it describes.
 
 /// The generated subset's bytes, in the binary's read-only section.
-pub const FONT: &[u8] = include_bytes!("{face_id}.ttf");
+pub const FONT: &[u8] = include_bytes!("../assets/{face_id}.ttf");
 '''
 
 
@@ -276,8 +277,8 @@ def main():
     payload, glyph_count, missing = subset_bytes(face, source_path, codepoints)
     text = header(args.face, face, len(payload), glyph_count, digest)
 
-    ttf_path = OUT_DIR / f"{args.face}.ttf"
-    rs_path = OUT_DIR / f"{args.face}.rs"
+    ttf_path = ASSET_DIR / f"{args.face}.ttf"
+    rs_path = SRC_DIR / f"{args.face}.rs"
 
     print(f"face:       {args.face} ({face['project']})")
     print(f"licence:    {face['license']}")

@@ -4,4 +4,4 @@ version = 4
 
 [[package]]
 name = "rust-widgets-font"
-version = "2.9.4"
+version = "3.0.0"

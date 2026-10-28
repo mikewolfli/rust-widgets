@@ -22,4 +22,4 @@
 // binary it describes.
 
 /// The generated subset's bytes, in the binary's read-only section.
-pub const FONT: &[u8] = include_bytes!("emoji.ttf");
+pub const FONT: &[u8] = include_bytes!("../assets/emoji.ttf");

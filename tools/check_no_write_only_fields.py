@@ -70,10 +70,6 @@ ALLOW_LIST: set[tuple[str, str]] = {
         "src/widget/media_widgets/video_player.rs",
         "artwork",
     ): "public field of media metadata; read by the host, never by the control",
-    (
-        "src/widget/web_widgets/web_engine.rs",
-        "scroll_pos",
-    ): "public field of a history entry; the host restores it, the view does not re-read it",
 }
 
 FIELD_DECL = re.compile(

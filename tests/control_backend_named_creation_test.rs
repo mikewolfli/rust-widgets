@@ -443,59 +443,61 @@ fn creation_cases(backend: &CustomPaintControlBackend, parent: ObjectId) -> Vec<
         ("create_undo_view", backend.create_undo_view(parent, 0, 0, W, H), "list_view"),
         ("create_video_player", backend.create_video_player(parent, 0, 0, W, H), "video_player"),
         ("create_volume_chart", backend.create_volume_chart(parent, 0, 0, W, H), "volume_chart"),
+        ("create_wizard", backend.create_wizard(parent, "t", 0, 0, W, H), "wizard_dialog"),
+        ("create_wizard_dialog", backend.create_wizard_dialog(parent, 0, 0, W, H), "wizard_dialog"),
+    ]
+}
+
+/// The `create_*` methods that must answer `0` in this crate, and why.
+///
+/// The web controls (`web_engine_view`, `web_find_bar`, `web_history_panel`) moved to the
+/// optional `rust-widgets-webview` crate, which contributes them through
+/// `install(&mut WidgetFactory)`. The custom backend mounts **by name** out of
+/// `WidgetFactory::shared`, so a root-only build has no such name and the documented answer is
+/// `0` — which is exactly what `ControlBackend::create_web_engine_page`'s doc promises for "a
+/// backend with no web support".
+///
+/// They are listed separately rather than deleted from the table: the trait keeps the methods for
+/// the C ABI, and a method that quietly built *something else* (the historical defect: this kind
+/// resolved to `media_player`) is what the rest of this file exists to catch. Asserting the `0`
+/// keeps that distinction — "nothing built" — visible.
+fn unavailable_creation_cases(
+    backend: &CustomPaintControlBackend,
+    parent: ObjectId,
+) -> Vec<(&'static str, ObjectId)> {
+    vec![
         (
             "create_web_engine_context_menu_request",
             backend.create_web_engine_context_menu_request(parent, 0, 0, W, H),
-            "web_engine_view",
         ),
         (
             "create_web_engine_cookie_store",
             backend.create_web_engine_cookie_store(parent, 0, 0, W, H),
-            "web_engine_view",
         ),
         (
             "create_web_engine_download_item",
             backend.create_web_engine_download_item(parent, 0, 0, W, H),
-            "web_engine_view",
         ),
         (
             "create_web_engine_find_text_result",
             backend.create_web_engine_find_text_result(parent, 0, 0, W, H),
-            "web_engine_view",
         ),
         (
             "create_web_engine_notification",
             backend.create_web_engine_notification(parent, 0, 0, W, H),
-            "web_engine_view",
         ),
-        (
-            "create_web_engine_page",
-            backend.create_web_engine_page(parent, 0, 0, W, H),
-            "web_engine_view",
-        ),
+        ("create_web_engine_page", backend.create_web_engine_page(parent, 0, 0, W, H)),
         (
             "create_web_engine_script_dialog",
             backend.create_web_engine_script_dialog(parent, 0, 0, W, H),
-            "web_engine_view",
         ),
-        (
-            "create_web_engine_settings",
-            backend.create_web_engine_settings(parent, 0, 0, W, H),
-            "web_engine_view",
-        ),
-        (
-            "create_web_engine_view",
-            backend.create_web_engine_view(parent, 0, 0, W, H),
-            "web_engine_view",
-        ),
+        ("create_web_engine_settings", backend.create_web_engine_settings(parent, 0, 0, W, H)),
+        ("create_web_engine_view", backend.create_web_engine_view(parent, 0, 0, W, H)),
         (
             "create_web_engine_web_channel",
             backend.create_web_engine_web_channel(parent, 0, 0, W, H),
-            "web_engine_view",
         ),
-        ("create_web_view", backend.create_web_view(parent, 0, 0, W, H), "web_engine_view"),
-        ("create_wizard", backend.create_wizard(parent, "t", 0, 0, W, H), "wizard_dialog"),
-        ("create_wizard_dialog", backend.create_wizard_dialog(parent, 0, 0, W, H), "wizard_dialog"),
+        ("create_web_view", backend.create_web_view(parent, 0, 0, W, H)),
     ]
 }
 
@@ -535,6 +537,26 @@ fn every_create_method_mounts_the_control_it_is_named_after() {
     );
 }
 
+#[test]
+fn the_web_methods_answer_zero_because_the_control_is_in_another_crate() {
+    let backend = CustomPaintControlBackend::new();
+    let parent = backend.create_window("Parent", 0, 0, 1000, 800);
+
+    let mut unexpected: Vec<String> = Vec::new();
+    for (method, id) in unavailable_creation_cases(&backend, parent) {
+        if id != 0 {
+            unexpected.push(format!("{method}: returned id {id}, expected 0 (no web capability)"));
+        }
+    }
+    assert!(
+        unexpected.is_empty(),
+        "a web method built something without `rust-widgets-webview` installed — the control is \
+         not in this crate, so building a stand-in is the substitution this file exists to \
+         catch:\n  {}",
+        unexpected.join("\n  ")
+    );
+}
+
 /// The table above must cover **every** `create_*` the trait declares.
 ///
 /// The previous version of this protection was a hand-picked sample, which is how
@@ -548,6 +570,8 @@ fn creation_table_covers_the_whole_create_surface() {
     let parent = backend.create_window("Parent", 0, 0, 1000, 800);
     let mut names: Vec<&'static str> =
         creation_cases(&backend, parent).into_iter().map(|(method, _, _)| method).collect();
+    names
+        .extend(unavailable_creation_cases(&backend, parent).into_iter().map(|(method, _)| method));
     names.sort_unstable();
     let total = names.len();
     names.dedup();

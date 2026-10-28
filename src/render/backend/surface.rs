@@ -2389,7 +2389,7 @@ impl<'a> RenderContext<'a> {
     /// ellipsised string has to be built, but that is the case that was always going to allocate.
     ///
     /// The public method delegates here, so the two can never disagree about what is drawn.
-    pub(crate) fn draw_text_fitted_cow<'t>(
+    pub fn draw_text_fitted_cow<'t>(
         &mut self,
         bounds: Rect,
         text: &'t str,

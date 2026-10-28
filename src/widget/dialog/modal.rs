@@ -143,6 +143,28 @@ pub(crate) fn move_focus(current: Option<usize>, count: usize, forward: bool) ->
 //   a push hook there would make their open order explicit instead of first-paint order.
 thread_local! {
     static SCRIM_STACK: RefCell<Vec<ObjectId>> = const { RefCell::new(Vec::new()) };
+    /// The modal whose scrim plane the current frame's root pass already painted (DLG-001).
+    ///
+    /// A modal painted as one of the root's children is rasterised into its own layer, and its
+    /// scrim is clipped to that layer — so the plane has to be painted by the root pass, before
+    /// the modal, or the page under it keeps its full brightness. Painting it in both places dims
+    /// the page twice; this flag is how the modal's own `draw` knows the plane is already down.
+    static PLANE_PAINTED: core::cell::Cell<Option<ObjectId>> = const { core::cell::Cell::new(None) };
+}
+
+/// Clears the "plane already painted" record for a new frame.
+pub(crate) fn reset_plane_painted() {
+    PLANE_PAINTED.with(|slot| slot.set(None));
+}
+
+/// Records that this frame's root pass painted the plane for `owner`.
+pub(crate) fn note_plane_painted(owner: ObjectId) {
+    PLANE_PAINTED.with(|slot| slot.set(Some(registry_id(owner))));
+}
+
+/// Whether this frame's root pass already painted the plane for `modal`.
+fn plane_already_painted(modal: ObjectId) -> bool {
+    PLANE_PAINTED.with(|slot| slot.get() == Some(registry_id(modal)))
 }
 
 /// How far [`modal_page_rect`] walks before it stops trusting the parent chain.
@@ -311,6 +333,11 @@ pub(crate) fn draw_modal_scrim_tinted(
         return;
     }
     if !claim_scrim(modal) {
+        return;
+    }
+    // The root pass paints the plane for a modal that is one of its painted children, because a
+    // child's layer clips its own scrim to its rectangle. Claiming above still ordered the stack.
+    if plane_already_painted(modal) {
         return;
     }
     let scrim = tint.unwrap_or_else(|| {

@@ -9,21 +9,21 @@
 //!
 //! JavaScript evaluation is real: with the `js-engine` feature the widget
 //! evaluates scripts in a genuine embedded engine (boa_engine via
-//! `crate::web::SimpleJsEngine`) and returns the actual result or error.
+//! `crate::SimpleJsEngine`) and returns the actual result or error.
 //! Without that feature, evaluation reports `Err` instead of faking success.
 
-use crate::compat::{lock, Arc, Mutex, VecDeque};
-use crate::core::{Color, Font, HorizontalAlignment, ObjectId, Point, Rect};
-use crate::event::{Event, EventHandler};
-use crate::signal::Signal1;
-use crate::widget::capability::coercion::expect_string;
-use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
-use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
-use crate::widget::capability::WidgetProperties;
-use crate::widget::metrics::{dimensions, role_font, ControlMetrics};
-use crate::widget::{BaseWidget, Widget, WidgetKind};
-use crate::{impl_widget_property_hooks, property_names_of};
-use alloc::vec::Vec;
+use rust_widgets::compat::{lock, Arc, Mutex, VecDeque};
+use rust_widgets::impl_draw_bridge;
+use rust_widgets::core::{Color, Font, HorizontalAlignment, ObjectId, Point, Rect};
+use rust_widgets::event::{Event, EventHandler};
+use rust_widgets::signal::Signal1;
+use rust_widgets::widget::capability::coercion::expect_string;
+use rust_widgets::widget::capability::properties_trait::{base_property_get, base_property_set};
+use rust_widgets::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use rust_widgets::widget::capability::WidgetProperties;
+use rust_widgets::widget::metrics::{dimensions, role_font, ControlMetrics};
+use rust_widgets::widget::{BaseWidget, Widget, WidgetKind};
+use rust_widgets::{impl_widget_property_hooks, property_names_of};
 
 /// First page id [`WebEngineView::create_page`] issues.
 ///
@@ -451,7 +451,7 @@ pub struct WebEngineView {
     next_page_id: ObjectId,
     /// Embedded real JavaScript engine (boa_engine) for script evaluation.
     #[cfg(feature = "js-engine")]
-    js_engine: Option<crate::web::BoaJsEngine>,
+    js_engine: Option<crate::BoaJsEngine>,
 }
 // Newtype structs for render pipeline symbol imports, wrapping WebEngineView.
 /// placeholder facade: forwards WebEngineView only, no independent semantics.
@@ -771,7 +771,7 @@ macro_rules! impl_web_engine_wrapper_traits {
                     self.0.base()
                 }
     fn set_state_theme_hook(&mut self) {
-        crate::style::reapply_active_theme_state(self);
+        rust_widgets::style::reapply_active_theme_state(self);
     }
 
                 fn base_mut(&mut self) -> &mut BaseWidget {
@@ -786,7 +786,7 @@ macro_rules! impl_web_engine_wrapper_traits {
                 /// name was accepted by `connect_event` and wired to nothing: the wrapper
                 /// delegates its behaviour, so it must delegate its signal resolution too, or the
  /// forwarding promise stops at the event side.
-                fn event_signal_dyn(&self, name: &str) -> Option<crate::signal::EventSignalRef> {
+                fn event_signal_dyn(&self, name: &str) -> Option<rust_widgets::signal::EventSignalRef> {
                     self.0.event_signal_dyn(name)
                 }
             }
@@ -1222,7 +1222,7 @@ impl WebEngineView {
     /// Scrolls the page, clamped to the content the last frame measured.
     pub fn set_scroll_offset(&mut self, offset: i32) {
         let max = (self.page_content_height
-            - crate::widget::metrics::dimensions::WEB_URL_BAR_HEIGHT as i32)
+            - rust_widgets::widget::metrics::dimensions::WEB_URL_BAR_HEIGHT as i32)
             .max(0);
         let clamped = offset.clamp(0, max);
         if clamped == self.scroll_offset {
@@ -1401,7 +1401,7 @@ impl WebEngineView {
 
         #[cfg(feature = "js-engine")]
         {
-            let engine = self.js_engine.get_or_insert_with(crate::web::BoaJsEngine::new);
+            let engine = self.js_engine.get_or_insert_with(crate::BoaJsEngine::new);
             engine.evaluate_to_string(script)
         }
         #[cfg(not(feature = "js-engine"))]
@@ -2018,14 +2018,14 @@ impl Widget for WebEngineView {
         &self.base
     }
     fn set_state_theme_hook(&mut self) {
-        crate::style::reapply_active_theme_state(self);
+        rust_widgets::style::reapply_active_theme_state(self);
     }
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
     }
 
-    fn size_hint(&self) -> crate::core::Size {
-        crate::core::Size::new(400, 300)
+    fn size_hint(&self) -> rust_widgets::core::Size {
+        rust_widgets::core::Size::new(400, 300)
     }
 
     /// Applies a script queued by [`Self::evaluate_javascript_async`] and any queued find request.
@@ -2050,30 +2050,30 @@ impl Widget for WebEngineView {
     /// `String`, an identifier as `Int`, and the two composite payloads (`navigation_state_changed`,
     /// `console_message`) as their debug spelling, which is the honest lossy form for a value the
     /// hub cannot carry field by field.
-    fn event_signal_dyn(&self, name: &str) -> Option<crate::signal::EventSignalRef> {
-        use crate::signal::EventSignalRef;
+    fn event_signal_dyn(&self, name: &str) -> Option<rust_widgets::signal::EventSignalRef> {
+        use rust_widgets::signal::EventSignalRef;
         match name {
             "loading_started" => {
                 Some(EventSignalRef::mapped("loading_started", &self.loading_started, |v| {
-                    crate::widget::capability::CapabilityValue::String(v.clone())
+                    rust_widgets::widget::capability::CapabilityValue::String(v.clone())
                 }))
             }
             "loading_finished" => {
                 Some(EventSignalRef::mapped("loading_finished", &self.loading_finished, |v| {
-                    crate::widget::capability::CapabilityValue::String(v.clone())
+                    rust_widgets::widget::capability::CapabilityValue::String(v.clone())
                 }))
             }
             "title_changed" => {
                 Some(EventSignalRef::mapped("title_changed", &self.title_changed, |v| {
-                    crate::widget::capability::CapabilityValue::String(v.clone())
+                    rust_widgets::widget::capability::CapabilityValue::String(v.clone())
                 }))
             }
             "url_changed" => Some(EventSignalRef::mapped("url_changed", &self.url_changed, |v| {
-                crate::widget::capability::CapabilityValue::String(v.clone())
+                rust_widgets::widget::capability::CapabilityValue::String(v.clone())
             })),
             "error_occurred" => {
                 Some(EventSignalRef::mapped("error_occurred", &self.error_occurred, |v| {
-                    crate::widget::capability::CapabilityValue::String(v.clone())
+                    rust_widgets::widget::capability::CapabilityValue::String(v.clone())
                 }))
             }
             "navigation_state_changed" => Some(EventSignalRef::mapped(
@@ -2082,20 +2082,20 @@ impl Widget for WebEngineView {
                 // The declared shape is `Tuple2` of `Bool`, so the payload arrives as the
                 // (can_go_back, can_go_forward) pair rather than its `Debug` spelling.
                 |v| {
-                    crate::widget::capability::CapabilityValue::Tuple(crate::compat::Vec::from([
-                        crate::widget::capability::CapabilityValue::Bool(v.0),
-                        crate::widget::capability::CapabilityValue::Bool(v.1),
+                    rust_widgets::widget::capability::CapabilityValue::Tuple(rust_widgets::compat::Vec::from([
+                        rust_widgets::widget::capability::CapabilityValue::Bool(v.0),
+                        rust_widgets::widget::capability::CapabilityValue::Bool(v.1),
                     ]))
                 },
             )),
             "page_created" => {
                 Some(EventSignalRef::mapped("page_created", &self.page_created, |v| {
-                    crate::widget::capability::CapabilityValue::UInt(*v)
+                    rust_widgets::widget::capability::CapabilityValue::UInt(*v)
                 }))
             }
             "page_destroyed" => {
                 Some(EventSignalRef::mapped("page_destroyed", &self.page_destroyed, |v| {
-                    crate::widget::capability::CapabilityValue::UInt(*v)
+                    rust_widgets::widget::capability::CapabilityValue::UInt(*v)
                 }))
             }
             "console_message" => {
@@ -2104,61 +2104,61 @@ impl Widget for WebEngineView {
                     // (message, line, source) triple: the message and source are strings and the
                     // line is an unsigned count, rather than a `Debug` dump a subscriber cannot
                     // split back apart.
-                    crate::widget::capability::CapabilityValue::Tuple(crate::compat::Vec::from([
-                        crate::widget::capability::CapabilityValue::String(v.0.clone()),
-                        crate::widget::capability::CapabilityValue::UInt(v.1 as u64),
-                        crate::widget::capability::CapabilityValue::String(v.2.clone()),
+                    rust_widgets::widget::capability::CapabilityValue::Tuple(rust_widgets::compat::Vec::from([
+                        rust_widgets::widget::capability::CapabilityValue::String(v.0.clone()),
+                        rust_widgets::widget::capability::CapabilityValue::UInt(v.1 as u64),
+                        rust_widgets::widget::capability::CapabilityValue::String(v.2.clone()),
                     ]))
                 }))
             }
             "download_requested" => {
                 Some(EventSignalRef::mapped("download_requested", &self.download_requested, |v| {
-                    crate::widget::capability::CapabilityValue::String(v.clone())
+                    rust_widgets::widget::capability::CapabilityValue::String(v.clone())
                 }))
             }
             "certificate_error" => {
                 Some(EventSignalRef::mapped("certificate_error", &self.certificate_error, |v| {
-                    crate::widget::capability::CapabilityValue::String(v.clone())
+                    rust_widgets::widget::capability::CapabilityValue::String(v.clone())
                 }))
             }
             "channel_message" => {
                 Some(EventSignalRef::mapped("channel_message", &self.channel_message, |v| {
-                    crate::widget::capability::CapabilityValue::Tuple(crate::compat::Vec::from([
-                        crate::widget::capability::CapabilityValue::String(v.0.clone()),
-                        crate::widget::capability::CapabilityValue::String(v.1.clone()),
+                    rust_widgets::widget::capability::CapabilityValue::Tuple(rust_widgets::compat::Vec::from([
+                        rust_widgets::widget::capability::CapabilityValue::String(v.0.clone()),
+                        rust_widgets::widget::capability::CapabilityValue::String(v.1.clone()),
                     ]))
                 }))
             }
             "load_progress_changed" => Some(EventSignalRef::mapped(
                 "load_progress_changed",
                 &self.load_progress_changed,
-                |v| crate::widget::capability::CapabilityValue::UInt(*v as u64),
+                |v| rust_widgets::widget::capability::CapabilityValue::UInt(*v as u64),
             )),
             "link_hovered" => {
                 Some(EventSignalRef::mapped("link_hovered", &self.link_hovered, |v| {
-                    crate::widget::capability::CapabilityValue::String((*v).clone())
+                    rust_widgets::widget::capability::CapabilityValue::String((*v).clone())
                 }))
             }
             "link_activated" => {
                 Some(EventSignalRef::mapped("link_activated", &self.link_activated, |v| {
-                    crate::widget::capability::CapabilityValue::String((*v).clone())
+                    rust_widgets::widget::capability::CapabilityValue::String((*v).clone())
                 }))
             }
             "on_window_requested" => Some(EventSignalRef::mapped(
                 "on_window_requested",
                 &self.on_window_requested,
-                |v| crate::widget::capability::CapabilityValue::String((*v).clone()),
+                |v| rust_widgets::widget::capability::CapabilityValue::String((*v).clone()),
             )),
             "render_process_crashed" => Some(EventSignalRef::mapped(
                 "render_process_crashed",
                 &self.render_process_crashed,
-                |v| crate::widget::capability::CapabilityValue::String((*v).clone()),
+                |v| rust_widgets::widget::capability::CapabilityValue::String((*v).clone()),
             )),
             "js_evaluated" => {
                 Some(EventSignalRef::mapped("js_evaluated", &self.js_evaluated, |v| {
-                    crate::widget::capability::CapabilityValue::Tuple(crate::compat::Vec::from([
-                        crate::widget::capability::CapabilityValue::Bool(v.0),
-                        crate::widget::capability::CapabilityValue::String(v.1.clone()),
+                    rust_widgets::widget::capability::CapabilityValue::Tuple(rust_widgets::compat::Vec::from([
+                        rust_widgets::widget::capability::CapabilityValue::Bool(v.0),
+                        rust_widgets::widget::capability::CapabilityValue::String(v.1.clone()),
                     ]))
                 }))
             }
@@ -2167,9 +2167,9 @@ impl Widget for WebEngineView {
                 &self.download_progress_changed,
                 // `(download id, fraction)` — text and a float, so the declared shape is `Mixed`.
                 |v| {
-                    crate::widget::capability::CapabilityValue::Tuple(crate::compat::Vec::from([
-                        crate::widget::capability::CapabilityValue::String(v.0.clone()),
-                        crate::widget::capability::CapabilityValue::Float(f64::from(v.1)),
+                    rust_widgets::widget::capability::CapabilityValue::Tuple(rust_widgets::compat::Vec::from([
+                        rust_widgets::widget::capability::CapabilityValue::String(v.0.clone()),
+                        rust_widgets::widget::capability::CapabilityValue::Float(f64::from(v.1)),
                     ]))
                 },
             )),
@@ -2295,8 +2295,8 @@ impl WidgetProperties for WebEngineView {
     }
 }
 
-use crate::render::RenderContext;
-use crate::widget::Draw;
+use rust_widgets::render::RenderContext;
+use rust_widgets::widget::Draw;
 
 impl EventHandler for WebEngineView {
     fn handle_event(&mut self, event: &Event) {
@@ -2426,11 +2426,11 @@ impl Draw for WebEngineView {
         // `resolved_theme_style`, so it is not held across the draw — the global manager's mutex
         // is not re-entrant.
         let style = self.base.style();
-        let theme = crate::style::resolved_theme_style_shared("web_engine_view");
+        let theme = rust_widgets::style::resolved_theme_style_shared("web_engine_view");
         // Read from the shared palette snapshot (the revision-cached accessor), which returns the
         // same draw-time `Colors` without taking the global manager lock.
         let (window_fill, foreground, secondary, accent) = {
-            match crate::style::palette_shared() {
+            match rust_widgets::style::palette_shared() {
                 Some(active) => {
                     (active.background, active.foreground, active.secondary, active.primary)
                 }
@@ -2578,7 +2578,7 @@ impl Draw for WebEngineView {
                     } else {
                         &page_font
                     };
-                    let ranges = crate::widget::text_utils::wrap_to_width(
+                    let ranges = rust_widgets::widget::text_utils::wrap_to_width(
                         &block.text,
                         text_width,
                         &mut |text: &str| ctx.measure_text(text, font).width,
@@ -2726,14 +2726,14 @@ impl Draw for WebEngineView {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::Rect;
-    use crate::widget::WidgetKind;
+    use rust_widgets::core::Rect;
+    use rust_widgets::widget::WidgetKind;
     use std::sync::{Arc, Mutex};
 
     #[test]
     fn web_engine_view_draw_produces_svg() {
         let mut wv = WebEngineView::new(Rect::new(0, 0, 300, 200));
-        let svg = crate::widget::svg::render_to_svg(&mut wv);
+        let svg = rust_widgets::widget::svg::render_to_svg(&mut wv);
         assert!(svg.starts_with("<svg"));
     }
 
@@ -2860,10 +2860,10 @@ mod tests {
     fn web_engine_wrappers_delegate_widget_draw_and_event_handler() {
         // Holds the crate-wide theme guard: this test renders, and a concurrent
         // test that switches the appearance would otherwise change a later frame.
-        let _theme_guard = crate::style::theme_test_guard();
+        let _theme_guard = rust_widgets::style::theme_test_guard();
         fn assert_wrapper_behaves(mut wrapper: impl Widget + Draw) {
             assert_eq!(wrapper.base().kind(), WidgetKind::WebEngineView);
-            let svg = crate::widget::svg::render_to_svg(&mut wrapper);
+            let svg = rust_widgets::widget::svg::render_to_svg(&mut wrapper);
             assert!(svg.starts_with("<svg"));
             wrapper.handle_event(&Event::timer(WebEngineView::load_timer_id()));
         }
@@ -3092,7 +3092,7 @@ mod tests {
             "WebEngineScriptDialog",
             "WebEngineContextMenuRequest",
         ] {
-            let marker = alloc::format!("pub struct {name}(").to_ascii_lowercase();
+            let marker = format!("pub struct {name}(").to_ascii_lowercase();
             let start =
                 source.find(&marker).unwrap_or_else(|| panic!("{name} must still be defined"));
             let doc = &source[start.saturating_sub(400)..start];
@@ -3126,7 +3126,7 @@ mod tests {
     fn the_url_bar_is_editable_and_commits_on_enter() {
         let mut view = WebEngineView::new(Rect::new(0, 0, 300, 200));
         view.load_html("<p>page</p>");
-        let _ = crate::widget::svg::render_to_svg(&mut view);
+        let _ = rust_widgets::widget::svg::render_to_svg(&mut view);
         let bar = view.url_bar_rect.expect("the bar was painted");
         view.handle_event(&Event::MousePress { pos: bar.center(), button: 1, modifiers: 0 });
         assert!(view.is_editing_url());
@@ -3153,18 +3153,18 @@ mod tests {
     fn the_page_layout_is_reused_until_a_layout_input_changes() {
         let mut view = WebEngineView::new(Rect::new(0, 0, 300, 200));
         view.load_html("<p>alpha beta gamma delta</p><p>second block</p>");
-        let _ = crate::widget::svg::render_to_svg(&mut view);
+        let _ = rust_widgets::widget::svg::render_to_svg(&mut view);
         let layout = view.page_layout.as_ref().expect("the page was laid out");
         assert_eq!(layout.revision, view.html_revision);
         let lines = layout.lines.as_ptr();
-        let _ = crate::widget::svg::render_to_svg(&mut view);
+        let _ = rust_widgets::widget::svg::render_to_svg(&mut view);
         assert_eq!(
             view.page_layout.as_ref().unwrap().lines.as_ptr(),
             lines,
             "a frame with an unchanged page must reuse its layout"
         );
         view.set_zoom_factor(2.0);
-        let _ = crate::widget::svg::render_to_svg(&mut view);
+        let _ = rust_widgets::widget::svg::render_to_svg(&mut view);
         assert_eq!(
             view.page_layout.as_ref().unwrap().zoom_bits,
             2.0f32.to_bits(),
@@ -3179,7 +3179,7 @@ mod tests {
 fn web_engine_evaluate_javascript_is_real_when_feature_enabled() {
     // Holds the crate-wide theme guard: this test renders, and a concurrent
     // test that switches the appearance would otherwise change a later frame.
-    let _theme_guard = crate::style::theme_test_guard();
+    let _theme_guard = rust_widgets::style::theme_test_guard();
     let mut wv = WebEngineView::new(Rect::new(0, 0, 300, 200));
     #[cfg(feature = "js-engine")]
     {
@@ -3214,7 +3214,7 @@ fn web_engine_load_html_retains_source() {
 fn an_empty_url_paints_no_text_element() {
     let mut wv = WebEngineView::new(Rect::new(0, 0, 240, 120));
     assert!(wv.url().is_empty(), "a fresh view has no URL");
-    let svg = crate::widget::svg::render_to_svg(&mut wv);
+    let svg = rust_widgets::widget::svg::render_to_svg(&mut wv);
     assert!(
         !svg.contains("></text>"),
         "an empty URL must not emit an empty text element, got:\n{svg}"
@@ -3228,10 +3228,10 @@ fn an_empty_url_paints_no_text_element() {
 /// numbers.
 #[test]
 fn the_url_bar_keeps_its_own_height() {
-    use crate::widget::metrics::{dimensions, ControlMetrics};
+    use rust_widgets::widget::metrics::{dimensions, ControlMetrics};
     for height in [28u32, 60, 120, 400] {
         let mut wv = WebEngineView::new(Rect::new(0, 0, 240, height));
-        let svg = crate::widget::svg::render_to_svg(&mut wv);
+        let svg = rust_widgets::widget::svg::render_to_svg(&mut wv);
         let bar =
             ControlMetrics::top_band(Rect::new(0, 0, 240, height), dimensions::WEB_URL_BAR_HEIGHT);
         let fill = format!("x=\"0\" y=\"0\" width=\"240\" height=\"{}\"", bar.height);

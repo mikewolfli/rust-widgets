@@ -71,12 +71,13 @@ PATTERNS = [
 ]
 
 hits = []
-for path in sorted(pathlib.Path("src").rglob("*.rs")):
-    text = path.read_text(encoding="utf-8", errors="replace")
-    for pattern in PATTERNS:
-        for match in pattern.finditer(text):
-            line = text.count("\n", 0, match.start()) + 1
-            hits.append(f"{path}:{line}: {match.group(0).strip()}")
+for root in (pathlib.Path("src"), pathlib.Path("crates/rust-widgets-webview/src")):
+    for path in sorted(root.rglob("*.rs")):
+        text = path.read_text(encoding="utf-8", errors="replace")
+        for pattern in PATTERNS:
+            for match in pattern.finditer(text):
+                line = text.count("\n", 0, match.start()) + 1
+                hits.append(f"{path}:{line}: {match.group(0).strip()}")
 cargo = pathlib.Path("Cargo.toml")
 if cargo.exists():
     text = cargo.read_text(encoding="utf-8", errors="replace")
@@ -111,21 +112,21 @@ fi
 echo "  PASS  supports_web_engine() exists and defaults to false"
 
 echo "[3/4] the widget's degradation is queryable and agrees with the platform"
-if ! grep -q "pub fn has_real_engine" src/web/web_engine.rs; then
+if ! grep -q "pub fn has_real_engine" crates/rust-widgets-webview/src/web_engine_enhanced.rs; then
     echo "  FAIL  WebEngineViewEnhanced::has_real_engine is missing"
     exit 1
 fi
 if ! rw_cargo_cached "$STEP_BUDGET" test \
-    --no-default-features --features desktop \
-    --lib 'web::web_engine::tests::test_has_real_engine_agrees_with_the_platform' \
+    --manifest-path crates/rust-widgets-webview/Cargo.toml --lib \
+    'web_engine_enhanced::tests::test_has_real_engine_agrees_with_the_platform' \
     > /tmp/rw_web_honest.log 2>&1; then
     echo "  FAIL  the widget's answer disagrees with the platform's"
     sed -n '1,60p' /tmp/rw_web_honest.log
     exit 1
 fi
 if ! rw_cargo_cached "$STEP_BUDGET" test \
-    --no-default-features --features desktop \
-    --lib 'web::web_engine::tests::test_no_backend_renders_the_web_today' \
+    --manifest-path crates/rust-widgets-webview/Cargo.toml --lib \
+    'web_engine_enhanced::tests::test_no_backend_renders_the_web_today' \
     >> /tmp/rw_web_honest.log 2>&1; then
     echo "  FAIL  a backend claims to render the web while the docs say none does"
     sed -n '1,60p' /tmp/rw_web_honest.log
@@ -134,7 +135,7 @@ fi
 # Reverse-injection check: the query must actually consult the platform. A hardcoded
 # `true`/`false` in the widget would satisfy the equality test only by coincidence, so the
 # body is inspected for the platform call.
-if ! grep -A 3 "pub fn has_real_engine" src/web/web_engine.rs | grep -q "supports_web_engine"; then
+if ! grep -A 3 "pub fn has_real_engine" crates/rust-widgets-webview/src/web_engine_enhanced.rs | grep -q "supports_web_engine"; then
     echo "  FAIL  has_real_engine does not ask the platform, so it is a hardcoded answer"
     exit 1
 fi
@@ -142,8 +143,8 @@ echo "  PASS  has_real_engine() asks the platform and agrees with it"
 
 echo "[4/4] the retained capability (JavaScript) still works"
 if ! rw_cargo_cached "$STEP_BUDGET" test \
-    --no-default-features --features desktop \
-    --lib 'web::js_engine' > /tmp/rw_web_js.log 2>&1; then
+    --manifest-path crates/rust-widgets-webview/Cargo.toml --lib 'js_engine' \
+    > /tmp/rw_web_js.log 2>&1; then
     echo "  FAIL  the JS engine regressed"
     sed -n '1,80p' /tmp/rw_web_js.log
     exit 1

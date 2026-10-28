@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
 // SPDX-License-Identifier: MIT
 
-use crate::compat::HashMap;
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 /// A JavaScript value in the engine-neutral subset understood by this module.
 ///
@@ -1497,9 +1497,9 @@ mod tests {
     fn empty_collections_are_truthy_like_ecmascript_objects() {
         assert!(JsValue::Array(Vec::new()).is_truthy());
         assert!(JsValue::Array(vec![JsValue::Null]).is_truthy());
-        assert!(JsValue::Object(crate::compat::HashMap::new()).is_truthy());
+        assert!(JsValue::Object(std::collections::HashMap::new()).is_truthy());
         assert!(JsValue::Array(Vec::new()).to_boolean());
-        assert!(JsValue::Object(crate::compat::HashMap::new()).to_boolean());
+        assert!(JsValue::Object(std::collections::HashMap::new()).to_boolean());
         // The falsey cases stay falsey.
         assert!(!JsValue::String(String::new()).is_truthy());
         assert!(!JsValue::Number(0.0).is_truthy());

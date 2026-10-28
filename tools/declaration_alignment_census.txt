@@ -10,8 +10,8 @@
 #           placeholder is not a lie, so it is not required to be answered
 # failed  = declarations that disagree with the implementation
 
-controls   271
-skipped    275
+controls   268
+skipped    270
 failed     0
 
 ## skipped entries (each with its reason)
@@ -104,9 +104,6 @@ failed     0
 - dock_area::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
 - mdi_area::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
 - text_edit::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
-- web_engine_view::can_go_back: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
-- web_engine_view::can_go_forward: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
-- web_engine_view::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
 - pie_menu::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
 - toggle_button::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
 - arc::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
@@ -224,7 +221,6 @@ failed     0
 - terminal_find_bar::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
 - map_attribution::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
 - gantt_task_grid::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
-- web_history_panel::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
 - chapter_list_panel::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
 - map_overview::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
 - property_grid::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
@@ -270,7 +266,6 @@ failed     0
 - diff_file_list::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
 - markdown_outline_panel::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
 - find_bar::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
-- web_find_bar::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
 - menu_panel::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
 - speed_dial::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
 - swipe_actions::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered

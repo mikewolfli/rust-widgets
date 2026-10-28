@@ -1230,7 +1230,7 @@ pub fn default_widget_property_default_value(
             // the declared schema is what a dropped binding resets to (`Null` would be a value the
             // schema refuses).
             "tasks" => CapabilityValue::Records(crate::widget::capability::RecordList::new(
-                &crate::widget::special_widgets::gantt_widget::GANTT_TASK_SCHEMA,
+                &crate::widget::chart_widgets::gantt_widget::GANTT_TASK_SCHEMA,
             )),
             "task_count" => CapabilityValue::UInt(0),
             "selected_id" => CapabilityValue::Null,
@@ -1346,7 +1346,8 @@ pub fn default_widget_property_default_value(
             "playlist_index" => CapabilityValue::Null,
             "track_count" => CapabilityValue::UInt(0),
             "user_agent" => CapabilityValue::String(
-                crate::widget::web_widgets::web_engine::DEFAULT_USER_AGENT.to_string(),
+                "Mozilla/5.0 (compatible; rust-widgets WebEngineView) AppleWebKit/605.1.15"
+                    .to_string(),
             ),
             "background_transparent" => CapabilityValue::Bool(false),
             "cookie_persistence_enabled" => CapabilityValue::Bool(false),
@@ -1588,10 +1589,10 @@ pub fn default_widget_property_default_value(
             // A fresh board has no columns and no cards; the empty list of the declared schema is
             // what a dropped binding resets to (`Null` would be a value the schema refuses).
             "columns" => CapabilityValue::Records(crate::widget::capability::RecordList::new(
-                &crate::widget::special_widgets::kanban_board::KANBAN_COLUMN_SCHEMA,
+                &crate::widget::chart_widgets::kanban_board::KANBAN_COLUMN_SCHEMA,
             )),
             "cards" => CapabilityValue::Records(crate::widget::capability::RecordList::new(
-                &crate::widget::special_widgets::kanban_board::KANBAN_CARD_SCHEMA,
+                &crate::widget::chart_widgets::kanban_board::KANBAN_CARD_SCHEMA,
             )),
             "column_count" => CapabilityValue::UInt(0),
             "card_count" => CapabilityValue::UInt(0),
@@ -2797,7 +2798,7 @@ pub fn default_widget_property_default_value(
             // An editor starts with no edges: the empty list of the declared schema.
             "dependency_edges" => {
                 CapabilityValue::Records(crate::widget::capability::RecordList::new(
-                    &crate::widget::special_widgets::gantt_widget::companions::DEPENDENCY_SCHEMA,
+                    &crate::widget::chart_widgets::gantt_widget::companions::DEPENDENCY_SCHEMA,
                 ))
             }
             "editable" => CapabilityValue::Bool(true),

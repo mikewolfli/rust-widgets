@@ -30,13 +30,13 @@ use crate::render::RenderContext;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
-use crate::widget::metrics::role_font;
-use crate::widget::special_widgets::finance::indicators;
-use crate::widget::special_widgets::finance::layout::{
+use crate::widget::chart_widgets::finance::indicators;
+use crate::widget::chart_widgets::finance::layout::{
     panel_colors, IndexAxis, PanelColors, PlotArea, PriceAxis, PANEL_MIN_CONTRAST,
 };
-use crate::widget::special_widgets::finance::types::Bar;
-use crate::widget::special_widgets::finance::types::PriceSeries;
+use crate::widget::chart_widgets::finance::types::Bar;
+use crate::widget::chart_widgets::finance::types::PriceSeries;
+use crate::widget::metrics::role_font;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -1023,7 +1023,7 @@ impl WidgetProperties for IndicatorChart {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::widget::special_widgets::finance::types::fixtures;
+    use crate::widget::chart_widgets::finance::types::fixtures;
 
     /// The pane carries the series it was given.
     #[test]
@@ -1223,10 +1223,10 @@ mod tests {
     /// A malformed series draws without panicking in every mode.
     #[test]
     fn a_malformed_series_draws_in_every_mode() {
-        let mut series = crate::widget::special_widgets::finance::types::PriceSeries::new();
+        let mut series = crate::widget::chart_widgets::finance::types::PriceSeries::new();
         for index in 0..30 {
             if index % 7 == 0 {
-                series.push(crate::widget::special_widgets::finance::types::Bar::new(
+                series.push(crate::widget::chart_widgets::finance::types::Bar::new(
                     f64::NAN,
                     f64::NAN,
                     f64::NAN,
@@ -1234,7 +1234,7 @@ mod tests {
                     f64::NAN,
                 ));
             } else {
-                series.push(crate::widget::special_widgets::finance::types::Bar::flat(
+                series.push(crate::widget::chart_widgets::finance::types::Bar::flat(
                     100.0 + index as f64,
                     0.0,
                 ));

@@ -947,18 +947,6 @@ pub fn create_text_edit(geometry: Rect, text: &str) -> Box<dyn Widget> {
     label(geometry, text, Box::new(TextEdit::new(geometry)))
 }
 
-// ── Web widget constructors ───────────────────────────────────
-
-#[cfg(full_widgets)]
-/// Creates a web engine view with no page loaded.
-///
-/// `_text` is deliberately ignored: the underlying view has no label concept, so
-/// there is nothing for it to configure.
-pub fn create_web_view(geometry: Rect, _text: &str) -> Box<dyn Widget> {
-    // WebView is now an alias for WebEngineView.
-    Box::new(WebEngineView::new(geometry))
-}
-
 // ── Advanced widget constructors ──────────────────────────────
 
 #[cfg(full_widgets)]
@@ -1190,16 +1178,12 @@ pub fn create_gantt_task_grid(geometry: Rect, text: &str) -> Box<dyn Widget> {
     label(
         geometry,
         text,
-        Box::new(crate::widget::special_widgets::gantt_widget::GanttTaskGrid::new(geometry)),
+        Box::new(crate::widget::chart_widgets::gantt_widget::GanttTaskGrid::new(geometry)),
     )
 }
 
 #[cfg(full_widgets)]
 /// Creates a web history panel with no entries (COMP-A5). `text` is applied as the control's label.
-pub fn create_web_history_panel(geometry: Rect, text: &str) -> Box<dyn Widget> {
-    label(geometry, text, Box::new(crate::widget::web_widgets::WebHistoryPanel::new(geometry)))
-}
-
 #[cfg(full_widgets)]
 /// Creates a media chapter list with no chapters (COMP-A6). `text` is applied as the control's
 /// label.
@@ -1722,30 +1706,30 @@ pub fn create_property_grid(geometry: Rect, text: &str) -> Box<dyn Widget> {
 }
 
 #[cfg(full_widgets)]
-/// Creates an empty [`CandlestickChart`](crate::widget::special_widgets::finance::candlestick_chart::CandlestickChart).
+/// Creates an empty [`CandlestickChart`](crate::widget::chart_widgets::finance::candlestick_chart::CandlestickChart).
 /// `text` is applied as a label beside the control, following the convention the
 /// other chart constructors use.
 pub fn create_candlestick_chart(geometry: Rect, text: &str) -> Box<dyn Widget> {
     let widget =
-        crate::widget::special_widgets::finance::candlestick_chart::CandlestickChart::new(geometry);
+        crate::widget::chart_widgets::finance::candlestick_chart::CandlestickChart::new(geometry);
     label(geometry, text, Box::new(widget))
 }
 
 #[cfg(full_widgets)]
-/// Creates an empty [`VolumeChart`](crate::widget::special_widgets::finance::volume_chart::VolumeChart).
+/// Creates an empty [`VolumeChart`](crate::widget::chart_widgets::finance::volume_chart::VolumeChart).
 /// `text` is applied as a label beside the control, following the convention the
 /// other chart constructors use.
 pub fn create_volume_chart(geometry: Rect, text: &str) -> Box<dyn Widget> {
-    let widget = crate::widget::special_widgets::finance::volume_chart::VolumeChart::new(geometry);
+    let widget = crate::widget::chart_widgets::finance::volume_chart::VolumeChart::new(geometry);
     label(geometry, text, Box::new(widget))
 }
 
 #[cfg(full_widgets)]
-/// Creates an empty [`DepthChart`](crate::widget::special_widgets::finance::depth_chart::DepthChart).
+/// Creates an empty [`DepthChart`](crate::widget::chart_widgets::finance::depth_chart::DepthChart).
 /// `text` is applied as a label beside the control, following the convention the
 /// other chart constructors use.
 pub fn create_depth_chart(geometry: Rect, text: &str) -> Box<dyn Widget> {
-    let widget = crate::widget::special_widgets::finance::depth_chart::DepthChart::new(geometry);
+    let widget = crate::widget::chart_widgets::finance::depth_chart::DepthChart::new(geometry);
     label(geometry, text, Box::new(widget))
 }
 
@@ -1754,27 +1738,26 @@ pub fn create_depth_chart(geometry: Rect, text: &str) -> Box<dyn Widget> {
 /// `text` is applied as a label beside the control, following the convention the
 /// other chart constructors use.
 pub fn create_order_book(geometry: Rect, text: &str) -> Box<dyn Widget> {
-    let widget =
-        crate::widget::special_widgets::finance::order_book::OrderBookWidget::new(geometry);
+    let widget = crate::widget::chart_widgets::finance::order_book::OrderBookWidget::new(geometry);
     label(geometry, text, Box::new(widget))
 }
 
 #[cfg(full_widgets)]
-/// Creates an empty [`QuoteBoard`](crate::widget::special_widgets::finance::quote_board::QuoteBoard).
+/// Creates an empty [`QuoteBoard`](crate::widget::chart_widgets::finance::quote_board::QuoteBoard).
 /// `text` is applied as a label beside the control, following the convention the
 /// other chart constructors use.
 pub fn create_quote_board(geometry: Rect, text: &str) -> Box<dyn Widget> {
-    let widget = crate::widget::special_widgets::finance::quote_board::QuoteBoard::new(geometry);
+    let widget = crate::widget::chart_widgets::finance::quote_board::QuoteBoard::new(geometry);
     label(geometry, text, Box::new(widget))
 }
 
 #[cfg(full_widgets)]
-/// Creates an empty [`IndicatorChart`](crate::widget::special_widgets::finance::indicator_chart::IndicatorChart).
+/// Creates an empty [`IndicatorChart`](crate::widget::chart_widgets::finance::indicator_chart::IndicatorChart).
 /// `text` is applied as a label beside the control, following the convention the
 /// other chart constructors use.
 pub fn create_indicator_chart(geometry: Rect, text: &str) -> Box<dyn Widget> {
     let widget =
-        crate::widget::special_widgets::finance::indicator_chart::IndicatorChart::new(geometry);
+        crate::widget::chart_widgets::finance::indicator_chart::IndicatorChart::new(geometry);
     label(geometry, text, Box::new(widget))
 }
 
@@ -2088,13 +2071,13 @@ pub fn create_compass(geometry: Rect, _text: &str) -> Box<dyn Widget> {
 #[cfg(full_widgets)]
 /// Creates a timeline axis over `0 ..= 100` (`COMP-14`).
 pub fn create_timeline_axis(geometry: Rect, _text: &str) -> Box<dyn Widget> {
-    Box::new(crate::widget::special_widgets::gantt_widget::TimelineAxis::new(geometry))
+    Box::new(crate::widget::chart_widgets::gantt_widget::TimelineAxis::new(geometry))
 }
 
 #[cfg(full_widgets)]
 /// Creates an empty dependency editor (`COMP-14`).
 pub fn create_dependency_editor(geometry: Rect, _text: &str) -> Box<dyn Widget> {
-    Box::new(crate::widget::special_widgets::gantt_widget::DependencyEditor::new(geometry))
+    Box::new(crate::widget::chart_widgets::gantt_widget::DependencyEditor::new(geometry))
 }
 
 #[cfg(full_widgets)]
@@ -2117,10 +2100,6 @@ pub fn create_find_bar(geometry: Rect, _text: &str) -> Box<dyn Widget> {
 
 /// Creates the web view's find strip (`COMP-L03`).
 #[cfg(full_widgets)]
-pub fn create_web_find_bar(geometry: Rect, _text: &str) -> Box<dyn Widget> {
-    Box::new(crate::widget::web_widgets::find_bar::WebFindBar::new(geometry))
-}
-
 #[cfg(full_widgets)]
 /// Creates a drop-down menu panel (`COMP-A01`).
 pub fn create_menu_panel(geometry: Rect, _text: &str) -> Box<dyn Widget> {
@@ -2168,13 +2147,13 @@ pub fn create_shape_canvas(geometry: Rect, _text: &str) -> Box<dyn Widget> {
 #[cfg(full_widgets)]
 /// Creates a kanban card titled by `text` (`COMP-18`).
 pub fn create_kanban_card_view(geometry: Rect, text: &str) -> Box<dyn Widget> {
-    Box::new(crate::widget::special_widgets::kanban_board::KanbanCardView::new(geometry, text))
+    Box::new(crate::widget::chart_widgets::kanban_board::KanbanCardView::new(geometry, text))
 }
 
 #[cfg(full_widgets)]
 /// Creates a kanban column header titled by `text` (`COMP-18`).
 pub fn create_kanban_column_header(geometry: Rect, text: &str) -> Box<dyn Widget> {
-    Box::new(crate::widget::special_widgets::kanban_board::KanbanColumnHeader::new(geometry, text))
+    Box::new(crate::widget::chart_widgets::kanban_board::KanbanColumnHeader::new(geometry, text))
 }
 
 #[cfg(full_widgets)]

@@ -3,7 +3,7 @@
 
 //! WebViewEnhanced widget — a web view wrapper.
 //!
-//! This type shares ~95% of its implementation with [`WebEngineViewEnhanced`](super::web_engine::WebEngineViewEnhanced).
+//! This type shares ~95% of its implementation with [`WebEngineViewEnhanced`](crate::web_engine_enhanced::WebEngineViewEnhanced).
 //! Both delegate to a common [`WebViewCore`] to avoid code duplication.
 //!
 //! **Unique to this type:**
@@ -14,12 +14,12 @@
 
 use super::js_engine::{JsResult, JsValue};
 use super::web_core::{delegate_widget, WebViewCore};
-use crate::core::{Color, Font, HorizontalAlignment, ObjectId, Point, Rect, Size};
-use crate::event::{Event, EventHandler};
-use crate::render::RenderContext;
-use crate::signal::{ConnectionScope, GenericSignal, Signal1};
-use crate::style::WidgetStyle;
-use crate::widget::{Draw, Widget, WidgetKind};
+use rust_widgets::core::{Color, Font, HorizontalAlignment, ObjectId, Point, Rect, Size};
+use rust_widgets::event::{Event, EventHandler};
+use rust_widgets::render::RenderContext;
+use rust_widgets::signal::{ConnectionScope, GenericSignal, Signal1};
+use rust_widgets::style::WidgetStyle;
+use rust_widgets::widget::{Draw, Widget, WidgetKind};
 use std::cell::RefCell;
 
 /// Enhanced web view widget.
@@ -41,7 +41,7 @@ impl WebViewEnhanced {
     /// Creates a web view in `geometry` showing `about:blank`, with no title and
     /// nothing loading.
     ///
-    /// Unlike [`WebEngineViewEnhanced::new`](super::web_engine::WebEngineViewEnhanced::new),
+    /// Unlike [`WebEngineViewEnhanced::new`](crate::web_engine_enhanced::WebEngineViewEnhanced::new),
     /// this type never acquires a native engine: every operation runs on the
     /// simulated loader, which emits 0% → 50% → 100% progress and stores the URL
     /// without performing any network I/O.
@@ -82,7 +82,7 @@ impl WebViewEnhanced {
 
     /// The core's load-progress signal, in percent.
     ///
-    /// See [`WebEngineViewEnhanced::loading_progress_signal`](super::web_engine::WebEngineViewEnhanced::loading_progress_signal)
+    /// See [`WebEngineViewEnhanced::loading_progress_signal`](crate::web_engine_enhanced::WebEngineViewEnhanced::loading_progress_signal)
     /// for why the core's signals need an accessor on the wrapper.
     pub fn loading_progress_signal(&self) -> &Signal1<u8> {
         &self.core.loading_progress
@@ -354,7 +354,7 @@ impl Draw for WebViewEnhanced {
                         drop(cached);
                         let text = if content.len() > 200 {
                             let boundary =
-                                crate::widget::text_utils::floor_char_boundary(content, 197);
+                                rust_widgets::widget::text_utils::floor_char_boundary(content, 197);
                             format!("{}...", &content[..boundary])
                         } else {
                             content.clone()
@@ -395,8 +395,8 @@ impl Draw for WebViewEnhanced {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::Rect;
-    use crate::web::privacy::BrowsingData;
+    use rust_widgets::core::Rect;
+    use crate::privacy::BrowsingData;
 
     #[test]
     fn test_web_view_new() {
@@ -485,7 +485,7 @@ mod tests {
 
     #[test]
     fn test_web_view_draw_multibyte_content() {
-        use crate::widget::svg::render_to_svg;
+        use rust_widgets::widget::svg::render_to_svg;
         let mut view = WebViewEnhanced::new(Rect::new(0, 0, 800, 600));
         let long_multibyte_html = format!(
             "<p>{}</p>",

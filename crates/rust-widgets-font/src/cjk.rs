@@ -23,4 +23,4 @@
 // ~150 KB of source, which is a worse artifact than the binary it describes.
 
 /// The subset's bytes. Parsed on first use, never copied into a heap allocation.
-pub const FONT: &[u8] = include_bytes!("cjk.ttf");
+pub const FONT: &[u8] = include_bytes!("../assets/cjk.ttf");

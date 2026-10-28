@@ -17,8 +17,8 @@
 //! # One kernel for both spellings
 //!
 //! This type used to exist twice: this companion, and a second `ChartCrosshair` inside
-//! `special_widgets::chart` that used a different `WidgetKind` and a separate draw/hit path.
-//! `special_widgets::chart` now re-exports this type instead of defining its own, so both paths
+//! `chart_widgets::chart` that used a different `WidgetKind` and a separate draw/hit path.
+//! `chart_widgets::chart` now re-exports this type instead of defining its own, so both paths
 //! paint the same lines, obey the same visibility rules, and report through the same signals.
 //! The surface the embedded spelling published (`position`, `show_axes`, `follow_pointer`,
 //! `position_changed`) is kept alongside the companion surface (`show_at_data`, `mode`,

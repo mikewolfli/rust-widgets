@@ -34,7 +34,7 @@ Every kind must hit exactly one of:
 * **AliasOf**      — a `pub type X = Y;` in `src/widget/mod.rs` declares it, and
   `Y` is itself Registered. A type alias is the same control under a second name
   (`Panel = GroupBox`), so registering it would create a duplicate entry.
-* **BaseOrChild**  — annotated with a `// kind-role: base` or `// kind-role: child`
+* **BaseOrChild**  — annotated with a `// kind-role: base`, `child` or `external`
   marker next to its variant in `src/widget/kind.rs`. These are structural roles
   (`Frame` supplies its children's drawing, `MenuItem` is built by its `Menu`),
   never standalone controls. The marker exists because "this one is a base class"
@@ -82,7 +82,7 @@ ALIAS_FILE = "src/widget/mod.rs"
 # Matches a `// kind-role: base` / `// kind-role: child` marker. The marker is
 # allowed to carry trailing prose, and to sit on the line above or the same line
 # as the variant, because either reads naturally in Rust.
-ROLE_RE = re.compile(r"//\s*kind-role:\s*(base|child)\b")
+ROLE_RE = re.compile(r"//\s*kind-role:\s*(base|child|external)\b")
 
 # `pub type Panel = GroupBox;` — the alias half of the reachability model.
 ALIAS_RE = re.compile(r"^pub type (?P<alias>[A-Za-z0-9_]+)\s*=\s*(?P<target>[A-Za-z0-9_]+)\s*;")
@@ -283,7 +283,7 @@ def main() -> int:
             print(f"  ❌ {entry}", file=sys.stderr)
         print(
             "\nEvery kind must be registered in the factory, declared a `pub type` alias "
-            "of a registered kind, or carry a `// kind-role: base|child` marker in "
+            "of a registered kind, or carry a `// kind-role: base|child|external` marker in "
             f"{KIND_FILE}.",
             file=sys.stderr,
         )

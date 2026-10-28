@@ -7,8 +7,8 @@
 
 For each declared face, two files:
 
-    crates/rust-widgets-font/src/<id>.ttf   the subset itself, byte-for-byte from fontTools
-    crates/rust-widgets-font/src/<id>.rs    a one-line `include_bytes!` with a provenance header
+    crates/rust-widgets-font/assets/<id>.ttf   the subset itself, byte-for-byte from fontTools
+    crates/rust-widgets-font/src/<id>.rs       a one-line `include_bytes!` with a provenance header
 
 The header repeats the upstream project, the upstream URL, the SHA-256 of the *upstream* file
 and the licence, because `tools/font_license_scan.py` requires exactly those facts and the
@@ -53,7 +53,8 @@ LICENSES = {
     "ofl-1.1": "SIL Open Font License 1.1",
 }
 
-ASSET_DIR = REPO_ROOT / "crates" / "rust-widgets-font" / "src"
+SRC_DIR = REPO_ROOT / "crates" / "rust-widgets-font" / "src"
+ASSET_DIR = REPO_ROOT / "crates" / "rust-widgets-font" / "assets"
 CACHE_DIR = REPO_ROOT / "target" / "font-cache"
 
 # ── The faces ───────────────────────────────────────────────────────────────────────────────────
@@ -351,7 +352,7 @@ def wrapper_source(face_id, face, license_id, payload_len, glyphs, has_gsub, has
 // ~150 KB of source, which is a worse artifact than the binary it describes.
 
 /// The subset's bytes. Parsed on first use, never copied into a heap allocation.
-pub const FONT: &[u8] = include_bytes!("{face_id}.ttf");
+pub const FONT: &[u8] = include_bytes!("../assets/{face_id}.ttf");
 '''
 
 
@@ -379,6 +380,7 @@ def main(argv=None) -> int:
         if get_face(face_id) is None:
             print(f"unknown --face={face_id!r}; known: {', '.join(all_faces())}", file=sys.stderr)
             return 1
+    SRC_DIR.mkdir(parents=True, exist_ok=True)
     ASSET_DIR.mkdir(parents=True, exist_ok=True)
 
     stale = False
@@ -394,7 +396,7 @@ def main(argv=None) -> int:
         )
 
         ttf_path = ASSET_DIR / f"{face_id}.ttf"
-        rs_path = ASSET_DIR / f"{face_id}.rs"
+        rs_path = SRC_DIR / f"{face_id}.rs"
         print(f"{face_id}: {len(payload)} bytes, {glyphs} glyphs, GSUB={has_gsub} GPOS={has_gpos}"
               f" ({len(unicodes)} codepoints requested, {len(absent)} absent upstream)")
 

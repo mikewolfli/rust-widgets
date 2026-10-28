@@ -3,7 +3,7 @@
 
 //! WebEngineViewEnhanced widget — a web engine view wrapper.
 //!
-//! This type shares ~95% of its implementation with [`WebViewEnhanced`](super::web_view::WebViewEnhanced).
+//! This type shares ~95% of its implementation with [`WebViewEnhanced`](crate::web_view_enhanced::WebViewEnhanced).
 //! Both delegate to a common [`WebViewCore`] to avoid code duplication.
 //!
 //! **Unique to this type:**
@@ -31,16 +31,16 @@
 //! (see [`Self::evaluate_javascript`]).
 //!
 //! A caller can ask whether a real engine is available with
-//! [`crate::platform::Platform::supports_web_engine`]; it answers `false` on every
+//! [`rust_widgets::platform::Platform::supports_web_engine`]; it answers `false` on every
 //! current backend, and the answer is honest rather than a silent degradation.
 
 use super::js_engine::{JsResult, JsValue};
 use super::web_core::{delegate_widget, WebViewCore};
-use crate::core::{ObjectId, Point, Rect, Size};
-use crate::event::{Event, EventHandler};
-use crate::signal::{ConnectionScope, GenericSignal, Signal1};
-use crate::style::WidgetStyle;
-use crate::widget::{Widget, WidgetKind};
+use rust_widgets::core::{ObjectId, Point, Rect, Size};
+use rust_widgets::event::{Event, EventHandler};
+use rust_widgets::signal::{ConnectionScope, GenericSignal, Signal1};
+use rust_widgets::style::WidgetStyle;
+use rust_widgets::widget::{Widget, WidgetKind};
 
 /// Enhanced web engine view widget.
 ///
@@ -84,9 +84,9 @@ impl WebEngineViewEnhanced {
     /// fact, so it stays correct if a backend gains engine support later. Today it is
     /// `false` everywhere (see [`Platform::supports_web_engine`]).
     ///
-    /// [`Platform::supports_web_engine`]: crate::platform::Platform::supports_web_engine
+    /// [`Platform::supports_web_engine`]: rust_widgets::platform::Platform::supports_web_engine
     pub fn has_real_engine(&self) -> bool {
-        crate::platform::platform_facts().supports_web_engine()
+        rust_widgets::platform::platform_facts().supports_web_engine()
     }
 
     /// The address currently shown, or `""` until something is loaded.
@@ -370,8 +370,8 @@ impl EventHandler for WebEngineViewEnhanced {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::Rect;
-    use crate::web::privacy::BrowsingData;
+    use rust_widgets::core::Rect;
+    use crate::privacy::BrowsingData;
 
     #[test]
     fn test_web_engine_view_new() {
@@ -569,7 +569,7 @@ mod tests {
         let engine = WebEngineViewEnhanced::new(Rect::new(0, 0, 800, 600));
         assert_eq!(
             engine.has_real_engine(),
-            crate::platform::platform_facts().supports_web_engine(),
+            rust_widgets::platform::platform_facts().supports_web_engine(),
             "the widget must report the platform's capability, not remember its own guess"
         );
     }

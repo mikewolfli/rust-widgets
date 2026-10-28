@@ -162,7 +162,7 @@ pub enum WidgetKind {
     /// against its position in an ordered series, while this plots a value against
     /// *which dimension* it belongs to, and draws each series as a closed polygon.
     /// The two data models are not the same shape (see the module docs of
-    /// `special_widgets::radar_chart`), which is the condition rule #80 sets.
+    /// `chart_widgets::radar_chart`), which is the condition rule #80 sets.
     #[cfg(widgets_unstripped)]
     RadarChart,
     /// Heat map — a matrix of values rendered as a grid of coloured cells.
@@ -178,7 +178,7 @@ pub enum WidgetKind {
     ///
     /// A separate kind rather than a `ListView` variant: the model is two-level and
     /// a drag changes both the column and the index (see the module docs of
-    /// `special_widgets::kanban_board`). It is also the first consumer of
+    /// `chart_widgets::kanban_board`). It is also the first consumer of
     /// `event::dnd`.
     #[cfg(widgets_unstripped)]
     KanbanBoard,
@@ -765,6 +765,8 @@ pub enum WidgetKind {
     /// FindBar — query, match and replacement controls for an editor.
     FindBar,
     /// WebFindBar — the web family's own find bar (searches a page, not an editor buffer).
+    // kind-role: external: registered by the `rust-widgets-webview` package (plan A), so this
+    // package's factory does not carry a constructor for it.
     WebFindBar,
     /// ShapeCanvas — a scene that hosts, selects and orders shapes.
     ShapeCanvas,

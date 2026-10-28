@@ -54,7 +54,7 @@ use rust_widgets::theme::{global_theme_manager, AppearanceMode, Theme};
 // The demo has a `Layout` struct of its own (the panel rects), so the library's layout
 // trait is imported under a distinct name rather than shadowing it.
 use rust_widgets::layout::{BoxLayout, Layout as LayoutTrait, LayoutConstraints};
-use rust_widgets::widget::special_widgets::finance::{
+use rust_widgets::widget::chart_widgets::finance::{
     Bar, BookLevel, CandlestickChart, DepthChart, IndicatorChart, IndicatorMode, OrderBook,
     OrderBookWidget, Overlay, PriceLevelKind, PriceLine, PriceSeries, Quote, QuoteBoard,
     QuoteColumn, QuoteSort, VolumeChart,
@@ -1525,7 +1525,7 @@ mod tests {
             "the series must be long enough for the longest overlay to settle"
         );
         let average =
-            rust_widgets::widget::special_widgets::finance::indicators::sma(&closes, longest);
+            rust_widgets::widget::chart_widgets::finance::indicators::sma(&closes, longest);
         let defined = average.iter().filter(|value| value.is_finite()).count();
         assert!(defined >= series.len() - longest, "the 60-period average must be defined");
     }

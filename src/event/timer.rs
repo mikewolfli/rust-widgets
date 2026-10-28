@@ -980,6 +980,11 @@ mod tests {
 
     /// G-901: the destroy chain's purge must reach a manager owned by another part of the
     /// process, stop only the dead target's timers, and leave other targets alone.
+    ///
+    /// Gated on `full_widgets` for the same reason the entry point is: the purge registry only
+    /// exists in the profile that has a widget destroy chain, so a reduced profile cannot even
+    /// name `stop_timers_for_target_everywhere`.
+    #[cfg(full_widgets)]
     #[test]
     fn destroying_a_target_stops_only_its_timers_everywhere() {
         let queue = EventQueue::new();

@@ -161,7 +161,16 @@ def main():
     exempt = exemptions()
     hint_count = 0
 
-    for path in sorted(pathlib.Path("src/widget").rglob("*.rs")):
+    # Both roots: the widget tree, and the webview package that now owns the web controls
+    # (WEB-001). Scanning only `src/widget` would have silently dropped `WebEngineView` and
+    # `WebFindBar` from this rule while their two exemption rows still read as if they were
+    # covered.
+    scan_paths = [
+        path
+        for root in (pathlib.Path("src/widget"), pathlib.Path("crates/rust-widgets-webview/src"))
+        for path in sorted(root.rglob("*.rs"))
+    ]
+    for path in scan_paths:
         rel = path.as_posix()
         if rel == SIZE_HINT_DEFINITION_FILE:
             continue

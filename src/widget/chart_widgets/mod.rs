@@ -12,8 +12,9 @@
 //! from another top-level module looked like an unrelated dependency.
 //!
 //! * **Control layer** — the data-visualisation *widgets*: [`bar_chart`],
-//!   [`line_chart`], [`pie_chart`] and [`sparkline`]. They own `WidgetKind`
-//!   semantics, events and signals.
+//!   [`line_chart`], [`pie_chart`], [`sparkline`], and the classified set that moved in from
+//!   `special_widgets` — [`chart`], [`heatmap`], [`radar_chart`], [`gantt_widget`],
+//!   [`kanban_board`] and [`finance`]. They own `WidgetKind` semantics, events and signals.
 //! * **Engine layer** — the resolution-independent *drawing* code: [`types`]
 //!   (data model, [`types::Chart`] / [`types::ChartContext`] contracts), [`charts`]
 //!   (concrete `LineChart`/`BarChart`/… renderers), [`layout`] (cartesian plot
@@ -45,19 +46,31 @@
 #[cfg(widgets_unstripped)]
 pub mod adapter;
 pub mod bar_chart;
+/// The general-purpose chart panel (series model, axes, legend, crosshair hit-testing).
+pub mod chart;
 /// COMP-F01: vertical/horizontal chart reference lines with axis value chips.
 pub mod chart_crosshair;
 /// COMP-A1: fixed value/threshold reference lines for line and bar charts.
 pub mod chart_reference_line;
 #[cfg(widgets_unstripped)]
 pub mod charts;
+/// Market-data widgets: candles, depth, ladder, quote board, volume and indicators.
+pub mod finance;
+/// Gantt chart and the two companion controls it ships with.
+pub mod gantt_widget;
 /// Gauge — a radial dial showing one value against a range.
 #[cfg(full_widgets)]
 pub mod gauge;
+/// Heatmap — a dense grid of colour-coded cells with a legend band.
+pub mod heatmap;
+/// Kanban board and the card/column controls it composes.
+pub mod kanban_board;
 #[cfg(widgets_unstripped)]
 pub mod layout;
 pub mod line_chart;
 pub mod pie_chart;
+/// Radar chart — a polar plot of series over shared axes.
+pub mod radar_chart;
 pub mod sparkline;
 #[cfg(widgets_unstripped)]
 pub mod svg;
@@ -66,10 +79,19 @@ pub mod types;
 
 // ── Control layer re-exports (the bare names mean the widgets) ──
 pub use bar_chart::{BarChart, BarEntry};
+pub use chart::ChartWidget;
 pub use chart_crosshair::{ChartCrosshair, CrosshairMode};
 pub use chart_reference_line::*;
+pub use gantt_widget::{
+    DateFormat, Dependency, DependencyEditor, GanttTask, GanttWidget, TimelineAxis,
+};
+pub use heatmap::{Heatmap, HeatmapCell};
+pub use kanban_board::{
+    CardPosition, KanbanBoard, KanbanCard, KanbanCardView, KanbanColumn, KanbanColumnHeader,
+};
 pub use line_chart::LineChart;
 pub use pie_chart::{PieChart, PieSlice};
+pub use radar_chart::RadarChart;
 pub use sparkline::Sparkline;
 
 // ── Engine layer re-exports (qualified, never shadowing the controls) ──

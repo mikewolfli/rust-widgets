@@ -26,10 +26,10 @@ use crate::signal::Signal1;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::chart_widgets::finance::layout::PlotArea;
+use crate::widget::chart_widgets::finance::types::Quote;
+use crate::widget::chart_widgets::finance::volume_chart::draw_empty_pane;
 use crate::widget::metrics::role_font;
-use crate::widget::special_widgets::finance::layout::PlotArea;
-use crate::widget::special_widgets::finance::types::Quote;
-use crate::widget::special_widgets::finance::volume_chart::draw_empty_pane;
 use crate::widget::view_widgets::filter_expr::{FilterCondition, FilterOperator};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
@@ -1198,9 +1198,9 @@ impl Draw for QuoteBoard {
                 draw_empty_pane(
                     context,
                     &PlotArea::of(body),
-                    crate::widget::special_widgets::finance::layout::PanelColors {
+                    crate::widget::chart_widgets::finance::layout::PanelColors {
                         grid: panel.blend(&secondary, 0.45),
-                        ..crate::widget::special_widgets::finance::layout::PanelColors::from_parts(
+                        ..crate::widget::chart_widgets::finance::layout::PanelColors::from_parts(
                             panel, ink,
                         )
                     },
@@ -1492,7 +1492,7 @@ impl WidgetProperties for QuoteBoard {
 mod tests {
     use super::*;
     use crate::event::{Event, EventHandler};
-    use crate::widget::special_widgets::finance::types::{fixtures, Quote};
+    use crate::widget::chart_widgets::finance::types::{fixtures, Quote};
     use alloc::sync::Arc;
     use core::sync::atomic::{AtomicUsize, Ordering};
 

@@ -300,7 +300,6 @@ pub mod video;
 pub mod view;
 /// Web view and engine components.
 #[cfg(widgets_unstripped)]
-pub mod web;
 /// Optional WGPU GPU acceleration backend (gated behind `gpu-wgpu` feature).
 #[cfg(feature = "gpu-wgpu")]
 pub mod wgpu_backend;
@@ -393,8 +392,6 @@ pub use widget::try_register_icon_on_grid;
 pub use widget::validate_icon;
 #[cfg(full_widgets)]
 pub use widget::view_widgets;
-#[cfg(full_widgets)]
-pub use widget::web_widgets;
 pub use widget::widget_property_get;
 pub use widget::widget_property_names;
 pub use widget::widget_property_set;
@@ -983,32 +980,6 @@ pub use widget::VideoPlayer;
 pub use widget::VirtualList;
 #[cfg(full_widgets)]
 pub use widget::VirtualTable;
-#[cfg(full_widgets)]
-pub use widget::WebEngine;
-#[cfg(full_widgets)]
-pub use widget::WebEngineContextMenuRequest;
-#[cfg(full_widgets)]
-pub use widget::WebEngineCookieStore;
-#[cfg(full_widgets)]
-pub use widget::WebEngineDownloadItem;
-#[cfg(full_widgets)]
-pub use widget::WebEngineFindTextResult;
-#[cfg(full_widgets)]
-pub use widget::WebEngineNotification;
-#[cfg(full_widgets)]
-pub use widget::WebEnginePage;
-#[cfg(full_widgets)]
-pub use widget::WebEngineScriptDialog;
-#[cfg(full_widgets)]
-pub use widget::WebEngineSettings;
-#[cfg(full_widgets)]
-pub use widget::WebEngineView;
-#[cfg(full_widgets)]
-pub use widget::WebEngineWebChannel;
-#[cfg(full_widgets)]
-pub use widget::WebFindBar;
-#[cfg(full_widgets)]
-pub use widget::WebView;
 pub use widget::Widget;
 #[cfg(widgets_unstripped)]
 pub use widget::WidgetAndDraw;

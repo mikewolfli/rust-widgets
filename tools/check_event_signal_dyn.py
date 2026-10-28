@@ -99,11 +99,11 @@ CONVERTED: dict[str, str] = {
     "breadcrumb": "src/widget/special_widgets/breadcrumb.rs",
     "button": "src/widget/base_widgets/button.rs",
     "calendar": "src/widget/advanced_widgets/calendar.rs",
-    "candlestick_chart": "src/widget/special_widgets/finance/candlestick_chart.rs",
+    "candlestick_chart": "src/widget/chart_widgets/finance/candlestick_chart.rs",
     "canvas": "src/widget/special_widgets/canvas.rs",
     "carousel": "src/widget/container_widgets/carousel.rs",
     "cascader": "src/widget/input_widgets/cascader.rs",
-    "chart": "src/widget/special_widgets/chart.rs",
+    "chart": "src/widget/chart_widgets/chart.rs",
     "chart_tooltip": "src/widget/companions/chart_tooltip.rs",
     "check_box": "src/widget/base_widgets/checkbox.rs",
     "chip": "src/widget/special_widgets/chip.rs",
@@ -130,8 +130,8 @@ CONVERTED: dict[str, str] = {
     "date_edit": "src/widget/advanced_widgets/date_edit.rs",
     "date_range_picker": "src/widget/misc_widgets/date_range_picker.rs",
     "date_time_edit": "src/widget/advanced_widgets/date_time_edit.rs",
-    "dependency_editor": "src/widget/special_widgets/gantt_companions.rs",
-    "depth_chart": "src/widget/special_widgets/finance/depth_chart.rs",
+    "dependency_editor": "src/widget/chart_widgets/gantt_companions.rs",
+    "depth_chart": "src/widget/chart_widgets/finance/depth_chart.rs",
     "dial": "src/widget/advanced_widgets/dial.rs",
     "dialog": "src/widget/dialog/dialog_widget.rs",
     "diff_file_list": "src/widget/special_widgets/diff_viewer.rs",
@@ -153,21 +153,21 @@ CONVERTED: dict[str, str] = {
     "font_combo_box": "src/widget/input_widgets/font_combo_box.rs",
     "font_dialog": "src/widget/dialog/font_dialog.rs",
     "freeform_shape": "src/widget/special_widgets/freeform_shape/shape.rs",
-    "gantt_widget": "src/widget/special_widgets/gantt_widget.rs",
+    "gantt_widget": "src/widget/chart_widgets/gantt_widget.rs",
     "grid": "src/widget/special_widgets/grid.rs",
     "grid_table": "src/widget/view_widgets/grid_table.rs",
     "grid_view_header": "src/widget/view_widgets/data_grid.rs",
     "group_box": "src/widget/container_widgets/groupbox.rs",
-    "heatmap": "src/widget/special_widgets/heatmap.rs",
+    "heatmap": "src/widget/chart_widgets/heatmap.rs",
     "hero_animation": "src/widget/media_widgets/hero_animation.rs",
     "image_gallery": "src/widget/view_widgets/image_gallery.rs",
     "image_view": "src/widget/display_widgets/image_view.rs",
-    "indicator_chart": "src/widget/special_widgets/finance/indicator_chart.rs",
+    "indicator_chart": "src/widget/chart_widgets/finance/indicator_chart.rs",
     "inplace_editor": "src/widget/input_widgets/inplace_editor.rs",
     "input_dialog": "src/widget/dialog/input_dialog.rs",
-    "kanban_board": "src/widget/special_widgets/kanban_board.rs",
-    "kanban_card_view": "src/widget/special_widgets/kanban_board.rs",
-    "kanban_column_header": "src/widget/special_widgets/kanban_board.rs",
+    "kanban_board": "src/widget/chart_widgets/kanban_board.rs",
+    "kanban_card_view": "src/widget/chart_widgets/kanban_board.rs",
+    "kanban_column_header": "src/widget/chart_widgets/kanban_board.rs",
     "keyboard": "src/widget/input_widgets/keyboard.rs",
     "lcd_number": "src/widget/display_widgets/lcd_number.rs",
     "legend": "src/widget/companions/legend.rs",
@@ -202,7 +202,7 @@ CONVERTED: dict[str, str] = {
     "navigation_stack": "src/widget/nav_widgets/navigation_stack.rs",
     "notification_center": "src/widget/special_widgets/notification_center.rs",
     "number_picker": "src/widget/input_widgets/number_picker.rs",
-    "order_book": "src/widget/special_widgets/finance/order_book.rs",
+    "order_book": "src/widget/chart_widgets/finance/order_book.rs",
     "otp_input": "src/widget/input_widgets/otp_input.rs",
     "pagination": "src/widget/nav_widgets/pagination.rs",
     "panel": "src/widget/container_widgets/groupbox.rs",
@@ -215,8 +215,8 @@ CONVERTED: dict[str, str] = {
     "properties_panel": "src/widget/view_widgets/properties_panel.rs",
     "property_grid": "src/widget/view_widgets/property_grid.rs",
     "query_builder": "src/widget/view_widgets/query_builder.rs",
-    "quote_board": "src/widget/special_widgets/finance/quote_board.rs",
-    "radar_chart": "src/widget/special_widgets/radar_chart.rs",
+    "quote_board": "src/widget/chart_widgets/finance/quote_board.rs",
+    "radar_chart": "src/widget/chart_widgets/radar_chart.rs",
     "radio_button": "src/widget/base_widgets/radiobutton.rs",
     "range_preset_bar": "src/widget/misc_widgets/date_range_picker.rs",
     "range_slider": "src/widget/input_widgets/range_slider.rs",
@@ -261,7 +261,7 @@ CONVERTED: dict[str, str] = {
     "tile_loader": "src/widget/special_widgets/map_view_companions.rs",
     "time_edit": "src/widget/advanced_widgets/time_edit.rs",
     "time_picker": "src/widget/advanced_widgets/time_edit.rs",
-    "timeline_axis": "src/widget/special_widgets/gantt_companions.rs",
+    "timeline_axis": "src/widget/chart_widgets/gantt_companions.rs",
     "timeline_widget": "src/widget/special_widgets/timeline_widget.rs",
     "toast": "src/widget/special_widgets/toast/single.rs",
     "toast_host": "src/widget/companions/toast_host.rs",
@@ -276,10 +276,7 @@ CONVERTED: dict[str, str] = {
     "video_player": "src/widget/media_widgets/video_player.rs",
     "virtual_list": "src/widget/view_widgets/virtual_list.rs",
     "virtual_table": "src/widget/view_widgets/virtual_table.rs",
-    "volume_chart": "src/widget/special_widgets/finance/volume_chart.rs",
-    "web_engine_view": "src/widget/web_widgets/web_engine.rs",
-    "web_find_bar": "src/widget/web_widgets/find_bar.rs",
-    "page_find_bar": "src/widget/web_widgets/find_bar.rs",
+    "volume_chart": "src/widget/chart_widgets/finance/volume_chart.rs",
     "window": "src/widget/window.rs",
     "wizard_dialog": "src/widget/dialog/wizard.rs",
     "zoom_control": "src/widget/special_widgets/map_view_companions.rs",
@@ -483,9 +480,6 @@ STRUCT_IMPL: dict[str, str] = {
     "virtual_list": "VirtualList",
     "virtual_table": "VirtualTable",
     "volume_chart": "VolumeChart",
-    "web_engine_view": "WebEngineView",
-    "web_find_bar": "WebFindBar",
-    "page_find_bar": "WebFindBar",
     "window": "Window",
     "wizard_dialog": "WizardDialog",
     "zoom_control": "ZoomControl",
@@ -514,6 +508,42 @@ STRUCT_IMPL: dict[str, str] = {
 DELEGATES: dict[str, str] = {
     "cupertino_switch": "switch",
 }
+
+# Converted controls that live outside the root crate, keyed by control.
+#
+# `WEB-001` moved the web widgets into `crates/rust-widgets-webview`, which owns its capability
+# table. The census is generated from the root crate's `properties.rs`, so these controls are
+# absent from it, and reading them out of the census would be reading the wrong crate's answer.
+# The row therefore names the source file, the struct, and the capability constant that publishes
+# the names — the same three facts the root-crate rows get from `CONVERTED` + `STRUCT_IMPL` +
+# `CENSUS`, taken from the crate that owns them rather than dropped from the check.
+#
+# Dropping them would have been the quiet failure this gate exists to prevent: the three controls
+# publish 24 event names between them and would simply stop being audited.
+EXTERNAL: dict[str, tuple[str, str, str]] = {
+    "web_engine_view": (
+        "crates/rust-widgets-webview/src/web_engine.rs",
+        "WebEngineView",
+        "WEB_ENGINE_VIEW_EVENTS",
+    ),
+    "web_find_bar": (
+        "crates/rust-widgets-webview/src/find_bar.rs",
+        "WebFindBar",
+        "WEB_FIND_BAR_EVENTS",
+    ),
+    "page_find_bar": (
+        "crates/rust-widgets-webview/src/find_bar.rs",
+        "WebFindBar",
+        "WEB_FIND_BAR_EVENTS",
+    ),
+    "web_history_panel": (
+        "crates/rust-widgets-webview/src/web_history_panel.rs",
+        "WebHistoryPanel",
+        "WEB_HISTORY_PANEL_EVENTS",
+    ),
+}
+
+EXTERNAL_CAPABILITY_SOURCE = REPO / "crates/rust-widgets-webview/src/capability.rs"
 
 NOT_YET_CONVERTED_REASON = (
     "`event_signal_dyn` is unimplemented, so `forward_all` wires none of its names. "
@@ -586,6 +616,29 @@ def read_alias_registry() -> dict[str, dict[str, str]]:
     return rows
 
 
+def external_published_names(const_name: str) -> set[str]:
+    """The `name` literals of one `&[EventSchema]` constant in the webview capability table.
+
+    Bracket-matched rather than regex-terminated so a constant that grows a row keeps being read as
+    one whole list, and a constant that is missing reports nothing rather than the rest of the file.
+    """
+    if not EXTERNAL_CAPABILITY_SOURCE.exists():
+        return set()
+    source = EXTERNAL_CAPABILITY_SOURCE.read_text()
+    match = re.search(rf"const\s+{re.escape(const_name)}\s*:[^=]*=\s*&\[", source)
+    if match is None:
+        return set()
+    depth = 0
+    for i in range(match.end() - 1, len(source)):
+        if source[i] == "[":
+            depth += 1
+        elif source[i] == "]":
+            depth -= 1
+            if depth == 0:
+                return set(re.findall(r'name:\s*"([a-z0-9_]+)"', source[match.end() : i]))
+    return set()
+
+
 def _struct_impl_body(source: str, struct_name: str) -> str | None:
     """The body of `impl Widget for <struct_name> { ... }`, matched by balanced braces.
 
@@ -623,6 +676,25 @@ def _struct_impl_body(source: str, struct_name: str) -> str | None:
     return None
 
 
+def _dynamic_bodies(region: str) -> list[str]:
+    """Every `event_signal_dyn` body in `region`, matched by balanced braces."""
+    bodies: list[str] = []
+    for start in re.finditer(r"fn event_signal_dyn\(", region):
+        open_at = region.find("{", start.end())
+        if open_at == -1:
+            continue
+        depth = 0
+        for i in range(open_at, len(region)):
+            if region[i] == "{":
+                depth += 1
+            elif region[i] == "}":
+                depth -= 1
+                if depth == 0:
+                    bodies.append(region[open_at : i + 1])
+                    break
+    return bodies
+
+
 def resolved_names(source: str, struct_name: str | None = None) -> set[str]:
     """The event-name literals a control's `event_signal_dyn` matches on.
 
@@ -638,20 +710,45 @@ def resolved_names(source: str, struct_name: str | None = None) -> set[str]:
     if region is None:
         return set()
     names: set[str] = set()
-    for start in re.finditer(r"fn event_signal_dyn\(", region):
-        open_at = region.find("{", start.end())
-        if open_at == -1:
-            continue
-        depth = 0
-        for i in range(open_at, len(region)):
-            if region[i] == "{":
-                depth += 1
-            elif region[i] == "}":
-                depth -= 1
-                if depth == 0:
-                    names |= set(re.findall(r'"([a-z0-9_]+)"\s*=>', region[open_at:i]))
-                    break
+    for body in _dynamic_bodies(region):
+        names |= set(re.findall(r'"([a-z0-9_]+)"\s*=>', body))
     return names
+
+
+_ARM_NAMES = re.compile(r'^\s*((?:"[a-z0-9_]+"\s*\|\s*)*"[a-z0-9_]+")\s*=>', re.M)
+_REF_NAME = re.compile(r'EventSignalRef::(?:mapped|unit)\(\s*"([a-z0-9_]+)"')
+
+
+def declared_name_mismatches(
+    source: str, struct_name: str | None = None
+) -> list[tuple[list[str], str, int]]:
+    """Arms whose `EventSignalRef` declares a name the arm does not match on.
+
+    # Why this is a separate check from `resolved_names`
+
+    `resolved_names` reads the arm literals only. The `EventSignalRef` built inside the arm carries
+    its **own** `&'static str`, and `EventSignalBinder::wire_one` refuses a reference that declares a
+    name other than the one it was asked for — deliberately, so a copy-paste mistake wires nothing
+    instead of wiring the wrong signal. An arm whose declared name disagrees with its own pattern is
+    therefore valid-but-inert: `forward_all` walks the published names, the arm resolves, and the
+    wire is then dropped. `video_player` had exactly this on `on_chapter_entered` (declared
+    `chapter_entered`), which is why this check exists rather than a comment asking for care.
+    """
+    region = source if struct_name is None else _struct_impl_body(source, struct_name)
+    if region is None:
+        return []
+    found: list[tuple[list[str], str, int]] = []
+    for body in _dynamic_bodies(region):
+        arms = list(_ARM_NAMES.finditer(body))
+        for index, arm in enumerate(arms):
+            stop = arms[index + 1].start() if index + 1 < len(arms) else len(body)
+            reference = _REF_NAME.search(body, arm.end(), stop)
+            if reference is None:
+                continue
+            names = re.findall(r'"([a-z0-9_]+)"', arm.group(1))
+            if reference.group(1) not in names:
+                found.append((names, reference.group(1), arm.start()))
+    return found
 
 
 def main() -> int:
@@ -780,6 +877,15 @@ def main() -> int:
         resolved = resolved_names(arm_source, STRUCT_IMPL.get(control))
         checked += 1
 
+        for names, declared_name, _offset in declared_name_mismatches(
+            arm_source, STRUCT_IMPL.get(control)
+        ):
+            failures.append(
+                f"{control}: the arm for {names} builds an `EventSignalRef` declaring "
+                f"`{declared_name}`, which the binder refuses — the arm resolves and the wire is "
+                "dropped"
+            )
+
         for name in sorted(declared - resolved):
             failures.append(
                 f"{control}: `{name}` is published but `event_signal_dyn` does not resolve it"
@@ -788,6 +894,40 @@ def main() -> int:
             failures.append(
                 f"{control}: `event_signal_dyn` resolves `{name}`, which neither this control nor "
                 "any control sharing its struct publishes — nothing can subscribe to it"
+            )
+
+    # Converted controls owned by another crate: the same two comparisons, against that crate's own
+    # capability constant instead of the root census (see [`EXTERNAL`]).
+    for control, (relative, struct_name, const_name) in sorted(EXTERNAL.items()):
+        path = REPO / relative
+        if not path.exists():
+            failures.append(f"{control}: {relative} does not exist")
+            continue
+        external_declared = external_published_names(const_name)
+        if not external_declared:
+            failures.append(
+                f"{control}: `{const_name}` names no event in "
+                f"{EXTERNAL_CAPABILITY_SOURCE.relative_to(REPO)}, so there is nothing to compare"
+            )
+            continue
+        external_source = path.read_text()
+        external_resolved = resolved_names(external_source, struct_name)
+        checked += 1
+
+        for names, declared_name, _offset in declared_name_mismatches(external_source, struct_name):
+            failures.append(
+                f"{control}: the arm for {names} builds an `EventSignalRef` declaring "
+                f"`{declared_name}`, which the binder refuses — the arm resolves and the wire is "
+                "dropped"
+            )
+        for name in sorted(external_declared - external_resolved):
+            failures.append(
+                f"{control}: `{name}` is published but `event_signal_dyn` does not resolve it"
+            )
+        for name in sorted(external_resolved - external_declared):
+            failures.append(
+                f"{control}: `event_signal_dyn` resolves `{name}`, which `{const_name}` does not "
+                "publish — nothing can subscribe to it"
             )
 
     # Direction 2: the gap must be named, so it is a fact rather than an impression. A control
@@ -807,6 +947,9 @@ def main() -> int:
     print(f"converted controls checked: {checked}")
     for control in converted:
         print(f"  {control}: {len(published.get(control, []))} published names")
+    print(f"converted controls in other crates: {len(EXTERNAL)}")
+    for control, (_relative, _struct, const_name) in sorted(EXTERNAL.items()):
+        print(f"  {control}: {len(external_published_names(const_name))} published names ({const_name})")
     print(f"alias identities checked: {len(aliases)}")
     for alias in sorted(aliases):
         print(f"  {alias} -> {aliases[alias]['alias_of']} ({aliases[alias]['implementation']})")

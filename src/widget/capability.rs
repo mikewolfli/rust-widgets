@@ -93,6 +93,10 @@ use super::{Widget, WidgetKind};
 #[cfg(full_widgets)]
 use crate::widget::base_widgets::toggle_button::ToggleButton;
 #[cfg(full_widgets)]
+use crate::widget::chart_widgets::chart::ChartWidget;
+#[cfg(full_widgets)]
+use crate::widget::chart_widgets::gantt_widget::GanttWidget;
+#[cfg(full_widgets)]
 use crate::widget::dialog::popup_window::PopupWindow;
 #[cfg(full_widgets)]
 use crate::widget::input_widgets::rich_edit::RichEdit;
@@ -107,15 +111,11 @@ use crate::widget::menu_toolbar::tool_button::ToolButton;
 #[cfg(full_widgets)]
 use crate::widget::special_widgets::canvas::Canvas;
 #[cfg(full_widgets)]
-use crate::widget::special_widgets::chart::ChartWidget;
-#[cfg(full_widgets)]
 use crate::widget::special_widgets::code_editor::CodeEditor;
 #[cfg(full_widgets)]
 use crate::widget::special_widgets::command_palette::CommandPalette;
 #[cfg(full_widgets)]
 use crate::widget::special_widgets::diff_viewer::DiffViewer;
-#[cfg(full_widgets)]
-use crate::widget::special_widgets::gantt_widget::GanttWidget;
 #[cfg(full_widgets)]
 use crate::widget::special_widgets::map_view::MapView;
 #[cfg(full_widgets)]
@@ -148,8 +148,6 @@ use crate::widget::view_widgets::tree_view::TreeView;
 use crate::widget::view_widgets::virtual_list::VirtualList;
 #[cfg(full_widgets)]
 use crate::widget::view_widgets::virtual_table::VirtualTable;
-#[cfg(full_widgets)]
-use crate::widget::web_widgets::web_view::WebView;
 // The container types the tie-break table below compares against. Each is named
 // there because its kind is shared with another control, so the concrete-type check
 // is the only way to tell which capability a mounted widget belongs to.
@@ -834,12 +832,6 @@ pub static ALIAS_OF: &[AliasRow] = &[
         alias_of: "line_edit",
         implementation: "LineEdit",
         file: "src/widget/input_widgets/lineedit.rs",
-    },
-    AliasRow {
-        alias: "page_find_bar",
-        alias_of: "web_find_bar",
-        implementation: "WebFindBar",
-        file: "src/widget/web_widgets/find_bar.rs",
     },
     AliasRow {
         alias: "password_edit",
@@ -2023,13 +2015,9 @@ impl WidgetFactory {
             >(widget)
             .is_some(),
             "gantt_task_grid" => self::coercion::widget_as::<
-                crate::widget::special_widgets::gantt_widget::GanttTaskGrid,
+                crate::widget::chart_widgets::gantt_widget::GanttTaskGrid,
             >(widget)
             .is_some(),
-            "web_history_panel" => {
-                self::coercion::widget_as::<crate::widget::web_widgets::WebHistoryPanel>(widget)
-                    .is_some()
-            }
             "chapter_list_panel" => {
                 self::coercion::widget_as::<crate::widget::media_widgets::ChapterListPanel>(widget)
                     .is_some()
@@ -2061,9 +2049,6 @@ impl WidgetFactory {
             // `web_view` and `webview` are aliases of it, so all three spellings must
             // resolve — an alias that resolves to a name absent from this table is an
             // alias that cannot address its own control.
-            "web_engine_view" | "web_view" | "webview" => {
-                self::coercion::widget_as::<WebView>(widget).is_some()
-            }
             "media_player" => self::coercion::widget_as::<MediaPlayer>(widget).is_some(),
             // `WidgetKind::Toolbox`. Two registered names for one control.
             "tool_box" | "toolbox" => self::coercion::widget_as::<ToolBox>(widget).is_some(),

@@ -1,28 +1,26 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
 // SPDX-License-Identifier: MIT
 
-//! Special widgets: canvas, chart, grid, freeform shape, etc.
+//! Special widgets: canvas, grid, freeform shape, editors, maps and the misc controls.
+//!
+//! The data-visualisation controls (charts, heatmaps, radar, gantt, kanban and the finance
+//! set) live in [`crate::widget::chart_widgets`], which is where the chart drawing engine
+//! already is — one classification, not two.
 pub mod breadcrumb;
 pub mod canvas;
-pub mod chart;
 pub mod chip;
 pub mod code_editor;
 pub mod color_picker;
 pub mod command_palette;
 pub mod diff_viewer;
-pub mod finance;
 pub mod freeform_shape;
-pub mod gantt_widget;
 pub mod grid;
-pub mod heatmap;
-pub mod kanban_board;
 pub mod map_attribution;
 pub mod map_overview;
 pub mod map_view;
 pub mod markdown_editor;
 pub mod media_player;
 pub mod notification_center;
-pub mod radar_chart;
 pub mod segmented_control;
 pub mod signature_pad;
 pub mod snackbar;
@@ -34,21 +32,13 @@ pub mod toast;
 // Re-export special widgets
 pub use breadcrumb::{Breadcrumb, BreadcrumbSegment};
 pub use canvas::Canvas;
-pub use chart::ChartWidget;
 pub use chip::{Chip, ChipItem};
 pub use code_editor::{CodeEditor, DiagnosticMarker, MarkerSeverity, MultiCursor};
 pub use color_picker::ColorPicker;
 pub use command_palette::{CommandEntry, CommandPalette};
 pub use diff_viewer::{DiffFileList, DiffKind, DiffLine, DiffViewer};
 pub use freeform_shape::{FreeformShapeWidget, ShapeCanvas};
-pub use gantt_widget::{
-    DateFormat, Dependency, DependencyEditor, GanttTask, GanttWidget, TimelineAxis,
-};
 pub use grid::GridWidget;
-pub use heatmap::{Heatmap, HeatmapCell};
-pub use kanban_board::{
-    CardPosition, KanbanBoard, KanbanCard, KanbanCardView, KanbanColumn, KanbanColumnHeader,
-};
 pub use map_attribution::{AttributionEntry, Corner, MapAttributionOverlay};
 pub use map_overview::{CenterMarkerStyle, MapOverviewPanel};
 pub use map_view::{
@@ -58,7 +48,6 @@ pub use map_view::{
 pub use markdown_editor::{FindBar, MarkdownEditor, MarkdownOutlinePanel, MarkdownTextChange};
 pub use media_player::MediaPlayer;
 pub use notification_center::{NotificationCenter, NotificationItem, NotificationLevel};
-pub use radar_chart::RadarChart;
 pub use segmented_control::{SegmentItem, SegmentedControl};
 pub use signature_pad::{SignaturePad, SignatureStroke};
 pub use snackbar::Snackbar;

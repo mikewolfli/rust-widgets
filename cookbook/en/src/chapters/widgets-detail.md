@@ -78,7 +78,7 @@ Several controls also expose a string spelling of an enum through a property who
 | `dialog` | `src/widget/dialog/` | 17 | Modal decisions and transient panels |
 | `special` | `src/widget/special_widgets/` | 39 | Whole application surfaces and their companions |
 | `code_editor` | `src/widget/special_widgets/code_editor/` and `src/widget/special_widgets/markdown_editor.rs` | 5 | Structured-text editors and their navigation chrome |
-| `finance` | `src/widget/special_widgets/finance/` | 6 | Market data: candles, depth, ladder and indicators |
+| `finance` | `src/widget/chart_widgets/finance/` | 6 | Market data: candles, depth, ladder and indicators |
 | `advanced` | `src/widget/advanced_widgets/` | 10 | Date/time, dial, tabs, ribbon, pie menu and shortcuts |
 | `misc` | `src/widget/misc_widgets/` | 9 | Utility and mobile controls |
 | `media` | `src/widget/media_widgets/` | 7 | Playback, animation and camera preview |
@@ -2838,7 +2838,7 @@ Choose a finance control only for market or trading data: `CandlestickChart` for
 
 | Family | Source directory | Controls |
 |---|---|---|
-| `finance` | `src/widget/special_widgets/finance/` | 6 |
+| `finance` | `src/widget/chart_widgets/finance/` | 6 |
 
 ### CandlestickChart (`candlestick_chart`)
 

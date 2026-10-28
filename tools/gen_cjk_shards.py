@@ -7,8 +7,8 @@
 
 For each shard in `tools/cjk_vector_shards.txt`, two files:
 
-    crates/rust-widgets-font/src/cjk_shard_<id>.ttf   the subset itself
-    crates/rust-widgets-font/src/cjk_shard_<id>.rs     an `include_bytes!` with a provenance header
+    crates/rust-widgets-font/assets/cjk_shard_<id>.ttf   the subset itself
+    crates/rust-widgets-font/src/cjk_shard_<id>.rs       an `include_bytes!` with a provenance header
 
 and one index module, which is library code and stays in the crate that reads it:
 
@@ -42,7 +42,8 @@ import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-ASSET_DIR = REPO_ROOT / "crates" / "rust-widgets-font" / "src"
+SRC_DIR = REPO_ROOT / "crates" / "rust-widgets-font" / "src"
+ASSET_DIR = REPO_ROOT / "crates" / "rust-widgets-font" / "assets"
 INDEX_DIR = REPO_ROOT / "src" / "render" / "text" / "font_assets"
 SHARD_LIST = REPO_ROOT / "tools" / "cjk_vector_shards.txt"
 COVERAGE_LIST = REPO_ROOT / "tools" / "cjk_vector_codepoints.txt"
@@ -224,7 +225,7 @@ def shard_module(shard_id, license_id, payload_len, glyphs, requested, absent, r
 // `tools/cjk_vector_codepoints.txt`, which `tools/check_cjk_shards_cover_the_face.sh` asserts.
 
 /// This shard's bytes. Parsed on first use, never copied into a heap allocation.
-pub const FONT: &[u8] = include_bytes!("cjk_shard_{shard_id}.ttf");
+pub const FONT: &[u8] = include_bytes!("../assets/cjk_shard_{shard_id}.ttf");
 '''
 
 
@@ -400,7 +401,7 @@ def main(argv=None) -> int:
         rendered_shards.append((shard_id, codepoints, ranges_text))
 
         ttf_path = ASSET_DIR / f"cjk_shard_{shard_id}.ttf"
-        rs_path = ASSET_DIR / f"cjk_shard_{shard_id}.rs"
+        rs_path = SRC_DIR / f"cjk_shard_{shard_id}.rs"
         module = shard_module(shard_id, args.license_id, len(payload), glyphs,
                               len(codepoints), len(absent), ranges_text)
         if args.check:

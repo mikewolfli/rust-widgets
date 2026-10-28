@@ -75,7 +75,7 @@ macro_rules! impl_properties_other {
                 "tasks",
                 true,
                 true,
-                &crate::widget::special_widgets::gantt_widget::GANTT_TASK_SCHEMA,
+                &crate::widget::chart_widgets::gantt_widget::GANTT_TASK_SCHEMA,
             ),
             PropertySchema::new("task_count", PropertyValueKind::UInt, true, false),
             // The selection is reported only. The control's selection entry point is the Rust-side
@@ -511,21 +511,6 @@ macro_rules! impl_properties_other {
             PropertySchema::new("movable", PropertyValueKind::Bool, true, true),
         ];
 
-        #[cfg(not(alloc_frugal))]
-        pub(crate) const WEB_VIEW_PROPERTIES: &[PropertySchema] = &[
-            PropertySchema::new("url", PropertyValueKind::String, true, true),
-            PropertySchema::new("loading", PropertyValueKind::Bool, true, false),
-            PropertySchema::new("title", PropertyValueKind::String, true, true),
-            PropertySchema::new("can_go_back", PropertyValueKind::Bool, false, false),
-            PropertySchema::new("can_go_forward", PropertyValueKind::Bool, false, false),
-            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
-            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
-            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
-            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
-            PropertySchema::new("user_agent", PropertyValueKind::String, true, true),
-            PropertySchema::new("background_transparent", PropertyValueKind::Bool, true, true),
-            PropertySchema::new("cookie_persistence_enabled", PropertyValueKind::Bool, true, true),
-        ];
 
         pub(crate) const ARC_PROPERTIES: &[PropertySchema] = &[
             // D-01: the centre-reading template.
@@ -674,13 +659,13 @@ macro_rules! impl_properties_other {
                 "columns",
                 true,
                 true,
-                &crate::widget::special_widgets::kanban_board::KANBAN_COLUMN_SCHEMA,
+                &crate::widget::chart_widgets::kanban_board::KANBAN_COLUMN_SCHEMA,
             ),
             PropertySchema::records(
                 "cards",
                 true,
                 true,
-                &crate::widget::special_widgets::kanban_board::KANBAN_CARD_SCHEMA,
+                &crate::widget::chart_widgets::kanban_board::KANBAN_CARD_SCHEMA,
             ),
             PropertySchema::new("column_count", PropertyValueKind::UInt, true, false),
             PropertySchema::new("card_count", PropertyValueKind::UInt, true, false),
@@ -1736,7 +1721,7 @@ macro_rules! impl_properties_other {
                 "dependency_edges",
                 true,
                 true,
-                &crate::widget::special_widgets::gantt_widget::companions::DEPENDENCY_SCHEMA,
+                &crate::widget::chart_widgets::gantt_widget::companions::DEPENDENCY_SCHEMA,
             ),
             PropertySchema::new("editable", PropertyValueKind::Bool, true, true),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
@@ -1928,22 +1913,6 @@ macro_rules! impl_properties_other {
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
         ];
 
-        /// Web history panel (COMP-A5). `visible_count` is what the current prefix filter leaves
-        /// on screen; the rest are the list's own settings.
-        #[cfg(not(alloc_frugal))]
-        pub(crate) const WEB_HISTORY_PANEL_PROPERTIES: &[PropertySchema] = &[
-            PropertySchema::new("max_entries", PropertyValueKind::UInt, true, true),
-            PropertySchema::new("show_timestamps", PropertyValueKind::Bool, true, true),
-            PropertySchema::new("group_by_day", PropertyValueKind::Bool, true, true),
-            PropertySchema::new("row_height", PropertyValueKind::UInt, true, true),
-            PropertySchema::new("filter_prefix", PropertyValueKind::String, true, true),
-            PropertySchema::new("visible_count", PropertyValueKind::UInt, true, false),
-            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
-            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
-            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
-            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
-        ];
-
         /// Map overview (COMP-A7). The overview mirrors an attached map, so `map_view_attached`
         /// reports that connection rather than being a setting.
         #[cfg(not(alloc_frugal))]
@@ -1968,19 +1937,6 @@ macro_rules! impl_properties_other {
             PropertySchema::new("replace_visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("match_count", PropertyValueKind::UInt, true, false),
             PropertySchema::new("current_range", PropertyValueKind::String, true, false),
-            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
-            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
-            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
-        ];
-
-        /// Web find bar beside a web view (`COMP-L03`).
-        #[cfg(not(alloc_frugal))]
-        pub(crate) const WEB_FIND_BAR_PROPERTIES: &[PropertySchema] = &[
-            PropertySchema::new("query", PropertyValueKind::String, true, true),
-            PropertySchema::new("case_sensitive", PropertyValueKind::Bool, true, true),
-            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
-            PropertySchema::new("match_index", PropertyValueKind::UInt, true, true),
-            PropertySchema::new("match_count", PropertyValueKind::UInt, true, true),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),

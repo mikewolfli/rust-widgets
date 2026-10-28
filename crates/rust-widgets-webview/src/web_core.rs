@@ -20,24 +20,16 @@
 //! Regardless of feature selection, `file://` URLs and the `simulation_engine` trait
 //! always take priority over the real HTTP path.
 
-#[cfg(not(alloc_frugal))]
 use super::history::{BrowserHistory, SessionHistory};
-#[cfg(not(alloc_frugal))]
 use super::js_engine::{JsContext, JsEngine, JsResult, JsValue, SimpleJsEngine};
-#[cfg(not(alloc_frugal))]
 use super::plugins::PluginManager;
-#[cfg(not(alloc_frugal))]
 use super::privacy::{CookieJar, PrivacySettings, TrackingProtection};
-#[cfg(not(alloc_frugal))]
-use crate::core::Rect;
-#[cfg(not(alloc_frugal))]
-use crate::signal::Signal1;
-#[cfg(not(alloc_frugal))]
-use crate::widget::{BaseWidget, WidgetKind};
+use rust_widgets::core::Rect;
+use rust_widgets::signal::Signal1;
+use rust_widgets::widget::{BaseWidget, WidgetKind};
 
 /// A pluggable simulation engine that can be set externally (e.g. in tests)
 /// to inject mock content or simulate different network conditions.
-#[cfg(not(alloc_frugal))]
 pub trait SimulationEngine: Send {
     /// Simulate navigation to the given URL and return simulated content.
     fn simulate_navigation(&mut self, url: &str) -> Result<String, String>;
@@ -47,7 +39,7 @@ pub trait SimulationEngine: Send {
 ///
 /// Carries the generation it was started for so [`WebViewCore::poll_load`] can discard a result whose
 /// navigation has since been superseded.
-#[cfg(all(not(alloc_frugal), feature = "web-http"))]
+#[cfg(feature = "web-http")]
 struct HttpLoadOutcome {
     generation: u64,
     result: Result<String, String>,
@@ -64,17 +56,17 @@ struct HttpLoadOutcome {
 /// unbounded `read_to_string` against a hostile or misconfigured server could
 /// allocate until the process is killed. 16 MiB is larger than any HTML document a
 /// browser would keep as a page (larger payloads are downloads, not documents).
-#[cfg(all(not(alloc_frugal), feature = "web-http"))]
+#[cfg(feature = "web-http")]
 const HTTP_BODY_LIMIT: u64 = 16 * 1024 * 1024;
 
 /// Wall-clock budget for one fetch (connect + headers + body).
 ///
 /// Without it a stalled server blocked the helper thread — and therefore the load —
 /// indefinitely; the fetch has no cancellation channel of its own.
-#[cfg(all(not(alloc_frugal), feature = "web-http"))]
+#[cfg(feature = "web-http")]
 const HTTP_TIMEOUT: core::time::Duration = core::time::Duration::from_secs(30);
 
-#[cfg(all(not(alloc_frugal), feature = "web-http"))]
+#[cfg(feature = "web-http")]
 fn fetch_http_content(url: &str) -> Result<String, String> {
     let agent =
         ureq::Agent::config_builder().timeout_global(Some(HTTP_TIMEOUT)).build().new_agent();
@@ -90,7 +82,6 @@ fn fetch_http_content(url: &str) -> Result<String, String> {
 }
 
 /// Shared fields used by both WebEngineViewEnhanced and WebViewEnhanced.
-#[cfg(not(alloc_frugal))]
 pub struct WebViewCore {
     pub base: BaseWidget,
     pub url: String,
@@ -141,7 +132,6 @@ pub struct WebViewCore {
     load_generation: u64,
 }
 
-#[cfg(not(alloc_frugal))]
 impl WebViewCore {
     pub fn new(
         kind: WidgetKind,
@@ -678,14 +668,13 @@ impl WebViewCore {
 // ---------------------------------------------------------------------------
 // Widget trait delegation for WebViewCore (used by both wrappers)
 // ---------------------------------------------------------------------------
-#[cfg(not(alloc_frugal))]
 macro_rules! delegate_widget {
     ($wrapper:ty) => {
         impl Widget for $wrapper {
-            fn base(&self) -> &crate::widget::BaseWidget {
+            fn base(&self) -> &rust_widgets::widget::BaseWidget {
                 &self.core.base
             }
-            fn base_mut(&mut self) -> &mut crate::widget::BaseWidget {
+            fn base_mut(&mut self) -> &mut rust_widgets::widget::BaseWidget {
                 &mut self.core.base
             }
             fn id(&self) -> ObjectId {
@@ -788,14 +777,13 @@ macro_rules! delegate_widget {
     };
 }
 
-#[cfg(not(alloc_frugal))]
 pub(crate) use delegate_widget;
 
-#[cfg(all(test, not(alloc_frugal)))]
+#[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::Rect;
-    use crate::web::privacy::{BrowsingData, Cookie};
+    use rust_widgets::core::Rect;
+    use crate::privacy::{BrowsingData, Cookie};
 
     #[test]
     fn test_web_view_core_new() {

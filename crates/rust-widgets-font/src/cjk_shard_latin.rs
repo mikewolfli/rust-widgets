@@ -20,4 +20,4 @@
 // `tools/cjk_vector_codepoints.txt`, which `tools/check_cjk_shards_cover_the_face.sh` asserts.
 
 /// This shard's bytes. Parsed on first use, never copied into a heap allocation.
-pub const FONT: &[u8] = include_bytes!("cjk_shard_latin.ttf");
+pub const FONT: &[u8] = include_bytes!("../assets/cjk_shard_latin.ttf");

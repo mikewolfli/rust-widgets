@@ -38,7 +38,7 @@ pub use tooltip::Tooltip;
 pub use wizard::{NavAction, WizardDialog, WizardStep, WizardStyle};
 
 pub(crate) use modal::{
-    draw_modal_scrim, draw_modal_scrim_scaled, localized_label, move_focus, pop_modal_layer,
-    push_modal_layer, scale_about_centre, scrim_owner_for_root, scrim_plane_color,
-    REVEAL_MIN_SCALE,
+    draw_modal_scrim, draw_modal_scrim_scaled, localized_label, move_focus, note_plane_painted,
+    pop_modal_layer, push_modal_layer, reset_plane_painted, scale_about_centre,
+    scrim_owner_for_root, scrim_plane_color, REVEAL_MIN_SCALE,
 };

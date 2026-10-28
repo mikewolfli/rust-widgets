@@ -19,22 +19,23 @@
 //!
 //! [`set_entries`]: WebHistoryPanel::set_entries
 
-use crate::compat::{format, String, ToString, Vec};
-use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
-use crate::event::{Event, EventHandler};
-use crate::impl_widget_property_hooks;
-use crate::property_names_of;
-use crate::render::RenderContext;
-use crate::signal::Signal1;
-use crate::widget::capability::coercion::{
+use rust_widgets::compat::{format, String, ToString, Vec};
+use rust_widgets::impl_draw_bridge;
+use rust_widgets::core::{Color, HorizontalAlignment, Point, Rect, Size};
+use rust_widgets::event::{Event, EventHandler};
+use rust_widgets::impl_widget_property_hooks;
+use rust_widgets::property_names_of;
+use rust_widgets::render::RenderContext;
+use rust_widgets::signal::Signal1;
+use rust_widgets::widget::capability::coercion::{
     expect_bool, expect_string, expect_u32_saturating, expect_usize,
 };
-use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
-use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
-use crate::widget::capability::WidgetProperties;
-use crate::widget::metrics::{dimensions, role_font, ControlMetrics};
-use crate::widget::web_widgets::web_engine::{HistoryEntry, WebEngineView};
-use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use rust_widgets::widget::capability::properties_trait::{base_property_get, base_property_set};
+use rust_widgets::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use rust_widgets::widget::capability::WidgetProperties;
+use rust_widgets::widget::metrics::{dimensions, role_font, ControlMetrics};
+use crate::web_engine::{HistoryEntry, WebEngineView};
+use rust_widgets::widget::{BaseWidget, Draw, Widget, WidgetKind};
 
 /// Height of one history row when the host does not choose one, in logical pixels.
 const DEFAULT_ROW_HEIGHT: u32 = 44;
@@ -376,7 +377,7 @@ impl Widget for WebHistoryPanel {
     }
 
     fn set_state_theme_hook(&mut self) {
-        crate::style::reapply_active_theme_state(self);
+        rust_widgets::style::reapply_active_theme_state(self);
     }
 
     fn size_hint(&self) -> Size {
@@ -386,8 +387,8 @@ impl Widget for WebHistoryPanel {
 
     impl_draw_bridge!();
     impl_widget_property_hooks!();
-    fn event_signal_dyn(&self, name: &str) -> Option<crate::signal::EventSignalRef> {
-        use crate::signal::EventSignalRef;
+    fn event_signal_dyn(&self, name: &str) -> Option<rust_widgets::signal::EventSignalRef> {
+        use rust_widgets::signal::EventSignalRef;
         match name {
             "entry_activated" | "on_entry_activated" => {
                 Some(EventSignalRef::mapped("entry_activated", &self.on_entry_activated, |url| {
@@ -745,15 +746,15 @@ mod tests {
 
         // Glyphs are painted as outlines, so the paint is checked as text runs: two headers plus
         // a title and a URL per entry.
-        let without_times = crate::widget::svg::render_to_svg(&mut panel);
-        let runs_without_times = crate::widget::svg::text_ink_boxes(&without_times).len();
+        let without_times = rust_widgets::widget::svg::render_to_svg(&mut panel);
+        let runs_without_times = rust_widgets::widget::svg::text_ink_boxes(&without_times).len();
         assert_eq!(runs_without_times, 8, "two headers + three titles + three URLs");
 
         // The time column adds exactly one run per entry that supplied a time.
         panel.set_show_timestamps(true);
-        let with_times = crate::widget::svg::render_to_svg(&mut panel);
+        let with_times = rust_widgets::widget::svg::render_to_svg(&mut panel);
         assert_eq!(
-            crate::widget::svg::text_ink_boxes(&with_times).len(),
+            rust_widgets::widget::svg::text_ink_boxes(&with_times).len(),
             runs_without_times + 3,
             "each dated row paints its time"
         );

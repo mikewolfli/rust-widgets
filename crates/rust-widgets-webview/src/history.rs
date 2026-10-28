@@ -27,7 +27,7 @@
 //! Timestamps are whole seconds since the Unix epoch, so two visits within the
 //! same second are indistinguishable by `last_visit`.
 
-use alloc::collections::VecDeque;
+use std::collections::VecDeque;
 use std::time::{SystemTime, UNIX_EPOCH};
 /// Default entry cap for [`BrowserHistory::new`].
 const MAX_HISTORY_ENTRIES: usize = 100;

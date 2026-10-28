@@ -75,15 +75,15 @@ PAIRS=(
     # refuses to run without them, because they embed third-party outlines and the caller — not
     # the script — must record which licence is being relied on. The values here are the ones
     # each file's own header records as how it was produced.
-    "crates/rust-widgets-font/src/latin.ttf|tools/gen_font_subset.py|--check --face=latin --license=ofl-1.1"
-    "crates/rust-widgets-font/src/arabic.ttf|tools/gen_font_subset.py|--check --face=arabic --license=ofl-1.1"
-    "crates/rust-widgets-font/src/cjk.ttf|tools/gen_font_subset.py|--check --face=cjk --license=ofl-1.1"
-    "crates/rust-widgets-font/src/emoji.ttf|tools/gen_emoji_subset.py|--check --license=ofl-1.1"
-    "crates/rust-widgets-font/src/cjk_shard_latin.ttf|tools/gen_cjk_shards.py|--check --license=ofl-1.1"
-    "crates/rust-widgets-font/src/cjk_shard_han.ttf|tools/gen_cjk_shards.py|--check --license=ofl-1.1"
-    "crates/rust-widgets-font/src/cjk_shard_kana.ttf|tools/gen_cjk_shards.py|--check --license=ofl-1.1"
-    "crates/rust-widgets-font/src/cjk_shard_symbols.ttf|tools/gen_cjk_shards.py|--check --license=ofl-1.1"
-    "crates/rust-widgets-font/src/cjk_shard_fullwidth.ttf|tools/gen_cjk_shards.py|--check --license=ofl-1.1"
+    "crates/rust-widgets-font/assets/latin.ttf|tools/gen_font_subset.py|--check --face=latin --license=ofl-1.1"
+    "crates/rust-widgets-font/assets/arabic.ttf|tools/gen_font_subset.py|--check --face=arabic --license=ofl-1.1"
+    "crates/rust-widgets-font/assets/cjk.ttf|tools/gen_font_subset.py|--check --face=cjk --license=ofl-1.1"
+    "crates/rust-widgets-font/assets/emoji.ttf|tools/gen_emoji_subset.py|--check --license=ofl-1.1"
+    "crates/rust-widgets-font/assets/cjk_shard_latin.ttf|tools/gen_cjk_shards.py|--check --license=ofl-1.1"
+    "crates/rust-widgets-font/assets/cjk_shard_han.ttf|tools/gen_cjk_shards.py|--check --license=ofl-1.1"
+    "crates/rust-widgets-font/assets/cjk_shard_kana.ttf|tools/gen_cjk_shards.py|--check --license=ofl-1.1"
+    "crates/rust-widgets-font/assets/cjk_shard_symbols.ttf|tools/gen_cjk_shards.py|--check --license=ofl-1.1"
+    "crates/rust-widgets-font/assets/cjk_shard_fullwidth.ttf|tools/gen_cjk_shards.py|--check --license=ofl-1.1"
     # This one *is* the artifact: the CJK bitmap table is generated source, not a binary.
     "src/render/text/cjk_bitmap_data.rs|tools/gen_cjk_bitmap.py|--check --license=ofl-1.1"
 )

@@ -15,19 +15,20 @@
 //! Registration surface: canonical name `web_find_bar` (alias `page_find_bar`), kind
 //! [`WidgetKind::WebFindBar`], registered in the factory like any other companion.
 
-use crate::compat::Arc;
-use crate::core::{Color, HorizontalAlignment, Rect, Size};
-use crate::event::{Event, EventHandler};
-use crate::render::RenderContext;
-use crate::signal::{ConnectionScope, GenericSignal, Signal1};
-use crate::widget::capability::coercion::{expect_bool, expect_string, expect_usize};
-use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
-use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
-use crate::widget::capability::WidgetProperties;
-use crate::widget::metrics::role_font;
-use crate::widget::web_widgets::web_engine::{WebEngineView, WebFindRequest};
-use crate::widget::{BaseWidget, Draw, IconName, Widget, WidgetKind};
-use crate::{impl_widget_property_hooks, property_names_of};
+use rust_widgets::compat::Arc;
+use rust_widgets::impl_draw_bridge;
+use rust_widgets::core::{Color, HorizontalAlignment, Rect, Size};
+use rust_widgets::event::{Event, EventHandler};
+use rust_widgets::render::RenderContext;
+use rust_widgets::signal::{ConnectionScope, GenericSignal, Signal1};
+use rust_widgets::widget::capability::coercion::{expect_bool, expect_string, expect_usize};
+use rust_widgets::widget::capability::properties_trait::{base_property_get, base_property_set};
+use rust_widgets::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use rust_widgets::widget::capability::WidgetProperties;
+use rust_widgets::widget::metrics::role_font;
+use crate::web_engine::{WebEngineView, WebFindRequest};
+use rust_widgets::widget::{BaseWidget, Draw, IconName, Widget, WidgetKind};
+use rust_widgets::{impl_widget_property_hooks, property_names_of};
 
 /// A web-page find bar.
 pub struct WebFindBar {
@@ -176,7 +177,7 @@ impl WebFindBar {
         let search_queue = Arc::clone(&queue);
         self.search_requested.connect_scoped(&scope, move |value| {
             let (query, case_sensitive) = &*value;
-            crate::compat::lock(&search_queue).push_back(WebFindRequest::Search {
+            rust_widgets::compat::lock(&search_queue).push_back(WebFindRequest::Search {
                 needle: query.clone(),
                 case_sensitive: *case_sensitive,
             });
@@ -184,12 +185,12 @@ impl WebFindBar {
 
         let next_queue = Arc::clone(&queue);
         self.next_requested.connect_scoped(&scope, move || {
-            crate::compat::lock(&next_queue).push_back(WebFindRequest::Next);
+            rust_widgets::compat::lock(&next_queue).push_back(WebFindRequest::Next);
         });
 
         let previous_queue = Arc::clone(&queue);
         self.previous_requested.connect_scoped(&scope, move || {
-            crate::compat::lock(&previous_queue).push_back(WebFindRequest::Previous);
+            rust_widgets::compat::lock(&previous_queue).push_back(WebFindRequest::Previous);
         });
 
         self.binding = Some(WebFindBinding { _scope: scope });
@@ -251,7 +252,7 @@ impl Widget for WebFindBar {
         &mut self.base
     }
     fn set_state_theme_hook(&mut self) {
-        crate::style::reapply_active_theme_state(self);
+        rust_widgets::style::reapply_active_theme_state(self);
     }
     fn size_hint(&self) -> Size {
         Size::new(280, 32)
@@ -263,14 +264,14 @@ impl Widget for WebFindBar {
     /// `connect_event` validates a name against the capability table; only this method joins
     /// that name to the signal the control actually emits, so every published name gets an
     /// arm here and the arm set cannot drift from the published set (the gate compares them).
-    fn event_signal_dyn(&self, name: &str) -> Option<crate::signal::EventSignalRef> {
-        use crate::signal::EventSignalRef;
+    fn event_signal_dyn(&self, name: &str) -> Option<rust_widgets::signal::EventSignalRef> {
+        use rust_widgets::signal::EventSignalRef;
         match name {
             "search_requested" => Some(EventSignalRef::mapped(
                 "search_requested",
                 &self.search_requested,
                 |(query, case_sensitive)| {
-                    CapabilityValue::Tuple(crate::compat::Vec::from([
+                    CapabilityValue::Tuple(rust_widgets::compat::Vec::from([
                         CapabilityValue::String(query.clone()),
                         CapabilityValue::Bool(*case_sensitive),
                     ]))
@@ -414,7 +415,7 @@ impl Draw for WebFindBar {
         );
         for (x, icon) in [(right - 70, IconName::ChevronLeft), (right - 46, IconName::ChevronRight)]
         {
-            crate::widget::draw_icon_at(
+            rust_widgets::widget::draw_icon_at(
                 context,
                 Rect::new(x, rect.y + 8, 16, rect.height.saturating_sub(16)),
                 ink,

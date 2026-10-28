@@ -6708,7 +6708,24 @@ pub fn render_frame_tree(id: ObjectId, size: Size, clear: crate::core::Color) ->
         let mut metrics = TREE_METRICS.with(|slot| core::mem::take(&mut *slot.borrow_mut()));
         metrics.clear();
         ordered_root_children(&mut root_children);
+        // DLG-001: the scrim owner is resolved once per frame, and the plane is painted directly
+        // before it. A modal that is one of these children is rasterised into its own layer, where
+        // its scrim is clipped to its rectangle — so leaving the plane to the modal loses the
+        // dimming entirely, and painting it in both places dims the page twice.
+        #[cfg(full_widgets)]
+        let scrim_owner = crate::widget::dialog::scrim_owner_for_root(id);
+        #[cfg(full_widgets)]
+        crate::widget::dialog::reset_plane_painted();
         for child in root_children.iter().copied() {
+            #[cfg(full_widgets)]
+            if painted && scrim_owner == Some(child) {
+                let mut context = RenderContext::new(&mut backend);
+                context.fill_rect(
+                    Rect::new(0, 0, size.width, size.height),
+                    crate::widget::dialog::scrim_plane_color(),
+                );
+                crate::widget::dialog::note_plane_painted(child);
+            }
             // A node whose clip has no area cannot paint anything, and neither can its
             // descendants. Skipping the node skips the subtree, the same rule hiding uses.
             if root_clip.is_some_and(|rect| rect.width == 0 || rect.height == 0) {
@@ -6737,7 +6754,7 @@ pub fn render_frame_tree(id: ObjectId, size: Size, clear: crate::core::Color) ->
         // the owning modal is painted by this frame, its own scrim already covers the page; the
         // window pass is therefore only owed when it is not among the visited subtrees.
         #[cfg(full_widgets)]
-        if let Some(owner) = crate::widget::dialog::scrim_owner_for_root(id) {
+        if let Some(owner) = scrim_owner {
             let painted_here = metrics.contains_key(&owner) || root_children.contains(&owner);
             if !painted_here {
                 let mut context = RenderContext::new(&mut backend);
@@ -9058,13 +9075,13 @@ mod tests {
     fn a_control_offset_from_the_origin_paints_into_its_own_frame() {
         let geometry = Rect::new(12, 42, 200, 160);
         let mut chart =
-            crate::widget::special_widgets::finance::candlestick_chart::CandlestickChart::new(
+            crate::widget::chart_widgets::finance::candlestick_chart::CandlestickChart::new(
                 geometry,
             );
-        let mut series = crate::widget::special_widgets::finance::types::PriceSeries::new();
+        let mut series = crate::widget::chart_widgets::finance::types::PriceSeries::new();
         for index in 0..20 {
             let open = 100.0 + index as f64;
-            series.push(crate::widget::special_widgets::finance::types::Bar::new(
+            series.push(crate::widget::chart_widgets::finance::types::Bar::new(
                 open,
                 open + 2.0,
                 open - 2.0,
@@ -9465,7 +9482,7 @@ mod tests {
     fn custom_widgets_report_the_draw_bridge() {
         use crate::widget::special_widgets::chip::Chip;
         use crate::widget::special_widgets::color_picker::ColorPicker;
-        use crate::widget::special_widgets::gantt_widget::GanttWidget;
+        use crate::widget::chart_widgets::gantt_widget::GanttWidget;
         use crate::widget::special_widgets::snackbar::Snackbar;
         use crate::widget::special_widgets::terminal_view::TerminalView;
 

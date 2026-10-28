@@ -26,10 +26,10 @@ use crate::render::RenderContext;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::chart_widgets::finance::layout::{panel_colors, PanelColors, PlotArea};
+use crate::widget::chart_widgets::finance::types::{BookLevel, OrderBook};
+use crate::widget::chart_widgets::finance::volume_chart::draw_empty_pane;
 use crate::widget::metrics::role_font;
-use crate::widget::special_widgets::finance::layout::{panel_colors, PanelColors, PlotArea};
-use crate::widget::special_widgets::finance::types::{BookLevel, OrderBook};
-use crate::widget::special_widgets::finance::volume_chart::draw_empty_pane;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -758,7 +758,7 @@ impl WidgetProperties for DepthChart {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::widget::special_widgets::finance::types::fixtures;
+    use crate::widget::chart_widgets::finance::types::fixtures;
 
     /// The chart carries the book it was given.
     #[test]
@@ -778,14 +778,14 @@ mod tests {
     #[test]
     fn the_curve_accumulates_per_side() {
         let mut chart = DepthChart::new(Rect::new(0, 0, 480, 240));
-        let mut book = crate::widget::special_widgets::finance::types::OrderBook::new();
+        let mut book = crate::widget::chart_widgets::finance::types::OrderBook::new();
         book.set_bids(alloc::vec![
-            crate::widget::special_widgets::finance::types::BookLevel::new(99.0, 10.0),
-            crate::widget::special_widgets::finance::types::BookLevel::new(98.0, 20.0),
+            crate::widget::chart_widgets::finance::types::BookLevel::new(99.0, 10.0),
+            crate::widget::chart_widgets::finance::types::BookLevel::new(98.0, 20.0),
         ]);
         book.set_asks(alloc::vec![
-            crate::widget::special_widgets::finance::types::BookLevel::new(101.0, 5.0),
-            crate::widget::special_widgets::finance::types::BookLevel::new(102.0, 5.0),
+            crate::widget::chart_widgets::finance::types::BookLevel::new(101.0, 5.0),
+            crate::widget::chart_widgets::finance::types::BookLevel::new(102.0, 5.0),
         ]);
         chart.set_book(book);
 
@@ -846,8 +846,8 @@ mod tests {
     #[test]
     fn a_one_sided_book_draws_without_panicking() {
         let mut chart = DepthChart::new(Rect::new(0, 0, 320, 200));
-        let mut book = crate::widget::special_widgets::finance::types::OrderBook::new();
-        book.set_bids(alloc::vec![crate::widget::special_widgets::finance::types::BookLevel::new(
+        let mut book = crate::widget::chart_widgets::finance::types::OrderBook::new();
+        book.set_bids(alloc::vec![crate::widget::chart_widgets::finance::types::BookLevel::new(
             99.0, 10.0,
         )]);
         chart.set_book(book);
@@ -861,12 +861,12 @@ mod tests {
     #[test]
     fn a_malformed_book_draws_without_panicking() {
         let mut chart = DepthChart::new(Rect::new(0, 0, 320, 200));
-        let mut book = crate::widget::special_widgets::finance::types::OrderBook::new();
+        let mut book = crate::widget::chart_widgets::finance::types::OrderBook::new();
         book.set_bids(alloc::vec![
-            crate::widget::special_widgets::finance::types::BookLevel::new(f64::NAN, f64::NAN),
-            crate::widget::special_widgets::finance::types::BookLevel::new(99.0, -5.0),
+            crate::widget::chart_widgets::finance::types::BookLevel::new(f64::NAN, f64::NAN),
+            crate::widget::chart_widgets::finance::types::BookLevel::new(99.0, -5.0),
         ]);
-        book.set_asks(alloc::vec![crate::widget::special_widgets::finance::types::BookLevel::new(
+        book.set_asks(alloc::vec![crate::widget::chart_widgets::finance::types::BookLevel::new(
             f64::INFINITY,
             1.0,
         )]);
@@ -881,11 +881,11 @@ mod tests {
     #[test]
     fn a_flat_price_scale_draws_without_panicking() {
         let mut chart = DepthChart::new(Rect::new(0, 0, 320, 200));
-        let mut book = crate::widget::special_widgets::finance::types::OrderBook::new();
-        book.set_bids(alloc::vec![crate::widget::special_widgets::finance::types::BookLevel::new(
+        let mut book = crate::widget::chart_widgets::finance::types::OrderBook::new();
+        book.set_bids(alloc::vec![crate::widget::chart_widgets::finance::types::BookLevel::new(
             100.0, 10.0,
         )]);
-        book.set_asks(alloc::vec![crate::widget::special_widgets::finance::types::BookLevel::new(
+        book.set_asks(alloc::vec![crate::widget::chart_widgets::finance::types::BookLevel::new(
             100.0, 10.0,
         )]);
         chart.set_book(book);
@@ -906,13 +906,13 @@ mod tests {
     #[test]
     fn a_zero_size_level_does_not_erase_the_curve() {
         let geometry = Rect::new(0, 0, 400, 200);
-        let mut book = crate::widget::special_widgets::finance::types::OrderBook::new();
+        let mut book = crate::widget::chart_widgets::finance::types::OrderBook::new();
         // The zero-size level is first, so it is the one the old loop skipped first.
         book.set_bids(alloc::vec![
-            crate::widget::special_widgets::finance::types::BookLevel::new(100.0, 0.0),
-            crate::widget::special_widgets::finance::types::BookLevel::new(99.0, 100.0),
+            crate::widget::chart_widgets::finance::types::BookLevel::new(100.0, 0.0),
+            crate::widget::chart_widgets::finance::types::BookLevel::new(99.0, 100.0),
         ]);
-        book.set_asks(alloc::vec![crate::widget::special_widgets::finance::types::BookLevel::new(
+        book.set_asks(alloc::vec![crate::widget::chart_widgets::finance::types::BookLevel::new(
             101.0, 100.0,
         )]);
         let mut chart = DepthChart::new(geometry);
@@ -933,12 +933,12 @@ mod tests {
     #[test]
     fn a_non_finite_price_does_not_erase_the_curve() {
         let geometry = Rect::new(0, 0, 400, 200);
-        let mut book = crate::widget::special_widgets::finance::types::OrderBook::new();
-        book.set_bids(alloc::vec![crate::widget::special_widgets::finance::types::BookLevel::new(
+        let mut book = crate::widget::chart_widgets::finance::types::OrderBook::new();
+        book.set_bids(alloc::vec![crate::widget::chart_widgets::finance::types::BookLevel::new(
             f64::NAN,
             1000.0,
         )]);
-        book.set_asks(alloc::vec![crate::widget::special_widgets::finance::types::BookLevel::new(
+        book.set_asks(alloc::vec![crate::widget::chart_widgets::finance::types::BookLevel::new(
             101.0, 100.0,
         )]);
         let mut chart = DepthChart::new(geometry);

@@ -75,7 +75,7 @@ def main() -> int:
     # A control factory accepts a rectangle and returns an `ObjectId`. A platform method
     # named `create_*` that does not is not a control factory at all —
     # `create_web_engine(&self) -> Option<Box<dyn NativeWebEngine>>` hands back a native
-    # engine handle for `src/web/` to drive, and reporting it as "a control with no
+    # engine handle for `crates/rust-widgets-webview/` to drive, and reporting it as "a control with no
     # capability" is a false positive that sends a reader looking for a missing widget
     # that was never meant to exist.
     #

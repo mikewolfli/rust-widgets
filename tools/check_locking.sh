@@ -83,6 +83,26 @@
 # (`button.rs`, `menu.rs`, `menu_bar.rs`, `tool_bar.rs`, `slider.rs`) still get scanned for any
 # *other* lock. A `use ... Mutex ...;` import is likewise not a lock: it names a type.
 #
+# # `Arc<Mutex<..>>` is a shared cell, not widget state
+#
+# The rule this gate protects is "a control must not guard **its own** state behind a lock": that
+# state lives in the thread-local registry, so a lock there is overhead and a single-threaded
+# deadlock risk. A cell wrapped in `Arc` is the opposite case — it exists to be **shared** with
+# another widget or with the host, and the crate's signal layer requires `Send + Sync + 'static`
+# from every captured callback, so `compat::Arc<Mutex<..>>` is the only spelling that compiles in
+# both `std` and `no_std` builds (`Rc<RefCell<..>>` cannot cross a `Signal`).
+#
+# Every such cell in the tree is exactly that: a companion channel — `combobox` ↔ popup,
+# `text_edit` ↔ find bar, `data_grid` ↔ header menu / filter row / summary row, `image_view` ↔
+# zoom controls, the chart ↔ its data table / legend / crosshair, the media player ↔ transport /
+# scrubber / chapter list, `map_view` ↔ attribution / overview. The locks are load-bearing for the
+# same reason `ActionLiveState`'s is, so they are skipped by the *shape of the cell* rather than by
+# naming 27 files: a file-level exemption would also excuse a future bare `Mutex` in those files,
+# which is the finding this gate is for.
+#
+# The widened rule is asserted below against two synthetic lines, so it cannot swallow an in-place
+# lock: `state: Mutex<Vec<u8>>` is still a finding, `clicked: Arc<Mutex<Option<usize>>>` is not.
+#
 # Usage: tools/check_locking.sh
 set -euo pipefail
 
@@ -134,6 +154,33 @@ IMPORT_PREFIX = "use "
 # Guards around a cell that must be `Sync` because it is captured by a signal or an `Action`
 # handle. Explained in the header under "What is not excused by name".
 SHARED_SYNC_CELLS = ("ActionLiveState", "NumericLinkState")
+
+# A cell wrapped in `Arc` is shared by construction; see "`Arc<Mutex<..>>` is a shared cell" above.
+SHARED_CELL = re.compile(r"\bArc\b")
+
+
+def is_finding(stripped: str) -> bool:
+    """Whether one production line is a synchronisation primitive in place.
+
+    Split out of the scan so the skip rules can be asserted against synthetic lines: a rule list
+    that only runs over the tree cannot show that it still rejects the shape it exists to catch.
+    """
+    if any(token in stripped for token in PROSE):
+        return False
+    if stripped.startswith(IMPORT_PREFIX):
+        return False
+    if any(cell in stripped for cell in SHARED_SYNC_CELLS):
+        return False
+    if SHARED_CELL.search(stripped):
+        return False
+    return bool(PATTERN.search(stripped))
+
+
+# Reverse injection: the widened `Arc` rule must not excuse an in-place lock.
+assert is_finding("    state: Mutex<Vec<u8>>,"), "a bare Mutex must still be a finding"
+assert is_finding("    static CACHE: OnceLock<u32> = OnceLock::new();")
+assert not is_finding("    clicked: Arc<Mutex<Option<usize>>>,")
+assert not is_finding("    let requests = Arc::new(Mutex::new(Vec::new()));")
 
 # The two character classes whose net count decides whether a line opens a body.
 # Named constants rather than inline literals: when these were written inline, the
@@ -413,13 +460,7 @@ for path in sorted(Path(SCAN_ROOT).rglob("*.rs")):
     production = strip_test_modules(path.read_text(encoding="utf-8"))
     for number, line in enumerate(production.split("\n"), start=1):
         stripped = line.strip()
-        if any(token in stripped for token in PROSE):
-            continue
-        if stripped.startswith(IMPORT_PREFIX):
-            continue
-        if any(cell in stripped for cell in SHARED_SYNC_CELLS):
-            continue
-        if PATTERN.search(stripped):
+        if is_finding(stripped):
             findings.append(f"{path}:{number}: {stripped}")
 
 if findings:

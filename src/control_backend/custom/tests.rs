@@ -552,11 +552,20 @@ fn create_dock_widget_sets_text() {
 
 #[cfg(not(alloc_frugal))]
 #[test]
-fn create_web_view_allocates_valid_id() {
+fn create_web_view_reports_the_unregistered_name() {
+    // The web control moved to `rust-widgets-webview`, which contributes its capabilities through
+    // `install(&mut WidgetFactory)`. A host that has not installed that crate has no
+    // `web_engine_view` name, and `create_web_view` mounts **by name**, so the honest answer is the
+    // ABI's "unknown name" value `0` — not a silently different control reached through
+    // `WidgetKind::WebEngineView`, which `MediaPlayer` also carries.
+    //
+    // The positive side (a registered name mounts) is covered by every other
+    // `create_*_allocates_valid_id` case in this file; pinning the negative here is what makes the
+    // dependency on the webview crate visible instead of a test that only passes when the whole
+    // tree is linked together.
     let backend = CustomPaintControlBackend::new();
     let parent = backend.create_window("Parent", 0, 0, 800, 600);
-    let id = backend.create_web_view(parent, 0, 0, 800, 600);
-    assert_ne!(id, 0);
+    assert_eq!(backend.create_web_view(parent, 0, 0, 800, 600), 0);
 }
 
 #[cfg(not(alloc_frugal))]

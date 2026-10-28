@@ -27,12 +27,12 @@ use crate::signal::Signal1;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
-use crate::widget::metrics::role_font;
-use crate::widget::special_widgets::finance::layout::{
+use crate::widget::chart_widgets::finance::layout::{
     panel_colors, PanelColors, PlotArea, PANEL_MIN_CONTRAST,
 };
-use crate::widget::special_widgets::finance::types::Bar;
-use crate::widget::special_widgets::finance::types::PriceSeries;
+use crate::widget::chart_widgets::finance::types::Bar;
+use crate::widget::chart_widgets::finance::types::PriceSeries;
+use crate::widget::metrics::role_font;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -552,7 +552,7 @@ pub(crate) fn draw_index_ticks(
 pub(crate) fn draw_empty_pane(
     context: &mut RenderContext,
     area: &PlotArea,
-    chrome: crate::widget::special_widgets::finance::layout::PanelColors,
+    chrome: crate::widget::chart_widgets::finance::layout::PanelColors,
     font: &crate::core::Font,
 ) {
     context.draw_rect(area.rect, chrome.grid);
@@ -673,8 +673,8 @@ impl WidgetProperties for VolumeChart {
 mod tests {
     use super::*;
     use crate::event::EventHandler;
-    use crate::widget::special_widgets::finance::types::fixtures;
-    use crate::widget::special_widgets::finance::types::{Bar, PriceSeries};
+    use crate::widget::chart_widgets::finance::types::fixtures;
+    use crate::widget::chart_widgets::finance::types::{Bar, PriceSeries};
     use alloc::sync::Arc;
     use core::sync::atomic::{AtomicUsize, Ordering};
 

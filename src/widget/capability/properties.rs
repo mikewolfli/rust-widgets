@@ -1521,20 +1521,6 @@ pub(crate) fn text_edit_capability() -> WidgetCapability {
 /// lookup. `web_view` stays reachable as an alias, so `factory.create("web_view", ..)`
 /// and `WebView` (the `pub type` for this same control) are unaffected.
 #[cfg(not(alloc_frugal))]
-pub(crate) fn web_view_capability() -> WidgetCapability {
-    WidgetCapability {
-        kind: WidgetKind::WebEngineView,
-        canonical_name: "web_engine_view",
-        aliases: &["webview", "web_view"],
-        properties: WEB_VIEW_PROPERTIES,
-        events: events_of!("web_engine_view"),
-        // Audit 20261026: `load_url` stays unpublished — the address is the writable `url`
-        // property and `set_url` is its published command form, so loading a page is a property
-        // write (principle #18).
-        commands: &["set_url", "reload", "go_back", "go_forward", "stop"],
-    }
-}
-
 // ── Advanced widget capabilities ─────────────────────────────
 #[cfg(not(alloc_frugal))]
 pub(crate) fn pie_menu_capability() -> WidgetCapability {
@@ -1729,7 +1715,7 @@ pub(crate) fn radar_chart_capability() -> WidgetCapability {
 ///
 /// Not registered as a `chart_type` token: the data model differs (two **categorical**
 /// axes and one value per coordinate pair), so it is its own control rather than a style
-/// of `ChartWidget`. See the module docs of `special_widgets::heatmap`.
+/// of `ChartWidget`. See the module docs of `chart_widgets::heatmap`.
 #[cfg(not(alloc_frugal))]
 pub(crate) fn heatmap_capability() -> WidgetCapability {
     WidgetCapability {
@@ -3129,17 +3115,6 @@ pub(crate) fn gantt_task_grid_capability() -> WidgetCapability {
 ///
 /// It shares `WidgetKind::WebEngineView` with the web view it lists history for.
 #[cfg(not(alloc_frugal))]
-pub(crate) fn web_history_panel_capability() -> WidgetCapability {
-    WidgetCapability {
-        kind: WidgetKind::WebEngineView,
-        canonical_name: "web_history_panel",
-        aliases: &[],
-        properties: WEB_HISTORY_PANEL_PROPERTIES,
-        events: events_of!("web_history_panel"),
-        commands: &[],
-    }
-}
-
 /// Media chapter list (COMP-A6).
 ///
 /// It shares `WidgetKind::VideoPlayer` with the player whose chapters it lists.
@@ -3769,17 +3744,6 @@ pub(crate) fn find_bar_capability() -> WidgetCapability {
 
 #[cfg(not(alloc_frugal))]
 /// `web_find_bar` — the web view's find strip (`COMP-L03`).
-pub(crate) fn web_find_bar_capability() -> WidgetCapability {
-    WidgetCapability {
-        kind: WidgetKind::WebFindBar,
-        canonical_name: "web_find_bar",
-        aliases: &[],
-        properties: WEB_FIND_BAR_PROPERTIES,
-        events: events_of!("web_find_bar"),
-        commands: &["next", "previous", "close"],
-    }
-}
-
 #[cfg(not(alloc_frugal))]
 /// `menu_panel` — a drop-down menu panel a host anchors itself (`COMP-A01`).
 pub(crate) fn menu_panel_capability() -> WidgetCapability {

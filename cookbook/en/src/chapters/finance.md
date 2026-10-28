@@ -18,7 +18,7 @@ Everything in the family is built from one series type.
 One OHLCV bar — the unit every financial chart is made of:
 
 ```rust
-use rust_widgets::widget::special_widgets::finance::Bar;
+use rust_widgets::widget::chart_widgets::finance::Bar;
 
 // open, high, low, close, volume
 let bar = Bar::new(100.0, 103.5, 99.2, 102.8, 1_250_000.0);
@@ -39,7 +39,7 @@ two gaps from the previous close — the definition ATR averages.
 A series of bars plus the axis labels that go with them:
 
 ```rust
-use rust_widgets::widget::special_widgets::finance::{Bar, PriceSeries};
+use rust_widgets::widget::chart_widgets::finance::{Bar, PriceSeries};
 
 let mut series = PriceSeries::new();
 series.push(Bar::new(100.0, 103.0, 99.0, 102.0, 1_000.0));
@@ -63,7 +63,7 @@ of step, which shows up as a label on the wrong period rather than as a failure.
 ### `OrderBook` and `Quote`
 
 ```rust
-use rust_widgets::widget::special_widgets::finance::{BookLevel, OrderBook, Quote};
+use rust_widgets::widget::chart_widgets::finance::{BookLevel, OrderBook, Quote};
 
 let mut book = OrderBook::new();
 book.set_bids(vec![BookLevel::new(99.9, 300.0), BookLevel::new(99.8, 500.0)]);
@@ -90,7 +90,7 @@ not controls: a moving average has no geometry, so as functions they are testabl
 without a window and the drawing stays one shared concern.
 
 ```rust
-use rust_widgets::widget::special_widgets::finance::indicators::{
+use rust_widgets::widget::chart_widgets::finance::indicators::{
     sma, ema, rsi, macd, bollinger_bands, atr, vwap, stochastic, donchian_channel,
     money_flow_index, on_balance_volume,
 };
@@ -110,7 +110,7 @@ let (lower, middle, upper) = bollinger_bands(&closes, 20, 2.0);
 are not yet computable filled with `NAN`:
 
 ```rust
-# use rust_widgets::widget::special_widgets::finance::indicators::sma;
+# use rust_widgets::widget::chart_widgets::finance::indicators::sma;
 let values = [1.0, 2.0, 3.0, 4.0, 5.0];
 let result = sma(&values, 3);
 
@@ -142,7 +142,7 @@ visible:
 ### The volume-weighted indicators
 
 ```rust
-# use rust_widgets::widget::special_widgets::finance::indicators::{vwap, money_flow_index, on_balance_volume};
+# use rust_widgets::widget::chart_widgets::finance::indicators::{vwap, money_flow_index, on_balance_volume};
 # let highs = vec![101.0; 60];
 # let lows = vec![99.0; 60];
 # let closes = vec![100.0; 60];
@@ -162,7 +162,7 @@ volume is `NAN` rather than a carried-forward level.
 
 ```rust
 use rust_widgets::core::Rect;
-use rust_widgets::widget::special_widgets::finance::{
+use rust_widgets::widget::chart_widgets::finance::{
     CandlestickChart, Overlay, PriceLevelKind, PriceLine, PriceSeries,
 };
 
@@ -195,7 +195,7 @@ can explain a gap at the left of the chart rather than leaving it unexplained.
 
 ```rust
 # use rust_widgets::core::Rect;
-# use rust_widgets::widget::special_widgets::finance::CandlestickChart;
+# use rust_widgets::widget::chart_widgets::finance::CandlestickChart;
 # let mut chart = CandlestickChart::new(Rect::new(0, 0, 900, 420));
 chart.bar_hovered.connect(|index| { /* *index */ });
 chart.bar_clicked.connect(|index| { /* *index */ });
@@ -218,7 +218,7 @@ candle and the oscillator lines up too. Share the series and the geometry:
 
 ```rust
 use rust_widgets::core::Rect;
-use rust_widgets::widget::special_widgets::finance::{
+use rust_widgets::widget::chart_widgets::finance::{
     CandlestickChart, IndicatorChart, IndicatorMode, PriceSeries, VolumeChart,
 };
 
@@ -246,7 +246,7 @@ by a pixel and silently put an overlay on the wrong bar.
 
 ```rust
 # use rust_widgets::core::Rect;
-# use rust_widgets::widget::special_widgets::finance::{IndicatorChart, IndicatorMode};
+# use rust_widgets::widget::chart_widgets::finance::{IndicatorChart, IndicatorMode};
 # let mut momentum = IndicatorChart::new(Rect::new(0, 0, 900, 150));
 momentum.set_mode(IndicatorMode::Rsi);
 momentum.set_period(14);
@@ -272,9 +272,9 @@ time you looked. `IndicatorMode::fixed_range()` tells you which you have.
 ### The volume pane
 
 ```rust
-use rust_widgets::widget::special_widgets::finance::VolumeColorMode;
+use rust_widgets::widget::chart_widgets::finance::VolumeColorMode;
 # use rust_widgets::core::Rect;
-# use rust_widgets::widget::special_widgets::finance::VolumeChart;
+# use rust_widgets::widget::chart_widgets::finance::VolumeChart;
 # let mut volume = VolumeChart::new(Rect::new(0, 0, 900, 100));
 volume.set_color_mode(VolumeColorMode::Direction);  // green up, red down
 volume.set_headroom(0.92);                          // tallest bar's share of the pane
@@ -292,9 +292,9 @@ a depth curve as one picture.
 
 ```rust
 use rust_widgets::core::Rect;
-use rust_widgets::widget::special_widgets::finance::{DepthChart, OrderBookWidget, BookSide};
+use rust_widgets::widget::chart_widgets::finance::{DepthChart, OrderBookWidget, BookSide};
 
-# let book = rust_widgets::widget::special_widgets::finance::OrderBook::new();
+# let book = rust_widgets::widget::chart_widgets::finance::OrderBook::new();
 let mut ladder = OrderBookWidget::new(Rect::new(0, 0, 320, 260));
 ladder.set_book(book.clone());     // both sides sorted best-first
 ladder.set_depth(5);               // five levels per side, the usual published depth
@@ -322,7 +322,7 @@ size that does not exist at prices in between.
 
 ```rust
 use rust_widgets::core::Rect;
-use rust_widgets::widget::special_widgets::finance::{Quote, QuoteBoard, QuoteColumn, QuoteSort};
+use rust_widgets::widget::chart_widgets::finance::{Quote, QuoteBoard, QuoteColumn, QuoteSort};
 
 # let quotes: Vec<Quote> = Vec::new();
 let mut board = QuoteBoard::new(Rect::new(0, 0, 760, 300));
@@ -365,7 +365,7 @@ crate, so they work from JSON, CSS and the C ABI without special cases:
 use rust_widgets::widget::capability::CapabilityValue;
 use rust_widgets::widget::capability::properties_trait::{widget_property_get, widget_property_set};
 
-# let mut chart = rust_widgets::widget::special_widgets::finance::CandlestickChart::new(
+# let mut chart = rust_widgets::widget::chart_widgets::finance::CandlestickChart::new(
 #     rust_widgets::core::Rect::new(0, 0, 900, 420));
 // A price series as a comma-separated list becomes flat bars.
 widget_property_set(&mut chart, "series", CapabilityValue::String("100,101.5,99,102".into())).unwrap();

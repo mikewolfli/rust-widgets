@@ -145,8 +145,8 @@ src/widget/special_widgets/color_picker.rs ColorPicker backlog
 src/widget/special_widgets/command_palette.rs CommandPalette backlog
 src/widget/special_widgets/diff_viewer.rs DiffViewer backlog
 src/widget/special_widgets/freeform_shape/shape.rs FreeformShapeWidget backlog
-src/widget/special_widgets/heatmap.rs Heatmap backlog
-src/widget/special_widgets/kanban_board.rs KanbanBoard backlog
+src/widget/chart_widgets/heatmap.rs Heatmap backlog
+src/widget/chart_widgets/kanban_board.rs KanbanBoard backlog
 src/widget/special_widgets/map_view.rs MapView backlog
 src/widget/special_widgets/markdown_editor.rs MarkdownEditor backlog
 src/widget/special_widgets/media_player.rs MediaPlayer backlog
@@ -161,7 +161,7 @@ src/widget/view_widgets/properties_panel.rs PropertiesPanel backlog
 src/widget/view_widgets/property_grid.rs PropertyGrid backlog
 src/widget/view_widgets/query_builder.rs QueryBuilder backlog
 src/widget/view_widgets/virtual_table.rs VirtualTable backlog
-src/widget/web_widgets/web_engine.rs WebEngineView backlog
+crates/rust-widgets-webview/src/web_engine.rs WebEngineView backlog
 src/widget/window.rs Window backlog
 
 # ── N10 additions: fixed-chrome, with the reason each is permanent ─────────────
@@ -258,14 +258,14 @@ src/widget/media_widgets/subtitle_bar.rs SubtitleBar backlog
 src/widget/misc_widgets/date_range_picker.rs RangePresetBar backlog
 src/widget/misc_widgets/drum_column.rs DrumColumn backlog
 src/widget/misc_widgets/preset_chip_bar.rs PresetChipBar backlog
-src/widget/special_widgets/chart.rs ChartCrosshair backlog
+src/widget/chart_widgets/chart.rs ChartCrosshair backlog
 src/widget/special_widgets/chip_input.rs ChipInput backlog
 src/widget/special_widgets/diff_viewer.rs DiffFileList backlog
 src/widget/special_widgets/freeform_shape/shape.rs ShapeCanvas backlog
-src/widget/special_widgets/gantt_companions.rs TimelineAxis backlog
-src/widget/special_widgets/gantt_companions.rs DependencyEditor backlog
-src/widget/special_widgets/kanban_board.rs KanbanCardView backlog
-src/widget/special_widgets/kanban_board.rs KanbanColumnHeader backlog
+src/widget/chart_widgets/gantt_companions.rs TimelineAxis backlog
+src/widget/chart_widgets/gantt_companions.rs DependencyEditor backlog
+src/widget/chart_widgets/kanban_board.rs KanbanCardView backlog
+src/widget/chart_widgets/kanban_board.rs KanbanColumnHeader backlog
 src/widget/special_widgets/map_marker_detail.rs MapMarkerDetail backlog
 src/widget/special_widgets/map_view_companions.rs TileLoader backlog
 src/widget/special_widgets/map_view_companions.rs ZoomControl backlog
@@ -278,4 +278,4 @@ src/widget/view_widgets/column_chooser.rs ColumnChooser backlog
 src/widget/view_widgets/data_grid.rs GridViewHeader backlog
 src/widget/view_widgets/grid_find_bar.rs GridFindBar backlog
 src/widget/view_widgets/thumbnail_cache.rs ThumbnailCache backlog
-src/widget/web_widgets/find_bar.rs WebFindBar backlog
+crates/rust-widgets-webview/src/find_bar.rs WebFindBar backlog

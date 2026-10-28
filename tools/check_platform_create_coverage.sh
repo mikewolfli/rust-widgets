@@ -16,7 +16,7 @@
 # 第一版脚本的判据是「平台层有没有同名 create_* 而 capability 表里没有」。
 # 这个判据会**误报**：平台层的 `create_*` 不一定都是控件工厂。
 # 典型反例是 `create_web_engine(&self) -> Option<Box<dyn NativeWebEngine>>`——
-# 它返回的是原生引擎句柄（给 `src/web/` 驱动用），没有几何、不返回 `id`，
+# 它返回的是原生引擎句柄（给 `crates/rust-widgets-webview/` 驱动用），没有几何、不返回 `id`，
 # 把它报成「缺了对应 capability」是假阳性（规则 #110）。
 #
 # 因此判据收紧为：**接受 `width`/`height` 且返回 `ObjectId`** 才是控件工厂。

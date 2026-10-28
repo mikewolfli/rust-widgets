@@ -130,7 +130,6 @@ impl WidgetFactory {
             self.register(terminal_find_bar_capability(), create_terminal_find_bar);
             self.register(map_attribution_capability(), create_map_attribution);
             self.register(gantt_task_grid_capability(), create_gantt_task_grid);
-            self.register(web_history_panel_capability(), create_web_history_panel);
             self.register(chapter_list_panel_capability(), create_chapter_list_panel);
             self.register(map_overview_capability(), create_map_overview);
             self.register(grid_capability(), create_grid);
@@ -174,7 +173,6 @@ impl WidgetFactory {
             self.register(text_edit_capability(), create_text_edit);
 
             // ── Web widget ────────────────────────────────────────────
-            self.register(web_view_capability(), create_web_view);
 
             // ── Advanced widgets ──────────────────────────────────────
             self.register(pie_menu_capability(), create_pie_menu);
@@ -327,7 +325,6 @@ impl WidgetFactory {
             self.register(diff_file_list_capability(), create_diff_file_list);
             self.register(markdown_outline_panel_capability(), create_markdown_outline_panel);
             self.register(find_bar_capability(), create_find_bar);
-            self.register(web_find_bar_capability(), create_web_find_bar);
             self.register(menu_panel_capability(), create_menu_panel);
             self.register(speed_dial_capability(), create_speed_dial);
             self.register(swipe_actions_capability(), create_swipe_actions);

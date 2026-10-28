@@ -111,16 +111,16 @@ use crate::widget::special_widgets::breadcrumb::{Breadcrumb, BreadcrumbSegment};
 use crate::widget::special_widgets::canvas::Canvas;
 use crate::widget::special_widgets::chip::{Chip, ChipItem};
 use crate::widget::special_widgets::command_palette::{CommandEntry, CommandPalette};
-use crate::widget::special_widgets::finance::candlestick_chart::CandlestickChart;
-use crate::widget::special_widgets::finance::depth_chart::DepthChart;
-use crate::widget::special_widgets::finance::indicator_chart::IndicatorChart;
-use crate::widget::special_widgets::finance::order_book::OrderBookWidget;
-use crate::widget::special_widgets::finance::quote_board::QuoteBoard;
-use crate::widget::special_widgets::finance::volume_chart::VolumeChart;
-use crate::widget::special_widgets::finance::{Bar, BookLevel, OrderBook, PriceSeries, Quote};
-use crate::widget::special_widgets::gantt_widget::{GanttTask, GanttWidget};
+use crate::widget::chart_widgets::finance::candlestick_chart::CandlestickChart;
+use crate::widget::chart_widgets::finance::depth_chart::DepthChart;
+use crate::widget::chart_widgets::finance::indicator_chart::IndicatorChart;
+use crate::widget::chart_widgets::finance::order_book::OrderBookWidget;
+use crate::widget::chart_widgets::finance::quote_board::QuoteBoard;
+use crate::widget::chart_widgets::finance::volume_chart::VolumeChart;
+use crate::widget::chart_widgets::finance::{Bar, BookLevel, OrderBook, PriceSeries, Quote};
+use crate::widget::chart_widgets::gantt_widget::{GanttTask, GanttWidget};
 use crate::widget::special_widgets::grid::GridWidget;
-use crate::widget::special_widgets::kanban_board::{KanbanBoard, KanbanCard, KanbanColumn};
+use crate::widget::chart_widgets::kanban_board::{KanbanBoard, KanbanCard, KanbanColumn};
 use crate::widget::special_widgets::map_attribution::MapAttributionOverlay;
 use crate::widget::special_widgets::notification_center::{
     NotificationCenter, NotificationItem, NotificationLevel,
@@ -143,8 +143,6 @@ use crate::widget::view_widgets::tree_table::TreeTable;
 use crate::widget::view_widgets::tree_view::{TreeView, VecTreeModel};
 use crate::widget::view_widgets::virtual_list::VirtualList;
 use crate::widget::view_widgets::virtual_table::VirtualTable;
-use crate::widget::web_widgets::find_bar::WebFindBar;
-use crate::widget::web_widgets::web_engine::WebEngineView;
 use crate::widget::{Draw, SimpleRegistry};
 
 /// Fills `widget` with this crate's sample data, returning `true` when it wrote something.
@@ -1171,22 +1169,6 @@ pub fn apply(name: &str, widget: &mut dyn Widget) -> bool {
                 drawer.add_item("G", "Settings");
                 drawer.set_selected_index(0);
                 drawer.open();
-                true
-            }
-            None => false,
-        },
-        "web_engine_view" => match widget_as_mut::<WebEngineView>(widget) {
-            Some(view) => {
-                view.load_html("<h1>Web content</h1>");
-                true
-            }
-            None => false,
-        },
-        "web_find_bar" => match widget_as_mut::<WebFindBar>(widget) {
-            Some(bar) => {
-                bar.open();
-                bar.set_query("widget");
-                bar.set_match_progress(2, 7);
                 true
             }
             None => false,

@@ -30,10 +30,10 @@ use crate::render::RenderContext;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::chart_widgets::finance::layout::PlotArea;
+use crate::widget::chart_widgets::finance::types::{BookLevel, OrderBook};
+use crate::widget::chart_widgets::finance::volume_chart::draw_empty_pane;
 use crate::widget::metrics::role_font;
-use crate::widget::special_widgets::finance::layout::PlotArea;
-use crate::widget::special_widgets::finance::types::{BookLevel, OrderBook};
-use crate::widget::special_widgets::finance::volume_chart::draw_empty_pane;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -838,9 +838,9 @@ impl Draw for OrderBookWidget {
             draw_empty_pane(
                 context,
                 &area,
-                crate::widget::special_widgets::finance::layout::PanelColors {
+                crate::widget::chart_widgets::finance::layout::PanelColors {
                     grid: rule_color,
-                    ..crate::widget::special_widgets::finance::layout::PanelColors::from_parts(
+                    ..crate::widget::chart_widgets::finance::layout::PanelColors::from_parts(
                         panel, ink,
                     )
                 },
@@ -1128,7 +1128,7 @@ impl WidgetProperties for OrderBookWidget {
 mod tests {
     use super::*;
     use crate::event::{Event, EventHandler};
-    use crate::widget::special_widgets::finance::types::fixtures;
+    use crate::widget::chart_widgets::finance::types::fixtures;
     use alloc::sync::Arc;
     use core::sync::atomic::{AtomicUsize, Ordering};
 
@@ -1168,17 +1168,17 @@ mod tests {
     #[test]
     fn both_sides_are_ordered_best_first() {
         let mut ladder = OrderBookWidget::new(Rect::new(0, 0, 320, 240));
-        let mut book = crate::widget::special_widgets::finance::types::OrderBook::new();
+        let mut book = crate::widget::chart_widgets::finance::types::OrderBook::new();
         // Deliberately out of order, as a feed delivers them.
         book.set_bids(alloc::vec![
-            crate::widget::special_widgets::finance::types::BookLevel::new(97.0, 1.0),
-            crate::widget::special_widgets::finance::types::BookLevel::new(99.0, 1.0),
-            crate::widget::special_widgets::finance::types::BookLevel::new(98.0, 1.0),
+            crate::widget::chart_widgets::finance::types::BookLevel::new(97.0, 1.0),
+            crate::widget::chart_widgets::finance::types::BookLevel::new(99.0, 1.0),
+            crate::widget::chart_widgets::finance::types::BookLevel::new(98.0, 1.0),
         ]);
         book.set_asks(alloc::vec![
-            crate::widget::special_widgets::finance::types::BookLevel::new(103.0, 1.0),
-            crate::widget::special_widgets::finance::types::BookLevel::new(101.0, 1.0),
-            crate::widget::special_widgets::finance::types::BookLevel::new(102.0, 1.0),
+            crate::widget::chart_widgets::finance::types::BookLevel::new(103.0, 1.0),
+            crate::widget::chart_widgets::finance::types::BookLevel::new(101.0, 1.0),
+            crate::widget::chart_widgets::finance::types::BookLevel::new(102.0, 1.0),
         ]);
         ladder.set_book(book);
         let bids = ladder.levels(BookSide::Bid);
@@ -1290,10 +1290,10 @@ mod tests {
     #[test]
     fn a_malformed_book_draws_without_panicking() {
         let mut ladder = OrderBookWidget::new(Rect::new(0, 0, 320, 240));
-        let mut book = crate::widget::special_widgets::finance::types::OrderBook::new();
+        let mut book = crate::widget::chart_widgets::finance::types::OrderBook::new();
         book.set_bids(alloc::vec![
-            crate::widget::special_widgets::finance::types::BookLevel::new(f64::NAN, f64::NAN),
-            crate::widget::special_widgets::finance::types::BookLevel::new(99.0, f64::INFINITY),
+            crate::widget::chart_widgets::finance::types::BookLevel::new(f64::NAN, f64::NAN),
+            crate::widget::chart_widgets::finance::types::BookLevel::new(99.0, f64::INFINITY),
         ]);
         ladder.set_book(book);
         let mut backend =

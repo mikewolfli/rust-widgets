@@ -836,6 +836,17 @@ pub trait ControlBackend: Send + Sync {
         0
     }
     /// Create web view control.
+    ///
+    /// # Where the control lives now
+    ///
+    /// The web controls (`web_engine_view`, `web_find_bar`, `web_history_panel`) ship in the
+    /// optional `rust-widgets-webview` crate, which contributes them through
+    /// `rust_widgets_webview::install(&mut WidgetFactory)`. This crate no longer carries the
+    /// control, so a backend that mounts **by name** from
+    /// [`WidgetFactory::shared`](crate::widget::capability::WidgetFactory::shared) answers `0`
+    /// here — the same "no web support" answer
+    /// [`ControlBackend::create_web_engine_page`] documents, rather than resolving
+    /// `WidgetKind::WebEngineView` to the `media_player` that also carries that kind.
     fn create_web_view(
         &self,
         _parent: ObjectId,
@@ -925,6 +936,9 @@ pub trait ControlBackend: Send + Sync {
         0
     }
     /// Create web engine view control.
+    ///
+    /// `0` when the host has not installed `rust-widgets-webview`; see
+    /// [`ControlBackend::create_web_view`].
     fn create_web_engine_view(
         &self,
         _parent: ObjectId,

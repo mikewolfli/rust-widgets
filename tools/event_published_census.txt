@@ -180,7 +180,6 @@ number_picker: value_changed
 order_book: level_clicked, level_hovered, level_unhovered
 otp_input: value_changed, completed, canceled, submitted
 padding:
-page_find_bar: search_requested, next_requested, previous_requested, closed  [alias_of=web_find_bar]
 pagination: page_changed, clicked, page_hover_changed
 panel: toggled, collapse_changed
 password_edit: text_changed, editing_finished, return_pressed, context_menu_requested, cursor_position_changed, selection_changed, text_edited, undo_available, redo_available, copy_available  [alias_of=line_edit]
@@ -271,9 +270,6 @@ video_player: audio_track_selected, buffering_progress_changed, duration_changed
 virtual_list: selection_changed, visible_window_changed, drag_finished, selected_rows_changed
 virtual_table: visible_window_changed, selection_changed, selection_set_changed, context_menu_requested, sort_changed
 volume_chart: bar_clicked, bar_hovered, view_changed
-web_engine_view: loading_started, loading_finished, title_changed, url_changed, error_occurred, navigation_state_changed, page_created, page_destroyed, console_message, download_requested, certificate_error, channel_message, load_progress_changed, link_hovered, link_activated, on_window_requested, render_process_crashed, js_evaluated, download_progress_changed
-web_find_bar: search_requested, next_requested, previous_requested, closed
-web_history_panel: on_entry_activated
 window: closed
 wizard_dialog: finished, canceled, step_changed, help_requested, custom_button_clicked, sidebar_page_activated
 wrap_layout: item_clicked
