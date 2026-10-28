@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 
 //! Input dialog widget.
+use core::fmt::Write as _;
+
 use crate::compat::{Rc, RefCell};
 use crate::core::{Color, HorizontalAlignment, ObjectId, Point, Rect, Size};
 use crate::event::key_codes;
@@ -130,6 +132,9 @@ pub struct InputDialog {
     line_count: usize,
     /// Cached drop-down row rectangles, keyed by its rect and the item count (G-P14).
     dropdown_cache: DropdownCache,
+    /// The text painted in the input field, rebuilt only when an input that spells it changes
+    /// (G-P15): the paint used to clone the whole buffer, or allocate a fresh string, every frame.
+    display_cache: String,
 }
 
 /// The cached drop-down row rectangles and the geometry/item count they were built for.
@@ -172,6 +177,40 @@ impl InputDialog {
             focus: None,
             line_count: 1,
             dropdown_cache: RefCell::new(None),
+            display_cache: String::new(),
+        }
+    }
+    /// Rebuilds [`InputDialog::display_cache`] from the value the current mode presents.
+    ///
+    /// Called from every writer of the edit buffer, the numeric values, the item selection, the
+    /// echo mode and the precision, so the paint only reads it.
+    fn refresh_display_text(&mut self) {
+        let mode = self.mode;
+        let current_item_text = self.items.get(self.current_item).map(String::as_str).unwrap_or("");
+        let text_value = self.text_value.as_str();
+        let cache = &mut self.display_cache;
+        cache.clear();
+        match mode {
+            InputMode::Text => cache.push_str(text_value),
+            // The password field paints one mask glyph per character; `text_value` keeps the
+            // real string, so `get_text` and the signals are unchanged (DLG-13).
+            InputMode::Password => {
+                for character in text_value.chars() {
+                    cache.push(if character == '\n' { '\n' } else { '*' });
+                }
+            }
+            InputMode::Integer => {
+                let _ = write!(cache, "{}", self.int_value);
+            }
+            InputMode::Double => {
+                let _ = write!(
+                    cache,
+                    "{:.prec$}",
+                    self.double_value,
+                    prec = self.double_decimals as usize
+                );
+            }
+            InputMode::Item => cache.push_str(current_item_text),
         }
     }
     /// Creates a text-input dialog with its title, label and initial text
@@ -190,6 +229,7 @@ impl InputDialog {
         d.label_text = label.into();
         d.text_value = default.into();
         d.mode = InputMode::Text;
+        d.refresh_display_text();
         d
     }
     /// Creates a whole-number dialog preset to `value`, bounded by `min` and
@@ -226,6 +266,7 @@ impl InputDialog {
         d.int_value = value.clamp(d.int_min, d.int_max);
         d.int_step = step;
         d.mode = InputMode::Integer;
+        d.refresh_display_text();
         d
     }
     /// The dialog's title, drawn in its header bar.
@@ -320,6 +361,7 @@ impl InputDialog {
             return;
         }
         self.mode = mode;
+        self.refresh_display_text();
         self.base.request_redraw();
     }
     /// Sets the free-text value and repaints. Overwrites rather than appends, so
@@ -336,6 +378,7 @@ impl InputDialog {
         }
         self.text_value = value;
         self.text_caret = self.text_caret.min(self.text_value.chars().count());
+        self.refresh_display_text();
         self.base.request_redraw();
         self.text_value_changed.emit(self.text_value.clone());
     }
@@ -346,6 +389,7 @@ impl InputDialog {
     pub fn set_items(&mut self, items: Vec<String>) {
         self.items = items;
         self.current_item = 0;
+        self.refresh_display_text();
         self.base.request_redraw();
     }
     /// Sets the whole-number value, clamped into the current
@@ -360,6 +404,7 @@ impl InputDialog {
             return;
         }
         self.int_value = clamped;
+        self.refresh_display_text();
         self.base.request_redraw();
         self.int_value_changed.emit(self.int_value);
     }
@@ -380,6 +425,7 @@ impl InputDialog {
             return;
         }
         self.double_value = clamped;
+        self.refresh_display_text();
         self.base.request_redraw();
         self.double_value_changed.emit(self.double_value);
     }
@@ -453,6 +499,7 @@ impl InputDialog {
             return;
         }
         self.double_decimals = decimals;
+        self.refresh_display_text();
         self.base.request_redraw();
     }
     /// Whether the item-mode drop-down is open.
@@ -485,6 +532,7 @@ impl InputDialog {
         }
         self.text_value = next;
         self.text_caret = caret.min(self.text_value.chars().count());
+        self.refresh_display_text();
         self.base.request_redraw();
         self.text_value_changed.emit(self.text_value.clone());
     }
@@ -757,6 +805,7 @@ impl WidgetProperties for InputDialog {
                 }
                 if self.current_item != index {
                     self.current_item = index;
+                    self.refresh_display_text();
                     self.base.request_redraw();
                 }
                 Ok(())
@@ -799,6 +848,7 @@ impl EventHandler for InputDialog {
                 {
                     self.current_item = index;
                     self.dropdown_open = false;
+                    self.refresh_display_text();
                     self.base.request_redraw();
                     return;
                 }
@@ -873,6 +923,7 @@ impl EventHandler for InputDialog {
                         if self.mode == InputMode::Item {
                             if self.current_item > 0 {
                                 self.current_item -= 1;
+                                self.refresh_display_text();
                                 self.base.request_redraw();
                             }
                         } else {
@@ -883,6 +934,7 @@ impl EventHandler for InputDialog {
                         if self.mode == InputMode::Item {
                             if self.current_item + 1 < self.items.len() {
                                 self.current_item += 1;
+                                self.refresh_display_text();
                                 self.base.request_redraw();
                             }
                         } else {
@@ -1213,23 +1265,11 @@ impl Draw for InputDialog {
         if self.focus == Some(0) {
             context.draw_rounded_rect_stroke(input_band, 2, accent, 2);
         }
-        let display_text = match self.mode {
-            InputMode::Text => self.text_value.clone(),
-            // The password field paints one mask glyph per character; `text_value` keeps the
-            // real string, so `get_text` and the signals are unchanged (DLG-13).
-            InputMode::Password => {
-                self.text_value.chars().map(|ch| if ch == '\n' { '\n' } else { '*' }).collect()
-            }
-            InputMode::Integer => self.int_value.to_string(),
-            InputMode::Double => {
-                format!("{:.prec$}", self.double_value, prec = self.double_decimals as usize)
-            }
-            InputMode::Item => self.current_item_text().unwrap_or("").to_string(),
-        };
+        // The painted text comes from the cache the value writers maintain (G-P15).
         // Guarded: an unguarded draw of an empty value emits `<text …></text>`, an element
         // the rasteriser never produces. The line box is centred on the field through the
         // shared primitive, which the old `input_y + ((26 - h) / 2)` re-derived by hand.
-        if !display_text.is_empty() {
+        if !self.display_cache.is_empty() {
             let input_font = font;
             let multiline = self.line_count > 1
                 && matches!(self.mode, InputMode::Text | InputMode::Password)
@@ -1237,7 +1277,7 @@ impl Draw for InputDialog {
             if multiline {
                 // One row per explicit line; Enter inserts `\n` in this mode (DLG-14).
                 let line_h = context.text_line(input_band, input_font).height.max(1);
-                let rows = display_text.split('\n');
+                let rows = self.display_cache.split('\n');
                 let lines: Vec<&str> = rows.collect();
                 for (row_index, line_text) in lines.iter().enumerate() {
                     let y = input_band.y + 2 + row_index as i32 * line_h as i32;
@@ -1261,7 +1301,7 @@ impl Draw for InputDialog {
                         input_band.width.saturating_sub(8),
                         input_line.height.max(1),
                     ),
-                    &display_text,
+                    &self.display_cache,
                     input_font,
                     ink,
                     HorizontalAlignment::Left,

@@ -1,6 +1,20 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
 // SPDX-License-Identifier: MIT
 
+/// Blend factor a hovered control applies toward its contrasting tone (WGT-F5).
+///
+/// The one number every hover affordance uses: [`StateOverlay::fill_blend`], the preset theme's
+/// `"<kind>:hover"` overrides, and the controls that tint a fill or an ink directly. It used to
+/// exist as three spellings (0.08, 0.10 and 0.22), which made the same gesture visibly stronger on
+/// some controls than on others.
+pub const HOVER_FILL_BLEND: f32 = 0.08;
+
+/// Blend factor a pressed control applies toward its contrasting tone (WGT-F5).
+///
+/// Firmer than [`HOVER_FILL_BLEND`], because a press is a committed gesture. Same single-source
+/// rule as the hover weight.
+pub const PRESSED_FILL_BLEND: f32 = 0.12;
+
 /// The state layers a control should **overlay** on top of its resolved fill.
 ///
 /// # Why this is separate from [`WidgetState`]
@@ -129,9 +143,9 @@ impl StateOverlay {
     /// so an overlaid control and a theme-driven one move by the same amount.
     pub fn fill_blend(&self) -> f32 {
         if self.pressed {
-            0.12
+            PRESSED_FILL_BLEND
         } else if self.hovered {
-            0.08
+            HOVER_FILL_BLEND
         } else {
             0.0
         }

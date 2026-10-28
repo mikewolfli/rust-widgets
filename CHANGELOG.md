@@ -5,6 +5,107 @@ The canonical project changelog is maintained at [docs/reports/CHANGELOG.md](doc
 This root-level file exists for tools and release automation that expect `CHANGELOG.md` at repository root.
 When the two disagree, this file is the one that ships; `tools/check_changelog_sync.sh` keeps them identical.
 
+## 3.0.0 (2026-10-28) — deep-scan round: whole-app input safety, steady-state allocation closure, touch/focus completeness
+
+Full re-scan of the crate (`docs/issues/issue-20261028-1.md`, 41 items), implemented item by item.
+**Major** because one public signature changed: `ShortcutManager::set_focus_chain_lookup` now takes
+`Fn(&mut Vec<ObjectId>)` so the host fills a reused buffer instead of returning a fresh `Vec` for
+every key press (see *API changes*). Everything else keeps its signatures and its rendered output;
+the performance work replaces per-frame allocations with caches, scratch buffers and revision keys.
+Per-item evidence (file:line and the command that proved it) is in `docs/log/log-20261028-3.md`.
+
+### Correctness (hidden global defects)
+
+- **A destroyed control can no longer leave its modality behind.** `unregister` now pops the widget
+  from the modal stack (both id spaces) beside the existing popup-grab cleanup. A dead modal id used
+  to sit on no live ancestor chain, so `modal_blocks` answered `true` for every id and the whole
+  application stopped accepting input after a window or dialog was destroyed without `Dialog::close`.
+- **The layer-cache eviction ring is bounded again.** Invalidation and replacement now drop the
+  matching ring entries (`retain_resident_layer_order`), restoring “ring length ≤ resident layers”.
+  Previously a control that repainted every frame neither filled the map nor triggered eviction, so
+  the ring grew by one entry per frame for the life of the session.
+- **The macOS window resize delegate no longer leaks per window.** `NSWindow.delegate` is a weak
+  property; the delegate created with `new` had no owner. It is now retained as an associated
+  object of its window (then the `+1` is balanced), so it is released with the window it describes.
+- **Accessibility tables are torn down with their widget.** The objc2 backend drops its
+  `NSView` pointer registration in `destroy_widget` (a late notification used to dereference a
+  deallocated view), and the Harmony bridge drops the accessible name, which ids never reuse.
+- **`CALLBACK_GENERATIONS` stops growing on every destroy.** The bump is now conditional on “this id
+  actually held a callback” (or has one on a dispatch guard's stack), which keeps the D08-A-02 guard
+  protocol while bounding the table to ids that were ever wired.
+- **Android `display_info` reports logical pixels.** The physical `widthPixels`/`heightPixels` are
+  divided by `densityDpi/160` like the same file's inset and pointer paths, so a 3× device no longer
+  answers bounds three times too large while also reporting `scale = 3`.
+- **`set_enabled` is one contract again.** The trait default now re-resolves the theme, requests a
+  repaint and announces the state change to the accessibility pump; Button, CheckBox, ToggleButton
+  and RadioButton converge on it (RadioButton previously did neither).
+
+### Steady-state cost (per frame / per key / per command)
+
+- **Runtime:** the dirty-frame path swaps its region tracker out for an idle one instead of
+  building a tracker and copying every region (`DirtyTrackerScratch`); `word_ranges` is a cursor
+  iterator, removing the temporary `Vec` from every wrapped label's frame.
+- **Render:** the dash kernel gained `dash_line_segments_into`/`for_each_dash_segment` (one
+  thread-local buffer, no `runs` vector) and all three call sites use it; `for_each_cluster` reuses
+  a thread-local `String`; the rounded-clip outline is written into a reusable buffer.
+- **Platform:** redox presents through `render_frame_tree_cached_shared` and skips the BGRA
+  conversion and `sync()` when the cache hands back the frame already on screen; Windows converts
+  only the damaged region to BGRA (the DIB describes the region, not the window); the Wayland portal
+  keeps one session connection instead of building one per cache TTL.
+- **Shortcuts:** `lookup` compares `ObjectId`s for control scopes (no `format!("control:{id}")` per
+  focused control), reuses a thread-local focus-chain buffer, and skips the focus chain entirely when
+  the chord bucket has no control-scoped binding.
+- **Layout:** grid `place` takes its `emitted` buffer from a scratch stack instead of allocating it
+  per pass.
+- **Widgets:** the per-frame string/allocation iceberg is closed across summary rows, status bars,
+  media scrubbers/transport bars, value spin boxes, calendar marks, Cupertino material/date pickers,
+  camera previews, Lottie image providers (negative results are cached), chart reference lines and
+  tooltips, Gantt flags and critical-path borrows, DataGrid merged-cell lookup (per-row index
+  instead of a scan per visible cell), column chooser row snapshots, tool-bar hosted-widget bands,
+  find bars, carousel indicators, progress dialogs, wizards, input dialogs, steppers, maps, kanban
+  headers, aspect-ratio labels and AnimatedImage scaling (`nearest_scale_into` reuses the buffer).
+- **Theme reads:** `active_profile()` is now a thread-local cache keyed by the theme revision, so
+  draw/measure paths stop taking the global theme mutex once per control per frame.
+- **Buttons:** the shortcut hint (formatted text + font) is cached under the same key discipline as
+  the intrinsic-size hint instead of being rebuilt every frame.
+
+### Consistency and capability completeness
+
+- **Touch:** 27 interactive controls gained `TouchBegin`/`Tap`/cancel arms (text fields and editors,
+  search fields, OTP/masked/mention/auto-complete/in-place/shortcut editors, toggle button, rating,
+  tag, scrollbar, range slider, number picker, dropdown, cascader, multi-select/editable/font combo
+  boxes, command link, suggestion and recent-value popups, validation bubble). Each arm routes into
+  the same state transition the mouse arm uses; nothing is duplicated. `ime_preedit` and
+  `progress_circle` are documented exceptions — they have no pointer state machine at all.
+- **Focus:** the input-family controls that could be Tab-focused but painted no ring now draw
+  `FocusRing::for_control` under `base.draws_focus_ring()` (so pointer focus still paints nothing).
+- **Cursor:** the default `cursor_icon` table covers the newer controls — text-entry kinds are an
+  I-beam, selectors/triggers are the pointer — so a text area no longer shows the default arrow.
+- **Hover:** one weight. `HOVER_FILL_BLEND = 0.08` / `PRESSED_FILL_BLEND = 0.12` in
+  `style::theme_state` are the single source; the preset theme, button/toggle-button transition
+  paths, switch thumb, frame and label tints all read them (0.22 and 0.10 are gone).
+- **Popups:** `Dropdown::set_highlighted` requests the repaint the keyboard path already did, and
+  cascader / multi-select / suggestion / recent-value popups highlight the row under the pointer
+  through the same setter the keyboard uses.
+
+### API changes
+
+- `ShortcutManager::set_focus_chain_lookup` takes `Box<dyn Fn(&mut Vec<ObjectId>) + Send + Sync>`.
+  The closure `clear()`s the buffer and pushes the chain; the manager owns the buffer and reuses it
+  across key presses. `clear_focus_chain_lookup`, `register_for_control` and the lookup semantics are
+  unchanged.
+- No other public signature, property name, event name or rendered byte changed.
+
+### Verification
+
+- `cargo test --lib`: 10222 passed, 0 failed. Full `cargo test --no-default-features --features desktop`:
+  every suite passes (the 21 ignored tests are the repository's existing `--ignored` set).
+- `cargo clippy --all-targets --no-default-features --features desktop -- -D warnings`: clean.
+- Cross-target type checks: desktop + `touch` + `3d`, `macos,cocoa-legacy`, `mini`/`embedded`/`tablet`,
+  Android (`x86_64-linux-android`), HarmonyOS (`aarch64-unknown-linux-ohos`, `xcomponent`), Linux
+  Wayland portal, **Windows msvc (`cargo xwin`) and gnu with the full `desktop` profile**, and both
+  Redox targets via `tools/check_redox_cross.sh` (`-Z build-std`).
+
 ## 2.9.4 (2026-10-28) — build-matrix and lint-closure round
 
 Second round over `docs/issues/issue-20261026.md`. 2.9.3 fixed hot paths; this round made the

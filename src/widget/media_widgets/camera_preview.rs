@@ -495,12 +495,13 @@ impl CameraPreview {
         let resolution = (frame.width, frame.height);
         let negotiated = self.resolution != resolution;
         self.resolution = resolution;
-        self.resolution_text = format!("{}x{}", resolution.0, resolution.1);
         self.processed = None;
         self.present_elapsed_ms = 0;
         self.frame_available.emit(frame.pts_ms);
         self.back = Some(frame);
         if negotiated {
+            // The readout only depends on the resolution, so it is rebuilt when that changes.
+            self.resolution_text = format!("{}x{}", resolution.0, resolution.1);
             self.announce_format();
         }
         self.base.request_redraw();

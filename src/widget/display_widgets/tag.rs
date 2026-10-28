@@ -12,7 +12,7 @@
 //! an item list, a focus index and a multi-select flag it can never use.
 
 use crate::compat::{Cell, RefCell};
-use crate::core::{Color, Font, HorizontalAlignment, Rect, Size};
+use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{key_codes, Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -530,6 +530,26 @@ impl Draw for Tag {
     }
 }
 
+impl Tag {
+    /// Resolves a pointer press at `pos`: the close glyph emits `closed`, any other point
+    /// inside the tag toggles the selection.
+    ///
+    /// Lifted out of the press arm so a completed tap takes the same path.
+    fn press_at(&mut self, pos: Point) {
+        if let Some(close) = self.close_rect() {
+            if close.contains(pos) {
+                self.closed.emit(self.text.clone());
+                self.base.request_redraw();
+                return;
+            }
+        }
+        if self.geometry().contains(pos) {
+            let selected = !self.selected;
+            self.set_selected(selected);
+        }
+    }
+}
+
 impl EventHandler for Tag {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
@@ -548,18 +568,16 @@ impl EventHandler for Tag {
             }
             // A disabled tag accepts no pointer input, exactly like its key arm above (D-024).
             Event::MousePress { pos, button: 1, .. } if self.base.is_enabled() => {
-                if let Some(close) = self.close_rect() {
-                    if close.contains(*pos) {
-                        self.closed.emit(self.text.clone());
-                        self.base.request_redraw();
-                        return;
-                    }
-                }
-                if self.geometry().contains(*pos) {
-                    let selected = !self.selected;
-                    self.set_selected(selected);
-                }
+                self.press_at(*pos);
             }
+            // Touch has no translated press here: contact marks the tag as hovered, and the
+            // completed tap performs the same press `press_at` gives the pointer.
+            #[cfg(feature = "touch")]
+            Event::TouchBegin { .. } => self.set_hovered(true),
+            #[cfg(feature = "touch")]
+            event if crate::event::translator::is_touch_cancel(event) => self.set_hovered(false),
+            #[cfg(feature = "touch")]
+            Event::Tap { pos } if self.base.is_enabled() => self.press_at(*pos),
             _ => {}
         }
     }

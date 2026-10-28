@@ -15,7 +15,8 @@
 //!
 //! The backend owns one [`orbclient::Window`] per library window, its input state, and the scale
 //! the compositor reports. The library owns every control, so a window's child tree is painted by
-//! `widget::runtime::render_frame_tree` and blitted into `Window::data_mut`. No per-control native
+//! `widget::runtime::render_frame_tree_cached_shared` and blitted into `Window::data_mut` (skipped
+//! entirely when the cache hands back the frame already on screen). No per-control native
 //! creation exists here, exactly as on the other self-drawn hosts (rules #55/#56).
 //!
 //! # Threading
@@ -62,6 +63,11 @@ pub(crate) struct OrbitalWindow {
     pub(crate) window: Window,
     /// Modifier/button state and the text/key pairing flag.
     pub(crate) input: OrbitalInput,
+    /// The frame most recently converted and synced, kept so the next tick can tell "the cache
+    /// handed back the same pixels" from "the content moved" without converting a whole frame
+    /// (ENG-C1). Holding it also keeps its allocation alive, so the pointer comparison cannot be
+    /// satisfied by a recycled allocation.
+    pub(crate) last_frame: Option<crate::compat::Rc<Vec<u8>>>,
 }
 
 // SAFETY: `Window` is `!Send` because it holds a mapped pixel buffer. The whole per-window map is

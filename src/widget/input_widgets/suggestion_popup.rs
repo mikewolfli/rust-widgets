@@ -688,6 +688,19 @@ impl SuggestionPopup {
     }
 }
 
+impl SuggestionPopup {
+    /// Resolves a press at `pos`: a row is taken, a press past the rows but inside the popup
+    /// is ignored, and a press outside the popup dismisses it.
+    fn press_at(&mut self, pos: Point) {
+        if let Some(row) = self.row_at(pos) {
+            self.set_highlight(Some(row));
+            self.commit_highlighted();
+        } else if !self.popup_rect().contains_point(pos) {
+            self.dismiss();
+        }
+    }
+}
+
 impl EventHandler for SuggestionPopup {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
@@ -715,12 +728,29 @@ impl EventHandler for SuggestionPopup {
                 _ => {}
             },
             Event::MousePress { pos, button: 1, .. } => {
-                if let Some(row) = self.row_at(*pos) {
-                    self.set_highlight(Some(row));
-                    self.commit_highlighted();
-                } else if !self.popup_rect().contains_point(*pos) {
-                    self.dismiss();
-                }
+                self.press_at(*pos);
+            }
+            // Hovering a painted row marks it, and leaving the rows (or the popup) clears the
+            // mark rather than latching the last row crossed.
+            Event::MouseMove { pos } => {
+                self.set_highlight(self.row_at(*pos));
+            }
+            Event::MouseLeave { .. } => {
+                self.set_highlight(None);
+            }
+            // Touch has no translated press here: contact previews the row under the finger and
+            // the completed tap takes it through the same `press_at` path.
+            #[cfg(feature = "touch")]
+            Event::TouchBegin { pos, .. } => {
+                self.set_highlight(self.row_at(*pos));
+            }
+            #[cfg(feature = "touch")]
+            event if crate::event::translator::is_touch_cancel(event) => {
+                self.set_highlight(None);
+            }
+            #[cfg(feature = "touch")]
+            Event::Tap { pos } => {
+                self.press_at(*pos);
             }
             Event::FocusLost => self.dismiss(),
             _ => {}

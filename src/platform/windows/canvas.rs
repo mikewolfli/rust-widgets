@@ -514,10 +514,10 @@ pub(crate) unsafe fn blit_frame(hdc: HDC, width: u32, height: u32, frame: &[u8])
 
 /// Blits the `region` of a top-down RGBA frame into `hdc`.
 ///
-/// `region` is in the frame's own (client) coordinates. The whole frame is still converted
-/// to BGRA — the DIB stride must stay the full frame width — but only the requested source
-/// and destination rectangles are transferred, so an accurate dirty rectangle avoids
-/// re-uploading the unchanged part of the window.
+/// `region` is in the frame's own (client) coordinates. Only that region is converted to BGRA and
+/// transferred (ENG-C2): the conversion buffer holds the region's rows, the DIB describes the
+/// region's width, and `StretchDIBits` reads it at `(0, 0)` and writes it at `(left, top)`. A small
+/// damage rectangle in a large window therefore costs its own pixels rather than the window's.
 ///
 /// # Safety
 /// `hdc` must be a live device context and `frame` must hold at least `width * height * 4` bytes.
@@ -568,30 +568,46 @@ pub(crate) unsafe fn blit_frame_region(
     }
     let region_width = right - left;
     let region_height = bottom - top;
+    let region_width_usize = region_width as usize;
+    let region_height_usize = region_height as usize;
+    let region_bytes = region_width_usize * region_height_usize * 4;
 
     // 32-bit top-down BGRA. The frame is RGBA, so red and blue are swapped while
     // copying; alpha is forced opaque because StretchDIBits with BI_RGB ignores it.
     // The conversion buffer is retained per thread (G-601): a repaint used to allocate a
     // whole-window buffer every frame, which is the largest recurring cost of a 1:1 blit.
+    // It now holds the **damaged region** rather than the whole frame (ENG-C2), which is what
+    // the transfer below always limited itself to.
     BLIT_BUFFER.with(|buffer| {
         let mut buffer = buffer.borrow_mut();
-        buffer.resize(expected, 0);
-        for (offset, pixel) in
-            buffer.as_chunks_mut::<4>().0.iter_mut().zip(frame.as_chunks::<4>().0)
-        {
-            offset[0] = pixel[2];
-            offset[1] = pixel[1];
-            offset[2] = pixel[0];
-            offset[3] = 255;
+        buffer.resize(region_bytes, 0);
+        let src_stride = width as usize * 4;
+        let dst_stride = region_width_usize * 4;
+        let left_bytes = left as usize * 4;
+        for row in 0..region_height_usize {
+            let src_start = (top as usize + row) * src_stride + left_bytes;
+            let src_end = src_start + dst_stride;
+            let dst_start = row * dst_stride;
+            for (dst, src) in buffer[dst_start..dst_start + dst_stride]
+                .as_chunks_mut::<4>()
+                .0
+                .iter_mut()
+                .zip(frame[src_start..src_end].as_chunks::<4>().0)
+            {
+                dst[0] = src[2];
+                dst[1] = src[1];
+                dst[2] = src[0];
+                dst[3] = 255;
+            }
         }
 
         let mut info: BITMAPINFOHEADER = std::mem::zeroed();
         info.biSize = std::mem::size_of::<BITMAPINFOHEADER>() as u32;
-        info.biWidth = width_i32;
+        info.biWidth = region_width;
         // A negative height selects a top-down DIB, matching the frame's row order.
         // `checked_neg` cannot fail here because the conversion above rejects `i32::MIN`-scale
         // heights, but stating it keeps the negation total by construction.
-        info.biHeight = height_i32.checked_neg().unwrap_or(height_i32);
+        info.biHeight = region_height.checked_neg().unwrap_or(region_height);
         info.biPlanes = 1;
         info.biBitCount = 32;
         info.biCompression = BI_RGB;
@@ -602,8 +618,8 @@ pub(crate) unsafe fn blit_frame_region(
             top,
             region_width,
             region_height,
-            left,
-            top,
+            0,
+            0,
             region_width,
             region_height,
             buffer.as_ptr() as *const _,

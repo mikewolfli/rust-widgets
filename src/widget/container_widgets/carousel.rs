@@ -78,6 +78,8 @@ use crate::{impl_widget_property_hooks, property_names_of};
 
 use super::theme_snapshot::ThemeSnapshot;
 
+use std::cell::RefCell;
+
 // `Instant` is the monotonic clock the gesture velocity is measured against. `std`
 // is available in every profile this control compiles in; a `no_std` clock would
 // have to be injected, which is not worth a constructor parameter for a value only
@@ -378,6 +380,8 @@ pub struct Carousel {
     page_transition: bool,
     /// The programmatic slide in flight, if any.
     slide: Option<PageSlide>,
+    /// The numeric indicator's `current/total` text, keyed by the pair it was formatted from.
+    indicator_text_cache: RefCell<Option<((usize, usize), String)>>,
     /// Emitted when the current page index changes.
     pub page_changed: Signal1<usize>,
 }
@@ -406,6 +410,7 @@ impl Carousel {
             page_gap: 0,
             page_transition: true,
             slide: None,
+            indicator_text_cache: RefCell::new(None),
             page_changed: Signal1::new(),
         }
     }
@@ -1592,9 +1597,14 @@ impl Carousel {
             // `Numeric` (the only remaining visible style): `current / total`, one
             // based, because that is how a reader counts pages. Drawn centered on the
             // strip with no slot list, so it stays legible at any page count.
-            let label = format!("{}/{}", self.current_index + 1, page_count);
+            let mut cache = self.indicator_text_cache.borrow_mut();
+            let key = (self.current_index + 1, page_count);
+            if cache.as_ref().is_none_or(|(cached, _)| *cached != key) {
+                *cache = Some((key, format!("{}/{}", key.0, key.1)));
+            }
+            let label = cache.as_ref().map(|(_, text)| text.as_str()).unwrap_or_default();
             let font = crate::core::Font::simple("Sans", 12.0);
-            let metrics = context.measure_text(&label, &font);
+            let metrics = context.measure_text(label, &font);
             let (text_x, text_y) = if vertical {
                 // A stacked counter on the side edge reads bottom-to-top, which is
                 // not worth the readability cost of a rotated glyph run; centred on
@@ -1609,7 +1619,7 @@ impl Carousel {
             };
             context.draw_text(
                 Point::new(text_x, text_y),
-                &label,
+                label,
                 &font,
                 mark,
                 HorizontalAlignment::Left,

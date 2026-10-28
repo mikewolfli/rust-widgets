@@ -71,8 +71,8 @@ pub use manager::{
     active_palette_shared, global_high_contrast, global_theme_manager, resolved_semantic_border,
     resolved_theme_style, resolved_theme_style_for, resolved_theme_style_for_shared,
     resolved_theme_style_for_state, resolved_theme_style_for_state_shared,
-    resolved_theme_style_shared, semantic_color, set_global_high_contrast, SemanticColor,
-    ThemeManager,
+    resolved_theme_style_shared, semantic_color, set_global_high_contrast, theme_revision,
+    SemanticColor, ThemeManager,
 };
 pub use preset_states::preset_state_key_count;
 pub use types::{

@@ -171,6 +171,26 @@ pub struct MaskedEdit {
 }
 
 impl MaskedEdit {
+    /// Paints the keyboard-focus ring around the field box.
+    ///
+    /// Only a keyboard focus draws it: a pointer (or touch) press focuses the field without
+    /// claiming visual focus, so no ring appears under the cursor. `fill` is the field's painted
+    /// face, whose contrast colour stands in when the theme declares no `outline` token.
+    fn draw_focus_ring(&self, context: &mut RenderContext, field: Rect, fill: Color) {
+        if !self.base.draws_focus_ring() {
+            return;
+        }
+        let ring = crate::widget::metrics::FocusRing::for_control(field, 4);
+        if ring.is_drawable() {
+            context.draw_rounded_rect_stroke(
+                ring.rect,
+                ring.radius,
+                crate::widget::metrics::focus_ring_color(fill.contrast_color()),
+                crate::widget::metrics::FOCUS_RING_WIDTH,
+            );
+        }
+    }
+
     /// Creates a new MaskedEdit widget with the given geometry.
     ///
     /// Initially has an empty mask. A mask with no input segments has nowhere to place a
@@ -508,6 +528,17 @@ impl MaskedEdit {
         if self.selection_anchor == Some(self.cursor_pos) {
             self.selection_anchor = None;
         }
+    }
+
+    /// A primary press at `pos`: focuses the field and places the caret / anchors the selection
+    /// at the pressed character.
+    ///
+    /// Shared by the mouse and touch press arms, so a finger enters exactly the state machine a
+    /// pointer does instead of a second copy of it.
+    fn press_with_pointer(&mut self, pos: Point, modifiers: u32) {
+        self.focused = true;
+        let index = self.display_position_at_x(pos.x);
+        self.press_at(index, crate::shortcut::Modifiers::from_event_bits(modifiers));
     }
 
     /// Starts a pointer selection at display position `index`.
@@ -1215,6 +1246,9 @@ impl Draw for MaskedEdit {
                     self.alignment.to_horizontal().unwrap_or(HorizontalAlignment::Left),
                 );
             }
+            // The ring is painted last in *both* branches, so the ink and the selection band cannot
+            // cover its edge.
+            self.draw_focus_ring(context, geom, bg_color);
             return;
         }
 
@@ -1370,6 +1404,9 @@ impl Draw for MaskedEdit {
                 }
             }
         }
+
+        // The ring is painted after every glyph and the selection band, so neither can cover it.
+        self.draw_focus_ring(context, geom, bg_color);
     }
 }
 
@@ -1409,9 +1446,7 @@ impl EventHandler for MaskedEdit {
             Event::MousePress { pos, button, modifiers, .. }
                 if *button == 1 && self.field_rect().contains_point(*pos) =>
             {
-                self.focused = true;
-                let index = self.display_position_at_x(pos.x);
-                self.press_at(index, crate::shortcut::Modifiers::from_event_bits(*modifiers));
+                self.press_with_pointer(*pos, *modifiers);
             }
             Event::MouseMove { pos } => {
                 if self.dragging_selection {
@@ -1422,6 +1457,24 @@ impl EventHandler for MaskedEdit {
             // A release anywhere ends the gesture, including outside the field: the anchor stays
             // where the press put it, so the selection the user made is kept.
             Event::MouseRelease { button, .. } if *button == 1 => {
+                self.end_drag();
+            }
+            // ── Touch ──
+            //
+            // A finger takes the same route the pointer does: the contact places the caret and
+            // anchors the selection, the lift ends the gesture, and a withdrawn contact clears
+            // the same latch. Without these arms the field was unreachable on a touch-only host.
+            // No separate `Tap` arm: a tap is the press plus the release performed here.
+            #[cfg(feature = "touch")]
+            Event::TouchBegin { pos, .. } if self.field_rect().contains_point(*pos) => {
+                self.press_with_pointer(*pos, 0);
+            }
+            #[cfg(feature = "touch")]
+            Event::TouchEnd { .. } => {
+                self.end_drag();
+            }
+            #[cfg(feature = "touch")]
+            event if crate::event::translator::is_touch_cancel(event) => {
                 self.end_drag();
             }
             // Platform-committed text (D09-INPUT-01), routed through the mask entry point the

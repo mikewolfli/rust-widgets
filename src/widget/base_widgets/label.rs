@@ -27,8 +27,9 @@ use crate::{impl_widget_property_hooks, property_names_of};
 /// How far the ink moves toward its contrasting tone at full interaction strength.
 ///
 /// Named because the draw path and its tests read the same value; at rest the tint is
-/// skipped entirely, so this only describes the hovered/pressed picture.
-const LABEL_INTERACTION_TINT: f32 = 0.22;
+/// skipped entirely, so this only describes the hovered/pressed picture. The value is the style
+/// layer's single hover weight (WGT-F5), not a second copy of it.
+const LABEL_INTERACTION_TINT: f32 = crate::style::HOVER_FILL_BLEND;
 
 /// A label's own padding: the gap it keeps between its rectangle and its text.
 ///

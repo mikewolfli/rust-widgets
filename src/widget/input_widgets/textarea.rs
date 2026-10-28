@@ -1807,6 +1807,25 @@ impl TextArea {
         self.delete_range(start, end);
     }
 
+    /// A primary press at `pos`: grabs the scrollbar when the point is on it, otherwise focuses
+    /// the area, starts the caret blink and places the caret / anchors the selection.
+    ///
+    /// Shared by the mouse and touch press arms, so a finger enters exactly the state machine a
+    /// pointer does instead of a second copy of it.
+    fn press_with_pointer(&mut self, pos: Point, modifiers: u32) {
+        // I-118: a press on the scrollbar thumb grabs it instead of moving the caret.
+        if self.scrollbar_contains(pos) {
+            self.scrollbar_drag = true;
+            self.scrollbar_scroll_to(pos.y);
+            self.request_redraw();
+            return;
+        }
+        self.focused = true;
+        self.cursor_blink.start();
+        let index = self.byte_index_at(pos);
+        self.press_at(index, crate::shortcut::Modifiers::from_event_bits(modifiers));
+    }
+
     /// Starts a pointer selection at the character `index`, extending from the anchor when `Shift`
     /// is held.
     ///
@@ -2733,17 +2752,7 @@ impl EventHandler for TextArea {
             Event::MousePress { pos, button, modifiers, .. }
                 if *button == 1 && self.hit_test(*pos) =>
             {
-                // I-118: a press on the scrollbar thumb grabs it instead of moving the caret.
-                if self.scrollbar_contains(*pos) {
-                    self.scrollbar_drag = true;
-                    self.scrollbar_scroll_to(pos.y);
-                    self.request_redraw();
-                    return;
-                }
-                self.focused = true;
-                self.cursor_blink.start();
-                let index = self.byte_index_at(*pos);
-                self.press_at(index, crate::shortcut::Modifiers::from_event_bits(*modifiers));
+                self.press_with_pointer(*pos, *modifiers);
             }
             Event::MouseMove { pos } => {
                 if self.scrollbar_drag {
@@ -2769,6 +2778,27 @@ impl EventHandler for TextArea {
             // A release anywhere ends the gesture, including outside the control: the anchor stays
             // where the press put it, so the selection the user made is kept.
             Event::MouseRelease { button, .. } if *button == 1 => {
+                self.scrollbar_drag = false;
+                self.end_drag();
+            }
+            // ── Touch ──
+            //
+            // A finger takes the same route the pointer does: the contact places the caret and
+            // anchors the selection, the lift ends the drag, and a withdrawn contact clears the
+            // latches without leaving the gesture half-finished. Without these arms the control
+            // was unreachable on a touch-only host. There is no separate `Tap` arm: a tap is the
+            // press plus the release the two arms above already perform.
+            #[cfg(feature = "touch")]
+            Event::TouchBegin { pos, .. } if self.hit_test(*pos) => {
+                self.press_with_pointer(*pos, 0);
+            }
+            #[cfg(feature = "touch")]
+            Event::TouchEnd { .. } => {
+                self.scrollbar_drag = false;
+                self.end_drag();
+            }
+            #[cfg(feature = "touch")]
+            event if crate::event::translator::is_touch_cancel(event) => {
                 self.scrollbar_drag = false;
                 self.end_drag();
             }
@@ -2965,6 +2995,25 @@ impl Draw for TextArea {
         }
         context.pop_clip();
         self.draw_scrollbar(context);
+
+        // ── Focus ring ──
+        //
+        // Only a keyboard focus draws it: a pointer (or touch) press focuses the area without
+        // claiming visual focus, so no ring appears under the cursor.
+        if self.base.draws_focus_ring() {
+            let ring = crate::widget::metrics::FocusRing::for_control(
+                rect,
+                self.style().border_radius.unwrap_or(0),
+            );
+            if ring.is_drawable() {
+                context.draw_rounded_rect_stroke(
+                    ring.rect,
+                    ring.radius,
+                    crate::widget::metrics::focus_ring_color(bg.contrast_color()),
+                    crate::widget::metrics::FOCUS_RING_WIDTH,
+                );
+            }
+        }
     }
 }
 

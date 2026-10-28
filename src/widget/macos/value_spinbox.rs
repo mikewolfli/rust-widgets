@@ -32,6 +32,8 @@ pub struct ValueSpinBox {
     editing: bool,
     /// The text being edited; committed on Enter and discarded on Escape.
     draft: String,
+    /// The non-edit display text, rebuilt when the value or an affix changes.
+    display_cache: String,
     /// Emitted with the new value whenever it changes.
     pub value_changed: Signal1<i64>,
     /// Emitted with the final value when editing ends.
@@ -52,6 +54,7 @@ impl ValueSpinBox {
             editable: true,
             editing: false,
             draft: String::new(),
+            display_cache: String::from("0"),
             value_changed: Signal1::new(),
             editing_finished: Signal1::new(),
         }
@@ -69,6 +72,7 @@ impl ValueSpinBox {
             return;
         }
         self.value = clamped;
+        self.rebuild_display_cache();
         self.base.request_redraw();
         self.value_changed.emit(clamped);
     }
@@ -91,6 +95,7 @@ impl ValueSpinBox {
         let clamped = self.value.clamp(minimum, maximum);
         if clamped != self.value {
             self.value = clamped;
+            self.rebuild_display_cache();
             self.value_changed.emit(clamped);
         }
         self.base.request_redraw();
@@ -117,6 +122,7 @@ impl ValueSpinBox {
     /// Sets the prefix.
     pub fn set_prefix(&mut self, prefix: impl Into<String>) {
         self.prefix = prefix.into();
+        self.rebuild_display_cache();
         self.base.request_redraw();
     }
 
@@ -128,6 +134,7 @@ impl ValueSpinBox {
     /// Sets the suffix.
     pub fn set_suffix(&mut self, suffix: impl Into<String>) {
         self.suffix = suffix.into();
+        self.rebuild_display_cache();
         self.base.request_redraw();
     }
 
@@ -147,6 +154,15 @@ impl ValueSpinBox {
             self.draft.clear();
         }
         self.base.request_redraw();
+    }
+
+    /// Rebuilds the non-edit display text from the current value and affixes.
+    fn rebuild_display_cache(&mut self) {
+        self.display_cache.clear();
+        self.display_cache.push_str(&self.prefix);
+        let _ =
+            core::fmt::Write::write_fmt(&mut self.display_cache, format_args!("{}", self.value));
+        self.display_cache.push_str(&self.suffix);
     }
 
     /// The field's rectangle: everything left of the stepper buttons.
@@ -226,10 +242,11 @@ impl Draw for ValueSpinBox {
             if self.editing { ink } else { ink.with_alpha(60) },
             1,
         );
-        let text = if self.editing {
-            self.draft.clone()
+        let text: &str = if self.editing {
+            // Borrowed, not cloned: the draft already holds the text being edited.
+            self.draft.as_str()
         } else {
-            format!("{}{}{}", self.prefix, self.value, self.suffix)
+            &self.display_cache
         };
         context.draw_text_fitted_cow(
             Rect::new(
@@ -238,7 +255,7 @@ impl Draw for ValueSpinBox {
                 field.width.saturating_sub(12),
                 field.height.saturating_sub(4),
             ),
-            &text,
+            text,
             font,
             ink,
             HorizontalAlignment::Left,

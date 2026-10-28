@@ -39,6 +39,14 @@ struct Cached {
 static COLOR_SCHEME: Mutex<Option<Cached>> = Mutex::new(None);
 static CONTRAST: Mutex<Option<Cached>> = Mutex::new(None);
 
+/// The process-wide session-bus connection, built once and reused (ENG-C4).
+///
+/// Building a connection per TTL period paid a socket connect, SASL authentication, the `Hello`
+/// handshake and a zbus blocking executor thread spawn/join every two seconds, on a thread that
+/// can be the frame path. The portal's `Settings` interface is stateless, so one connection serves
+/// every key and every lookup; it is dropped with the process.
+static SESSION: Mutex<Option<zbus::blocking::Connection>> = Mutex::new(None);
+
 /// The desktop's colour scheme, or `None` when no preference was reported.
 ///
 /// `true` is dark and `false` is light. The portal's `0` ("no preference") and a missing portal
@@ -84,11 +92,7 @@ fn read_u32(key: &str, cache: &Mutex<Option<Cached>>) -> Option<u32> {
 
 /// One blocking portal lookup. `None` on any failure (no bus, no portal, no key).
 fn query(key: &str) -> Option<u32> {
-    let connection = zbus::blocking::connection::Builder::session()
-        .ok()?
-        .method_timeout(METHOD_TIMEOUT)
-        .build()
-        .ok()?;
+    let connection = session_connection()?;
     let proxy = zbus::blocking::Proxy::new(
         &connection,
         "org.freedesktop.portal.Desktop",
@@ -99,6 +103,24 @@ fn query(key: &str) -> Option<u32> {
     let value: zbus::zvariant::OwnedValue =
         proxy.call("Read", &("org.freedesktop.appearance", key)).ok()?;
     value.downcast_ref::<u32>().ok()
+}
+
+/// The shared session connection, building it on first use.
+///
+/// The lock is held across the build so two threads cannot open two sessions; a failed build
+/// leaves the slot empty, so the next lookup retries rather than caching the failure forever.
+fn session_connection() -> Option<zbus::blocking::Connection> {
+    let mut guard = lock(&SESSION);
+    if let Some(connection) = guard.as_ref() {
+        return Some(connection.clone());
+    }
+    let connection = zbus::blocking::connection::Builder::session()
+        .ok()?
+        .method_timeout(METHOD_TIMEOUT)
+        .build()
+        .ok()?;
+    *guard = Some(connection.clone());
+    Some(connection)
 }
 
 #[cfg(test)]

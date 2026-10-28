@@ -3822,6 +3822,8 @@ pub struct FindBar {
     matches: Vec<(usize, usize)>,
     /// The active match, as an index into `matches`.
     current: Option<usize>,
+    /// The painted `current/total` counter, keyed by the pair it was formatted from.
+    counter_cache: RefCell<Option<((usize, usize), String)>>,
     /// Which field typing goes to.
     focus: FindFocus,
     /// Emitted with the active match's byte range, or `(0, 0)` when there is no match.
@@ -3846,6 +3848,7 @@ impl FindBar {
             last_replaced: 0,
             matches: Vec::new(),
             current: None,
+            counter_cache: RefCell::new(None),
             focus: FindFocus::Query,
             search_changed: Signal1::new(),
             replace_requested: Signal1::new(),
@@ -4466,12 +4469,18 @@ impl Draw for FindBar {
 
         let query_band = self.query_band();
         let text_rect = self.query_text_rect();
-        let counter = if self.matches.is_empty() {
-            "0/0".to_string()
-        } else {
-            format!("{}/{}", self.current.map_or(0, |index| index + 1), self.matches.len())
-        };
-        let counter_width = context.measure_text(&counter, font).width as i32;
+        let mut counter_cache = self.counter_cache.borrow_mut();
+        let counter_key = (self.current.map_or(0, |index| index + 1), self.matches.len());
+        if counter_cache.as_ref().is_none_or(|(key, _)| *key != counter_key) {
+            let text = if self.matches.is_empty() {
+                "0/0".to_string()
+            } else {
+                format!("{}/{}", counter_key.0, counter_key.1)
+            };
+            *counter_cache = Some((counter_key, text));
+        }
+        let counter = counter_cache.as_ref().map(|(_, text)| text.as_str()).unwrap_or_default();
+        let counter_width = context.measure_text(counter, font).width as i32;
         context.draw_text(
             Point::new(text_rect.x, text_rect.y + 7),
             &crate::widget::text_utils::elide_end(
@@ -4487,7 +4496,7 @@ impl Draw for FindBar {
                 query_band.x + query_band.width as i32 - 2 * FIND_TOGGLE_SIDE - 12 - counter_width,
                 query_band.y + 7,
             ),
-            &counter,
+            counter,
             font,
             ink.blend(&surface, 0.35),
             HorizontalAlignment::Left,

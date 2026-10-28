@@ -136,6 +136,8 @@ pub struct SummaryRow {
     /// [`Self::value`] reads this cell, so a value pushed by an attached `DataGrid` is visible
     /// immediately rather than after the next paint.
     shared_values: Arc<Mutex<Vec<(String, f64)>>>,
+    /// The rendered text per cell, rebuilt when the aggregates or a value change.
+    cell_texts: Vec<String>,
     /// Emitted once per [`SummaryRow::update_from_source`] call after values were refreshed.
     pub summary_recalculated: GenericSignal,
 }
@@ -149,6 +151,7 @@ impl SummaryRow {
             sticky: false,
             values: Vec::new(),
             shared_values: Arc::new(Mutex::new(Vec::new())),
+            cell_texts: Vec::new(),
             summary_recalculated: GenericSignal::new(),
         }
     }
@@ -165,6 +168,7 @@ impl SummaryRow {
             |token: &String| known.iter().any(|item| item.column_token.as_str() == token.as_str());
         self.values.retain(|(token, _)| is_known(token));
         lock(&self.shared_values).retain(|(token, _)| is_known(token));
+        self.rebuild_cell_texts();
         self.base.request_redraw();
     }
 
@@ -191,6 +195,7 @@ impl SummaryRow {
         };
         write_token(&mut self.values, token, value);
         if changed {
+            self.rebuild_cell_texts();
             self.base.request_redraw();
         }
         true
@@ -218,6 +223,7 @@ impl SummaryRow {
             |token: &String| known.iter().any(|item| item.column_token.as_str() == token.as_str());
         self.values.retain(|(token, _)| is_known(token));
         lock(&self.shared_values).retain(|(token, _)| is_known(token));
+        self.rebuild_cell_texts();
         self.base.request_redraw();
         self.summary_recalculated.emit();
     }
@@ -275,10 +281,27 @@ impl SummaryRow {
     /// writes the shared cell between frames, and the paint pass is the first guaranteed `&mut`
     /// entry point afterwards.
     fn pull_shared_values(&mut self) {
-        let shared = lock(&self.shared_values);
-        if *shared != self.values {
-            self.values.clone_from(&shared);
+        let changed = {
+            let shared = lock(&self.shared_values);
+            if *shared != self.values {
+                self.values.clone_from(&shared);
+                true
+            } else {
+                false
+            }
+        };
+        if changed {
+            // The guard is dropped before the rebuild: rendering a cell reads the same cell
+            // and would otherwise re-enter the lock.
+            self.rebuild_cell_texts();
         }
+    }
+
+    /// Rebuilds the per-cell text cache from the current aggregates and values.
+    fn rebuild_cell_texts(&mut self) {
+        let texts: Vec<String> =
+            self.aggregates.iter().map(|aggregate| self.aggregate_text(aggregate)).collect();
+        self.cell_texts = texts;
     }
 
     /// The rectangle of one cell, using the layout shared with [`Self::column_rect`].
@@ -329,6 +352,9 @@ impl Draw for SummaryRow {
         // latest aggregates are folded in at the one point a frame is guaranteed to run before the
         // cells are painted.
         self.pull_shared_values();
+        if self.cell_texts.len() != self.aggregates.len() {
+            self.rebuild_cell_texts();
+        }
         let rect = self.geometry();
         let style = self.style();
         let (surface, ink) = surface_ink(style);
@@ -357,8 +383,8 @@ impl Draw for SummaryRow {
             context.fill_rect(cell, surface.blend(&ink, 0.05));
             let border = if index == 0 { accent } else { surface.blend(&ink, 0.22) };
             context.draw_rect(cell, border);
-            let text = self.aggregate_text(&self.aggregates[index]);
-            context.draw_text_fitted_cow(cell, &text, font, ink, HorizontalAlignment::Left);
+            let text = &self.cell_texts[index];
+            context.draw_text_fitted_cow(cell, text, font, ink, HorizontalAlignment::Left);
         }
     }
 }

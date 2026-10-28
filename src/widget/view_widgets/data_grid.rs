@@ -432,6 +432,14 @@ pub struct DataGrid {
     column_order: Vec<usize>,
     /// Merged cells, expressed in projected coordinates (V-014).
     cell_spans: Vec<CellSpan>,
+    /// The spans that cover each row, so a cell's span is a bucket lookup rather than a scan of
+    /// every span on the grid (WGT-G3).
+    ///
+    /// `paint_cell_at` asks this for every visible cell and `cell_at` asks it on every pointer
+    /// sample, so the previous linear scan made both costs grow with the span count. Derived
+    /// data, maintained only by `set_cell_span` / `clear_cell_spans`; `cell_spans` stays the
+    /// authoritative list.
+    span_rows: HashMap<usize, Vec<CellSpan>>,
     /// Additional header rows painted above the title row (V-014).
     extra_header_rows: Vec<Vec<String>>,
     /// Per-cell tooltip source; `None` keeps the historical no-tooltip behaviour (V-014).
@@ -650,6 +658,13 @@ impl SortOrder {
         }
     }
 }
+
+/// The row count above which a span is left out of the per-row index (WGT-G3).
+///
+/// `CellSpan::row_span` is caller-supplied and `covers` accepts any `usize`; registering a span
+/// that tall would cost more than the scan it replaces. Such a span is answered by the exact
+/// linear fallback instead, so the index never changes an answer.
+const MAX_INDEXED_SPAN_ROWS: usize = 1024;
 
 /// A merged cell: its origin and how many rows and columns it covers (V-014).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1544,6 +1559,7 @@ impl DataGrid {
             column_chooser: None,
             column_order: Vec::new(),
             cell_spans: Vec::new(),
+            span_rows: HashMap::new(),
             extra_header_rows: Vec::new(),
             cell_tooltip: None,
             cell_delegate: None,
@@ -2974,14 +2990,29 @@ impl DataGrid {
         let span = CellSpan::new(row, column, row_span, column_span);
         // One span per origin: re-setting the same anchor replaces it rather than stacking two
         // answers for the same cell.
-        if let Some(existing) = self
-            .cell_spans
-            .iter_mut()
-            .find(|existing| existing.row == row && existing.column == column)
-        {
-            *existing = span;
-        } else {
-            self.cell_spans.push(span);
+        let replaced = {
+            let existing = self
+                .cell_spans
+                .iter_mut()
+                .find(|existing| existing.row == row && existing.column == column);
+            match existing {
+                Some(existing) => {
+                    let previous = *existing;
+                    *existing = span;
+                    Some(previous)
+                }
+                None => None,
+            }
+        };
+        match replaced {
+            Some(previous) => {
+                self.unindex_span(previous);
+                self.index_span(span);
+            }
+            None => {
+                self.cell_spans.push(span);
+                self.index_span(span);
+            }
         }
         self.base.request_redraw();
         true
@@ -2993,6 +3024,7 @@ impl DataGrid {
             return;
         }
         self.cell_spans.clear();
+        self.span_rows.clear();
         self.base.request_redraw();
     }
 
@@ -3001,8 +3033,46 @@ impl DataGrid {
         self.span_covering(row, column)
     }
 
+    /// Registers `span` under every row it covers.
+    fn index_span(&mut self, span: CellSpan) {
+        if span.row_span > MAX_INDEXED_SPAN_ROWS {
+            // Answered by the exact fallback in `span_covering`; indexing it would make the
+            // index itself the expensive part for a caller-supplied `usize` span.
+            return;
+        }
+        for row in span.row..span.row.saturating_add(span.row_span) {
+            self.span_rows.entry(row).or_default().push(span);
+        }
+    }
+
+    /// Removes `span` from every row bucket it was registered in.
+    fn unindex_span(&mut self, span: CellSpan) {
+        if span.row_span > MAX_INDEXED_SPAN_ROWS {
+            return;
+        }
+        for row in span.row..span.row.saturating_add(span.row_span) {
+            let mut empty = false;
+            if let Some(spans) = self.span_rows.get_mut(&row) {
+                spans.retain(|candidate| *candidate != span);
+                empty = spans.is_empty();
+            }
+            if empty {
+                self.span_rows.remove(&row);
+            }
+        }
+    }
+
     fn span_covering(&self, row: usize, column: usize) -> Option<CellSpan> {
-        self.cell_spans.iter().copied().find(|span| span.covers(row, column))
+        if let Some(spans) = self.span_rows.get(&row) {
+            if let Some(span) = spans.iter().copied().find(|span| span.covers(row, column)) {
+                return Some(span);
+            }
+        }
+        // Spans too tall to index are still answered exactly, just by scanning.
+        self.cell_spans
+            .iter()
+            .copied()
+            .find(|span| span.row_span > MAX_INDEXED_SPAN_ROWS && span.covers(row, column))
     }
 
     // ── Multi-level header (V-014) ──

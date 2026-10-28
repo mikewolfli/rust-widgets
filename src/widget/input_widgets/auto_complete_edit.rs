@@ -656,6 +656,58 @@ impl AutoCompleteEdit {
         (start != end).then_some((start, end))
     }
 
+    /// A primary press at `pos`: a press on the field focuses it and places the caret, and a press
+    /// on an open suggestion row takes that suggestion.
+    ///
+    /// Shared by the mouse and touch press arms, so a finger enters exactly the state machine a
+    /// pointer does instead of a second copy of it.
+    fn press_with_pointer(&mut self, pos: Point) {
+        let rect = self.geometry();
+        // A press on the field focuses it and places the caret; the caret blink follows
+        // the same flag the paint reads (X-003).
+        if rect.contains_point(pos) {
+            self.set_focused(true);
+            self.cursor = self.byte_index_at_x(pos.x);
+            self.selection_anchor = None;
+            self.show_dropdown();
+        }
+        // Check if click is on a dropdown item. The box comes from the shared placement
+        // rule, so the row the pointer hits is the row the paint drew (I-009).
+        if self.show_dropdown {
+            let drop_rect = self.dropdown_rect();
+            let item_height = self.dropdown_row_height() as i32;
+
+            if drop_rect.contains_point(pos) {
+                let rel_y = pos.y - drop_rect.y;
+                let idx = (rel_y / item_height).max(0) as usize;
+                if idx < self.filtered_suggestions.len() {
+                    self.selected_suggestion = Some(idx);
+                    self.select_highlighted();
+                }
+            }
+        }
+    }
+
+    /// Paints the keyboard-focus ring around the field box.
+    ///
+    /// Only a keyboard focus draws it: a pointer (or touch) press focuses the field without
+    /// claiming visual focus, so no ring appears under the cursor. `fill` is the field's painted
+    /// face, whose contrast colour stands in when the theme declares no `outline` token.
+    fn draw_focus_ring(&self, context: &mut RenderContext, field: Rect, fill: Color) {
+        if !self.base.draws_focus_ring() {
+            return;
+        }
+        let ring = crate::widget::metrics::FocusRing::for_control(field, 4);
+        if ring.is_drawable() {
+            context.draw_rounded_rect_stroke(
+                ring.rect,
+                ring.radius,
+                crate::widget::metrics::focus_ring_color(fill.contrast_color()),
+                crate::widget::metrics::FOCUS_RING_WIDTH,
+            );
+        }
+    }
+
     /// The byte offset a horizontal pixel points at.
     ///
     /// Reads the memoised advance table for the current value instead of building a zero-sized
@@ -1290,6 +1342,7 @@ impl Draw for AutoCompleteEdit {
 
         // Draw dropdown if visible
         if !self.show_dropdown || self.filtered_suggestions.is_empty() {
+            self.draw_focus_ring(context, rect, bg_color);
             return;
         }
 
@@ -1337,6 +1390,10 @@ impl Draw for AutoCompleteEdit {
                 );
             }
         }
+
+        // The ring is painted last in *both* branches, so the value, the inline completion and the
+        // dropdown cannot cover its edge.
+        self.draw_focus_ring(context, rect, bg_color);
     }
 }
 
@@ -1347,30 +1404,17 @@ impl EventHandler for AutoCompleteEdit {
         }
         match event {
             Event::MousePress { pos, button, .. } if *button == 1 => {
-                let rect = self.geometry();
-                // A press on the field focuses it and places the caret; the caret blink follows
-                // the same flag the paint reads (X-003).
-                if rect.contains_point(*pos) {
-                    self.set_focused(true);
-                    self.cursor = self.byte_index_at_x(pos.x);
-                    self.selection_anchor = None;
-                    self.show_dropdown();
-                }
-                // Check if click is on a dropdown item. The box comes from the shared placement
-                // rule, so the row the pointer hits is the row the paint drew (I-009).
-                if self.show_dropdown {
-                    let drop_rect = self.dropdown_rect();
-                    let item_height = self.dropdown_row_height() as i32;
-
-                    if drop_rect.contains_point(*pos) {
-                        let rel_y = pos.y - drop_rect.y;
-                        let idx = (rel_y / item_height).max(0) as usize;
-                        if idx < self.filtered_suggestions.len() {
-                            self.selected_suggestion = Some(idx);
-                            self.select_highlighted();
-                        }
-                    }
-                }
+                self.press_with_pointer(*pos);
+            }
+            // ── Touch ──
+            //
+            // A finger takes the same route the pointer does: the contact focuses the field,
+            // places the caret or takes the suggestion row it landed on. The field holds no
+            // pressed or drag latch, so a lift has nothing of its own to clear — and no separate
+            // `Tap` arm is needed, because the press is the whole click for this control.
+            #[cfg(feature = "touch")]
+            Event::TouchBegin { pos, .. } => {
+                self.press_with_pointer(*pos);
             }
             Event::FocusGained { .. } => self.set_focused(true),
             Event::FocusLost => self.set_focused(false),

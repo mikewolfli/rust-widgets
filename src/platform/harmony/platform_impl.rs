@@ -323,11 +323,13 @@ impl Platform for HarmonyPlatform {
 
     /// Release the state record for `widget_id`.
     ///
-    /// Harmony keeps no per-widget side table now that the native control
-    /// constructors are gone: the shared list storage and the menu bookkeeping
-    /// that used to need purging here no longer exist, so dropping the
-    /// authoritative `BackendState` record is the whole teardown.
+    /// Harmony keeps no native-control side table now that the native control
+    /// constructors are gone, but the accessibility bridge does keep one entry per widget that
+    /// was given a name. Ids are never reused, so that entry has to be dropped with the widget
+    /// (ENG-C6); the rest of the teardown is the authoritative `BackendState` record.
     fn destroy_widget(&self, widget_id: u64) -> bool {
+        #[cfg(all(feature = "xcomponent", not(alloc_frugal)))]
+        super::accessibility::bridge().remove_name(widget_id);
         self.state.destroy_widget(widget_id)
     }
     fn create_window(&self, title: &str, x: i32, y: i32, width: u32, height: u32) -> u64 {

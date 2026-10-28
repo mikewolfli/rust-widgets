@@ -687,19 +687,24 @@ impl Widget for CheckBox {
     }
 
     fn set_enabled(&mut self, enabled: bool) {
-        // Reached from `Widget::set_enabled`'s default only through the field write below,
-        // because this override shadows it. The hook is the same one the default calls, so a
-        // checkbox disabled after theming still resolves `check_box:disabled`.
-        if self.base.is_enabled() != enabled {
-            self.base.set_enabled(enabled);
-            if !enabled {
-                // A disabled box is inert, so a hold in progress ends here rather than resuming
-                // if the box is re-enabled while the pointer is still down.
-                self.end_auto_repeat();
-            }
-            self.set_state_theme_hook();
+        // The hook is the same one the trait default calls, so a checkbox disabled after theming
+        // still resolves `check_box:disabled`. The repaint and the announcement follow the same
+        // contract as the default and as `runtime::report_state` (ENG-A4).
+        if self.base.is_enabled() == enabled {
+            return;
         }
+        self.base.set_enabled(enabled);
+        if !enabled {
+            // A disabled box is inert, so a hold in progress ends here rather than resuming
+            // if the box is re-enabled while the pointer is still down.
+            self.end_auto_repeat();
+        }
+        self.set_state_theme_hook();
         self.base.request_redraw();
+        #[cfg(not(alloc_frugal))]
+        if let Some(id) = crate::widget::runtime::registry_id_of(self.base.id()) {
+            crate::widget::a11y_submit::submit_state_changed(id);
+        }
     }
 
     fn size_hint(&self) -> Size {

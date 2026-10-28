@@ -9,7 +9,7 @@ use crate::widget::capability::coercion::{expect_bool, expect_string};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
-use crate::widget::metrics::role_font;
+use crate::widget::metrics::{focus_ring_color, role_font, FocusRing, FOCUS_RING_WIDTH};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -251,6 +251,28 @@ impl WidgetProperties for CommandLink {
     }
 }
 
+impl CommandLink {
+    /// Arms the gesture for a press that resolves to this control.
+    fn press_at(&mut self, pos: Point) {
+        // Only a press that resolves to this control arms it: a direct dispatch (a
+        // test, a designer preview) may not have been hit-tested by the runtime.
+        if self.base.contains_point_with_touch_expansion(pos) {
+            self.base.set_grabbed(true);
+            self.base.set_pressed(true);
+        }
+    }
+
+    /// Completes the gesture, activating only when the release is still over the link.
+    fn release_at(&mut self, pos: Point) {
+        let inside = self.base.contains_point_with_touch_expansion(pos);
+        self.base.set_grabbed(false);
+        self.base.set_pressed(false);
+        if inside {
+            self.click();
+        }
+    }
+}
+
 impl EventHandler for CommandLink {
     /// The activation contract: a press arms, a release decides, the keyboard commits.
     ///
@@ -268,24 +290,29 @@ impl EventHandler for CommandLink {
     fn handle_event(&mut self, event: &Event) {
         match event {
             Event::MousePress { pos, button, .. } if *button == 1 && self.base.is_enabled() => {
-                // Only a press that resolves to this control arms it: a direct dispatch (a
-                // test, a designer preview) may not have been hit-tested by the runtime.
-                if self.base.contains_point_with_touch_expansion(*pos) {
-                    self.base.set_grabbed(true);
-                    self.base.set_pressed(true);
-                }
+                self.press_at(*pos);
             }
             // A drag off the link clears the painted pressed state; a drag back restores it.
             Event::MouseMove { pos } if self.base.is_grabbed() => {
                 self.base.set_pressed(self.base.contains_point_with_touch_expansion(*pos));
             }
             Event::MouseRelease { pos, button, .. } if *button == 1 && self.base.is_grabbed() => {
-                let inside = self.base.contains_point_with_touch_expansion(*pos);
+                self.release_at(*pos);
+            }
+            // Touch has no translated press/release here, so contact arms the same gesture and
+            // the completed tap completes it through the same path.
+            #[cfg(feature = "touch")]
+            Event::TouchBegin { pos, .. } => {
+                self.press_at(*pos);
+            }
+            #[cfg(feature = "touch")]
+            event if crate::event::translator::is_touch_cancel(event) => {
                 self.base.set_grabbed(false);
                 self.base.set_pressed(false);
-                if inside {
-                    self.click();
-                }
+            }
+            #[cfg(feature = "touch")]
+            Event::Tap { pos } => {
+                self.release_at(*pos);
             }
             Event::KeyPress { key, .. }
                 if is_keyboard_activation(*key) && self.base.is_enabled() =>
@@ -450,6 +477,22 @@ impl Draw for CommandLink {
                 Point::new(text_x + text_metrics.width as i32, underline_y),
                 current_text_color,
             );
+        }
+
+        // ── Keyboard focus ring ──
+        //
+        // Only a keyboard focus draws it; a pointer press focuses the link without painting a
+        // ring under the cursor, which is the rule every other control in the crate follows.
+        if self.base.draws_focus_ring() {
+            let ring = FocusRing::for_control(rect, 0);
+            if ring.is_drawable() {
+                context.draw_rounded_rect_stroke(
+                    ring.rect,
+                    ring.radius,
+                    focus_ring_color(bg_color.contrast_color()),
+                    FOCUS_RING_WIDTH,
+                );
+            }
         }
     }
 }

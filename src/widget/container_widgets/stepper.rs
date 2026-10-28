@@ -23,6 +23,8 @@
 //! collision with the shared table's vocabulary for one with this crate's own history; naming both here
 //! removes the ambiguity at the point of search instead.
 
+use core::fmt::Write as _;
+
 use crate::core::{Color, HorizontalAlignment, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
@@ -52,6 +54,9 @@ pub struct Stepper {
     hold: Option<HoldDirection>,
     /// The shared auto-repeat timer, the same one `CheckBox` uses (C-021).
     auto_repeat: AutoRepeat,
+    /// The painted value label and the value it was built for (C-P10); a still repaint reuses
+    /// the buffer instead of allocating a `String` per frame.
+    value_label: (i32, String),
     /// Emitted when the value changes.
     pub value_changed: Signal1<i32>,
 }
@@ -82,6 +87,7 @@ impl Stepper {
                 timer.set_enabled(true);
                 timer
             },
+            value_label: (0, String::from("0")),
             value_changed: Signal1::new(),
         }
     }
@@ -376,7 +382,14 @@ impl WidgetProperties for Stepper {
 impl Draw for Stepper {
     fn draw(&mut self, context: &mut RenderContext) {
         let is_enabled = self.base.is_enabled();
-        let value_text = self.value.to_string();
+        // The label is rebuilt only when the value it spells changes; `set_value` is the only
+        // writer of `value`, so a still frame reads what the cache already holds.
+        if self.value_label.0 != self.value {
+            self.value_label.0 = self.value;
+            self.value_label.1.clear();
+            let _ = write!(self.value_label.1, "{}", self.value);
+        }
+        let value_text = self.value_label.1.as_str();
         let font = crate::core::Font::default_ui();
 
         // Chrome colours resolve explicit style first, then the theme's resolved
@@ -485,7 +498,7 @@ impl Draw for Stepper {
         let value_color = if !is_enabled { disabled_text } else { text_color };
         context.draw_text_fitted_cow(
             Rect::new(gap_left, value_line.y, gap_width.max(1), value_line.height.max(1)),
-            &value_text,
+            value_text,
             &font,
             value_color,
             HorizontalAlignment::Center,

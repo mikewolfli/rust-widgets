@@ -5,7 +5,7 @@ use super::{
     control_scope_key, Key, Modifiers, PlatformShortcutStyle, Shortcut, ShortcutEntry,
     ShortcutScope,
 };
-use crate::compat::{format, Arc, Box, HashMap, String, Vec};
+use crate::compat::{format, Arc, Box, HashMap, RefCell, String, Vec};
 use crate::core::ObjectId;
 use crate::event::Event;
 use crate::signal::Signal1;
@@ -46,7 +46,7 @@ pub struct ShortcutManager {
     /// scopes existed. The closure is supplied by the host rather than read from the widget
     /// runtime: `shortcut` has no access to the focus tree (and the runtime is compiled out of the
     /// stripped profiles), so the host states the fact instead of the manager guessing.
-    focus_chain: Option<Arc<dyn Fn() -> Vec<ObjectId> + Send + Sync>>,
+    focus_chain: Option<Arc<FocusChainLookup>>,
     /// Emitted when a shortcut is triggered.
     pub shortcut_triggered: Signal1<String>,
     /// Emitted when a shortcut conflict is detected.
@@ -70,12 +70,38 @@ struct ActiveScope {
 /// drift from the entry it mirrors.
 #[derive(Clone)]
 struct IndexedBinding {
+    /// `None` for a global or window binding, the owning control otherwise.
+    ///
+    /// Resolved from the scope key once, at registration: the per-key lookup compares an
+    /// `ObjectId` instead of formatting a `control:<id>` string for every control in the focus
+    /// chain (ENG-D1).
+    scope_control: Option<ObjectId>,
     /// `None` for a global binding, the owning scope's id otherwise.
     scope: Option<String>,
     /// The action the chord routes to.
     action_id: String,
     /// Copy of the registered binding, handed to `matches_binding` unchanged.
     shortcut: Shortcut,
+}
+
+/// The host's focus-chain lookup (ENG-D1).
+///
+/// Named rather than spelled inline in every signature: it is a boxed trait object with two auto
+/// traits, which reads as noise at each use.
+type FocusChainLookup = dyn Fn(&mut Vec<ObjectId>) + Send + Sync;
+
+thread_local! {
+    /// Focus-chain buffer reused by [`ShortcutManager::lookup`] (ENG-D1).
+    ///
+    /// The host's closure fills this instead of allocating a `Vec` per key press. A re-entrant
+    /// lookup (a closure that dispatches a key) finds it borrowed and uses a local buffer.
+    #[allow(clippy::missing_const_for_thread_local)]
+    static FOCUS_CHAIN_SCRATCH: RefCell<Vec<ObjectId>> = RefCell::new(Vec::new());
+}
+
+/// The control a scope key names, when the key is a control scope (`control:<id>`).
+fn control_from_scope_key(scope: &str) -> Option<ObjectId> {
+    scope.strip_prefix("control:")?.parse().ok()
 }
 
 impl ShortcutManager {
@@ -187,6 +213,7 @@ impl ShortcutManager {
             scope: scope.clone(),
         };
         let indexed = IndexedBinding {
+            scope_control: scope.as_deref().and_then(control_from_scope_key),
             scope: scope.clone(),
             action_id: action_id.clone(),
             shortcut: shortcut.clone(),
@@ -463,6 +490,28 @@ impl ShortcutManager {
     /// host, and this crate installs none — `shortcut` cannot read the widget runtime's focus
     /// tree (it is compiled out of the stripped profiles), so claiming a chain here would be a
     /// guess. Without the lookup, a control binding simply never resolves.
+    /// `lookup`'s control-scope step: the first binding that answers for a control in `chain`.
+    fn first_control_match(
+        bucket: &[IndexedBinding],
+        chain: impl Iterator<Item = ObjectId>,
+        key: Key,
+        modifiers: Modifiers,
+    ) -> Option<String> {
+        for control in chain {
+            let matched = bucket
+                .iter()
+                .find(|binding| {
+                    binding.scope_control == Some(control)
+                        && Self::matches_binding(&binding.shortcut, key, modifiers)
+                })
+                .map(|binding| binding.action_id.clone());
+            if matched.is_some() {
+                return matched;
+            }
+        }
+        None
+    }
+
     fn lookup(&self, key: Key, modifiers: Modifiers) -> Option<String> {
         // The same normalization `matches_binding` applies, used here only to pick the bucket;
         // acceptance is still decided per candidate by `matches_binding` below.
@@ -471,16 +520,32 @@ impl ShortcutManager {
         let bucket = self.index.get(&(key, normalized))?;
         // W-12: control scopes first, innermost first. Each candidate is still judged by the one
         // matching rule, so the platform lift behaves identically here and in a window scope.
+        //
+        // A bucket with no control-scoped candidate cannot answer differently because of the focus
+        // chain, so it is skipped entirely: a registry that only uses global bindings never touches
+        // the focus chain (ENG-D1).
         if let Some(focus_chain) = self.focus_chain.as_ref() {
-            for control in focus_chain() {
-                let control_scope = control_scope_key(control);
-                let matched = bucket
-                    .iter()
-                    .find(|binding| {
-                        binding.scope.as_deref() == Some(control_scope.as_str())
-                            && Self::matches_binding(&binding.shortcut, key, modifiers)
-                    })
-                    .map(|binding| binding.action_id.clone());
+            if bucket.iter().any(|binding| binding.scope_control.is_some()) {
+                // The host fills a reused buffer instead of allocating a chain vector per key
+                // press; a re-entrant lookup (a closure that dispatches a key) falls back to a
+                // local buffer.
+                let mut local = Vec::new();
+                let mut resolved = false;
+                let mut matched = None;
+                let _ = FOCUS_CHAIN_SCRATCH.try_with(|buffer| {
+                    let Ok(mut chain) = buffer.try_borrow_mut() else { return };
+                    chain.clear();
+                    focus_chain(&mut chain);
+                    matched =
+                        Self::first_control_match(bucket, chain.iter().copied(), key, modifiers);
+                    resolved = true;
+                });
+                if !resolved {
+                    local.clear();
+                    focus_chain(&mut local);
+                    matched =
+                        Self::first_control_match(bucket, local.iter().copied(), key, modifiers);
+                }
                 if matched.is_some() {
                     return matched;
                 }
@@ -524,6 +589,10 @@ impl ShortcutManager {
     /// order the focus tree walks. A binding registered through [`Self::register_for_control`] for
     /// a control in that list then wins over window and global bindings on the same chord.
     ///
+    /// The chain is written into the buffer the manager passes in, which is reused across key
+    /// presses: the closure should `clear()` it and push the chain (ENG-D1). Returning a fresh
+    /// `Vec` per key press allocated one vector for every key of every focused control.
+    ///
     /// # What a host has to publish
     ///
     /// Only controls that are actually reachable count: a control behind a modal dialog should not
@@ -534,7 +603,10 @@ impl ShortcutManager {
     ///
     /// [`Self::clear_focus_chain_lookup`] restores the "no control scope resolves" behaviour,
     /// which is the default and the pre-W-12 behaviour.
-    pub fn set_focus_chain_lookup(&mut self, lookup: Box<dyn Fn() -> Vec<ObjectId> + Send + Sync>) {
+    pub fn set_focus_chain_lookup(
+        &mut self,
+        lookup: Box<dyn Fn(&mut Vec<ObjectId>) + Send + Sync>,
+    ) {
         self.focus_chain = Some(Arc::from(lookup));
     }
 

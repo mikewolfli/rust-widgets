@@ -18,6 +18,7 @@ use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 use alloc::rc::Rc;
 use core::cell::{Ref, RefCell};
+use core::fmt::Write as _;
 
 /// A map marker's pin size: a 6x6 square centred on the marker's screen position.
 ///
@@ -359,6 +360,8 @@ pub struct MapView {
     controls_layout: Option<Rect>,
     /// Identity of the painted grid; a fresh key rebuilds its cached pixels (SP-P59).
     grid_cache_key: u64,
+    /// One scratch buffer for the cluster badge counts, reused across the loop (SP-P58).
+    cluster_badge: String,
 }
 
 /// The last rendered status line and the camera it names.
@@ -412,6 +415,7 @@ impl MapView {
             status_cache: RefCell::new(None),
             controls_layout: None,
             grid_cache_key: next_map_key(),
+            cluster_badge: String::new(),
         }
     }
 
@@ -1600,11 +1604,15 @@ impl Draw for MapView {
                 let (sx, sy) = cluster.screen;
                 if cluster.indices.len() > 1 {
                     context.fill_circle(Point::new(sx as i32, sy as i32), 9, MAP_MARKER_COLOR);
-                    let count = cluster.indices.len().to_string();
-                    let metrics = context.measure_text(&count, effective_font(style));
+                    // One buffer reused for every badge in the frame: the count was a fresh
+                    // `String` per cluster on every paint.
+                    let count = &mut self.cluster_badge;
+                    count.clear();
+                    let _ = write!(count, "{}", cluster.indices.len());
+                    let metrics = context.measure_text(count, effective_font(style));
                     context.draw_text(
                         Point::new(sx as i32 - metrics.width as i32 / 2, sy as i32 - 6),
-                        &count,
+                        count,
                         effective_font(style),
                         Color::WHITE,
                         HorizontalAlignment::Left,

@@ -9,6 +9,9 @@
 //! Registration surface (out of scope for this file): canonical name `media_scrubber`, kind
 //! [`WidgetKind::Slider`].
 
+use core::fmt::Write as _;
+
+use crate::compat::String;
 use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
@@ -35,6 +38,8 @@ pub struct MediaScrubber {
     step_ms: u64,
     thumb_style: ScrubberThumbStyle,
     dragging: bool,
+    /// The percentage readout, reused between frames so a repaint does not build a `String`.
+    readout_text: String,
     /// Emitted while scrubbing with `(active, value)`.
     pub scrubbing: Signal1<(bool, f64)>,
     /// Emitted when a drag or jump commits its final value.
@@ -52,6 +57,7 @@ impl MediaScrubber {
             step_ms: 0,
             thumb_style: ScrubberThumbStyle::Dot,
             dragging: false,
+            readout_text: String::new(),
             scrubbing: Signal1::new(),
             committed: Signal1::new(),
         }
@@ -226,11 +232,12 @@ impl Draw for MediaScrubber {
             }
         }
         // A value readout makes the current fraction legible while dragging.
-        let label = format!("{:.0}%", self.value * 100.0);
+        self.readout_text.clear();
+        let _ = write!(self.readout_text, "{:.0}%", self.value * 100.0);
         let font = &role_font(style, 10.0);
         context.draw_text(
             Point::new(rect.x + 4, rect.y + 1),
-            &label,
+            &self.readout_text,
             font,
             ink.with_alpha(180),
             HorizontalAlignment::Left,

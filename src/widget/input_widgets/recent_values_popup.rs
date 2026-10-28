@@ -419,6 +419,20 @@ impl RecentValuesPopup {
     }
 }
 
+impl RecentValuesPopup {
+    /// Resolves a press at `pos`: a row is taken, and a press outside the rows hides the
+    /// popup.
+    fn press_at(&mut self, pos: Point) {
+        match self.row_at(pos) {
+            Some(row) => {
+                self.set_highlight(Some(row));
+                self.commit_highlighted();
+            }
+            None => self.hide(),
+        }
+    }
+}
+
 impl EventHandler for RecentValuesPopup {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
@@ -441,13 +455,30 @@ impl EventHandler for RecentValuesPopup {
                 27 => self.hide(),
                 _ => {}
             },
-            Event::MousePress { pos, button: 1, .. } => match self.row_at(*pos) {
-                Some(row) => {
-                    self.selected_index = Some(row);
-                    self.commit_highlighted();
-                }
-                None => self.hide(),
-            },
+            Event::MousePress { pos, button: 1, .. } => {
+                self.press_at(*pos);
+            }
+            // Hovering a painted row marks it, and leaving the popup clears the mark.
+            Event::MouseMove { pos } => {
+                self.set_highlight(self.row_at(*pos));
+            }
+            Event::MouseLeave { .. } => {
+                self.set_highlight(None);
+            }
+            // Touch has no translated press here: contact previews the row under the finger and
+            // the completed tap takes it through the same `press_at` path.
+            #[cfg(feature = "touch")]
+            Event::TouchBegin { pos, .. } => {
+                self.set_highlight(self.row_at(*pos));
+            }
+            #[cfg(feature = "touch")]
+            event if crate::event::translator::is_touch_cancel(event) => {
+                self.set_highlight(None);
+            }
+            #[cfg(feature = "touch")]
+            Event::Tap { pos } => {
+                self.press_at(*pos);
+            }
             Event::FocusLost => self.hide(),
             _ => {}
         }

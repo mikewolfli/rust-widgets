@@ -17,7 +17,7 @@
 
 use core::fmt::Write as _;
 
-use crate::core::{Color, HorizontalAlignment, Rect, Size};
+use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler, WheelScroll};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -958,6 +958,62 @@ impl Draw for MultiSelectComboBox {
     }
 }
 
+impl MultiSelectComboBox {
+    /// The item index under `pos` when the open list paints it, regardless of enabled state.
+    ///
+    /// This is the same window geometry the press arm and the paint use.
+    fn row_at_pos(&self, pos: Point) -> Option<usize> {
+        if !self.expanded {
+            return None;
+        }
+        let rect = self.geometry();
+        let item_height = 28i32;
+        let drop_down_y = rect.y + rect.height as i32;
+        let (first, last) = self.visible_range();
+        let drop_down_height = item_height * (last - first) as i32;
+        let drop_rect = Rect::new(rect.x, drop_down_y, rect.width, drop_down_height as u32);
+        if !drop_rect.contains_point(pos) {
+            return None;
+        }
+        let row = ((pos.y - drop_down_y) / item_height) as usize;
+        let index = first + row;
+        (index < last).then_some(index)
+    }
+
+    /// Resolves a press at `pos`: the field toggles the list, a row toggles its selection, and
+    /// a press outside both dismisses the list.
+    fn press_at(&mut self, pos: Point) {
+        let rect = self.geometry();
+
+        // Click on the main box toggles expand
+        if rect.contains_point(pos) {
+            self.toggle_expand();
+            return;
+        }
+
+        // Click on a dropdown item
+        if self.expanded {
+            let item_height = 28i32;
+            let drop_down_y = rect.y + rect.height as i32;
+            let (first, last) = self.visible_range();
+            let drop_down_height = item_height * (last - first) as i32;
+            let drop_rect = Rect::new(rect.x, drop_down_y, rect.width, drop_down_height as u32);
+
+            if drop_rect.contains_point(pos) {
+                let row = ((pos.y - drop_down_y) / item_height) as usize;
+                let idx = first + row;
+                if idx < last && self.items[idx].enabled {
+                    self.active_index = idx;
+                    self.toggle(idx);
+                }
+            } else {
+                // I-103: a press outside both the field and the open list dismisses it.
+                self.set_expanded(false);
+            }
+        }
+    }
+}
+
 impl EventHandler for MultiSelectComboBox {
     fn handle_event(&mut self, event: &Event) {
         if !self.base.is_enabled() {
@@ -965,36 +1021,31 @@ impl EventHandler for MultiSelectComboBox {
         }
         match event {
             Event::MousePress { pos, button, .. } if *button == 1 => {
-                let rect = self.geometry();
-
-                // Click on the main box toggles expand
-                if rect.contains_point(*pos) {
-                    self.toggle_expand();
-                    return;
-                }
-
-                // Click on a dropdown item
-                if self.expanded {
-                    let item_height = 28i32;
-                    let drop_down_y = rect.y + rect.height as i32;
-                    let (first, last) = self.visible_range();
-                    let drop_down_height = item_height * (last - first) as i32;
-                    let drop_rect =
-                        Rect::new(rect.x, drop_down_y, rect.width, drop_down_height as u32);
-
-                    if drop_rect.contains_point(*pos) {
-                        let rel_y = pos.y - drop_down_y;
-                        let row = (rel_y / item_height) as usize;
-                        let idx = first + row;
-                        if idx < last && self.items[idx].enabled {
-                            self.active_index = idx;
-                            self.toggle(idx);
-                        }
-                    } else {
-                        // I-103: a press outside both the field and the open list dismisses it.
-                        self.set_expanded(false);
+                self.press_at(*pos);
+            }
+            // Hovering a painted row makes it the active row, the same state the keyboard
+            // arrows move, so the row under the pointer is the row a click would toggle.
+            Event::MouseMove { pos } => {
+                if let Some(index) = self.row_at_pos(*pos) {
+                    if self.items.get(index).is_some_and(|item| item.enabled) {
+                        self.set_active_index(index);
                     }
                 }
+            }
+            // Touch has no translated press here: contact latches the pressed state and the
+            // completed tap performs the same open/toggle/dismiss transition as the pointer.
+            #[cfg(feature = "touch")]
+            Event::TouchBegin { pos, .. } => {
+                self.base.set_pressed(self.geometry().contains_point(*pos));
+            }
+            #[cfg(feature = "touch")]
+            event if crate::event::translator::is_touch_cancel(event) => {
+                self.base.set_pressed(false);
+            }
+            #[cfg(feature = "touch")]
+            Event::Tap { pos } => {
+                self.press_at(*pos);
+                self.base.set_pressed(false);
             }
             Event::KeyPress { key, modifiers } => {
                 // Keyboard support: Escape closes, arrows move the active row, Space toggles

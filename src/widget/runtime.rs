@@ -815,6 +815,16 @@ pub fn unregister(id: ObjectId) -> bool {
             clear_popup_grab();
         }
     }
+    // A destroyed control must not leave its modality behind. A dead modal id is on no live
+    // widget's ancestor chain, so `modal_blocks` answers `true` for *every* id and input stays
+    // blocked for the rest of the session. Both id spaces are popped because the stack may hold
+    // either (same shape as the popup-grab cleanup above).
+    let _ = exit_modal(id);
+    if let Some(registry) = registry_id_of(id) {
+        if registry != id {
+            let _ = exit_modal(registry);
+        }
+    }
     // The cached frame and any pending damage describe this widget, so both must go
     // with it: a reused id would otherwise start from the previous control's pixels,
     // and a stale damage rect would repaint a region that no longer exists.
@@ -5010,6 +5020,65 @@ impl Drop for DirtyRectScratch {
     }
 }
 
+thread_local! {
+    /// Idle dirty-region tracker swapped in for a widget's own while the damage is painted
+    /// (ENG-A3).
+    ///
+    /// Both trackers keep the capacity their previous frames grew, so the steady state neither
+    /// constructs a tracker per frame nor copies its regions one by one.
+    #[allow(clippy::missing_const_for_thread_local)]
+    static DIRTY_TRACKER_SPARE: RefCell<Option<crate::performance::DirtyRegionTracker>> =
+        const { RefCell::new(None) };
+}
+
+/// Takes the idle tracker, or a fresh one when the slot is empty (a re-entrant render).
+fn take_dirty_tracker_spare() -> crate::performance::DirtyRegionTracker {
+    DIRTY_TRACKER_SPARE
+        .try_with(|spare| spare.borrow_mut().take())
+        .ok()
+        .flatten()
+        .unwrap_or_default()
+}
+
+/// Returns a spent tracker to the idle slot, keeping its capacity for the next frame.
+fn return_dirty_tracker_spare(tracker: crate::performance::DirtyRegionTracker) {
+    let _ = DIRTY_TRACKER_SPARE.try_with(|spare| {
+        if let Ok(mut spare) = spare.try_borrow_mut() {
+            *spare = Some(tracker);
+        }
+    });
+}
+
+/// Owns the swapped-out dirty tracker for one incremental render and returns it on every exit
+/// path (ENG-A3).
+///
+/// The tracker is emptied by the paint itself; the guard exists because the render has several
+/// early returns between the swap and that point. `try_borrow_mut` in
+/// [`return_dirty_tracker_spare`] keeps the drop safe if a callback unwinds while the slot is
+/// borrowed.
+struct DirtyTrackerScratch {
+    tracker: Option<crate::performance::DirtyRegionTracker>,
+}
+
+impl DirtyTrackerScratch {
+    fn new(tracker: crate::performance::DirtyRegionTracker) -> Self {
+        Self { tracker: Some(tracker) }
+    }
+
+    fn get(&mut self) -> &mut crate::performance::DirtyRegionTracker {
+        // `None` only while `Drop` is taking the tracker out.
+        self.tracker.get_or_insert_default()
+    }
+}
+
+impl Drop for DirtyTrackerScratch {
+    fn drop(&mut self) {
+        if let Some(tracker) = self.tracker.take() {
+            return_dirty_tracker_spare(tracker);
+        }
+    }
+}
+
 /// Records that a widget asked to be repainted, resolving its registry id.
 ///
 /// # Why the id needs resolving
@@ -5426,6 +5495,11 @@ fn invalidate_widget_layers_in(id: ObjectId, rect: Rect) {
         // The submitting control is addressed directly; ancestors are caught by the scan below.
         layers.remove(&id);
         layers.retain(|_, layer| !layer.rect.intersects(&rect));
+        // The eviction ring must keep exactly one entry per resident layer. Leaving the dropped
+        // ids behind lets the ring outgrow the map; because the store path only evicts while the
+        // *map* is full, those stale entries are then never popped and the ring grows without
+        // bound (ENG-A1).
+        retain_resident_layer_order(&layers);
     });
 }
 
@@ -5484,9 +5558,9 @@ thread_local! {
     static WIDGET_LAYER_CLOCK: core::cell::Cell<u64> = const { core::cell::Cell::new(0) };
 
     /// Insertion order for [`WIDGET_LAYERS`], so eviction pops the oldest entry instead of
-    /// scanning the map for a minimum (G-105). Each entry carries the stamp the layer was stored
-    /// with; a ring entry whose stamp no longer matches the resident layer has already been
-    /// replaced or removed and is skipped.
+    /// scanning the map for a minimum (G-105). Every entry names a resident layer: the map's
+    /// removal paths drop the matching entries and a replacement drops its own old entry first
+    /// (ENG-A1), so the ring length never exceeds the resident count.
     #[allow(clippy::missing_const_for_thread_local)]
     static WIDGET_LAYER_ORDER: RefCell<alloc::collections::VecDeque<(ObjectId, u64)>> =
         RefCell::new(alloc::collections::VecDeque::new());
@@ -5501,6 +5575,18 @@ thread_local! {
     #[allow(clippy::missing_const_for_thread_local)]
     static WIDGET_LAYER_BOUNDS: core::cell::Cell<Option<Rect>> =
         const { core::cell::Cell::new(None) };
+}
+
+/// Drops the eviction-ring entries that no longer name a resident layer.
+///
+/// The ring is an ordering hint for insertion-order eviction, so every entry must name a layer
+/// the map still holds. Without this the ring accumulates entries for layers that were replaced,
+/// invalidated or forgotten; the store path only evicts while the map is full, so a bounded map
+/// would no longer bound the ring (ENG-A1).
+fn retain_resident_layer_order(layers: &HashMap<ObjectId, CachedWidgetLayer>) {
+    let _ = WIDGET_LAYER_ORDER.try_with(|order| {
+        order.borrow_mut().retain(|entry| layers.contains_key(&entry.0));
+    });
 }
 
 /// Advances and returns the layer insertion stamp.
@@ -5543,8 +5629,8 @@ fn lookup_widget_layer(
 /// Eviction follows insertion order rather than scanning for a least-recently-used entry
 /// (G-105): the cache holds at most [`MAX_CACHED_WIDGET_LAYERS`] entries, so the scan and the
 /// ring differ by a constant, but the ring removes an O(N) map walk from every store past the
-/// bound. Replacing an existing id does not evict anything and appends its own ring entry; the
-/// previous entry becomes stale and is skipped when it reaches the front.
+/// bound. Replacing an existing id does not evict anything: its previous ring entry is dropped
+/// first, so the ring holds exactly one entry per resident layer (ENG-A1).
 #[allow(clippy::too_many_arguments)]
 fn store_widget_layer(
     id: ObjectId,
@@ -5559,7 +5645,13 @@ fn store_widget_layer(
     let stamp = next_widget_layer_clock();
     let _ = WIDGET_LAYERS.try_with(|layers| {
         let mut layers = layers.borrow_mut();
-        if !layers.contains_key(&id) {
+        if layers.contains_key(&id) {
+            // Replacing a resident layer must not append a second ring entry for it: a control
+            // that repaints every frame would otherwise add one entry per frame while the map
+            // stays at its bound, so the eviction loop never runs and the ring grows forever
+            // (ENG-A1). Dropping the entry here keeps the ring in step with the map.
+            WIDGET_LAYER_ORDER.with(|order| order.borrow_mut().retain(|entry| entry.0 != id));
+        } else {
             while layers.len() >= MAX_CACHED_WIDGET_LAYERS {
                 let evicted = WIDGET_LAYER_ORDER.with(|order| order.borrow_mut().pop_front());
                 let Some((oldest, old_stamp)) = evicted else {
@@ -6187,29 +6279,35 @@ fn render_frame_incremental_cow(
     // the clip rectangles, which are also absolute, so that both translate together.
     let origin = frame_origin(id);
 
-    let mut tracker = REPAINT
-        .try_with(|map| {
-            map.borrow_mut().get_mut(&id).map(|state| {
-                // Feed the `Adaptive` run counter — **only** in `Adaptive`. Updating it
-                // in `Dirty` too was the first version of this code, and it made the two
-                // modes observably identical again from the outside: `Dirty` reported a
-                // growing run while its contract says it never learns. The counter is
-                // `Adaptive`'s memory, so only `Adaptive` may write it.
-                if mode == RepaintMode::Adaptive {
-                    state.large_damage_run =
-                        if covered_too_much { state.large_damage_run.saturating_add(1) } else { 0 };
-                }
-                let mut taken = crate::performance::DirtyRegionTracker::new();
-                for region in state.tracker.regions() {
-                    taken.add(region.rect);
-                }
-                state.tracker.clear();
-                taken
+    let mut tracker = DirtyTrackerScratch::new(
+        REPAINT
+            .try_with(|map| {
+                map.borrow_mut().get_mut(&id).map(|state| {
+                    // Feed the `Adaptive` run counter — **only** in `Adaptive`. Updating it
+                    // in `Dirty` too was the first version of this code, and it made the two
+                    // modes observably identical again from the outside: `Dirty` reported a
+                    // growing run while its contract says it never learns. The counter is
+                    // `Adaptive`'s memory, so only `Adaptive` may write it.
+                    if mode == RepaintMode::Adaptive {
+                        state.large_damage_run = if covered_too_much {
+                            state.large_damage_run.saturating_add(1)
+                        } else {
+                            0
+                        };
+                    }
+                    // Swap the populated tracker out for an idle one instead of copying every
+                    // region into a new tracker (ENG-A3): the state keeps an empty tracker, and
+                    // the one it gives up already holds this frame's damage and the capacity
+                    // earlier frames grew.
+                    let mut spare = take_dirty_tracker_spare();
+                    spare.clear();
+                    core::mem::replace(&mut state.tracker, spare)
+                })
             })
-        })
-        .ok()
-        .flatten()?;
-    tracker.merge();
+            .ok()
+            .flatten()?,
+    );
+    tracker.get().merge();
 
     let painted = with_widget_mut(id, |widget| {
         let Some(drawable) = widget.as_draw_mut() else {
@@ -6221,7 +6319,7 @@ fn render_frame_incremental_cow(
             // The `_into` form keeps the region buffer across frames; the convenience form
             // allocated a fresh `Vec` for every rendered frame (G-72).
             crate::performance::render_dirty_regions_into(
-                &mut tracker,
+                tracker.get(),
                 &mut context,
                 scratch.buffer(),
                 |ctx| {
@@ -6560,12 +6658,12 @@ pub fn forget_cached_frame(id: ObjectId) {
         if let Some(old) = map.remove(&id) {
             recycle_layer_pixels(old.pixels);
         }
+        // Keep the eviction ring in step with the map (ENG-A1).
+        retain_resident_layer_order(&map);
         // The fast-reject union is only a superset, so it may stay after a removal; when the
         // cache is empty it is reset, which is what restores the free "no layers" rejection.
-        // The eviction ring keeps the stale entry, which the pop path skips (G-105).
         if map.is_empty() {
             WIDGET_LAYER_BOUNDS.with(|bounds| bounds.set(None));
-            let _ = WIDGET_LAYER_ORDER.try_with(|order| order.borrow_mut().clear());
         }
     });
 }

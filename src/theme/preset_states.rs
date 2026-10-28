@@ -26,14 +26,14 @@ use crate::theme::types::{Colors, ThemeStyleToken};
 /// Blend factor for a hovered control's fill, toward `foreground`.
 ///
 /// The value the major toolkits agree on for "the pointer is over me": a visible but
-/// non-committal step. Written once so every state key below uses the same number
-/// rather than each spelling its own.
-const HOVER_BLEND: f32 = 0.08;
+/// non-committal step. Re-exported from the style layer's single source (WGT-F5) rather than
+/// spelled a second time, so the preset overrides and the overlay-driven controls cannot drift.
+const HOVER_BLEND: f32 = crate::style::HOVER_FILL_BLEND;
 
 /// Blend factor for a pressed control's fill, toward `foreground`.
 ///
 /// Firmer than [`HOVER_BLEND`], because a press is a committed gesture.
-const PRESSED_BLEND: f32 = 0.12;
+const PRESSED_BLEND: f32 = crate::style::PRESSED_FILL_BLEND;
 
 /// How far a **latched** toggle's fill steps from the accent's base, toward the foreground.
 ///

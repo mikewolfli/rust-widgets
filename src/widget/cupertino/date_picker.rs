@@ -42,6 +42,9 @@ const FLING_REST_ROWS_PER_FRAME: f32 = 0.2;
 /// capped as well.
 const FLING_MAX_ROWS: f32 = 6.0;
 
+/// The most wheels a picker paints: three date columns plus three time columns.
+const MAX_WHEEL_COLUMNS: usize = 6;
+
 /// Parses an ISO `YYYY-MM-DD` date into a `(year, month, day)` tuple.
 ///
 /// Returns `None` for anything that is not exactly that shape, so the property
@@ -365,32 +368,65 @@ impl CupertinoDatePicker {
     }
 
     /// The time columns in draw order: hour, minute, and AM/PM when the clock is 12-hour.
+    ///
+    /// The paint pass uses [`Self::time_columns_into`] directly; this allocating form remains for
+    /// callers that need an owned column list.
+    #[allow(dead_code)]
     fn time_columns(&self) -> Vec<(i32, &[String])> {
+        let mut slots = [None; MAX_WHEEL_COLUMNS];
+        let count = self.time_columns_into(&mut slots);
+        slots[..count].iter().flatten().copied().collect()
+    }
+
+    /// Writes the time wheels into `slots`, returning the column count.
+    ///
+    /// The caller owns the storage so a paint pass does not allocate a fresh `Vec` per frame.
+    fn time_columns_into<'a>(&'a self, slots: &mut [Option<(i32, &'a [String])>]) -> usize {
         let minute_offset = (self.selected_minute / self.minute_interval.max(1)) as i32;
-        let mut columns = vec![self.hour_values(), (minute_offset, self.minute_values())];
-        if !self.use_24_hour {
-            columns.push(self.ampm_values());
+        slots[0] = Some(self.hour_values());
+        slots[1] = Some((minute_offset, self.minute_values()));
+        if self.use_24_hour {
+            return 2;
         }
-        columns
+        slots[2] = Some(self.ampm_values());
+        3
     }
 
     /// The date columns (year, month, day) in logical order, borrowing the cached caption
     /// tables (L-P09).
+    ///
+    /// The paint pass uses [`Self::date_columns_into`] directly; this allocating form remains for
+    /// callers that need owned column and order lists.
+    #[allow(dead_code)]
     fn date_columns(&self) -> (Vec<(i32, &[String])>, Vec<usize>) {
+        let mut slots = [None; MAX_WHEEL_COLUMNS];
+        let mut order = [0usize; MAX_WHEEL_COLUMNS];
+        let count = self.date_columns_into(&mut slots, &mut order);
+        (slots[..count].iter().flatten().copied().collect(), order[..count].to_vec())
+    }
+
+    /// Writes the date wheels into `slots` in logical order and their paint order into `order`,
+    /// returning the column count.
+    ///
+    /// The caller owns both buffers, so the paint pass allocates nothing for the wheel skeleton.
+    fn date_columns_into<'a>(
+        &'a self,
+        slots: &mut [Option<(i32, &'a [String])>],
+        order: &mut [usize],
+    ) -> usize {
         let max_days = days_in_month(self.selected_year, self.selected_month);
         let months: &[String] = &self.month_labels;
         let days: &[String] = &self.day_labels[..max_days as usize];
-        let logical = vec![
-            (2, self.year_labels.as_slice()),
-            (self.selected_month as i32 - 1, months),
-            (self.selected_day as i32 - 1, days),
-        ];
-        let order = match self.column_order {
-            DateColumnOrder::YearMonthDay => vec![0, 1, 2],
-            DateColumnOrder::DayMonthYear => vec![2, 1, 0],
-            DateColumnOrder::MonthDayYear => vec![1, 2, 0],
+        slots[0] = Some((2, self.year_labels.as_slice()));
+        slots[1] = Some((self.selected_month as i32 - 1, months));
+        slots[2] = Some((self.selected_day as i32 - 1, days));
+        let sorted = match self.column_order {
+            DateColumnOrder::YearMonthDay => [0, 1, 2],
+            DateColumnOrder::DayMonthYear => [2, 1, 0],
+            DateColumnOrder::MonthDayYear => [1, 2, 0],
         };
-        (logical, order)
+        order[..3].copy_from_slice(&sorted);
+        3
     }
 
     /// Rebuilds the cached caption tables whose inputs changed (L-P09).
@@ -956,32 +992,40 @@ impl Draw for CupertinoDatePicker {
         let roll_shift =
             (self.roll.value() * row_height as f32 * self.roll_direction as f32) as i32;
 
-        let (columns, order) = match self.mode {
-            CupertinoDatePickerMode::Date => self.date_columns(),
-            CupertinoDatePickerMode::CountDownTimer => (
-                vec![
-                    (self.selected_hour as i32, self.hour_labels.as_slice()),
-                    (self.selected_minute as i32, self.minute_labels.as_slice()),
-                    (self.selected_second as i32, self.second_labels.as_slice()),
-                ],
-                vec![0, 1, 2],
-            ),
+        // The wheel skeleton is written into stack storage: the paint pass used to build a
+        // fresh column and order `Vec` on every frame.
+        let mut columns: [Option<(i32, &[String])>; MAX_WHEEL_COLUMNS] = [None; MAX_WHEEL_COLUMNS];
+        let mut order = [0usize; MAX_WHEEL_COLUMNS];
+        let column_total = match self.mode {
+            CupertinoDatePickerMode::Date => self.date_columns_into(&mut columns, &mut order),
+            CupertinoDatePickerMode::CountDownTimer => {
+                columns[0] = Some((self.selected_hour as i32, self.hour_labels.as_slice()));
+                columns[1] = Some((self.selected_minute as i32, self.minute_labels.as_slice()));
+                columns[2] = Some((self.selected_second as i32, self.second_labels.as_slice()));
+                for (index, slot) in order.iter_mut().take(3).enumerate() {
+                    *slot = index;
+                }
+                3
+            }
             CupertinoDatePickerMode::Time => {
-                let columns = self.time_columns();
-                let order = (0..columns.len()).collect();
-                (columns, order)
+                let count = self.time_columns_into(&mut columns);
+                for (index, slot) in order.iter_mut().take(count).enumerate() {
+                    *slot = index;
+                }
+                count
             }
             CupertinoDatePickerMode::DateTime => {
-                let (mut columns, mut order) = self.date_columns();
-                let offset = columns.len();
-                columns.extend(self.time_columns());
-                order.extend(offset..columns.len());
-                (columns, order)
+                let date_count = self.date_columns_into(&mut columns, &mut order);
+                let time_count = self.time_columns_into(&mut columns[date_count..]);
+                for index in 0..time_count {
+                    order[date_count + index] = date_count + index;
+                }
+                date_count + time_count
             }
         };
 
-        for (position, &logical_index) in order.iter().enumerate() {
-            let Some((sel_offset, items)) = columns.get(logical_index) else {
+        for (position, logical_index) in order.iter().copied().enumerate().take(column_total) {
+            let Some((sel_offset, items)) = columns[logical_index] else {
                 continue;
             };
             let col_x = wheel_rect.x + (position as u32 * col_width) as i32;

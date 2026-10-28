@@ -1354,10 +1354,58 @@ impl Draw for Mention {
         } else {
             context.pop_clip();
         }
+
+        // ── Focus ring ──
+        //
+        // Only a keyboard focus draws it: a pointer (or touch) press focuses the field without
+        // claiming visual focus, so no ring appears under the cursor. Around the field, never the
+        // popup, which is a separate surface.
+        if self.base.draws_focus_ring() {
+            let ring = crate::widget::metrics::FocusRing::for_control(rect, 4);
+            if ring.is_drawable() {
+                context.draw_rounded_rect_stroke(
+                    ring.rect,
+                    ring.radius,
+                    crate::widget::metrics::focus_ring_color(background.contrast_color()),
+                    crate::widget::metrics::FOCUS_RING_WIDTH,
+                );
+            }
+        }
     }
 }
 
 impl Mention {
+    /// A primary press at `pos`: a press on the field places the caret and starts a selection, a
+    /// press on a candidate row completes that mention, and a press elsewhere dismisses the popup.
+    ///
+    /// Shared by the mouse and touch press arms, so a finger enters exactly the state machine a
+    /// pointer does instead of a second copy of it.
+    fn press_with_pointer(&mut self, pos: Point) {
+        let rect = self.geometry();
+        if rect.contains_point(pos) {
+            self.focused = true;
+            self.cursor_blink.start();
+            // The press places the caret where the user aimed and starts a selection, so
+            // clicking into the middle of the value inserts there instead of appending.
+            let index = self.byte_index_at_x(pos.x);
+            self.caret = index;
+            self.selection_anchor = Some(index);
+            self.dragging_selection = true;
+            self.refresh();
+            self.base.request_redraw();
+            return;
+        }
+        if self.is_popup_open() {
+            if let Some(index) = self.row_at(pos) {
+                self.complete(index);
+            } else {
+                // A click outside the popup and outside the field dismisses,
+                // which is what every popup list does.
+                self.close_popup();
+            }
+        }
+    }
+
     /// Draws the candidate popup below the field.
     ///
     /// # Why the popup reads the theme and the field's fallbacks do not
@@ -1491,29 +1539,7 @@ impl EventHandler for Mention {
                 }
             }
             Event::MousePress { pos, button, .. } if *button == 1 => {
-                let rect = self.geometry();
-                if rect.contains_point(*pos) {
-                    self.focused = true;
-                    self.cursor_blink.start();
-                    // The press places the caret where the user aimed and starts a selection, so
-                    // clicking into the middle of the value inserts there instead of appending.
-                    let index = self.byte_index_at_x(pos.x);
-                    self.caret = index;
-                    self.selection_anchor = Some(index);
-                    self.dragging_selection = true;
-                    self.refresh();
-                    self.base.request_redraw();
-                    return;
-                }
-                if self.is_popup_open() {
-                    if let Some(index) = self.row_at(*pos) {
-                        self.complete(index);
-                    } else {
-                        // A click outside the popup and outside the field dismisses,
-                        // which is what every popup list does.
-                        self.close_popup();
-                    }
-                }
+                self.press_with_pointer(*pos);
             }
             // A drag extends the press's selection; a bare hover still does nothing because
             // `dragging_selection` is only raised by a press.
@@ -1524,6 +1550,24 @@ impl EventHandler for Mention {
                 }
             }
             Event::MouseRelease { button, .. } if *button == 1 => {
+                self.dragging_selection = false;
+            }
+            // ── Touch ──
+            //
+            // A finger takes the same route the pointer does: the contact places the caret, starts
+            // a selection or takes the candidate row it landed on, and the lift (or a withdrawn
+            // contact) drops the selection-drag latch. Without these arms the field was
+            // unreachable on a touch-only host. No separate `Tap` arm: the press is the click.
+            #[cfg(feature = "touch")]
+            Event::TouchBegin { pos, .. } => {
+                self.press_with_pointer(*pos);
+            }
+            #[cfg(feature = "touch")]
+            Event::TouchEnd { .. } => {
+                self.dragging_selection = false;
+            }
+            #[cfg(feature = "touch")]
+            event if crate::event::translator::is_touch_cancel(event) => {
                 self.dragging_selection = false;
             }
             // Typing goes to the field, and a trigger character opens the popup as a

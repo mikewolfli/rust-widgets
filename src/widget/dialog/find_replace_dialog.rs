@@ -8,7 +8,7 @@
 //! action buttons for find next, find previous, replace, replace all,
 //! and close. Emits typed signals when actions are triggered.
 
-use crate::compat::format;
+use crate::compat::{format, RefCell};
 use crate::core::{Color, HorizontalAlignment, ObjectId, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
@@ -80,6 +80,12 @@ pub struct SearchRequest {
     pub options: SearchOptions,
 }
 
+/// The cached status line and the match report it was formatted from (WGT-G5).
+///
+/// Named so the field's type stays readable: the key is the report pair, and `None` means the
+/// "no matches" spelling.
+type StatusCache = RefCell<Option<(Option<(usize, usize)>, String)>>;
+
 /// FindReplaceDialog widget — a find/replace panel for text search and replace.
 pub struct FindReplaceDialog {
     base: BaseWidget,
@@ -136,6 +142,8 @@ pub struct FindReplaceDialog {
     text_input_seen: bool,
     /// The host's match report: `(current, total)`, or `None` for "no matches" (DLG-11).
     match_report: Option<(usize, usize)>,
+    /// The painted report text, keyed by the report it was formatted from.
+    status_cache: StatusCache,
 }
 
 impl FindReplaceDialog {
@@ -162,6 +170,7 @@ impl FindReplaceDialog {
             anchor: [0, 0],
             text_input_seen: false,
             match_report: None,
+            status_cache: RefCell::new(None),
         }
     }
 
@@ -841,10 +850,17 @@ impl Draw for FindReplaceDialog {
             // user sees "3 / 12" (or "no matches") beside the query that produced it
             // (DLG-11). Only a non-empty query can have a report worth showing.
             if !self.find_text.is_empty() {
-                let status = match self.match_report {
-                    Some((current, total)) => format!("{current} / {total}"),
-                    None => super::localized_label("dialog.find_replace.no_matches", "No matches"),
-                };
+                let mut cache = self.status_cache.borrow_mut();
+                if cache.as_ref().is_none_or(|(report, _)| *report != self.match_report) {
+                    let text = match self.match_report {
+                        Some((current, total)) => format!("{current} / {total}"),
+                        None => {
+                            super::localized_label("dialog.find_replace.no_matches", "No matches")
+                        }
+                    };
+                    *cache = Some((self.match_report, text));
+                }
+                let status = cache.as_ref().map(|(_, text)| text.as_str()).unwrap_or_default();
                 let status_band = Rect::new(
                     input_rect.x + input_rect.width as i32 / 3,
                     input_rect.y,
@@ -854,7 +870,7 @@ impl Draw for FindReplaceDialog {
                 let status_line = self.text_line(status_band, font, context);
                 context.draw_text_fitted_cow(
                     status_line,
-                    &status,
+                    status,
                     font,
                     ink.blend(&field, 0.35),
                     HorizontalAlignment::Right,

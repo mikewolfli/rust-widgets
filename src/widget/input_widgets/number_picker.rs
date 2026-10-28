@@ -32,6 +32,7 @@ use crate::widget::capability::coercion::{expect_bool, expect_i64, expect_string
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::{focus_ring_color, FocusRing, FOCUS_RING_WIDTH};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -642,10 +643,7 @@ impl EventHandler for NumberPicker {
 
         match event {
             Event::MousePress { pos, button: 1, .. } if self.contains(*pos) => {
-                // A drag is measured from where it started, so the state is
-                // recorded here and never accumulated during the move.
-                self.drag_origin_y = Some(pos.y);
-                self.drag_origin_value = self.value;
+                self.begin_drag(*pos);
             }
             Event::MouseMove { pos } => {
                 if let Some(origin_y) = self.drag_origin_y {
@@ -677,13 +675,22 @@ impl EventHandler for NumberPicker {
                 }
             }
             Event::MouseRelease { .. } => {
+                self.end_drag();
+            }
+            // Touch starts and ends the same reel drag as the pointer.
+            #[cfg(feature = "touch")]
+            Event::TouchBegin { pos, .. } if self.contains(*pos) => {
+                self.begin_drag(*pos);
+            }
+            #[cfg(feature = "touch")]
+            event if crate::event::translator::is_touch_cancel(event) => {
                 self.drag_origin_y = None;
-                if self.settle_offset.abs() > 0.01 {
-                    self.settling = true;
-                    self.base.request_redraw();
-                } else {
-                    self.settle_offset = 0.0;
-                }
+                self.settle_offset = 0.0;
+                self.base.request_redraw();
+            }
+            #[cfg(feature = "touch")]
+            Event::Tap { .. } => {
+                self.end_drag();
             }
             // A press whose release lands outside the widget never reaches the arm
             // above: the runtime's hit-test returns `None` for a point outside every
@@ -779,6 +786,27 @@ impl NumberPicker {
     /// downward drag means.
     fn scroll_rows_visual(&mut self, rows: i64) -> bool {
         self.scroll_rows(-rows)
+    }
+}
+
+impl NumberPicker {
+    /// Records the drag origin at `pos`; the move arm measures every step from here.
+    fn begin_drag(&mut self, pos: Point) {
+        // A drag is measured from where it started, so the state is
+        // recorded here and never accumulated during the move.
+        self.drag_origin_y = Some(pos.y);
+        self.drag_origin_value = self.value;
+    }
+
+    /// Ends a drag and starts the settle if the reel stopped between two rows.
+    fn end_drag(&mut self) {
+        self.drag_origin_y = None;
+        if self.settle_offset.abs() > 0.01 {
+            self.settling = true;
+            self.base.request_redraw();
+        } else {
+            self.settle_offset = 0.0;
+        }
     }
 }
 
@@ -893,6 +921,22 @@ impl Draw for NumberPicker {
             style.border_color.unwrap_or(Color::rgb(200, 200, 200)),
             1,
         );
+
+        // ── Keyboard focus ring ──
+        //
+        // Only a keyboard focus draws it — a pointer press focuses without claiming visual
+        // focus, which is the rule every other control in the crate follows.
+        if self.base.draws_focus_ring() {
+            let ring = FocusRing::for_control(rect, 0);
+            if ring.is_drawable() {
+                context.draw_rounded_rect_stroke(
+                    ring.rect,
+                    ring.radius,
+                    focus_ring_color(background.contrast_color()),
+                    FOCUS_RING_WIDTH,
+                );
+            }
+        }
     }
 
     fn uses_custom_drawing(&self) -> bool {

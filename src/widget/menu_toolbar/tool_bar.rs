@@ -673,6 +673,11 @@ pub struct ToolBar {
     widget_items: Vec<ToolBarWidgetItem>,
     /// The box each hosted widget occupied on the last paint, for event routing.
     widget_bands: Vec<(String, Rect)>,
+    /// The layout signature the resident `widget_bands` rectangles were computed for.
+    ///
+    /// `u64::MAX` means "never laid out". The paint used to rebuild the list and clone
+    /// every id per frame; an unchanged signature keeps the resident bands instead.
+    widget_bands_key: u64,
 }
 impl ToolBar {
     /// Creates a horizontal toolbar with a default icon size of 24 pixels, and
@@ -713,6 +718,7 @@ impl ToolBar {
             bands_cache: RefCell::new(None),
             widget_items: Vec::new(),
             widget_bands: Vec::new(),
+            widget_bands_key: u64::MAX,
         }
     }
     /// The direction items are laid out in.
@@ -758,7 +764,11 @@ impl ToolBar {
         if id.is_empty() || self.widget_items.iter().any(|item| item.id == id) {
             return false;
         }
-        self.widget_items.push(ToolBarWidgetItem { id, widget });
+        self.widget_items.push(ToolBarWidgetItem { id: id.clone(), widget });
+        // The resident band list mirrors the hosted widgets, so a paint never clones an id.
+        // The zero-sized placeholder cannot be hit until the next paint fills it.
+        self.widget_bands.push((id, Rect::default()));
+        self.widget_bands_key = u64::MAX;
         self.base.request_layout();
         self.base.request_redraw();
         true
@@ -1798,8 +1808,39 @@ impl ToolBar {
             } else {
                 rect.y
             } + inset;
-        let mut widget_bands = Vec::with_capacity(self.widget_items.len());
-        for item in &mut self.widget_items {
+
+        // A signature of everything the band arithmetic reads, including each widget's
+        // hint. `size_hint` is still called every frame; it feeds this key, so an unchanged
+        // frame reuses the resident bands instead of allocating a list and cloning ids.
+        let mut key = self.layout_signature().rotate_left(13) ^ (self.widget_items.len() as u64);
+        for item in &self.widget_items {
+            let hint = item.widget.size_hint();
+            key = key.rotate_left(7) ^ (u64::from(hint.width) << 32 | u64::from(hint.height));
+        }
+        if key == self.widget_bands_key && self.widget_bands.len() == self.widget_items.len() {
+            for (index, item) in self.widget_items.iter_mut().enumerate() {
+                let band = self.widget_bands[index].1;
+                // The strip did not move, so a widget already in its band pays nothing for
+                // having the same rectangle reasserted.
+                if item.widget.base().geometry() != band {
+                    item.widget.base_mut().set_geometry(band);
+                }
+                if let Some(drawable) = item.widget.as_draw_mut() {
+                    drawable.draw(context);
+                }
+            }
+            return;
+        }
+
+        // Refill the resident list in place: `add_widget`/`remove_widget` keep its ids
+        // aligned with `widget_items`, so a relayout writes only the rectangles.
+        if self.widget_bands.len() != self.widget_items.len() {
+            self.widget_bands.clear();
+            for item in &self.widget_items {
+                self.widget_bands.push((item.id.clone(), Rect::default()));
+            }
+        }
+        for (index, item) in self.widget_items.iter_mut().enumerate() {
             let hint = item.widget.size_hint();
             let extent = if horizontal { hint.width } else { hint.height }.max(1);
             let band = if horizontal {
@@ -1807,14 +1848,19 @@ impl ToolBar {
             } else {
                 Rect::new(rect.x + inset, cursor, cross, extent)
             };
-            item.widget.base_mut().set_geometry(band);
+            if self.widget_bands[index].0 != item.id {
+                self.widget_bands[index].0.clone_from(&item.id);
+            }
+            self.widget_bands[index].1 = band;
+            if item.widget.base().geometry() != band {
+                item.widget.base_mut().set_geometry(band);
+            }
             if let Some(drawable) = item.widget.as_draw_mut() {
                 drawable.draw(context);
             }
-            widget_bands.push((item.id.clone(), band));
             cursor += extent as i32 + dimensions::TOOLBAR_SPACING as i32;
         }
-        self.widget_bands = widget_bands;
+        self.widget_bands_key = key;
     }
 
     fn item_bands(&self) -> Rc<Vec<Rect>> {

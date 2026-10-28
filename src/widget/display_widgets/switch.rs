@@ -979,7 +979,7 @@ impl Draw for Switch {
         // toward the ink: without it a switch that is under the cursor looks exactly like
         // one that is not, which is the affordance the control was missing.
         let thumb_color = if is_enabled && self.base.is_hovered() {
-            thumb_color.blend(&track_color.contrast_color(), 0.10)
+            thumb_color.blend(&track_color.contrast_color(), crate::style::HOVER_FILL_BLEND)
         } else {
             thumb_color
         };

@@ -131,14 +131,36 @@ pub trait Widget: EventHandler + Any {
             | crate::widget::WidgetKind::ComboBox
             | crate::widget::WidgetKind::ListBox
             | crate::widget::WidgetKind::ProgressBar
-            | crate::widget::WidgetKind::Slider => CursorIcon::Pointer,
-            crate::widget::WidgetKind::LineEdit | crate::widget::WidgetKind::SpinBox => {
-                CursorIcon::Text
-            }
+            | crate::widget::WidgetKind::Slider
+            | crate::widget::WidgetKind::Dropdown => CursorIcon::Pointer,
+            crate::widget::WidgetKind::LineEdit
+            | crate::widget::WidgetKind::SpinBox
+            | crate::widget::WidgetKind::TextArea => CursorIcon::Text,
+            // Text entries added after the table was written: an I-beam is the affordance that
+            // says "you can type here", and leaving them on the default arrow made a text field
+            // the only control whose cursor did not describe it (WGT-F4).
             #[cfg(widgets_unstripped)]
-            crate::widget::WidgetKind::TextEdit | crate::widget::WidgetKind::RichEdit => {
-                CursorIcon::Text
-            }
+            crate::widget::WidgetKind::TextEdit
+            | crate::widget::WidgetKind::RichEdit
+            | crate::widget::WidgetKind::SearchBox
+            | crate::widget::WidgetKind::SearchBar
+            | crate::widget::WidgetKind::MaskedEdit
+            | crate::widget::WidgetKind::OtpInput
+            | crate::widget::WidgetKind::Mention
+            | crate::widget::WidgetKind::AutoCompleteEdit
+            | crate::widget::WidgetKind::InplaceEditor
+            | crate::widget::WidgetKind::ShortcutEditor => CursorIcon::Text,
+            // Selectors and triggers: the pointer says "this opens, picks or runs".
+            #[cfg(widgets_unstripped)]
+            crate::widget::WidgetKind::Cascader
+            | crate::widget::WidgetKind::MultiSelectComboBox
+            | crate::widget::WidgetKind::EditableComboBox
+            | crate::widget::WidgetKind::FontComboBox
+            | crate::widget::WidgetKind::CommandLink
+            | crate::widget::WidgetKind::TagInput
+            | crate::widget::WidgetKind::RangeSlider
+            | crate::widget::WidgetKind::ToggleButton
+            | crate::widget::WidgetKind::NumberPicker => CursorIcon::Pointer,
             #[cfg(widgets_unstripped)]
             crate::widget::WidgetKind::Splitter => CursorIcon::ResizeHorizontal,
             crate::widget::WidgetKind::MiniCanvas => CursorIcon::Crosshair,
@@ -326,6 +348,15 @@ pub trait Widget: EventHandler + Any {
         }
         self.base_mut().set_enabled(enabled);
         self.set_state_theme_hook();
+        // `enabled` is a state that can be seen and heard, so the write is not reported until
+        // both have been told — the same contract `runtime::report_state` states for the backend
+        // path (ENG-A4). `request_redraw` resolves the registry id itself; the announcement has
+        // to name it, because the accessibility pump is keyed by the mounted id.
+        self.base().request_redraw();
+        #[cfg(not(alloc_frugal))]
+        if let Some(id) = crate::widget::runtime::registry_id_of(self.base().id()) {
+            crate::widget::a11y_submit::submit_state_changed(id);
+        }
     }
     /// Sets the hovered flag and requests a repaint.
     ///

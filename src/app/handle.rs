@@ -717,7 +717,7 @@ pub trait WidgetHandle: Sized {
 
 use crate::signal::ConnectionHandle;
 use core::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 /// The per-widget lock-free callback table, keyed by widget id and callback token.
@@ -801,7 +801,8 @@ thread_local! {
     static LOCAL_CALLBACKS: LocalCallbackMap =
         RefCell::new(HashMap::new());
 
-    /// A per-widget removal generation, bumped every time `remove_callbacks` runs.
+    /// A per-widget removal generation, bumped when `remove_callbacks` removes something for
+    /// that widget.
     ///
     /// `dispatch_trigger` takes a widget's callbacks out of the table, then a
     /// `ValueCallGuard`/`ClickCallGuard` puts them back on drop. If the callback
@@ -813,6 +814,16 @@ thread_local! {
     /// generation) still re-registers.
     #[allow(clippy::missing_const_for_thread_local)]
     static CALLBACK_GENERATIONS: RefCell<HashMap<ObjectId, u64>> = RefCell::new(HashMap::new());
+
+    /// The ids whose callbacks are currently held by a dispatch guard (ENG-E1).
+    ///
+    /// `remove_callbacks` needs this because a dispatch that is in flight has already moved the
+    /// callbacks out of their tables: `had_entries` is false, yet the guard still holds a snapshot
+    /// whose restore must lose to this removal (D08-A-02). Together with the table removals this
+    /// is what lets the generation be bumped only for ids that actually had a callback, instead of
+    /// for every widget that is ever destroyed.
+    #[allow(clippy::missing_const_for_thread_local)]
+    static DISPATCH_IN_FLIGHT: RefCell<HashSet<ObjectId>> = RefCell::new(HashSet::new());
 
     /// How many callbacks have been requested for an id with no mounted widget.
     ///
@@ -830,6 +841,29 @@ thread_local! {
     /// `const`.
     #[allow(clippy::missing_const_for_thread_local)]
     static UNWIRED_BINDINGS: Cell<usize> = const { Cell::new(0) };
+}
+
+/// Records that `id`'s callbacks are on a dispatch guard's stack, returning whether the entry was
+/// added by this call.
+fn note_dispatch_in_flight(id: ObjectId) -> bool {
+    DISPATCH_IN_FLIGHT
+        .with(|set| set.try_borrow_mut().map(|mut set| set.insert(id)).unwrap_or(false))
+}
+
+/// Removes the in-flight note a guard added when it drops.
+fn clear_dispatch_in_flight(id: ObjectId) {
+    let _ = DISPATCH_IN_FLIGHT.try_with(|set| {
+        if let Ok(mut set) = set.try_borrow_mut() {
+            set.remove(&id);
+        }
+    });
+}
+
+/// Whether `id` currently has callbacks on a dispatch guard's stack.
+fn dispatch_in_flight(id: ObjectId) -> bool {
+    DISPATCH_IN_FLIGHT
+        .try_with(|set| set.try_borrow().map(|set| set.contains(&id)).unwrap_or(false))
+        .unwrap_or(false)
 }
 
 /// The current removal generation for `id`, defaulting to `0`.
@@ -1244,10 +1278,17 @@ struct ClickCallGuard {
     /// callbacks are restored only if it still matches, so a `remove_callbacks`
     /// that ran *inside* the callback is not undone by this restore (D08-A-02).
     generation: u64,
+    /// Whether this guard registered itself in [`DISPATCH_IN_FLIGHT`] (ENG-E1).
+    in_flight: bool,
 }
 
 impl Drop for ClickCallGuard {
     fn drop(&mut self) {
+        // Clear the in-flight note first: the restore path below may run `remove_callbacks`'
+        // readers, and the note describes the dispatch, which is over either way.
+        if self.in_flight {
+            clear_dispatch_in_flight(self.widget_id);
+        }
         if let Some(callbacks) = self.callbacks.take() {
             if callback_generation(self.widget_id) != self.generation {
                 // The callbacks were removed while they were dispatched; honour the
@@ -1282,10 +1323,15 @@ struct ValueCallGuard {
     callbacks: Option<Vec<ValueChangedCallback>>,
     /// See [`ClickCallGuard::generation`].
     generation: u64,
+    /// See [`ClickCallGuard::in_flight`].
+    in_flight: bool,
 }
 
 impl Drop for ValueCallGuard {
     fn drop(&mut self) {
+        if self.in_flight {
+            clear_dispatch_in_flight(self.widget_id);
+        }
         if let Some(callbacks) = self.callbacks.take() {
             if callback_generation(self.widget_id) != self.generation {
                 return;
@@ -1333,27 +1379,46 @@ fn record_signal_connection(widget_id: ObjectId, kind: SignalKind, handle: Conne
 /// Uses `try_borrow_mut` to avoid panicking when called re-entrantly
 /// (e.g. during callback dispatch when a handle is dropped).
 pub fn remove_callbacks(id: ObjectId) {
-    // Bump the generation first: a guard that is mid-dispatch on this thread must
-    // see the change and decline to restore the callbacks it holds (D08-A-02).
-    bump_callback_generation(id);
+    // The generation is bumped only for an id that actually held a callback (or has one on a
+    // dispatch guard's stack). The old code bumped unconditionally on every destroy, and ids are
+    // never reused, so `CALLBACK_GENERATIONS` grew by one entry per widget ever destroyed — the
+    // one per-id table the LYT-X06 cleanup chain did not shrink (ENG-E1). A bump is still
+    // required while a dispatch is in flight even with empty tables: the guard's restore must
+    // lose to this removal (D08-A-02).
+    let mut had_entries = false;
     CLICK_CALLBACKS.with(|map| {
         if let Ok(mut map) = map.try_borrow_mut() {
-            map.remove(&id);
+            had_entries |= map.remove(&id).is_some();
         }
     });
     // The lock-free convenience path stores the closure itself beside the runtime registry, so an
     // explicit removal must drop it too; otherwise every removed handler stayed alive until the
     // thread exited (W-P08).
+    let mut removed_local = 0usize;
     LOCAL_CALLBACKS.with(|map| {
         if let Ok(mut map) = map.try_borrow_mut() {
-            map.retain(|(widget_id, _), _| *widget_id != id);
+            map.retain(|(widget_id, _), _| {
+                if *widget_id == id {
+                    removed_local += 1;
+                    false
+                } else {
+                    true
+                }
+            });
         }
     });
+    had_entries |= removed_local > 0;
     VALUE_CALLBACKS.with(|map| {
         if let Ok(mut map) = map.try_borrow_mut() {
-            map.remove(&id);
+            had_entries |= map.remove(&id).is_some();
         }
     });
+    // Bump after the tables are read, and before anything below can re-enter a guard's drop: a
+    // guard that is mid-dispatch on this thread must see the change and decline to restore the
+    // callbacks it holds (D08-A-02).
+    if had_entries || dispatch_in_flight(id) {
+        bump_callback_generation(id);
+    }
     // The IME pre-edit observers are stored by the widget runtime (they are per-widget state like
     // focus and hover), so an explicit "remove every callback for this id" must clear them too.
     crate::widget::runtime::clear_ime_preedit_callbacks(id);
@@ -1564,6 +1629,7 @@ pub fn dispatch_trigger(widget_id: ObjectId, kind: WidgetTriggerKind) -> bool {
                 widget_id,
                 callbacks: Some(callbacks),
                 generation: callback_generation(widget_id),
+                in_flight: note_dispatch_in_flight(widget_id),
             };
             for callback in guard.callbacks.as_ref().expect("set just above") {
                 if let Ok(mut f) = callback.try_borrow_mut() {
@@ -1587,6 +1653,7 @@ pub fn dispatch_trigger(widget_id: ObjectId, kind: WidgetTriggerKind) -> bool {
                 widget_id,
                 callbacks: Some(callbacks),
                 generation: callback_generation(widget_id),
+                in_flight: note_dispatch_in_flight(widget_id),
             };
             for callback in guard.callbacks.as_ref().expect("set just above") {
                 if let Ok(mut f) = callback.try_borrow_mut() {

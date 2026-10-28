@@ -1059,17 +1059,29 @@ pub fn display_info() -> Option<AndroidDisplayInfo> {
         // pending, which then failed every later JNI call in the probe. The host's Activity
         // window is full-screen, so bounds is the truthful work area here; a host that runs a
         // split-screen session can still use the per-window surface metrics it owns.
-        let work_width = width.max(0) as u32;
-        let work_height = height.max(0) as u32;
+        //
+        // Android reports these in physical pixels. The trait contract
+        // (`platform::DisplayInfo::bounds`) is the desktop's **logical** pixel space, and this
+        // file's other two conversion paths divide by `densityDpi/160` for exactly that reason
+        // (`window_insets`, the pointer dispatch). Reporting physical bounds *beside* the scale
+        // factor made a 3x device answer a bounds three times too large and then invited a second
+        // multiplication downstream — a 9x area (ENG-C3).
+        let scale = if density_dpi > 0 { density_dpi as f32 / 160.0 } else { 1.0 };
+        let scale = if scale.is_finite() && scale > 0.0 { scale } else { 1.0 };
+        let logical = |pixels: i32| (pixels.max(0) as f32 / scale).round() as u32;
+        let width = logical(width);
+        let height = logical(height);
+        let work_width = width;
+        let work_height = height;
 
         Some(AndroidDisplayInfo {
             id,
-            width: width.max(0) as u32,
-            height: height.max(0) as u32,
+            width,
+            height,
             work_width,
             work_height,
             // Android's baseline density is 160 dpi; a non-positive reading is not a scale.
-            scale: if density_dpi > 0 { density_dpi as f32 / 160.0 } else { 1.0 },
+            scale,
             is_primary: true,
         })
     })

@@ -21,7 +21,8 @@ use crate::{impl_widget_property_hooks, property_names_of};
 ///
 /// Named rather than inlined because the draw path and its tests read the same value; at
 /// rest the tint is skipped entirely, so this only describes the hovered/pressed picture.
-const FRAME_INTERACTION_TINT: f32 = 0.22;
+/// The value is the style layer's single hover weight (WGT-F5), not a second copy of it.
+const FRAME_INTERACTION_TINT: f32 = crate::style::HOVER_FILL_BLEND;
 
 /// Frame widget.
 pub struct Frame {

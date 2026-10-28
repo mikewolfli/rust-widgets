@@ -8,7 +8,7 @@
 //! lives here and both call into it (principle #101). The callers own the caching
 //! policy: this module only computes.
 
-use crate::compat::{vec, Vec};
+use crate::compat::Vec;
 
 /// Nearest-neighbour resample of an RGBA buffer into `width` x `height`.
 ///
@@ -22,9 +22,29 @@ pub(crate) fn nearest_scale(
     width: u32,
     height: u32,
 ) -> Vec<u8> {
-    let mut out = vec![0u8; (width as usize) * (height as usize) * 4];
+    let mut out = Vec::new();
+    nearest_scale_into(data, source_width, source_height, width, height, &mut out);
+    out
+}
+
+/// Resamples into `out`, reusing its capacity when the destination size is unchanged.
+///
+/// The buffer is only resized when its length disagrees with the destination geometry, so a
+/// playback frame that keeps the same viewport re-samples in place instead of allocating.
+pub(crate) fn nearest_scale_into(
+    data: &[u8],
+    source_width: u32,
+    source_height: u32,
+    width: u32,
+    height: u32,
+    out: &mut Vec<u8>,
+) {
+    let length = (width as usize) * (height as usize) * 4;
+    if out.len() != length {
+        out.resize(length, 0);
+    }
     if source_width == 0 || source_height == 0 || width == 0 || height == 0 {
-        return out;
+        return;
     }
     for y in 0..height {
         let source_y = (y as u64 * source_height as u64 / height as u64) as u32;
@@ -36,5 +56,4 @@ pub(crate) fn nearest_scale(
             out[destination..destination + 4].copy_from_slice(&data[source..source + 4]);
         }
     }
-    out
 }

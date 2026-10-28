@@ -4,7 +4,7 @@
 //! Software rendering surface: back buffer, surface, and configuration.
 use crate::compat::Arc;
 use crate::compat::Rc;
-use crate::compat::{lock, vec, Cow, MiniToString, Mutex, OnceLock, String, Vec};
+use crate::compat::{lock, vec, Cow, MiniToString, Mutex, OnceLock, RefCell, String, Vec};
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::render::core::command::{LayerEffect, MatteMode};
 use crate::render::pixel_bytes_len;
@@ -684,25 +684,52 @@ pub(crate) fn fitted_origin(bounds: Rect, advance: i32, alignment: HorizontalAli
 /// segments to the loop it replaced. `closed` appends the closing run from the
 /// last point back to the first, matching [`RenderCommand::DrawPath`]'s closing
 /// convention.
+/// The owned form of [`dash_line_segments_into`], kept for tests that compare the kernel's
+/// output against the historical inline walk. Production call sites use the `_into`/visitor form,
+/// so this wrapper is compiled only for tests (ENG-B1).
+#[cfg(test)]
 pub(crate) fn dash_line_segments(
     points: &[Point],
     closed: bool,
     dash: crate::render::core::command::DashPattern,
 ) -> Vec<(Point, Point)> {
     let mut segments = Vec::new();
+    dash_line_segments_into(points, closed, dash, &mut segments);
+    segments
+}
+
+thread_local! {
+    /// Dash segments reused by the per-frame dash call sites (ENG-B1).
+    ///
+    /// A dashed border expands four straight edges and a dashed path command expands once per
+    /// frame; both used to allocate two `Vec`s per call. `try_borrow_mut` keeps a re-entrant call
+    /// from panicking — the busy path below falls back to a local buffer.
+    #[allow(clippy::missing_const_for_thread_local)]
+    static DASH_SEGMENT_SCRATCH: RefCell<Vec<(Point, Point)>> = RefCell::new(Vec::new());
+}
+
+/// [`dash_line_segments`] writing into a caller-held buffer.
+///
+/// The buffer is cleared first; the walk itself is the historical one, so the segments are
+/// byte-identical to the owned form.
+pub(crate) fn dash_line_segments_into(
+    points: &[Point],
+    closed: bool,
+    dash: crate::render::core::command::DashPattern,
+    segments: &mut Vec<(Point, Point)>,
+) {
+    segments.clear();
     if points.len() < 2 || dash.mark == 0 {
-        return segments;
-    }
-    let mut runs: Vec<(Point, Point)> = Vec::with_capacity(points.len());
-    for window in points.windows(2) {
-        runs.push((window[0], window[1]));
-    }
-    if closed && points.len() >= 3 {
-        runs.push((*points.last().expect("len >= 2 checked above"), points[0]));
+        return;
     }
     let mark = i64::from(dash.mark);
     let gap = i64::from(dash.gap);
-    for (from, to) in runs {
+    // The last edge closes the loop back to the first point. Iterating indices instead of
+    // materialising `runs` removes the second allocation without changing the order.
+    let edges = if closed && points.len() >= 3 { points.len() } else { points.len() - 1 };
+    for index in 0..edges {
+        let from = points[index];
+        let to = points[(index + 1) % points.len()];
         let dx = i64::from(to.x - from.x);
         let dy = i64::from(to.y - from.y);
         // The edge's length in path pixels. An integer square root keeps the walk
@@ -722,7 +749,34 @@ pub(crate) fn dash_line_segments(
             position = end + gap;
         }
     }
-    segments
+}
+
+/// Calls `visit` for every dash segment of `points`, reusing a thread-local buffer (ENG-B1).
+///
+/// The busy case (a re-entrant dash expansion while the buffer is borrowed) uses a local buffer,
+/// so the result is the same either way.
+pub(crate) fn for_each_dash_segment(
+    points: &[Point],
+    closed: bool,
+    dash: crate::render::core::command::DashPattern,
+    mut visit: impl FnMut(Point, Point),
+) {
+    let mut done = false;
+    let _ = DASH_SEGMENT_SCRATCH.try_with(|scratch| {
+        let Ok(mut segments) = scratch.try_borrow_mut() else { return };
+        dash_line_segments_into(points, closed, dash, &mut segments);
+        for &(from, to) in segments.iter() {
+            visit(from, to);
+        }
+        done = true;
+    });
+    if !done {
+        let mut segments = Vec::new();
+        dash_line_segments_into(points, closed, dash, &mut segments);
+        for &(from, to) in segments.iter() {
+            visit(from, to);
+        }
+    }
 }
 
 /// Where a single line of text sits inside the band it is drawn in.
@@ -1999,7 +2053,8 @@ impl<'a> RenderContext<'a> {
     ///
     /// The dash walk is [`dash_line_segments`], the same kernel
     /// [`RenderCommand::DrawPathDashed`] expands through, so the border's dashes
-    /// and a dashed path cannot disagree on where a mark starts (G-014). A unit
+    /// and a dashed path cannot disagree on where a mark starts (G-014). The
+    /// per-edge buffer is reused across the four edges (ENG-B1). A unit
     /// test in this module pins the kernel's output to the historical inline
     /// walk on identical inputs; the dots branch stays inline because a dot is a
     /// disc, not a mark/gap pair.
@@ -2033,18 +2088,19 @@ impl<'a> RenderContext<'a> {
             if dashes {
                 // One straight edge per kernel call: the pattern restarts at the
                 // edge, exactly as the inline loop it replaced did.
-                for (a, b) in dash_line_segments(
+                for_each_dash_segment(
                     &[from, to],
                     false,
                     crate::render::core::command::DashPattern { mark, gap },
-                ) {
-                    self.dispatch_owned(RenderCommand::DrawLineStroke {
-                        from: a,
-                        to: b,
-                        color,
-                        width,
-                    });
-                }
+                    |a, b| {
+                        self.dispatch_owned(RenderCommand::DrawLineStroke {
+                            from: a,
+                            to: b,
+                            color,
+                            width,
+                        });
+                    },
+                );
             } else {
                 let dx = i64::from(to.x - from.x);
                 let dy = i64::from(to.y - from.y);

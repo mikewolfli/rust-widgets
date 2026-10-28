@@ -648,9 +648,10 @@ fn a_control_scope_resolves_only_inside_the_focus_chain() {
     let chain = Arc::clone(&focused);
     let reads = Arc::new(AtomicUsize::new(0));
     let reads_in_closure = Arc::clone(&reads);
-    manager.set_focus_chain_lookup(Box::new(move || {
+    manager.set_focus_chain_lookup(Box::new(move |out: &mut Vec<crate::core::ObjectId>| {
         reads_in_closure.fetch_add(1, Ordering::SeqCst);
-        chain.lock().unwrap().clone()
+        out.clear();
+        out.extend(chain.lock().unwrap().iter().copied());
     }));
 
     // The control is not in the chain: the global binding still applies.

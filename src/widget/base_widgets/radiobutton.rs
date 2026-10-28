@@ -707,6 +707,13 @@ impl Widget for RadioButton {
         }
         self.set_state_theme_hook();
         self.sync_group_registration();
+        self.base.request_redraw();
+        // The trait contract (ENG-A4): a state change that can be seen is also one a screen
+        // reader should hear about.
+        #[cfg(not(alloc_frugal))]
+        if let Some(id) = crate::widget::runtime::registry_id_of(self.base.id()) {
+            crate::widget::a11y_submit::submit_state_changed(id);
+        }
     }
 
     /// Keeps the exclusive group in step with the parent it may be keyed by.

@@ -193,6 +193,11 @@ pub struct ChartWidget {
     legend_key: Option<(u64, usize, u32)>,
     /// The hover read-out text and its measured size, with the key it was built for.
     readout_cache: Option<(usize, u64, String, u32, u32)>,
+    /// The hovered bucket's tooltip line, keyed like `readout_cache`.
+    ///
+    /// `hover_anchor` runs on every hover move and used to format the line each time; the
+    /// text is kept while the hovered index and the data/label generations are unchanged.
+    hover_anchor_cache: RefCell<Option<(usize, u64, String)>>,
     /// The legend cell rectangles on the last frame, for hit-testing.
     legend_hits: Vec<(Rect, usize)>,
     /// The legend row under the pointer.
@@ -262,6 +267,7 @@ impl ChartWidget {
             legend_rows: Vec::new(),
             legend_key: None,
             readout_cache: None,
+            hover_anchor_cache: RefCell::new(None),
             legend_hits: Vec::new(),
             hovered_legend: None,
             hover_readout_external: false,
@@ -696,23 +702,37 @@ impl ChartWidget {
 
     /// Paints or withdraws the attached tooltip to match the current hover.
     fn sync_chart_tooltip(&mut self) {
-        let anchor = self.hover_anchor();
-        if let Some(tooltip) = self.chart_tooltip.as_mut() {
-            match anchor {
-                Some((point, lines)) => tooltip.show_at(point, lines),
-                None => tooltip.hide(),
-            }
+        // Resolve the line before touching the tooltip: the cached borrow ends here, and a
+        // line the bubble already paints only needs its anchor re-pinned.
+        let prepared = self.hover_anchor_line().map(|(point, text)| {
+            let unchanged = self.chart_tooltip.as_ref().is_some_and(|tooltip| {
+                tooltip.is_visible()
+                    && matches!(tooltip.content(), [line] if line.text.as_str() == &*text)
+            });
+            (point, if unchanged { None } else { Some(crate::compat::String::from(&*text)) })
+        });
+        let Some(tooltip) = self.chart_tooltip.as_mut() else {
+            return;
+        };
+        match prepared {
+            Some((point, Some(text))) => tooltip.show_at(
+                point,
+                crate::compat::Vec::from([crate::widget::companions::TooltipLine::colored(
+                    text,
+                    Self::series_color(0),
+                )]),
+            ),
+            Some((point, None)) => tooltip.set_anchor(point),
+            None => tooltip.hide(),
         }
     }
 
-    /// The hovered bucket's anchor and suggested tooltip content, for an external read-out.
+    /// The hovered bucket's anchor and its tooltip line, cached while the hover is unchanged.
     ///
-    /// Returns `None` when nothing is hovered. The anchor is the pointer bucket's centre in the
-    /// plot area, so a companion bubble appears beside the datum rather than at a fixed corner.
-    pub fn hover_anchor(
-        &self,
-    ) -> Option<(Point, crate::compat::Vec<crate::widget::companions::TooltipLine>)> {
-        use crate::widget::companions::TooltipLine;
+    /// The text is keyed by the hovered index and the data/label generations, the same key
+    /// the inline read-out uses, so a still hover formats nothing. The anchor is derived from
+    /// the current geometry and zoom, so it is recomputed on every call.
+    fn hover_anchor_line(&self) -> Option<(Point, Ref<'_, str>)> {
         let index = self.hovered_index?;
         let value = self.hovered_value()?;
         let rect = self.geometry();
@@ -729,16 +749,48 @@ impl ChartWidget {
         let _ = points;
         let (min, max) = self.plot_range();
         let y = plot.y_for(value, min, max);
-        let mut lines = crate::compat::Vec::new();
-        if let Some(label) = self.labels.get(index) {
-            lines.push(TooltipLine::colored(
-                format!("{label}: {}", format_axis_value(value)),
-                Self::series_color(0),
-            ));
-        } else {
-            lines.push(TooltipLine::colored(format_axis_value(value), Self::series_color(0)));
+        let generation = self
+            .data_generation
+            .wrapping_mul(31)
+            .wrapping_add(self.label_generation.rotate_left(17));
+        let fresh = matches!(
+            self.hover_anchor_cache.borrow().as_ref(),
+            Some((cached, cached_generation, _))
+                if *cached == index && *cached_generation == generation
+        );
+        if !fresh {
+            let text = match self.labels.get(index) {
+                Some(label) => format!("{label}: {}", format_axis_value(value)),
+                None => format_axis_value(value),
+            };
+            *self.hover_anchor_cache.borrow_mut() = Some((index, generation, text));
         }
-        Some((Point::new(x, y), lines))
+        // The cache was filled above; the empty string keeps the borrow infallible.
+        let line = Ref::map(self.hover_anchor_cache.borrow(), |slot| {
+            slot.as_ref().map_or("", |(_, _, text)| text.as_str())
+        });
+        Some((Point::new(x, y), line))
+    }
+
+    /// The hovered bucket's anchor and suggested tooltip content, for an external read-out.
+    ///
+    /// Returns `None` when nothing is hovered. The anchor is the pointer bucket's centre in the
+    /// plot area, so a companion bubble appears beside the datum rather than at a fixed corner.
+    ///
+    /// The owned line is copied from the cached text here, because the public contract hands
+    /// back owned lines; the internal tooltip sync path reuses the cache without allocating.
+    pub fn hover_anchor(
+        &self,
+    ) -> Option<(Point, crate::compat::Vec<crate::widget::companions::TooltipLine>)> {
+        use crate::widget::companions::TooltipLine;
+        let (anchor, text) = self.hover_anchor_line()?;
+        Some((
+            anchor,
+            crate::compat::Vec::from([TooltipLine::colored(
+                crate::compat::String::from(&*text),
+                Self::series_color(0),
+            )]),
+        ))
     }
 
     /// The visible `[start, end)` category range.

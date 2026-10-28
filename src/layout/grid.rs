@@ -130,6 +130,13 @@ struct GridAllocation {
 thread_local! {
     #[allow(clippy::missing_const_for_thread_local)]
     static GRID_FLOOR_SCRATCH: RefCell<Vec<(Vec<u32>, Vec<u32>)>> = RefCell::new(Vec::new());
+    /// Sorted ids already emitted in the current placement pass (ENG-E2).
+    ///
+    /// Same stack-of-buffers shape as [`GRID_FLOOR_SCRATCH`], for the same reason: `place` runs
+    /// on every relayout, so a fresh `Vec<ObjectId>` per pass made a full grid pay an allocation
+    /// each time. Depth 2 covers a `widgets` callback that lays out another grid.
+    #[allow(clippy::missing_const_for_thread_local)]
+    static GRID_EMITTED_SCRATCH: RefCell<Vec<Vec<ObjectId>>> = RefCell::new(Vec::new());
 }
 
 /// Takes a zeroed column/row floor pair of the requested lengths.
@@ -154,6 +161,28 @@ fn return_grid_floors(mut columns: Vec<u32>, mut rows: Vec<u32>) {
             columns.clear();
             rows.clear();
             scratch.push((columns, rows));
+        }
+    });
+}
+
+/// Takes an empty emitted-id buffer, keeping the capacity a previous pass grew.
+fn take_grid_emitted() -> Vec<ObjectId> {
+    let mut emitted = GRID_EMITTED_SCRATCH
+        .try_with(|scratch| scratch.borrow_mut().pop())
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    emitted.clear();
+    emitted
+}
+
+/// Returns an emitted-id buffer to the scratch stack.
+fn return_grid_emitted(mut emitted: Vec<ObjectId>) {
+    let _ = GRID_EMITTED_SCRATCH.try_with(|scratch| {
+        let mut scratch = scratch.borrow_mut();
+        if scratch.len() < 2 {
+            emitted.clear();
+            scratch.push(emitted);
         }
     });
 }
@@ -1069,7 +1098,10 @@ impl GridLayout {
         // cell — the only cell a spanning placement can start from — so "not emitted yet"
         // is exactly "this is the origin cell" and no second scan (`cell_of`, itself a
         // linear search over every cell) is needed.
-        let mut emitted: Vec<ObjectId> = Vec::new();
+        //
+        // The buffer is taken from a scratch stack rather than allocated per pass, following
+        // the floors above (ENG-E2).
+        let mut emitted = take_grid_emitted();
         for row in 0..self.rows {
             for col in 0..self.cols {
                 let Some(placement) =
@@ -1140,6 +1172,7 @@ impl GridLayout {
                 widgets(placement.widget_id, Rect::new(x, y, width, height));
             }
         }
+        return_grid_emitted(emitted);
     }
 }
 

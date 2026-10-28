@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 
 //! Progress dialog widget.
+use core::fmt::Write as _;
+
 use crate::compat::{Rc, RefCell};
 use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
 use crate::event::key_codes;
@@ -61,6 +63,8 @@ pub struct ProgressDialog {
     busy_phase: f32,
     /// Cached action labels, keyed by the button caption (G-P09).
     label_cache: RefCell<Option<(String, Rc<Vec<String>>)>>,
+    /// The percentage read-out, reused between paints so a still frame allocates nothing.
+    percent_text: String,
     /// The Cancel button's rect from the last paint, with the frame it was derived from.
     ///
     /// The press path reads this instead of building a paint backend to re-measure the
@@ -114,6 +118,7 @@ impl ProgressDialog {
             busy: false,
             busy_phase: 0.0,
             label_cache: RefCell::new(None),
+            percent_text: String::new(),
             cancel_rect_cache: core::cell::Cell::new(None),
             canceled: GenericSignal::new(),
             value_changed: Signal1::new(),
@@ -957,9 +962,11 @@ impl Draw for ProgressDialog {
                 // 100%, run up to `bar_w/2 + 42` past the bar. The text reads the same fraction
                 // the fill does, so an eased bar and its number cannot disagree (DLG-16).
                 let pct = (fraction * 100.0) as i32;
+                self.percent_text.clear();
+                let _ = write!(self.percent_text, "{pct}%");
                 context.draw_text_line_cow(
                     bar_band,
-                    &format!("{pct}%"),
+                    &self.percent_text,
                     font,
                     if track.is_dark() { Color::WHITE } else { ink },
                     HorizontalAlignment::Center,

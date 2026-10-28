@@ -44,7 +44,7 @@ use crate::widget::capability::coercion::{expect_bool, expect_string, expect_usi
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
-use crate::widget::metrics::dimensions;
+use crate::widget::metrics::{dimensions, focus_ring_color, FocusRing, FOCUS_RING_WIDTH};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -1423,6 +1423,22 @@ impl Cascader {
         context.fill_rounded_rect(rect, 4, background);
         context.draw_rounded_rect_stroke(rect, 4, border, 1);
 
+        // ── Keyboard focus ring ──
+        //
+        // Only a keyboard focus draws it; a pointer press focuses the field without painting a
+        // ring under the cursor, which is the rule every other control in the crate follows.
+        if self.base.draws_focus_ring() {
+            let ring = FocusRing::for_control(rect, 4);
+            if ring.is_drawable() {
+                context.draw_rounded_rect_stroke(
+                    ring.rect,
+                    ring.radius,
+                    focus_ring_color(background.contrast_color()),
+                    FOCUS_RING_WIDTH,
+                );
+            }
+        }
+
         let text = self.cached_display_text();
         let is_empty = text.is_empty();
         // The hint is the host's string, which defaults to the `"Select…"` the field used to
@@ -1663,6 +1679,71 @@ impl Cascader {
     }
 }
 
+impl Cascader {
+    /// Resolves a press at `pos`: the field toggles the overlay, a row chooses, and a press
+    /// past the rows or outside every column dismisses.
+    fn press_at(&mut self, pos: Point) {
+        let field = self.field_rect();
+        if field.contains_point(pos) {
+            if self.expanded {
+                self.collapse();
+            } else {
+                self.expand();
+            }
+            return;
+        }
+        if self.expanded {
+            if let Some(level) = self.level_at(pos) {
+                if let Some(option_index) = self.row_at(level, pos) {
+                    self.choose(level, option_index);
+                } else {
+                    // A click on the column but past its rows dismisses, which
+                    // is the behaviour every popup list has.
+                    self.collapse();
+                }
+            } else {
+                // A click outside the field and outside every column closes
+                // without choosing — the standard way to abandon a picker.
+                self.collapse();
+            }
+        }
+    }
+
+    /// Moves the browsed mark to the row under `pos`.
+    ///
+    /// Only the deepest walked column is a hover target: it is the column the keyboard's
+    /// arrows act on, and moving a shallower entry would leave the deeper path pointing into
+    /// a different branch. The move is the same mutation `move_browsed` makes.
+    fn hover_browsed(&mut self, pos: Point) -> bool {
+        if !self.expanded {
+            return false;
+        }
+        let Some(level) = self.expanded_path.len().checked_sub(1) else {
+            return false;
+        };
+        if self.level_at(pos) != Some(level) {
+            return false;
+        }
+        let Some(index) = self.row_at(level, pos) else {
+            return false;
+        };
+        if self.expanded_path.get(level) == Some(&index) {
+            return false;
+        }
+        let enabled = self
+            .siblings_at(level)
+            .and_then(|siblings| siblings.get(index))
+            .is_some_and(|option| option.enabled);
+        if !enabled {
+            return false;
+        }
+        self.expanded_path[level] = index;
+        self.invalidate_level_rows();
+        self.base.request_redraw();
+        true
+    }
+}
+
 impl EventHandler for Cascader {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
@@ -1671,30 +1752,28 @@ impl EventHandler for Cascader {
         }
         match event {
             Event::MousePress { pos, button, .. } if *button == 1 => {
-                let field = self.field_rect();
-                if field.contains_point(*pos) {
-                    if self.expanded {
-                        self.collapse();
-                    } else {
-                        self.expand();
-                    }
-                    return;
-                }
-                if self.expanded {
-                    if let Some(level) = self.level_at(*pos) {
-                        if let Some(option_index) = self.row_at(level, *pos) {
-                            self.choose(level, option_index);
-                        } else {
-                            // A click on the column but past its rows dismisses, which
-                            // is the behaviour every popup list has.
-                            self.collapse();
-                        }
-                    } else {
-                        // A click outside the field and outside every column closes
-                        // without choosing — the standard way to abandon a picker.
-                        self.collapse();
-                    }
-                }
+                self.press_at(*pos);
+            }
+            // Hovering a painted row moves the browsed mark to it through the same path the
+            // keyboard arrows use. Leaving does not clear it: the mark is also the keyboard's
+            // cursor and the column has no "no row" state to fall back to.
+            Event::MouseMove { pos } => {
+                self.hover_browsed(*pos);
+            }
+            // Touch has no translated press here: contact latches the pressed state and the
+            // completed tap performs the same choose/dismiss transition as the pointer.
+            #[cfg(feature = "touch")]
+            Event::TouchBegin { pos, .. } => {
+                self.base.set_pressed(self.field_rect().contains_point(*pos));
+            }
+            #[cfg(feature = "touch")]
+            event if crate::event::translator::is_touch_cancel(event) => {
+                self.base.set_pressed(false);
+            }
+            #[cfg(feature = "touch")]
+            Event::Tap { pos } => {
+                self.press_at(*pos);
+                self.base.set_pressed(false);
             }
             // Backspace edits the filter before the general key arm sees it, so
             // filtering and navigation do not compete for the same key codes.

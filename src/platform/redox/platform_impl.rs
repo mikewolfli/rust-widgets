@@ -9,7 +9,8 @@
 //! window is a socket under `/scheme/orbital`, and input arrives as packed `orbclient::Event`
 //! records. This module uses `orbclient`'s client window (the same crate winit's backend reads
 //! its event types from) and keeps the crate's own self-drawn model: a window owns its pixel
-//! buffer, and `widget::runtime::render_frame_tree` paints the whole control tree into it.
+//! buffer, and `widget::runtime::render_frame_tree_cached_shared` paints the control tree into it
+//! (the cached entry point the other backends use, so an unchanged tick converts nothing).
 //!
 //! # What is real here
 //!
@@ -39,7 +40,7 @@
 //! on this host**; `tools/check_redox_cross.sh` reports that as a host limitation (exit 2) and the
 //! log records it as an open verification item rather than as a passing gate (principle #103).
 
-use crate::compat::{String, Vec};
+use crate::compat::{Rc, String, Vec};
 use crate::core::{ObjectId, PlatformFamily, Point, Rect, Size};
 use crate::event::Event;
 use crate::platform::redox::types::{OrbitalPlatform, OrbitalWindow, RedoxHandleKind};
@@ -151,8 +152,10 @@ impl Platform for OrbitalPlatform {
                 if let Ok((w, h)) = get_display_size() {
                     *crate::compat::lock(&self.screen) = (w, h);
                 }
-                crate::compat::lock(&self.windows)
-                    .insert(id, OrbitalWindow { window, input: Default::default() });
+                crate::compat::lock(&self.windows).insert(
+                    id,
+                    OrbitalWindow { window, input: Default::default(), last_frame: None },
+                );
                 id
             }
             None => {
@@ -539,13 +542,22 @@ impl OrbitalPlatform {
             }
             let width = entry.window.width().max(1);
             let height = entry.window.height().max(1);
-            let Some(frame) = runtime::render_frame_tree(
+            // The cached, shared entry point: another backend's repaint no longer turns this into a
+            // miss, and a tick that changed nothing answers the cache's own `Rc` instead of
+            // rasterising the whole frame (ENG-C1).
+            let Some(frame) = runtime::render_frame_tree_cached_shared(
                 window_widget,
                 Size::new(width, height),
                 crate::core::Color::rgb(240, 240, 240),
             ) else {
                 continue;
             };
+            // A frame that is the same `Rc` as the one on screen needs neither the full BGRA
+            // conversion below nor the compositor sync: those pixels are already presented.
+            // Keeping the previous `Rc` alive is what makes the pointer comparison meaningful.
+            if entry.last_frame.as_ref().is_some_and(|previous| Rc::ptr_eq(previous, &frame)) {
+                continue;
+            }
             {
                 let pixels = entry.window.data_mut();
                 for (pixel, rgba) in pixels.iter_mut().zip(frame.chunks_exact(4)) {
@@ -553,6 +565,7 @@ impl OrbitalPlatform {
                 }
             }
             entry.window.sync();
+            entry.last_frame = Some(frame);
         }
     }
 }

@@ -38,7 +38,10 @@ thread_local! {
 }
 
 /// The revision the calling thread should validate cached resolutions against.
-fn theme_revision() -> u64 {
+///
+/// Public so a caller that keeps its own thread-local derivation of theme state (the control
+/// metrics profile) can use the same key the style cache uses (WGT-F6).
+pub fn theme_revision() -> u64 {
     #[cfg(test)]
     {
         TEST_THEME_REVISION.with(|revision| revision.get())

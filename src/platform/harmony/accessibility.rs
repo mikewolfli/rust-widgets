@@ -175,6 +175,15 @@ impl HarmonyAccessibilityBridge {
         let _ = (provider, id, event_type);
         true
     }
+
+    /// Drops the accessible name recorded for `id` when its widget is destroyed (ENG-C6).
+    ///
+    /// Widget ids are never reused, so an entry left behind is both unreachable and permanent.
+    /// `destroy_widget` calls this at the same point the macOS and Windows backends drop their
+    /// per-widget accessibility entry.
+    pub fn remove_name(&self, id: ObjectId) {
+        lock(&self.names).remove(&id);
+    }
 }
 
 crate::impl_default_via_new!(HarmonyAccessibilityBridge);

@@ -8,11 +8,22 @@
 //! their token form, so visibility survives a save/load round trip), filters them by a search
 //! string and reports every change back to the owning grid.
 
+use core::cell::RefCell;
+
 use crate::core::{Color, HorizontalAlignment, Point, Rect};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
 use crate::widget::view_widgets::data_grid::ColumnSpec;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+
+/// One painted row: the label as spelled on screen and the visibility it states.
+///
+/// Stored in [`ColumnChooser::row_cache`] so the paint path never re-filters the
+/// columns, re-tokenises one or formats a hidden suffix per frame.
+struct RowSnapshot {
+    label: String,
+    visible: bool,
+}
 
 /// A list of the table's columns with visibility and order controls.
 pub struct ColumnChooser {
@@ -22,6 +33,8 @@ pub struct ColumnChooser {
     hidden: std::collections::HashSet<String>,
     search_text: String,
     allow_reorder: bool,
+    /// The rows to paint, keyed by [`Self::row_revision`].
+    row_cache: RefCell<Option<(u64, Vec<RowSnapshot>)>>,
     /// Emitted with `(token, visible)` when a column is shown or hidden.
     pub column_visibility_changed: Signal1<(String, bool)>,
     /// Emitted with the full token order after a move.
@@ -39,6 +52,7 @@ impl ColumnChooser {
             hidden: std::collections::HashSet::new(),
             search_text: String::new(),
             allow_reorder: true,
+            row_cache: RefCell::new(None),
             column_visibility_changed: Signal1::new(),
             column_order_changed: Signal1::new(),
             chooser_closed: Signal1::new(),
@@ -136,6 +150,67 @@ impl ColumnChooser {
             .collect()
     }
 
+    /// A signature of the state the row list is built from: the column titles in order,
+    /// the hidden tokens and the search text.
+    ///
+    /// The paint compares it against the cached rows, so an untouched chooser reuses them
+    /// instead of re-filtering and re-formatting every frame. It folds bytes rather than
+    /// formatting tokens, so it allocates nothing.
+    fn row_revision(&self) -> u64 {
+        let mut revision = 0xcbf2_9ce4_8422_2325u64;
+        let mut fold = |byte: u8| {
+            revision ^= u64::from(byte);
+            revision = revision.wrapping_mul(0x0000_0100_0000_01b3);
+        };
+        for column in &self.columns {
+            for byte in column.title.as_bytes() {
+                fold(*byte);
+            }
+            fold(0xff);
+        }
+        for token in &self.hidden {
+            for byte in token.as_bytes() {
+                fold(*byte);
+            }
+            fold(0xfe);
+        }
+        for byte in self.search_text.as_bytes() {
+            fold(*byte);
+        }
+        revision
+    }
+
+    /// The rows to paint, rebuilt only when [`Self::row_revision`] changes.
+    fn row_snapshots(&self) -> core::cell::Ref<'_, [RowSnapshot]> {
+        let revision = self.row_revision();
+        let fresh = matches!(
+            self.row_cache.borrow().as_ref(),
+            Some((cached, _)) if *cached == revision
+        );
+        if !fresh {
+            let needle = self.search_text.to_lowercase();
+            let rows = self
+                .columns
+                .iter()
+                .filter(|column| needle.is_empty() || column.title.to_lowercase().contains(&needle))
+                .map(|column| {
+                    let visible = !self.hidden.contains(&column.to_token());
+                    let label = if visible {
+                        column.title.clone()
+                    } else {
+                        std::format!("{} (hidden)", column.title)
+                    };
+                    RowSnapshot { label, visible }
+                })
+                .collect();
+            *self.row_cache.borrow_mut() = Some((revision, rows));
+        }
+        // The cache was filled above; the empty slice keeps the borrow infallible.
+        core::cell::Ref::map(self.row_cache.borrow(), |slot| {
+            slot.as_ref().map_or(&[][..], |(_, rows)| rows.as_slice())
+        })
+    }
+
     /// Dismisses the chooser.
     pub fn close(&mut self) {
         self.chooser_closed.emit(());
@@ -195,22 +270,23 @@ impl Draw for ColumnChooser {
             1,
         );
         let font = crate::widget::metrics::effective_font(self.base.style());
-        let filtered = self.filtered_columns();
-        for (index, column) in filtered.iter().enumerate() {
-            let Some(row) = self.row_rect(index) else {
+        // The rows were filtered, tokenised and formatted once per state change; the loop
+        // below only reads them, so a still frame allocates nothing.
+        let rows = self.row_snapshots();
+        for (index, row) in rows.iter().enumerate() {
+            let Some(row_rect) = self.row_rect(index) else {
                 break;
             };
-            let token = column.to_token();
-            let visible = !self.hidden.contains(&token);
-            if visible {
-                context.fill_rounded_rect(row, 2, surface.blend(&accent, 0.12));
+            if row.visible {
+                context.fill_rounded_rect(row_rect, 2, surface.blend(&accent, 0.12));
             }
-            let label = if visible {
-                column.title.clone()
-            } else {
-                std::format!("{} (hidden)", column.title)
-            };
-            context.draw_text_fitted_cow(row, &label, font, ink, HorizontalAlignment::Left);
+            context.draw_text_fitted_cow(
+                row_rect,
+                &row.label,
+                font,
+                ink,
+                HorizontalAlignment::Left,
+            );
         }
     }
 }

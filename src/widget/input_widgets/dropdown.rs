@@ -30,7 +30,10 @@ use crate::widget::capability::WidgetProperties;
 #[cfg(full_widgets)]
 use crate::widget::companions::{DropDownPopupHost, PopupItem as HostPopupItem};
 use crate::widget::input_widgets::combobox::{neighbour_row, prefix_row, PopupWindow};
-use crate::widget::metrics::{dimensions, effective_font, estimate_text_width, ControlMetrics};
+use crate::widget::metrics::{
+    dimensions, effective_font, estimate_text_width, focus_ring_color, ControlMetrics, FocusRing,
+    FOCUS_RING_WIDTH,
+};
 use crate::widget::{BaseWidget, Draw, IconName, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -488,6 +491,9 @@ impl Dropdown {
         if let Some(index) = index {
             self.highlighted.emit(index);
         }
+        // The mark is painted, so a pointer move that changes it owes a frame just as
+        // `move_highlight` does for the keyboard.
+        self.base.request_redraw();
     }
 
     /// Returns the text of the currently-selected item, or `None` if the list
@@ -995,6 +1001,38 @@ impl WidgetProperties for Dropdown {
     }
 }
 
+impl Dropdown {
+    /// Resolves a press at `pos`: a row of the open list is chosen, a press elsewhere closes
+    /// it, and a press on the closed field opens it.
+    ///
+    /// Lifted out of the press arm so a completed tap takes the same path.
+    fn press_at(&mut self, pos: Point) {
+        if self.expanded {
+            // Clicked on one of the list items?
+            if let Some(idx) = self.hit_test_item(pos) {
+                // A disabled row is not a choice: the press is swallowed (the popup stays
+                // open) rather than selecting a row the user cannot have.
+                if self.is_item_enabled(idx) {
+                    self.set_selected_index(idx);
+                    self.activated.emit(idx);
+                    self.set_expanded(false);
+                }
+                return;
+            }
+
+            // Clicked back on the button header, or outside the control — collapse.
+            self.set_expanded(false);
+        } else {
+            // Collapsed: open the list through the same entry point the keyboard uses, so
+            // the popup grab and the marked row are set here too.
+            let geo = self.geometry();
+            if geo.contains_point(pos) {
+                self.set_expanded(true);
+            }
+        }
+    }
+}
+
 impl EventHandler for Dropdown {
     fn handle_event(&mut self, event: &Event) {
         // A host activation is a shared write, drained before routing so the next frame reflects
@@ -1008,29 +1046,22 @@ impl EventHandler for Dropdown {
 
         match event {
             Event::MousePress { pos, button, .. } if *button == 1 => {
-                if self.expanded {
-                    // Clicked on one of the list items?
-                    if let Some(idx) = self.hit_test_item(*pos) {
-                        // A disabled row is not a choice: the press is swallowed (the popup stays
-                        // open) rather than selecting a row the user cannot have.
-                        if self.is_item_enabled(idx) {
-                            self.set_selected_index(idx);
-                            self.activated.emit(idx);
-                            self.set_expanded(false);
-                        }
-                        return;
-                    }
-
-                    // Clicked back on the button header, or outside the control — collapse.
-                    self.set_expanded(false);
-                } else {
-                    // Collapsed: open the list through the same entry point the keyboard uses, so
-                    // the popup grab and the marked row are set here too.
-                    let geo = self.geometry();
-                    if geo.contains_point(*pos) {
-                        self.set_expanded(true);
-                    }
-                }
+                self.press_at(*pos);
+            }
+            // Touch has no translated press here: contact latches the pressed state and the
+            // completed tap performs the same open/choose/collapse transition as the pointer.
+            #[cfg(feature = "touch")]
+            Event::TouchBegin { pos, .. } => {
+                self.base.set_pressed(self.geometry().contains_point(*pos));
+            }
+            #[cfg(feature = "touch")]
+            event if crate::event::translator::is_touch_cancel(event) => {
+                self.base.set_pressed(false);
+            }
+            #[cfg(feature = "touch")]
+            Event::Tap { pos } => {
+                self.press_at(*pos);
+                self.base.set_pressed(false);
             }
             // Hovering the open list marks the row under the pointer. This is what makes
             // `highlighted` a live signal rather than only a keyboard echo.
@@ -1283,6 +1314,22 @@ impl Draw for Dropdown {
             color,
             IconName::ChevronDown,
         );
+
+        // ── Keyboard focus ring ──
+        //
+        // Around the field band — the part the keyboard operates on — rather than around the
+        // control's laid-out rectangle, which can be taller than the field.
+        if self.base.draws_focus_ring() {
+            let ring = FocusRing::for_control(geo, 0);
+            if ring.is_drawable() {
+                context.draw_rounded_rect_stroke(
+                    ring.rect,
+                    ring.radius,
+                    focus_ring_color(bg.contrast_color()),
+                    FOCUS_RING_WIDTH,
+                );
+            }
+        }
 
         // ── Expanded list ───────────────────────────────────────────────
         if !self.expanded || self.items.is_empty() {

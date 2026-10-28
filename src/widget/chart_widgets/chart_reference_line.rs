@@ -24,6 +24,8 @@
 //! threshold case. [`ReferenceAxis::X`] draws vertical lines at positions on the index /
 //! data axis: a line-chart x value, or a bar-chart category index.
 
+use core::cell::{Ref, RefCell};
+
 use crate::core::{Color, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::impl_widget_property_hooks;
@@ -115,6 +117,15 @@ pub struct ChartReferenceLine {
     x_range: Option<(f64, f64)>,
     /// The line index the pointer currently sits on, so a crossing emits once.
     hovered: Option<usize>,
+    /// The labels painted for the current line set, keyed by `lines_revision`.
+    ///
+    /// `label_text` formats on every call, and the paint used to call it per line per
+    /// frame; a still frame now only indexes this list.
+    label_cache: RefCell<Option<(u64, Vec<String>)>>,
+    /// Bumped whenever the line set or label visibility changes, which keys `label_cache`.
+    lines_revision: u64,
+    /// Reused run list for dashed lines, so the dashed path allocates nothing in steady state.
+    dash_spans_scratch: RefCell<Vec<(i32, i32)>>,
     /// Emitted with `(line index, value)` when the pointer enters a line's hit target.
     pub on_line_crossed: Signal1<(usize, f64)>,
 }
@@ -136,6 +147,9 @@ impl ChartReferenceLine {
             value_range: None,
             x_range: None,
             hovered: None,
+            label_cache: RefCell::new(None),
+            lines_revision: 0,
+            dash_spans_scratch: RefCell::new(Vec::new()),
             on_line_crossed: Signal1::new(),
         }
     }
@@ -143,6 +157,7 @@ impl ChartReferenceLine {
     /// Replaces the line set.
     pub fn set_lines(&mut self, lines: Vec<ReferenceLineSpec>) {
         self.lines = lines;
+        self.lines_revision = self.lines_revision.wrapping_add(1);
         self.hovered = None;
         self.base.request_redraw();
     }
@@ -155,6 +170,7 @@ impl ChartReferenceLine {
     /// Appends one line.
     pub fn add_line(&mut self, spec: ReferenceLineSpec) {
         self.lines.push(spec);
+        self.lines_revision = self.lines_revision.wrapping_add(1);
         self.base.request_redraw();
     }
 
@@ -168,6 +184,7 @@ impl ChartReferenceLine {
             return false;
         }
         self.lines.remove(index);
+        self.lines_revision = self.lines_revision.wrapping_add(1);
         self.hovered = None;
         self.base.request_redraw();
         true
@@ -179,6 +196,7 @@ impl ChartReferenceLine {
             return;
         }
         self.lines.clear();
+        self.lines_revision = self.lines_revision.wrapping_add(1);
         self.hovered = None;
         self.base.request_redraw();
     }
@@ -209,6 +227,7 @@ impl ChartReferenceLine {
             return;
         }
         self.label_visible = visible;
+        self.lines_revision = self.lines_revision.wrapping_add(1);
         self.base.request_redraw();
     }
 
@@ -328,6 +347,25 @@ impl ChartReferenceLine {
         spec.label.clone().unwrap_or_else(|| std::format!("{:.2}", spec.value))
     }
 
+    /// The labels for the current line set, rebuilt only when `lines_revision` moves.
+    ///
+    /// Every entry is aligned with `lines` by index, so the paint reads a label by the
+    /// same index it reads the spec by. An empty slice is returned for the impossible
+    /// unfilled case, which keeps the borrow infallible.
+    fn cached_labels(&self) -> Ref<'_, [String]> {
+        let fresh = matches!(
+            self.label_cache.borrow().as_ref(),
+            Some((revision, _)) if *revision == self.lines_revision
+        );
+        if !fresh {
+            let labels = self.lines.iter().map(|spec| self.label_text(spec)).collect();
+            *self.label_cache.borrow_mut() = Some((self.lines_revision, labels));
+        }
+        Ref::map(self.label_cache.borrow(), |slot| {
+            slot.as_ref().map_or(&[][..], |(_, labels)| labels.as_slice())
+        })
+    }
+
     /// The dash pattern in force: the caller's, or `fallback` when none was supplied.
     ///
     /// The fallback is a stack array owned by the paint site: the default period is two
@@ -358,7 +396,11 @@ impl ChartReferenceLine {
         let horizontal = from.y == to.y;
         let (start, end) = if horizontal { (from.x, to.x) } else { (from.y, to.y) };
         let fallback = [(width * 3).max(1), (width * 2).max(1)];
-        for (run_start, run_end) in dash_spans(start, end, self.resolved_dash(&fallback)) {
+        // The resident scratch is cleared and refilled, so a dashed line allocates nothing
+        // once the list has grown to its longest span count.
+        let mut spans = self.dash_spans_scratch.borrow_mut();
+        dash_spans(start, end, self.resolved_dash(&fallback), &mut spans);
+        for (run_start, run_end) in spans.iter().copied() {
             let (a, b) = if horizontal {
                 (Point::new(run_start, from.y), Point::new(run_end, from.y))
             } else {
@@ -422,15 +464,16 @@ impl ChartReferenceLine {
 /// `pattern` holds inked and blank lengths in pixels, starting with an inked run; it
 /// cycles until the interval is consumed. The returned pairs are in the same direction
 /// as `start → end`. A pattern with no positive run returns no spans, which paints
-/// nothing rather than silently reverting to a solid line.
-fn dash_spans(start: i32, end: i32, pattern: &[u32]) -> Vec<(i32, i32)> {
-    let mut spans = Vec::new();
+/// nothing rather than silently reverting to a solid line. The spans are written into
+/// the caller's `spans` (cleared first) so a dashed paint can reuse one buffer.
+fn dash_spans(start: i32, end: i32, pattern: &[u32], spans: &mut Vec<(i32, i32)>) {
+    spans.clear();
     if pattern.len() < 2 || pattern.iter().all(|length| *length == 0) {
-        return spans;
+        return;
     }
     let total = (end - start).abs();
     if total == 0 {
-        return spans;
+        return;
     }
     let step = if end >= start { 1 } else { -1 };
     let mut consumed = 0i32;
@@ -450,7 +493,6 @@ fn dash_spans(start: i32, end: i32, pattern: &[u32]) -> Vec<(i32, i32)> {
         }
         consumed += length;
     }
-    spans
 }
 
 impl Widget for ChartReferenceLine {
@@ -504,7 +546,9 @@ impl Draw for ChartReferenceLine {
         let width = 1u32;
         let right = plot.x + plot.width as i32;
         let bottom = plot.y + plot.height as i32;
-        for spec in &self.lines {
+        // Built once per line-set revision, then indexed by line; a still frame formats nothing.
+        let labels = if self.label_visible { Some(self.cached_labels()) } else { None };
+        for (index, spec) in self.lines.iter().enumerate() {
             let color = spec.color.unwrap_or_else(|| self.resolved_color());
             match self.axis {
                 ReferenceAxis::Y => {
@@ -520,13 +564,12 @@ impl Draw for ChartReferenceLine {
                         width,
                         spec.dashed,
                     );
-                    if self.label_visible {
-                        let label = self.label_text(spec);
+                    if let Some(label) = labels.as_ref().and_then(|labels| labels.get(index)) {
                         // Above the line when the row is free, below it at the top edge.
                         let label_y = (y - 14).max(plot.y);
                         context.draw_text(
                             Point::new(plot.x + 2, label_y),
-                            &label,
+                            label,
                             effective_font(self.base.style()),
                             color,
                             HorizontalAlignment::Left,
@@ -546,11 +589,10 @@ impl Draw for ChartReferenceLine {
                         width,
                         spec.dashed,
                     );
-                    if self.label_visible {
-                        let label = self.label_text(spec);
+                    if let Some(label) = labels.as_ref().and_then(|labels| labels.get(index)) {
                         context.draw_text(
                             Point::new(x + 2, plot.y + 2),
-                            &label,
+                            label,
                             effective_font(self.base.style()),
                             color,
                             HorizontalAlignment::Left,

@@ -46,6 +46,12 @@ pub struct GridStatusBar {
     filter_active: bool,
     /// Optional caller-supplied text, shown instead of the generated summary.
     text: String,
+    /// Bumped whenever the explicit text changes, so the summary cache can key on it.
+    text_revision: u64,
+    /// The last rendered summary, kept between frames.
+    summary_cache: String,
+    /// The inputs the cached summary was rendered from; `None` until the first render.
+    summary_key: Option<(u64, u64, bool, u64)>,
     /// Emitted when the strip is activated by a click, Enter or Space.
     pub status_clicked: GenericSignal,
 }
@@ -58,6 +64,9 @@ impl GridStatusBar {
             counts: Arc::new(Mutex::new((0, 0))),
             filter_active: false,
             text: String::new(),
+            text_revision: 0,
+            summary_cache: String::new(),
+            summary_key: None,
             status_clicked: GenericSignal::new(),
         }
     }
@@ -126,6 +135,7 @@ impl GridStatusBar {
             return;
         }
         self.text = text;
+        self.text_revision = self.text_revision.wrapping_add(1);
         self.base.request_redraw();
     }
 
@@ -144,10 +154,24 @@ impl GridStatusBar {
         let filter = if self.filter_active { ", filtered" } else { "" };
         format!("{rows}{selection}{filter}")
     }
+
+    /// The painted summary, rebuilt only when a count, the filter flag or the explicit text changes.
+    fn summary_cached(&mut self) -> &str {
+        let (row_count, selected_count) = *lock(&self.counts);
+        let key = (row_count, selected_count, self.filter_active, self.text_revision);
+        if self.summary_key != Some(key) {
+            self.summary_cache = self.summary();
+            self.summary_key = Some(key);
+        }
+        &self.summary_cache
+    }
 }
 
 impl Draw for GridStatusBar {
     fn draw(&mut self, context: &mut RenderContext) {
+        // Refresh the cached summary before the style borrow below pins `self`; the text is only
+        // rebuilt when one of its inputs changed.
+        self.summary_cached();
         let rect = self.geometry();
         let style = self.style();
         let (surface, ink) = surface_ink(style);
@@ -155,7 +179,7 @@ impl Draw for GridStatusBar {
         context.fill_rect(rect, surface);
         context.draw_rect(rect, surface.blend(&ink, 0.18));
 
-        let summary = self.summary();
+        let summary = self.summary_cache.as_str();
         if summary.is_empty() {
             return;
         }
@@ -166,7 +190,7 @@ impl Draw for GridStatusBar {
             rect.height,
         );
         let color = if self.filter_active { accent_color() } else { surface.blend(&ink, 0.7) };
-        context.draw_text_fitted_cow(text_rect, &summary, font, color, HorizontalAlignment::Left);
+        context.draw_text_fitted_cow(text_rect, summary, font, color, HorizontalAlignment::Left);
     }
 }
 

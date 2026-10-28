@@ -21,6 +21,7 @@ use crate::signal::Signal1;
 use crate::widget::view_widgets::data_source::IncrementalTableDataSource;
 use crate::widget::view_widgets::filter_expr::FilterOperator;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use std::cell::RefCell;
 use std::sync::Arc;
 
 /// An incremental find bar bound to a table data source.
@@ -35,6 +36,10 @@ pub struct GridFindBar {
     searchable_columns: Vec<usize>,
     /// The row the last `find_next`/`find_previous` landed on.
     current_match: Option<usize>,
+    /// The prompt painted while the query is empty.
+    placeholder: String,
+    /// The painted prompt/query text, keyed by the query it was built from.
+    display_cache: RefCell<Option<(String, String)>>,
     /// Emitted with the matched row's projection index.
     pub match_found: Signal1<usize>,
     /// Emitted when a search reaches the end without a match.
@@ -56,6 +61,8 @@ impl GridFindBar {
             visible: false,
             searchable_columns: Vec::new(),
             current_match: None,
+            placeholder: "Find…".to_string(),
+            display_cache: RefCell::new(None),
             match_found: Signal1::new(),
             no_match: Signal1::new(),
             closed: Signal1::new(),
@@ -303,12 +310,20 @@ impl Draw for GridFindBar {
             1,
         );
         let font = crate::widget::metrics::effective_font(self.base.style());
-        let label = if self.query.is_empty() { "Find…".to_string() } else { self.query.clone() };
+        let query_empty = self.query.is_empty();
+        // The displayed text changes only with the query, so a still bar reuses the last frame's
+        // `String` instead of cloning the query on every paint.
+        let mut cache = self.display_cache.borrow_mut();
+        if cache.as_ref().is_none_or(|(query, _)| query != &self.query) {
+            let text = if query_empty { self.placeholder.clone() } else { self.query.clone() };
+            *cache = Some((self.query.clone(), text));
+        }
+        let label = cache.as_ref().map(|(_, text)| text.as_str()).unwrap_or_default();
         context.draw_text_fitted_cow(
             Rect::new(rect.x + 6, rect.y, rect.width.saturating_sub(12), rect.height),
-            &label,
+            label,
             font,
-            if self.query.is_empty() { ink.with_alpha(140) } else { ink },
+            if query_empty { ink.with_alpha(140) } else { ink },
             HorizontalAlignment::Left,
         );
     }

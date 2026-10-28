@@ -273,6 +273,15 @@ impl ValidationBubble {
     }
 }
 
+impl ValidationBubble {
+    /// Acknowledges a press on the bubble, which hides it.
+    fn press_at(&mut self, pos: Point) {
+        if self.bubble_rect().contains(pos) {
+            self.hide();
+        }
+    }
+}
+
 impl EventHandler for ValidationBubble {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
@@ -282,9 +291,13 @@ impl EventHandler for ValidationBubble {
         // Any press on the bubble acknowledges it: a message the user has read should not sit over
         // the field they are trying to correct.
         if let Event::MousePress { pos, button: 1, .. } = event {
-            if self.bubble_rect().contains(*pos) {
-                self.hide();
-            }
+            self.press_at(*pos);
+        }
+        // Touch has no translated press here, so contact and the completed tap both acknowledge
+        // the bubble. A cancelled contact deliberately does not: the message was not read.
+        #[cfg(feature = "touch")]
+        if let Event::TouchBegin { pos, .. } | Event::Tap { pos } = event {
+            self.press_at(*pos);
         }
     }
 }

@@ -781,6 +781,42 @@ impl SearchBox {
     fn field_rect(&self) -> Rect {
         ControlMetrics::full_width_band(self.geometry(), dimensions::SEARCH_BOX_FIELD_HEIGHT)
     }
+
+    /// What a primary press at `pos` does: the clear button erases the query, and anywhere else on
+    /// the field focuses it and places the caret / anchors a selection.
+    ///
+    /// Shared by the mouse arm and the touch arms, so a finger and a pointer enter the same state.
+    fn press_with_pointer(&mut self, pos: Point) {
+        // Check if clear button was clicked. The circle is placed from the **drawn
+        // field**, not from the control's rectangle: the two used to be the same
+        // box, so the hit test silently agreed with the ink by accident, and once
+        // the field became a centred band they would have diverged — the X would
+        // have been painted in the field but clickable where the rectangle was.
+        if !self.text.is_empty() {
+            let rect = self.field_rect();
+            let clear_margin = SEARCH_BOX_CLEAR_MARGIN as i32;
+            let clear_btn_size = SEARCH_BOX_CLEAR_BUTTON as i32;
+            let center_y = rect.y + rect.height as i32 / 2;
+            let clear_cx = rect.x + rect.width as i32 - clear_margin - clear_btn_size / 2;
+            let clear_cy = center_y;
+            let dx = pos.x - clear_cx;
+            let dy = pos.y - clear_cy;
+            let clear_radius = clear_btn_size as u32 / 2;
+            // Hit-test within the clear button circle
+            if dx * dx + dy * dy <= (clear_radius as i32 * clear_radius as i32) {
+                self.clear();
+                return;
+            }
+        }
+        // Click on the search box → gain focus and place the caret where it landed.
+        self.set_focused(true);
+        let position = self.byte_index_at_x(pos.x);
+        self.cursor = position;
+        // I-110: a press anchors a selection a drag can extend.
+        self.selection_anchor = Some(position);
+        self.dragging_selection = true;
+        self.base.request_redraw();
+    }
 }
 
 impl Draw for SearchBox {
@@ -1030,6 +1066,23 @@ impl Draw for SearchBox {
                 Color::WHITE,
             );
         }
+
+        // ── Focus ring ──
+        //
+        // Only a keyboard focus draws it: a pointer (or touch) press focuses the box without
+        // claiming visual focus, so no ring appears under the cursor. It follows the field's own
+        // stadium radius, not a rounded-box radius the fill does not use.
+        if self.base.draws_focus_ring() {
+            let ring = crate::widget::metrics::FocusRing::for_control(rect, field_radius);
+            if ring.is_drawable() {
+                context.draw_rounded_rect_stroke(
+                    ring.rect,
+                    ring.radius,
+                    crate::widget::metrics::focus_ring_color(bg_color.contrast_color()),
+                    crate::widget::metrics::FOCUS_RING_WIDTH,
+                );
+            }
+        }
     }
 }
 
@@ -1040,35 +1093,7 @@ impl EventHandler for SearchBox {
         }
         match event {
             Event::MousePress { pos, button, .. } if *button == 1 => {
-                // Check if clear button was clicked. The circle is placed from the **drawn
-                // field**, not from the control's rectangle: the two used to be the same
-                // box, so the hit test silently agreed with the ink by accident, and once
-                // the field became a centred band they would have diverged — the X would
-                // have been painted in the field but clickable where the rectangle was.
-                if !self.text.is_empty() {
-                    let rect = self.field_rect();
-                    let clear_margin = SEARCH_BOX_CLEAR_MARGIN as i32;
-                    let clear_btn_size = SEARCH_BOX_CLEAR_BUTTON as i32;
-                    let center_y = rect.y + rect.height as i32 / 2;
-                    let clear_cx = rect.x + rect.width as i32 - clear_margin - clear_btn_size / 2;
-                    let clear_cy = center_y;
-                    let dx = pos.x - clear_cx;
-                    let dy = pos.y - clear_cy;
-                    let clear_radius = clear_btn_size as u32 / 2;
-                    // Hit-test within the clear button circle
-                    if dx * dx + dy * dy <= (clear_radius as i32 * clear_radius as i32) {
-                        self.clear();
-                        return;
-                    }
-                }
-                // Click on the search box → gain focus and place the caret where it landed.
-                self.set_focused(true);
-                let position = self.byte_index_at_x(pos.x);
-                self.cursor = position;
-                // I-110: a press anchors a selection a drag can extend.
-                self.selection_anchor = Some(position);
-                self.dragging_selection = true;
-                self.base.request_redraw();
+                self.press_with_pointer(*pos);
             }
             Event::MouseMove { pos } => {
                 // I-110: a pointer drag extends the selection the press began.
@@ -1078,6 +1103,33 @@ impl EventHandler for SearchBox {
                 }
             }
             Event::MouseRelease { pos: _, button } if *button == 1 => {
+                self.dragging_selection = false;
+            }
+            // ── Touch ──
+            //
+            // A finger takes the same route the pointer does: the contact focuses the box and
+            // places the caret (or clears the query when it lands on the X), the lift ends the
+            // selection drag, and a withdrawn contact clears the same latch. Without these arms
+            // the control was unreachable on a touch-only host.
+            #[cfg(feature = "touch")]
+            Event::TouchBegin { pos, .. } => {
+                self.press_with_pointer(*pos);
+            }
+            #[cfg(feature = "touch")]
+            Event::TouchEnd { .. } => {
+                self.dragging_selection = false;
+            }
+            #[cfg(feature = "touch")]
+            event if crate::event::translator::is_touch_cancel(event) => {
+                self.dragging_selection = false;
+            }
+            // A resolved tap is the click itself, so a host that reports taps rather than the raw
+            // contact stream still focuses the box and lands the caret where the finger went. The
+            // selection-drag latch is dropped again because a tap is a *completed* gesture: no
+            // lift follows it.
+            #[cfg(feature = "touch")]
+            Event::Tap { pos } => {
+                self.press_with_pointer(*pos);
                 self.dragging_selection = false;
             }
             Event::FocusGained { .. } => {

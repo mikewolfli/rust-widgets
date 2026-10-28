@@ -176,6 +176,8 @@ pub struct WizardDialog {
     validation_message: Option<String>,
     /// Cached navigation slots, keyed by the row's geometry and the action set (G-P17).
     nav_cache: NavCache,
+    /// The painted "Step n of m" line, keyed by the step and the step count it spells.
+    info_text_cache: RefCell<Option<((usize, usize), String)>>,
 }
 
 /// The type of the navigation slots and the key they were built under.
@@ -224,6 +226,7 @@ impl WizardDialog {
             validators: Vec::new(),
             validation_message: None,
             nav_cache: RefCell::new(None),
+            info_text_cache: RefCell::new(None),
         }
     }
 
@@ -1524,8 +1527,14 @@ impl Draw for WizardDialog {
             let well_top = content_rect.y;
             let well_bottom = content_rect.y + content_rect.height as i32;
             let info_font = role_font(style, 11.0);
-            let info_text = format!("Step {} of {}", self.current_step + 1, self.steps.len());
-            let info_metrics = context.measure_text(&info_text, &info_font);
+            let mut info_cache = self.info_text_cache.borrow_mut();
+            let info_key = (self.current_step, self.steps.len());
+            if info_cache.as_ref().is_none_or(|(key, _)| *key != info_key) {
+                let text = format!("Step {} of {}", info_key.0 + 1, info_key.1);
+                *info_cache = Some((info_key, text));
+            }
+            let info_text = info_cache.as_ref().map(|(_, text)| text.as_str()).unwrap_or_default();
+            let info_metrics = context.measure_text(info_text, &info_font);
             let info_h = info_metrics.height.max(1) as i32;
             // Step title in content area
             let title_font = role_font(style, 16.0).with_bold(true);
@@ -1617,7 +1626,7 @@ impl Draw for WizardDialog {
             if both_fit && info_y >= title_top + title_h as i32 + 2 {
                 context.draw_text_fitted_cow(
                     Rect::new(rect.x + 12, info_y, rect.width.saturating_sub(24), info_h as u32),
-                    &info_text,
+                    info_text,
                     &info_font,
                     ink.blend(&surface, 0.45),
                     HorizontalAlignment::Left,

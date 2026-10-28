@@ -34,7 +34,10 @@ use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::input_widgets::shortcut_editor::primary_shortcut_pressed;
 use crate::widget::input_widgets::suggestion_popup::{MatchMode, SuggestionPopup};
-use crate::widget::metrics::{dimensions, effective_font, estimate_text_width, ControlMetrics};
+use crate::widget::metrics::{
+    dimensions, effective_font, estimate_text_width, focus_ring_color, ControlMetrics, FocusRing,
+    FOCUS_RING_WIDTH,
+};
 use crate::widget::{BaseWidget, Draw, IconName, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 use std::cell::RefCell;
@@ -936,6 +939,23 @@ impl Draw for EditableComboBox {
             arrow_icon,
         );
 
+        // ── Keyboard focus ring ──
+        //
+        // Around the field band — the part the keyboard operates on — rather than around the
+        // control's laid-out rectangle, which can be taller than the field, and before the
+        // popup's early return so a focused field always paints its ring.
+        if self.base.draws_focus_ring() {
+            let ring = FocusRing::for_control(rect, 4);
+            if ring.is_drawable() {
+                context.draw_rounded_rect_stroke(
+                    ring.rect,
+                    ring.radius,
+                    focus_ring_color(bg_color.contrast_color()),
+                    FOCUS_RING_WIDTH,
+                );
+            }
+        }
+
         // Draw dropdown if expanded
         if !self.expanded {
             return;
@@ -1013,6 +1033,47 @@ impl Draw for EditableComboBox {
                 item_color,
                 HorizontalAlignment::Left,
             );
+        }
+    }
+}
+
+impl EditableComboBox {
+    /// Resolves a press at `pos`: the field opens/collapses the list, the arrow zone toggles
+    /// it, a popup row commits that row, and a press outside both collapses.
+    fn press_at(&mut self, pos: Point) {
+        let rect = self.geometry();
+
+        // Click on the text field (with arrow zone)
+        if rect.contains_point(pos) {
+            // Check if click is on the arrow area (right side)
+            let arrow_zone_x = rect.x + rect.width as i32 - 24;
+            if pos.x >= arrow_zone_x {
+                // Arrow zone - toggle dropdown
+                self.toggle();
+            } else {
+                // Text field - focus and expand if items exist
+                if !self.expanded && !self.items.is_empty() {
+                    self.expand();
+                } else {
+                    self.toggle();
+                }
+            }
+            return;
+        }
+
+        // Click on a dropdown item
+        if self.expanded {
+            if let Some(row) = self.popup.window_row_at(pos) {
+                if let Some(&index) = self.popup.visible_indices().get(row) {
+                    self.select_index(index);
+                }
+                return;
+            }
+
+            // Click outside dropdown - collapse
+            if !rect.contains_point(pos) {
+                self.collapse();
+            }
         }
     }
 }
@@ -1161,40 +1222,22 @@ impl EventHandler for EditableComboBox {
                 self.editing_finished.emit();
             }
             Event::MousePress { pos, button, .. } if *button == 1 => {
-                let rect = self.geometry();
-
-                // Click on the text field (with arrow zone)
-                if rect.contains_point(*pos) {
-                    // Check if click is on the arrow area (right side)
-                    let arrow_zone_x = rect.x + rect.width as i32 - 24;
-                    if pos.x >= arrow_zone_x {
-                        // Arrow zone - toggle dropdown
-                        self.toggle();
-                    } else {
-                        // Text field - focus and expand if items exist
-                        if !self.expanded && !self.items.is_empty() {
-                            self.expand();
-                        } else {
-                            self.toggle();
-                        }
-                    }
-                    return;
-                }
-
-                // Click on a dropdown item
-                if self.expanded {
-                    if let Some(row) = self.popup.window_row_at(*pos) {
-                        if let Some(&index) = self.popup.visible_indices().get(row) {
-                            self.select_index(index);
-                        }
-                        return;
-                    }
-
-                    // Click outside dropdown - collapse
-                    if !rect.contains_point(*pos) {
-                        self.collapse();
-                    }
-                }
+                self.press_at(*pos);
+            }
+            // Touch has no translated press here: contact latches the pressed state and the
+            // completed tap performs the same open/commit/collapse transition as the pointer.
+            #[cfg(feature = "touch")]
+            Event::TouchBegin { pos, .. } => {
+                self.base.set_pressed(self.geometry().contains_point(*pos));
+            }
+            #[cfg(feature = "touch")]
+            event if crate::event::translator::is_touch_cancel(event) => {
+                self.base.set_pressed(false);
+            }
+            #[cfg(feature = "touch")]
+            Event::Tap { pos } => {
+                self.press_at(*pos);
+                self.base.set_pressed(false);
             }
             Event::Wheel { delta, modifiers } => {
                 if !self.expanded {

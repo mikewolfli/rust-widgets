@@ -18,7 +18,7 @@ use crate::widget::capability::coercion::expect_string;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
-use crate::widget::metrics::role_font;
+use crate::widget::metrics::{focus_ring_color, role_font, FocusRing, FOCUS_RING_WIDTH};
 use crate::widget::text_utils::elide_end;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
@@ -1126,6 +1126,49 @@ impl Draw for ShortcutEditor {
             }
         }
         context.pop_clip();
+
+        // ── Keyboard focus ring ──
+        //
+        // Only a keyboard focus draws it; a pointer press focuses the panel without painting a
+        // ring under the cursor, which is the rule every other control in the crate follows.
+        if self.base.draws_focus_ring() {
+            let ring = FocusRing::for_control(rect, 0);
+            if ring.is_drawable() {
+                context.draw_rounded_rect_stroke(
+                    ring.rect,
+                    ring.radius,
+                    focus_ring_color(panel.contrast_color()),
+                    FOCUS_RING_WIDTH,
+                );
+            }
+        }
+    }
+}
+
+impl ShortcutEditor {
+    /// Resolves a press at `pos`: the filter bar takes focus, a row starts recording that
+    /// binding, and a press outside the panel is ignored.
+    fn press_at(&mut self, pos: Point) {
+        let rect = self.geometry();
+        if !rect.contains_point(pos) {
+            return;
+        }
+        // I-112: a press in the filter bar focuses it; a press on a row enters that
+        // row's capture state.
+        let filter_top = rect.y + 8 + if self.is_capturing() { 20 } else { 0 };
+        if pos.y >= filter_top && pos.y < filter_top + 24 {
+            self.filter_focused = true;
+            self.base.request_redraw();
+            return;
+        }
+        self.filter_focused = false;
+        if let Some(index) = self.hit_row(pos) {
+            if let Some(entry) = self.shortcuts.get(index) {
+                self.capture_id = Some(entry.id.clone());
+                self.capture_keys.clear();
+                self.base.request_redraw();
+            }
+        }
     }
 }
 
@@ -1136,26 +1179,22 @@ impl EventHandler for ShortcutEditor {
         }
         match event {
             Event::MousePress { pos, button, .. } if *button == 1 => {
-                let rect = self.geometry();
-                if !rect.contains_point(*pos) {
-                    return;
-                }
-                // I-112: a press in the filter bar focuses it; a press on a row enters that
-                // row's capture state.
-                let filter_top = rect.y + 8 + if self.is_capturing() { 20 } else { 0 };
-                if pos.y >= filter_top && pos.y < filter_top + 24 {
-                    self.filter_focused = true;
-                    self.base.request_redraw();
-                    return;
-                }
-                self.filter_focused = false;
-                if let Some(index) = self.hit_row(*pos) {
-                    if let Some(entry) = self.shortcuts.get(index) {
-                        self.capture_id = Some(entry.id.clone());
-                        self.capture_keys.clear();
-                        self.base.request_redraw();
-                    }
-                }
+                self.press_at(*pos);
+            }
+            // Touch has no translated press here: contact latches the pressed state and the
+            // completed tap performs the same focus/record transition as the pointer.
+            #[cfg(feature = "touch")]
+            Event::TouchBegin { pos, .. } => {
+                self.base.set_pressed(self.geometry().contains_point(*pos));
+            }
+            #[cfg(feature = "touch")]
+            event if crate::event::translator::is_touch_cancel(event) => {
+                self.base.set_pressed(false);
+            }
+            #[cfg(feature = "touch")]
+            Event::Tap { pos } => {
+                self.press_at(*pos);
+                self.base.set_pressed(false);
             }
             Event::Wheel { delta, modifiers, .. } => {
                 // I-112: wheel scrolls the visible window of rows.

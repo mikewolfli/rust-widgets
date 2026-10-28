@@ -50,6 +50,12 @@ use std::time::{Duration, Instant};
 /// the constant only through the `objc-sys` surface.
 const OBJC_ASSOCIATION_ASSIGN: usize = 0;
 
+/// `OBJC_ASSOCIATION_RETAIN_NONATOMIC` (1): retain the associated object, without atomicity.
+///
+/// Used to give the per-window resize delegate an owner that lives as long as its window
+/// (ENG-C5); AppKit only touches it on the main thread, so nonatomic is sufficient.
+const OBJC_ASSOCIATION_RETAIN_NONATOMIC: usize = 1;
+
 /// `NSRange` in the spelling `ClassDecl::add_method` accepts.
 ///
 /// `cocoa`'s `NSRange` does not implement `objc::Encode`, and both the type (another crate) and
@@ -1965,6 +1971,20 @@ fn retarget_heartbeat_in(timer: id, delay: Duration) {
 /// them from drifting apart (see `platform/linux/platform_impl.rs`'s twin).
 const FRAME_INTERVAL_MS: u64 = crate::platform::types::FRAME_INTERVAL_MS;
 
+/// Association key holding the resize delegate on its window.
+///
+/// `NSWindow.delegate` is a **weak** (`assign`) property, so the window does not own its delegate.
+/// The delegate is attached under this key with a retaining policy instead, which gives it
+/// exactly the lifetime the old comment claimed the window provided (ENG-C5).
+fn resize_delegate_key() -> id {
+    static KEY: OnceLock<usize> = OnceLock::new();
+    let ptr = *KEY.get_or_init(|| {
+        // SAFETY: standard NSString construction; the value lives for the process.
+        unsafe { NSString::alloc(nil).init_str("RustWidgetsResizeDelegate") as id as usize }
+    });
+    ptr as id
+}
+
 /// Installs the resize delegate on `window` and tags it with `widget_id`.
 ///
 /// The frame heartbeat is **not** started here; it lives on the process-wide timer
@@ -1975,8 +1995,10 @@ const FRAME_INTERVAL_MS: u64 = crate::platform::types::FRAME_INTERVAL_MS;
 ///
 /// `window` must be a live `NSWindow` on the AppKit main thread.
 pub(crate) unsafe fn install_resize_delegate(window: id, widget_id: ObjectId) {
-    // The delegate is retained by the window, so a process-lifetime allocation here is
-    // correct: AppKit releases it with the window.
+    // `NSWindow.delegate` does not retain its delegate (it is a weak property), so the `+1`
+    // reference `new` hands back had no owner: every real window leaked one delegate (ENG-C5).
+    // Attaching the delegate to the window as a retained associated object makes its lifetime
+    // match the window, which is what the previous comment assumed AppKit provided.
     let delegate: id = msg_send![window_delegate_class(), new];
     objc_setAssociatedObject(
         delegate as *mut c_void,
@@ -1984,6 +2006,15 @@ pub(crate) unsafe fn install_resize_delegate(window: id, widget_id: ObjectId) {
         widget_id as *mut c_void,
         OBJC_ASSOCIATION_ASSIGN,
     );
+    // Order matters: associate (retains), balance `new`, then hand the weak slot the object that
+    // the association now owns.
+    objc_setAssociatedObject(
+        window as *mut c_void,
+        resize_delegate_key() as *const c_void,
+        delegate as *mut c_void,
+        OBJC_ASSOCIATION_RETAIN_NONATOMIC,
+    );
+    let _: () = msg_send![delegate, release];
     let _: () = msg_send![window, setDelegate: delegate];
 }
 

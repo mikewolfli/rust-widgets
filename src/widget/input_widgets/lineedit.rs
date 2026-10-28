@@ -1736,6 +1736,44 @@ impl LineEdit {
         self.base.request_redraw();
     }
 
+    /// A primary press at `pos`: the clear button owns its corner of the field, and anywhere else
+    /// the press focuses the field and places the caret / anchors the selection.
+    ///
+    /// Shared by the mouse and touch press arms, so a finger enters exactly the state machine a
+    /// pointer does instead of a second copy of it.
+    fn press_with_pointer(&mut self, pos: Point, modifiers: u32) {
+        // The clear button owns its corner of the field and consumes the press before the
+        // caret can move there: a click meant to erase must not also select text.
+        if self.clear_button_hit(pos) {
+            let revision = self.text_revision;
+            // The button is a user gesture, so its erase stays undoable even though the
+            // programmatic `clear()` entry point is a pristine write (I-04).
+            self.apply_text(String::new(), EditOrigin::User);
+            self.modified = true;
+            self.press_streak = 0;
+            self.emit_text_edited_if_revision_moved(revision);
+            return;
+        }
+        // Track a multi-click streak so a third press can select the whole value. The
+        // platform reports a double click separately; the press that precedes it is what
+        // tells this field the streak is still growing.
+        let elapsed = self.clock_ms.wrapping_sub(self.last_press_ms);
+        if self.press_streak > 0 && elapsed <= MULTI_CLICK_WINDOW_MS {
+            self.press_streak = self.press_streak.saturating_add(1);
+        } else {
+            self.press_streak = 1;
+        }
+        self.last_press_ms = self.clock_ms;
+        self.set_focused(true);
+        // A press places the caret where the user aimed and starts a selection.
+        //
+        // `press_at` is the pointer's counterpart to `select_with_modifiers`: it anchors where
+        // the press landed, and a following drag extends without a key being held, because a
+        // drag *is* the gesture that means "extend".
+        let index = self.byte_index_at_x(pos.x);
+        self.press_at(index, crate::shortcut::Modifiers::from_event_bits(modifiers));
+    }
+
     /// Places the caret at `pos` and starts a pointer selection.
     ///
     /// A press with no modifier begins a *new* selection anchored at the pressed character:
@@ -3375,40 +3413,7 @@ impl EventHandler for LineEdit {
             Event::MousePress { pos, button, modifiers, .. }
                 if *button == 1 && self.field_rect().contains_point(*pos) =>
             {
-                // The clear button owns its corner of the field and consumes the press before the
-                // caret can move there: a click meant to erase must not also select text.
-                if self.clear_button_hit(*pos) {
-                    let revision = self.text_revision;
-                    // The button is a user gesture, so its erase stays undoable even though the
-                    // programmatic `clear()` entry point is a pristine write (I-04).
-                    self.apply_text(String::new(), EditOrigin::User);
-                    self.modified = true;
-                    self.press_streak = 0;
-                    self.emit_text_edited_if_revision_moved(revision);
-                    return;
-                }
-                // Track a multi-click streak so a third press can select the whole value. The
-                // platform reports a double click separately; the press that precedes it is what
-                // tells this field the streak is still growing.
-                let elapsed = self.clock_ms.wrapping_sub(self.last_press_ms);
-                if self.press_streak > 0 && elapsed <= MULTI_CLICK_WINDOW_MS {
-                    self.press_streak = self.press_streak.saturating_add(1);
-                } else {
-                    self.press_streak = 1;
-                }
-                self.last_press_ms = self.clock_ms;
-                self.set_focused(true);
-                // A press places the caret where the user aimed and starts a selection.
-                //
-                // Previously a press only focused the field, so the caret stayed wherever it
-                // happened to be — `set_text` leaves it at the end, so clicking into the middle
-                // of an existing value and typing appended instead of inserting, and there was
-                // no way at all to select with the pointer. `press_at` is the pointer's
-                // counterpart to `select_with_modifiers`: it anchors where the press landed,
-                // and a following drag extends without a key being held, because a drag *is*
-                // the gesture that means "extend".
-                let index = self.byte_index_at_x(pos.x);
-                self.press_at(index, crate::shortcut::Modifiers::from_event_bits(*modifiers));
+                self.press_with_pointer(*pos, *modifiers);
             }
             // A double click selects the word under the pointer; a third click in the same streak
             // selects the whole value, which is the convention for single-line fields.
@@ -3439,6 +3444,26 @@ impl EventHandler for LineEdit {
             // A release anywhere ends the gesture, including outside the field: the anchor
             // stays where the press put it so the selection the user made is kept.
             Event::MouseRelease { button, .. } if *button == 1 => {
+                self.end_drag();
+            }
+            // ── Touch ──
+            //
+            // A finger takes the same route the pointer does: the contact places the caret and
+            // anchors the selection, the lift ends the gesture, and a withdrawn contact clears
+            // the same latch. These arms live here rather than in each factory because the
+            // password and email derivations are this control with a different echo mode, so
+            // they inherit touch support. No separate `Tap` arm: a tap is the press plus the
+            // release performed here.
+            #[cfg(feature = "touch")]
+            Event::TouchBegin { pos, .. } if self.field_rect().contains_point(*pos) => {
+                self.press_with_pointer(*pos, 0);
+            }
+            #[cfg(feature = "touch")]
+            Event::TouchEnd { .. } => {
+                self.end_drag();
+            }
+            #[cfg(feature = "touch")]
+            event if crate::event::translator::is_touch_cancel(event) => {
                 self.end_drag();
             }
             _ => { /* Other events are not relevant */ }

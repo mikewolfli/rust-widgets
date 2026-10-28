@@ -602,16 +602,19 @@ fn wrap_paragraph(
     }
 }
 
-/// The byte ranges of the non-space runs in `text`.
+/// The byte ranges of the non-space runs in `text`, as a cursor rather than a `Vec`.
+///
+/// `wrap_paragraph` runs from [`wrap_to_width`], which every wrapping control calls **every
+/// frame**; materialising the runs made each paragraph cost one heap allocation on top of the
+/// result `Vec` (ENG-A5). The scan is the previous one, byte for byte.
 ///
 /// Splitting on ASCII spaces is safe at any byte offset, so no character-boundary
 /// arithmetic is needed here; a run that contains a multi-byte character is still a
 /// whole-character range because its ends are at space positions.
-fn word_ranges(text: &str) -> Vec<Range<usize>> {
+fn word_ranges(text: &str) -> impl Iterator<Item = Range<usize>> + '_ {
     let bytes = text.as_bytes();
-    let mut words = Vec::new();
     let mut cursor = 0usize;
-    while cursor < bytes.len() {
+    core::iter::from_fn(move || {
         while cursor < bytes.len() && bytes[cursor] == b' ' {
             cursor += 1;
         }
@@ -619,11 +622,8 @@ fn word_ranges(text: &str) -> Vec<Range<usize>> {
         while cursor < bytes.len() && bytes[cursor] != b' ' {
             cursor += 1;
         }
-        if start < cursor {
-            words.push(start..cursor);
-        }
-    }
-    words
+        (start < cursor).then_some(start..cursor)
+    })
 }
 
 /// Removes the selected range from `text`, returning the caret position to place.

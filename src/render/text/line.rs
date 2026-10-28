@@ -27,7 +27,7 @@
 //! 4. **Reporting** — the total advance, which is invariant under reordering (a sum), so the
 //!    width a control reserved before the reorder still holds after it.
 
-use crate::compat::{Rc, String, Vec};
+use crate::compat::{Rc, RefCell, String, Vec};
 use crate::core::Font;
 use crate::render::{ShapedText, TextCluster};
 
@@ -53,8 +53,35 @@ pub(crate) use crate::render::grapheme::{is_combining_mark, is_variation_selecto
 /// A callback gives both the traversal without picking a side.
 ///
 /// `buffer` is reused across clusters, so the walk costs one allocation regardless of length.
+///
+/// # Why the buffer is thread-local (ENG-B2)
+///
+/// The walk runs on every `size_hint`/`arrange` measurement and on every shape-cache miss, so the
+/// one allocation above was a per-measurement allocation. The thread-local buffer makes the steady
+/// state allocation-free; a re-entrant call (a `visit` that measures text) finds the buffer
+/// borrowed and falls back to a local one, exactly like `widget::metrics`'s scratch.
 pub(crate) fn for_each_cluster(text: &str, mut visit: impl FnMut(&str, (usize, usize))) {
-    let mut buffer = String::new();
+    let mut done = false;
+    let _ = CLUSTER_TEXT_BUFFER.try_with(|buffer| {
+        let Ok(mut buffer) = buffer.try_borrow_mut() else { return };
+        buffer.clear();
+        walk_clusters(text, &mut buffer, &mut visit);
+        done = true;
+    });
+    if !done {
+        let mut buffer = String::new();
+        walk_clusters(text, &mut buffer, &mut visit);
+    }
+}
+
+thread_local! {
+    /// Reused cluster text buffer for [`for_each_cluster`] (ENG-B2).
+    #[allow(clippy::missing_const_for_thread_local)]
+    static CLUSTER_TEXT_BUFFER: RefCell<String> = RefCell::new(String::new());
+}
+
+/// The clustering walk itself, writing through a caller-held buffer.
+fn walk_clusters(text: &str, buffer: &mut String, visit: &mut impl FnMut(&str, (usize, usize))) {
     let mut start = 0usize;
     for (index, scalar) in text.char_indices() {
         // A scalar joins the previous cluster when the latter is still open and either it ends
@@ -69,7 +96,7 @@ pub(crate) fn for_each_cluster(text: &str, mut visit: impl FnMut(&str, (usize, u
             buffer.push(scalar);
         } else {
             if !buffer.is_empty() {
-                visit(&buffer, (start, index));
+                visit(buffer, (start, index));
                 buffer.clear();
             }
             start = index;
@@ -77,7 +104,7 @@ pub(crate) fn for_each_cluster(text: &str, mut visit: impl FnMut(&str, (usize, u
         }
     }
     if !buffer.is_empty() {
-        visit(&buffer, (start, text.len()));
+        visit(buffer, (start, text.len()));
     }
 }
 

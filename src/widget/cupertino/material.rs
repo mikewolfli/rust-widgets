@@ -548,7 +548,11 @@ impl Draw for MaterialSnackbar {
             // The message takes the **effective font** at its role size, so the theme family and the
             // user's text scale reach it (D09-STYLE-01).
             let font = role_font(style, 14.0);
-            let metrics = context.measure_text(&self.message, &font);
+            let metrics = crate::widget::base_widgets::measure_cache::measure_text(
+                context,
+                &self.message,
+                &font,
+            );
 
             let text_x = bar_rect.x + 16;
             // Centre on the bar. The origin is the glyph box's top edge, so the offset is half
@@ -568,7 +572,11 @@ impl Draw for MaterialSnackbar {
         // ── Action text (right side, if non-empty) ──
         if !self.action_text.is_empty() {
             let action_font = role_font(style, 14.0).with_bold(true);
-            let metrics = context.measure_text(&self.action_text, &action_font);
+            let metrics = crate::widget::base_widgets::measure_cache::measure_text(
+                context,
+                &self.action_text,
+                &action_font,
+            );
 
             let action_x = bar_rect.x + bar_rect.width as i32 - metrics.width as i32 - 16;
             // The hit region is the measured ink plus padding, cached for the event path.
@@ -782,6 +790,8 @@ pub struct MaterialNavigationRail {
     header_widget: Option<crate::compat::Box<dyn Widget>>,
     /// Whether each destination paints its caption.
     label_mode: NavigationRailLabelMode,
+    /// The badge captions, rebuilt only when an item's badge value changes.
+    badge_texts: crate::compat::RefCell<Option<(u64, Vec<String>)>>,
 }
 
 impl MaterialNavigationRail {
@@ -797,6 +807,7 @@ impl MaterialNavigationRail {
             current_changed: Signal1::new(),
             header_widget: None,
             label_mode: NavigationRailLabelMode::IconAndLabel,
+            badge_texts: crate::compat::RefCell::new(None),
         }
     }
 
@@ -939,6 +950,22 @@ impl MaterialNavigationRail {
         }
         self.base.request_layout();
         self.base.request_redraw();
+    }
+
+    /// A fingerprint of the item badges, used to decide when the captions must be rebuilt.
+    fn badge_key(&self) -> u64 {
+        let mut hash = 0xcbf2_9ce4_8422_2325u64;
+        let mut mix = |value: u64| {
+            hash = (hash ^ value).wrapping_mul(0x0000_0100_0000_01b3);
+        };
+        mix(self.items.len() as u64);
+        for item in &self.items {
+            mix(match item.badge {
+                Some(badge) => (u64::from(badge) << 1) | 1,
+                None => 0,
+            });
+        }
+        hash
     }
 
     /// The header slot, when one is installed.
@@ -1139,6 +1166,26 @@ impl Draw for MaterialNavigationRail {
         let label_font = role_font(style, 12.0);
         let items_top = self.items_top();
 
+        // Badge captions are rebuilt only when a badge value changes, so a still frame renders
+        // no badge text at all.
+        let badge_key = self.badge_key();
+        {
+            let mut cache = self.badge_texts.borrow_mut();
+            if cache.as_ref().map(|(key, _)| *key) != Some(badge_key) {
+                let mut texts = Vec::with_capacity(self.items.len());
+                for item in &self.items {
+                    let mut text = String::new();
+                    if let Some(badge) = item.badge {
+                        use core::fmt::Write as _;
+                        let _ = write!(text, "{badge}");
+                    }
+                    texts.push(text);
+                }
+                *cache = Some((badge_key, texts));
+            }
+        }
+        let badge_texts = self.badge_texts.borrow();
+
         for (i, item) in self.items.iter().enumerate() {
             let item_y = items_top + (i as u32 * item_height) as i32;
             let is_selected = i == self.selected_index;
@@ -1207,13 +1254,17 @@ impl Draw for MaterialNavigationRail {
             // ── Badge ──
             // A count capsule at the icon's trailing top corner, on the same role colours the
             // icon uses so it reads as part of the same destination.
-            if let Some(badge) = item.badge {
-                let mut text = String::new();
-                {
-                    use core::fmt::Write as _;
-                    let _ = write!(text, "{badge}");
-                }
-                let metrics = context.measure_text(&text, &label_font);
+            if item.badge.is_some() {
+                let text = badge_texts
+                    .as_ref()
+                    .and_then(|(_, texts)| texts.get(i))
+                    .map(String::as_str)
+                    .unwrap_or("");
+                let metrics = crate::widget::base_widgets::measure_cache::measure_text(
+                    context,
+                    text,
+                    &label_font,
+                );
                 let width = (metrics.width + 8).max(14);
                 let height = metrics.height.max(12);
                 let badge_rect = Rect::new(
@@ -1225,7 +1276,7 @@ impl Draw for MaterialNavigationRail {
                 context.fill_rounded_rect(badge_rect, height / 2, primary);
                 context.draw_text_fitted_cow(
                     badge_rect,
-                    &text,
+                    text,
                     &label_font,
                     primary.contrast_color(),
                     HorizontalAlignment::Center,
@@ -1237,7 +1288,11 @@ impl Draw for MaterialNavigationRail {
             // so `item_y + 44 + height / 2` put every label half a line low.
             if self.label_mode == NavigationRailLabelMode::IconAndLabel {
                 let label_color = if is_selected { primary } else { secondary };
-                let label_metrics = context.measure_text(&item.label, &label_font);
+                let label_metrics = crate::widget::base_widgets::measure_cache::measure_text(
+                    context,
+                    &item.label,
+                    &label_font,
+                );
                 let label_band = Rect::new(
                     rect.x + 4,
                     item_y + 44,

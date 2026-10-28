@@ -102,6 +102,11 @@ struct ButtonHintKey {
     icon_position: IconPosition,
     /// The metrics profile whose button floor and padding decide the answer.
     profile: ControlMetricsProfile,
+    /// The declared shortcut, whose formatted text the draw-time hint caches (WGT-F7).
+    ///
+    /// Part of the same key so a shortcut change invalidates both derived values at once; the
+    /// intrinsic-size answer does not depend on it, so a shortcut change merely re-measures.
+    shortcut: Option<crate::shortcut::Shortcut>,
 }
 /// Button widget for clickable actions.
 ///
@@ -163,6 +168,13 @@ pub struct Button {
     /// borrow is confined to one lookup and one store, and nothing called from
     /// [`Button::implicit_size`] can reach this control, so a nested borrow cannot occur.
     hint_cache: RefCell<Option<(ButtonHintKey, Size)>>,
+    /// The cached draw-time shortcut hint: its key, the formatted text and the font it was
+    /// formatted for (WGT-F7).
+    ///
+    /// `format_shortcut` builds a `String` and `with_size` a `Font`; both were rebuilt on every
+    /// frame a button with a shortcut was painted. The key is the one [`Button::implicit_size`]
+    /// uses, so a text/font/profile change invalidates both caches together.
+    shortcut_hint_cache: RefCell<Option<(ButtonHintKey, String, Font)>>,
     /// The attached drop-down menu's rows, when the `full_widgets` surface is built.
     ///
     /// A push button that owns a menu is the reference toolkit's `setMenu`: the menu is part of
@@ -286,6 +298,7 @@ impl Button {
             auto_repeat: AutoRepeat::new(),
             text_revision: 0,
             hint_cache: RefCell::new(None),
+            shortcut_hint_cache: RefCell::new(None),
             #[cfg(full_widgets)]
             menu_items: Vec::new(),
             #[cfg(full_widgets)]
@@ -456,6 +469,7 @@ impl Button {
             icon_size: self.icon_size,
             icon_position: self.icon_position,
             profile: active_profile(),
+            shortcut: self.shortcut.clone(),
         }
     }
 
@@ -466,6 +480,7 @@ impl Button {
     /// releases the cached `Font` reference when a control stops using its icon.
     fn invalidate_hint(&self) {
         let _ = self.hint_cache.replace(None);
+        let _ = self.shortcut_hint_cache.replace(None);
     }
 
     /// Measures the intrinsic size from scratch; the slow path behind [`Button::implicit_size`].
@@ -913,6 +928,11 @@ impl Button {
         if previous != current {
             self.state_changed.emit(current);
             self.base.request_redraw();
+            // A state change is also a change a screen reader should hear about (ENG-A4).
+            #[cfg(not(alloc_frugal))]
+            if let Some(id) = crate::widget::runtime::registry_id_of(self.base.id()) {
+                crate::widget::a11y_submit::submit_state_changed(id);
+            }
         }
     }
     /// Sets button text.
@@ -2336,7 +2356,7 @@ impl Draw for Button {
         } else {
             let interactive = match state {
                 ButtonState::Pressed => bg,
-                _ => bg.blend(&bg.contrast_color(), 0.22),
+                _ => bg.blend(&bg.contrast_color(), crate::style::HOVER_FILL_BLEND),
             };
             bg.blend(&interactive, progress)
         };
@@ -2381,7 +2401,7 @@ impl Draw for Button {
                     Color::BLACK,
                 );
             } else if progress > 0.0 {
-                let interactive = bg.blend(&bg.contrast_color(), 0.22);
+                let interactive = bg.blend(&bg.contrast_color(), crate::style::HOVER_FILL_BLEND);
                 context.fill_rounded_rect(rect, br, interactive);
             }
             if let (Some(color), Some(width)) = (style.border_color, style.border_width) {
@@ -2556,9 +2576,21 @@ impl Draw for Button {
         // button's own centred caption. `None` paints nothing, so the historical picture is
         // unchanged.
         if let Some(shortcut) = self.shortcut.as_ref() {
-            let hint = shortcut.format_shortcut();
+            // The formatted caption and its font come from the cache keyed by the same inputs as
+            // the intrinsic-size hint (WGT-F7); a hit costs a clone of a shared font name.
             let base_font = effective_font(style);
-            let hint_font = base_font.with_size((base_font.size() * 0.75).max(6.0));
+            let key = self.hint_key(base_font);
+            let cached = (*self.shortcut_hint_cache.borrow()).clone();
+            let (hint, hint_font) = match cached {
+                Some((cached_key, text, font)) if cached_key == key => (text, font),
+                _ => {
+                    let text = shortcut.format_shortcut();
+                    let font = base_font.with_size((base_font.size() * 0.75).max(6.0));
+                    *self.shortcut_hint_cache.borrow_mut() =
+                        Some((key, text.clone(), font.clone()));
+                    (text, font)
+                }
+            };
             let pad = dimensions::BUTTON_PADDING_H as i32 / 2;
             let line = context.text_line(rect, &hint_font);
             let band = Rect::new(

@@ -339,6 +339,45 @@ impl InplaceEditor {
         )
     }
 
+    /// A primary press on the field: starts an edit when the trigger allows it, then places the
+    /// caret and anchors the selection where the press landed.
+    ///
+    /// Shared by the mouse and touch press arms, so a finger enters exactly the same state a
+    /// pointer does instead of a second copy of it. `event` is the press being handled, which the
+    /// "no trigger" branch hands back to the base widget unchanged.
+    fn press_on_field(&mut self, event: &Event, pos: Point, modifiers: u32) {
+        if !self.is_editing {
+            if self.edit_triggers.contains(EditTriggers::SINGLE_CLICK) {
+                self.start_edit();
+            } else {
+                self.base.handle_event(event);
+                return;
+            }
+        }
+        let shift = crate::shortcut::Modifiers::from_event_bits(modifiers)
+            .contains(crate::shortcut::Modifiers::SHIFT);
+        let index = self.char_index_at_x(pos.x);
+        if !shift {
+            self.selection_anchor = Some(index);
+        }
+        self.cursor_position = index;
+        self.dragging_selection = !shift;
+        self.base.request_redraw();
+    }
+
+    /// Ends a pointer gesture the press began, collapsing a zero-width selection.
+    ///
+    /// Shared by the mouse release arm and the touch lift / cancel arms.
+    fn release_pointer(&mut self) {
+        if self.dragging_selection {
+            self.dragging_selection = false;
+            if self.selection_anchor == Some(self.cursor_position) {
+                self.selection_anchor = None;
+            }
+            self.base.request_redraw();
+        }
+    }
+
     /// Inserts a character at the cursor position.
     fn insert_char(&mut self, c: char) {
         if c == '\u{7f}' {
@@ -891,6 +930,26 @@ impl Draw for InplaceEditor {
                 HorizontalAlignment::Left,
             );
         }
+
+        // ── Focus ring ──
+        //
+        // Only a keyboard focus draws it: a pointer (or touch) press focuses the editor without
+        // claiming visual focus, so no ring appears under the cursor. Radius from the style, which
+        // is what both the editing and the display face are stroked with.
+        if self.base.draws_focus_ring() {
+            let ring = crate::widget::metrics::FocusRing::for_control(
+                rect,
+                style.border_radius.unwrap_or(0),
+            );
+            if ring.is_drawable() {
+                context.draw_rounded_rect_stroke(
+                    ring.rect,
+                    ring.radius,
+                    crate::widget::metrics::focus_ring_color(surface.contrast_color()),
+                    crate::widget::metrics::FOCUS_RING_WIDTH,
+                );
+            }
+        }
     }
 }
 
@@ -923,23 +982,7 @@ impl EventHandler for InplaceEditor {
             Event::MousePress { pos, button, modifiers, .. }
                 if *button == 1 && self.field_rect().contains_point(*pos) =>
             {
-                if !self.is_editing {
-                    if self.edit_triggers.contains(EditTriggers::SINGLE_CLICK) {
-                        self.start_edit();
-                    } else {
-                        self.base.handle_event(event);
-                        return;
-                    }
-                }
-                let shift = crate::shortcut::Modifiers::from_event_bits(*modifiers)
-                    .contains(crate::shortcut::Modifiers::SHIFT);
-                let index = self.char_index_at_x(pos.x);
-                if !shift {
-                    self.selection_anchor = Some(index);
-                }
-                self.cursor_position = index;
-                self.dragging_selection = !shift;
-                self.base.request_redraw();
+                self.press_on_field(event, *pos, *modifiers);
             }
             Event::MouseMove { pos } => {
                 if self.dragging_selection {
@@ -948,13 +991,26 @@ impl EventHandler for InplaceEditor {
                 }
             }
             Event::MouseRelease { button, .. } if *button == 1 => {
-                if self.dragging_selection {
-                    self.dragging_selection = false;
-                    if self.selection_anchor == Some(self.cursor_position) {
-                        self.selection_anchor = None;
-                    }
-                    self.base.request_redraw();
-                }
+                self.release_pointer();
+            }
+            // ── Touch ──
+            //
+            // A finger takes the same route the pointer does: the contact starts the edit (when a
+            // single click is the trigger) and places the caret, the lift ends the gesture, and a
+            // withdrawn contact clears the same latch. Without these arms the editor was
+            // unreachable on a touch-only host. No separate `Tap` arm: a tap is the press plus the
+            // release performed here.
+            #[cfg(feature = "touch")]
+            Event::TouchBegin { pos, .. } if self.field_rect().contains_point(*pos) => {
+                self.press_on_field(event, *pos, 0);
+            }
+            #[cfg(feature = "touch")]
+            Event::TouchEnd { .. } => {
+                self.release_pointer();
+            }
+            #[cfg(feature = "touch")]
+            event if crate::event::translator::is_touch_cancel(event) => {
+                self.release_pointer();
             }
             Event::KeyPress { key, modifiers } => {
                 if !self.is_editing {

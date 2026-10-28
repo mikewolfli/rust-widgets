@@ -19,7 +19,10 @@ use crate::widget::capability::WidgetProperties;
 use crate::widget::menu_toolbar::menu_button::{
     draw_menu_panel, menu_item_rect, menu_panel_rect, MenuArrowType, MenuButtonPopup, MenuItem,
 };
-use crate::widget::metrics::{dimensions, effective_font, estimate_text_width, ControlMetrics};
+use crate::widget::metrics::{
+    dimensions, effective_font, estimate_text_width, focus_ring_color, ControlMetrics, FocusRing,
+    FOCUS_RING_WIDTH,
+};
 use crate::widget::{BaseWidget, Draw, IconSource, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 /// Toggle button state enumeration.
@@ -824,8 +827,13 @@ impl Widget for ToggleButton {
         self.sync_group_registration();
         self.base.request_redraw();
         // `Disabled` is one of the five states, so an enabled change is a state change and must
-        // be announced through the same signal every other state transition uses (B-008).
+        // be announced through the same signal every other state transition uses (B-008) and
+        // through the accessibility pump (ENG-A4).
         self.state_changed.emit(self.state());
+        #[cfg(not(alloc_frugal))]
+        if let Some(id) = crate::widget::runtime::registry_id_of(self.base.id()) {
+            crate::widget::a11y_submit::submit_state_changed(id);
+        }
     }
 
     /// The button and its open menu accept the pointer.
@@ -1275,7 +1283,7 @@ impl Draw for ToggleButton {
                 let interactive = if state == ToggleButtonState::Pressed {
                     resting
                 } else {
-                    resting.blend(&resting.contrast_color(), 0.22)
+                    resting.blend(&resting.contrast_color(), crate::style::HOVER_FILL_BLEND)
                 };
                 resting.blend(&interactive, progress)
             }
@@ -1327,6 +1335,22 @@ impl Draw for ToggleButton {
                 border_color,
                 border_width,
             );
+        }
+
+        // ── Keyboard focus ring ──
+        //
+        // The derived `Focused` state had no ink of its own, so only a keyboard focus draws a
+        // ring; a pointer press focuses without painting one under the cursor.
+        if self.base.draws_focus_ring() {
+            let ring = FocusRing::for_control(rect, 0);
+            if ring.is_drawable() {
+                context.draw_rounded_rect_stroke(
+                    ring.rect,
+                    ring.radius,
+                    focus_ring_color(bg_color.contrast_color()),
+                    FOCUS_RING_WIDTH,
+                );
+            }
         }
 
         // ── Icon, arrow and text ──
@@ -1547,6 +1571,23 @@ impl crate::event::EventHandler for ToggleButton {
                 self.set_pressed(false);
             }
             crate::event::Event::FocusLost => {
+                self.set_pressed(false);
+            }
+            // A touch has no translated press/release here, so the same latch and commit are
+            // driven directly. `Tap` is the completed gesture, like the release arm above.
+            #[cfg(feature = "touch")]
+            crate::event::Event::TouchBegin { pos, .. } => {
+                self.set_pressed(self.base.contains_point_with_touch_expansion(*pos));
+            }
+            #[cfg(feature = "touch")]
+            event if crate::event::translator::is_touch_cancel(event) => {
+                self.set_pressed(false);
+            }
+            #[cfg(feature = "touch")]
+            crate::event::Event::Tap { pos } => {
+                if self.base.contains_point_with_touch_expansion(*pos) {
+                    self.toggle();
+                }
                 self.set_pressed(false);
             }
             // Space and Enter activate a tool button, matching the push button's contract.

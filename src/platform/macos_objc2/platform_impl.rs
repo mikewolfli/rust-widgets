@@ -1103,6 +1103,14 @@ impl Platform for MacOSObjc2Platform {
             }
         }
 
+        // The accessibility table holds a raw `NSView` pointer per widget, registered when the
+        // canvas was created (`native.rs`). Without this removal the entry outlives the view's
+        // deallocation, so any late name/value notification dereferences a dangling pointer
+        // (ENG-C6). Dropped before the logical record, at the same point the cocoa backend drops
+        // its registration.
+        #[cfg(feature = "macos")]
+        crate::platform::accessibility::macos_objc2::bridge().unregister_handle(widget_id);
+
         let existed = self.state.destroy_widget(widget_id);
 
         // Drop every bookkeeping entry that names this widget, including any queued

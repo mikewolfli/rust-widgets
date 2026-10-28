@@ -2168,6 +2168,8 @@ pub struct AspectRatio {
     base: BaseWidget,
     content: Content,
     ratio: f32,
+    /// The ratio caption, rebuilt by [`AspectRatio::set_ratio`] rather than every frame (G-P16).
+    ratio_label_cache: String,
     respect_parent: bool,
     forwarding: ContentForwarding,
 }
@@ -2179,6 +2181,7 @@ impl AspectRatio {
             base: BaseWidget::new(WidgetKind::AspectRatio, geometry, "AspectRatio"),
             content: Content::new(),
             ratio: DEFAULT_ASPECT_RATIO,
+            ratio_label_cache: ratio_label(DEFAULT_ASPECT_RATIO),
             respect_parent: true,
             forwarding: ContentForwarding::default(),
         }
@@ -2250,6 +2253,7 @@ impl AspectRatio {
             return Ok(());
         }
         self.ratio = ratio;
+        self.ratio_label_cache = ratio_label(ratio);
         self.base.request_layout();
         self.base.request_redraw();
         Ok(())
@@ -2425,7 +2429,7 @@ fn paint_ratio_guides(
     base: &BaseWidget,
     role: &str,
     content: Rect,
-    ratio: f32,
+    label: &str,
 ) {
     if content.width == 0 || content.height == 0 {
         return;
@@ -2493,7 +2497,7 @@ fn paint_ratio_guides(
     );
     ctx.draw_text_line_cow(
         caption_rect,
-        &ratio_label(ratio),
+        label,
         &palette.font,
         palette.ink.with_alpha_f32(0.8),
         HorizontalAlignment::Left,
@@ -2509,7 +2513,7 @@ impl Draw for AspectRatio {
         // The guides announce the shape the box bounds; a mounted control covers them, so they are
         // only painted for the placeholder spellings.
         if self.content.child.is_none() {
-            paint_ratio_guides(ctx, &self.base, "aspect_ratio", content, self.ratio);
+            paint_ratio_guides(ctx, &self.base, "aspect_ratio", content, &self.ratio_label_cache);
         }
     }
 }

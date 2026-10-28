@@ -718,6 +718,39 @@ fn trim_trailing_zero(value: f32) -> String {
     }
 }
 
+impl Rating {
+    /// Commits the star under `pos`.
+    ///
+    /// This is the one state transition a pointer release makes, lifted out so the touch tap
+    /// takes the same path instead of re-deriving the half-step and toggle rules.
+    fn commit_at(&mut self, pos: Point) {
+        // The hit test is the **drawn geometry**: the star row's own band, so the
+        // clickable area and the ink are the same object. The same helper drives the
+        // hover preview, so the star highlighted and the star committed cannot differ.
+        let Some(index) = self.star_index_at(pos) else {
+            return;
+        };
+        if self.allow_half_step {
+            // The horizontal position inside the star decides the half step. This is the
+            // fraction the painter already uses to fill the star, so what is drawn and
+            // what is committed are the same quantity.
+            let fraction = self
+                .star_cell(index)
+                .map(|cell| ((pos.x - cell.x) as f32 / cell.width.max(1) as f32).clamp(0.0, 1.0))
+                .unwrap_or(1.0);
+            let exact = index as f32 + if fraction < 0.5 { 0.5 } else { 1.0 };
+            self.set_rating_exact(exact);
+            return;
+        }
+        // Clicking the same star as the current rating toggles between that star and
+        // clearing; any other star sets that many. Compared against the whole-star
+        // projection so a 4.5 rating still toggles its fourth star off rather than
+        // being treated as a fifth.
+        let new_rating = if self.rating() == index + 1 { index } else { index + 1 };
+        self.set_rating(new_rating);
+    }
+}
+
 impl EventHandler for Rating {
     fn handle_event(&mut self, event: &Event) {
         // A disabled or read-only control consumes nothing, so the base state stays
@@ -741,32 +774,24 @@ impl EventHandler for Rating {
                 if *button != 1 {
                     return;
                 }
-                // The hit test is the **drawn geometry**: the star row's own band, so the
-                // clickable area and the ink are the same object. The same helper drives the
-                // hover preview, so the star highlighted and the star committed cannot differ.
-                let Some(index) = self.star_index_at(*pos) else {
-                    return;
-                };
-                if self.allow_half_step {
-                    // The horizontal position inside the star decides the half step. This is the
-                    // fraction the painter already uses to fill the star, so what is drawn and
-                    // what is committed are the same quantity.
-                    let fraction = self
-                        .star_cell(index)
-                        .map(|cell| {
-                            ((pos.x - cell.x) as f32 / cell.width.max(1) as f32).clamp(0.0, 1.0)
-                        })
-                        .unwrap_or(1.0);
-                    let exact = index as f32 + if fraction < 0.5 { 0.5 } else { 1.0 };
-                    self.set_rating_exact(exact);
-                    return;
-                }
-                // Clicking the same star as the current rating toggles between that star and
-                // clearing; any other star sets that many. Compared against the whole-star
-                // projection so a 4.5 rating still toggles its fourth star off rather than
-                // being treated as a fifth.
-                let new_rating = if self.rating() == index + 1 { index } else { index + 1 };
-                self.set_rating(new_rating);
+                self.commit_at(*pos);
+            }
+            // A touch drives the same preview and commit as the pointer: contact previews the
+            // star under the finger, and the completed tap commits it through `commit_at`.
+            #[cfg(feature = "touch")]
+            Event::TouchBegin { pos, .. } => {
+                self.update_hover_preview(*pos);
+            }
+            #[cfg(feature = "touch")]
+            event if crate::event::translator::is_touch_cancel(event) => {
+                self.clear_hover_preview();
+                self.request_frame_repaint(None);
+            }
+            #[cfg(feature = "touch")]
+            Event::Tap { pos } => {
+                self.clear_hover_preview();
+                self.commit_at(*pos);
+                self.request_frame_repaint(None);
             }
             Event::KeyPress { key, .. } => match *key {
                 key_codes::LEFT => {

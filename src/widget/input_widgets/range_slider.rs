@@ -1087,6 +1087,49 @@ impl RangeSlider {
     }
 }
 
+impl RangeSlider {
+    /// Starts the pointer gesture at `pos`, grabbing the nearer handle (or the one under the
+    /// pointer) and committing a trough click to it.
+    fn press_at(&mut self, pos: Point) {
+        let rect = self.geometry();
+        // A press inside the track commits the nearest handle to that point and starts
+        // dragging it. Without this arm a click away from a handle did nothing, so the
+        // control had no way to jump a bound to a position — every move required
+        // grabbing an 8 px disc first.
+        if self.is_handle_hit(pos, &rect, false) {
+            self.dragging = Some(false); // upper handle
+            self.set_active_handle(false);
+        } else if self.is_handle_hit(pos, &rect, true) {
+            self.dragging = Some(true); // lower handle
+            self.set_active_handle(true);
+        } else {
+            let pixel = match self.orientation {
+                RangeSliderOrientation::Horizontal => pos.x,
+                RangeSliderOrientation::Vertical => pos.y,
+            };
+            let raw_value = self.pixel_to_value(pixel, &rect);
+            let lower_distance = (raw_value - self.lower_value).abs();
+            let upper_distance = (raw_value - self.upper_value).abs();
+            let lower = lower_distance <= upper_distance;
+            // The handle that is nearer is the one a user means, and it is the one the
+            // subsequent drag moves.
+            if lower {
+                self.set_lower_value(raw_value);
+            } else {
+                self.set_upper_value(raw_value);
+            }
+            self.set_active_handle(lower);
+            self.dragging = Some(lower);
+        }
+        self.set_focused(true);
+    }
+
+    /// Ends a gesture: the next pointer move no longer drags a handle.
+    fn release_handles(&mut self) {
+        self.dragging = None;
+    }
+}
+
 impl EventHandler for RangeSlider {
     fn handle_event(&mut self, event: &Event) {
         if !self.base.is_enabled() {
@@ -1094,40 +1137,23 @@ impl EventHandler for RangeSlider {
         }
         match event {
             Event::MousePress { pos, button, .. } if *button == 1 => {
-                let rect = self.geometry();
-                // A press inside the track commits the nearest handle to that point and starts
-                // dragging it. Without this arm a click away from a handle did nothing, so the
-                // control had no way to jump a bound to a position — every move required
-                // grabbing an 8 px disc first.
-                if self.is_handle_hit(*pos, &rect, false) {
-                    self.dragging = Some(false); // upper handle
-                    self.set_active_handle(false);
-                } else if self.is_handle_hit(*pos, &rect, true) {
-                    self.dragging = Some(true); // lower handle
-                    self.set_active_handle(true);
-                } else {
-                    let pixel = match self.orientation {
-                        RangeSliderOrientation::Horizontal => pos.x,
-                        RangeSliderOrientation::Vertical => pos.y,
-                    };
-                    let raw_value = self.pixel_to_value(pixel, &rect);
-                    let lower_distance = (raw_value - self.lower_value).abs();
-                    let upper_distance = (raw_value - self.upper_value).abs();
-                    let lower = lower_distance <= upper_distance;
-                    // The handle that is nearer is the one a user means, and it is the one the
-                    // subsequent drag moves.
-                    if lower {
-                        self.set_lower_value(raw_value);
-                    } else {
-                        self.set_upper_value(raw_value);
-                    }
-                    self.set_active_handle(lower);
-                    self.dragging = Some(lower);
-                }
-                self.set_focused(true);
+                self.press_at(*pos);
             }
             Event::MouseRelease { pos: _, button } if *button == 1 => {
-                self.dragging = None;
+                self.release_handles();
+            }
+            // Touch drives the same handle grab and release without a translated mouse gesture.
+            #[cfg(feature = "touch")]
+            Event::TouchBegin { pos, .. } => {
+                self.press_at(*pos);
+            }
+            #[cfg(feature = "touch")]
+            event if crate::event::translator::is_touch_cancel(event) => {
+                self.release_handles();
+            }
+            #[cfg(feature = "touch")]
+            Event::Tap { .. } => {
+                self.release_handles();
             }
             // A press whose release lands outside the widget never reaches the arm
             // above: the runtime's hit-test returns `None` for a point outside every

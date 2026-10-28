@@ -973,6 +973,83 @@ pub enum ScrollBarAction {
     SliderToMaximum,
 }
 // Implement Widget trait
+impl ScrollBar {
+    /// Begins the pointer gesture at `pos`: an arrow cell starts a repeating line step, a
+    /// thumb press starts a drag, and a trough press pages toward the click.
+    ///
+    /// Lifted out of the press arm so `TouchBegin` drives the same transition.
+    fn press_at(&mut self, pos: Point) {
+        self.mouse_pressed = true;
+        self.slider_pressed.emit();
+        // An arrow cell is a line step, and holding it repeats. The press itself is
+        // the first step, so a single click is exactly one line.
+        if let Some(action) = self.arrow_action_at(pos) {
+            self.repeat = Some(ArrowRepeat { action, held_ms: 0, fired: 0 });
+            self.dragging_thumb = false;
+            self.trigger_action(action);
+            self.request_frame_repaint(None);
+            return;
+        }
+        self.repeat = None;
+        let pixel = match self.orientation {
+            Orientation::Horizontal => pos.x as f32,
+            Orientation::Vertical => pos.y as f32,
+        };
+        self.drag_last_pixel = pixel;
+        self.drag_pending_px = 0.0;
+        self.drag_velocity_px_per_ms = 0.0;
+        self.inertia_velocity = None;
+        self.inertia_remainder = 0.0;
+        self.dragging_thumb = self.thumb_rect().contains(pos);
+        if self.dragging_thumb {
+            // Grabbing the thumb selects the value under the pointer, which is the
+            // historical drag behaviour and stays the exact inverse of the drawing.
+            let value = self.pixel_pos_to_value(pixel);
+            self.set_value(value);
+        } else {
+            // A trough click is a **page step in the click's direction**, not a jump to
+            // the clicked position: one visible page per click is the gesture every
+            // scrollbar publishes, and a jump made a mis-aimed click lose the reading
+            // position the user was holding.
+            let clicked = self.pixel_pos_to_value(pixel);
+            let action = if clicked < self.value {
+                Some(ScrollBarAction::PageUp)
+            } else if clicked > self.value {
+                Some(ScrollBarAction::PageDown)
+            } else {
+                None
+            };
+            if let Some(action) = action {
+                self.trigger_action(action);
+            }
+        }
+        self.request_frame_repaint(None);
+    }
+
+    /// Ends the pointer gesture, carrying a released thumb's velocity into the glide.
+    fn end_drag(&mut self) {
+        self.mouse_pressed = false;
+        self.repeat = None;
+        self.slider_released.emit();
+        // A released thumb may keep gliding. A release with no sampled movement falls
+        // back to the movement accumulated since the last frame so a fast flick that
+        // happened entirely between two ticks is still carried.
+        if self.inertia && self.dragging_thumb {
+            let mut velocity = self.drag_velocity_px_per_ms;
+            if velocity == 0.0 && self.drag_pending_px != 0.0 {
+                velocity = self.drag_pending_px / 16.0;
+            }
+            if velocity.abs() >= SCROLLBAR_INERTIA_STOP_PX_PER_MS {
+                self.inertia_velocity = Some(velocity);
+                self.inertia_remainder = 0.0;
+            }
+        }
+        self.dragging_thumb = false;
+        self.drag_pending_px = 0.0;
+        self.drag_velocity_px_per_ms = 0.0;
+        self.request_frame_repaint(None);
+    }
+}
 impl Widget for ScrollBar {
     fn base(&self) -> &BaseWidget {
         &self.base
@@ -1162,73 +1239,27 @@ impl EventHandler for ScrollBar {
                 self.request_frame_repaint(None);
             }
             Event::MousePress { pos, button, .. } if *button == 1 => {
-                self.mouse_pressed = true;
-                self.slider_pressed.emit();
-                // An arrow cell is a line step, and holding it repeats. The press itself is
-                // the first step, so a single click is exactly one line.
-                if let Some(action) = self.arrow_action_at(*pos) {
-                    self.repeat = Some(ArrowRepeat { action, held_ms: 0, fired: 0 });
-                    self.dragging_thumb = false;
-                    self.trigger_action(action);
-                    self.request_frame_repaint(None);
-                    return;
-                }
-                self.repeat = None;
-                let pixel = match self.orientation {
-                    Orientation::Horizontal => pos.x as f32,
-                    Orientation::Vertical => pos.y as f32,
-                };
-                self.drag_last_pixel = pixel;
-                self.drag_pending_px = 0.0;
-                self.drag_velocity_px_per_ms = 0.0;
-                self.inertia_velocity = None;
-                self.inertia_remainder = 0.0;
-                self.dragging_thumb = self.thumb_rect().contains(*pos);
-                if self.dragging_thumb {
-                    // Grabbing the thumb selects the value under the pointer, which is the
-                    // historical drag behaviour and stays the exact inverse of the drawing.
-                    let value = self.pixel_pos_to_value(pixel);
-                    self.set_value(value);
-                } else {
-                    // A trough click is a **page step in the click's direction**, not a jump to
-                    // the clicked position: one visible page per click is the gesture every
-                    // scrollbar publishes, and a jump made a mis-aimed click lose the reading
-                    // position the user was holding.
-                    let clicked = self.pixel_pos_to_value(pixel);
-                    let action = if clicked < self.value {
-                        Some(ScrollBarAction::PageUp)
-                    } else if clicked > self.value {
-                        Some(ScrollBarAction::PageDown)
-                    } else {
-                        None
-                    };
-                    if let Some(action) = action {
-                        self.trigger_action(action);
-                    }
-                }
-                self.request_frame_repaint(None);
+                self.press_at(*pos);
             }
             Event::MouseRelease { pos: _, button } if *button == 1 => {
+                self.end_drag();
+            }
+            // Touch has no translated press/release here: contact starts the same gesture as a
+            // press, and a cancelled contact abandons it without carrying inertia.
+            #[cfg(feature = "touch")]
+            Event::TouchBegin { pos, .. } => {
+                self.press_at(*pos);
+            }
+            #[cfg(feature = "touch")]
+            event if crate::event::translator::is_touch_cancel(event) => {
                 self.mouse_pressed = false;
                 self.repeat = None;
-                self.slider_released.emit();
-                // A released thumb may keep gliding. A release with no sampled movement falls
-                // back to the movement accumulated since the last frame so a fast flick that
-                // happened entirely between two ticks is still carried.
-                if self.inertia && self.dragging_thumb {
-                    let mut velocity = self.drag_velocity_px_per_ms;
-                    if velocity == 0.0 && self.drag_pending_px != 0.0 {
-                        velocity = self.drag_pending_px / 16.0;
-                    }
-                    if velocity.abs() >= SCROLLBAR_INERTIA_STOP_PX_PER_MS {
-                        self.inertia_velocity = Some(velocity);
-                        self.inertia_remainder = 0.0;
-                    }
-                }
                 self.dragging_thumb = false;
-                self.drag_pending_px = 0.0;
-                self.drag_velocity_px_per_ms = 0.0;
                 self.request_frame_repaint(None);
+            }
+            #[cfg(feature = "touch")]
+            Event::Tap { .. } => {
+                self.end_drag();
             }
             Event::MouseMove { pos } if self.mouse_pressed && self.dragging_thumb => {
                 let pixel = match self.orientation {

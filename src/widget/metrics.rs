@@ -874,8 +874,7 @@ impl FocusRing {
 /// Takes the colour rather than a theme handle so a control with no theme can still ask.
 pub fn focus_ring_color(fallback: Color) -> Color {
     ring_color_from(
-        crate::style::palette_shared()
-            .map(|colors| focus_ring_color_from_theme(&colors)),
+        crate::style::palette_shared().map(|colors| focus_ring_color_from_theme(&colors)),
         fallback,
     )
 }
@@ -2095,6 +2094,17 @@ pub const fn profile_metrics(profile: ControlMetricsProfile) -> ProfileMetrics {
     }
 }
 
+thread_local! {
+    /// The active metrics profile, keyed by the theme revision (WGT-F6).
+    ///
+    /// `draw`/`measure` ask for this on every frame; reading it from the theme manager took the
+    /// global mutex each time. The profile changes only when the theme registry does, which is the
+    /// key `resolved_theme_style_shared` already validates against.
+    #[cfg(device_profile)]
+    static ACTIVE_PROFILE_CACHE: crate::compat::Cell<Option<(u64, ControlMetricsProfile)>> =
+        const { crate::compat::Cell::new(None) };
+}
+
 /// The metrics profile of the active theme, or [`ControlMetricsProfile::Material`] when no
 /// theme is active.
 ///
@@ -2103,13 +2113,28 @@ pub const fn profile_metrics(profile: ControlMetricsProfile) -> ProfileMetrics {
 /// Material, which is the same rendering such a build had before profiles existed.
 pub fn active_profile() -> ControlMetricsProfile {
     #[cfg(device_profile)]
-    let profile = crate::style::theme_manager()
-        .current_theme()
-        .map(|theme| theme.metrics_profile)
-        .unwrap_or_default();
+    {
+        let revision = crate::style::theme_revision();
+        if let Some((cached_revision, profile)) = ACTIVE_PROFILE_CACHE.with(|cache| cache.get()) {
+            if cached_revision == revision {
+                return profile;
+            }
+        }
+        let profile = crate::style::theme_manager()
+            .current_theme()
+            .map(|theme| theme.metrics_profile)
+            .unwrap_or_default();
+        // Re-read the revision after the lookup: touching the manager can seed the registry,
+        // which moves the revision, and storing the earlier value would make the entry stale the
+        // moment it was written.
+        let revision = crate::style::theme_revision();
+        ACTIVE_PROFILE_CACHE.with(|cache| cache.set(Some((revision, profile))));
+        profile
+    }
     #[cfg(not(device_profile))]
-    let profile = ControlMetricsProfile::Material;
-    profile
+    {
+        ControlMetricsProfile::Material
+    }
 }
 
 #[cfg(all(test, full_widgets))]

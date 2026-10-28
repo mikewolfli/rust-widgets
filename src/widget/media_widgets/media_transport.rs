@@ -13,7 +13,7 @@
 //! Registration surface (out of scope for this file, recorded for the capability table):
 //! canonical name `media_transport_bar`, kind [`WidgetKind::VideoPlayer`].
 
-use crate::compat::{Arc, Mutex};
+use crate::compat::{Arc, Mutex, String};
 use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
@@ -63,6 +63,8 @@ pub struct MediaTransportBar {
     scrubbing: bool,
     /// The progress track from the last paint, so a drag maps to the painted span.
     track_rect: Option<Rect>,
+    /// The last formatted timecode, keyed by the `(position, duration)` it was built from.
+    timecode_cache: (u64, u64, String),
     /// The play/pause button from the last paint.
     play_rect: Option<Rect>,
     /// The volume button from the last paint.
@@ -133,6 +135,7 @@ impl MediaTransportBar {
             accent: None,
             scrubbing: false,
             track_rect: None,
+            timecode_cache: (0, 0, timecode(0, 0)),
             play_rect: None,
             volume_rect: None,
             fullscreen_rect: None,
@@ -249,8 +252,7 @@ impl MediaTransportBar {
         let sink = Arc::clone(&queue);
         let wake = redraw.clone();
         self.play_toggled.connect_ref_scoped(&scope, move |playing| {
-            let request =
-                if *playing { TransportRequest::Play } else { TransportRequest::Pause };
+            let request = if *playing { TransportRequest::Play } else { TransportRequest::Pause };
             crate::compat::lock(&sink).push(request);
             wake.emit();
         });
@@ -660,11 +662,17 @@ impl Draw for MediaTransportBar {
         // The timecode occupies the slot left of the right-hand group.
         let time_text = if self.show_timecode {
             let (position_ms, duration_ms) = self.current_position();
-            let text = timecode(position_ms, duration_ms);
-            let metrics = context.measure_text(&text, font);
+            // The clock text is constant between seconds, so it is rebuilt only when that second
+            // pair changes.
+            let (position_s, duration_s) = (position_ms / 1000, duration_ms / 1000);
+            if self.timecode_cache.0 != position_s || self.timecode_cache.1 != duration_s {
+                self.timecode_cache = (position_s, duration_s, timecode(position_ms, duration_ms));
+            }
+            let text = self.timecode_cache.2.as_str();
+            let metrics = context.measure_text(text, font);
             let x = right - metrics.width as i32 - 6;
             let y = strip.y + (strip.height as i32 - metrics.height as i32) / 2;
-            context.draw_text(Point::new(x, y), &text, font, muted_ink, HorizontalAlignment::Left);
+            context.draw_text(Point::new(x, y), text, font, muted_ink, HorizontalAlignment::Left);
             right = x - 6;
             true
         } else {
@@ -851,11 +859,7 @@ mod tests {
     #[test]
     fn an_attached_bar_drives_the_player_through_its_queue() {
         let mut player = VideoPlayer::new(Rect::new(0, 0, 320, 240));
-        player.set_playlist(vec![
-            "a.mp4".to_string(),
-            "b.mp4".to_string(),
-            "c.mp4".to_string(),
-        ]);
+        player.set_playlist(vec!["a.mp4".to_string(), "b.mp4".to_string(), "c.mp4".to_string()]);
         player.load("a.mp4");
         player.set_duration(60.0);
         let mut bar = MediaTransportBar::new(Rect::new(0, 0, 320, 40));

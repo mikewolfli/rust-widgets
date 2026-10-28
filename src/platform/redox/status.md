@@ -6,7 +6,7 @@ documentation only; this crate does not depend on winit.
 | Area | Status | Evidence / boundary |
 |---|---|---|
 | Window creation | ✅ Implemented | `OrbitalPlatform::create_window` opens a real `orbclient::Window` with the async/resizable/scalable flags. |
-| Window painting | ✅ Implemented | `render_frame_tree` → `Window::data_mut` → `Window::sync`, one frame per tick. |
+| Window painting | ✅ Implemented | `render_frame_tree_cached_shared` → `Window::data_mut` → `Window::sync`, one frame per tick; an unchanged cached frame skips the conversion and the sync. |
 | Pointer input and focus | ✅ Implemented | Orbital mouse/button records are routed through `dispatch_pointer_event`, which also focuses the hit control (the same entry point every backend uses). |
 | Keyboard / text input | ✅ Implemented | Key records become `KeyPress`/`KeyRelease`; Orbital `TextInput` records become `Event::TextInput` and are never forwarded as a second key event. Control chords suppress text so `Ctrl+C` stays a command. |
 | Tab traversal | ✅ Implemented | `K_TAB` calls `runtime::focus_next` (Shift reverses), matching the GTK/Windows hosts. |

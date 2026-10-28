@@ -899,8 +899,9 @@ pub struct LottieWidget {
     /// Decoded image assets already resolved, so a provider is asked at most once per asset.
     ///
     /// The value is shared through an `Rc`, so a hit clones a handle rather than the pixels
-    /// (L-P07).
-    image_cache: core::cell::RefCell<Vec<(String, crate::compat::Rc<LottieImage>)>>,
+    /// (L-P07). An asset the provider could not resolve is cached as `None` too, so a missing
+    /// asset is not re-queried on every frame.
+    image_cache: core::cell::RefCell<Vec<(String, Option<crate::compat::Rc<LottieImage>>)>>,
     /// Text faces already resolved, keyed by `(family, size bits, bold)`.
     font_cache: core::cell::RefCell<Vec<(String, u32, bool, Font)>>,
     /// The frame-counter caption, rebuilt only when its inputs change.
@@ -1706,17 +1707,16 @@ impl LottieWidget {
         };
         for layer in layers {
             // A cache hit clones the shared handle, not the pixel buffer. The cache is keyed by
-            // the asset id and holds `Rc<LottieImage>` (L-P07).
+            // the asset id and holds `Option<Rc<LottieImage>>` so an unresolved asset is a hit too
+            // (L-P07).
             let image = {
                 let mut cache = self.image_cache.borrow_mut();
                 if let Some(position) = cache.iter().position(|(id, _)| id == &layer.asset_id) {
-                    Some(crate::compat::Rc::clone(&cache[position].1))
-                } else if let Some(decoded) = provider.image(&layer.asset_id) {
-                    let shared = crate::compat::Rc::new(decoded);
-                    cache.push((layer.asset_id.clone(), crate::compat::Rc::clone(&shared)));
-                    Some(shared)
+                    cache[position].1.clone()
                 } else {
-                    None
+                    let resolved = provider.image(&layer.asset_id).map(crate::compat::Rc::new);
+                    cache.push((layer.asset_id.clone(), resolved.clone()));
+                    resolved
                 }
             };
             let Some(image) = image else {

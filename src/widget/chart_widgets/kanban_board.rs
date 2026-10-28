@@ -3397,6 +3397,10 @@ pub struct KanbanColumnHeader {
     editable: bool,
     /// The in-progress title edit, when the header is being renamed.
     edit_buffer: Option<String>,
+    /// The badge label, with the `(count, wip_limit)` pair it was built for (BK-P12).
+    badge_text_cache: (usize, Option<usize>, String),
+    /// The count-only label the badge width is measured from, with the count it was built for.
+    count_text_cache: (usize, String),
     /// Emitted with the new title after a rename.
     pub column_renamed: Signal1<String>,
     /// Emitted with the new collapsed flag.
@@ -3416,6 +3420,8 @@ impl KanbanColumnHeader {
             collapsed: false,
             editable: true,
             edit_buffer: None,
+            badge_text_cache: (0, None, String::from("0")),
+            count_text_cache: (0, String::from("0")),
             column_renamed: Signal1::new(),
             column_collapsed_changed: Signal1::new(),
             add_card_requested: GenericSignal::new(),
@@ -3778,7 +3784,26 @@ impl Draw for KanbanColumnHeader {
             None => self.title.as_str(),
         };
         let add = self.add_rect();
-        let badge_width = context.measure_text(&format!("{}", self.count), &font).width as i32 + 10;
+        // Both labels are rebuilt only when the pair they spell changes. The width is still
+        // measured from the count alone, exactly as before, so the frame is unchanged.
+        if self.badge_text_cache.0 != self.count || self.badge_text_cache.1 != self.wip_limit {
+            self.badge_text_cache.0 = self.count;
+            self.badge_text_cache.1 = self.wip_limit;
+            let badge_text = &mut self.badge_text_cache.2;
+            badge_text.clear();
+            if let Some(limit) = self.wip_limit {
+                let _ = write!(badge_text, "{}/{}", self.count, limit);
+            } else {
+                let _ = write!(badge_text, "{}", self.count);
+            }
+        }
+        if self.count_text_cache.0 != self.count {
+            self.count_text_cache.0 = self.count;
+            let count_text = &mut self.count_text_cache.1;
+            count_text.clear();
+            let _ = write!(count_text, "{}", self.count);
+        }
+        let badge_width = context.measure_text(&self.count_text_cache.1, &font).width as i32 + 10;
         let text_left = self.collapse_rect().x + HEADER_ICON + 6;
         let text_right = (add.x - 6 - badge_width).max(text_left + 8);
         let text = crate::widget::text_utils::elide_end(
@@ -3796,14 +3821,9 @@ impl Draw for KanbanColumnHeader {
         let badge =
             Rect::new(text_right, rect.y + (rect.height as i32 - 16) / 2, badge_width as u32, 16);
         context.fill_rounded_rect(badge, 8, surface.blend(&ink, 0.12));
-        let badge_text = if let Some(limit) = self.wip_limit {
-            format!("{}/{limit}", self.count)
-        } else {
-            format!("{}", self.count)
-        };
         context.draw_text(
             Point::new(badge.x + 5, badge.y + 2),
-            &badge_text,
+            &self.badge_text_cache.2,
             &font,
             if self.is_at_wip_limit() { warning } else { ink },
             HorizontalAlignment::Left,

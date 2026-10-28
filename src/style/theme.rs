@@ -60,6 +60,21 @@ pub fn resolved_theme_style_shared(_widget_name: &str) -> Option<crate::compat::
     None
 }
 
+/// The theme registry revision (WGT-F6).
+///
+/// A caller that caches a derivation of theme state can validate its entry against this number
+/// instead of taking the global manager's mutex to re-read the state itself.
+#[cfg(device_profile)]
+pub fn theme_revision() -> u64 {
+    crate::theme::theme_revision()
+}
+
+/// No theme registry in this profile, so nothing can have changed.
+#[cfg(not(device_profile))]
+pub fn theme_revision() -> u64 {
+    0
+}
+
 /// The shared form of [`resolved_theme_style_for_state`]; see
 /// [`resolved_theme_style_shared`] for why the draw path wants it.
 #[cfg(device_profile)]

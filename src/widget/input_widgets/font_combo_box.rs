@@ -24,7 +24,9 @@ use crate::widget::capability::coercion::{
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
-use crate::widget::metrics::{dimensions, effective_font, ControlMetrics};
+use crate::widget::metrics::{
+    dimensions, effective_font, focus_ring_color, ControlMetrics, FocusRing, FOCUS_RING_WIDTH,
+};
 use crate::widget::text_utils::{floor_char_boundary, next_char_boundary, previous_char_boundary};
 use crate::widget::{BaseWidget, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
@@ -1190,6 +1192,37 @@ impl WidgetProperties for FontComboBox {
 use crate::render::RenderContext;
 use crate::widget::Draw;
 
+impl FontComboBox {
+    /// Resolves a press at `pos`: the field opens the list, a popup row commits that row, and
+    /// a press outside both dismisses.
+    fn press_at(&mut self, pos: Point) {
+        // Arm only for a press on the control; a press outside must not leave the
+        // cycle-on-release latch armed.
+        let inside = self.geometry().contains_point(pos) || self.popup_row_at(pos).is_some();
+        self.base.set_pressed(inside);
+        if !inside {
+            // A press outside the field and its popup dismisses the list, the same
+            // contract every other popup in the crate has.
+            self.hide_popup();
+        } else if self.geometry().contains_point(pos) {
+            // Show the dropdown list
+            self.show_popup();
+            self.base.clicked.emit();
+        } else if let Some(row) = self.popup_row_at(pos) {
+            // A press on a popup row commits that row directly; the row the user
+            // pressed is the row they meant.
+            if let Some(name) = self.visible_fonts.get(row) {
+                if let Some(original) = self.original_index_of(name) {
+                    self.set_current_index(original as i32);
+                    self.activated.emit(original as i32);
+                }
+            }
+            self.hide_popup();
+            self.base.set_pressed(false);
+        }
+    }
+}
+
 impl EventHandler for FontComboBox {
     fn handle_event(&mut self, event: &Event) {
         if !self.base.is_enabled() {
@@ -1300,31 +1333,24 @@ impl EventHandler for FontComboBox {
                 }
             }
             Event::MousePress { pos, button, .. } if button == &1 => {
-                // Arm only for a press on the control; a press outside must not leave the
-                // cycle-on-release latch armed.
+                self.press_at(*pos);
+            }
+            // Touch has no translated press here: contact arms the latch and the completed
+            // tap performs the same open/commit/dismiss transition as the pointer.
+            #[cfg(feature = "touch")]
+            Event::TouchBegin { pos, .. } => {
                 let inside =
                     self.geometry().contains_point(*pos) || self.popup_row_at(*pos).is_some();
                 self.base.set_pressed(inside);
-                if !inside {
-                    // A press outside the field and its popup dismisses the list, the same
-                    // contract every other popup in the crate has.
-                    self.hide_popup();
-                } else if self.geometry().contains_point(*pos) {
-                    // Show the dropdown list
-                    self.show_popup();
-                    self.base.clicked.emit();
-                } else if let Some(row) = self.popup_row_at(*pos) {
-                    // A press on a popup row commits that row directly; the row the user
-                    // pressed is the row they meant.
-                    if let Some(name) = self.visible_fonts.get(row) {
-                        if let Some(original) = self.original_index_of(name) {
-                            self.set_current_index(original as i32);
-                            self.activated.emit(original as i32);
-                        }
-                    }
-                    self.hide_popup();
-                    self.base.set_pressed(false);
-                }
+            }
+            #[cfg(feature = "touch")]
+            event if crate::event::translator::is_touch_cancel(event) => {
+                self.base.set_pressed(false);
+            }
+            #[cfg(feature = "touch")]
+            Event::Tap { pos } => {
+                self.press_at(*pos);
+                self.base.set_pressed(false);
             }
             Event::MouseRelease { button, .. }
                 if button == &1
@@ -1524,6 +1550,21 @@ impl Draw for FontComboBox {
                     Point::new(caret_x, value_line.y),
                     Point::new(caret_x, value_line.y + value_line.height as i32),
                     ink,
+                );
+            }
+        }
+        // ── Keyboard focus ring ──
+        //
+        // Around the field band — the part the keyboard operates on — rather than around the
+        // control's laid-out rectangle, which can be taller than the field.
+        if self.base.draws_focus_ring() {
+            let ring = FocusRing::for_control(g, 0);
+            if ring.is_drawable() {
+                ctx.draw_rounded_rect_stroke(
+                    ring.rect,
+                    ring.radius,
+                    focus_ring_color(field.contrast_color()),
+                    FOCUS_RING_WIDTH,
                 );
             }
         }

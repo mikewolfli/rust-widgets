@@ -209,7 +209,7 @@ pub enum DependencyKind {
     StartToFinish,
 }
 
-use core::cell::RefCell;
+use core::cell::{Ref, RefCell};
 
 /// The distance from an edge at which a drag starts advancing the viewport.
 const DRAG_EDGE_BAND: i32 = 24;
@@ -793,12 +793,22 @@ impl GanttWidget {
     /// The answer is a pure function of the tasks and their edges, so it is computed once and
     /// cached until one of those changes; a still frame used to re-run the topology walk.
     fn critical_path_indices(&self) -> Vec<usize> {
-        if let Some(cached) = self.critical_cache.borrow().as_ref() {
-            return cached.clone();
+        // The owned copy is what the public contract returns; the paint path borrows instead.
+        self.critical_path_indices_ref().to_vec()
+    }
+
+    /// The cached critical-path indices, computed on a miss.
+    ///
+    /// The paint path needs every index but owns none of them, so borrowing the cached
+    /// vector keeps a still frame from cloning the list on each paint.
+    fn critical_path_indices_ref(&self) -> Ref<'_, [usize]> {
+        if self.critical_cache.borrow().is_none() {
+            let computed = self.compute_critical_path();
+            *self.critical_cache.borrow_mut() = Some(computed);
         }
-        let computed = self.compute_critical_path();
-        *self.critical_cache.borrow_mut() = Some(computed.clone());
-        computed
+        Ref::map(self.critical_cache.borrow(), |slot| {
+            slot.as_ref().map_or(&[][..], |cached| cached.as_slice())
+        })
     }
 
     /// Computes the critical path from scratch.
@@ -1463,11 +1473,11 @@ impl Widget for GanttWidget {
                 &self.row_height_changed,
                 |height| CapabilityValue::UInt(u64::from(*height)),
             )),
-            "scroll_changed" => Some(EventSignalRef::mapped(
-                "scroll_changed",
-                &self.scroll_changed,
-                |offset| CapabilityValue::UInt(*offset as u64),
-            )),
+            "scroll_changed" => {
+                Some(EventSignalRef::mapped("scroll_changed", &self.scroll_changed, |offset| {
+                    CapabilityValue::UInt(*offset as u64)
+                }))
+            }
 
             "task_selected" => {
                 Some(EventSignalRef::mapped("task_selected", &self.task_selected, |v| {
@@ -1898,16 +1908,18 @@ impl Draw for GanttWidget {
         let critical_color = crate::style::semantic_color(crate::style::SemanticColor::Warning)
             .map(|token| token.blend(&background, 0.25))
             .unwrap_or_else(|| bar_color.blend(&progress_color, 0.5));
-        let critical_flags: Vec<bool> = {
+        let critical_flags: Option<Vec<bool>> = if self.show_critical_path {
+            // Built only when the highlight is on: a schedule that never shows a critical
+            // path used to allocate a flag per task on every paint.
             let mut flags = vec![false; self.tasks.len()];
-            if self.show_critical_path {
-                for index in self.critical_path_indices() {
-                    if let Some(flag) = flags.get_mut(index) {
-                        *flag = true;
-                    }
+            for &index in self.critical_path_indices_ref().iter() {
+                if let Some(flag) = flags.get_mut(index) {
+                    *flag = true;
                 }
             }
-            flags
+            Some(flags)
+        } else {
+            None
         };
 
         context.face_with_gradient_corners(
@@ -2002,7 +2014,11 @@ impl Draw for GanttWidget {
                     Point::new(x0, cy + half),
                     Point::new(x0 - half, cy),
                 ];
-                let fill = if critical_flags.get(index).copied().unwrap_or(false) {
+                let fill = if critical_flags
+                    .as_ref()
+                    .and_then(|flags| flags.get(index).copied())
+                    .unwrap_or(false)
+                {
                     critical_color
                 } else {
                     bar_color
@@ -2025,7 +2041,11 @@ impl Draw for GanttWidget {
             let x1 = self.project_x(task.end, track_x, track_w).max(x0 + 2);
             let bar_h = self.row_height.saturating_sub(10);
             let bar_rect = Rect::new(x0, y + 5, (x1 - x0) as u32, bar_h);
-            let fill = if critical_flags.get(index).copied().unwrap_or(false) {
+            let fill = if critical_flags
+                .as_ref()
+                .and_then(|flags| flags.get(index).copied())
+                .unwrap_or(false)
+            {
                 critical_color
             } else {
                 bar_color

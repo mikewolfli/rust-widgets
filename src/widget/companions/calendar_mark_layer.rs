@@ -1,6 +1,6 @@
 //! `CalendarMarkLayer` — per-date marks drawn over a month's 7x6 day grid (COMP-A28).
 
-use crate::compat::{format, BTreeMap, String, ToString, Vec};
+use crate::compat::{BTreeMap, String, ToString, Vec};
 use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::impl_draw_bridge;
@@ -340,11 +340,14 @@ impl Draw for CalendarMarkLayer {
         }
 
         let days = days_in_month(self.year, self.month);
+        // One reused buffer for the day numbers: `format!` built a fresh `String` per cell.
+        let mut day_text = String::new();
         for day in 1..=days {
             let Some(cell) = self.day_rect(day) else {
                 continue;
             };
-            let label = format!("{day}");
+            day_text.clear();
+            let _ = core::fmt::Write::write_fmt(&mut day_text, format_args!("{day}"));
             let label_rect = Rect::new(
                 cell.x + 3,
                 cell.y + 1,
@@ -353,7 +356,7 @@ impl Draw for CalendarMarkLayer {
             );
             context.draw_text_fitted_cow(
                 label_rect,
-                label.as_str(),
+                &day_text,
                 font,
                 surface.blend(&ink, 0.65),
                 HorizontalAlignment::Left,

@@ -27,7 +27,7 @@ use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::effective_font;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 
-use super::pixels::nearest_scale;
+use super::pixels::{nearest_scale, nearest_scale_into};
 
 /// Default number of provider frames kept resident.
 ///
@@ -793,16 +793,44 @@ impl Draw for AnimatedImage {
                             && cache.fit == fit
                 );
                 if !cached {
-                    let scaled = self
-                        .cached_frame(frame_index)
-                        .map(|frame| nearest_scale(&frame.data, fw, fh, dest.width, dest.height));
-                    self.scale_cache = scaled.map(|data| ScaledFrame {
-                        frame_index,
-                        width: dest.width,
-                        height: dest.height,
-                        fit,
-                        data,
-                    });
+                    // During playback only the frame index changes: when the destination size
+                    // matches the resident buffer, the resample writes back into it instead of
+                    // allocating a new one. The buffer is rebuilt only when the size changes.
+                    let mut previous = self.scale_cache.take();
+                    let resampled = match (previous.as_mut(), self.cached_frame(frame_index)) {
+                        (Some(cache), Some(frame))
+                            if cache.width == dest.width && cache.height == dest.height =>
+                        {
+                            nearest_scale_into(
+                                &frame.data,
+                                fw,
+                                fh,
+                                dest.width,
+                                dest.height,
+                                &mut cache.data,
+                            );
+                            true
+                        }
+                        _ => false,
+                    };
+                    if resampled {
+                        if let Some(cache) = previous.as_mut() {
+                            cache.frame_index = frame_index;
+                            cache.fit = fit;
+                        }
+                        self.scale_cache = previous;
+                    } else {
+                        let scaled = self.cached_frame(frame_index).map(|frame| {
+                            nearest_scale(&frame.data, fw, fh, dest.width, dest.height)
+                        });
+                        self.scale_cache = scaled.map(|data| ScaledFrame {
+                            frame_index,
+                            width: dest.width,
+                            height: dest.height,
+                            fit,
+                            data,
+                        });
+                    }
                 }
             }
 

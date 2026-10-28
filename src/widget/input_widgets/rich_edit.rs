@@ -1730,10 +1730,58 @@ impl Draw for RichEdit {
             }
         }
         context.pop_clip();
+
+        // ── Focus ring ──
+        //
+        // Only a keyboard focus draws it: a pointer (or touch) press focuses the document without
+        // claiming visual focus, so no ring appears under the cursor.
+        if self.base.draws_focus_ring() {
+            let ring = crate::widget::metrics::FocusRing::for_control(
+                rect,
+                self.style().border_radius.unwrap_or(0),
+            );
+            if ring.is_drawable() {
+                context.draw_rounded_rect_stroke(
+                    ring.rect,
+                    ring.radius,
+                    crate::widget::metrics::focus_ring_color(paper.contrast_color()),
+                    crate::widget::metrics::FOCUS_RING_WIDTH,
+                );
+            }
+        }
     }
 }
 
 impl RichEdit {
+    /// A primary press at `pos`: a press on the formatting strip belongs to a toolbar cell, and a
+    /// press in the document focuses it, places the caret and anchors the selection.
+    ///
+    /// Shared by the mouse and touch press arms, so a finger enters exactly the same state machine
+    /// a pointer does instead of a second copy of it.
+    fn press_with_pointer(&mut self, pos: crate::core::Point) {
+        // A press on the formatting strip belongs to a toolbar cell, not to the
+        // document. Intercepting it here is what keeps the strip usable without host
+        // wiring while leaving the editor's own public contract unchanged.
+        if let Some(action) = self.format_strip_action_at(pos) {
+            if let Some(toolbar) = self.format_toolbar.as_mut() {
+                // `press` emits `format_requested` as it always has, so an observer still
+                // sees the intent; the editor then applies it through the same rule.
+                toolbar.press(action);
+            }
+            self.apply_format_action(action);
+            self.base.request_redraw();
+            return;
+        }
+        self.base.set_mouse_pressed(true);
+        // A press focuses the control, which is how the user reaches it with the pointer.
+        self.focused = true;
+        // A press places the caret where the user aimed, anchoring a selection a drag can grow.
+        let index = self.byte_offset_at_point(pos);
+        self.set_selection(index, index);
+        self.drag_anchor = index;
+        self.dragging_selection = true;
+    }
+
     /// Paints one line as a sequence of formatted runs.
     ///
     /// Each run is measured with its own face, so a bold run advances further than the same text
@@ -1853,30 +1901,7 @@ impl crate::event::EventHandler for RichEdit {
                 self.base.request_redraw();
             }
             crate::event::Event::MousePress { pos, button, .. } if *button == 1 => {
-                // A press on the formatting strip belongs to a toolbar cell, not to the
-                // document. Intercepting it here is what keeps the strip usable without host
-                // wiring while leaving the editor's own public contract unchanged.
-                if let Some(action) = self.format_strip_action_at(*pos) {
-                    if let Some(toolbar) = self.format_toolbar.as_mut() {
-                        // `press` emits `format_requested` as it always has, so an observer still
-                        // sees the intent; the editor then applies it through the same rule.
-                        toolbar.press(action);
-                    }
-                    self.apply_format_action(action);
-                    self.base.request_redraw();
-                    return;
-                }
-                self.base.set_mouse_pressed(true);
-                // A press focuses the control, which is how the user reaches it with the pointer.
-                self.focused = true;
-                // A press places the caret where the user aimed. It used to only set the pressed
-                // flag, so clicking into the document left the caret wherever it was and there was
-                // no pointer selection at all — the probe read `Some((0, 0))` after a press in the
-                // middle of the value.
-                let index = self.byte_offset_at_point(*pos);
-                self.set_selection(index, index);
-                self.drag_anchor = index;
-                self.dragging_selection = true;
+                self.press_with_pointer(*pos);
             }
             // Moving with the button down extends the selection the press began. A bare hover
             // still does nothing, because `dragging_selection` is only set by a press.
@@ -1894,6 +1919,26 @@ impl crate::event::EventHandler for RichEdit {
                 }
             }
             crate::event::Event::MouseRelease { pos: _, button } if *button == 1 => {
+                self.base.set_mouse_pressed(false);
+                self.dragging_selection = false;
+            }
+            // ── Touch ──
+            //
+            // A finger takes the same route the pointer does: the contact presses the document
+            // (or the formatting strip), the lift releases it, and a withdrawn contact clears the
+            // same latches. Without these arms the editor was unreachable on a touch-only host.
+            // No separate `Tap` arm: a tap is the press plus the release performed here.
+            #[cfg(feature = "touch")]
+            crate::event::Event::TouchBegin { pos, .. } => {
+                self.press_with_pointer(*pos);
+            }
+            #[cfg(feature = "touch")]
+            crate::event::Event::TouchEnd { .. } => {
+                self.base.set_mouse_pressed(false);
+                self.dragging_selection = false;
+            }
+            #[cfg(feature = "touch")]
+            event if crate::event::translator::is_touch_cancel(event) => {
                 self.base.set_mouse_pressed(false);
                 self.dragging_selection = false;
             }

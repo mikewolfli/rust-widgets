@@ -645,9 +645,16 @@ impl EventHandler for OtpInput {
 
         match event {
             Event::MousePress { pos, .. } => {
-                if let Some(index) = self.box_index_at(*pos) {
-                    self.set_focused_index(index);
-                }
+                self.select_box_at(*pos);
+            }
+            // ── Touch ──
+            //
+            // A finger selects the box it lands on, exactly as the pointer press does. The code
+            // field holds no pressed or drag latch, so a lift (or a withdrawn contact) has nothing
+            // of its own to clear; adding those arms would be a no-op.
+            #[cfg(feature = "touch")]
+            Event::TouchBegin { pos, .. } => {
+                self.select_box_at(*pos);
             }
             Event::KeyPress { key, modifiers } => {
                 let mods = crate::shortcut::Modifiers::from_event_bits(*modifiers);
@@ -726,6 +733,16 @@ impl EventHandler for OtpInput {
 }
 
 impl OtpInput {
+    /// Moves the focus to the box under `pos`, when the point lands on one.
+    ///
+    /// Shared by the mouse and touch press arms, so a finger targets exactly the box a pointer
+    /// would.
+    fn select_box_at(&mut self, pos: Point) {
+        if let Some(index) = self.box_index_at(pos) {
+            self.set_focused_index(index);
+        }
+    }
+
     /// Moves the focus to `index`, clamped to the row.
     fn set_focused_index(&mut self, index: usize) {
         let next = index.min(self.length);
@@ -953,6 +970,26 @@ impl Draw for OtpInput {
                         HorizontalAlignment::Center,
                     );
                 }
+            }
+        }
+
+        // ── Focus ring ──
+        //
+        // Only a keyboard focus draws it: a pointer (or touch) press moves the focused box without
+        // claiming visual focus, so no ring appears under the cursor. Around the whole row, which
+        // is the box a caller lays out and the control paints.
+        if self.base.draws_focus_ring() {
+            let ring = crate::widget::metrics::FocusRing::for_control(
+                rect,
+                self.style().border_radius.unwrap_or(0),
+            );
+            if ring.is_drawable() {
+                context.draw_rounded_rect_stroke(
+                    ring.rect,
+                    ring.radius,
+                    crate::widget::metrics::focus_ring_color(background.contrast_color()),
+                    crate::widget::metrics::FOCUS_RING_WIDTH,
+                );
             }
         }
     }

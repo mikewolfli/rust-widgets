@@ -6,7 +6,7 @@
 use super::batch::BatchState;
 #[cfg(test)]
 use crate::compat::vec;
-use crate::compat::{Arc, Rc, Vec};
+use crate::compat::{Arc, Rc, RefCell, Vec};
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::render::pipeline::{
     fill_conic_ramp, ramp_lut_for_stops, sat_add_i32, sat_mul_i32, sat_neg_i32,
@@ -453,10 +453,9 @@ impl PaintBackend for SoftwarePaintBackend {
         width: u32,
         dash: crate::render::core::command::DashPattern,
     ) {
-        for (from, to) in crate::render::backend::surface::dash_line_segments(points, closed, dash)
-        {
+        crate::render::backend::surface::for_each_dash_segment(points, closed, dash, |from, to| {
             self.surface.draw_line_with_width(from, to, color, width);
-        }
+        });
     }
 
     /// Paints recorded compound geometry; the path object is built once per touched region.
@@ -702,8 +701,22 @@ pub(super) fn route_command_to_surface(surface: &mut SoftwareSurface, command: &
             // six segments per corner keeps the quarter arc within half a pixel
             // of the true circle at any radius a UI uses.
             let rect = crate::core::Rect::new(*x, *y, *width, *height);
-            let outline = rounded_rect_outline_points(rect, *radii);
-            surface.push_path_clip(&outline);
+            // The outline buffer is thread-local (ENG-B3); the re-entrant fallback keeps the
+            // clip from silently disappearing.
+            let reused = ROUNDED_CLIP_POINTS
+                .try_with(|scratch| {
+                    scratch.try_borrow_mut().ok().map(|mut points| {
+                        rounded_rect_outline_points_into(rect, *radii, &mut points);
+                        surface.push_path_clip(points.as_slice());
+                    })
+                })
+                .ok()
+                .flatten()
+                .is_some();
+            if !reused {
+                let outline = rounded_rect_outline_points(rect, *radii);
+                surface.push_path_clip(&outline);
+            }
         }
         RenderCommand::PopClip => surface.pop_clip(),
         RenderCommand::PushLayer { bounds, effect } => push_layer(surface, *bounds, *effect),
@@ -737,12 +750,14 @@ pub(super) fn route_command_to_surface(surface: &mut SoftwareSurface, command: &
         RenderCommand::DrawPathDashed { points, closed, color, width, dash } => {
             // One dash kernel, shared with the border's dashed edges (G-014): the
             // polyline is expanded here, on the immediate path, into the same
-            // `DrawLineStroke` primitives a solid stroke uses.
-            for (from, to) in
-                crate::render::backend::surface::dash_line_segments(points, *closed, *dash)
-            {
-                surface.draw_line_with_width(from, to, *color, *width);
-            }
+            // `DrawLineStroke` primitives a solid stroke uses. The segment buffer is
+            // thread-local (ENG-B1).
+            crate::render::backend::surface::for_each_dash_segment(
+                points,
+                *closed,
+                *dash,
+                |from, to| surface.draw_line_with_width(from, to, *color, *width),
+            );
         }
         RenderCommand::FillPathNonZero { path, color } => {
             surface.fill_path_non_zero(path, *color);
@@ -946,6 +961,29 @@ fn blur_rect_on_surface(surface: &mut SoftwareSurface, region: Rect, blur_radius
 /// cannot produce a self-intersecting polygon — the same guarantee a filled
 /// rounded rect's coverage path has.
 fn rounded_rect_outline_points(rect: Rect, radii: [u32; 4]) -> Vec<crate::core::Point> {
+    let mut points = Vec::new();
+    rounded_rect_outline_points_into(rect, radii, &mut points);
+    points
+}
+
+thread_local! {
+    /// Rounded-clip outline reused by `PushClipRoundedRect` (ENG-B3).
+    ///
+    /// A card/avatar scissor runs every frame; the ~28-point `Vec` per command was the last
+    /// per-command allocation on this path. A re-entrant push falls back to a local buffer.
+    #[allow(clippy::missing_const_for_thread_local)]
+    static ROUNDED_CLIP_POINTS: RefCell<Vec<crate::core::Point>> = RefCell::new(Vec::new());
+}
+
+/// [`rounded_rect_outline_points`] writing into a caller-held buffer.
+///
+/// The buffer is cleared first; the sampling order and rounding are the ones the owned form has
+/// always used, so the coverage mask is byte-identical.
+fn rounded_rect_outline_points_into(
+    rect: Rect,
+    radii: [u32; 4],
+    points: &mut Vec<crate::core::Point>,
+) {
     use crate::core::Point;
     use crate::render::pipeline::rounded_rect_effective_radii;
     let [tl, tr, br, bl] = rounded_rect_effective_radii(rect, radii);
@@ -954,7 +992,8 @@ fn rounded_rect_outline_points(rect: Rect, radii: [u32; 4]) -> Vec<crate::core::
     let right = rect.x + rect.width as i32;
     let bottom = rect.y + rect.height as i32;
     let segments = ROUNDED_CLIP_CORNER_SEGMENTS;
-    let mut points = Vec::with_capacity(4 * segments + 4);
+    points.clear();
+    points.reserve(4 * segments + 4);
     // Perimeter order (top-left → top-right → bottom-right → bottom-left), the
     // order every other outline the command set carries uses.
     let arc = |points: &mut Vec<Point>, cx: i32, cy: i32, radius: u32, start: f32| {
@@ -972,15 +1011,14 @@ fn rounded_rect_outline_points(rect: Rect, radii: [u32; 4]) -> Vec<crate::core::
         }
     };
     // Top edge runs left to right, so the top-left arc sweeps from 180° to 270°.
-    arc(&mut points, left + tl as i32, top + tl as i32, tl, core::f32::consts::PI);
+    arc(points, left + tl as i32, top + tl as i32, tl, core::f32::consts::PI);
     // The top-right arc starts where the top edge ends: 270° (its tangent
     // point) through 360°.
-    arc(&mut points, right - tr as i32, top + tr as i32, tr, -core::f32::consts::FRAC_PI_2);
+    arc(points, right - tr as i32, top + tr as i32, tr, -core::f32::consts::FRAC_PI_2);
     // Bottom-right: 0° through 90°.
-    arc(&mut points, right - br as i32, bottom - br as i32, br, 0.0);
+    arc(points, right - br as i32, bottom - br as i32, br, 0.0);
     // Bottom-left: 90° through 180°.
-    arc(&mut points, left + bl as i32, bottom - bl as i32, bl, core::f32::consts::FRAC_PI_2);
-    points
+    arc(points, left + bl as i32, bottom - bl as i32, bl, core::f32::consts::FRAC_PI_2);
 }
 
 /// Draws `text` and then the decorations `decoration` asks for (G-013).

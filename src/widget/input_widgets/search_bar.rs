@@ -1135,10 +1135,84 @@ impl Draw for SearchBar {
                 );
             }
         }
+
+        // ── Focus ring ──
+        //
+        // Only a keyboard focus draws it: a pointer (or touch) press focuses the field without
+        // claiming visual focus, so no ring appears under the cursor. Around the field box only —
+        // the cancel button and the recent menu are separate surfaces.
+        if self.base.draws_focus_ring() {
+            let ring = crate::widget::metrics::FocusRing::for_control(field_rect, corner_radius);
+            if ring.is_drawable() {
+                context.draw_rounded_rect_stroke(
+                    ring.rect,
+                    ring.radius,
+                    crate::widget::metrics::focus_ring_color(field_color.contrast_color()),
+                    crate::widget::metrics::FOCUS_RING_WIDTH,
+                );
+            }
+        }
     }
 }
 
 impl SearchBar {
+    /// A primary press at `pos`: the recent-search menu picks a query, the cancel button dismisses
+    /// the bar, the clear button empties it, and the field itself activates and places the caret.
+    ///
+    /// Shared by the mouse arm and the touch arm, so a finger and a pointer enter the same state.
+    fn press_with_pointer(&mut self, pos: Point) {
+        // A click on the recent-search menu picks that query; the menu hangs below
+        // the field, so this must be tested before the field hit test.
+        if let Some(row) = self.recent_row_at(pos) {
+            let chosen = self.recent_searches[row].clone();
+            self.show_recent = false;
+            self.set_text(chosen);
+            self.submit();
+            return;
+        }
+        let rect = self.geometry();
+        let cancel_width = if self.is_active && self.cancel_button_visible {
+            self.cancel_button_width()
+        } else {
+            0
+        };
+        let cancel_x = rect.x + rect.width as i32 - cancel_width as i32;
+
+        // Cancel button click
+        if self.is_active && self.cancel_button_visible && pos.x >= cancel_x {
+            self.is_active = false;
+            self.set_focused(false);
+            self.canceled.emit();
+            self.base.request_redraw();
+            return;
+        }
+
+        // Clear button click (when text is non-empty)
+        let field_width = rect.width.saturating_sub(cancel_width + 4);
+        let clear_x = rect.x + field_width as i32 - 22;
+        if !self.text.is_empty()
+            && pos.x >= clear_x
+            && pos.x < clear_x + 16
+            && pos.y >= rect.y
+            && pos.y < rect.y + rect.height as i32
+        {
+            self.clear();
+            return;
+        }
+
+        // Focus the search bar and place the caret where the press landed.
+        if !self.is_active {
+            self.set_active(true);
+        }
+        self.set_focused(true);
+        self.cursor = self.byte_index_at_x(pos.x);
+        self.selection_anchor = None;
+        // An empty field shows its history; a field with a query keeps it closed so
+        // the menu never covers the user's typing.
+        self.show_recent = self.text.is_empty() && !self.recent_searches.is_empty();
+        self.base.request_redraw();
+    }
+
     /// The byte offset a horizontal pixel points at, using the same origin the paint uses.
     fn byte_index_at_x(&self, x: i32) -> usize {
         if self.text.is_empty() {
@@ -1220,57 +1294,20 @@ impl EventHandler for SearchBar {
         match event {
             Event::MousePress { pos, button, .. } => {
                 if *button == 1 {
-                    // A click on the recent-search menu picks that query; the menu hangs below
-                    // the field, so this must be tested before the field hit test.
-                    if let Some(row) = self.recent_row_at(*pos) {
-                        let chosen = self.recent_searches[row].clone();
-                        self.show_recent = false;
-                        self.set_text(chosen);
-                        self.submit();
-                        return;
-                    }
-                    let rect = self.geometry();
-                    let cancel_width = if self.is_active && self.cancel_button_visible {
-                        self.cancel_button_width()
-                    } else {
-                        0
-                    };
-                    let cancel_x = rect.x + rect.width as i32 - cancel_width as i32;
-
-                    // Cancel button click
-                    if self.is_active && self.cancel_button_visible && pos.x >= cancel_x {
-                        self.is_active = false;
-                        self.set_focused(false);
-                        self.canceled.emit();
-                        self.base.request_redraw();
-                        return;
-                    }
-
-                    // Clear button click (when text is non-empty)
-                    let field_width = rect.width.saturating_sub(cancel_width + 4);
-                    let clear_x = rect.x + field_width as i32 - 22;
-                    if !self.text.is_empty()
-                        && pos.x >= clear_x
-                        && pos.x < clear_x + 16
-                        && pos.y >= rect.y
-                        && pos.y < rect.y + rect.height as i32
-                    {
-                        self.clear();
-                        return;
-                    }
-
-                    // Focus the search bar and place the caret where the press landed.
-                    if !self.is_active {
-                        self.set_active(true);
-                    }
-                    self.set_focused(true);
-                    self.cursor = self.byte_index_at_x(pos.x);
-                    self.selection_anchor = None;
-                    // An empty field shows its history; a field with a query keeps it closed so
-                    // the menu never covers the user's typing.
-                    self.show_recent = self.text.is_empty() && !self.recent_searches.is_empty();
-                    self.base.request_redraw();
+                    self.press_with_pointer(*pos);
                 }
+            }
+            // ── Touch ──
+            //
+            // A finger takes the same route the pointer does: the contact picks a recent query,
+            // fires the cancel/clear buttons or activates the field and places the caret. Without
+            // this arm the bar was unreachable on a touch-only host. There is no pressed or drag
+            // latch on this control, so a lift has nothing of its own to clear — and no `Tap` arm:
+            // a tap arrives after the contact it resolves, so repeating the click would re-activate
+            // a bar the same gesture had just cancelled.
+            #[cfg(feature = "touch")]
+            Event::TouchBegin { pos, .. } => {
+                self.press_with_pointer(*pos);
             }
             Event::FocusGained { .. } => {
                 self.set_active(true);
