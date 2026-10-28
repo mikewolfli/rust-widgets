@@ -555,6 +555,9 @@ pub(crate) fn unmount_canvas(platform: &LinuxPlatform, id: ObjectId) -> bool {
 
 /// Blits a top-down RGBA frame through a cairo context.
 ///
+/// The paint is restricted to the context's existing clip (intersected with the frame
+/// bounds), so a caller whose clip is the expose region composites only that damage.
+///
 /// `pub(crate)` because the window's tree painter in `platform_impl.rs` presents its frame
 /// the same way a mounted surface does, and one blit implementation is what keeps the two
 /// from disagreeing about channel order or stride.
@@ -568,6 +571,24 @@ pub(crate) fn blit_rgba(context: &cairo::Context, width: u32, height: u32, frame
     if frame.len() < expected {
         log::error!("[linux] canvas: frame is {} bytes, need {expected}", frame.len());
         return;
+    }
+
+    // Present only the damage rectangle this context is clipped to. GTK narrows the clip to
+    // the exposed region on a `draw` signal, so intersecting it with the surface bounds stops
+    // the compositor from painting pixels no one asked for. The frame-to-surface conversion
+    // stays whole-frame; clipping is what keeps a small cursor-blink damage from compositing
+    // the entire window. An unavailable or empty clip keeps the previous full-frame
+    // presentation.
+    if let Ok((clip_x0, clip_y0, clip_x1, clip_y1)) = context.clip_extents() {
+        let left = clip_x0.floor().max(0.0);
+        let top = clip_y0.floor().max(0.0);
+        let right = clip_x1.ceil().min(width as f64);
+        let bottom = clip_y1.ceil().min(height as f64);
+        if right > left && bottom > top {
+            context.new_path();
+            context.rectangle(left, top, right - left, bottom - top);
+            context.clip();
+        }
     }
 
     // Cairo wants BGRA on little-endian; the frame is RGBA, so swap while copying.

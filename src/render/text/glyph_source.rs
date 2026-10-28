@@ -257,6 +257,16 @@ pub trait GlyphSource: Send + Sync {
         self.glyph(ch).is_some()
     }
 
+    /// Whether this source's ink is four-byte colour RGBA.
+    ///
+    /// Ink kind is a static property of a source: only a colour bitmap face produces
+    /// [`InkKind::Color`]. A renderer asks this **before** [`Self::paint`], so it can skip the
+    /// rasterisation a colour-capable call would pay for a character the source draws as coverage.
+    /// The default is `false`, which is true of every source that predates colour ink.
+    fn paints_color(&self) -> bool {
+        false
+    }
+
     /// Paint `ch`'s coverage into `out`, one byte per pixel of `cell`, row-major.
     ///
     /// `out` must be at least `cell.area()` bytes for a coverage or bitmap face, and
@@ -446,6 +456,11 @@ impl GlyphSource for ColorBitmapSource {
         self.face_for(ch).is_some()
     }
 
+    fn paints_color(&self) -> bool {
+        // This source has no other kind of ink: every glyph it answers is RGBA.
+        true
+    }
+
     fn paint(&self, ch: char, cell: Cell, out: &mut [u8]) -> Option<Painted> {
         let face_bytes = self.face_for(ch)?;
         let parsed = ttf_parser::Face::parse(face_bytes.bytes, 0).ok()?;
@@ -514,6 +529,21 @@ impl FontStack {
             }
         }
         None
+    }
+
+    /// Whether the first source that covers `ch` paints colour ink.
+    ///
+    /// This mirrors [`Self::resolve`]'s first-hit rule but asks [`GlyphSource::covers`], which —
+    /// unlike [`GlyphSource::paint`] — does not rasterise. A renderer uses it to decide whether a
+    /// colour attempt is worth making; a character no source covers falls back to the coverage
+    /// tofu block, so it answers `false`.
+    pub fn paints_color(&self, ch: char) -> bool {
+        for source in self.sources {
+            if source.covers(ch) {
+                return source.paints_color();
+            }
+        }
+        false
     }
 
     /// [`Self::resolve`], falling back to [`TOFU`] so a caller always has something to draw.
@@ -663,6 +693,14 @@ pub fn active_stack() -> FontStack {
 /// Resolve `ch` through the active stack, falling back to tofu.
 pub fn resolve(ch: char) -> (GlyphBitmap, Option<&'static str>) {
     active_stack().resolve_or_tofu(ch)
+}
+
+/// Whether the active stack resolves `ch` through a source that paints colour ink.
+///
+/// The predicate form of [`paint_active`]: a caller holding a four-byte scratch can ask this first
+/// and skip the colour rasterisation for the common coverage case.
+pub fn paints_color(ch: char) -> bool {
+    active_stack().paints_color(ch)
 }
 
 /// Paint `ch`'s coverage through the active stack, falling back to tofu.

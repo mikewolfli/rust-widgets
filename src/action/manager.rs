@@ -265,7 +265,15 @@ impl ActionManager {
         if !self.actions.contains_key(&action_id) {
             return false;
         }
-        let chord = normalize_shortcut(&shortcut.into());
+        let shortcut = shortcut.into();
+        // EV-X08: a malformed chord is rejected rather than registered under a silently
+        // truncated/synthesised spelling, so both string paths give the same verdict.
+        let Some(chord) = normalize_shortcut(&shortcut) else {
+            log::warn!(
+                "[action] refusing malformed shortcut '{shortcut}' for action '{action_id}'"
+            );
+            return false;
+        };
         self.observe_chord_collision(&chord, &action_id);
         self.release_shortcuts_for(&action_id);
         self.set_chord(chord, action_id);
@@ -354,8 +362,13 @@ impl ActionManager {
     }
     /// Resolves and triggers an action by shortcut string.
     pub fn trigger_shortcut(&mut self, shortcut: &str) -> bool {
-        let Some(action_id) = self.shortcut_to_action.get(&normalize_shortcut(shortcut)).cloned()
-        else {
+        // EV-X08: a malformed chord can never match a registered one, so it is rejected with the
+        // same verdict the typed path gives rather than normalised into a different key.
+        let Some(chord) = normalize_shortcut(shortcut) else {
+            log::warn!("[action] refusing malformed shortcut '{shortcut}'");
+            return false;
+        };
+        let Some(action_id) = self.shortcut_to_action.get(&chord).cloned() else {
             return false;
         };
         self.trigger_action(&action_id)

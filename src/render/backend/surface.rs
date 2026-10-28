@@ -516,6 +516,14 @@ pub struct SoftwareSurface {
     /// Whether [`Self::depth_buffer`] still holds the previous frame's depths and must be cleared.
     #[cfg(feature = "3d")]
     pub(crate) depth_dirty: bool,
+    /// Scratch space reused by [`Self::draw_mesh_3d`] for the projected triangles.
+    ///
+    /// The projection used to allocate a fresh `Vec` on every mesh draw — once per 3D control per
+    /// frame. Keeping it on the surface, exactly as [`Self::text_coverage_scratch`] is kept for the
+    /// text path, makes the allocation per surface rather than per draw; the vector's capacity only
+    /// grows, so a mesh no larger than the last one pays nothing.
+    #[cfg(feature = "3d")]
+    pub(crate) projected_triangles_scratch: Vec<crate::render::mesh3d::ProjectedTriangle>,
 }
 
 /// How many reusable backdrop buffers a surface keeps (G-06).
@@ -533,6 +541,23 @@ impl SoftwareSurface {
     /// Returns the blur buffers for the next call. The vectors keep their capacity (G-07).
     pub(crate) fn return_blur_scratch(&mut self, scratch: BoxBlurScratch) {
         self.buffer.blur_scratch = Some(scratch);
+    }
+
+    /// Takes the reusable projected-triangle scratch, or an empty vector when none is pooled.
+    #[cfg(feature = "3d")]
+    pub(crate) fn take_projected_triangles_scratch(
+        &mut self,
+    ) -> Vec<crate::render::mesh3d::ProjectedTriangle> {
+        core::mem::take(&mut self.projected_triangles_scratch)
+    }
+
+    /// Returns the projected-triangle scratch for the next mesh draw.
+    #[cfg(feature = "3d")]
+    pub(crate) fn return_projected_triangles_scratch(
+        &mut self,
+        scratch: Vec<crate::render::mesh3d::ProjectedTriangle>,
+    ) {
+        self.projected_triangles_scratch = scratch;
     }
 
     /// Takes the reusable foreground capture buffer (G-06).

@@ -43,9 +43,15 @@ use objc2_app_kit::{
 // Named only by the input handlers and the blit, both of which are `widgets_unstripped` code.
 #[cfg(widgets_unstripped)]
 use objc2_app_kit::{NSEvent, NSGraphicsContext};
-// The blit is the only CGContext consumer, and it is `widgets_unstripped` code.
+// The blit is the only CoreGraphics consumer, and it is `widgets_unstripped` code.
 #[cfg(widgets_unstripped)]
-use objc2_core_graphics::CGContext;
+use objc2_core_foundation::CFRetained;
+#[cfg(widgets_unstripped)]
+use objc2_core_graphics::{
+    CGBitmapContextCreate, CGBitmapContextCreateImage, CGBitmapContextGetBytesPerRow,
+    CGBitmapContextGetData, CGColorSpace, CGContext, CGImage, CGImageAlphaInfo,
+    CGImageByteOrderInfo, CGInterpolationQuality,
+};
 use objc2_foundation::{
     NSArray, NSAttributedString, NSAttributedStringKey, NSDate, NSDefaultRunLoopMode, NSEdgeInsets,
     NSLocale, NSNotification, NSRange, NSRect, NSSize, NSString,
@@ -834,11 +840,24 @@ pub(crate) fn destroy_native_handle(widget_id: u64) -> NativeDestroyOutcome {
     unsafe {
         let object = ptr.0 as *mut AnyObject;
         if object_is_window(object) {
+            // The window's content view is the canvas this cache is keyed by. Evict it before
+            // `close` releases the view, so the bitmap does not outlive its canvas.
+            #[cfg(widgets_unstripped)]
+            {
+                let window: &NSWindow = &*(object as *const NSWindow);
+                if let Some(content_view) = window.contentView() {
+                    evict_bitmap_cache(Retained::as_ptr(&content_view) as *mut NSView as usize);
+                }
+            }
             // `close`, not `orderOut:`: `close` is the symmetric counterpart of
             // `makeKeyAndOrderFront:`, releasing the window and its views. An
             // `orderOut:` alone would hide it but leave the object retained.
             let _: () = msg_send![object, close];
         } else {
+            #[cfg(widgets_unstripped)]
+            {
+                evict_bitmap_cache(object as usize);
+            }
             let _: () = msg_send![object, removeFromSuperview];
         }
         let _: () = msg_send![object, release];
@@ -856,6 +875,22 @@ fn release_closed_window(host_id: u64) {
     let removed =
         NATIVE_VIEWS.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).remove(&host_id);
     if let Some(ptr) = removed {
+        // The user closed the window, which releases its content view. Evict that canvas's cached
+        // bitmap now so the context does not outlive the view it paints.
+        #[cfg(widgets_unstripped)]
+        {
+            // SAFETY: `ptr` is the live window this backend created, and the caller checked the
+            // main thread, so reading its content view is valid.
+            unsafe {
+                let object = ptr.0 as *mut AnyObject;
+                if object_is_window(object) {
+                    let window: &NSWindow = &*(object as *const NSWindow);
+                    if let Some(content_view) = window.contentView() {
+                        evict_bitmap_cache(Retained::as_ptr(&content_view) as *mut NSView as usize);
+                    }
+                }
+            }
+        }
         PENDING_NATIVE_RELEASES.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).push(ptr);
     }
 }
@@ -922,13 +957,14 @@ define_class!(
         /// Mirrors `macos/canvas.rs::draw_rect`: the size comes from `bounds`, not
         /// from the dirty rectangle AppKit passes, because a partial invalidation
         /// hands a rect smaller than the view and sizing the frame from it would
-        /// stretch the image into the wrong place.
+        /// stretch the image into the wrong place. The rectangle still selects the
+        /// row band that is converted and clipped, so a small invalidation stays small.
         #[unsafe(method(drawRect:))]
-        fn draw_rect(&self, _dirty_rect: NSRect) {
+        fn draw_rect(&self, dirty_rect: NSRect) {
             // A panic must not unwind through AppKit: a foreign exception cannot
             // cross the Objective-C frame, so it is caught and logged here.
             let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                self.blit_frame();
+                self.blit_frame(dirty_rect);
             }));
             if outcome.is_err() {
                 log::error!("[macos-objc2] canvas: panic while drawing a self-drawn widget");
@@ -1234,7 +1270,10 @@ define_class!(
 impl RustWidgetsObjc2CanvasView {
     /// Renders one frame for the carried widget id and draws it into the view's
     /// current CoreGraphics context.
-    fn blit_frame(&self) {
+    ///
+    /// `dirty_rect` is AppKit's damage for this pass; it becomes the row band the blit converts
+    /// and clips to. `None` from `dirty_row_range` means the whole frame is presented.
+    fn blit_frame(&self, dirty_rect: NSRect) {
         let widget_id = self.ivars().widget_id.get();
         if widget_id == 0 {
             log::error!("[macos-objc2] canvas: drawRect: on a view with no widget id");
@@ -1290,8 +1329,14 @@ impl RustWidgetsObjc2CanvasView {
                 );
                 return;
             };
+            // The cached frame is a full frame, so limiting conversion to the damaged rows is
+            // safe: rows outside the band are neither converted nor composited (the blit clips).
+            let dirty_rows = dirty_row_range(dirty_rect, width, height);
             let cg_context = context.CGContext();
-            if !blit_rgba(&cg_context, width, height, &frame) {
+            // The view's own address is the cache key: two canvases of the same size must not
+            // share a bitmap, and a destroyed/recreated view gets a fresh entry.
+            let canvas_key = self as *const Self as usize;
+            if !blit_rgba(&cg_context, canvas_key, width, height, &frame, dirty_rows) {
                 log::error!("[macos-objc2] canvas: drawRect: blit failed for {width}x{height}");
             }
         }
@@ -1663,32 +1708,124 @@ fn translate_key_event(event: &NSEvent) -> crate::platform::macos::accelerator::
     )
 }
 
+/// The reusable CoreGraphics bitmap behind [`blit_rgba`], keyed by canvas view.
+///
+/// A blit used to create a whole-frame bitmap context per `drawRect:` and release it at the end.
+/// The context's storage is overwritten in full each frame, so it can live as long as the canvas
+/// does at a given size. `CFRetained` releases the context exactly once when the entry is dropped —
+/// on a size change, on canvas teardown, or with the thread. This is the objc2 spelling of the
+/// `BITMAP_CACHE` in `macos/cg.rs`.
+#[cfg(widgets_unstripped)]
+struct BitmapCache {
+    context: CFRetained<CGContext>,
+    /// Held for the context's lifetime; `CGBitmapContextCreate` may not retain it.
+    _color_space: CFRetained<CGColorSpace>,
+    width: u32,
+    height: u32,
+}
+
+#[cfg(widgets_unstripped)]
+impl BitmapCache {
+    fn new(width: u32, height: u32) -> Option<Self> {
+        let color_space = CGColorSpace::new_device_rgb()?;
+        let bitmap_info =
+            CGImageAlphaInfo::PremultipliedLast.0 | CGImageByteOrderInfo::Order32Big.0;
+        // SAFETY: null data lets CoreGraphics own the pixel buffer; both dimensions are the
+        // caller-checked frame size and the colour space is live for the call.
+        let context = unsafe {
+            CGBitmapContextCreate(
+                std::ptr::null_mut(),
+                width as usize,
+                height as usize,
+                8,
+                width as usize * 4,
+                Some(&color_space),
+                bitmap_info,
+            )
+        }?;
+        Some(Self { context, _color_space: color_space, width, height })
+    }
+}
+
+#[cfg(widgets_unstripped)]
+thread_local! {
+    /// One persistent bitmap per live canvas. Removed when the canvas is destroyed, and rebuilt
+    /// when its size changes; the cache never serves a stale size.
+    static BITMAP_CACHE: std::cell::RefCell<HashMap<usize, BitmapCache>> =
+        std::cell::RefCell::new(HashMap::new());
+}
+
+/// Drops the bitmap cached for `canvas`, releasing its context exactly once.
+#[cfg(widgets_unstripped)]
+fn evict_bitmap_cache(canvas: usize) {
+    BITMAP_CACHE.with(|slot| {
+        let _ = slot.borrow_mut().remove(&canvas);
+    });
+}
+
+/// Translates AppKit's dirty rectangle into a half-open band of frame rows.
+///
+/// The canvas reports `isFlipped == NO`, so `drawRect:`'s rectangle counts up from the view's
+/// bottom-left while a frame buffer starts at its top row. The intersection is clamped to the
+/// pixel bounds; `None` means "present the whole frame", which is also the answer for the
+/// null/empty rectangle AppKit may pass.
+#[cfg(widgets_unstripped)]
+fn dirty_row_range(dirty: NSRect, width: u32, height: u32) -> Option<(usize, usize)> {
+    if width == 0 || height == 0 {
+        return None;
+    }
+    if !dirty.origin.x.is_finite()
+        || !dirty.origin.y.is_finite()
+        || !dirty.size.width.is_finite()
+        || !dirty.size.height.is_finite()
+        || dirty.size.width <= 0.0
+        || dirty.size.height <= 0.0
+    {
+        return None;
+    }
+    let width = width as f64;
+    let height = height as f64;
+    let min_x = dirty.origin.x.max(0.0);
+    let max_x = (dirty.origin.x + dirty.size.width).min(width);
+    let min_y = dirty.origin.y.max(0.0);
+    let max_y = (dirty.origin.y + dirty.size.height).min(height);
+    if max_x <= min_x || max_y <= min_y {
+        return None;
+    }
+    if min_x <= 0.0 && max_x >= width && min_y <= 0.0 && max_y >= height {
+        return None;
+    }
+    let first_row = (height - max_y).floor().max(0.0) as usize;
+    let last_row = (height - min_y).ceil().min(height) as usize;
+    (first_row < last_row).then_some((first_row, last_row))
+}
+
 /// Blits a top-down, straight-alpha RGBA frame into a CoreGraphics context.
 ///
-/// The two details the caller should not have to think about:
+/// The details the caller should not have to think about:
 ///
 /// 1. **Premultiplication** — the frame is straight alpha; `PremultipliedLast` is
-///    not, so RGB is scaled by alpha.
-/// 2. **Ownership** — the colour space, bitmap context and image are all released
-///    here, including on the early-return paths.
+///    not, so RGB is scaled by alpha. Fully opaque rows are copied verbatim.
+/// 2. **Reuse** — the bitmap context and colour space are cached per canvas and size, as in
+///    `macos/cg.rs`; only a size change rebuilds them.
+/// 3. **Damage** — `dirty_rows` limits both the conversion and the composited clip. `None`
+///    presents the whole frame.
 ///
 /// The image is drawn at its own pixel size (a 1:1 blit). Like
 /// `macos/cg.rs::blit_rgba`, no CTM flip is applied: the canvas reports
 /// `isFlipped == NO`, so the frame's row order matches the context's.
 ///
-/// Uses `objc2-core-graphics` (already a dependency of the `macos` feature)
-/// rather than re-declaring the FFI the cocoa backend keeps in `macos/cg.rs`.
-///
 /// Returns `false` when a CoreGraphics object cannot be created or the frame is
 /// too small for the requested size.
 #[cfg(widgets_unstripped)]
-fn blit_rgba(context: &CGContext, width: u32, height: u32, frame: &[u8]) -> bool {
-    use objc2_core_graphics::{
-        CGBitmapContextCreate, CGBitmapContextCreateImage, CGBitmapContextGetBytesPerRow,
-        CGBitmapContextGetData, CGColorSpace, CGContext, CGImage, CGImageAlphaInfo,
-        CGImageByteOrderInfo, CGInterpolationQuality,
-    };
-
+fn blit_rgba(
+    context: &CGContext,
+    canvas_key: usize,
+    width: u32,
+    height: u32,
+    frame: &[u8],
+    dirty_rows: Option<(usize, usize)>,
+) -> bool {
     if width == 0 || height == 0 {
         return false;
     }
@@ -1702,32 +1839,25 @@ fn blit_rgba(context: &CGContext, width: u32, height: u32, frame: &[u8]) -> bool
         return false;
     }
 
-    let Some(color_space) = CGColorSpace::new_device_rgb() else {
-        log::error!("[macos-objc2] canvas: CGColorSpaceCreateDeviceRGB returned null");
-        return false;
-    };
-
-    // `kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big` gives an in-memory R, G, B, A
-    // byte order — the order the software renderer produces. The sibling raw-objc backend
-    // (`platform::macos::cg`) shipped this pairing with `Order32Little`, which normalises to
-    // A, B, G, R and put the alpha byte in the red channel: every window came out tinted with
-    // the theme's error red while the frame handed to the blit was correct.
-    let bitmap_info = CGImageAlphaInfo::PremultipliedLast.0 | CGImageByteOrderInfo::Order32Big.0;
-    // SAFETY: every pointer argument is either null (let CG allocate) or a value
-    // derived from the borrowed `frame` and the live colour space.
-    let Some(bitmap) = (unsafe {
-        CGBitmapContextCreate(
-            std::ptr::null_mut(),
-            width as usize,
-            height as usize,
-            8,
-            width as usize * 4,
-            Some(&color_space),
-            bitmap_info,
-        )
-    }) else {
+    // The reusable context is the objc2 form of `macos::cg`'s BITMAP_CACHE: keyed by the canvas,
+    // rebuilt only when the size changes, and evicted when the canvas is destroyed.
+    let bitmap = BITMAP_CACHE.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        let stale = slot
+            .get(&canvas_key)
+            .is_none_or(|cache| cache.width != width || cache.height != height);
+        if stale {
+            // Replacing the entry drops the old context and colour space exactly once.
+            let _ = slot.remove(&canvas_key);
+            if let Some(cache) = BitmapCache::new(width, height) {
+                slot.insert(canvas_key, cache);
+            }
+        }
+        slot.get(&canvas_key).map(|cache| cache.context.clone())
+    });
+    let Some(bitmap) = bitmap else {
         log::error!(
-            "[macos-objc2] canvas: CGBitmapContextCreate returned null for {width}x{height}"
+            "[macos-objc2] canvas: could not create the bitmap context for {width}x{height}"
         );
         return false;
     };
@@ -1735,10 +1865,31 @@ fn blit_rgba(context: &CGContext, width: u32, height: u32, frame: &[u8]) -> bool
     // Copy in with premultiplied alpha, row by row using the bitmap's **actual**
     // stride: CoreGraphics may pad rows once the width crosses an alignment
     // boundary, and assuming `width * 4` shifts every row after the first.
+    // SAFETY: `bitmap` is a live bitmap context created at `width`x`height`; when the pixel
+    // buffer is non-null it is writable for `height` rows of `stride` bytes.
     let destination = unsafe { CGBitmapContextGetData(Some(&bitmap)) } as *mut u8;
     if !destination.is_null() {
+        // SAFETY: `bitmap` is the live bitmap context queried immediately above.
         let stride = unsafe { CGBitmapContextGetBytesPerRow(Some(&bitmap)) };
-        for y in 0..height as usize {
+        let (first_row, last_row) = dirty_rows.unwrap_or((0, height as usize));
+        for y in first_row.min(height as usize)..last_row.min(height as usize) {
+            let source_row = y * width as usize * 4;
+            let target_row = y * stride;
+            // An opaque row needs no premultiplication, so it is copied verbatim. That is both
+            // exact and skips three divisions per pixel for the common fully-opaque row.
+            let opaque = (0..width as usize).all(|x| frame[source_row + x * 4 + 3] == 255);
+            if opaque {
+                // SAFETY: the source row was bounds-checked against `frame.len()` above, and
+                // each destination row is at least `width * 4` bytes because `stride >= width * 4`.
+                unsafe {
+                    std::ptr::copy_nonoverlapping(
+                        frame.as_ptr().add(source_row),
+                        destination.add(target_row),
+                        width as usize * 4,
+                    );
+                }
+                continue;
+            }
             for x in 0..width as usize {
                 let source = (y * width as usize + x) * 4;
                 let target = y * stride + x * 4;
@@ -1756,6 +1907,8 @@ fn blit_rgba(context: &CGContext, width: u32, height: u32, frame: &[u8]) -> bool
         }
     }
 
+    // SAFETY: `bitmap` is the live bitmap context just written, so CoreGraphics can snapshot a
+    // consistent image of it; a null return is handled below.
     let Some(image) = (unsafe { CGBitmapContextCreateImage(Some(&bitmap)) }) else {
         log::error!("[macos-objc2] canvas: CGBitmapContextCreateImage returned null");
         return false;
@@ -1766,7 +1919,24 @@ fn blit_rgba(context: &CGContext, width: u32, height: u32, frame: &[u8]) -> bool
     // `CGRect`, so the rect built from the image's own pixel size can be passed
     // straight to `CGContextDrawImage`.
     unsafe {
+        CGContext::save_g_state(Some(context));
         CGContext::set_interpolation_quality(Some(context), CGInterpolationQuality::None);
+        // Clip to the same band that received pixels, so rows outside AppKit's dirty rectangle are
+        // never composited from the cached bitmap. `height` is the view's pixel height and the
+        // context is bottom-up, so the top-down row band maps to `y = height - last_row`.
+        if let Some((first_row, last_row)) = dirty_rows {
+            let first_row = first_row.min(height as usize);
+            let last_row = last_row.min(height as usize);
+            if first_row < last_row {
+                CGContext::clip_to_rect(
+                    Some(context),
+                    NSRect::new(
+                        objc2_foundation::NSPoint::new(0.0, (height as usize - last_row) as f64),
+                        NSSize::new(width as f64, (last_row - first_row) as f64),
+                    ),
+                );
+            }
+        }
         let image_width = CGImage::width(Some(&image)) as f64;
         let image_height = CGImage::height(Some(&image)) as f64;
         let rect = NSRect::new(
@@ -1774,6 +1944,7 @@ fn blit_rgba(context: &CGContext, width: u32, height: u32, frame: &[u8]) -> bool
             NSSize::new(image_width, image_height),
         );
         CGContext::draw_image(Some(context), rect, Some(&image));
+        CGContext::restore_g_state(Some(context));
     }
     true
 }
@@ -1958,6 +2129,8 @@ pub(crate) fn mount_surface_native(
         .get(&parent)
         .copied()
     {
+        // SAFETY: the registry only stores live AppKit objects created by this module, and the
+        // main-thread guard above satisfies `object_is_window`'s precondition.
         Some(ptr) if unsafe { object_is_window(ptr.0 as *mut AnyObject) } => ptr.0 as *mut NSWindow,
         Some(_) => {
             log::error!(
@@ -2103,6 +2276,11 @@ pub(crate) fn unmount_surface_native(id: u64) -> bool {
     unsafe {
         let view: &NSView = &*(ptr.0 as *const NSView);
         view.removeFromSuperview();
+    }
+    // The canvas is gone; dropping its cached bitmap releases the context exactly once.
+    #[cfg(widgets_unstripped)]
+    {
+        evict_bitmap_cache(ptr.0 as usize);
     }
     true
 }

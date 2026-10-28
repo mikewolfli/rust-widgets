@@ -703,6 +703,10 @@ impl Platform for MacOSPlatform {
         let handle = crate::compat::lock(&self.handles).remove(&widget_id);
         // Drop the per-widget accessibility registration that `register_handle` added.
         self.a11y_bridge.unregister_handle(widget_id);
+        // A destroyed window must not stay reachable through the canvas side table: its cached
+        // content-view pointer is stale once the window is closed, and a repaint could route there.
+        #[cfg(widgets_unstripped)]
+        super::canvas::forget_window_canvas(widget_id);
         // Native teardown for a window this backend really created: close it (so it
         // leaves the screen) and release the `alloc`-owned reference `create_window`
         // took. Without this, `destroy_widget` only deleted a `Copy` `usize` bookkeeping
@@ -829,6 +833,9 @@ impl Platform for MacOSPlatform {
             #[cfg(widgets_unstripped)]
             if let Some(canvas) = super::canvas::make_window_canvas(id, width, height) {
                 let _: () = msg_send![window, setContentView: canvas];
+                // The window retains its content view. Release the `alloc` reference
+                // `make_window_canvas` took so the canvas is not leaked for the window's lifetime.
+                super::canvas::release_canvas_view(canvas);
             }
             window.makeKeyAndOrderFront_(nil);
             let _: () = msg_send![window, display];

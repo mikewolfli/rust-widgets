@@ -32,7 +32,9 @@
 
 use crate::core::{Rect, Size};
 use crate::render::math3d::Mat4;
-use crate::render::mesh3d::{project_mesh, Camera, Mesh3D, ProjectedTriangle, ProjectedVertex};
+use crate::render::mesh3d::{
+    project_mesh_into, Camera, Mesh3D, ProjectedTriangle, ProjectedVertex,
+};
 use crate::render::pipeline::pixel_ops::write_pixel_with_mode;
 use crate::render::pipeline::u32_to_i32_saturating;
 use crate::render::{BlendMode, SoftwareSurface};
@@ -57,8 +59,12 @@ impl SoftwareSurface {
         {
             return;
         }
-        let triangles = project_mesh(mesh, model, camera, viewport, size);
+        // Take the surface's scratch instead of allocating: the same vector is reused by every
+        // mesh draw and every frame, and only a mesh larger than any seen before grows it.
+        let mut triangles = self.take_projected_triangles_scratch();
+        project_mesh_into(mesh, model, camera, viewport, size, &mut triangles);
         if triangles.is_empty() {
+            self.return_projected_triangles_scratch(triangles);
             return;
         }
         self.ensure_depth_buffer(size);
@@ -70,6 +76,7 @@ impl SoftwareSurface {
         for triangle in &triangles {
             rasterize_triangle(triangle, frame, depth, width, size.height, viewport, clip, blend);
         }
+        self.return_projected_triangles_scratch(triangles);
     }
 
     /// Resizes the depth buffer and fills it with the far value when it is stale.

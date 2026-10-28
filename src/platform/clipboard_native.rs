@@ -211,6 +211,9 @@ pub mod macos {
                     ClipboardContent::Text(text) => {
                         let item: id = msg_send![class!(NSPasteboardItem), alloc];
                         let item: id = msg_send![item, init];
+                        // `init` hands back a +1 reference; `writeObjects:` only retains what it
+                        // keeps, so ownership is handed to the enclosing pool like `nsstring` above.
+                        let item: id = item.autorelease();
                         let ns_string = nsstring(text);
                         let success: BOOL = msg_send![item, setString: ns_string forType: nsstring("public.utf8-plain-text")];
                         if success == YES {
@@ -229,6 +232,9 @@ pub mod macos {
                     ClipboardContent::Html { html, plain } => {
                         let item: id = msg_send![class!(NSPasteboardItem), alloc];
                         let item: id = msg_send![item, init];
+                        // Same ownership rule as the `Text` arm: the pasteboard is not the owner of
+                        // the alloc/init reference, so the pool takes it over.
+                        let item: id = item.autorelease();
 
                         let ns_html = nsstring(html);
                         let html_ok: BOOL =

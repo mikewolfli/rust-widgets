@@ -451,9 +451,9 @@ unsafe fn paint_canvas(hwnd: HWND) {
     };
     // `render_frame_cached` rather than `render_frame`: it carries the previous frame
     // forward and repaints only the damage, so a widget in `RepaintMode::Dirty` does
-    // not re-rasterise every pixel on each `WM_PAINT`. The returned frame is complete
-    // — the swap in `blit_frame` still walks it — because `StretchDIBits` presents a
-    // whole bitmap; the saving is in what was drawn, not in what is converted.
+    // not re-rasterise every pixel on each `WM_PAINT`. The returned frame is complete,
+    // but `BeginPaint`'s `rcPaint` is handed to `blit_frame_region`, so only the damaged
+    // part of the cached frame is converted and transferred to the screen.
     // `render_frame_cached_shared`: an unchanged frame is the cache's own `Rc`, so this
     // paints it without duplicating the whole surface first.
     let Some(frame) = crate::widget::runtime::render_frame_cached_shared(
@@ -469,7 +469,7 @@ unsafe fn paint_canvas(hwnd: HWND) {
         return;
     };
 
-    blit_frame(hdc, width, height, frame.as_slice());
+    blit_frame_region(hdc, width, height, frame.as_slice(), paint.rcPaint);
     EndPaint(hwnd, &paint);
 }
 
@@ -503,6 +503,31 @@ pub(crate) unsafe fn client_size(hwnd: HWND) -> Option<(u32, u32)> {
 /// # Safety
 /// `hdc` must be a live device context and `frame` must hold at least `width * height * 4` bytes.
 pub(crate) unsafe fn blit_frame(hdc: HDC, width: u32, height: u32, frame: &[u8]) {
+    blit_frame_region(
+        hdc,
+        width,
+        height,
+        frame,
+        RECT { left: 0, top: 0, right: width as i32, bottom: height as i32 },
+    );
+}
+
+/// Blits the `region` of a top-down RGBA frame into `hdc`.
+///
+/// `region` is in the frame's own (client) coordinates. The whole frame is still converted
+/// to BGRA — the DIB stride must stay the full frame width — but only the requested source
+/// and destination rectangles are transferred, so an accurate dirty rectangle avoids
+/// re-uploading the unchanged part of the window.
+///
+/// # Safety
+/// `hdc` must be a live device context and `frame` must hold at least `width * height * 4` bytes.
+pub(crate) unsafe fn blit_frame_region(
+    hdc: HDC,
+    width: u32,
+    height: u32,
+    frame: &[u8],
+    region: RECT,
+) {
     if width == 0 || height == 0 {
         return;
     }
@@ -531,6 +556,18 @@ pub(crate) unsafe fn blit_frame(hdc: HDC, width: u32, height: u32, frame: &[u8])
         );
         return;
     }
+
+    // Clip the requested rectangle to the surface: Win32 can report damage that touches
+    // the window border, and an empty rectangle means there is nothing to present.
+    let left = region.left.max(0).min(width_i32);
+    let top = region.top.max(0).min(height_i32);
+    let right = region.right.max(0).min(width_i32);
+    let bottom = region.bottom.max(0).min(height_i32);
+    if right <= left || bottom <= top {
+        return;
+    }
+    let region_width = right - left;
+    let region_height = bottom - top;
 
     // 32-bit top-down BGRA. The frame is RGBA, so red and blue are swapped while
     // copying; alpha is forced opaque because StretchDIBits with BI_RGB ignores it.
@@ -561,14 +598,14 @@ pub(crate) unsafe fn blit_frame(hdc: HDC, width: u32, height: u32, frame: &[u8])
 
         let scanned = StretchDIBits(
             hdc,
-            0,
-            0,
-            width_i32,
-            height_i32,
-            0,
-            0,
-            width_i32,
-            height_i32,
+            left,
+            top,
+            region_width,
+            region_height,
+            left,
+            top,
+            region_width,
+            region_height,
             buffer.as_ptr() as *const _,
             &info as *const _ as *const BITMAPINFO,
             DIB_RGB_COLORS,

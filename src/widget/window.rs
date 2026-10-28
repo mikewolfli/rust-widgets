@@ -447,10 +447,18 @@ impl EventHandler for Window {
                 // The close dot is the first of the three painted buttons. Tapping it is the
                 // only window action the self-drawn chrome offers: minimise/maximise are the
                 // window manager's job and remain reachable through `set_window_state`.
-                let dot = self.close_button_size.clamp(6, 20) as i32;
-                let y = (self.title_bar_height as i32 - dot) / 2;
-                let close = Rect::new(8, y, dot as u32, dot as u32);
-                if close.contains_point(*pos) {
+                //
+                // The box comes from the same `WindowChromeGeometry` the paint path uses, so the
+                // button cannot be drawn where it cannot be clicked.
+                let bounds = self.geometry();
+                let client = Rect::new(0, 0, bounds.width, bounds.height);
+                let chrome = crate::widget::window_decorations::WindowChromeGeometry::compute(
+                    client,
+                    self.title_bar_height,
+                    self.close_button_size,
+                    self.button_spacing,
+                );
+                if chrome.close.contains_point(*pos) {
                     self.close();
                     return;
                 }
@@ -561,13 +569,16 @@ impl Draw for Window {
         // Self-drawn chrome for a borderless window. It is opt-in precisely because a
         // window-manager-decorated window must not paint a second title bar inside itself.
         if self.decorated {
-            let bar_height = self.title_bar_height.min(rect.height);
-            let bar = Rect::new(0, 0, rect.width, bar_height);
+            // One geometry for the paint path and the close-button hit test; the module that owns
+            // the arithmetic is the shared answer for both.
+            let chrome = crate::widget::window_decorations::WindowChromeGeometry::compute(
+                client,
+                self.title_bar_height,
+                self.close_button_size,
+                self.button_spacing,
+            );
             let title_fill = bg_color.blend(&bg_color.contrast_color(), 0.06);
-            context.fill_rect(bar, title_fill);
-            let dot = self.close_button_size.clamp(6, 20) as i32;
-            let y = (bar_height as i32 - dot) / 2;
-            let gap = (self.button_spacing.max(self.close_button_size + 6)) as i32;
+            context.fill_rect(chrome.title_bar, title_fill);
             for (index, color) in [
                 Color::rgba(255, 95, 86, 255),
                 Color::rgba(255, 189, 46, 255),
@@ -576,12 +587,18 @@ impl Draw for Window {
             .into_iter()
             .enumerate()
             {
-                let x = 8 + index as i32 * gap;
-                context.fill_circle_aa(Point::new(x + dot / 2, y + dot / 2), dot as u32 / 2, color);
+                let button = match index {
+                    0 => chrome.close,
+                    1 => chrome.minimize,
+                    _ => chrome.maximize,
+                };
+                let radius = (button.width / 2).max(1);
+                let center = Point::new(button.x + radius as i32, button.y + radius as i32);
+                context.fill_circle_aa(center, radius, color);
             }
             if !self.title.is_empty() {
                 let font = crate::widget::metrics::role_font(self.style(), 13.0);
-                let line = context.text_line(bar, &font);
+                let line = context.text_line(chrome.title_bar, &font);
                 // Borrow the title: the fitted helper returns a `Cow`, so cloning the `String`
                 // here was an allocation per frame for a value that is only read (G-320).
                 context.draw_text_fitted_cow(

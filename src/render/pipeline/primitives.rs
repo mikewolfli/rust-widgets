@@ -1438,15 +1438,20 @@ impl SoftwareSurface {
                 // Colour ink needs the four-byte scratch, and the two calls are mutually exclusive
                 // by what each one's buffer means: `blend_color_glyph` refuses coverage ink and
                 // `blend_painted_glyph` refuses colour ink, so trying one and then the other draws
-                // each cluster exactly once whichever kind of face answered for it.
+                // each cluster exactly once whichever kind of face answered for it. The stack
+                // predicate answers the same question without painting: a character the stack
+                // resolves through a coverage face can skip the colour attempt entirely, which is
+                // what stops the common all-text case paying a full rasterisation per glyph that
+                // was then thrown away.
                 #[cfg(feature = "fonts-emoji-color")]
-                let drawn = blend_color_glyph(
-                    ch,
-                    pen_x.round() as i32,
-                    origin.y,
-                    &mut color_scratch,
-                    &mut config,
-                );
+                let drawn = crate::render::text::paints_color(ch)
+                    && blend_color_glyph(
+                        ch,
+                        pen_x.round() as i32,
+                        origin.y,
+                        &mut color_scratch,
+                        &mut config,
+                    );
                 #[cfg(not(feature = "fonts-emoji-color"))]
                 let drawn = false;
                 // The glyph atlas answers only the requests it can reproduce byte for byte — see

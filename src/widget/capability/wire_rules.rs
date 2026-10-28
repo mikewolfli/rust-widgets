@@ -12,17 +12,21 @@
 //!
 //! # Why the table is data rather than a `match`
 //!
-//! There are two consumers of this rule set:
+//! The production consumer is the generator (`src/designer/generator.rs`): it asks
+//! [`compatibility`] at generation time for every declared wire (both the published `events`
+//! route and the `on_*` marker route) and records a `GenerationGapReason::IncompatibleWire` when
+//! the verdict is not offered. Expressing the rules as an array rather than arms inside that one
+//! caller keeps the decision readable as data for the designer this module exists for.
 //!
-//! 1. **The runtime** (`src/json/`, `src/view/`), which validates a wire when a project loads;
-//! 2. **The generator** (BLUE19 T-23), which must decide at *generation* time whether to emit a
-//!    direct assignment or a conversion, because a generated program cannot ask a question the
-//!    generator already knows the answer to.
+//! The JSON loader (`src/json/`) is deliberately **not** a consumer of the type table: it validates
+//! the *name* of a published event against the capability schema (`bind_published_event`) and then
+//! binds the control's own dynamic signal, which delivers whatever payload the event declares. The
+//! type question therefore only exists where a value has to reach a typed destination — the
+//! generation-time decision above.
 //!
-//! A `match` inside the runtime would be write-once-read-once for consumer 1 and invisible to
-//! consumer 2, so the two would drift into disagreeing about which wires are legal — and a project
-//! the designer accepted would fail to generate. The rules below are therefore an array of values,
-//! walked by both.
+//! The table is `pub` for a designer that does not exist in this repository yet: it will read
+//! [`WIRE_RULES`] to grey out a wire it cannot offer and show the rule's reason. Until then the
+//! generator is its only caller, and saying so is more honest than implying a second one.
 //!
 //! # What D5/D6 decided (recorded here, since the plan left them open)
 //!
@@ -88,7 +92,7 @@ pub struct WireRule {
 
 use crate::widget::capability::types::PropertyValueKind as K;
 
-/// The rule set, as data. Walked by [`compatibility`]; also readable by the generator.
+/// The rule set, as data. Walked by [`compatibility`]; also readable by a designer.
 ///
 /// # The shape of the table
 ///

@@ -144,6 +144,8 @@ unsafe extern "C" {
     pub(crate) fn CGContextRestoreGState(context: CGContextRef);
     /// Draws an image into `rect`, applying the current CTM and clip.
     pub(crate) fn CGContextDrawImage(context: CGContextRef, rect: CGRect, image: CGImageRef);
+    /// Intersects the current clip region with `rect`.
+    pub(crate) fn CGContextClipToRect(context: CGContextRef, rect: CGRect);
     /// Returns the bitmap context's actual row stride in bytes.
     pub(crate) fn CGBitmapContextGetBytesPerRow(context: CGContextRef) -> usize;
 
@@ -223,6 +225,11 @@ thread_local! {
 ///
 /// Returns `false` (after logging) when a CoreGraphics object cannot be created.
 ///
+/// `dirty_rows` names the half-open row band `[first, last)` AppKit reported as
+/// damaged, or `None` for a full-frame presentation. Only that band is converted into the
+/// cached bitmap and the destination context is clipped to the same band, so a small
+/// invalidation costs a small band instead of the whole window.
+///
 /// # Safety
 ///
 /// `context` must be a live `CGContextRef` valid for drawing with the current
@@ -232,6 +239,7 @@ pub(crate) unsafe fn blit_rgba(
     width: u32,
     height: u32,
     frame: &[u8],
+    dirty_rows: Option<(usize, usize)>,
 ) -> bool {
     if context.is_null() || width == 0 || height == 0 {
         return false;
@@ -275,7 +283,23 @@ pub(crate) unsafe fn blit_rgba(
     let destination = CGBitmapContextGetData(bitmap) as *mut u8;
     if !destination.is_null() {
         let stride = CGBitmapContextGetBytesPerRow(bitmap);
-        for y in 0..height as usize {
+        let (first_row, last_row) = dirty_rows.unwrap_or((0, height as usize));
+        for y in first_row.min(height as usize)..last_row.min(height as usize) {
+            let source_row = y * width as usize * 4;
+            let target_row = y * stride;
+            // An opaque row needs no premultiplication, so it is copied verbatim. That is both
+            // exact and skips three divisions per pixel for the common fully-opaque row.
+            let opaque = (0..width as usize).all(|x| frame[source_row + x * 4 + 3] == 255);
+            if opaque {
+                // SAFETY: the source band was bounds-checked against `frame.len()` above, and
+                // each destination row is at least `width * 4` bytes because `stride >= width * 4`.
+                std::ptr::copy_nonoverlapping(
+                    frame.as_ptr().add(source_row),
+                    destination.add(target_row),
+                    width as usize * 4,
+                );
+                continue;
+            }
             for x in 0..width as usize {
                 let source = (y * width as usize + x) * 4;
                 let target = y * stride + x * 4;
@@ -295,12 +319,28 @@ pub(crate) unsafe fn blit_rgba(
     }
 
     CGContextSaveGState(context);
-    CGContextSetInterpolationQuality(context, 0); // nearest: 1:1 blit, no blur
-                                                  // Draw at the image's **own pixel size**. The frame and the image are both
-                                                  // `width × height` pixels, and the destination bitmap is the same size, so
-                                                  // this is a 1:1 blit. Passing `width/height` as f64 was equivalent here only
-                                                  // by luck; deriving the rect from the image keeps the blit correct even if a
-                                                  // caller's frame is larger than the mount area.
+    // Nearest-neighbour: this is a 1:1 blit, so no blur.
+    CGContextSetInterpolationQuality(context, 0);
+    // Clip to the same band that received pixels. `height` is the view's pixel height and the
+    // context is bottom-up, so the top-down row band maps to `y = height - last_row`.
+    if let Some((first_row, last_row)) = dirty_rows {
+        let first_row = first_row.min(height as usize);
+        let last_row = last_row.min(height as usize);
+        if first_row < last_row {
+            CGContextClipToRect(
+                context,
+                CGRect {
+                    origin: CGPoint { x: 0.0, y: (height as usize - last_row) as f64 },
+                    size: CGSize { width: width as f64, height: (last_row - first_row) as f64 },
+                },
+            );
+        }
+    }
+    // Draw at the image's **own pixel size**. The frame and the image are both
+    // `width × height` pixels, and the destination bitmap is the same size, so
+    // this is a 1:1 blit. Passing `width/height` as f64 was equivalent here only
+    // by luck; deriving the rect from the image keeps the blit correct even if a
+    // caller's frame is larger than the mount area.
     let image_width = CGImageGetWidth(image) as f64;
     let image_height = CGImageGetHeight(image) as f64;
     CGContextDrawImage(context, CGRect::new(image_width, image_height), image);
@@ -455,7 +495,7 @@ mod tests {
         let empty: [u8; 0] = [];
         // Null context short-circuits before any CoreGraphics call.
         // SAFETY: the null context is rejected before CoreGraphics is touched; `empty` is a valid zero-length slice.
-        assert!(!unsafe { blit_rgba(std::ptr::null_mut(), 4, 4, &empty) });
+        assert!(!unsafe { blit_rgba(std::ptr::null_mut(), 4, 4, &empty, None) });
     }
 
     /// Renders a deliberately asymmetric frame through [`blit_rgba`] into a
@@ -500,7 +540,7 @@ mod tests {
             );
             assert!(!context.is_null(), "destination context");
 
-            assert!(blit_rgba(context, WIDTH, HEIGHT, &frame), "blit must succeed");
+            assert!(blit_rgba(context, WIDTH, HEIGHT, &frame, None), "blit must succeed");
 
             // The destination bitmap context inherits the host display's backing
             // scale on Retina hardware, so a blitted source pixel occupies
@@ -580,7 +620,7 @@ mod tests {
             );
             assert!(!destination.is_null(), "BGRA destination context");
 
-            assert!(blit_rgba(destination, WIDTH, HEIGHT, &frame), "blit must succeed");
+            assert!(blit_rgba(destination, WIDTH, HEIGHT, &frame, None), "blit must succeed");
 
             let data = CGBitmapContextGetData(destination) as *mut u8;
             assert!(!data.is_null(), "bitmap data");

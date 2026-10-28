@@ -21,8 +21,56 @@
 //! The JSON side (`src/json/event_route.rs`) is outside this module's write scope; it still
 //! rejects `on_double_click` and needs to route that key to the published `double_clicked` name.
 
+#[cfg(full_widgets)]
+use crate::compat::{lock, Mutex, Vec};
 use crate::core::ObjectId;
 use crate::core::Point;
+#[cfg(full_widgets)]
+use alloc::sync::{Arc, Weak};
+
+/// Process-wide weak handles to the tracker of every live [`DoubleClickTracker`] owner (EV-X03).
+///
+/// Widget destruction happens in `widget::runtime`, which has no route to the loop's tracker:
+/// the tracker lives on the host thread (and moves onto the loop thread while it runs), while
+/// `unregister` is a plain registry operation. The tracker is shared through an `Arc`, so a weak
+/// handle registered here lets the destroy chain drop a dead target's last press without owning
+/// the loop. Weak handles let the registry prune itself when a loop is dropped.
+///
+/// `full_widgets` only: that is the only profile with a widget destroy chain.
+#[cfg(full_widgets)]
+static DOUBLE_CLICK_PURGE_ARMS: crate::compat::OnceLock<
+    Mutex<Vec<Weak<Mutex<DoubleClickTracker>>>>,
+> = crate::compat::OnceLock::new();
+
+/// Publishes a tracker so [`forget_double_click_for_target_everywhere`] can reach it.
+#[cfg(full_widgets)]
+pub(crate) fn register_double_click_purge_arm(tracker: &Arc<Mutex<DoubleClickTracker>>) {
+    let registry = DOUBLE_CLICK_PURGE_ARMS.get_or_init(|| Mutex::new(Vec::new()));
+    let mut arms = lock(registry);
+    arms.retain(|weak| weak.strong_count() > 0);
+    arms.push(Arc::downgrade(tracker));
+}
+
+/// Drops the recorded press for `target` in every live double-click tracker (EV-X03).
+///
+/// This is the destroy-chain entry point. [`DoubleClickTracker::forget`] cannot be called from
+/// `widget::runtime` — the loop is not reachable from there — so the same cleanup is applied
+/// through the shared tracker handle instead. Without it, a new control that reuses an id could
+/// inherit the dead control's last press and report a phantom double-click within the interval.
+#[cfg(full_widgets)]
+pub(crate) fn forget_double_click_for_target_everywhere(target: ObjectId) {
+    let Some(registry) = DOUBLE_CLICK_PURGE_ARMS.get() else {
+        return;
+    };
+    let mut arms = lock(registry);
+    arms.retain(|weak| {
+        let Some(tracker) = weak.upgrade() else {
+            return false;
+        };
+        lock(&tracker).forget(target);
+        true
+    });
+}
 
 /// The interval and movement bound used when the gesture module is not compiled in.
 ///

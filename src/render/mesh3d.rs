@@ -468,8 +468,28 @@ pub fn project_mesh(
     viewport: Rect,
     target: Size,
 ) -> Vec<ProjectedTriangle> {
+    let mut triangles = Vec::new();
+    project_mesh_into(mesh, model, camera, viewport, target, &mut triangles);
+    triangles
+}
+
+/// [`project_mesh`] into a caller-owned vector, reusing its allocation.
+///
+/// The vector is cleared first and then reserved for the mesh's triangle count, so a renderer that
+/// keeps one vector on its surface — the way it keeps its text coverage scratch — allocates only
+/// on the first draw or when a larger mesh appears. The projection and the triangles produced are
+/// identical to [`project_mesh`], which is now this function's thin wrapper.
+pub fn project_mesh_into(
+    mesh: &Mesh3D,
+    model: &Mat4,
+    camera: &Camera,
+    viewport: Rect,
+    target: Size,
+    triangles: &mut Vec<ProjectedTriangle>,
+) {
+    triangles.clear();
+    triangles.reserve(mesh.triangle_count());
     let projector = Projector::new(model, camera, viewport, target);
-    let mut triangles = Vec::with_capacity(mesh.triangle_count());
     for indices in mesh.indices.as_chunks::<3>().0 {
         // `Mesh3D::new` validated every index against the vertex list, so the lookups cannot fail.
         let a = mesh.vertices[indices[0] as usize];
@@ -487,7 +507,6 @@ pub fn project_mesh(
             color: mean_color([a.color, b.color, c.color]),
         });
     }
-    triangles
 }
 
 /// Narrows a `[x, y, depth]` triple into a [`ProjectedVertex`].

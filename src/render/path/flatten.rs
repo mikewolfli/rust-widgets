@@ -258,40 +258,37 @@ pub fn flatten_paths(
 }
 
 #[cfg(all(not(alloc_frugal), any(feature = "icons", widgets_unstripped)))]
-struct CachedPath {
-    address: usize,
-    length: usize,
-    subpaths: crate::compat::Arc<[Subpath]>,
-}
-
-#[cfg(all(not(alloc_frugal), any(feature = "icons", widgets_unstripped)))]
 fn parse_static_cached(
     path: &'static str,
 ) -> Result<crate::compat::Arc<[Subpath]>, super::parser::PathError> {
-    use crate::compat::{lock, Mutex, OnceLock, VecDeque};
+    use crate::compat::{lock, HashMap, Mutex, OnceLock};
 
     const CACHE_CAPACITY: usize = 128;
-    static CACHE: OnceLock<Mutex<VecDeque<CachedPath>>> = OnceLock::new();
-    let address = path.as_ptr() as usize;
-    if let Some(subpaths) = lock(CACHE.get_or_init(|| Mutex::new(VecDeque::new())))
-        .iter()
-        .find(|entry| entry.address == address && entry.length == path.len())
-        .map(|entry| entry.subpaths.clone())
-    {
-        return Ok(subpaths);
+    // A `&'static str`'s address is permanently stable and unique for that literal, so
+    // `(address, length)` is a sound identity as well as a hash key. Unlike the old linear scan,
+    // a hit is one lookup and a miss is one insertion.
+    static CACHE: OnceLock<Mutex<HashMap<(usize, usize), crate::compat::Arc<[Subpath]>>>> =
+        OnceLock::new();
+    let key = (path.as_ptr() as usize, path.len());
+    if let Some(subpaths) = lock(CACHE.get_or_init(|| Mutex::new(HashMap::new()))).get(&key) {
+        return Ok(subpaths.clone());
     }
 
     let parsed: crate::compat::Arc<[Subpath]> = parse(path)?.into();
-    let mut cache = lock(CACHE.get_or_init(|| Mutex::new(VecDeque::new())));
-    if let Some(entry) =
-        cache.iter().find(|entry| entry.address == address && entry.length == path.len())
-    {
-        return Ok(entry.subpaths.clone());
+    let mut cache = lock(CACHE.get_or_init(|| Mutex::new(HashMap::new())));
+    // Another thread may have parsed the same literal while this one did. Keeping the first entry
+    // is what makes the shared parse result single-valued.
+    if let Some(existing) = cache.get(&key) {
+        return Ok(existing.clone());
     }
-    if cache.len() == CACHE_CAPACITY {
-        cache.pop_front();
+    if cache.len() >= CACHE_CAPACITY {
+        // Any key is a valid victim: a static literal's address never changes and the parse is a
+        // pure function of the text, so eviction order has no semantic meaning.
+        if let Some(victim) = cache.keys().next().copied() {
+            cache.remove(&victim);
+        }
     }
-    cache.push_back(CachedPath { address, length: path.len(), subpaths: parsed.clone() });
+    cache.insert(key, parsed.clone());
     Ok(parsed)
 }
 

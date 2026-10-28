@@ -532,6 +532,17 @@ pub(crate) unsafe extern "system" fn wnd_proc(
             DefWindowProcW(hwnd, msg, wparam, lparam)
         }
         WM_DESTROY => {
+            // Release the HICON this backend loaded for the window, if any. `WM_SETICON`
+            // does not take ownership, so the handle would otherwise live until process
+            // exit; `destroy_window_icon` forgets the entry first, so a later `destroy_widget`
+            // for the same id cannot double-free it.
+            if let Some(platform) = notify::active_windows_platform() {
+                // SAFETY: `hwnd` is the window this procedure is being called for and is
+                // therefore live; `widget_id_by_native_handle` only reads its `GWLP_USERDATA`.
+                if let Some(widget_id) = unsafe { platform.widget_id_by_native_handle(hwnd) } {
+                    platform.menu_state.destroy_window_icon(widget_id);
+                }
+            }
             // A top-level window this backend created has closed. Posting `WM_QUIT` here
             // unconditionally means the **first** window closed ends the whole message loop, so
             // any other open window stops receiving input and paint messages even though it is
@@ -1293,6 +1304,13 @@ pub struct Win32MenuState {
     /// hot path taken by every message procedure. Nothing in Win32 can turn an id into a
     /// window, so that direction is remembered here.
     pub(crate) handles: Mutex<HashMap<u64, usize>>,
+    /// Widget id → the `HICON` this backend loaded for it, if any.
+    ///
+    /// `LoadImageW` returns a handle owned by the caller and `WM_SETICON` only copies it
+    /// into the window, so the backend must destroy it itself. One entry per window is
+    /// enough: `set_window_icon` installs the same handle as both `ICON_SMALL` and
+    /// `ICON_BIG`, and a handle is destroyed once, when it is replaced or the window dies.
+    pub(crate) window_icons: Mutex<HashMap<u64, usize>>,
     /// Command id → widget id, for a native control the host put in one of this backend's
     /// windows. Stamped onto the control with `SetWindowLongPtrW(GWLP_ID)`.
     pub(crate) control_command_to_widget: Mutex<HashMap<u32, u64>>,
@@ -1308,6 +1326,7 @@ impl Win32MenuState {
     fn new() -> Self {
         Self {
             handles: Mutex::new(HashMap::new()),
+            window_icons: Mutex::new(HashMap::new()),
             control_command_to_widget: Mutex::new(HashMap::new()),
             pending_widget_events: Mutex::new(VecDeque::new()),
             next_command_id: AtomicU64::new(1000),
@@ -1317,7 +1336,7 @@ impl Win32MenuState {
     /// Drops every native record that names `widget_id` (PLAT-08).
     ///
     /// Windows keeps a different table set from the Android/Mobile/Wayland menu model: the
-    /// native-handle map and the command-id map are Win32-specific. Keeping the three lock/error
+    /// native-handle map and the command-id map are Win32-specific. Keeping the lock/error
     /// blocks here makes `destroy_widget` one call and gives a new side table a single place to
     /// be added.
     pub(crate) fn purge(&self, widget_id: u64) {
@@ -1345,6 +1364,50 @@ impl Win32MenuState {
                 "[rust_widgets][windows] destroy_widget: trigger queue poisoned; queued \
                  events for widget {widget_id} were not released"
             ),
+        }
+        self.destroy_window_icon(widget_id);
+    }
+
+    /// Records `icon` as the current handle for `widget_id` and returns the handle it replaced.
+    ///
+    /// The caller destroys the returned handle only after the window has stopped using it:
+    /// `WM_SETICON` copies the handle into the window rather than taking ownership.
+    pub(crate) fn replace_window_icon(&self, widget_id: u64, icon: usize) -> Option<usize> {
+        match self.window_icons.lock() {
+            Ok(mut icons) => icons.insert(widget_id, icon),
+            Err(_) => {
+                log::error!(
+                    "[rust_widgets][windows] set_window_icon: icon map poisoned; the HICON \
+                     for widget {widget_id} was not recorded"
+                );
+                None
+            }
+        }
+    }
+
+    /// Forgets and destroys the icon recorded for `widget_id`, if there is one.
+    ///
+    /// Only handles this backend loaded itself are in the table, so an icon the host set
+    /// through `WM_SETICON` is never destroyed here. Removing the entry before destroying
+    /// the handle makes this the only owner and keeps a repeated call from double-freeing.
+    pub(crate) fn destroy_window_icon(&self, widget_id: u64) {
+        let icon = match self.window_icons.lock() {
+            Ok(mut icons) => icons.remove(&widget_id),
+            Err(_) => {
+                log::error!(
+                    "[rust_widgets][windows] destroy_widget: icon map poisoned; the HICON \
+                     for widget {widget_id} was not released"
+                );
+                return;
+            }
+        };
+        if let Some(icon) = icon {
+            // SAFETY: `icon` is a non-null HICON this backend obtained from `LoadImageW` and
+            // has just removed from the table, so nothing else in this backend refers to it;
+            // `DestroyIcon` is the documented way to release such a handle.
+            unsafe {
+                winapi::um::winuser::DestroyIcon(icon as winapi::shared::windef::HICON);
+            }
         }
     }
 }

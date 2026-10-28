@@ -1146,16 +1146,52 @@ unsafe fn text_of(object: id) -> Option<String> {
     Some(std::ffi::CStr::from_ptr(utf8).to_string_lossy().into_owned())
 }
 
+/// Translates AppKit's dirty rectangle into a half-open band of frame rows.
+///
+/// The canvas reports `isFlipped == NO`, so AppKit's `drawRect:` rectangle has its origin at the
+/// view's bottom-left while a frame buffer starts at its top row. The intersection is clamped to
+/// the pixel bounds; `None` means "present the whole frame", which is also the answer for the
+/// null/empty rectangle AppKit may pass.
+fn dirty_row_range(dirty: NSRect, width: u32, height: u32) -> Option<(usize, usize)> {
+    if width == 0 || height == 0 {
+        return None;
+    }
+    if !dirty.origin.x.is_finite()
+        || !dirty.origin.y.is_finite()
+        || !dirty.size.width.is_finite()
+        || !dirty.size.height.is_finite()
+        || dirty.size.width <= 0.0
+        || dirty.size.height <= 0.0
+    {
+        return None;
+    }
+    let width = width as f64;
+    let height = height as f64;
+    let min_x = dirty.origin.x.max(0.0);
+    let max_x = (dirty.origin.x + dirty.size.width).min(width);
+    let min_y = dirty.origin.y.max(0.0);
+    let max_y = (dirty.origin.y + dirty.size.height).min(height);
+    if max_x <= min_x || max_y <= min_y {
+        return None;
+    }
+    if min_x <= 0.0 && max_x >= width && min_y <= 0.0 && max_y >= height {
+        return None;
+    }
+    let first_row = (height - max_y).floor().max(0.0) as usize;
+    let last_row = (height - min_y).ceil().min(height) as usize;
+    (first_row < last_row).then_some((first_row, last_row))
+}
+
 /// `-drawRect:` renders the mounted widget and blits the frame.
 ///
 /// Wrapped in `catch_unwind` because AppKit calls this from its own run loop; a
 /// panic unwinding through an Objective-C frame is undefined behaviour.
 ///
-/// The `_rect` parameter is the dirty rectangle AppKit passes, and the body
-/// deliberately ignores it in favour of `bounds` (see the note below); its name
-/// carries the underscore so the intent is visible in the signature rather than
-/// left as a compiler warning.
-extern "C" fn draw_rect(this: &Object, _cmd: Sel, _rect: NSRect) {
+/// The size still comes from `bounds`, never from `rect` (see the note below): a partial
+/// invalidation hands a smaller rectangle, and sizing the frame from it would stretch the picture.
+/// The rectangle is not ignored, though — it becomes the row band the blit converts and clips to,
+/// so a cursor blink or a progress-bar step no longer pays a full-window conversion.
+extern "C" fn draw_rect(this: &Object, _cmd: Sel, rect: NSRect) {
     let outcome = std::panic::catch_unwind(|| {
         // SAFETY: `this` is the live canvas view AppKit is asking to draw.
         unsafe {
@@ -1179,6 +1215,9 @@ extern "C" fn draw_rect(this: &Object, _cmd: Sel, _rect: NSRect) {
             let width = bounds.size.width.round().max(1.0) as u32;
             let height = bounds.size.height.round().max(1.0) as u32;
             let size = Size::new(width, height);
+            // The cached frame is a full frame, so limiting the conversion to the damaged rows is
+            // safe: rows outside the band are neither converted nor composited (the blit clips).
+            let dirty_rows = dirty_row_range(rect, width, height);
 
             // A window's content view paints the window's own chrome **and every child**
             // (`render_frame_tree_cached`), whereas a mounted surface is one widget in its own box
@@ -1229,7 +1268,7 @@ extern "C" fn draw_rect(this: &Object, _cmd: Sel, _rect: NSRect) {
                 return;
             }
             let native: cg::CGContextRef = msg_send![context, CGContext];
-            if !cg::blit_rgba(native, width, height, &frame) {
+            if !cg::blit_rgba(native, width, height, &frame, dirty_rows) {
                 log::error!("[macos] canvas: drawRect: blit failed for {width}x{height}");
             }
         }
@@ -1367,6 +1406,42 @@ pub(crate) unsafe fn make_window_canvas(host_id: ObjectId, width: u32, height: u
     Some(view)
 }
 
+/// Drops the [`window_canvases`] entry for a host window that is being destroyed.
+///
+/// The entry holds a raw pointer to the window's content view. Once the window is closed that
+/// pointer is stale, and leaving it in the table let a repaint request route to a view that no
+/// longer belongs to any window. Clearing it here is the destroy-side half of the balance that
+/// `make_window_canvas` establishes.
+pub(crate) fn forget_window_canvas(host_id: ObjectId) {
+    let _ = crate::compat::lock(window_canvases()).remove(&host_id);
+}
+
+/// Takes a reference that this module's side table owns for a canvas view.
+///
+/// The discipline mirrors `macos_objc2::native::store_native_view`: the view is retained for the
+/// side table, so the table's pointer stays valid independently of the superview, and the matching
+/// release happens once at teardown.
+///
+/// # Safety
+///
+/// `view` must be a live canvas view on the AppKit main thread.
+unsafe fn retain_canvas_view(view: id) {
+    let _: *mut c_void = msg_send![view, retain];
+}
+
+/// Releases one reference this module owns to a canvas view.
+///
+/// `mount_surface_impl` calls it for the `alloc` reference once `addSubview:` has retained the
+/// view; `unmount_surface_impl` calls it for the side table's reference after
+/// `removeFromSuperview`. Keeping both halves on one helper is what stops the pair from drifting.
+///
+/// # Safety
+///
+/// `view` must be a live canvas view and the caller must own a reference to it.
+pub(crate) unsafe fn release_canvas_view(view: id) {
+    let _: () = msg_send![view, release];
+}
+
 /// Side table from mounted `ObjectId` to its canvas view pointer.
 ///
 /// Needed so resize/unmount can reach the view again; the widget id itself lives
@@ -1434,10 +1509,18 @@ impl MacOSPlatform {
             let content_view = NSWindow::contentView(MacOSPlatform::as_id(parent_handle));
             if content_view == nil {
                 log::error!("[macos] mount_surface: window {parent} has no content view");
+                // Nothing took a reference to the view, so its `alloc` reference is the only one.
+                release_canvas_view(view);
                 pool.drain();
                 return false;
             }
             let _: () = msg_send![content_view, addSubview: view];
+            // `addSubview:` retained the view. The side table takes its own reference (the same
+            // retain/release pair `macos_objc2::native::store_native_view` keeps), and the `alloc`
+            // reference is then dropped: without this the view left behind one owned reference per
+            // mount/unmount cycle and every cycle leaked an `NSView`.
+            retain_canvas_view(view);
+            release_canvas_view(view);
             let _: () = msg_send![view, setNeedsDisplay: YES];
             // The view is being revealed, which is the platform repainting a surface the
             // library just mounted. Announcing it keeps the frame that reveals it accounted
@@ -1606,11 +1689,13 @@ impl MacOSPlatform {
             log::error!("[macos] unmount_surface: id={id} is not mounted");
             return false;
         };
-        // SAFETY: the side-table entry was removed just above, so the view has
-        // no other owner in this module and removing it from its superview is
-        // the correct teardown.
+        // SAFETY: the side-table entry was removed just above, so the module's reference is the
+        // one being released. `removeFromSuperview` first drops the superview's reference (zero
+        // when the table's is the only other one), then the table's own reference is released —
+        // the same order `macos_objc2::native::remove_native_view` uses.
         unsafe {
             let _: () = msg_send![view as id, removeFromSuperview];
+            release_canvas_view(view as id);
         }
         crate::compat::lock(&self.handles).remove(&id);
         self.state.destroy_widget(id);

@@ -767,6 +767,20 @@ impl Platform for WindowsPlatform {
                     SendMessageW(hwnd, WM_SETICON, ICON_SMALL as usize, icon as isize);
                     SendMessageW(hwnd, WM_SETICON, ICON_BIG as usize, icon as isize);
                 }
+                // `WM_SETICON` does not take ownership, so the replaced handle is still ours.
+                // Record the new handle only after the window has stopped using the old one,
+                // then release the old one. A handle the host set itself was never recorded
+                // here, so it is never destroyed by this backend.
+                if let Some(previous) =
+                    self.menu_state.replace_window_icon(widget_id, icon as usize)
+                {
+                    // SAFETY: `previous` was loaded by this backend with `LoadImageW`, it
+                    // has just been removed from the table by `replace_window_icon`, and
+                    // both icon slots were replaced above, so nothing refers to it.
+                    unsafe {
+                        winapi::um::winuser::DestroyIcon(previous as winapi::shared::windef::HICON);
+                    }
+                }
             }
         }
         self.state.set_window_icon(widget_id, path);
@@ -1747,6 +1761,8 @@ impl Platform for WindowsPlatform {
             notify::register_active_platform(static_self);
         }
         #[cfg(target_os = "windows")]
+        // SAFETY: `InitCommonControls` is a process-level common-controls initialization
+        // with no arguments and no pointer or handle preconditions.
         unsafe {
             use winapi::um::commctrl::InitCommonControls;
             InitCommonControls();
@@ -2014,6 +2030,9 @@ impl Platform for WindowsPlatform {
             }
             let outer_width = frame.right - frame.left;
             let outer_height = frame.bottom - frame.top;
+            // SAFETY: `class_name` and `title_wide` are NUL-terminated UTF-16 buffers that
+            // stay alive until after this call; `hinstance` is the process instance handle
+            // returned above and the parent/menu/parameter pointers are intentionally null.
             let hwnd = unsafe {
                 CreateWindowExW(
                     0,
@@ -2034,6 +2053,8 @@ impl Platform for WindowsPlatform {
                 log::error!(
                     "[rust_widgets][windows] create_window failed for title='{}' (GetLastError={})",
                     title,
+                    // SAFETY: `GetLastError` reads the calling thread's last-error value
+                    // and takes no arguments.
                     unsafe { winapi::um::errhandlingapi::GetLastError() }
                 );
                 return 0;
@@ -2060,6 +2081,8 @@ impl Platform for WindowsPlatform {
                 widget_id,
                 crate::platform::state::WindowStateRecord::new_window(),
             );
+            // SAFETY: `hwnd` is the live window returned by `CreateWindowExW` above and
+            // checked non-null; both calls only operate on that handle.
             unsafe {
                 ShowWindow(hwnd, SW_SHOW);
                 UpdateWindow(hwnd);
@@ -2081,7 +2104,7 @@ impl Platform for WindowsPlatform {
         #[cfg(target_os = "windows")]
         {
             use winapi::um::winbase::GlobalAlloc;
-            use winapi::um::winbase::{GlobalLock, GlobalUnlock, GHND};
+            use winapi::um::winbase::{GlobalFree, GlobalLock, GlobalUnlock, GHND};
             use winapi::um::winuser::{
                 CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData, CF_UNICODETEXT,
             };
@@ -2112,6 +2135,12 @@ impl Platform for WindowsPlatform {
                 std::ptr::copy_nonoverlapping(text_utf16.as_ptr(), p_dest, text_utf16.len());
                 GlobalUnlock(h_mem);
                 let ret = SetClipboardData(CF_UNICODETEXT, h_mem as _);
+                if ret.is_null() {
+                    // The system refused the handle, so ownership never transferred and the
+                    // allocation is still ours. Freeing it here keeps this path's ownership
+                    // rule identical to the rich-clipboard backend's.
+                    GlobalFree(h_mem);
+                }
                 CloseClipboard();
                 ret as isize != 0
             }

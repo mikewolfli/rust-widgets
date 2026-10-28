@@ -183,6 +183,8 @@ pub enum GenerationGapReason {
     CrossProfile,
     /// A declared `events:` name is not one the control publishes, so no wire can resolve it.
     UnresolvableEvent,
+    /// A declared wire carries a value into a channel the runtime's rule table says cannot take it.
+    IncompatibleWire,
 }
 
 impl GenerationGapReason {
@@ -193,14 +195,21 @@ impl GenerationGapReason {
             Self::CapacityOverflow => "capacity-overflow",
             Self::CrossProfile => "cross-profile",
             Self::UnresolvableEvent => "unresolvable-event",
+            Self::IncompatibleWire => "incompatible-wire",
         }
     }
 
     /// The reason this token names, if it is one this version knows.
     pub fn from_token(token: &str) -> Option<Self> {
-        [Self::Unsupported, Self::CapacityOverflow, Self::CrossProfile, Self::UnresolvableEvent]
-            .into_iter()
-            .find(|reason| reason.token() == token)
+        [
+            Self::Unsupported,
+            Self::CapacityOverflow,
+            Self::CrossProfile,
+            Self::UnresolvableEvent,
+            Self::IncompatibleWire,
+        ]
+        .into_iter()
+        .find(|reason| reason.token() == token)
     }
 }
 
@@ -692,6 +701,21 @@ fn event_is_published(widget: &str, event: &str) -> bool {
         .is_some()
 }
 
+/// The payload kind `widget`'s `event` declares, or `None` when it is payload-free or unknown.
+///
+/// The kind comes from the same capability schema the runtime validates names against, so the
+/// generator's wire check reads the declaration a designer would display rather than guessing from
+/// the event's spelling.
+fn event_payload_kind(
+    widget: &str,
+    event: &str,
+) -> Option<crate::widget::capability::PropertyValueKind> {
+    WidgetFactory::shared()
+        .capability(widget)
+        .and_then(|capability| crate::widget::capability::find_event_schema(capability, event))
+        .and_then(|schema| schema.payload)
+}
+
 /// Whether the control itself resolves `event` through `event_signal_dyn`.
 ///
 /// # Why the capability check alone was the wrong half
@@ -1123,6 +1147,29 @@ fn emit_node(
             });
             continue;
         }
+        // The published signal delivers the event's payload to the handler unchanged, so the
+        // runtime's rule table asks only whether that payload kind is one the wire model can
+        // carry. Consulting it here keeps the generator's answer and the table's from drifting:
+        // a kind added to `PropertyValueKind` without a same-kind rule is refused rather than
+        // emitted as a wire whose destination has no declared type.
+        let source = event_payload_kind(&node.widget, &key);
+        let target = source.map_or(
+            crate::widget::capability::WireTarget::PayloadFreeCommand,
+            crate::widget::capability::WireTarget::Property,
+        );
+        if !wire_verdict_for(source, target).is_offered() {
+            report.unsupported.push(GenerationGap {
+                path: path.to_vec(),
+                widget: node.widget.clone(),
+                reason: format!(
+                    "{}: `events.{key}` on {} carries a payload the wire model cannot target, so \
+                     the generated wire `{handler}` is not emitted",
+                    GenerationGapReason::IncompatibleWire.token(),
+                    node_label(path, &node.widget)
+                ),
+            });
+            continue;
+        }
         // `events` is an *object* in the document (`{ event: handler }`), so each published name
         // becomes one prop rather than the whole map being stored under one key. The name is
         // kept verbatim: the library validates it against the control's capability and reports a
@@ -1175,6 +1222,34 @@ fn emit_node(
                     });
                     continue;
                 }
+            }
+            // The rule table also decides whether the marker's channel can receive the payload its
+            // intent event declares. A value-bearing channel (the value callback, or the published
+            // event that carries an unroutable intent) delivers the payload unchanged; every other
+            // marker travels a payload-free base signal (`clicked` / `closed` / focus), so a
+            // value-carrying event cannot reach it. A rejected pair is reported rather than
+            // emitted as a wire that silently drops the value.
+            let source = marker
+                .published_counterpart()
+                .and_then(|name| event_payload_kind(&node.widget, name));
+            let carries_value =
+                marker.uses_value_callback() || marker.unroutable_reason().is_some();
+            let target = match (carries_value, source) {
+                (true, Some(kind)) => crate::widget::capability::WireTarget::Property(kind),
+                _ => crate::widget::capability::WireTarget::PayloadFreeCommand,
+            };
+            if !wire_verdict_for(source, target).is_offered() {
+                report.unsupported.push(GenerationGap {
+                    path: path.to_vec(),
+                    widget: node.widget.clone(),
+                    reason: format!(
+                        "{}: `{key}` on {} carries a value into a channel that cannot receive it, \
+                         so the generated wire `{handler}` is not emitted",
+                        GenerationGapReason::IncompatibleWire.token(),
+                        node_label(path, &node.widget)
+                    ),
+                });
+                continue;
             }
         }
         let prop = format!("{WIRE_PROP_PREFIX}{key}");
@@ -2415,11 +2490,41 @@ mod tests {
         assert_eq!(child_stretch(&small), 3);
     }
 
+    /// A wire the rule table rejects must be reported, not silently emitted.
+    ///
+    /// `tag` publishes `closed` carrying a `String`, while `on_close` travels the payload-free base
+    /// close signal. The runtime's table rejects a value into a payload-free target, so the
+    /// generator now records `IncompatibleWire` and leaves the handler out of the source instead
+    /// of producing a wire that would drop the value.
     #[test]
-    fn the_generator_shares_the_runtime_wire_table() {
+    fn an_incompatible_wire_is_recorded_at_generation() {
+        const DOCUMENT: &str = r#"{
+          "window": {
+            "id": "root",
+            "title": "Gap",
+            "children": [
+              { "tag": { "id": "t", "text": "x", "on_close": "on_closed" } }
+            ]
+          }
+        }"#;
+        let request = GenerationRequest {
+            json: String::from(DOCUMENT),
+            target: TargetProfile::Default,
+            width: 320,
+            height: 240,
+            function_name: String::from("build_gap"),
+        };
+        let generated = generate(&request).expect("the document must generate");
+        let gap = generated
+            .report
+            .unsupported
+            .iter()
+            .find(|gap| gap.reason.contains("on_close"))
+            .unwrap_or_else(|| panic!("no gap names the wire: {:?}", generated.report));
+        assert_eq!(gap.reason_kind(), Some(GenerationGapReason::IncompatibleWire));
         assert!(
-            shared_wire_rule_count() > 0,
-            "the generator must consult the same rule table the runtime uses (T-3)"
+            !generated.source.contains("__wire_on_close"),
+            "a wire the table rejects must not be carried into the generated source"
         );
     }
 

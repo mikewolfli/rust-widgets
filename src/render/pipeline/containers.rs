@@ -387,6 +387,8 @@ impl SoftwareSurface {
             depth_buffer: Vec::new(),
             #[cfg(feature = "3d")]
             depth_dirty: true,
+            #[cfg(feature = "3d")]
+            projected_triangles_scratch: Vec::new(),
         }
     }
 

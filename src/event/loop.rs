@@ -564,7 +564,11 @@ pub struct EventLoop {
     /// Touch double-taps are decided by `gesture::DoubleTapGesture`; this tracker applies the
     /// same rule (the gesture timing tokens) to the mouse stream, so the loop does not accept a
     /// host `MouseDoubleClick` that contradicts the interval the gesture engine uses.
-    double_click: DoubleClickTracker,
+    ///
+    /// Shared through an `Arc` so the destroy chain can drop a dead target's last press through
+    /// [`super::double_click::forget_double_click_for_target_everywhere`] (EV-X03): the loop thread
+    /// holds a clone while the host owns the registry handle.
+    double_click: Arc<Mutex<DoubleClickTracker>>,
     /// Runtime timer manager emitting `Event::Timer` into this loop queue.
     timer_manager: TimerManager,
     /// Next animation frame request ID.
@@ -653,6 +657,11 @@ impl EventLoop {
         let queue = EventQueue::new();
         let sender = queue.sender();
         let timer_manager = TimerManager::new(sender.clone());
+        // EV-X03: publish the tracker before the loop can start, so a widget destroyed at any
+        // point can reach the same state the dispatch path uses.
+        let double_click = Arc::new(Mutex::new(DoubleClickTracker::new()));
+        #[cfg(full_widgets)]
+        super::double_click::register_double_click_purge_arm(&double_click);
         Self {
             queue: Arc::new(Mutex::new(queue)),
             sender,
@@ -669,7 +678,7 @@ impl EventLoop {
             parent_lookup: Arc::new(runtime_parent),
             key_state: KeyRepeatState::new(),
             clock_origin: crate::compat::Instant::now(),
-            double_click: DoubleClickTracker::new(),
+            double_click,
             timer_manager,
             next_anim_frame_id: AtomicU64::new(1),
             native_pump: None,
@@ -745,7 +754,9 @@ impl EventLoop {
         #[cfg(feature = "touch")]
         let mut gesture_engines = GestureRegistry::new();
         let mut key_state = core::mem::take(&mut self.key_state);
-        let mut double_click = core::mem::take(&mut self.double_click);
+        // EV-X03: share the tracker with the loop thread rather than moving it, so the destroy
+        // chain can still reach it through the process-wide registry.
+        let double_click = Arc::clone(&self.double_click);
         let native_pump = self.native_pump.clone();
         // Gesture and double-click timestamps are measured from one monotonic origin (W-P02).
         // Taking it before the thread starts is what makes every recogniser in this run share the
@@ -849,7 +860,7 @@ impl EventLoop {
                     #[cfg(feature = "touch")]
                     let gesture_ref = &mut gesture_engines;
                     let key_ref = &mut key_state;
-                    let double_click_ref = &mut double_click;
+                    let double_click_ref = &double_click;
                     // `mut` is only needed when the `touch` feature captures the gesture
                     // registry by `&mut`; without it the binding is immutable.
                     #[cfg_attr(not(feature = "touch"), allow(unused_mut))]
@@ -866,16 +877,40 @@ impl EventLoop {
                             return;
                         }
 
+                        // EV-X06: the loop's own stop wake-up is an internal signal. Consume it
+                        // here, before the filter chain, so it never reaches host code.
+                        if matches!(event, Event::Custom { name, .. } if name.as_ref() == "__stop_wake")
+                        {
+                            return;
+                        }
+
                         // W-09: the host's filter chain, in registration order. A filter that
                         // claims the event consumes it: no later filter, no accelerator and no
                         // delivery. The chain is empty unless a host added one, so the default
                         // path is byte-for-byte the old one. Filters see the event the host
                         // posted, before any canonicalisation or synthesis, so "intercept this
                         // event" means the event that actually arrived.
-                        for filter in &event_filters {
-                            if filter(target, event) {
-                                return;
-                            }
+                        //
+                        // EV-X05: one panic barrier around the chain. A panicking host filter
+                        // must not take the loop thread down (which would also skip the deferred
+                        // event write-back below); it is logged and the event is treated as
+                        // unconsumed.
+                        let claimed =
+                            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                for filter in &event_filters {
+                                    if filter(target, event) {
+                                        return true;
+                                    }
+                                }
+                                false
+                            }));
+                        match claimed {
+                            Ok(true) => return,
+                            Ok(false) => {}
+                            Err(error) => log::error!(
+                                "[event-loop] Event filter panicked for target {target:?}; \
+                                 treating the event as unconsumed: {error:?}"
+                            ),
                         }
 
                         // W-001: one canonical form for every dispatch-side rule. The legacy
@@ -883,16 +918,35 @@ impl EventLoop {
                         // double-click judgement, gesture feed and accelerator hook have one
                         // spelling to branch on instead of two. The *delivered* event keeps the
                         // spelling the host posted, so a control that matches `MouseDown` still
-                        // receives it.
-                        let canonical = event.clone().into_canonical();
+                        // receives it. The canonicalisation only changes legacy aliases, so a
+                        // modern event is cloned without a second match.
+                        let canonical = if event.is_legacy_alias() {
+                            event.clone().into_canonical()
+                        } else {
+                            event.clone()
+                        };
 
                         // The accelerator hook runs before the focused control sees the key.
                         // A consumed key press must not also be delivered as text/activation:
                         // the host asked the shortcut path to own it. Non-key events are
                         // untouched, so the hook has exactly one trigger condition.
+                        //
+                        // EV-X05: the same panic barrier the filter chain uses. A panicking hook
+                        // is logged and the key is treated as unconsumed.
                         if let Some(shortcut) = shortcut_ref {
-                            if matches!(canonical, Event::KeyPress { .. }) && shortcut(&canonical) {
-                                return;
+                            if matches!(canonical, Event::KeyPress { .. }) {
+                                let consumed =
+                                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                        shortcut(&canonical)
+                                    }));
+                                match consumed {
+                                    Ok(true) => return,
+                                    Ok(false) => {}
+                                    Err(error) => log::error!(
+                                        "[event-loop] Shortcut hook panicked for target \
+                                         {target:?}; treating the event as unconsumed: {error:?}"
+                                    ),
+                                }
                             }
                         }
 
@@ -942,7 +996,7 @@ impl EventLoop {
                         let single_click_replay: Event;
                         let delivery: &Event = match &canonical {
                             Event::MousePress { pos, button, modifiers } => {
-                                if double_click_ref.observe_press(
+                                if lock(double_click_ref).observe_press(
                                     target,
                                     *pos,
                                     *button,
@@ -957,7 +1011,7 @@ impl EventLoop {
                                 event
                             }
                             Event::MouseDoubleClick { pos, button } => {
-                                if double_click_ref.accept_platform_double_click(
+                                if lock(double_click_ref).accept_platform_double_click(
                                     target,
                                     *pos,
                                     *button,
@@ -972,7 +1026,7 @@ impl EventLoop {
                                     single_click_replay = Event::MousePress {
                                         pos: *pos,
                                         button: *button,
-                                        modifiers: double_click_ref.last_press_modifiers(),
+                                        modifiers: lock(double_click_ref).last_press_modifiers(),
                                     };
                                     &single_click_replay
                                 }
@@ -1245,19 +1299,47 @@ impl EventLoop {
             // The frame was cancelled: treat it as consumed work, not a dispatch.
             return true;
         }
+        // EV-X06: consume the loop's internal stop wake-up before host filters see it.
+        if matches!(&event, Event::Custom { name, .. } if name.as_ref() == "__stop_wake") {
+            return true;
+        }
         // W-09: the host's filter chain, in registration order; a filter can consume the event.
         // The chain is empty by default, so this loop is the previous behaviour exactly.
-        for filter in &self.event_filters {
-            if filter(target, &event) {
-                return true;
+        // EV-X05: one panic barrier, matching the threaded dispatch path; a panicking filter is
+        // logged and the event is treated as unconsumed.
+        let claimed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            for filter in &self.event_filters {
+                if filter(target, &event) {
+                    return true;
+                }
             }
+            false
+        }));
+        match claimed {
+            Ok(true) => return true,
+            Ok(false) => {}
+            Err(error) => log::error!(
+                "[event-loop] Event filter panicked for target {target:?}; treating the event \
+                 as unconsumed: {error:?}"
+            ),
         }
         // W-001: one canonical spelling for the dispatch-side rules; delivery keeps the host's.
-        let canonical = event.clone().into_canonical();
+        // The canonicalisation only changes legacy aliases, so a modern event is cloned without
+        // a second match (EV-X02).
+        let canonical =
+            if event.is_legacy_alias() { event.clone().into_canonical() } else { event.clone() };
         if matches!(canonical, Event::KeyPress { .. }) {
             if let Some(shortcut) = self.shortcut_dispatch.as_ref() {
-                if shortcut(&canonical) {
-                    return true;
+                // EV-X05: the same barrier the threaded dispatch uses for its accelerator hook.
+                let consumed =
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| shortcut(&canonical)));
+                match consumed {
+                    Ok(true) => return true,
+                    Ok(false) => {}
+                    Err(error) => log::error!(
+                        "[event-loop] Shortcut hook panicked for target {target:?}; treating \
+                         the event as unconsumed: {error:?}"
+                    ),
                 }
             }
         }
@@ -1276,20 +1358,23 @@ impl EventLoop {
         let single_click_replay: Event;
         let delivery: &Event = match &canonical {
             Event::MousePress { pos, button, modifiers } => {
-                if self.double_click.observe_press(target, *pos, *button, *modifiers, now_ms) {
+                if lock(&self.double_click).observe_press(target, *pos, *button, *modifiers, now_ms)
+                {
                     synthesized_double_click =
                         Some(Event::mouse_double_click(pos.x, pos.y, *button));
                 }
                 &event
             }
             Event::MouseDoubleClick { pos, button } => {
-                if self.double_click.accept_platform_double_click(target, *pos, *button, now_ms) {
+                if lock(&self.double_click)
+                    .accept_platform_double_click(target, *pos, *button, now_ms)
+                {
                     &event
                 } else {
                     single_click_replay = Event::MousePress {
                         pos: *pos,
                         button: *button,
-                        modifiers: self.double_click.last_press_modifiers(),
+                        modifiers: lock(&self.double_click).last_press_modifiers(),
                     };
                     &single_click_replay
                 }
@@ -1315,6 +1400,12 @@ impl EventLoop {
         // polls `dequeue` and releases the lock between iterations — so this is politeness, not
         // the deadlock-avoidance measure it was once described as.
         let _ = self.sender.post(0, Event::Custom { name: "__stop_wake".into(), payload: vec![] });
+        // EV-X01: the threaded branch used to leave input state behind while `mini` reset it.
+        // A key held across the stop boundary must not turn its next press into a phantom repeat,
+        // and a click run must not survive a scene change. The double-click tracker is shared, so
+        // this reset reaches the copy the loop thread was using.
+        self.key_state.reset();
+        lock(&self.double_click).reset();
         if let Some(handle) = self.thread_handle.take() {
             if let Err(e) = handle.join() {
                 log::error!("[event-loop] Thread join failed: {e:?}");
@@ -1334,7 +1425,7 @@ impl EventLoop {
         // A key held across the stop boundary must not turn its next press into a phantom
         // repeat, and a click run must not survive a scene change.
         self.key_state.reset();
-        self.double_click.reset();
+        lock(&self.double_click).reset();
     }
 
     /// Posts an event to the event loop.
@@ -2831,11 +2922,7 @@ mod tests {
         let delivered = Arc::new(Mutex::new(Vec::new()));
         let delivered_in_dispatch = Arc::clone(&delivered);
         el.set_dispatch_fn(Arc::new(move |_target, event| {
-            if let Event::Custom { name, payload } = event {
-                // Ignore the loop's own `__stop_wake` wake-up.
-                if name.as_ref() != "x" {
-                    return;
-                }
+            if let Event::Custom { payload, .. } = event {
                 if payload.first() == Some(&1) {
                     panic!("handler failure");
                 }
@@ -2873,9 +2960,7 @@ mod tests {
         let delivered_out = Arc::clone(&delivered);
         el.set_dispatch_fn(Arc::new(move |_target, event| {
             if let Event::Custom { name, .. } = event {
-                if name.as_ref() != "__stop_wake" {
-                    delivered_out.lock().unwrap().push(name.to_string());
-                }
+                delivered_out.lock().unwrap().push(name.to_string());
             }
         }));
 
@@ -2883,9 +2968,6 @@ mod tests {
         assert!(
             el.add_event_filter(Arc::new(move |_target, event| {
                 let Event::Custom { name, .. } = event else { return false };
-                if name.as_ref() == "__stop_wake" {
-                    return false;
-                }
                 first_seen.lock().unwrap().push(("first", name.to_string()));
                 name.as_ref() == "blocked"
             })),
@@ -2894,9 +2976,6 @@ mod tests {
         let second_seen = Arc::clone(&seen);
         assert!(el.add_event_filter(Arc::new(move |_target, event| {
             let Event::Custom { name, .. } = event else { return false };
-            if name.as_ref() == "__stop_wake" {
-                return false;
-            }
             second_seen.lock().unwrap().push(("second", name.to_string()));
             false
         })));

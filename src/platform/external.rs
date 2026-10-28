@@ -110,8 +110,8 @@ pub(crate) fn validate_target(target: &str) -> Result<(), OpenError> {
 /// started", not "the target was opened".
 ///
 /// A spawn failure is reported as [`OpenError::NoHandler`]: the only realistic cause is that
-/// `program` is not installed, and the handler's own exit status is not observable without
-/// waiting, which this deliberately does not do.
+/// `program` is not installed, and the handler's own exit status is not reported to the caller
+/// because it is collected by a background reaper instead.
 pub(crate) fn spawn_handler(
     program: &str,
     prefix_args: &[&str],
@@ -131,7 +131,30 @@ pub(crate) fn spawn_handler(
     // long-lived user application in the group the host will tear down. See
     // [`super::child_process`] for the boundary this states.
     super::child_process::in_own_group(&mut command);
-    command.spawn().map(|_child| ()).map_err(|_error| OpenError::NoHandler)
+    let child = command.spawn().map_err(|_error| OpenError::NoHandler)?;
+    // Dropping a `Child` neither waits nor reaps, so an exited handler would stay a
+    // zombie until this process exits. A one-shot reaper thread collects it instead,
+    // keeping this call (and the UI thread that made it) non-blocking.
+    let (reaper_tx, reaper_rx) = std::sync::mpsc::channel::<std::process::Child>();
+    match std::thread::Builder::new().name("rw-open-reap".to_owned()).spawn(move || {
+        if let Ok(mut child) = reaper_rx.recv() {
+            let _ = child.wait();
+        }
+    }) {
+        Ok(_) => {
+            // The reaper owns the handle from here. A send error means the thread is gone,
+            // and dropping the child then is no worse than the old behaviour.
+            let _ = reaper_tx.send(child);
+        }
+        Err(_) => {
+            // The reaper thread could not be created. Waiting here would block the caller
+            // on a long-lived handler, so only poll once: a handler that has already exited
+            // is reaped, while one still running is left unreaped until this process exits.
+            let mut child = child;
+            let _ = child.try_wait();
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

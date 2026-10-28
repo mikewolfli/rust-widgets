@@ -302,6 +302,17 @@ thread_local! {
     static IME_PREEDIT_CALLBACKS: RefCell<HashMap<ObjectId, Vec<ImePreeditCallback>>> =
         RefCell::new(HashMap::new());
 
+    /// Scratch buffer for [`notify_ime_preedit`], reusing the list across notifications.
+    ///
+    /// A pre-edit notification arrives once per keystroke while a composition is active, and
+    /// cloning the registered observers into a fresh `Vec` paid one allocation per keystroke. The
+    /// list is taken out for the duration of the call (so a callback may register or clear an
+    /// observer without touching the borrowed map), then cleared and returned by
+    /// [`ImePreeditBuffer`]'s `Drop`, including when a callback unwinds.
+    #[allow(clippy::missing_const_for_thread_local)]
+    static IME_PREEDIT_SCRATCH: RefCell<Vec<ImePreeditCallback>> =
+        RefCell::new(Vec::new());
+
     /// Whether the last [`tick_animations`] sweep left a **mounted** control in flight.
     ///
     /// Kept across frames because the frame that observes a control *settling* is one the
@@ -536,6 +547,13 @@ fn finish_registration(id: ObjectId) {
     // instead of restyling synchronously.
     #[cfg(device_profile)]
     subscribe_widget_to_theme_changes(id);
+    // RT-X02: record the tooltip managers so a hover transition can iterate only them.
+    #[cfg(full_widgets)]
+    if read_widget(id, |widget| widget.kind() == crate::widget::WidgetKind::TooltipManager)
+        .unwrap_or(false)
+    {
+        note_tooltip_manager(id, true);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -765,6 +783,10 @@ pub fn unregister(id: ObjectId) -> bool {
     // A host observer of this widget's IME pre-edit would otherwise outlive the control it
     // observes and keep its captured state alive for the rest of the thread.
     clear_ime_preedit_callbacks(id);
+    // RT-X02: a destroyed manager must leave the hover set, or a later pointer transition would
+    // look it up and find nothing.
+    #[cfg(full_widgets)]
+    note_tooltip_manager(id, false);
     // A host-registered repeating timer would otherwise outlive the control: the worker would
     // keep waking and posting `Event::Timer` to an id that no longer resolves. The loop owns the
     // timer set, so the purge goes through the shared registry rather than a manager method
@@ -772,6 +794,11 @@ pub fn unregister(id: ObjectId) -> bool {
     // profile, so the call is gated to the profile that owns both.
     #[cfg(full_widgets)]
     let _ = crate::event::timer::stop_timers_for_target_everywhere(id);
+    // Object ids are reused (see `create_widgets_base`): a tracker that still holds the dead
+    // widget's last press at the same position would turn a fresh widget's first click into a
+    // double-click (EV-X03). Same registry pattern as the timer purge above.
+    #[cfg(full_widgets)]
+    let _ = crate::event::double_click::forget_double_click_for_target_everywhere(id);
     // And it must not keep pointer capture: routing would send every subsequent
     // pointer event to an id that resolves to nothing.
     let _ = CAPTURE.try_with(|capture| {
@@ -1945,6 +1972,31 @@ pub fn clear_hover(point: Point) {
     dispatch_hover_transition(None, point);
 }
 
+#[cfg(full_widgets)]
+thread_local! {
+    /// Mounted [`TooltipManager`](crate::widget::companions::TooltipManager) ids.
+    ///
+    /// A hover transition used to filter the whole [`MOUNTED`] map for this kind, which is
+    /// O(every mounted control) per pointer boundary crossing while the number of managers is
+    /// almost always zero or one. The set is maintained beside the registry (written by
+    /// [`finish_registration`], removed by [`unregister`]) so the transition iterates only the
+    /// managers that exist and can return before reading any tooltip text when there are none.
+    #[allow(clippy::missing_const_for_thread_local)]
+    static TOOLTIP_MANAGERS: RefCell<IdSet> = RefCell::new(IdSet::new());
+}
+
+/// Adds `id` to, or removes it from, the mounted tooltip-manager set.
+#[cfg(full_widgets)]
+fn note_tooltip_manager(id: ObjectId, is_manager: bool) {
+    let _ = TOOLTIP_MANAGERS.try_with(|set| {
+        if is_manager {
+            set.borrow_mut().insert(id);
+        } else {
+            set.borrow_mut().remove(&id);
+        }
+    });
+}
+
 /// Registers the hovered control's `tooltip` property with every mounted [`TooltipManager`].
 ///
 /// [`TooltipManager`]: crate::widget::companions::TooltipManager
@@ -1963,15 +2015,35 @@ pub fn clear_hover(point: Point) {
 ///
 /// # The two passes, and why
 ///
-/// The tooltip text is read first, then the manager ids are collected, then each manager is
-/// mutated. Mutating while the registry's map is borrowed would alias the live entries — and a
-/// manager that requests a repaint reads the registry. The id scan uses `MOUNTED` directly
-/// rather than `for_each_mounted_widget` because the latter also re-observes every widget's
-/// animating bit, which a pointer transition has no business rewriting.
+/// The manager ids are copied out of [`TOOLTIP_MANAGERS`] first, then the tooltip text is read,
+/// then each manager is mutated. Mutating while the registry's map is borrowed would alias the
+/// live entries — and a manager that requests a repaint reads the registry. The set is the
+/// registry's own record of which mounted controls are managers, so the function neither scans
+/// `MOUNTED` nor re-observes every widget's animating bit (which a pointer transition has no
+/// business rewriting). When the set is empty the function returns before reading the tooltip
+/// property at all.
 #[cfg(full_widgets)]
 fn forward_hover_to_tooltip_managers(hovered: Option<ObjectId>, point: Point) {
     use crate::widget::capability::coercion::widget_as_mut;
     use crate::widget::companions::TooltipManager;
+
+    // No mounted manager means the hover path owns no work at all: return before the tooltip
+    // property is even read, so a pointer crossing costs one set probe and no allocation.
+    let managers: Vec<ObjectId> = TOOLTIP_MANAGERS
+        .try_with(|set| {
+            let set = set.borrow();
+            if set.0.is_empty() {
+                None
+            } else {
+                Some(set.0.clone())
+            }
+        })
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    if managers.is_empty() {
+        return;
+    }
 
     // The published spelling is the control's `tooltip` **property**: `base_property_get`
     // answers that name from the same field `Widget::tooltip` reads, so a control with a
@@ -1987,17 +2059,6 @@ fn forward_hover_to_tooltip_managers(hovered: Option<ObjectId>, point: Point) {
         })
     });
 
-    let managers: alloc::vec::Vec<ObjectId> = MOUNTED
-        .try_with(|map| {
-            map.borrow()
-                .iter()
-                .filter(|(_, entry)| {
-                    entry.widget.kind() == crate::widget::WidgetKind::TooltipManager
-                })
-                .map(|(id, _)| *id)
-                .collect()
-        })
-        .unwrap_or_default();
     for id in managers {
         let _ = with_widget_mut(id, |widget| {
             if let Some(manager) = widget_as_mut::<TooltipManager>(widget) {
@@ -3580,20 +3641,67 @@ pub(crate) fn register_ime_preedit_callback<F: FnMut(&str, usize) + 'static>(
     true
 }
 
+/// Owns the taken pre-edit scratch buffer and returns it to its thread-local slot on drop.
+///
+/// The guard exists so a callback that unwinds cannot permanently steal the buffer: the `Drop`
+/// runs during unwinding, clears the borrowed `Rc`s, and installs the allocation back where the
+/// next notification finds it. A re-entrant notification took its own buffer (the slot was
+/// empty), so the slot may already hold one by the time this guard runs; in that case this
+/// buffer is simply dropped rather than replacing it.
+struct ImePreeditBuffer(Option<Vec<ImePreeditCallback>>);
+
+impl ImePreeditBuffer {
+    /// Takes the thread's scratch buffer, or answers `None` when the thread has no slot.
+    fn take() -> Self {
+        Self(IME_PREEDIT_SCRATCH.try_with(|slot| core::mem::take(&mut *slot.borrow_mut())).ok())
+    }
+
+    /// The reusable list, when the thread had a slot to take it from.
+    fn entries(&mut self) -> Option<&mut Vec<ImePreeditCallback>> {
+        self.0.as_mut()
+    }
+}
+
+impl Drop for ImePreeditBuffer {
+    fn drop(&mut self) {
+        let Some(mut buffer) = self.0.take() else { return };
+        // The `Rc`s must not outlive the notification: keeping them would retain observers (and
+        // their captures) after the control was unregistered or the host cleared them.
+        buffer.clear();
+        let _ = IME_PREEDIT_SCRATCH.try_with(|slot| {
+            if let Ok(mut slot) = slot.try_borrow_mut() {
+                if slot.is_empty() {
+                    *slot = buffer;
+                }
+            }
+        });
+    }
+}
+
 /// Tells every observer of `widget_id` about one uncommitted composition update.
 ///
-/// The list is cloned out before the callbacks run, so a callback may register another observer,
-/// destroy the widget, or call [`clear_ime_preedit_callbacks`] without hitting an already-borrowed
-/// `RefCell`. Returns whether at least one observer ran.
+/// The entries are `Rc::clone`d into the thread's reusable scratch list before the callbacks run,
+/// so a callback may register another observer, destroy the widget, or call
+/// [`clear_ime_preedit_callbacks`] without hitting an already-borrowed `RefCell`. Cloning out is
+/// still required for that reason; only the per-notification `Vec` allocation is gone. Returns
+/// whether at least one observer ran.
 pub(crate) fn notify_ime_preedit(widget_id: ObjectId, text: &str, cursor: usize) -> bool {
-    let callbacks: Vec<ImePreeditCallback> = IME_PREEDIT_CALLBACKS
-        .try_with(|map| map.borrow().get(&widget_id).cloned())
-        .unwrap_or_default()
-        .unwrap_or_default();
-    if callbacks.is_empty() {
+    let mut scratch = ImePreeditBuffer::take();
+    let Some(callbacks) = scratch.entries() else { return false };
+    callbacks.clear();
+    let found = IME_PREEDIT_CALLBACKS
+        .try_with(|map| match map.borrow().get(&widget_id) {
+            Some(entries) => {
+                callbacks.extend(entries.iter().cloned());
+                true
+            }
+            None => false,
+        })
+        .unwrap_or(false);
+    if !found || callbacks.is_empty() {
         return false;
     }
-    for callback in callbacks {
+    for callback in callbacks.iter() {
         if let Ok(mut observer) = callback.try_borrow_mut() {
             observer(text, cursor);
         } else {
@@ -7309,9 +7417,7 @@ mod tests {
 
         drive_frame(0);
 
-        let dark_primary = {
-            crate::style::palette_shared().expect("an active theme").primary
-        };
+        let dark_primary = { crate::style::palette_shared().expect("an active theme").primary };
         assert_ne!(fill(), before, "the frame drained the notification into a restyle");
         assert_eq!(
             fill(),
@@ -9480,9 +9586,9 @@ mod tests {
     /// the widgets the demos and the factory expose.
     #[test]
     fn custom_widgets_report_the_draw_bridge() {
+        use crate::widget::chart_widgets::gantt_widget::GanttWidget;
         use crate::widget::special_widgets::chip::Chip;
         use crate::widget::special_widgets::color_picker::ColorPicker;
-        use crate::widget::chart_widgets::gantt_widget::GanttWidget;
         use crate::widget::special_widgets::snackbar::Snackbar;
         use crate::widget::special_widgets::terminal_view::TerminalView;
 

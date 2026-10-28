@@ -280,6 +280,43 @@ pub fn elide_start(text: &str, max_chars: usize) -> Cow<'_, str> {
     Cow::Owned(out)
 }
 
+/// A cursor over `text`'s character boundaries that moves incrementally.
+///
+/// The width-fitting searches probe a different character count on every step. Recomputing a byte
+/// index with `text.char_indices().nth(count)` made every probe walk the string from its start, so
+/// one elision cost O(n log n) character steps. This cursor keeps the last `(count, byte index)`
+/// and advances or retreats only by the difference, producing the same indices in the same order.
+struct CharCursor<'a> {
+    text: &'a str,
+    count: usize,
+    index: usize,
+}
+
+impl<'a> CharCursor<'a> {
+    const fn new(text: &'a str) -> Self {
+        Self { text, count: 0, index: 0 }
+    }
+
+    /// The byte offset of the `target`-th character boundary, clamped to `text.len()`.
+    fn byte_index_of(&mut self, target: usize) -> usize {
+        while self.count < target {
+            let Some(ch) = self.text[self.index..].chars().next() else {
+                break;
+            };
+            self.index += ch.len_utf8();
+            self.count += 1;
+        }
+        while self.count > target {
+            let Some((index, _)) = self.text[..self.index].char_indices().next_back() else {
+                break;
+            };
+            self.index = index;
+            self.count -= 1;
+        }
+        self.index
+    }
+}
+
 /// Shortens `text` so its measured width fits `max_width`, eliding the **middle**.
 ///
 /// The width-budget counterpart of `elide_middle`, for a path or URL in a column too
@@ -305,15 +342,20 @@ pub fn elide_middle_to_width<'a>(
     let char_count = text.chars().count();
     // Binary search the number of characters that fit, exactly as `elide_to_width`
     // does, but split the accepted count between the two ends on every probe.
+    let mut head_cursor = CharCursor::new(text);
+    let mut tail_cursor = CharCursor::new(text);
+    // One candidate buffer for the whole search: each probe clears and rebuilds it rather than
+    // allocating, and the `Owned` result at the end reuses this same allocation.
+    let mut candidate = String::with_capacity(text.len() + ELLIPSIS.len());
     let mut low = 0usize;
     let mut high = char_count;
     while low < high {
         let mid = (low + high).div_ceil(2);
         let head_chars = mid.div_ceil(2);
         let tail_chars = mid - head_chars;
-        let head_end = byte_index_of_char(text, head_chars);
-        let tail_start = byte_index_of_char(text, char_count - tail_chars);
-        let mut candidate = String::with_capacity(head_end + (text.len() - tail_start) + 3);
+        let head_end = head_cursor.byte_index_of(head_chars);
+        let tail_start = tail_cursor.byte_index_of(char_count - tail_chars);
+        candidate.clear();
         candidate.push_str(&text[..head_end]);
         candidate.push('\u{2026}');
         candidate.push_str(&text[tail_start..]);
@@ -331,13 +373,13 @@ pub fn elide_middle_to_width<'a>(
     }
     let head_chars = low.div_ceil(2);
     let tail_chars = low - head_chars;
-    let head_end = byte_index_of_char(text, head_chars);
-    let tail_start = byte_index_of_char(text, char_count - tail_chars);
-    let mut out = String::with_capacity(head_end + (text.len() - tail_start) + 3);
-    out.push_str(&text[..head_end]);
-    out.push('\u{2026}');
-    out.push_str(&text[tail_start..]);
-    Cow::Owned(out)
+    let head_end = head_cursor.byte_index_of(head_chars);
+    let tail_start = tail_cursor.byte_index_of(char_count - tail_chars);
+    candidate.clear();
+    candidate.push_str(&text[..head_end]);
+    candidate.push('\u{2026}');
+    candidate.push_str(&text[tail_start..]);
+    Cow::Owned(candidate)
 }
 
 /// Shortens `text` so its measured width fits `max_width`, keeping the head.
@@ -365,12 +407,16 @@ pub fn elide_to_width<'a>(
     }
 
     let char_count = text.chars().count();
+    let mut cursor = CharCursor::new(text);
+    // The same single buffer discipline as `elide_middle_to_width`: each probe clears it, and the
+    // final `Owned` result is that buffer filled one last time.
+    let mut candidate = String::with_capacity(text.len() + ELLIPSIS.len());
     let mut low = 0usize;
     let mut high = char_count;
     while low < high {
         let mid = (low + high).div_ceil(2);
-        let end = byte_index_of_char(text, mid);
-        let mut candidate = String::with_capacity(end + ELLIPSIS.len());
+        let end = cursor.byte_index_of(mid);
+        candidate.clear();
         candidate.push_str(&text[..end]);
         candidate.push('\u{2026}');
         if measure(&candidate) <= max_width {
@@ -385,11 +431,11 @@ pub fn elide_to_width<'a>(
         // character; this arm is defensive and keeps the borrow contract total.
         return Cow::Borrowed(text);
     }
-    let end = byte_index_of_char(text, low);
-    let mut out = String::with_capacity(end + ELLIPSIS.len());
-    out.push_str(&text[..end]);
-    out.push('\u{2026}');
-    Cow::Owned(out)
+    let end = cursor.byte_index_of(low);
+    candidate.clear();
+    candidate.push_str(&text[..end]);
+    candidate.push('\u{2026}');
+    Cow::Owned(candidate)
 }
 
 /// Splits `text` into visual lines of at most `max_chars` characters.

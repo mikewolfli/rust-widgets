@@ -44,8 +44,8 @@ struct IbusConnection {
     /// Serialises DBus calls onto one worker thread.
     ///
     /// The UI thread used to run `pollster::block_on` for every keystroke, so a busy IBus
-    /// daemon froze typing. Calls are now handed to this worker; the caller waits at most
-    /// [`IBUS_REPLY_TIMEOUT`] and otherwise falls back to in-process handling.
+    /// daemon froze typing. Focus and cursor notifications are now queued with no wait;
+    /// only `ProcessKeyEvent` waits, at most [`IBUS_REPLY_TIMEOUT`].
     worker: std::sync::mpsc::Sender<IbusJob>,
 }
 
@@ -123,21 +123,29 @@ impl IbusConnection {
         Some(IbusConnection { _connection: conn, input_context_path: context_path, worker })
     }
 
-    /// Send a method call straight over the session connection.
+    /// Build the worker job for one input-context method call.
     ///
-    /// This deliberately does **not** build a `zbus::Proxy` per call: a proxy performs
+    /// The reply-bearing and fire-and-forget paths share this constructor, so the worker sees an
+    /// identical sequence on both: same destination, path, interface, method and serialized
+    /// body. `reply_tx` is `Some` only when the caller can observe the reply.
+    ///
+    /// The call deliberately does **not** build a `zbus::Proxy`: a proxy performs
     /// introspection/property bookkeeping that an input-context call does not need, and it used
     /// to be rebuilt on every keystroke. The connection already knows the destination, path and
     /// interface, so `Connection::call_method` is the direct route.
-    fn call_input_context<B>(&self, method: &str, body: &B) -> Option<zbus::Message>
+    fn input_context_job<B>(
+        &self,
+        method: &str,
+        body: &B,
+        reply_tx: Option<std::sync::mpsc::SyncSender<Option<zbus::Message>>>,
+    ) -> IbusJob
     where
         B: serde::Serialize + zbus::zvariant::DynamicType + Clone + Send + 'static,
     {
         let path = self.input_context_path.clone();
         let method = method.to_string();
         let body = body.clone();
-        let (reply_tx, reply_rx) = std::sync::mpsc::sync_channel(1);
-        let job: IbusJob = Box::new(move |conn| {
+        Box::new(move |conn| {
             let reply = pollster::block_on(async {
                 conn.call_method(
                     Some("org.freedesktop.IBus"),
@@ -152,29 +160,62 @@ impl IbusConnection {
             if reply.is_none() {
                 log::warn!("[Linux IME] IBus {method} call failed or returned no reply");
             }
-            // A send error means the caller already timed out and dropped the receiver; the
-            // reply is no longer observable, which is the documented fallback path.
-            let _ = reply_tx.send(reply);
-        });
+            if let Some(reply_tx) = reply_tx {
+                // A send error means the caller already timed out and dropped the receiver; the
+                // reply is no longer observable, which is the documented fallback path.
+                let _ = reply_tx.send(reply);
+            }
+        })
+    }
+
+    /// Send a method call and wait up to [`IBUS_REPLY_TIMEOUT`] for its reply.
+    ///
+    /// This is the bounded-wait path, reserved for calls whose reply the caller acts on
+    /// (`ProcessKeyEvent`). Focus and cursor notifications use
+    /// [`Self::call_input_context_queued`] instead, because they run on the UI thread.
+    fn call_input_context<B>(&self, method: &str, body: &B) -> Option<zbus::Message>
+    where
+        B: serde::Serialize + zbus::zvariant::DynamicType + Clone + Send + 'static,
+    {
+        let (reply_tx, reply_rx) = std::sync::mpsc::sync_channel(1);
+        let job = self.input_context_job(method, body, Some(reply_tx));
         if self.worker.send(job).is_err() {
             return None;
         }
         reply_rx.recv_timeout(IBUS_REPLY_TIMEOUT).ok().flatten()
     }
 
+    /// Queue a method call on the worker and return without waiting for its reply.
+    ///
+    /// Returns `true` only when the job was accepted by the worker's channel; `false` means the
+    /// worker is gone and the call will never reach the daemon. The reply is not observable to
+    /// the caller, which is the point: focus transitions run on the UI thread and must not block
+    /// on a session-bus round-trip (G-602).
+    fn call_input_context_queued<B>(&self, method: &str, body: &B) -> bool
+    where
+        B: serde::Serialize + zbus::zvariant::DynamicType + Clone + Send + 'static,
+    {
+        let job = self.input_context_job(method, body, None);
+        if self.worker.send(job).is_err() {
+            log::warn!("[Linux IME] IBus {method} was not queued: the worker is gone");
+            return false;
+        }
+        true
+    }
+
     /// Invoke a void method on this connection's input context with no arguments.
     fn call_input_context_no_args(&self, method: &str) -> bool {
-        self.call_input_context(method, &()).is_some()
+        self.call_input_context_queued(method, &())
     }
 
     /// Invoke a void method on this connection's input context with one `u` argument.
     fn call_input_context_u(&self, method: &str, arg: u32) -> bool {
-        self.call_input_context(method, &(arg,)).is_some()
+        self.call_input_context_queued(method, &(arg,))
     }
 
     /// Invoke a void method on this connection's input context with four `i` args.
     fn call_input_context_iiii(&self, method: &str, a: i32, b: i32, c: i32, d: i32) -> bool {
-        self.call_input_context(method, &(a, b, c, d)).is_some()
+        self.call_input_context_queued(method, &(a, b, c, d))
     }
 
     /// Set input capabilities advertised to the engine.
@@ -323,7 +364,9 @@ impl LinuxImeBridge {
         #[cfg(feature = "linux-a11y")]
         if let Some(conn) = lock(&self.ibus_connection).as_ref() {
             if !conn.set_cursor_location(x, y, w, h) {
-                log::warn!("[Linux IME] SetCursorLocation failed (engine may be gone)");
+                log::warn!(
+                    "[Linux IME] SetCursorLocation was not queued (the IBus worker is gone)"
+                );
             }
         }
     }
@@ -440,13 +483,14 @@ impl ImeBridge for LinuxImeBridge {
         *lock(&self.focused_widget) = Some(widget_id);
         *lock(&self.active) = true;
         log::info!("[Linux IME] focus_in: widget={widget_id}");
-        // Announce capabilities once per connection, then focus the engine so it
-        // starts composing into this context.
+        // Announce capabilities, then focus the engine so it starts composing into this
+        // context. Both calls are queued to the IBus worker rather than awaited: a focus move
+        // runs on the UI thread and must not wait for the session bus (G-602).
         #[cfg(feature = "linux-a11y")]
         if let Some(conn) = lock(&self.ibus_connection).as_ref() {
             conn.set_capabilities(IBUS_CAP_PREEDIT_TEXT_FOCUS);
             if !conn.focus_in() {
-                log::warn!("[Linux IME] IBus FocusIn failed (engine may be gone)");
+                log::warn!("[Linux IME] IBus FocusIn was not queued (the worker is gone)");
             }
         }
     }
@@ -456,10 +500,11 @@ impl ImeBridge for LinuxImeBridge {
         *lock(&self.active) = false;
         self.clear_composition();
         log::info!("[Linux IME] focus_out: widget={widget_id}");
+        // Queued, not awaited, for the same reason as `focus_in`.
         #[cfg(feature = "linux-a11y")]
         if let Some(conn) = lock(&self.ibus_connection).as_ref() {
             if !conn.focus_out() {
-                log::warn!("[Linux IME] IBus FocusOut failed (engine may be gone)");
+                log::warn!("[Linux IME] IBus FocusOut was not queued (the worker is gone)");
             }
         }
     }

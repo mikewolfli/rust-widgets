@@ -33,9 +33,46 @@
 //! # Why there is no allocation for a miss
 //!
 //! A lookup returns a borrowed slice of the face's own bytes. Only a *hit* that has to be decoded and
-//! scaled touches a buffer, and that buffer is the caller's.
+//! scaled touches a buffer. That scaled result is kept in a small bounded FIFO cache (see
+//! [`COLOR_GLYPH_CACHE_LIMIT`]), so a repeated emoji is a copy rather than another inflate, while the
+//! cache's size stays constant instead of growing with the text ever drawn.
+
+use crate::compat::{HashMap, Rc, RefCell, VecDeque};
 
 use super::png::decode_png;
+
+/// How many decoded, scaled colour glyphs one thread keeps before evicting the oldest.
+///
+/// The same bounded-FIFO shape as `GRADIENT_LUT_CACHE_LIMIT` and `BAKED_IMAGE_CACHE_LIMIT`. A
+/// screen shows a small set of emoji, so 32 entries cover the working set; a scaled cell is
+/// already `cell.area() * 4` bytes, which is why this is a cache with a bound rather than a table
+/// that grows with every glyph ever seen.
+const COLOR_GLYPH_CACHE_LIMIT: usize = 32;
+
+/// How many parsed strikes one thread keeps before evicting the oldest.
+///
+/// A strike is static per face and this crate ships one colour face, so the bound is a guard
+/// against a caller constructing faces over many short-lived buffers, not a working-set estimate.
+const STRIKE_CACHE_LIMIT: usize = 16;
+
+/// The identity of one scaled colour glyph: face address and length, glyph id, cell size.
+///
+/// The face's address and length identify it because a [`ColorBitmapFace`] is built over the
+/// binary's read-only face bytes, whose address never changes. The cell is part of the key because
+/// the cached bytes are already scaled to it.
+type ColorGlyphKey = (usize, usize, u16, u32, u32);
+
+thread_local! {
+    /// Scaled colour glyphs, keyed by [`ColorGlyphKey`], oldest first.
+    #[allow(clippy::missing_const_for_thread_local)]
+    static COLOR_GLYPHS: RefCell<(VecDeque<ColorGlyphKey>, HashMap<ColorGlyphKey, Rc<[u8]>>)> =
+        RefCell::new((VecDeque::new(), HashMap::new()));
+    /// Each face's parsed strike, showing any negative result too: a face that cannot be read must
+    /// not be re-scanned for every glyph. This is the same `Option` cache `SHAPED_RUNS` uses.
+    #[allow(clippy::missing_const_for_thread_local)]
+    static STRIKES: RefCell<(VecDeque<(usize, usize)>, HashMap<(usize, usize), Option<Strike>>)> =
+        RefCell::new((VecDeque::new(), HashMap::new()));
+}
 
 /// The eight bytes every PNG starts with.
 const PNG_SIGNATURE: &[u8] = &[0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
@@ -184,9 +221,39 @@ impl<'a> ColorBitmapFace<'a> {
         Some(Strike { list, index_count, start_glyph, end_glyph })
     }
 
+    /// This face's `(address, length)`, its identity in the thread-local caches.
+    fn identity(&self) -> (usize, usize) {
+        (self.data.as_ptr() as usize, self.data.len())
+    }
+
+    /// [`Self::strike`], reused for this face.
+    ///
+    /// A strike is a static property of a face and a face's bytes cannot change, so the result —
+    /// including the `None` a malformed or unsupported face yields — is cached instead of walking
+    /// the `CBLC` directory on every glyph lookup.
+    fn cached_strike(&self) -> Option<Strike> {
+        let key = self.identity();
+        if let Some(hit) = STRIKES.with(|cache| cache.borrow().1.get(&key).copied()) {
+            return hit;
+        }
+        let computed = self.strike();
+        STRIKES.with(|cache| {
+            let mut cache = cache.borrow_mut();
+            if cache.1.insert(key, computed).is_none() {
+                cache.0.push_back(key);
+            }
+            while cache.0.len() > STRIKE_CACHE_LIMIT {
+                if let Some(oldest) = cache.0.pop_front() {
+                    cache.1.remove(&oldest);
+                }
+            }
+        });
+        computed
+    }
+
     /// The PNG for `glyph_id`, or `None` when this face has no image for it.
     pub fn image(&self, glyph_id: u16) -> Option<ImageRef> {
-        let strike = self.strike()?;
+        let strike = self.cached_strike()?;
         if glyph_id < strike.start_glyph || glyph_id > strike.end_glyph {
             return None;
         }
@@ -328,9 +395,11 @@ impl<'a> ColorBitmapFace<'a> {
     /// be a borrow error, and if it compiled it would have the scaler read pixels it had already
     /// overwritten.
     ///
-    /// So the decoded image gets its own allocation and `out` receives only the scaled result. It is
-    /// dropped at the end of the call, which is what keeps the third constraint: no colour glyph is
-    /// ever resident.
+    /// So the decoded image gets its own allocation, and only the scaled result reaches the caller.
+    /// The scaled bytes are also kept in a thread-local FIFO bounded by
+    /// [`COLOR_GLYPH_CACHE_LIMIT`]: the face's "no glyph is ever resident" intent is preserved as a
+    /// *bounded* constant rather than an unbounded table, and the next frame's identical emoji skips
+    /// the inflate entirely.
     ///
     /// Returns `None` when the face has no image for the glyph, the PNG cannot be decoded, or the
     /// buffer is too small for the cell.
@@ -339,6 +408,13 @@ impl<'a> ColorBitmapFace<'a> {
         if cell.is_empty() || out.len() < needed {
             return None;
         }
+        let (face_address, face_len) = self.identity();
+        let key = (face_address, face_len, glyph_id, cell.width, cell.height);
+        if let Some(hit) = COLOR_GLYPHS.with(|cache| cache.borrow().1.get(&key).cloned()) {
+            out[..needed].copy_from_slice(&hit);
+            return Some(());
+        }
+
         let image = self.image(glyph_id)?;
         let bytes = self.data.get(image.offset..image.offset.checked_add(image.length)?)?;
 
@@ -348,9 +424,30 @@ impl<'a> ColorBitmapFace<'a> {
         let decoded_len = (width as usize).checked_mul(height as usize)?.checked_mul(4)?;
         let mut decoded = crate::compat::vec![0u8; decoded_len];
         let view = decode_png(bytes, &mut decoded)?;
-        scale_rgba(view.pixels, view.width, view.height, cell, out);
+        let mut scaled = crate::compat::vec![0u8; needed];
+        scale_rgba(view.pixels, view.width, view.height, cell, &mut scaled);
+        out[..needed].copy_from_slice(&scaled);
+        store_color_glyph(key, Rc::from(scaled));
         Some(())
     }
+}
+
+/// Inserts `pixels` under `key`, evicting the oldest entry at [`COLOR_GLYPH_CACHE_LIMIT`].
+///
+/// A duplicate key does not join the eviction queue again, so an entry can never be evicted by its
+/// own replacement (the rule `SHAPED_RUNS`' cache documents).
+fn store_color_glyph(key: ColorGlyphKey, pixels: Rc<[u8]>) {
+    COLOR_GLYPHS.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if cache.1.insert(key, pixels).is_none() {
+            cache.0.push_back(key);
+        }
+        while cache.0.len() > COLOR_GLYPH_CACHE_LIMIT {
+            if let Some(oldest) = cache.0.pop_front() {
+                cache.1.remove(&oldest);
+            }
+        }
+    });
 }
 
 /// How many bytes sit between the start of a glyph's image in `CBDT` and its PNG bytes.

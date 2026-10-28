@@ -118,8 +118,8 @@ pub mod bidi;
 mod cjk_bitmap_data;
 
 pub use glyph_source::{
-    active_stack, paint_active, resolve, source_for, BitOrder, Cell, Font8x8Source, FontStack,
-    GlyphBitmap, GlyphSource, InkKind, Painted, TOFU,
+    active_stack, paint_active, paints_color, resolve, source_for, BitOrder, Cell, Font8x8Source,
+    FontStack, GlyphBitmap, GlyphSource, InkKind, Painted, TOFU,
 };
 
 // The weight-aware paint entry point. Gated on the shaper because it instantiates an `fvar` axis,

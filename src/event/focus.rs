@@ -198,6 +198,10 @@ impl FocusManager {
         Self::partition_out(&mut self.registration_order, id);
         Self::partition_indexed(&mut self.focusable_widgets, &mut self.positions, id);
         self.policies.remove(&id);
+        // EV-X04: the position map had no removal path, so a recreated control that reused an id
+        // inherited the dead control's coordinates (or was ordered at `(0, 0)`) and the map grew
+        // without bound across create/destroy cycles.
+        self.widget_positions.remove(&id);
         // A removal cannot move the remaining widgets relative to each other, so the effective
         // order is already correct under `TabOrder`. Spatial strategies keep their sort because
         // the positions of the remaining widgets are unchanged.

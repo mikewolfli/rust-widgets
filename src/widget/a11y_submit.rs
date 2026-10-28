@@ -74,13 +74,6 @@ thread_local! {
     #[allow(clippy::missing_const_for_thread_local)]
     static INSTALLED: core::cell::RefCell<Option<InstalledBridge>> =
         const { core::cell::RefCell::new(None) };
-
-    /// Whether the pinned platform bridge has been resolved yet.
-    ///
-    /// Resolving it is a thread-local store of a `'static` pointer, so it happens once per thread
-    /// rather than once per submit point.
-    #[allow(clippy::missing_const_for_thread_local)]
-    static PLATFORM_RESOLVED: core::cell::Cell<bool> = const { core::cell::Cell::new(false) };
 }
 
 /// Installs `bridge` as the bridge submit points report to.
@@ -95,9 +88,6 @@ thread_local! {
 /// intended uses are a `'static` platform bridge and a test substitute that is kept alive by the
 /// test's own scope. [`uninstall_bridge`] reverses this and is what a test calls on the way out.
 pub fn install_bridge(bridge: &'static dyn AccessibilityBridge) -> bool {
-    // A test installation must win over the pinned platform bridge, so mark the platform as
-    // resolved: otherwise the next `current()` would replace the substitute with the platform's.
-    let _ = PLATFORM_RESOLVED.try_with(|flag| flag.set(true));
     INSTALLED
         .try_with(|slot| slot.borrow_mut().replace(InstalledBridge { ptr: bridge }).is_some())
         .unwrap_or(false)
@@ -133,12 +123,13 @@ fn with_bridge<R>(f: impl FnOnce(&dyn AccessibilityBridge) -> R) -> Option<R> {
     Some(f(unsafe { &*ptr }))
 }
 
-/// Resolves the pinned platform bridge once, returning its pointer.
+/// Resolves the current platform bridge, returning its pointer.
+///
+/// This runs on every call by design: `get_platform()` answers from `PLATFORM_OVERRIDE`, which a
+/// host may replace at run time, so a cached pointer would keep reporting to a bridge that is no
+/// longer installed. The resolution is a cheap trait-object lookup, and correctness here is worth
+/// more than the saved lookup at each submit point.
 fn platform_bridge_ptr() -> Option<*const dyn AccessibilityBridge> {
-    let already = PLATFORM_RESOLVED.try_with(|flag| flag.get()).unwrap_or(false);
-    if !already {
-        let _ = PLATFORM_RESOLVED.try_with(|flag| flag.set(true));
-    }
     let bridge = crate::platform::runtime::get_platform().accessibility_bridge()?;
     Some(bridge as *const dyn AccessibilityBridge)
 }

@@ -218,14 +218,24 @@ pub struct ActionBinding {
 /// as **two** entries for one chord, and a type-bound chord could never be triggered by the
 /// `Ctrl` spelling a hand-written layout uses. Folding the aliases here is what makes both the
 /// string API and the type API agree, wherever they are reached.
-pub(crate) fn normalize_shortcut(shortcut: &str) -> String {
+///
+/// # Why malformed input is rejected (EV-X08)
+///
+/// This mirrors [`Shortcut::from_string`](crate::shortcut::Shortcut::from_string): a shortcut has
+/// exactly one key token, and that token must be a key `Key::from_string` accepts. Before this,
+/// the last non-modifier token silently won (`"Ctrl+A+B"` registered `primary+b`) and any
+/// unrecognised token was accepted, so the two string paths disagreed about the same input.
+/// Returning `None` is the rejection verdict both paths now share.
+pub(crate) fn normalize_shortcut(shortcut: &str) -> Option<String> {
     let mut primary = false;
     let mut alt = false;
     let mut shift = false;
     let mut meta = false;
-    let mut key: String = String::new();
+    let mut key: Option<String> = None;
 
-    for token in shortcut.split('+').map(|t| t.trim()).filter(|t| !t.is_empty()) {
+    // Empty tokens are meaningful here: `from_string` splits the same way without filtering, so
+    // `"Ctrl+"` has an empty key token and is rejected below, exactly as the typed path rejects it.
+    for token in shortcut.split('+').map(|t| t.trim()) {
         let lower = token.to_lowercase();
         match lower.as_str() {
             // The string API folds every spelling of the primary modifier onto
@@ -238,10 +248,23 @@ pub(crate) fn normalize_shortcut(shortcut: &str) -> String {
             "shift" => shift = true,
             // Meta/Win/Super are one physical modifier, so fold them together.
             "meta" | "win" | "super" => meta = true,
-            // The last non-modifier token is the key, matching `Shortcut::from_string`.
-            _ => key = lower,
+            _ => {
+                // A second key token used to overwrite the first silently; report the malformed
+                // input instead of registering a chord the author did not write.
+                if key.is_some() {
+                    return None;
+                }
+                // Validate through the typed parser, so this path cannot accept a key spelling
+                // `Shortcut::from_string` rejects.
+                crate::shortcut::Key::from_string(&lower)?;
+                key = Some(lower);
+            }
         }
     }
+
+    // No key token is a malformed chord for the typed path (`Key::from_string("")` fails), so it
+    // is a rejection here too.
+    let key = key?;
 
     // Emit modifiers in the same canonical order `Shortcut::format_shortcut` uses,
     // so `"Ctrl+Shift+S"` and `"Shift+Ctrl+S"` both normalize to `primary+shift+s`.
@@ -258,10 +281,8 @@ pub(crate) fn normalize_shortcut(shortcut: &str) -> String {
     if meta {
         parts.push(String::from("meta"));
     }
-    if !key.is_empty() {
-        parts.push(key);
-    }
-    parts.join("+")
+    parts.push(key);
+    Some(parts.join("+"))
 }
 
 /// Canonicalizes a typed [`Shortcut`](crate::shortcut::Shortcut) for the action
