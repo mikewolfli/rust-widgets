@@ -67,7 +67,14 @@ cd "$ROOT_DIR"
 . "$ROOT_DIR/tools/lib_python.sh"
 
 # ── Half 1: the outbound record ─────────────────────────────────────────────────────────────────
-if ! OUT="$("$PYTHON" tools/font_license_scan.py)"; then
+#
+# Two roots, because the tables no longer share one directory: the payload wrappers moved into the
+# `rust-widgets-font` crate when this package reached crates.io's 10 MiB ceiling, while the shard
+# index (`cjk_shards.rs`) stayed behind as library code. Scanning only `src` would silently stop
+# checking nine of the ten shipped tables, which is the kind of green that this gate exists to
+# prevent.
+SCAN_ROOTS=(--root src --root crates/rust-widgets-font/src)
+if ! OUT="$("$PYTHON" tools/font_license_scan.py "${SCAN_ROOTS[@]}")"; then
     echo "FAIL: font_license_scan.py could not run"
     exit 1
 fi
@@ -142,7 +149,7 @@ mv "$INJECT_DIR/emoji_subset_codepoints.txt" tools/emoji_subset_codepoints.txt
 # a font table *is* is the only file that has to change when one is added. The `expected == checked`
 # equality still carries the original intent — every shipped table must be recorded — while the
 # scanner's own `checked=N failed=0` shape is preserved for the earlier half-1 check.
-SCAN_OUT="$("$PYTHON" tools/font_license_scan.py)"
+SCAN_OUT="$("$PYTHON" tools/font_license_scan.py "${SCAN_ROOTS[@]}")"
 # `grep -o` + `cut`, not `sed`/`awk` regex captures: the `\b` word boundary is a GNU-sed extension
 # (BSD/macOS `sed` silently matched nothing and failed the gate on every correct tree), and the
 # three-argument `match()` is a GNU-awk extension absent from macOS `awk`. Splitting on `=` with

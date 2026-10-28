@@ -4018,6 +4018,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "rust-widgets-font"
+version = "2.9.4"
+
+[[package]]
 name = "rust_widgets"
 version = "2.9.4"
 dependencies = [
@@ -4060,6 +4064,7 @@ dependencies = [
  "proptest",
  "raw-window-handle",
  "resvg",
+ "rust-widgets-font",
  "rustybuzz",
  "serde",
  "serde_json",

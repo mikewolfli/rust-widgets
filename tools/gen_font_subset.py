@@ -7,8 +7,8 @@
 
 For each declared face, two files:
 
-    src/render/text/font_assets/<id>.ttf   the subset itself, byte-for-byte from fontTools
-    src/render/text/font_assets/<id>.rs    a one-line `include_bytes!` with a provenance header
+    crates/rust-widgets-font/src/<id>.ttf   the subset itself, byte-for-byte from fontTools
+    crates/rust-widgets-font/src/<id>.rs    a one-line `include_bytes!` with a provenance header
 
 The header repeats the upstream project, the upstream URL, the SHA-256 of the *upstream* file
 and the licence, because `tools/font_license_scan.py` requires exactly those facts and `NOTICE`
@@ -53,7 +53,7 @@ LICENSES = {
     "ofl-1.1": "SIL Open Font License 1.1",
 }
 
-ASSET_DIR = REPO_ROOT / "src" / "render" / "text" / "font_assets"
+ASSET_DIR = REPO_ROOT / "crates" / "rust-widgets-font" / "src"
 CACHE_DIR = REPO_ROOT / "target" / "font-cache"
 
 # ── The faces ───────────────────────────────────────────────────────────────────────────────────

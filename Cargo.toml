@@ -31,9 +31,12 @@ include = [
     # shrinking ~250 KB elsewhere re-breaks publishing.
     # "benches/**/*",
     # "examples/**/*",
-    # "include/**/*",
     "language/**/*",
-    "crates/**/*",
+    # `crates/` holds nested packages — `rust-widgets-font` (the `fonts-*` payloads) and
+    # `mobile-services`. Cargo skips a nested package in the parent's tarball by itself; the
+    # negation states the exclusion explicitly, so "the payloads are not in this package" is a
+    # line here rather than a rule a reader has to know.
+    "!crates/**/*",
     "themes/**/*",
     # Both files under `tools/` are *declared* as Cargo targets below, so they must
     # ship: a target whose path is absent from the package makes `cargo package`
@@ -42,14 +45,14 @@ include = [
     # and a consumer building from the tarball then has no such target at all.
     # The rest of `tools/` is gates and generators that are not part of the crate's
     # build surface and stays excluded.
-    # "tools/widget_gallery.rs",
-    # "tools/view_platform_gate_probe.rs",
-    # "tools/generator_agreement_probe.rs",
+    "tools/widget_gallery.rs",
+    "tools/view_platform_gate_probe.rs",
+    "tools/generator_agreement_probe.rs",
     # The designer's generation entry point (D7-b-3). Declared as an example below, so
     # it must ship for the same reason: without it, a consumer who takes the crate from
     # the tarball has the `designer` feature and the `designer_generate` binary it
     # documents, but not the target that writes a project's committed sources.
-    # "tools/designer_generate.rs",
+    "tools/designer_generate.rs",
     # The entries below are **anchored** with a leading `/`. That is not cosmetic.
     #
     # An unanchored `"README.md"` / `"LICENSE"` / `"CHANGELOG.md"` is a gitignore-style
@@ -486,8 +489,8 @@ fonts-cjk-bitmap = []
 ## They also *draw*: `render::text::raster` rasterises their outlines into antialiased coverage at
 ## whatever size the caller asked for, which is G-5. A build with one of these faces gets
 ## antialiased text; the default build's 8x8 face stays 1-bit, byte-identical to what it always drew.
-fonts-vector-latin = ["text-shaping"]
-fonts-complex = ["text-shaping"]
+fonts-vector-latin = ["text-shaping", "rust-widgets-font/latin"]
+fonts-complex = ["text-shaping", "rust-widgets-font/arabic"]
 
 ## `fonts-cjk` adds a **scalable** CJK vector face (`NotoSansSC`, outlines) — the counterpart to
 ## `fonts-cjk-bitmap` above, and a different trade.
@@ -516,7 +519,7 @@ fonts-complex = ["text-shaping"]
 ##     is rasterised at exactly the requested size.
 ##
 ## Because it carries outlines and layout tables, this feature implies `text-shaping`.
-fonts-cjk = ["text-shaping"]
+fonts-cjk = ["text-shaping", "rust-widgets-font/cjk"]
 
 ## ── The CJK vector face, sharded on Unicode block boundaries ──
 ##
@@ -545,15 +548,15 @@ fonts-cjk-shards = [
 ]
 
 ## ASCII, so a mixed line's advances and kerning come from one face.
-fonts-cjk-shard-latin = ["text-shaping"]
+fonts-cjk-shard-latin = ["text-shaping", "rust-widgets-font/cjk-shard-latin"]
 ## CJK Symbols and Punctuation.
-fonts-cjk-shard-symbols = ["text-shaping"]
+fonts-cjk-shard-symbols = ["text-shaping", "rust-widgets-font/cjk-shard-symbols"]
 ## Hiragana and Katakana, including the voiced-mark range.
-fonts-cjk-shard-kana = ["text-shaping"]
+fonts-cjk-shard-kana = ["text-shaping", "rust-widgets-font/cjk-shard-kana"]
 ## Halfwidth and Fullwidth Forms.
-fonts-cjk-shard-fullwidth = ["text-shaping"]
+fonts-cjk-shard-fullwidth = ["text-shaping", "rust-widgets-font/cjk-shard-fullwidth"]
 ## Han: the 800 most common ideographs.
-fonts-cjk-shard-han = ["text-shaping"]
+fonts-cjk-shard-han = ["text-shaping", "rust-widgets-font/cjk-shard-han"]
 
 ## `fonts-emoji-color` adds a colour emoji face: `CBDT`/`CBLC` bitmap glyphs, each a PNG, plus the
 ## PNG decoder that reads them — G-6.
@@ -584,7 +587,7 @@ fonts-cjk-shard-han = ["text-shaping"]
 ## needs — there is no `GSUB`/`GPOS` step. So the two features can be enabled independently, and
 ## every combination of them builds (the reference-count matrix in `docs/plans/archive/blue23.md` §0A.4
 ## lists them).
-fonts-emoji-color = ["dep:ttf-parser"]
+fonts-emoji-color = ["dep:ttf-parser", "rust-widgets-font/emoji"]
 
 ## `runtime-fonts` lets a host register its own face at runtime:
 ## `text::register_face("My Family", bytes)` installs a `&'static [u8]` that is consulted **before**
@@ -798,6 +801,19 @@ all-desktop-features = [
 # ═══════════════════════════════════════════════════════════════════════
 
 [dependencies]
+# The `fonts-*` payloads live in `crates/rust-widgets-font`. Their features mirror this crate's
+# `fonts-*` ones one-for-one, and `"rust-widgets-font/<face>"` below both enables the face and
+# pulls the optional dependency in — so no `fonts-*` feature can read a payload without naming it,
+# and a build that enables none of them downloads none.
+#
+# Why it is a nested package and not a directory beside this code: crates.io caps a package at
+# 10 MiB, and the payloads are already-compressed binaries. 2.9.3 shipped at 10,357,752 bytes;
+# 2.9.4 would have been 10,918,287 and was answered with HTTP 413. Excluding them from `include`
+# in place is impossible — they are `include_bytes!`d by the default profile, so the packaged
+# crate would fail its own verification build with `couldn't read …ttf`. Moving them out and
+# excluding `crates/` (see the negated pattern in `include`) is the form of "exclude" that still
+# leaves a package that compiles.
+rust-widgets-font = { version = "2.9.4", path = "crates/rust-widgets-font", optional = true }
 serde = { version = "1.0", features = ["derive"], optional = true }
 serde_json = { version = "1.0", optional = true }
 # BLUE28 B28.40: the standard host/GPU interop handle type. Optional because it is a
@@ -1307,6 +1323,10 @@ required-features = ["desktop", "serde_json"]
 [[example]]
 name = "theme_resolve_dump"
 required-features = ["desktop"]
+
+# Reads back the style a **created** control carries, to decide whether a control that
+# renders grey is missing the theme or ignoring it. Needs a device profile and the
+# `app` module, like the other probes.
 
 # The executable companion to the cookbook's embedded chapter. Declared with **no**
 # `required-features` on purpose: it is supposed to compile on every profile

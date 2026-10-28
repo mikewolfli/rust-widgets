@@ -7,10 +7,10 @@
 
 For each shard in `tools/cjk_vector_shards.txt`, two files:
 
-    src/render/text/font_assets/cjk_shard_<id>.ttf   the subset itself
-    src/render/text/font_assets/cjk_shard_<id>.rs     an `include_bytes!` with a provenance header
+    crates/rust-widgets-font/src/cjk_shard_<id>.ttf   the subset itself
+    crates/rust-widgets-font/src/cjk_shard_<id>.rs     an `include_bytes!` with a provenance header
 
-and one index module:
+and one index module, which is library code and stays in the crate that reads it:
 
     src/render/text/font_assets/cjk_shards.rs          the shard table `shard_for(ch)` reads
 
@@ -42,7 +42,8 @@ import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-ASSET_DIR = REPO_ROOT / "src" / "render" / "text" / "font_assets"
+ASSET_DIR = REPO_ROOT / "crates" / "rust-widgets-font" / "src"
+INDEX_DIR = REPO_ROOT / "src" / "render" / "text" / "font_assets"
 SHARD_LIST = REPO_ROOT / "tools" / "cjk_vector_shards.txt"
 COVERAGE_LIST = REPO_ROOT / "tools" / "cjk_vector_codepoints.txt"
 
@@ -254,16 +255,14 @@ def index_module(shards, sizes):
         "// coverage), asserted by `tools/check_cjk_shards_cover_the_face.sh`.",
         "",
     ]
-    # One module per shard, each behind its own feature. The `#[path]` is required: this index is
-    # a module file, so a bare `mod cjk_shard_x;` would be looked for under a `cjk_shards/`
-    # directory, while the generated shard modules live beside this file.
+    # One re-export per shard, each behind its own feature. The payload and its provenance header
+    # live in `rust-widgets-font` (`ASSET_DIR` above): they moved out of this package when it hit
+    # crates.io's 10 MiB ceiling. The index stays here because `shard_for` is library code, not
+    # data, and callers name it through `fonts-cjk-shards` either way.
     for shard_id, _codepoints, ranges_text in shards:
         feature = f"fonts-cjk-shard-{shard_id}"
         lines.append(f'#[cfg(feature = "{feature}")]')
-        lines.append(f'#[path = "cjk_shard_{shard_id}.rs"]')
-        lines.append(f"mod cjk_shard_{shard_id};")
-        lines.append(f'#[cfg(feature = "{feature}")]')
-        lines.append(f"pub use cjk_shard_{shard_id}::FONT as {shard_id.upper()};")
+        lines.append(f"pub use rust_widgets_font::cjk_shard_{shard_id}::FONT as {shard_id.upper()};")
         lines.append("")
     lines.append("/// One shard: its id, its bytes (when this build carries it), and its coverage.")
     lines.append("pub struct Shard {")
@@ -417,7 +416,7 @@ def main(argv=None) -> int:
             ttf_path.write_bytes(payload)
             rs_path.write_text(module, encoding="utf-8")
 
-    index_path = ASSET_DIR / "cjk_shards.rs"
+    index_path = INDEX_DIR / "cjk_shards.rs"
     index = index_module(rendered_shards, sizes)
     if args.check:
         actual = index_path.read_text(encoding="utf-8") if index_path.exists() else ""

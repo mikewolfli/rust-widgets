@@ -5,8 +5,8 @@
 
 # What this produces
 
-    src/render/text/font_assets/emoji.ttf   the subset, byte-for-byte from fontTools
-    src/render/text/font_assets/emoji.rs    a one-line `include_bytes!` with a provenance header
+    crates/rust-widgets-font/src/emoji.ttf   the subset, byte-for-byte from fontTools
+    crates/rust-widgets-font/src/emoji.rs    a one-line `include_bytes!` with a provenance header
 
 The header repeats the upstream project, the upstream URL, the SHA-256 of the *upstream* file and
 the licence, because `tools/font_license_scan.py` requires exactly those facts and `NOTICE` must
@@ -66,7 +66,7 @@ import urllib.request
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-OUT_DIR = REPO_ROOT / "src" / "render" / "text" / "font_assets"
+OUT_DIR = REPO_ROOT / "crates" / "rust-widgets-font" / "src"
 CACHE_DIR = REPO_ROOT / "target" / "font-cache"
 CODEPOINT_LIST = REPO_ROOT / "tools" / "emoji_subset_codepoints.txt"
 

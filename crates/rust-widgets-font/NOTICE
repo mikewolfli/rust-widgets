@@ -1,0 +1,61 @@
+rust-widgets-font — font data notice
+====================================
+
+This crate ships **font data**, not code, and none of that data is under the MIT licence that
+covers the crate's own source. Every payload is a subset of a font released under the
+SIL Open Font License, Version 1.1 (https://openfontlicense.org/), and each subset is a
+"Modified Version" under that licence: it retains a portion of the upstream glyphs, it is
+renamed, and it does not use the upstream Reserved Font Name.
+
+The full prose record — what was subset, what was dropped, and the licence reasoning per face —
+lives in the `rust_widgets` repository's root `NOTICE`
+(https://github.com/mikewolfli/rust-widgets/blob/main/NOTICE), which `tools/check_font_licenses.sh`
+verifies against the same headers. The facts below are repeated from those headers so this crate
+is readable on its own.
+
+Payloads
+--------
+
+    src/latin.rs / latin.ttf
+        Open Sans (Google Fonts) — Latin-1 letters, ASCII and label punctuation.
+        Upstream SHA-256: 36643644f318a812aab2d2ed3bb98f8cf0872527f835fe9398d95fe6b9adb878
+        Generator: tools/gen_font_subset.py --face=latin
+
+    src/arabic.rs / arabic.ttf
+        Noto Naskh Arabic (the Noto project) — the Arabic block with its joining forms and marks.
+        Upstream SHA-256: 67b5a525a661b607971fbd3f96a81b89d3a768e74534fca84f18ac97e6fab72f
+        Generator: tools/gen_font_subset.py --face=arabic
+
+    src/cjk.rs / cjk.ttf
+        Noto Sans SC (the Noto project) — kana, CJK punctuation, fullwidth forms, common Han.
+        Upstream SHA-256: faa6c9df652116dde789d351359f3d7e5d2285a2b2a1f04a2d7244df706d5ea9
+        Generator: tools/gen_font_subset.py --face=cjk
+
+    src/cjk_shard_*.rs / cjk_shard_*.ttf
+        Noto Sans SC, partitioned on Unicode block boundaries (`latin`, `symbols`, `kana`,
+        `fullwidth`, `han`) so a host can load one script rather than all of CJK. Same upstream
+        revision as `cjk.ttf`.
+        Upstream SHA-256: faa6c9df652116dde789d351359f3d7e5d2285a2b2a1f04a2d7244df706d5ea9
+        Generator: tools/gen_cjk_shards.py
+
+    src/emoji.rs / emoji.ttf
+        Noto Color Emoji (the Noto project) — colour emoji as CBDT PNG bitmaps, one strike at
+        109 ppem, 317 codepoints. The bitmaps are retained verbatim: nothing was redrawn,
+        re-encoded or rescaled.
+        Upstream SHA-256: 15671215ab769fdc7162a045d56fd7d7e477c51b04e6b3c761d914d8fdd6cc44
+        Generator: tools/gen_emoji_subset.py
+
+Embedding exception
+-------------------
+
+The OFL's "embedding exception" is what permits these files to be converted into, and shipped as,
+binary payloads inside a software distribution. Nothing here is sold on its own, and the fonts are
+not the product.
+
+Why the data lives here
+-----------------------
+
+The library that consumes it (`rust_widgets`) is capped at 10 MiB per package by crates.io, and
+these payloads are already-compressed binaries that gzip cannot shrink. Keeping them in a package
+of their own is what lets the library keep growing. Nothing about the licence changes with the
+move: the same bytes, the same subsets, the same upstream revisions.

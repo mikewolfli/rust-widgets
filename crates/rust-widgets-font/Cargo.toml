@@ -1,0 +1,35 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+# SPDX-License-Identifier: MIT
+[package]
+name = "rust-widgets-font"
+version = "2.9.4"
+edition = "2021"
+rust-version = "1.88"
+license = "MIT"
+description = "The embedded font payloads behind rust_widgets' fonts-* features, kept out of the library's crates.io package (10 MiB ceiling)"
+authors = ["Mike Li <mikewolfli@163.com>"]
+homepage = "https://github.com/mikewolfli/rust-widgets"
+repository = "https://github.com/mikewolfli/rust-widgets"
+readme = "README.md"
+keywords = ["gui", "fonts", "emoji", "cjk", "no-std"]
+categories = ["gui", "text-processing"]
+
+# `src/` holds the payloads *and* the generated provenance wrappers that `include_bytes!` them, so
+# packaging `src/**/*` ships exactly the bytes a feature names and nothing else. `NOTICE` has to
+# travel with them: the glyph data is OFL-1.1, which requires the licence record to accompany the
+# font.
+include = ["/src/**/*", "/NOTICE", "/README.md", "/LICENSE"]
+
+[features]
+# Nothing on by default. This crate is only ever pulled in for the faces a consumer named, and a
+# consumer that asked for Latin must not pay to compile the emoji bitmaps.
+default = []
+latin = []
+arabic = []
+cjk = []
+emoji = []
+cjk-shard-latin = []
+cjk-shard-symbols = []
+cjk-shard-kana = []
+cjk-shard-fullwidth = []
+cjk-shard-han = []

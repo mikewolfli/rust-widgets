@@ -22,34 +22,19 @@
 // coverage), asserted by `tools/check_cjk_shards_cover_the_face.sh`.
 
 #[cfg(feature = "fonts-cjk-shard-latin")]
-#[path = "cjk_shard_latin.rs"]
-mod cjk_shard_latin;
-#[cfg(feature = "fonts-cjk-shard-latin")]
-pub use cjk_shard_latin::FONT as LATIN;
+pub use rust_widgets_font::cjk_shard_latin::FONT as LATIN;
 
 #[cfg(feature = "fonts-cjk-shard-symbols")]
-#[path = "cjk_shard_symbols.rs"]
-mod cjk_shard_symbols;
-#[cfg(feature = "fonts-cjk-shard-symbols")]
-pub use cjk_shard_symbols::FONT as SYMBOLS;
+pub use rust_widgets_font::cjk_shard_symbols::FONT as SYMBOLS;
 
 #[cfg(feature = "fonts-cjk-shard-kana")]
-#[path = "cjk_shard_kana.rs"]
-mod cjk_shard_kana;
-#[cfg(feature = "fonts-cjk-shard-kana")]
-pub use cjk_shard_kana::FONT as KANA;
+pub use rust_widgets_font::cjk_shard_kana::FONT as KANA;
 
 #[cfg(feature = "fonts-cjk-shard-han")]
-#[path = "cjk_shard_han.rs"]
-mod cjk_shard_han;
-#[cfg(feature = "fonts-cjk-shard-han")]
-pub use cjk_shard_han::FONT as HAN;
+pub use rust_widgets_font::cjk_shard_han::FONT as HAN;
 
 #[cfg(feature = "fonts-cjk-shard-fullwidth")]
-#[path = "cjk_shard_fullwidth.rs"]
-mod cjk_shard_fullwidth;
-#[cfg(feature = "fonts-cjk-shard-fullwidth")]
-pub use cjk_shard_fullwidth::FONT as FULLWIDTH;
+pub use rust_widgets_font::cjk_shard_fullwidth::FONT as FULLWIDTH;
 
 /// One shard: its id, its bytes (when this build carries it), and its coverage.
 pub struct Shard {
