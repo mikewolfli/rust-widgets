@@ -51,6 +51,12 @@ if [ "${1:-}" = "--cross" ]; then
     # Representative cross cells. Each one is a target the plan names; a missing target is a
     # host limitation, reported as SKIP rather than a failure (principle #103).
     run_cell "desktop@windows" "x86_64-pc-windows-msvc" "windows,controls-custom,controls-native" "compiles (no audio C dep)"
+    # Upstream feedback `feedback-20261029.md` §2: the sized profiles use the **core** prelude, which
+    # has no `ToOwned`; a `&'static str` that leaned on std's prelude compiled everywhere except a
+    # Windows target, because no gate exercised `embedded` on Windows. Both sized profiles are cells
+    # here so the class, not the one line, is covered.
+    run_cell "embedded@windows" "x86_64-pc-windows-msvc" "embedded" "compiles the sized profile on Windows (core prelude)"
+    run_cell "mini@windows" "x86_64-pc-windows-msvc" "mini" "compiles the smallest profile on Windows (core prelude)"
     run_cell "desktop@linux-gnu" "x86_64-unknown-linux-gnu" "wayland-native" "compiles the Wayland path"
     run_cell "ios@ios" "aarch64-apple-ios" "ios-uikit-ffi,mobile,controls-custom,controls-native,serde,serde_json" "compiles the UIKit path"
     run_cell "android@android" "x86_64-linux-android" "android-jni,jni,mobile,controls-custom,controls-native,serde,serde_json" "compiles the JNI path"

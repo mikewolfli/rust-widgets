@@ -244,6 +244,31 @@ impl JsonProject {
         self.nodes.first()
     }
 
+    /// The root window's declared client size, when the document states one.
+    ///
+    /// The designer saves the window's size as the root node's `width`/`height` properties, and
+    /// the generator solves the layout against a client size. Reading the size from the document
+    /// is what makes the committed artifact (solved against exactly that size) reproducible
+    /// without a CLI flag — upstream feedback `feedback-20261029.md` §4: the example's artifacts
+    /// are solved against 640×480 while the tool's defaults were 1280×800, so a flag-free
+    /// `--check` reported a false failure.
+    ///
+    /// A missing or non-positive axis answers `None`: half a rectangle is not a client size, and
+    /// inventing the other half would solve the layout against a size the document does not
+    /// describe.
+    pub fn window_size(&self) -> Option<(u32, u32)> {
+        let root = self.root()?;
+        let axis = |name: &str| {
+            root.properties
+                .iter()
+                .find(|(key, _)| key == name)
+                .and_then(|(_, value)| value.as_u64())
+                .and_then(|value| u32::try_from(value).ok())
+                .filter(|value| *value > 0)
+        };
+        Some((axis("width")?, axis("height")?))
+    }
+
     /// The node at `path`, or `None`.
     pub fn node(&self, path: &[usize]) -> Option<&ProjectNode> {
         self.path_index.get(path).and_then(|index| self.nodes.get(*index))
@@ -571,6 +596,30 @@ mod tests {
         // Pre-order: the root is first, its children follow.
         let paths: Vec<Vec<usize>> = project.walk().map(|n| n.path.clone()).collect();
         assert_eq!(paths, vec![vec![], vec![0], vec![1]]);
+    }
+
+    /// The document's window size is the source of truth for the layout solve
+    /// (`feedback-20261029.md` §4): a document that states both axes answers them, and the
+    /// example's own document is the case that made this necessary.
+    #[test]
+    fn the_root_window_size_is_read_from_the_document() {
+        let json = r#"{"window":{"id":"w","width":640,"height":480,"layout":{"type":"vbox","children":[]}}}"#;
+        let project = JsonProject::parse(json).expect("valid document");
+        assert_eq!(project.window_size(), Some((640, 480)));
+    }
+
+    /// A document that states neither axis (or only one) has no client size to solve against;
+    /// the caller falls back to its own default rather than to half a rectangle.
+    #[test]
+    fn a_partial_or_absent_window_size_is_none() {
+        let no_size = r#"{"window":{"id":"w","layout":{"type":"vbox","children":[]}}}"#;
+        assert_eq!(JsonProject::parse(no_size).unwrap().window_size(), None);
+        let one_axis =
+            r#"{"window":{"id":"w","width":640,"layout":{"type":"vbox","children":[]}}}"#;
+        assert_eq!(JsonProject::parse(one_axis).unwrap().window_size(), None);
+        let zero =
+            r#"{"window":{"id":"w","width":0,"height":0,"layout":{"type":"vbox","children":[]}}}"#;
+        assert_eq!(JsonProject::parse(zero).unwrap().window_size(), None);
     }
 
     #[test]

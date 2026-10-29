@@ -46,11 +46,11 @@ cd "$ROOT_DIR"
 # Generation is a Rust compile plus a run; the lint step is a second compile. Bounded per rule #58.
 GATE_TIMEOUT="${GATE_TIMEOUT:-900}"
 
-# The committed project. `dir:width:height` — the geometry is part of the artifact's identity, so a
-# mismatch there is drift too.
+# The committed project. The document's own `window.width`/`window.height` are the solve size —
+# the document is the source of truth, so generation here passes **no** `--width`/`--height`.
+# That is the regression guard for upstream feedback `feedback-20261029.md` §4: a flag-free run
+# used to solve against the tool's 1280x800 defaults while the committed artifacts were 640x480.
 PROJECT_DIR="examples/generated_project"
-PROJECT_WIDTH=640
-PROJECT_HEIGHT=480
 
 # The marker the writer emits. Kept in one variable so a shell-side check cannot drift from
 # `designer::artifact::GENERATED_MARKER`; step [1] also verifies it against the generated text, so a
@@ -72,8 +72,7 @@ GENERATE() {
   # about the *project* rather than the copy being generated. Running uncached removes both problems.
   rw_run_bounded "$GATE_TIMEOUT" cargo run --quiet \
     --no-default-features --features desktop,designer --example designer_generate -- \
-    --project "$project" --root "$root" \
-    --width "$PROJECT_WIDTH" --height "$PROJECT_HEIGHT" "$@"
+    --project "$project" --root "$root" "$@"
 }
 
 fail() {
@@ -93,9 +92,7 @@ echo "=== [1/4] every committed artifact carries the generated marker ==="
 ARTIFACTS=($(ls "$PROJECT_DIR"/src/generated/*.rs 2>/dev/null || true))
 if [[ "${#ARTIFACTS[@]}" -eq 0 ]]; then
   fail "$PROJECT_DIR commits no generated source. Generate it with:
-       cargo run --no-default-features --features desktop,designer --example designer_generate -- \\
-         --project $PROJECT_DIR/project.json --root $PROJECT_DIR \\
-         --width $PROJECT_WIDTH --height $PROJECT_HEIGHT"
+       cargo run --no-default-features --features desktop,designer --example designer_generate -- --project $PROJECT_DIR/project.json --root $PROJECT_DIR"
 fi
 for artifact in "${ARTIFACTS[@]}"; do
   first_line="$(grep -m1 -v '^[[:space:]]*$' "$artifact" || true)"
@@ -136,18 +133,14 @@ for generated in "$SCRATCH"/src/generated/*.rs; do
   committed="$PROJECT_DIR/src/generated/$name"
   if [[ ! -f "$committed" ]]; then
     fail "$committed is missing but the generator produces it. Regenerate with:
-       cargo run --no-default-features --features desktop,designer --example designer_generate -- \\
-         --project $PROJECT_DIR/project.json --root $PROJECT_DIR \\
-         --width $PROJECT_WIDTH --height $PROJECT_HEIGHT"
+       cargo run --no-default-features --features desktop,designer --example designer_generate -- --project $PROJECT_DIR/project.json --root $PROJECT_DIR"
   fi
   if ! cmp -s "$generated" "$committed"; then
     echo "" >&2
     echo "Generated source drift: $committed" >&2
     diff -u "$committed" "$generated" >&2 || true
     fail "$committed does not match $PROJECT_DIR/project.json. Regenerate with:
-       cargo run --no-default-features --features desktop,designer --example designer_generate -- \\
-         --project $PROJECT_DIR/project.json --root $PROJECT_DIR \\
-         --width $PROJECT_WIDTH --height $PROJECT_HEIGHT"
+       cargo run --no-default-features --features desktop,designer --example designer_generate -- --project $PROJECT_DIR/project.json --root $PROJECT_DIR"
   fi
 done
 echo "  regenerated output is byte-identical to the committed files"

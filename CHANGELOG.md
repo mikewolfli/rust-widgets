@@ -58,6 +58,25 @@ Per-item evidence is in `docs/log/log-20261029-3.md` (audit) and `log-20261029-4
 - The package's test suite grew from 19 to 38 cases
   (`cargo test --manifest-path crates/rust-widgets-suites/Cargo.toml`).
 
+### Upstream feedback (2026-10-29)
+
+`docs/issues/feedback-20261029.md` reported three gaps against 3.0.0; each is closed here or in the
+entry it concerns.
+
+- **Windows sized-profile builds are gated.** `embedded` (and `mini`, the same prelude class) now
+  have `check_profile_target_matrix.sh --cross` cells on `x86_64-pc-windows-msvc`. The reported
+  failure was a `&'static str::to_owned()` in `platform/external.rs`, which compiled everywhere but a
+  Windows target because the sized profiles use the **core** prelude. The line already uses
+  `alloc::string::String::from(...)`; the missing piece was a gate, which is what this adds.
+- **`designer_generate` solves against the project's own window size.** The document's
+  `window.width`/`window.height` are the default; `--width`/`--height` override one axis, and
+  1280×800 is only the fallback for a document that states no size. `--check` with no flags now
+  reproduces the committed example (640×480) instead of reporting a false failure, and
+  `tools/check_generated_sources.sh` regenerates with no size flags so that path stays covered.
+- **The 3.0.0 entry now records the `Layout` change** (see that section’s *API changes*): `arrange`,
+  `arrange_with_context` and `update_with_context` became required, with the `impl_layout_forward!`
+  migration written out. The old “no other public signature changed” sentence was wrong and is fixed.
+
 ## 3.0.0 (2026-10-28) — deep-scan round: whole-app input safety, steady-state allocation closure, touch/focus completeness
 
 Full re-scan of the crate (`docs/issues/issue-20261028-1.md`, 41 items), implemented item by item.
@@ -147,6 +166,31 @@ Per-item evidence (file:line and the command that proved it) is in `docs/log/log
   The closure `clear()`s the buffer and pushes the chain; the manager owns the buffer and reuses it
   across key presses. `clear_focus_chain_lookup`, `register_for_control` and the lookup semantics are
   unchanged.
+- **`Layout`'s three context-carrying entries lost their default bodies.** `arrange`,
+  `arrange_with_context` and `update_with_context` are now **required** methods, alongside the
+  already-required `update`. A downstream `impl Layout` that compiled against 2.x must add them
+  (`E0046: not all trait items implemented` otherwise).
+
+  The reason is G-403: a wrapper that inherited a default silently fell back to `update` and dropped
+  the `ChildInfo` hint channel (a width/height hint the layout must honour) or the device context (a
+  DPI scale it must apply). A default made that loss invisible; removing it makes the miss a compile
+  error, which is the only point where the information is still available to fix it.
+
+  A wrapper that forwards to an inner layout migrates with the exported macro, which generates all
+  four entries:
+
+  ```rust
+  impl Layout for Wrapper {
+      // `update`, `update_with_context`, `arrange`, `arrange_with_context` forwarded.
+      impl_layout_forward!(inner);
+  }
+  ```
+
+  A wrapper that transforms the rectangle first uses the two-argument form
+  (`impl_layout_forward!(inner, adjust_rect)`). A layout that cannot use the hint or the context
+  states that itself rather than inheriting a default — for example, an `Area`-based workbench
+  layout forwards `arrange`/`arrange_with_context` to its `update` and documents why the hint is
+  not consumed; the signature is the place that decision has to be written down.
 - No other public signature, property name, event name or rendered byte changed.
 
 ### Verification

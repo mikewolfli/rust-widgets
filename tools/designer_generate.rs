@@ -11,8 +11,13 @@
 //!
 //! ```text
 //! cargo run --no-default-features --features desktop,designer --example designer_generate -- \
-//!     --project ui/project.json --root . --width 1280 --height 800
+//!     --project examples/generated_project/project.json --root examples/generated_project --check
 //! ```
+//!
+//! The solve size is the project's **own** window size (`window.width`/`window.height`), so a
+//! flag-free run reproduces the committed artifacts. `--width`/`--height` override one axis for a
+//! caller previewing a different size (upstream feedback `feedback-20261029.md` §4: competing
+//! defaults made a flag-free `--check` report a false failure).
 //!
 //! and the two committed files are written. `tools/check_generated_sources.sh` regenerates them and
 //! compares, which is what makes committing safe.
@@ -74,8 +79,8 @@ usage: designer_generate --project <file> [--root <dir>] [--width <px>] [--heigh
 
   --project <file>   the designer's JSON project (required)
   --root <dir>       where `src/generated/` lives (default: the current directory)
-  --width <px>       the client width the layout is solved against (default: 1280)
-  --height <px>      the client height the layout is solved against (default: 800)
+  --width <px>       override the client width (default: the project's window width, else 1280)
+  --height <px>      override the client height (default: the project's window height, else 800)
   --check            do not write; report whether the committed files are up to date
 
 exit status:
@@ -83,13 +88,23 @@ exit status:
   1  --check found a committed file that does not match
   2  the arguments or the project document could not be used";
 
+/// The solve size used when neither the command line nor the document states one.
+///
+/// A document that declares `window.width`/`window.height` is authoritative; these are only the
+/// answer for a document that declares neither, and for the width of a document that declares
+/// only a height.
+const FALLBACK_WIDTH: u32 = 1280;
+const FALLBACK_HEIGHT: u32 = 800;
+
 /// The parsed command line.
 #[derive(Debug)]
 struct Options {
     project: String,
     root: std::path::PathBuf,
-    width: u32,
-    height: u32,
+    /// `None` means "use the document's own width".
+    width: Option<u32>,
+    /// `None` means "use the document's own height".
+    height: Option<u32>,
     check: bool,
 }
 
@@ -97,8 +112,8 @@ impl Options {
     fn parse(args: impl Iterator<Item = String>) -> Result<Self, String> {
         let mut project: Option<String> = None;
         let mut root = std::path::PathBuf::from(".");
-        let mut width = 1280u32;
-        let mut height = 800u32;
+        let mut width: Option<u32> = None;
+        let mut height: Option<u32> = None;
         let mut check = false;
 
         let mut args = args.peekable();
@@ -111,10 +126,10 @@ impl Options {
                     root = std::path::PathBuf::from(args.next().ok_or("--root needs a directory")?);
                 }
                 "--width" => {
-                    width = parse_dimension("--width", args.next())?;
+                    width = Some(parse_dimension("--width", args.next())?);
                 }
                 "--height" => {
-                    height = parse_dimension("--height", args.next())?;
+                    height = Some(parse_dimension("--height", args.next())?);
                 }
                 "--check" => check = true,
                 "--help" | "-h" => return Err(String::from("(help requested)")),
@@ -123,6 +138,25 @@ impl Options {
         }
 
         Ok(Self { project: project.ok_or("--project is required")?, root, width, height, check })
+    }
+
+    /// The client size the layout is solved against.
+    ///
+    /// The project document is the source of truth: its root window's `width`/`height` are the size
+    /// the committed artifact was solved against, which is why a flag-free `--check` must use them
+    /// (`feedback-20261029.md` §4). An explicit flag overrides that axis alone; a document that
+    /// states no size falls back to [`FALLBACK_WIDTH`]/[`FALLBACK_HEIGHT`].
+    ///
+    /// A document that does not parse is not this function's error to report: it answers the
+    /// fallback size, and [`run`] surfaces the parser's own message when generation begins.
+    fn solve_size(&self, json: &str) -> (u32, u32) {
+        let declared = rust_widgets::json::JsonProject::parse(json)
+            .ok()
+            .and_then(|project| project.window_size());
+        (
+            self.width.or(declared.map(|(width, _)| width)).unwrap_or(FALLBACK_WIDTH),
+            self.height.or(declared.map(|(_, height)| height)).unwrap_or(FALLBACK_HEIGHT),
+        )
     }
 }
 
@@ -138,12 +172,13 @@ fn parse_dimension(flag: &str, value: Option<String>) -> Result<u32, String> {
 fn run(options: &Options) -> Result<bool, String> {
     let json = std::fs::read_to_string(&options.project)
         .map_err(|error| format!("could not read `{}`: {error}", options.project))?;
+    let (width, height) = options.solve_size(&json);
 
     if options.check {
-        return check_committed(options, &json);
+        return check_committed(options, &json, width, height);
     }
 
-    let outcomes = regenerate_into(&options.root, &json, options.width, options.height)?;
+    let outcomes = regenerate_into(&options.root, &json, width, height)?;
     report(&outcomes);
     Ok(true)
 }
@@ -156,8 +191,8 @@ fn run(options: &Options) -> Result<bool, String> {
 /// tree — which is wrong for a check, and wrong for a designer that only wants to know whether the
 /// file it is about to overwrite is stale. Comparing in memory keeps `--check` free of side effects,
 /// which is what lets the gate run it on a read-only checkout.
-fn check_committed(options: &Options, json: &str) -> Result<bool, String> {
-    let artifacts = plan_artifacts(json, options.width, options.height)?;
+fn check_committed(options: &Options, json: &str, width: u32, height: u32) -> Result<bool, String> {
+    let artifacts = plan_artifacts(json, width, height)?;
     let mut up_to_date = true;
 
     for artifact in &artifacts {
@@ -238,12 +273,34 @@ mod tests {
     }
 
     #[test]
-    fn the_defaults_are_a_real_window_size_and_the_current_directory() {
+    fn the_defaults_are_the_documents_size_and_the_current_directory() {
         let options = Options::parse(args(&["--project", "p.json"]).into_iter()).expect("parses");
-        assert_eq!(options.width, 1280);
-        assert_eq!(options.height, 800);
+        assert_eq!(options.width, None, "no flag means the document's width");
+        assert_eq!(options.height, None, "no flag means the document's height");
         assert_eq!(options.root, std::path::PathBuf::from("."));
         assert!(!options.check, "writing is the default; `--check` is the opt-in");
+
+        // The document is authoritative, which is what makes a flag-free `--check` match the
+        // committed artifacts (`feedback-20261029.md` §4).
+        let document =
+            r#"{"window":{"width":640,"height":480,"layout":{"type":"vbox","children":[]}}}"#;
+        assert_eq!(options.solve_size(document), (640, 480));
+    }
+
+    #[test]
+    fn an_explicit_flag_overrides_one_axis_of_the_document_size() {
+        let options = Options::parse(args(&["--project", "p", "--width", "320"]).into_iter())
+            .expect("parses");
+        let document =
+            r#"{"window":{"width":640,"height":480,"layout":{"type":"vbox","children":[]}}}"#;
+        assert_eq!(options.solve_size(document), (320, 480));
+    }
+
+    #[test]
+    fn a_document_without_a_size_uses_the_fallback() {
+        let options = Options::parse(args(&["--project", "p"]).into_iter()).expect("parses");
+        let document = r#"{"window":{"layout":{"type":"vbox","children":[]}}}"#;
+        assert_eq!(options.solve_size(document), (FALLBACK_WIDTH, FALLBACK_HEIGHT));
     }
 
     #[test]
@@ -265,8 +322,8 @@ mod tests {
         .expect("parses");
         assert_eq!(options.project, "p.json");
         assert_eq!(options.root, std::path::PathBuf::from("/tmp/x"));
-        assert_eq!(options.width, 320);
-        assert_eq!(options.height, 240);
+        assert_eq!(options.width, Some(320));
+        assert_eq!(options.height, Some(240));
         assert!(options.check);
     }
 
