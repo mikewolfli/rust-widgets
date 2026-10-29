@@ -18,7 +18,7 @@ Two consequences worth internalising before you read further:
 1. **A control looks identical on every OS.** Your button has the same pixels on
    Windows, macOS, Linux, iOS, Android and the web, because the same Rust
    rasterizer drew all of them.
-2. **Widget availability is a *profile* question, not an OS question.** All 228
+2. **Widget availability is a *profile* question, not an OS question.** All 230
    widget kinds are available on every platform in the `desktop`/`tablet`/`mobile`
    profiles. Only the resource-constrained `embedded`/`mini` profiles compile a
    reduced set.
@@ -36,7 +36,7 @@ hardware-adaptive rendering, and deep platform integration — all through a
 clean, idiomatic Rust API.
 
 > The snippet below is illustrative of the intended API shape. For code that
-> compiles against 3.0.0, start from [`chapters/getting-started.md`](chapters/getting-started.md),
+> compiles against 3.1.0, start from [`chapters/getting-started.md`](chapters/getting-started.md),
 > which is verified against the current crate.
 
 ```rust
@@ -59,9 +59,9 @@ fn main() {
 
 ## Key Features
 
-### Rich Widget Library — 228 Widget Kinds
+### Rich Widget Library — 230 Widget Kinds
 
-228 built-in widget kinds span every common UI need, and **all of them are
+230 built-in widget kinds span every common UI need, and **all of them are
 self-drawn and therefore available on every platform**:
 
 - **Core controls**: Button, CheckBox, RadioButton, Label, LineEdit, TextEdit,
@@ -95,7 +95,7 @@ Three rendering backends, automatically selected for your target:
 ### Nine Platforms, One API
 
 The table below lists **how each platform provides a surface and event loop** — not
-which controls are available. Because every control is self-drawn, all 228 widget
+which controls are available. Because every control is self-drawn, all 230 widget
 kinds work on every platform listed; only the `embedded`/`mini` profiles reduce the
 compiled-in set.
 
@@ -202,7 +202,7 @@ handling, WebChannel communication, and context menu customization.
 
 | | |
 |---|---|
-| **Version** | 3.0.0 |
+| **Version** | 3.1.0 |
 | **License** | [MIT](https://github.com/mikewolfli/rust-widgets/blob/main/LICENSE) |
 | **Repository** | [github.com/mikewolfli/rust-widgets](https://github.com/mikewolfli/rust-widgets) |
 | **Tests** | 5300+ |

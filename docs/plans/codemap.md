@@ -68,7 +68,7 @@
 | `capability.rs` | WidgetCapability, WidgetFactory, generic property read/write |
 | `draw.rs` | Draw trait (custom rendering) |
 | `image.rs` | Image struct + ImageFormat |
-| `kind.rs` | WidgetKind enum (228 variants) |
+| `kind.rs` | WidgetKind enum (230 variants) |
 | `mod.rs` | Re-exports + type aliases |
 | `registry.rs` | SimpleRegistry for child forwarding |
 | `widget_trait.rs` | Widget trait (geometry, style, signals, CSS, a11y) |
@@ -251,7 +251,7 @@ EventHandler (handle_event)
             └── accessible_name / accessible_role
 
 Draw (draw, uses_custom_drawing)
-    └── All 228 widget kinds implement Draw
+    └── All 230 widget kinds implement Draw
 
 Platform (Send + Sync)
     ├── create_window/create_button/create_checkbox/...
@@ -313,7 +313,7 @@ Axis 3: Capabilities (arbitrary composition)
 
 ---
 
-## 6. WidgetKind→Module Mapping (228 variants)
+## 6. WidgetKind→Module Mapping (230 variants)
 
 | WidgetKind | Module Path | Type |
 |-----------|-------------|------|
@@ -323,6 +323,8 @@ Axis 3: Capabilities (arbitrary composition)
 | RadioButton | `widget::base_widgets::radiobutton::RadioButton` | struct |
 | Label | `widget::base_widgets::label::Label` | struct |
 | ToggleButton | `widget::base_widgets::toggle_button::ToggleButton` | struct |
+| Form | `rust_widgets_suites::form_widgets::form::Form` | struct (external crate) |
+| FormSet | `rust_widgets_suites::form_widgets::formset::FormSet` | struct (external crate) |
 | Frame | `widget::base_widgets::frame::Frame` | struct |
 | ComboBox | `widget::input_widgets::combobox::ComboBox` | struct |
 | LineEdit | `widget::input_widgets::lineedit::LineEdit` | struct |
@@ -376,7 +378,7 @@ Rust API → extern "C" (C ABI)
 | Category | Count |
 |----------|-------|
 | Rust source files | 350+ |
-| Widget kinds (`WidgetKind` variants) | 179 |
+| Widget kinds (`WidgetKind` variants) | 230 |
 | Layout managers | 14 |
 | Platform backends | 12 |
 | IME implementations | 4 |

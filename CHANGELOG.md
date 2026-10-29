@@ -5,6 +5,59 @@ The canonical project changelog is maintained at [docs/reports/CHANGELOG.md](doc
 This root-level file exists for tools and release automation that expect `CHANGELOG.md` at repository root.
 When the two disagree, this file is the one that ships; `tools/check_changelog_sync.sh` keeps them identical.
 
+## 3.1.0 (2026-10-29) — optional widget suites, the form group, and a form-completeness round
+
+**Minor**: no public signature changed. One new package and one new factory capability, plus the
+fixes from the form-suite audit (`docs/issues/issue-20261029.md` chapter 4, items FM-01..FM-19).
+Per-item evidence is in `docs/log/log-20261029-3.md` (audit) and `log-20261029-4/5/6.md`
+(implementation).
+
+### New package: `rust-widgets-suites`
+
+- **The form group.** `Form` (`form`, aliases `form_panel`, `form_layout`) lays out labelled fields
+  in rows/columns, aggregates validity, and submits/resets. `FormSet` (`form_set`, aliases
+  `formset`, `wizard_form`, `form_pages`) pages several forms with one active page, completed
+  flags, `goto_page`/`move_page`, aggregate validity and an aggregate `dirty`.
+- **Complete surface per control.** Property schemas with declared defaults, the Rust method API,
+  typed events with `event_signal_dyn` arms, payload-free commands, every layout rectangle
+  (`field_layouts`, `header_rect`, `content_rect`, …), and `WidgetCapability` rows installed by
+  `install` / `install_form_group`.
+- **Values stay in the child controls.** `value_of`/`set_value_of` read and write the child's own
+  `text`/`value`/`current_text` property; the form keeps no second copy. The write probe mirrors
+  the read probe (`text` → `current_text` → `value` as Int/UInt/Float).
+- **Layout.** `show_labels = false` reclaims the label column/row; the boxes are cached on a layout
+  revision and shared by draw, hit-testing and child placement, so a frame computes them once and
+  clones nothing.
+- **Validity.** Required rules plus per-field host rules (`set_field_validator`), `validate_field`,
+  `focus_first_invalid`, and a themed error colour (`semantic_color(Error)` with a literal
+  fallback). A forwarded event re-reads the fields and publishes `field_changed` plus the
+  `dirty`/`valid` edges; `enabled = false` on the container disables the fields it hosts.
+- **Accessibility.** `accessible_name` reports a form's title or a set's active page title; a set
+  with no pages stays out of the tab order; an invalid page is marked in the set's header.
+
+### Parent-crate additions
+
+- **`WidgetKind::Form` / `FormSet`** are registered by the optional package (`kind-role: external`),
+  with `css_name` arms, `FormSet` in the keyboard-focus list, routing arms, accessibility roles
+  (`Form → Group`, `FormSet → TabGroup`/`Tab`), and the reachability example and documentation
+  counts bumped to 230 kinds.
+- **`WidgetFactory::register_property_defaults`** lets an external package declare its kinds'
+  schema defaults. `default_property_value` now answers, in order, registered defaults → the named
+  table → the per-kind table, so the factory, a designer and the docs read one declaration.
+- **CI** runs the optional package's tests and clippy
+  (`--manifest-path crates/rust-widgets-suites/Cargo.toml`).
+
+### Audit fixes (FM-01..FM-19)
+
+- Accessibility role arms for the two kinds; semantic error border/text; hover/pressed/disabled
+  button states; invalid pages marked in the form-set header.
+- `overflows()` so a host can choose between `size_hint` and a `ScrollArea`; `move_page`,
+  `goto_page`, `validate_field`, `focus_first_invalid` and per-field validators.
+- `key_codes` constants instead of raw key numbers; the `Form`/`FormSet` Enter and arrow paths use
+  them.
+- The package's test suite grew from 19 to 38 cases
+  (`cargo test --manifest-path crates/rust-widgets-suites/Cargo.toml`).
+
 ## 3.0.0 (2026-10-28) — deep-scan round: whole-app input safety, steady-state allocation closure, touch/focus completeness
 
 Full re-scan of the crate (`docs/issues/issue-20261028-1.md`, 41 items), implemented item by item.

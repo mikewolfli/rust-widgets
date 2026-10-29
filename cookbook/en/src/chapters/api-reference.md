@@ -4,7 +4,7 @@ This chapter provides a comprehensive, module-by-module reference for the
 entire `rust_widgets` public API. Use this as a quick lookup when you need to
 find the right type, function, or trait for your task.
 
-The library version documented here is **3.0.0**. Code examples assume
+The library version documented here is **3.1.0**. Code examples assume
 `use rust_widgets::*;` or explicit paths as shown.
 
 ---
@@ -543,7 +543,7 @@ pub trait Draw {
 
 ### Widget Kind Enum
 
-`WidgetKind` enumerates every widget type in the system (228 in a device profile). Selected variants:
+`WidgetKind` enumerates every widget type in the system (230 in a device profile). Selected variants:
 
 - `Button`, `CheckBox`, `RadioButton`, `Label`
 - `LineEdit`, `TextArea`, `ComboBox`, `ListBox`, `SpinBox`, `Dropdown`
@@ -771,6 +771,10 @@ impl WidgetFactory {
     pub fn capability(&self, kind_or_name: &str) -> Option<&WidgetCapability>;
     pub fn read_property(&self, widget: &dyn Widget, name: &str) -> Result<CapabilityValue, CapabilityAccessError>;
     pub fn write_property(&self, widget: &mut dyn Widget, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError>;
+    /// The declared default for a property (registered defaults → named table → per-kind table).
+    pub fn default_property_value(&self, kind_or_name: &str, property_name: &str) -> Result<CapabilityValue, CapabilityAccessError>;
+    /// Lets an external package declare its own kinds' defaults; false for an unknown name.
+    pub fn register_property_defaults(&mut self, canonical_name: &'static str, defaults: fn(&str) -> Option<CapabilityValue>) -> bool;
 }
 
 pub struct WidgetCapability {
@@ -823,6 +827,12 @@ pub enum CapabilityAccessError {
     UnknownCommand,
 }
 ```
+
+Optional packages register their own kinds into the same factory: `rust-widgets-webview` carries
+the web controls and `rust-widgets-suites` carries control groups (today the form group — `Form`
+and `FormSet`). Their `install` calls `try_register` (which refuses a name the factory already
+answers) and `register_property_defaults` (which is where `default_property_value` finds their
+declared defaults).
 
 ### Widget state persistence *(2.9.1)*
 

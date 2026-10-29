@@ -13,7 +13,7 @@
 
 ## 特点
 
-- **228 种控件**——输入、表格、树、停靠面板、对话框、媒体、图表、编辑器等，所有平台共用同一套实现。
+- **230 种控件**——输入、表格、树、停靠面板、对话框、媒体、图表、编辑器等，所有平台共用同一套实现。
 - **输出可复现**——每个控件、每种外观都有提交到仓库的 SVG 与像素快照，视觉变化因此是可审阅的 diff，
   而不是聊天窗口里的一张截图。
 - **能力诚实**——宿主提供不了的服务返回 `false` / `None`；不会先假装成功再报告“已完成”。
@@ -26,18 +26,18 @@
 
 ```toml
 [dependencies]
-rust_widgets = "3.0.0"
+rust_widgets = "3.1.0"
 ```
 
 **必须且只能选择一个设备配置**。它们互斥：`mini` 与 `embedded` 会把 crate 的一部分*编译掉*，
 与 `desktop` 叠加不是“取最小公共集”，而是一个无法工作的构建。
 
 ```toml
-rust_widgets = { version = "3.0.0", features = ["desktop"] }                       # 默认
-rust_widgets = { version = "3.0.0", default-features = false, features = ["tablet"] }
-rust_widgets = { version = "3.0.0", default-features = false, features = ["mobile"] }
-rust_widgets = { version = "3.0.0", default-features = false, features = ["embedded"] }
-rust_widgets = { version = "3.0.0", default-features = false, features = ["mini"] }
+rust_widgets = { version = "3.1.0", features = ["desktop"] }                       # 默认
+rust_widgets = { version = "3.1.0", default-features = false, features = ["tablet"] }
+rust_widgets = { version = "3.1.0", default-features = false, features = ["mobile"] }
+rust_widgets = { version = "3.1.0", default-features = false, features = ["embedded"] }
+rust_widgets = { version = "3.1.0", default-features = false, features = ["mini"] }
 ```
 
 | 配置 | 适用场景 |
@@ -92,6 +92,10 @@ fn main() {
 
 行为是明确的，而不是碰巧如此：`clicked` 要求释放落在控件内部；按住后连续拖动时 `pressed` 保持；
 焦点环只在用户确实使用键盘时绘制。
+
+可选包放在库旁边、而不是塞进库内：`rust-widgets-webview` 承载 Web 控件族，
+[`rust-widgets-suites`](crates/rust-widgets-suites) 承载控件组——目前是表单组（`Form` 与 `FormSet`，
+含属性、事件、布局、校验与无障碍面）。每个包都安装到同一个 `WidgetFactory`，并拥有自己的名字。
 
 ## 文本、字体与图标
 

@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT
 [package]
 name = "rust-widgets-mobile-services"
-version = "3.0.0"
+version = "3.1.0"
 edition = "2021"
 license = "MIT"
 description = "Optional mobile application services for rust-widgets (BLUE28 B28.44): keep-awake, haptics, permissions, notifications, share, deep links"

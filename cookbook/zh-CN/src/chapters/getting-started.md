@@ -52,7 +52,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-rust_widgets = "3.0.0"
+rust_widgets = "3.1.0"
 ```
 
 默认功能集（`desktop`）会拉取完整的桌面配置文件：通过 wgpu 的 GPU 渲染、操作系统原生平台后端、触摸支持、i18n、图表、PDF/打印、辅助功能和高级控件。
@@ -74,7 +74,7 @@ rust_widgets = "3.0.0"
 | **迷你** | `mini` | LVGL 风格：约 28 个核心控件、软件光栅化、无 alloc 密集型依赖 |
 
 > **配置文件决定的是控件集有多少被*编译进来* —— 而不是每个操作系统上能用哪些控件。**
-> 所有配置文件绘制的都是同样的自绘控件；`desktop`/`tablet`/`mobile` 会编译全部 228 种控件类型，
+> 所有配置文件绘制的都是同样的自绘控件；`desktop`/`tablet`/`mobile` 会编译全部 230 种控件类型，
 > 而 `embedded`/`mini` 只编译一个精简的核心子集。参见
 > [platform-support.md § 1.2](platform-support.md#12-控件可用性按配置文件划分而非按操作系统)。
 
@@ -113,23 +113,23 @@ rust_widgets = "3.0.0"
 ```toml
 # 桌面 Linux 使用 Wayland，保留所有功能：
 [dependencies]
-rust_widgets = { version = "3.0.0", features = ["desktop", "linux-wayland"] }
+rust_widgets = { version = "3.1.0", features = ["desktop", "linux-wayland"] }
 
 # 平板使用自动检测操作系统：
 [dependencies]
-rust_widgets = { version = "3.0.0", default-features = false, features = ["tablet"] }
+rust_widgets = { version = "3.1.0", default-features = false, features = ["tablet"] }
 
 # 最小嵌入式（无 std）：
 [dependencies]
-rust_widgets = { version = "3.0.0", default-features = false, features = ["embedded"] }
+rust_widgets = { version = "3.1.0", default-features = false, features = ["embedded"] }
 
 # 移动端 Android：
 [dependencies]
-rust_widgets = { version = "3.0.0", default-features = false, features = ["mobile", "android"] }
+rust_widgets = { version = "3.1.0", default-features = false, features = ["mobile", "android"] }
 
 # WASM Web 应用：
 [dependencies]
-rust_widgets = { version = "3.0.0", default-features = false, features = ["mobile", "wasm", "touch"] }
+rust_widgets = { version = "3.1.0", default-features = false, features = ["mobile", "wasm", "touch"] }
 ```
 
 ### 构建配置文件

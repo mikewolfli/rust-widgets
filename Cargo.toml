@@ -1,6 +1,6 @@
 [package]
 name = "rust_widgets"
-version = "3.0.0"
+version = "3.1.0"
 edition = "2021"
 description = "Pure Rust cross-platform native GUI library with hardware-adaptive rendering, 180 widgets, touch/gesture support, i18n, and SVG-pipeline-accurate output"
 license = "MIT"
@@ -829,7 +829,7 @@ all-desktop-features = [
 # crate would fail its own verification build with `couldn't read …ttf`. Moving them out and
 # excluding `crates/` (see the negated pattern in `include`) is the form of "exclude" that still
 # leaves a package that compiles.
-rust-widgets-font = { version = "^3.0.0", path = "crates/rust-widgets-font", optional = true }
+rust-widgets-font = { version = "^3.1.0", path = "crates/rust-widgets-font", optional = true }
 serde = { version = "1.0", features = ["derive"], optional = true }
 serde_json = { version = "1.0", optional = true }
 # BLUE28 B28.40: the standard host/GPU interop handle type. Optional because it is a

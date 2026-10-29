@@ -258,6 +258,9 @@ fn all_kinds() -> Vec<WidgetKind> {
         AlertDialog,
         ConfirmDialog,
         AboutDialog,
+        // Suite controls registered by `rust-widgets-suites`.
+        Form,
+        FormSet,
     ];
     kinds
 }
@@ -302,6 +305,8 @@ fn exhaustive(kind: WidgetKind) -> &'static str {
         DrawerSectionHeader => "DrawerSectionHeader",
         LayerPanel => "LayerPanel",
         PlaylistPanel => "PlaylistPanel",
+        Form => "Form",
+        FormSet => "FormSet",
         Window => "Window",
         Dialog => "Dialog",
         MessageBox => "MessageBox",
@@ -597,7 +602,7 @@ mod tests {
         // Kept in step with `tools/check_widget_kind_count.sh`, which is the *other* place the
         // number is asserted — it parses `src/widget/kind.rs` and prints the canonical figure.
         // When this assertion and that script disagree, the script is right: it reads the enum.
-        assert_eq!(super::all_kinds().len(), 228);
+        assert_eq!(super::all_kinds().len(), 230);
     }
 
     /// The `match` in `exhaustive` and the `vec!` in `all_kinds` must agree.

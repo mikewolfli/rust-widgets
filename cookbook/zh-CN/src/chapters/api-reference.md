@@ -2,7 +2,7 @@
 
 本章提供整个 `rust_widgets` 公共 API 的逐模块完整参考。当你需要为任务查找正确的类型、函数或 trait 时，可将其作为快速查阅手册。
 
-本文档所描述的库版本为 **3.0.0**。代码示例假定已使用 `use rust_widgets::*;` 或按所示使用显式路径。
+本文档所描述的库版本为 **3.1.0**。代码示例假定已使用 `use rust_widgets::*;` 或按所示使用显式路径。
 
 ---
 
@@ -530,7 +530,7 @@ pub trait Draw {
 
 ### 控件种类枚举
 
-`WidgetKind` 枚举系统中的每种控件类型（设备档位下共 228 种）。选定的变体：
+`WidgetKind` 枚举系统中的每种控件类型（设备档位下共 230 种）。选定的变体：
 
 - `Button`, `CheckBox`, `RadioButton`, `Label`
 - `LineEdit`, `TextArea`, `ComboBox`, `ListBox`, `SpinBox`, `Dropdown`
@@ -754,6 +754,10 @@ impl WidgetFactory {
     pub fn capability(&self, kind_or_name: &str) -> Option<&WidgetCapability>;
     pub fn read_property(&self, widget: &dyn Widget, name: &str) -> Result<CapabilityValue, CapabilityAccessError>;
     pub fn write_property(&self, widget: &mut dyn Widget, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError>;
+    /// 属性的声明默认值（查询顺序：已注册 defaults → 命名表 → 按 kind 的表）。
+    pub fn default_property_value(&self, kind_or_name: &str, property_name: &str) -> Result<CapabilityValue, CapabilityAccessError>;
+    /// 让外部包声明自己 kind 的默认值；名字未注册时返回 false。
+    pub fn register_property_defaults(&mut self, canonical_name: &'static str, defaults: fn(&str) -> Option<CapabilityValue>) -> bool;
 }
 
 pub struct WidgetCapability {
@@ -805,6 +809,10 @@ pub enum CapabilityAccessError {
     UnknownCommand,
 }
 ```
+
+可选包把各自的 kind 注册进同一个工厂：`rust-widgets-webview` 承载 Web 控件，`rust-widgets-suites`
+承载控件组（目前是表单组 `Form` / `FormSet`）。它们的 `install` 调用 `try_register`（工厂已占用的
+名字会被拒绝）与 `register_property_defaults`（`default_property_value` 从这里读取它们声明的默认值）。
 
 ### 控件状态持久化 *(2.9.1)*
 

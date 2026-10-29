@@ -13,7 +13,7 @@
 在继续阅读之前，有两个结果值得先内化：
 
 1. **控件在每个操作系统上看起来完全相同。** 你的按钮在 Windows、macOS、Linux、iOS、Android 与 Web 上拥有相同的像素，因为它们都是由同一套 Rust 光栅化器绘制的。
-2. **控件可用性属于*配置文件*问题，而非操作系统问题。** 在 `desktop`/`tablet`/`mobile` 配置文件中，全部 228 种控件在每个平台上都可用。只有资源受限的 `embedded`/`mini` 配置文件会编译一个精简的集合。
+2. **控件可用性属于*配置文件*问题，而非操作系统问题。** 在 `desktop`/`tablet`/`mobile` 配置文件中，全部 230 种控件在每个平台上都可用。只有资源受限的 `embedded`/`mini` 配置文件会编译一个精简的集合。
 
 这就是为什么平台章节记录的是[每个操作系统*提供*什么](chapters/platform-support.md#13-平台服务确实因操作系统而异)（DPI、IME、无障碍、原生菜单），而不是列出哪些控件在哪些地方能用 —— 因为那张列表到处都一样。
 
@@ -21,7 +21,7 @@
 
 rust-widgets 让您只需一套 Rust 代码库，即可在各大平台上生成一致的界面。它包含了丰富的控件库、硬件自适应渲染以及深度平台集成——这一切都通过简洁、地道的 Rust API 实现。
 
-> 下文的代码片段仅用于说明预期的 API 形式。若需要能对 3.0.0 编译的代码，请从 [`chapters/getting-started.md`](chapters/getting-started.md) 开始，
+> 下文的代码片段仅用于说明预期的 API 形式。若需要能对 3.1.0 编译的代码，请从 [`chapters/getting-started.md`](chapters/getting-started.md) 开始，
 > 该文件已针对当前的 crate 验证过。
 
 ```rust
@@ -44,9 +44,9 @@ fn main() {
 
 ## 主要特性
 
-### 丰富的控件库——228 种控件
+### 丰富的控件库——230 种控件
 
-内置 228 种控件，涵盖各种常见的 UI 需求，而且**全部都是自绘的，因此每个平台都能使用**：
+内置 230 种控件，涵盖各种常见的 UI 需求，而且**全部都是自绘的，因此每个平台都能使用**：
 
 - **核心控件**：Button、CheckBox、RadioButton、Label、LineEdit、TextEdit、ComboBox、SpinBox、Slider、ScrollBar、ProgressBar
 - **容器**：Window、Dialog、Frame、TabWidget、Splitter、GroupBox、StackedWidget、DockWidget、MdiArea、ToolBox、CollapsiblePane
@@ -71,7 +71,7 @@ fn main() {
 ### 九大平台，统一 API
 
 下表列出的是**各平台如何提供绘图表面与事件循环**——而非哪些控件可用。
-因为所有控件均为自绘，下列每个平台都支持全部 228 种控件；只有
+因为所有控件均为自绘，下列每个平台都支持全部 230 种控件；只有
 `embedded`/`mini` 配置会减少编译进来的控件数量。
 
 | 平台 | 后端提供 | Feature 标志 |
@@ -158,7 +158,7 @@ fn main() {
 
 | | |
 |---|---|
-| **版本** | 3.0.0 |
+| **版本** | 3.1.0 |
 | **许可证** | [MIT](https://github.com/mikewolfli/rust-widgets/blob/main/LICENSE) |
 | **仓库** | [github.com/mikewolfli/rust-widgets](https://github.com/mikewolfli/rust-widgets) |
 | **测试** | 5300+ |

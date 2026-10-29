@@ -277,6 +277,17 @@ jobs:
           cargo clippy --all-targets --no-default-features --features desktop
           -- -D warnings
 
+      # The optional suites crate is not a workspace member (the same pattern as
+      # `crates/rust-widgets-webview`), so nothing above compiles it. Its registrations,
+      # property/event contracts and layout tests are checked explicitly here.
+      - name: Cargo test (rust-widgets-suites)
+        run: cargo test --manifest-path crates/rust-widgets-suites/Cargo.toml -q
+
+      - name: Cargo clippy (rust-widgets-suites, deny warnings)
+        run: >-
+          cargo clippy --manifest-path crates/rust-widgets-suites/Cargo.toml
+          --all-targets -- -D warnings
+
       - name: Profile build matrix
         run: |
           for profile in desktop tablet mobile mini embedded; do

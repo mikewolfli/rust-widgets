@@ -103,7 +103,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="rust-widgets",
-    version="3.0.0",
+    version="3.1.0",
     packages=find_packages(),
     description="Python bindings for the rust-widgets GUI library",
 )
@@ -503,7 +503,7 @@ previous ffi-napi") for the measured reason.
 ```json
 {
   "name": "rust-widgets",
-  "version": "3.0.0",
+  "version": "3.1.0",
   "description": "Node.js bindings for the rust-widgets GUI library",
   "main": "index.js",
   "dependencies": {

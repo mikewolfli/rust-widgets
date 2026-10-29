@@ -15,7 +15,7 @@ services at all.
 
 ## Highlights
 
-- **228 widget kinds** — inputs, tables, trees, docks, dialogs, media, charts, editors and more,
+- **230 widget kinds** — inputs, tables, trees, docks, dialogs, media, charts, editors and more,
   with one implementation shared by every platform.
 - **Cascading menus and real session state** — dropdowns, menu buttons and menus open up to four
   nested submenu levels, and controls opt in to `SaveState` so a host can restore their user state
@@ -33,7 +33,7 @@ services at all.
 
 ```toml
 [dependencies]
-rust_widgets = "3.0.0"
+rust_widgets = "3.1.0"
 ```
 
 Choose **exactly one** device profile. They are mutually exclusive: `mini` and `embedded` compile
@@ -41,11 +41,11 @@ parts of the crate *out*, so pairing one with `desktop` is not a lowest common d
 a build that cannot work.
 
 ```toml
-rust_widgets = { version = "3.0.0", features = ["desktop"] }                       # default
-rust_widgets = { version = "3.0.0", default-features = false, features = ["tablet"] }
-rust_widgets = { version = "3.0.0", default-features = false, features = ["mobile"] }
-rust_widgets = { version = "3.0.0", default-features = false, features = ["embedded"] }
-rust_widgets = { version = "3.0.0", default-features = false, features = ["mini"] }
+rust_widgets = { version = "3.1.0", features = ["desktop"] }                       # default
+rust_widgets = { version = "3.1.0", default-features = false, features = ["tablet"] }
+rust_widgets = { version = "3.1.0", default-features = false, features = ["mobile"] }
+rust_widgets = { version = "3.1.0", default-features = false, features = ["embedded"] }
+rust_widgets = { version = "3.1.0", default-features = false, features = ["mini"] }
 ```
 
 | Profile | Intended for |
@@ -105,6 +105,11 @@ switch; a caller's deliberate colour always wins.
 Behaviour is explicit rather than incidental: `clicked` requires the release to land inside the
 control, `pressed` is continuous while a drag stays on it, and a focus ring is drawn only when the
 user is actually on the keyboard.
+
+Optional packages sit beside the library rather than inside it: `rust-widgets-webview` carries the
+web family, and [`rust-widgets-suites`](crates/rust-widgets-suites) carries control groups — today
+the form group (`Form` and `FormSet`, with their property, event, layout, validation and
+accessibility surfaces). Each installs into the same `WidgetFactory` and owns its names.
 
 ## Text, fonts and icons
 

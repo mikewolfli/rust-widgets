@@ -1079,6 +1079,13 @@ pub struct WidgetFactory {
     pub(crate) key_to_index: HashMap<String, usize>,
     pub(crate) kind_to_index: HashMap<WidgetKind, Vec<usize>>,
     pub(crate) constructors: HashMap<String, WidgetCtor>,
+    /// Schema defaults an externally-registered kind answers, keyed by canonical name.
+    ///
+    /// The parent's own kinds answer from `access::default_widget_property_default_value`; a
+    /// package that registers a kind from outside this crate has no row there, so it registers
+    /// its provider here. `default_property_value` consults this first, which keeps one declared
+    /// table answering the factory, a designer and the docs.
+    pub(crate) property_defaults: HashMap<&'static str, fn(&str) -> Option<CapabilityValue>>,
 }
 
 #[cfg(test)]

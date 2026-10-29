@@ -445,6 +445,41 @@ def render_degradation_table(delegations: Dict[str, List[str]]) -> str:
 _KIND_CACHE: Dict[str, List[str]] = {}
 
 
+def _external_kind_variants() -> List[str]:
+    """Return the kinds marked `// kind-role: external` in `src/widget/kind.rs`.
+
+    Those are controls an optional package registers (the web family, the form suite); they are
+    deliberately absent from this matrix, which lists what the parent factory itself answers, but
+    the totals line names them so the enum count and the matrix count cannot drift silently.
+    """
+    if "external" in _KIND_CACHE:
+        return _KIND_CACHE["external"]
+    kind_rs = os.path.join(REPO_ROOT, "src", "widget", "kind.rs")
+    external: List[str] = []
+    pending = False
+    in_enum = False
+    with open(kind_rs, "r", encoding="utf-8") as handle:
+        for line in handle:
+            stripped = line.strip()
+            if stripped.startswith("pub enum WidgetKind"):
+                in_enum = True
+                continue
+            if in_enum and stripped.startswith("}"):
+                break
+            if not in_enum:
+                continue
+            if "kind-role:" in stripped:
+                pending = "external" in stripped
+                continue
+            match = re.match(r"([A-Z][A-Za-z0-9_]*)\s*[,=]", stripped)
+            if match:
+                if pending:
+                    external.append(match.group(1))
+                pending = False
+    _KIND_CACHE["external"] = external
+    return external
+
+
 def _widget_kind_variants() -> List[str]:
     """Return the `WidgetKind` variant names declared in `src/widget/kind.rs`.
 
@@ -682,9 +717,17 @@ def generate_matrix() -> str:
     lines.append("---")
     lines.append("")
     lines.append(
-        f"Total widgets: {len(WIDGETS)} ({kind_count} WidgetKind variants plus "
+        f"Total widgets: {len(WIDGETS)} ({kind_count} parent-registered kinds plus "
         f"{len(webengine_wrappers)} documented WebEngine wrapper types)"
     )
+    external_kinds = _external_kind_variants()
+    if external_kinds:
+        lines.append("")
+        lines.append(
+            "Registered by optional packages (outside this matrix): "
+            + ", ".join(f"`{name}`" for name in external_kinds)
+            + "."
+        )
     lines.append("")
     lines.append(
         f"C-ABI typed constructors: {len(abi_kinds & set(WIDGETS))} of {len(WIDGETS)} "

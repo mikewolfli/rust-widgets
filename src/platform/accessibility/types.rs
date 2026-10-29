@@ -652,6 +652,12 @@ impl From<WidgetKind> for AccessibleRole {
             | WidgetKind::DrawerSectionHeader
             | WidgetKind::LayerPanel
             | WidgetKind::PlaylistPanel => AccessibleRole::Group,
+            // Suite controls registered by `rust-widgets-suites`. A form groups its labelled
+            // fields, and a form set pages several forms the way a tab widget pages views —
+            // leaving them on the `Unknown` fallback would be the exact defect the COMP-01
+            // comment above describes.
+            WidgetKind::Form => AccessibleRole::Group,
+            WidgetKind::FormSet => AccessibleRole::TabGroup,
             _ => AccessibleRole::Unknown,
         }
     }
@@ -790,6 +796,11 @@ impl From<WidgetKind> for A11yRole {
             | WidgetKind::Sparkline => A11yRole::Image,
             WidgetKind::Rating => A11yRole::Slider,
             WidgetKind::Carousel => A11yRole::Tab,
+            // Suite controls registered by `rust-widgets-suites`; `A11yRole` has no tab-group
+            // variant, so a form set takes the tab role `TabWidget` takes here, and a form is a
+            // grouping container like `GroupBox` above.
+            WidgetKind::Form => A11yRole::Group,
+            WidgetKind::FormSet => A11yRole::Tab,
             _ => A11yRole::Unknown,
         }
     }
@@ -1125,6 +1136,10 @@ mod tests {
         assert_eq!(A11yRole::from(K::LineEdit), R::TextField);
         assert_eq!(A11yRole::from(K::Slider), R::Slider);
         assert_eq!(A11yRole::from(K::Window), R::Window);
+        // Suite controls: a form is a grouping container, and a form set pages like a tab
+        // control (the role a `TabWidget` takes here).
+        assert_eq!(A11yRole::from(K::Form), R::Group);
+        assert_eq!(A11yRole::from(K::FormSet), R::Tab);
     }
 
     #[test]

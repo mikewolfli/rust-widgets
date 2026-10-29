@@ -426,7 +426,7 @@ impl EventHandler for MyWidget {
 
 ---
 
-## `WidgetKind` Enum — 228 Variants
+## `WidgetKind` Enum — 230 Variants
 
 The `WidgetKind` enum categorizes every widget type. It is feature-gated:
 28 variants are always available; 151 require non-`mini` features.

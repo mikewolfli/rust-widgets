@@ -1,0 +1,27 @@
+[package]
+name = "rust-widgets-suites"
+version = "3.1.0"
+edition = "2021"
+rust-version = "1.88"
+license = "MIT"
+description = "Optional widget suites for rust_widgets — the form group (validated forms and form sets) with complete property, method, event, layout, wiring and capability surfaces"
+authors = ["Mike Li <mikewolfli@163.com>"]
+homepage = "https://github.com/mikewolfli/rust-widgets"
+repository = "https://github.com/mikewolfli/rust-widgets"
+readme = "README.md"
+keywords = ["gui", "widget", "form", "validation", "layout"]
+categories = ["gui"]
+
+# A nested package inside the main crate's tree, like `rust-widgets-webview`: the parent's
+# `include` excludes `crates/**/*`, so this package is not part of the parent's tarball, and a
+# host opts in explicitly with the path dependency below.
+include = ["/src/**/*", "/README.md"]
+
+[features]
+default = []
+
+[dependencies]
+# The dependency runs one way only: the parent cannot depend on this crate (Cargo rejects a
+# package cycle). The suite extends the parent's widget layer, so it takes the parent's default
+# (device) profile — the same shape `rust-widgets-webview` uses.
+rust_widgets = { version = "3.0.0", path = "../.." }

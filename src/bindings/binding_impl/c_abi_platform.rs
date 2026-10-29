@@ -6,6 +6,9 @@ use super::*;
 use crate::c_try;
 use crate::c_try_void;
 use crate::control_backend::get_control_backend;
+// Only the "no mobile backend" fallback constructs its empty result directly; with
+// `mobile-api` the backend name comes from `to_c_string_or_empty`.
+#[cfg(not(feature = "mobile-api"))]
 use alloc::ffi::CString;
 use core::ffi::c_char;
 use core::ffi::c_float;

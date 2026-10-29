@@ -292,7 +292,11 @@ mod tests {
             | WidgetKind::KanbanCardView
             | WidgetKind::KanbanColumnHeader
             | WidgetKind::RangePresetBar
-            | WidgetKind::GridViewHeader => ControlRoutePreference::CustomRequired,
+            | WidgetKind::GridViewHeader
+            // Suite controls registered by `rust-widgets-suites`; the route is still the
+            // library-painted one, because the suite paints them like any other control.
+            | WidgetKind::Form
+            | WidgetKind::FormSet => ControlRoutePreference::CustomRequired,
         }
     }
 

@@ -790,6 +790,14 @@ pub enum WidgetKind {
     LayerPanel,
     /// PlaylistPanel — the companion list for a media player's queue (COMP-I03).
     PlaylistPanel,
+    /// Form — a validated container that lays out labelled fields and aggregates validity.
+    // kind-role: external: registered by the `rust-widgets-suites` package (the `form_widgets`
+    // group), so this package's factory does not carry a constructor for it.
+    Form,
+    /// FormSet — an ordered set of forms with one active page and aggregate validity.
+    // kind-role: external: registered by the `rust-widgets-suites` package (the `form_widgets`
+    // group), so this package's factory does not carry a constructor for it.
+    FormSet,
 }
 
 impl WidgetKind {
@@ -1205,6 +1213,8 @@ impl WidgetKind {
             Self::DrawerSectionHeader => "DrawerSectionHeader",
             Self::LayerPanel => "LayerPanel",
             Self::PlaylistPanel => "PlaylistPanel",
+            Self::Form => "Form",
+            Self::FormSet => "FormSet",
         }
     }
 
@@ -1308,6 +1318,9 @@ impl WidgetKind {
             | Self::MenuPanel
             | Self::SpeedDial
             | Self::LayerPanel
+            // A form set walks its pages with the arrow keys and submits with Enter; a form
+            // itself is a container whose fields own the focus, so only the set opts in.
+            | Self::FormSet
             | Self::PlaylistPanel => true,
             _ => false,
         }

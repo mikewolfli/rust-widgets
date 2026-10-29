@@ -2,7 +2,7 @@
 
 本章提供完整的、按模組劃分的 `rust_widgets` 公開 API 參考文件。當您需要為任務查找正確的型別、函式或特徵時，可將其用作快速查閱手冊。
 
-此處記載的函式庫版本為 **3.0.0**。程式碼範例假設使用 `use rust_widgets::*;` 或如所示使用顯式路徑。
+此處記載的函式庫版本為 **3.1.0**。程式碼範例假設使用 `use rust_widgets::*;` 或如所示使用顯式路徑。
 
 ---
 
@@ -530,7 +530,7 @@ pub trait Draw {
 
 ### 控制項種類列舉
 
-`WidgetKind` 列舉系統中的每一種控制項型別（裝置設定檔下共 228 種）。選取的部分變體：
+`WidgetKind` 列舉系統中的每一種控制項型別（裝置設定檔下共 230 種）。選取的部分變體：
 
 - `Button`, `CheckBox`, `RadioButton`, `Label`
 - `LineEdit`, `TextArea`, `ComboBox`, `ListBox`, `SpinBox`, `Dropdown`
@@ -754,6 +754,10 @@ impl WidgetFactory {
     pub fn capability(&self, kind_or_name: &str) -> Option<&WidgetCapability>;
     pub fn read_property(&self, widget: &dyn Widget, name: &str) -> Result<CapabilityValue, CapabilityAccessError>;
     pub fn write_property(&self, widget: &mut dyn Widget, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError>;
+    /// 屬性的宣告預設值（查詢順序：已註冊 defaults → 命名表 → 按 kind 的表）。
+    pub fn default_property_value(&self, kind_or_name: &str, property_name: &str) -> Result<CapabilityValue, CapabilityAccessError>;
+    /// 讓外部套件宣告自己 kind 的預設值；名稱未註冊時回傳 false。
+    pub fn register_property_defaults(&mut self, canonical_name: &'static str, defaults: fn(&str) -> Option<CapabilityValue>) -> bool;
 }
 
 pub struct WidgetCapability {
@@ -805,6 +809,10 @@ pub enum CapabilityAccessError {
     UnknownCommand,
 }
 ```
+
+可選套件把各自的 kind 註冊進同一個工廠：`rust-widgets-webview` 承載 Web 控件，`rust-widgets-suites`
+承載控件組（目前是表單組 `Form` / `FormSet`）。它們的 `install` 呼叫 `try_register`（工廠已佔用的
+名稱會被拒絕）與 `register_property_defaults`（`default_property_value` 從這裡讀取它們宣告的預設值）。
 
 ### 控制項狀態持久化 *(2.9.1)*
 

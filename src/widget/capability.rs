@@ -1119,6 +1119,7 @@ impl WidgetFactory {
             key_to_index: HashMap::new(),
             kind_to_index: HashMap::new(),
             constructors: HashMap::new(),
+            property_defaults: HashMap::new(),
         }
     }
 
@@ -2110,6 +2111,10 @@ impl WidgetFactory {
     }
 
     /// Returns a schema-level default value for a known property.
+    ///
+    /// The lookup order is: defaults a package registered for its own kind, then the named table
+    /// for the shared-kind companions, then the parent's per-kind table. One order for every
+    /// caller is what makes the standard API the single way to ask.
     pub fn default_property_value(
         &self,
         kind_or_name: &str,
@@ -2122,6 +2127,15 @@ impl WidgetFactory {
             return Err(CapabilityAccessError::UnknownProperty);
         };
 
+        // A package that registered this kind from outside the crate declares its own defaults;
+        // this is the extension point that keeps the factory's answer and the package's answer
+        // the same one (FM-04).
+        if let Some(defaults) = self.property_defaults.get(capability.canonical_name) {
+            if let Some(value) = defaults(property.name) {
+                return Ok(value);
+            }
+        }
+
         // A shared kind cannot name two record schemas at once; these two companions are
         // answered by canonical name before the kind-keyed table is read.
         #[cfg(all(not(alloc_frugal), full_widgets))]
@@ -2133,6 +2147,27 @@ impl WidgetFactory {
 
         self.schema_default_value(capability.kind, property.name)
             .ok_or(CapabilityAccessError::UnsupportedOnWidget)
+    }
+
+    /// Registers the schema defaults an externally-registered kind answers.
+    ///
+    /// `defaults` receives a property name and returns the declared default, or `None` when the
+    /// package declares none. The registration is refused (`false`) when this factory does not
+    /// answer `canonical_name`: a defaults table no capability can reach is unreachable state.
+    ///
+    /// This is the external counterpart of the parent's own per-kind table, so
+    /// [`Self::default_property_value`] answers every registered kind the same way instead of
+    /// each package shipping a second lookup helper a host has to know about.
+    pub fn register_property_defaults(
+        &mut self,
+        canonical_name: &'static str,
+        defaults: fn(&str) -> Option<CapabilityValue>,
+    ) -> bool {
+        if self.capability(canonical_name).is_none() {
+            return false;
+        }
+        self.property_defaults.insert(canonical_name, defaults);
+        true
     }
 
     /// The schema default for `kind`'s `property_name`, from the property tables.
