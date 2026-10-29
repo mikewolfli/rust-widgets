@@ -28,7 +28,9 @@
 //! | `events` | Event routing: keys, IME, pointer, wheel |
 //! | `widget_impl` | The `Widget` and property contracts |
 
-use super::buffer::{join_lines, normalize_line_endings, split_lines, EditorModel};
+use super::buffer::{
+    join_lines, normalize_line_endings, split_lines, EditorBufferSlot, EditorModel,
+};
 use super::grid::{LineGrid, RowLayout};
 use super::multicursor::{self, MultiCursor};
 use super::pairs::{self, PairAction};
@@ -55,6 +57,7 @@ use crate::widget::text_utils::floor_char_boundary;
 use crate::widget::{BaseWidget, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 use alloc::boxed::Box;
+use alloc::collections::BTreeMap;
 use alloc::format;
 use alloc::rc::Rc;
 use alloc::string::{String, ToString};
@@ -82,6 +85,9 @@ mod widget_impl;
 
 /// Shared, cloneable handle to the editing model.
 pub(crate) type SharedModel = Rc<RefCell<EditorModel>>;
+
+/// A shared document handle, re-exported from the `document` submodule.
+pub use document::CodeEditorDocument;
 
 /// One caret's edit in a multi-caret batch.
 struct CaretEdit {
@@ -169,6 +175,10 @@ pub(crate) type DiagnosticRows = Option<(u64, Vec<(usize, usize)>)>;
 
 /// View state saved per open buffer, so switching tabs restores a buffer's own
 /// caret, selection, scroll position and folds instead of resetting them.
+///
+/// Stored in a map keyed by the buffer's **stable id**, not by its tab position: closing a tab
+/// shifts every later position, and a position-keyed store would hand one buffer's caret to its
+/// neighbour.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct BufferViewState {
     pub(crate) cursor: Cursor,
@@ -297,6 +307,22 @@ pub struct CodeEditor {
     /// whole-buffer switch in [`CodeEditorConfig::read_only`] cannot express that
     /// split, which is why this exists separately rather than as a flag.
     pub(crate) read_only_spans: Vec<ReadOnlySpan>,
+    /// Fold regions of this view's active buffer.
+    ///
+    /// Fold state is **view state**, not document state: two views of one document can have
+    /// different regions collapsed, the same way they can have different carets. It moved here
+    ///from `EditorModel` so a shared document no longer forces one view's folds onto the other.
+    /// The per-buffer snapshots live in [`BufferViewState::folds`] alongside caret and scroll.
+    pub(crate) folds: Vec<FoldRegion>,
+    /// The union of the folded regions as sorted, disjoint `[start, end]` line ranges.
+    ///
+    /// [`CodeEditor::is_hidden`] answers "is this line inside a fold" for every visible line on
+    /// every frame. The regions can nest (a folded block inside another folded block), so
+    /// "the last region that starts before this line" is not enough to decide — one earlier
+    /// region may extend past several later ones. Their union is disjoint by construction,
+    /// which makes the query two binary searches. It is rebuilt whenever the fold set
+    /// changes (J-P04).
+    pub(crate) hidden_ranges: Vec<(usize, usize)>,
     /// Lines whose fold marker is currently collapsed, for O(1) gutter queries.
     folded_lines: MiniVec<usize>,
     /// Visual rows before each document line, for O(1) row ↔ line conversion.
@@ -453,16 +479,42 @@ pub struct CodeEditor {
     /// a solid one reads as a frozen selection instead. The tempo and phase come from
     /// [`crate::style::CursorBlink`] so this caret cannot drift from the one in a text field.
     pub(crate) caret_blink: crate::style::CursorBlink,
-    undo_stack: UndoStack,
-    /// Undo history of every *inactive* buffer.
+    /// The document this view looks at: the buffer set, the revision counter and every
+    /// buffer's history.
     ///
-    /// `undo_stack` is the active buffer's history; on a switch the two are
-    /// swapped, so each document keeps its own undo timeline. Before this a
-    /// switch cleared the stack, which meant opening another file silently threw
-    /// away the history of the one just edited.
-    buffer_histories: Vec<UndoStack>,
-    /// Caret, scroll and fold state of every open buffer.
-    buffer_views: Vec<BufferViewState>,
+    /// Shared by every view created from the same [`CodeEditorDocument`] handle. The view keeps
+    /// the *selection* of which buffer it shows (`active_buffer_id`) and points `model` at that
+    /// buffer's text, so two views can edit two tabs of one document set.
+    pub(crate) document: CodeEditorDocument,
+    /// Stable id of the buffer this view shows.
+    ///
+    /// View state, not document state: a split view may show a different tab of the same
+    /// document set. An id, not a position, because positions shift when an earlier buffer is
+    /// closed while this view still points at the buffer that moved — which is exactly how a
+    /// per-buffer snapshot used to end up attached to its neighbour.
+    active_buffer_id: u64,
+    /// Cached position of `active_buffer_id` in the document's slot list.
+    ///
+    /// Maintained by activation and reconciliation. It is what the index-shaped public API
+    /// reports, and it is the position a closed active buffer re-homes *from*.
+    active_index: usize,
+    /// The buffer-list generation these fields were last reconciled with.
+    ///
+    /// [`CodeEditor::sync_with_document`] compares it with the document's counter: equal means
+    /// the tab list did not change since the last look, so the check is one integer comparison
+    /// rather than a walk over the tabs on every frame.
+    seen_generation: u64,
+    /// Undo history of the buffer this view shows.
+    ///
+    /// A shared handle, not an owned stack: the history belongs to the buffer, so two views of
+    /// it undo the same timeline. Switching buffers re-points this at the incoming slot.
+    undo_stack: Rc<RefCell<UndoStack>>,
+    /// Caret, scroll and fold state of each buffer this view has shown, keyed by buffer id.
+    ///
+    /// Keyed by the document's stable buffer id rather than by tab position: closing a buffer
+    /// shifts every later position, and a position-keyed map would hand one buffer's caret and
+    /// folds to its neighbour.
+    buffer_views: BTreeMap<u64, BufferViewState>,
     /// The typing run the next keystroke may merge into, if any.
     active_typing: Option<Rc<RefCell<TypingAccum>>>,
     /// `true` while the editor considers itself focused.
@@ -537,7 +589,7 @@ pub struct CodeEditor {
     /// on the accessor rather than on the field — keeping the field unconditional
     /// avoids a cfg-shaped hole in the struct initialiser.
     last_checkpoint_bytes: usize,
-    /// A counter bumped on every committed text change (BLUE26 B26.08).
+    /// A monotone counter bumped on every committed text change (BLUE26 B26.08).
     ///
     /// # Why a text editor needs a version
     ///
@@ -550,7 +602,11 @@ pub struct CodeEditor {
     ///
     /// A monotone counter rather than a hash: a hash collides, and a collision here means a stale
     /// result is accepted as fresh — the exact failure the version exists to prevent.
-    revision: u64,
+    ///
+    /// Shared through an `Rc<Cell<_>>` because two editors can present **one document**
+    /// ([`CodeEditor::with_document`]): an edit made through either view must be visible as a
+    /// revision change to both, or the second view keeps serving caches keyed by a stale text.
+    revision: Rc<core::cell::Cell<u64>>,
 
     /// Emitted when text changes.
     ///
@@ -619,10 +675,24 @@ impl CodeEditor {
 
     fn build(geometry: Rect, config: CodeEditorConfig) -> Self {
         let undo_limit = config.undo_stack_limit;
+        let document = CodeEditorDocument::new(String::new());
+        document.set_history_limit(undo_limit);
+        let model = document.slot_model(0);
+        let undo_stack = document.slot_history(0);
+        let revision = document.revision_handle();
+        let active_buffer_id = document.buffer_id(0).unwrap_or(1);
+        let seen_generation = document.generation();
+        let mut buffer_views = BTreeMap::new();
+        buffer_views.insert(active_buffer_id, BufferViewState::default());
         let mut editor = Self {
             base: BaseWidget::new(WidgetKind::RichEdit, geometry, "CodeEditor"),
-            model: Rc::new(RefCell::new(EditorModel::new())),
+            model,
             config,
+            document,
+            active_buffer_id,
+            active_index: 0,
+            seen_generation,
+            undo_stack,
             highlighter: None,
             language_highlighters: Vec::new(),
             completion_source: Box::new(DocumentCompletions),
@@ -643,6 +713,8 @@ impl CodeEditor {
             hovered_diagnostic: None,
             clipboard_has_text: None,
             read_only_spans: Vec::new(),
+            folds: Vec::new(),
+            hidden_ranges: Vec::new(),
             folded_lines: MiniVec::new(),
             visual_row_prefix: Vec::new(),
             line_states: Vec::new(),
@@ -673,9 +745,7 @@ impl CodeEditor {
             hovered_tab: None,
             last_pointer_position: None,
             caret_blink: crate::style::CursorBlink::new(),
-            undo_stack: UndoStack::with_capacity(undo_limit),
-            buffer_histories: Vec::new(),
-            buffer_views: vec![BufferViewState::default()],
+            buffer_views,
             active_typing: None,
             focused: true,
             caret_style: CaretStyle::Line,
@@ -708,7 +778,7 @@ impl CodeEditor {
             bracket_index: None,
             restoring_history: false,
             last_checkpoint_bytes: 0,
-            revision: 0,
+            revision,
             text_changed: Signal1::new(),
             text_change: Signal1::new(),
             marker_clicked: Signal1::new(),
@@ -1020,16 +1090,17 @@ impl CodeEditor {
 
     /// Returns how many undo steps the active buffer holds.
     pub fn undo_depth(&self) -> usize {
-        self.undo_stack.undo_count()
+        self.undo_stack.borrow().undo_count()
     }
 
-    /// Sets the undo-step limit for the active buffer and every inactive one.
+    /// Sets the undo-step limit for every buffer of the document.
+    ///
+    /// The history belongs to the document, so the limit is applied to every buffer rather
+    /// than only to the one this view shows. Two views with different limits therefore agree
+    /// on the last one applied, which is stated here rather than silently.
     pub fn set_undo_limit(&mut self, limit: usize) {
         self.config.undo_stack_limit = limit;
-        self.undo_stack.set_max_capacity(limit);
-        for history in &mut self.buffer_histories {
-            history.set_max_capacity(limit);
-        }
+        self.document.set_history_limit(limit);
     }
 
     /// Returns the lines carrying a breakpoint, ascending.
@@ -1481,12 +1552,7 @@ impl CodeEditor {
     /// tabs of different languages (whitepaper §14.2): the field existed before but
     /// nothing consulted it, so every tab was lexed as the configured language.
     pub fn active_language(&self) -> LanguageId {
-        self.model
-            .borrow()
-            .all_buffers
-            .get(self.model.borrow().active_tab)
-            .and_then(|buffer| buffer.language)
-            .unwrap_or(self.config.language)
+        self.document.language_at(self.active_buffer()).flatten().unwrap_or(self.config.language)
     }
 
     /// Sets the built-in language and resets indentation to its default.
@@ -1497,10 +1563,7 @@ impl CodeEditor {
     pub fn set_language(&mut self, language: LanguageId) {
         self.config.language = language;
         self.config.tab_width = language.default_tab_width();
-        let active = self.model.borrow().active_tab;
-        if let Some(buffer) = self.model.borrow_mut().all_buffers.get_mut(active) {
-            buffer.language = Some(language);
-        }
+        self.document.set_language_at(self.active_buffer(), Some(language));
         // A different language lexes the same text differently, so every cached
         // state and span is stale.
         self.invalidate_line_states();
@@ -1513,18 +1576,8 @@ impl CodeEditor {
     /// cached lexer state is dropped, because what is on screen just changed
     /// language.
     pub fn set_buffer_language(&mut self, index: usize, language: Option<LanguageId>) -> bool {
-        let active = self.model.borrow().active_tab;
-        let changed = {
-            let mut model = self.model.borrow_mut();
-            match model.all_buffers.get_mut(index) {
-                Some(buffer) => {
-                    buffer.language = language;
-                    true
-                }
-                None => false,
-            }
-        };
-        if changed && index == active {
+        let changed = self.document.set_language_at(index, language);
+        if changed && index == self.active_buffer() {
             self.invalidate_line_states();
             self.base.request_redraw();
         }
@@ -1533,7 +1586,7 @@ impl CodeEditor {
 
     /// Returns the language recorded for the buffer at `index`.
     pub fn buffer_language(&self, index: usize) -> Option<LanguageId> {
-        self.model.borrow().all_buffers.get(index).and_then(|buffer| buffer.language)
+        self.document.language_at(index).flatten()
     }
 
     /// Returns the keyword set of the language in force for the active buffer.
@@ -1744,7 +1797,7 @@ fn clamp_and_merge(text: &str, raw: Vec<TokenSpan>) -> Vec<TokenSpan> {
 /// anything finer is invisible. Comment/string/code is enough to give a file the
 /// texture Zed's minimap has (green comment blocks, warm string runs, plain code).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub(crate) enum MiniTone {
+pub enum MiniTone {
     /// Ordinary code.
     #[default]
     Plain,
@@ -1792,15 +1845,26 @@ pub(crate) fn common_leading_whitespace(text: &str) -> String {
 /// `length == 0` because a bucket containing only whitespace lines is blank,
 /// while one containing a line of spaces is not.
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct MinimapBucket {
+pub struct MinimapBucket {
+    /// First document line summarised into this bucket.
+    ///
+    /// A host drawing its own minimap decoration uses this to map a bucket back to a
+    /// document region; the control's own painter does not need it.
+    pub start_line: usize,
     /// Indent column of the longest line seen in this bucket.
-    pub(crate) indent: usize,
+    pub indent: usize,
     /// Text length of that line, indentation excluded.
-    pub(crate) length: usize,
+    pub length: usize,
     /// What that line mostly is, for the bar's colour.
-    pub(crate) tone: MiniTone,
+    pub tone: MiniTone,
     /// `true` when no non-blank line has landed in this bucket.
-    pub(crate) blank: bool,
+    pub blank: bool,
+    /// How many non-blank lines landed in this bucket.
+    ///
+    /// The bucket keeps a summary rather than a sum of every line, so this is the one
+    /// aggregate it tracks explicitly: it lets a host tell a dense block from a sparse one
+    /// without re-reading the document.
+    pub non_blank_lines: usize,
 }
 
 /// How many strip rows a document is summarized into, and how many lines each
@@ -1826,7 +1890,14 @@ fn minimap_partition(count: usize, rows: usize) -> (usize, usize) {
 /// strip instead of a page.
 impl Default for MinimapBucket {
     fn default() -> Self {
-        Self { indent: 0, length: 0, tone: MiniTone::Plain, blank: true }
+        Self {
+            start_line: 0,
+            indent: 0,
+            length: 0,
+            tone: MiniTone::Plain,
+            blank: true,
+            non_blank_lines: 0,
+        }
     }
 }
 

@@ -468,7 +468,7 @@ impl CodeEditor {
         if !self.config.highlight_brackets {
             return None;
         }
-        let revision = self.revision;
+        let revision = self.revision.get();
         let caret = self.cursor.head;
         if let Some(cached) = *self.bracket_cache.borrow() {
             if cached.revision == revision && cached.caret == caret {
@@ -605,13 +605,14 @@ impl CodeEditor {
     /// two inputs the answer depends on.
     pub(crate) fn prepare_occurrences(&mut self) {
         let bounds = self.cursor.bounds();
+        let revision = self.revision.get();
         if let Some(cache) = &self.occurrence_cache {
-            if cache.bounds == bounds && cache.revision == self.revision {
+            if cache.bounds == bounds && cache.revision == revision {
                 return;
             }
         }
         let matches = self.occurrences_of_selection();
-        self.occurrence_cache = Some(OccurrenceCache { bounds, revision: self.revision, matches });
+        self.occurrence_cache = Some(OccurrenceCache { bounds, revision, matches });
     }
 }
 

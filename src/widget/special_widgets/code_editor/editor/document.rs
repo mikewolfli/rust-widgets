@@ -9,6 +9,383 @@
 
 use super::*;
 
+/// A shared, clonable handle to one editor document.
+///
+/// Two [`CodeEditor`] views created with [`CodeEditor::with_document`] from clones of the same
+/// handle share the document's **buffers**, their **text**, the **revision counter**, the
+/// **fold-free text index** and every buffer's **undo history**. Each view keeps its own active
+/// buffer, caret, selection, extra cursors, scroll position and fold regions, so one document
+/// set can be shown twice, at two tabs and two places, without either side copying the text.
+///
+/// # What is shared and what is not
+///
+/// | State | Owner |
+/// |-------|-------|
+/// | the buffer list, each buffer's text, revision, undo history | the document (this handle) |
+/// | active buffer, caret, selection, extra cursors, scroll, folds | each view |
+///
+/// # Thread affinity
+///
+/// A buffer lives in `Rc<RefCell<…>>`, so this handle is `!Send`/`!Sync` exactly like the
+/// widget. A host that needs to read the text off the UI thread must copy it first and marshal
+/// the work back, the same way it does for every other widget.
+#[derive(Debug, Clone)]
+pub struct CodeEditorDocument {
+    /// Every buffer of this document, in tab order. Never empty.
+    slots: Rc<RefCell<Vec<EditorBufferSlot>>>,
+    /// The revision counter shared by every view of this document.
+    ///
+    /// A revision is a property of the *document*, not of a view, which is why it cannot stay
+    /// on the widget's own state once two views can edit the same text.
+    revision: Rc<core::cell::Cell<u64>>,
+    /// Monotonic source of buffer ids. Never reused, so a closed id cannot be mistaken for a
+    /// reopened buffer.
+    next_id: Rc<core::cell::Cell<u64>>,
+    /// Bumped whenever the buffer list changes (open/close).
+    ///
+    /// A view compares it with the value it last reconciled against: equal means its active
+    /// index and its per-buffer snapshots are still current, so `sync_with_document` is an
+    /// integer comparison rather than a walk over the tab list.
+    generation: Rc<core::cell::Cell<u64>>,
+}
+
+impl CodeEditorDocument {
+    /// Creates a document holding one `untitled` buffer with `text`.
+    pub fn new(text: impl Into<String>) -> Self {
+        let model: SharedModel = Rc::new(RefCell::new(EditorModel::new()));
+        model.borrow_mut().set_text(text.into());
+        let slot = EditorBufferSlot {
+            id: 1,
+            title: String::from("untitled"),
+            language: None,
+            model,
+            history: Rc::new(RefCell::new(UndoStack::new())),
+        };
+        Self {
+            slots: Rc::new(RefCell::new(vec![slot])),
+            revision: Rc::new(core::cell::Cell::new(0)),
+            next_id: Rc::new(core::cell::Cell::new(2)),
+            generation: Rc::new(core::cell::Cell::new(0)),
+        }
+    }
+
+    /// Returns the text of the document's **first** buffer.
+    ///
+    /// The handle has no active-buffer notion — that is view state. For the one-buffer
+    /// document [`CodeEditorDocument::new`] creates this is the document text; a view reads
+    /// *its* active buffer through [`CodeEditor::text`].
+    pub fn text(&self) -> String {
+        self.slot_model(0).borrow().text.borrow().clone()
+    }
+
+    /// Returns the document's revision counter.
+    ///
+    /// Every view of the document reads the same value, so a worker result keyed by this
+    /// revision is usable from any of them.
+    pub fn revision(&self) -> u64 {
+        self.revision.get()
+    }
+
+    /// Replaces the text of the document's **first** buffer as one committed change.
+    ///
+    /// The change is visible to every view on its next read, and the revision advances so a
+    /// stale worker result is refused.
+    pub fn set_text(&mut self, text: impl Into<String>) {
+        self.slot_model(0).borrow_mut().set_text(text.into());
+        self.revision.set(self.revision.get().wrapping_add(1));
+    }
+
+    // ── Crate-internal access ────────────────────────────────────────────────
+
+    /// The revision handle, for a view that wants to read it without a borrow.
+    pub(crate) fn revision_handle(&self) -> Rc<core::cell::Cell<u64>> {
+        Rc::clone(&self.revision)
+    }
+
+    /// Number of buffers in the document.
+    pub(crate) fn buffer_count(&self) -> usize {
+        self.slots.borrow().len()
+    }
+
+    /// The stable id of the buffer at `index`.
+    pub(crate) fn buffer_id(&self, index: usize) -> Option<u64> {
+        self.slots.borrow().get(index).map(|slot| slot.id)
+    }
+
+    /// The current position of the buffer with `id`.
+    ///
+    /// `None` means the buffer was closed. Positions shift when an earlier buffer is closed;
+    /// the id does not, which is why the view stores the id and looks the position up here.
+    pub(crate) fn index_of(&self, id: u64) -> Option<usize> {
+        self.slots.borrow().iter().position(|slot| slot.id == id)
+    }
+
+    /// Every buffer id, in tab order (ascending, because ids are never reused).
+    pub(crate) fn buffer_ids(&self) -> Vec<u64> {
+        self.slots.borrow().iter().map(|slot| slot.id).collect()
+    }
+
+    /// The buffer-list generation, bumped on every open and close.
+    pub(crate) fn generation(&self) -> u64 {
+        self.generation.get()
+    }
+
+    /// The text model of buffer `index`.
+    ///
+    /// # Panics
+    ///
+    /// A document always holds at least one buffer: [`Self::remove_buffer`] refuses to remove
+    /// the last, and construction starts with one. An out-of-range index here is therefore a
+    /// bug in a caller, not a state a host can produce, and failing loudly is better than
+    /// handing back a detached model that edits go into and nobody reads.
+    pub(crate) fn slot_model(&self, index: usize) -> SharedModel {
+        Rc::clone(
+            &self
+                .slots
+                .borrow()
+                .get(index)
+                .expect("a document always holds at least one buffer")
+                .model,
+        )
+    }
+
+    /// The undo history of buffer `index`, shared by every view of it.
+    pub(crate) fn slot_history(&self, index: usize) -> Rc<RefCell<UndoStack>> {
+        Rc::clone(
+            &self
+                .slots
+                .borrow()
+                .get(index)
+                .expect("a document always holds at least one buffer")
+                .history,
+        )
+    }
+
+    /// Appends a buffer and returns its index.
+    pub(crate) fn push_buffer(&self, title: String, text: String) -> usize {
+        let model: SharedModel = Rc::new(RefCell::new(EditorModel::new()));
+        model.borrow_mut().set_text(text);
+        let id = self.next_id.get();
+        self.next_id.set(id.wrapping_add(1));
+        let slot = EditorBufferSlot {
+            id,
+            title,
+            language: None,
+            model,
+            history: Rc::new(RefCell::new(UndoStack::new())),
+        };
+        let mut slots = self.slots.borrow_mut();
+        slots.push(slot);
+        let index = slots.len() - 1;
+        drop(slots);
+        self.generation.set(self.generation.get().wrapping_add(1));
+        index
+    }
+
+    /// Removes buffer `index`.
+    ///
+    /// Refuses to remove the last buffer and reports `false`; a document is never empty. Every
+    /// view re-homes its active buffer through [`CodeEditor::sync_with_document`].
+    pub(crate) fn remove_buffer(&self, index: usize) -> bool {
+        let removed = {
+            let mut slots = self.slots.borrow_mut();
+            if slots.len() <= 1 || index >= slots.len() {
+                return false;
+            }
+            slots.remove(index);
+            true
+        };
+        if removed {
+            self.generation.set(self.generation.get().wrapping_add(1));
+        }
+        removed
+    }
+
+    /// Applies an undo-stack limit to every buffer's history.
+    pub(crate) fn set_history_limit(&self, limit: usize) {
+        for slot in self.slots.borrow().iter() {
+            slot.history.borrow_mut().set_max_capacity(limit);
+        }
+    }
+
+    /// Copies every buffer out as the public value type.
+    pub(crate) fn buffer_snapshots(&self) -> Vec<EditorBuffer> {
+        self.slots
+            .borrow()
+            .iter()
+            .map(|slot| {
+                let model = slot.model.borrow();
+                let text = model.text.borrow().clone();
+                EditorBuffer {
+                    title: slot.title.clone(),
+                    text,
+                    language: slot.language,
+                    modified: model.dirty,
+                }
+            })
+            .collect()
+    }
+
+    /// `(title, modified, language)` for every buffer.
+    pub(crate) fn buffer_summaries(&self) -> Vec<(String, bool, Option<LanguageId>)> {
+        self.slots
+            .borrow()
+            .iter()
+            .map(|slot| (slot.title.clone(), slot.model.borrow().dirty, slot.language))
+            .collect()
+    }
+
+    /// The title of buffer `index`.
+    pub(crate) fn title_at(&self, index: usize) -> Option<String> {
+        self.slots.borrow().get(index).map(|slot| slot.title.clone())
+    }
+
+    /// Renames buffer `index`.
+    pub(crate) fn set_title_at(&self, index: usize, title: String) {
+        if let Some(slot) = self.slots.borrow_mut().get_mut(index) {
+            slot.title = title;
+        }
+    }
+
+    /// The language override of buffer `index`.
+    pub(crate) fn language_at(&self, index: usize) -> Option<Option<LanguageId>> {
+        self.slots.borrow().get(index).map(|slot| slot.language)
+    }
+
+    /// Sets the language override of buffer `index`, reporting whether it exists.
+    pub(crate) fn set_language_at(&self, index: usize, language: Option<LanguageId>) -> bool {
+        match self.slots.borrow_mut().get_mut(index) {
+            Some(slot) => {
+                slot.language = language;
+                true
+            }
+            None => false,
+        }
+    }
+}
+
+impl CodeEditor {
+    /// Returns a shared handle to this editor's document.
+    ///
+    /// The editor keeps using the document; a second view is created from the returned handle
+    /// with [`CodeEditor::with_document`].
+    pub fn document(&self) -> CodeEditorDocument {
+        self.document.clone()
+    }
+
+    /// Consumes the editor and returns its document handle.
+    ///
+    /// The editor's view state (caret, scroll, folds) is dropped with it; the document's
+    /// buffers, their text, revision and history live on in the handle.
+    pub fn into_document(self) -> CodeEditorDocument {
+        self.document.clone()
+    }
+
+    /// Creates a view onto an existing [`CodeEditorDocument`].
+    ///
+    /// The new view starts on the first buffer, at the top, with no folds. Its caret,
+    /// selection, extra cursors and scroll position are private to it, so two views of one
+    /// document can sit at different places — and on different buffers — at once.
+    ///
+    /// This view's configured undo limit is applied to every buffer's history, because the
+    /// limit belongs to the document the two views share.
+    pub fn with_document(geometry: Rect, document: CodeEditorDocument) -> Self {
+        let mut editor = Self::new(geometry);
+        editor.adopt_document(document);
+        editor
+    }
+
+    /// Re-points this editor at `document`, discarding its current view state.
+    ///
+    /// Used by [`CodeEditor::with_document`]. Every buffer gets a fresh snapshot slot keyed by
+    /// its stable id, so a later close cannot shift one buffer's caret onto another.
+    fn adopt_document(&mut self, document: CodeEditorDocument) {
+        self.document = document;
+        self.revision = self.document.revision_handle();
+        self.active_index = 0;
+        self.active_buffer_id = self.document.buffer_id(0).unwrap_or(1);
+        self.seen_generation = self.document.generation();
+        self.model = self.document.slot_model(0);
+        self.undo_stack = self.document.slot_history(0);
+        self.buffer_views.clear();
+        for id in self.document.buffer_ids() {
+            self.buffer_views.insert(id, BufferViewState::default());
+        }
+        self.folds.clear();
+        self.hidden_ranges.clear();
+        self.cursor = Cursor::default();
+        self.extra_cursors.clear();
+        self.goal = CursorGoal::default();
+        self.scroll_line = 0;
+        self.scroll_column = 0;
+        self.scroll_visual_row = 0;
+        self.active_typing = None;
+        self.completion_index = None;
+        *self.bracket_cache.borrow_mut() = None;
+        self.minimap_line_count = 0;
+        self.scale = DocumentScale::for_lines(self.line_count());
+        self.document.set_history_limit(self.config.undo_stack_limit);
+        self.invalidate_line_states();
+        self.refresh_derived_state();
+        self.base.request_layout();
+        self.base.request_redraw();
+    }
+
+    /// Re-homes this view after the shared document's buffer set changed under it.
+    ///
+    /// Opening or closing a buffer mutates the document, which every view shares. Because the
+    /// view stores the buffer's **stable id** rather than its position, a close elsewhere neither
+    /// changes which buffer this view shows nor moves its saved caret: the position is looked up
+    /// again here and the per-buffer snapshots already belong to the right buffer. Only when the
+    /// active buffer itself was closed elsewhere does the selection move, to the neighbour that
+    /// took its place.
+    ///
+    /// The paint and input paths call this at their entry point; a host that drives the editor
+    /// directly calls it before reading or editing.
+    ///
+    /// Returns `true` when the active buffer changed. A change emits the same signals a
+    /// [`CodeEditor::activate_buffer`] does (`tab_changed`, `text_change`, cursor/selection).
+    pub fn sync_with_document(&mut self) -> bool {
+        if self.seen_generation == self.document.generation() {
+            return false;
+        }
+        self.seen_generation = self.document.generation();
+        self.reconcile_active_buffer()
+    }
+
+    /// Re-resolves the active buffer against the current slot list.
+    ///
+    /// Shared by [`CodeEditor::sync_with_document`] and the close path. Snapshots of buffers that
+    /// no longer exist are pruned here, so a long-lived view does not accumulate them.
+    ///
+    /// Returns `true` when the active buffer changed.
+    pub(super) fn reconcile_active_buffer(&mut self) -> bool {
+        let count = self.document.buffer_count();
+        if count == 0 {
+            return false;
+        }
+        // Ids ascend with tab order, so this is a binary search per snapshot.
+        let ids = self.document.buffer_ids();
+        self.buffer_views.retain(|id, _| ids.binary_search(id).is_ok());
+        let index = match self.document.index_of(self.active_buffer_id) {
+            Some(index) => index,
+            // The active buffer was closed elsewhere: take the position it used to hold, which
+            // is now the following buffer (or the last one when it was the final tab).
+            None => self.active_index.min(count - 1),
+        };
+        let Some(id) = self.document.buffer_id(index) else { return false };
+        let changed = id != self.active_buffer_id;
+        self.active_index = index;
+        if changed {
+            self.active_buffer_id = id;
+            self.model = self.document.slot_model(index);
+            self.undo_stack = self.document.slot_history(index);
+            self.after_buffer_switch(index);
+        }
+        changed
+    }
+}
+
 impl CodeEditor {
     // ── Text access ─────────────────────────────────────────────────────────
 
@@ -26,7 +403,7 @@ impl CodeEditor {
     /// counter starts at `0` and only increases, so "unchanged" is an equality test and never a
     /// guess.
     pub fn revision(&self) -> u64 {
-        self.revision
+        self.revision.get()
     }
 
     /// Returns the line terminator the document was loaded with.
@@ -73,8 +450,8 @@ impl CodeEditor {
         end: TextPosition,
         text: &str,
     ) -> Result<u64, EditRejection> {
-        if expected != self.revision {
-            return Err(EditRejection::StaleRevision { expected, actual: self.revision });
+        if expected != self.revision.get() {
+            return Err(EditRejection::StaleRevision { expected, actual: self.revision.get() });
         }
         if !self.is_editable() || !self.is_range_editable(start, end) {
             return Err(EditRejection::ReadOnly);
@@ -87,7 +464,7 @@ impl CodeEditor {
         // cannot: an empty in-place splice leaves the model identical and reports nothing different
         // (BLUE26 B26.08).
         if start == end && text.is_empty() {
-            return Ok(self.revision);
+            return Ok(self.revision.get());
         }
         // The caret lands at the end of the inserted text, spelled the same way `splice_payload`
         // spells it, so a guarded edit and a typed one leave the caret in the same place.
@@ -100,7 +477,7 @@ impl CodeEditor {
         self.splice_and_record(start, end, text, head);
         // `splice_and_record` declines a no-op edit, so the revision may be unchanged; report the
         // current value either way, which is what a chaining caller needs.
-        Ok(self.revision)
+        Ok(self.revision.get())
     }
 
     /// Replaces the whole document, pushing one undo checkpoint.
@@ -117,7 +494,7 @@ impl CodeEditor {
         let before = self.text();
         if !self.restoring_history {
             let target = self.model.borrow().text.clone();
-            self.undo_stack.push(Box::new(ValueCommand::new(
+            self.undo_stack.borrow_mut().push(Box::new(ValueCommand::new(
                 target,
                 before,
                 next.clone(),
@@ -151,7 +528,7 @@ impl CodeEditor {
         // and clears caches), so the bump is repeated here rather than inherited — otherwise a host
         // that captured the revision before a `set_text` would see the document change under an
         // unchanged counter (BLUE26 B26.08).
-        self.revision = self.revision.wrapping_add(1);
+        self.revision.set(self.revision.get().wrapping_add(1));
         self.text_changed.emit(next);
         self.text_change.emit(TextChange::document(self.line_count()));
         self.emit_cursor_and_selection();
@@ -208,6 +585,25 @@ impl CodeEditor {
     /// an `O(document)` scan on every keystroke (J-P03).
     fn line_of_byte_offset_cached(&self, offset: usize) -> usize {
         self.model.borrow_mut().line_of_byte_offset_fast(offset)
+    }
+
+    /// Returns the byte offset of `position` in the joined document text.
+    ///
+    /// The position is clamped, so the result is always a valid offset into [`Self::text`].
+    /// This is the pair of [`Self::position_of`]: a host mapping a byte-range diagnostic or a
+    /// source span onto the caret can convert one way and back without maintaining a second
+    /// column calculation. The model's prefix index answers the line start in `O(log lines)`.
+    pub fn offset_of(&self, position: TextPosition) -> usize {
+        self.model.borrow_mut().total_byte_offset(position)
+    }
+
+    /// Returns the [`TextPosition`] containing byte `offset` in the joined document text.
+    ///
+    /// The offset is clamped to the document, so an offset past the end reports the last
+    /// position. This is the inverse of [`Self::offset_of`]; the line is located through the
+    /// prefix index in `O(log lines)`, so the lookup does not grow with the document.
+    pub fn position_of(&self, offset: usize) -> TextPosition {
+        self.model.borrow_mut().position_of_byte_offset(offset)
     }
 
     /// Returns the character length of a line, or 0 when out of range.
@@ -477,7 +873,8 @@ impl CodeEditor {
         // it from the whole text on the next completion trigger (J-P11). The update is the
         // size of the edit plus the word around it; a caller that could not describe the
         // change drops the index and the next trigger builds it from the live text.
-        let next_revision = if changed { self.revision.wrapping_add(1) } else { self.revision };
+        let next_revision =
+            if changed { self.revision.get().wrapping_add(1) } else { self.revision.get() };
         match (&checkpoint.range, &removed) {
             (Some((start, _, inserted)), Some(removed_text)) => {
                 let model = self.model.borrow();
@@ -513,7 +910,7 @@ impl CodeEditor {
         // replace) return before reaching here, so the counter tracks *accepted* changes only
         // (BLUE26 B26.08).
         if changed {
-            self.revision = self.revision.wrapping_add(1);
+            self.revision.set(self.revision.get().wrapping_add(1));
         }
         // A whole-document payload is emitted only on the paths that already own one
         // (a hand-rebuilt text). Every other change is described by `text_change`.
@@ -555,7 +952,7 @@ impl CodeEditor {
                 }
                 let command = TypingCommand::new(target, *start, inserted.clone());
                 self.active_typing = Some(command.accum());
-                self.undo_stack.push(Box::new(command));
+                self.undo_stack.borrow_mut().push(Box::new(command));
                 self.last_checkpoint_bytes = inserted.len();
                 return;
             }
@@ -564,7 +961,7 @@ impl CodeEditor {
         self.last_checkpoint_bytes = match (range, removed) {
             (Some((start, _removed_len, inserted)), Some(removed)) => {
                 let bytes = removed.len() + inserted.len();
-                self.undo_stack.push(Box::new(TextRangeCommand::new(
+                self.undo_stack.borrow_mut().push(Box::new(TextRangeCommand::new(
                     target,
                     start,
                     removed,
@@ -580,7 +977,7 @@ impl CodeEditor {
                 let current = target.borrow().clone();
                 let before = before_snapshot.unwrap_or_else(|| current.clone());
                 let bytes = before.len() + current.len();
-                self.undo_stack.push(Box::new(ValueCommand::new(
+                self.undo_stack.borrow_mut().push(Box::new(ValueCommand::new(
                     target,
                     before,
                     current,

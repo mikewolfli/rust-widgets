@@ -23,7 +23,7 @@ impl CodeEditor {
         if self.folded_lines.is_empty() {
             return (0..self.line_count()).collect();
         }
-        self.model.borrow().visible_lines()
+        self.visible_lines()
     }
 
     /// Returns the visible document lines within the viewport window, plus slack.
@@ -54,9 +54,8 @@ impl CodeEditor {
         };
         let mut rows = self.line_to_visual_row(start_line);
         let mut out = Vec::new();
-        let model = self.model.borrow();
         for line in start_line..count {
-            if model.is_hidden(line) {
+            if self.is_hidden(line) {
                 continue;
             }
             let segments = self.wrap_segments(line);
@@ -203,6 +202,38 @@ impl CodeEditor {
         }
     }
 
+    /// Builds the minimap summary if it is stale and returns it.
+    ///
+    /// The control paints the minimap from this summary, and it is the same data a host
+    /// needs to draw its own decoration beside the buffer. Exposing it means the host does
+    /// not have to summarise the document a second time (the old `editor_view.rs` did), so
+    /// the two views cannot disagree about where a block sits.
+    ///
+    /// `rows` is the number of strip rows to summarise into. The cached summary is keyed by
+    /// the document's line count and the resulting bucket count, so passing the same `rows`
+    /// the control paints with lets the next paint reuse it; a different value makes the next
+    /// paint rebuild it. The summary is built here even when the control's own minimap is
+    /// hidden, because a host decoration may still want it.
+    pub fn minimap_summary(&mut self, rows: usize) -> &[MinimapBucket] {
+        let rows = rows.max(1);
+        let count = self.line_count();
+        let (buckets, _) = minimap_partition(count, rows);
+        if self.minimap_buckets.len() != buckets || self.minimap_line_count != count {
+            self.rebuild_minimap(rows);
+            self.minimap_line_count = count;
+        }
+        &self.minimap_buckets
+    }
+
+    /// Returns the minimap summary as last built, without building it.
+    ///
+    /// Empty until something has built it — the paint path, or a call to
+    /// [`Self::minimap_summary`]. A read-only reader that must not trigger a document pass
+    /// uses this and treats an empty slice as "not summarised yet".
+    pub fn minimap_summary_cached(&self) -> &[MinimapBucket] {
+        &self.minimap_buckets
+    }
+
     /// Returns how many strip rows the minimap has room for.
     pub(crate) fn minimap_rows(&self) -> usize {
         let rect = self.geometry();
@@ -269,13 +300,24 @@ impl CodeEditor {
         let (buckets, per_bucket) = minimap_partition(count, rows);
         self.minimap_buckets.clear();
         self.minimap_buckets.resize(buckets, MinimapBucket::default());
+        for (index, bucket) in self.minimap_buckets.iter_mut().enumerate() {
+            bucket.start_line = index.saturating_mul(per_bucket);
+        }
         if count == 0 {
             return;
         }
         for line in 0..count {
             let bucket = line / per_bucket;
             let Some(text) = self.line_text(line) else { break };
-            MinimapBucket::accumulate(&mut self.minimap_buckets[bucket], &text);
+            let Some(slot) = self.minimap_buckets.get_mut(bucket) else { continue };
+            MinimapBucket::accumulate(slot, &text);
+            // `accumulate` keeps the longest line, so it cannot also count lines; the
+            // count is maintained here, at the one place that sees every line exactly
+            // once. `patch_minimap_line` deliberately does not touch it: it re-folds a
+            // single line and would otherwise count the same line again.
+            if !text.trim().is_empty() {
+                slot.non_blank_lines = slot.non_blank_lines.saturating_add(1);
+            }
         }
     }
 
@@ -463,11 +505,19 @@ impl CodeEditor {
                 // below mutates the prefix table while reading line text.
                 let model = Rc::clone(&self.model);
                 let model = model.borrow();
+                // Fold visibility is read from a local copy of the merged ranges: the
+                // loop holds a mutable borrow of `visual_row_prefix`, so it cannot call
+                // `self.is_hidden` while it runs. The ranges are a handful of pairs.
+                let hidden_ranges = self.hidden_ranges.clone();
+                let hidden = |line: usize| {
+                    let index = hidden_ranges.partition_point(|(start, _)| *start <= line);
+                    index > 0 && hidden_ranges[index - 1].1 >= line
+                };
                 let prefix = &mut self.visual_row_prefix;
                 let mut row = prefix[first];
                 let mut line = first;
                 while line < count {
-                    if !(folded && model.is_hidden(line)) {
+                    if !(folded && hidden(line)) {
                         row += if self.config.word_wrap {
                             LineGrid::new(model.line(line), self.config.tab_width)
                                 .segments(columns)
@@ -494,7 +544,7 @@ impl CodeEditor {
             let model = self.model.borrow();
             for line in 0..count {
                 prefix.push(row);
-                if folded && model.is_hidden(line) {
+                if folded && self.is_hidden(line) {
                     continue;
                 }
                 row += if self.config.word_wrap {

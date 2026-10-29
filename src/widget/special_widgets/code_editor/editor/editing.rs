@@ -131,7 +131,7 @@ impl CodeEditor {
         if !self.restoring_history {
             let after_span = self.model.borrow().extract(span_start, span_end);
             let target = self.model.borrow().text.clone();
-            self.undo_stack.push(Box::new(TextRangeCommand::new(
+            self.undo_stack.borrow_mut().push(Box::new(TextRangeCommand::new(
                 target,
                 span_offset,
                 before_span,
@@ -140,7 +140,7 @@ impl CodeEditor {
             )));
         }
         self.active_typing = None;
-        self.revision = self.revision.wrapping_add(1);
+        self.revision.set(self.revision.get().wrapping_add(1));
         // Several disjoint word changes cannot be applied to the completion index one
         // range at a time, so it is dropped and rebuilt on the next trigger.
         self.completion_index = None;
@@ -1227,7 +1227,7 @@ impl CodeEditor {
             return false;
         }
         let before_tab = self.active_buffer();
-        if self.undo_stack.undo().is_err() {
+        if self.undo_stack.borrow_mut().undo().is_err() {
             return false;
         }
         if before_tab != self.active_buffer() {
@@ -1246,7 +1246,7 @@ impl CodeEditor {
             return false;
         }
         let before_tab = self.active_buffer();
-        if self.undo_stack.redo().is_err() {
+        if self.undo_stack.borrow_mut().redo().is_err() {
             return false;
         }
         if before_tab != self.active_buffer() {
@@ -1258,17 +1258,17 @@ impl CodeEditor {
 
     /// Returns `true` when an undo is available.
     pub fn can_undo(&self) -> bool {
-        self.undo_stack.can_undo()
+        self.undo_stack.borrow().can_undo()
     }
 
     /// Returns `true` when a redo is available.
     pub fn can_redo(&self) -> bool {
-        self.undo_stack.can_redo()
+        self.undo_stack.borrow().can_redo()
     }
 
     /// Clears the edit history without touching the text.
     pub fn clear_history(&mut self) {
-        self.undo_stack.clear();
+        self.undo_stack.borrow_mut().clear();
     }
 
     pub(super) fn restore_history_text(&mut self) {

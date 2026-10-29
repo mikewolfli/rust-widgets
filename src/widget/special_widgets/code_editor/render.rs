@@ -63,6 +63,10 @@ fn font_family_hash(family: &str) -> u64 {
 
 impl Draw for CodeEditor {
     fn draw(&mut self, context: &mut RenderContext) {
+        // A different view may have opened or closed a buffer since the last frame; the
+        // shared buffer list is document state, so this view re-homes before it paints
+        // geometry that assumes its active index is still valid.
+        let _ = self.sync_with_document();
         // Measure the character cell **first**: every coordinate below — token origins, caret x, the
         // column ruler, hit-testing margins — is `column * cell_width()`, and reading the configured
         // constant instead of the font's real advance is what produced overlapping text.

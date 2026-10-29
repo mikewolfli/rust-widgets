@@ -3543,7 +3543,7 @@ version = "3.1.0"
 
 [[package]]
 name = "rust_widgets"
-version = "3.1.0"
+version = "3.1.1"
 dependencies = [
  "aes",
  "bumpalo",

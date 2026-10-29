@@ -654,7 +654,7 @@ impl CodeEditor {
         };
         let mut carets: Vec<Cursor> = Vec::new();
         for line in start_line..=end_line {
-            if self.model.borrow().is_hidden(line) {
+            if self.is_hidden(line) {
                 continue;
             }
             let text = self.line_text(line).unwrap_or_default();

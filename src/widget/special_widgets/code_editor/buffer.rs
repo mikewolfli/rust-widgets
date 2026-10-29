@@ -1,44 +1,37 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
 // SPDX-License-Identifier: MIT
 
-//! Line-indexed document model with tabs, folds and the splice primitive.
+//! Line-indexed document model with the splice primitive.
 //!
-//! The document always owns **at least one line**, even when empty. That
-//! invariant is what makes every index operation in the editor total: there is
-//! no line index that can be "out of range because the buffer is empty".
+//! One model holds **one buffer's** text. The buffer set, the revision counter and every
+//! buffer's undo history belong to the shared document handle, and the per-view selection of
+//! buffer, caret, scroll and folds belong to the widget — which is what lets two views show
+//! two tabs of one document without copying either text.
+//!
+//! The document always owns **at least one line**, even when empty. That invariant is what
+//! makes every index operation in the editor total: there is no line index that can be "out of
+//! range because the buffer is empty".
 //!
 //! The model also mirrors its text into an `Rc<RefCell<String>>` so the shared
 //! `ValueCommand<String>` undo command can be reused unchanged instead of
 //! introducing a second history implementation.
 
-use super::types::{EditorBuffer, FoldRegion, LineEnding, TextPosition};
+use super::editor::SharedModel;
+use super::syntax::LanguageId;
+use super::types::{LineEnding, TextPosition};
+use crate::undo::UndoStack;
 use alloc::rc::Rc;
 use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 use core::cell::RefCell;
 
-/// Shared editing core: line index, tabs, folds and undo targets.
+/// One buffer's editing core: line index and undo target.
 #[derive(Debug)]
 pub(crate) struct EditorModel {
     /// Document lines; never empty.
     pub(crate) lines: Vec<String>,
-    /// Open buffers, in tab order.
-    pub(crate) all_buffers: Vec<EditorBuffer>,
-    /// Index of the active buffer.
-    pub(crate) active_tab: usize,
-    /// Fold regions of the active buffer.
-    pub(crate) folds: Vec<FoldRegion>,
-    /// The union of the folded regions as sorted, disjoint `[start, end]` line ranges.
-    ///
-    /// [#`is_hidden`] answers "is this line inside a fold" for every visible line on every
-    /// frame. The regions can nest (a folded block inside another folded block), so
-    /// "the last region that starts before this line" is not enough to decide — one earlier
-    /// region may extend past several later ones. Their union is disjoint by construction,
-    /// which makes the query two binary searches. It is rebuilt whenever the fold set
-    /// changes (J-P04).
-    hidden_ranges: Vec<(usize, usize)>,
-    /// Mirror of the active buffer used by undo commands.
+    /// Mirror of the buffer used by undo commands.
     pub(crate) text: Rc<RefCell<String>>,
     /// Pristine text of the active buffer's save point.
     pub(crate) saved: String,
@@ -64,22 +57,20 @@ pub(crate) struct EditorModel {
 }
 
 impl EditorModel {
-    /// Creates a model holding one empty `untitled` buffer.
+    /// Creates an empty model.
+    ///
+    /// One buffer's text lives here; the set of buffers that share it belongs to
+    /// [`CodeEditorDocument`](super::CodeEditorDocument), so a view can pick a different
+    /// one without either buffer's index being implicit in this type.
     pub(crate) fn new() -> Self {
-        let mut model = Self {
+        Self {
             lines: vec![String::new()],
-            all_buffers: Vec::new(),
-            active_tab: 0,
-            folds: Vec::new(),
-            hidden_ranges: Vec::new(),
             text: Rc::new(RefCell::new(String::new())),
             saved: String::new(),
             dirty: false,
             prefix_offsets: None,
             line_ending: LineEnding::Lf,
-        };
-        model.all_buffers.push(EditorBuffer::new("untitled", ""));
-        model
+        }
     }
 
     /// Replaces the whole document, splitting it into lines.
@@ -97,11 +88,7 @@ impl EditorModel {
         *self.text.borrow_mut() = text.clone();
         self.lines = split_lines(&text);
         self.lines_replaced();
-        if let Some(buffer) = self.all_buffers.get_mut(self.active_tab) {
-            buffer.text = text;
-        }
         self.refresh_dirty();
-        self.normalize_folds();
     }
 
     /// Returns the terminator the document was loaded with.
@@ -136,67 +123,6 @@ impl EditorModel {
             text.as_str() == self.saved.as_str()
         };
         self.dirty = !same;
-    }
-
-    /// Switches the active tab, persisting the outgoing buffer's text first.
-    pub(crate) fn apply_tab_switch(&mut self, tab: usize) {
-        if tab >= self.all_buffers.len() {
-            return;
-        }
-        self.persist_active();
-        self.load_buffer(tab);
-    }
-
-    /// Persists the active buffer's current text and dirty flag into its slot.
-    ///
-    /// Used by [`Self::apply_tab_switch`] and by the editor's close path when
-    /// the buffer being closed is not the active one.
-    ///
-    /// The text is **moved** out of the mirror into the slot: the switch immediately loads
-    /// the incoming buffer into the mirror, so nothing can observe the empty moment, and a
-    /// tab switch no longer pays a whole-document copy on the way out (J-P12).
-    pub(crate) fn persist_active(&mut self) {
-        let outgoing = core::mem::take(&mut *self.text.borrow_mut());
-        let outgoing_dirty = self.dirty;
-        if let Some(active) = self.all_buffers.get_mut(self.active_tab) {
-            active.modified = outgoing_dirty;
-            active.text = outgoing;
-        }
-    }
-
-    /// Loads buffer `tab` into the active state without persisting the outgoing
-    /// one.
-    ///
-    /// Used by [`Self::apply_tab_switch`] and by the editor's close path, where
-    /// the outgoing buffer has already been removed and must not be written back.
-    ///
-    /// The incoming text is moved into the mirror; the slot is left empty because the
-    /// active buffer's authoritative text *is* the mirror. [`EditorModel::active_text`]
-    /// and the editor's `buffers()` restore it for a reader that wants the whole text.
-    pub(crate) fn load_buffer(&mut self, tab: usize) {
-        let incoming = core::mem::take(&mut self.all_buffers[tab].text);
-        self.active_tab = tab;
-        self.set_text_owned(incoming);
-        self.saved = self.text.borrow().clone();
-        self.dirty = self.all_buffers[tab].modified;
-    }
-
-    /// Replaces the document from an owned string without copying it into the tab slot.
-    ///
-    /// The mirror is the active document: the slot is where a *inactive* buffer's text
-    /// lives, and it is filled on switch-out by [`Self::persist_active`]. Splitting the
-    /// text into lines is unavoidable (the index is part of the model), but the extra
-    /// mirror copy is not.
-    pub(crate) fn set_text_owned(&mut self, text: String) {
-        if text.contains('\r') {
-            self.line_ending = LineEnding::Crlf;
-        }
-        let text = normalize_line_endings(text);
-        self.lines = split_lines(&text);
-        *self.text.borrow_mut() = text;
-        self.lines_replaced();
-        self.refresh_dirty();
-        self.normalize_folds();
     }
 
     /// Returns the joined document text.
@@ -243,68 +169,32 @@ impl EditorModel {
         chars.next().map(|(offset, _)| offset).unwrap_or(text.len())
     }
 
-    /// Returns whether a line is hidden by a folded region.
+    /// Converts a byte offset inside `line` back to a character column, clamped.
     ///
-    /// Two binary searches over the merged fold ranges: the last range starting at or
-    /// before `line`, then a containment test. The old form scanned every fold for every
-    /// line, which made scrolling a long folded file `O(lines x folds)` (J-P04).
-    pub(crate) fn is_hidden(&self, line: usize) -> bool {
-        let index = self.hidden_ranges.partition_point(|(start, _)| *start <= line);
-        index > 0 && self.hidden_ranges[index - 1].1 >= line
+    /// This is the inverse of [`Self::byte_offset`] for one line. A `byte_offset` past the
+    /// line end reports the line's character length, and one that lands inside a multi-byte
+    /// character snaps down to that character's first byte, so the result is always a valid
+    /// column rather than a position the index cannot represent.
+    pub(crate) fn byte_column(&self, line: usize, byte_offset: usize) -> usize {
+        let text = self.line(line);
+        let mut limit = byte_offset.min(text.len());
+        while limit > 0 && !text.is_char_boundary(limit) {
+            limit -= 1;
+        }
+        text[..limit].chars().count()
     }
 
-    /// Returns the index of the fold region starting at `start_line`.
-    pub(crate) fn fold_at(&self, start_line: usize) -> Option<usize> {
-        self.folds.iter().position(|region| region.start_line == start_line)
-    }
-
-    /// Returns the number of lines currently hidden by folds.
-    pub(crate) fn folded_line_count(&self) -> usize {
-        self.folds.iter().map(FoldRegion::hidden_lines).sum()
-    }
-
-    /// Drops fold regions that no longer span more than one line after an edit.
+    /// Converts a byte offset in the joined document to a [`TextPosition`], clamped.
     ///
-    /// The list is also put in `start_line` order here. [`Self::is_hidden`] binary-searches
-    /// it, and fold commands append regions in document order anyway — sorting is what keeps
-    /// that an invariant of the type rather than a property the callers happen to have.
-    pub(crate) fn normalize_folds(&mut self) {
-        let last = self.lines.len().saturating_sub(1);
-        for region in &mut self.folds {
-            region.start_line = region.start_line.min(last);
-            region.end_line = region.end_line.clamp(region.start_line, last);
-        }
-        self.folds.retain(|region| region.end_line > region.start_line);
-        self.folds.sort_by_key(|region| region.start_line);
-        // Rebuild the merged view the visibility query reads. Regions are sorted by start,
-        // so a single pass unions them: overlapping and adjacent ranges collapse into one
-        // entry, which is what makes a nested fold queryable in `O(log folds)`.
-        self.hidden_ranges.clear();
-        for region in &self.folds {
-            if !region.folded || region.end_line <= region.start_line {
-                continue;
-            }
-            // `start_line` itself stays visible (it carries the fold marker).
-            let start = region.start_line + 1;
-            match self.hidden_ranges.last_mut() {
-                Some((_, last_end)) if start <= *last_end + 1 => {
-                    *last_end = (*last_end).max(region.end_line);
-                }
-                _ => self.hidden_ranges.push((start, region.end_line)),
-            }
-        }
-    }
-
-    /// Replaces the fold set and refreshes the derived visibility ranges.
-    #[cfg(test)]
-    pub(crate) fn set_folds(&mut self, folds: Vec<FoldRegion>) {
-        self.folds = folds;
-        self.normalize_folds();
-    }
-
-    /// Returns the indices of all lines that are not hidden by a fold.
-    pub(crate) fn visible_lines(&self) -> Vec<usize> {
-        (0..self.lines.len()).filter(|line| !self.is_hidden(*line)).collect()
+    /// The line is located through the prefix index, so the cost is `O(log lines)` plus the
+    /// column scan inside one line — it does not grow with the number of lines. The offset is
+    /// clamped to the document, so an offset past the end reports the end position rather than
+    /// panicking.
+    pub(crate) fn position_of_byte_offset(&mut self, offset: usize) -> TextPosition {
+        let line = self.line_of_byte_offset_fast(offset);
+        let start = self.prefix_offset(line);
+        let within = offset.saturating_sub(start);
+        TextPosition::new(line, self.byte_column(line, within))
     }
 
     /// Extracts the text between two positions, newlines included.
@@ -437,7 +327,6 @@ impl EditorModel {
                 .collect();
             index.splice(start.line, removed_lines, &inserted);
         }
-        self.normalize_folds();
         self.dirty = true;
         let removed_len = end_offset.saturating_sub(start_offset);
         self.refresh_mirror(start_offset, removed_len, replacement);
@@ -685,6 +574,47 @@ pub(crate) fn join_lines(lines: &[String]) -> String {
     lines.join("\n")
 }
 
+/// One buffer in a shared document: its title, language override, text and history.
+///
+/// A document is a *list* of these. Each view points at one of them, which is what lets two
+/// views show different buffers of the same document set while the text of every buffer lives
+/// in exactly one place.
+///
+/// The history is shared by every view of the buffer (document-level undo), while caret,
+/// scroll and folds stay on the view.
+pub(crate) struct EditorBufferSlot {
+    /// Stable identity of this buffer within its document.
+    ///
+    /// A position in [`CodeEditorDocument`](super::CodeEditorDocument)'s slot list changes when
+    /// an earlier buffer is closed; this id never does, and is never reused. View snapshots
+    /// (`BufferViewState`) are keyed by it, so closing a buffer in one view cannot shift another
+    /// view's saved caret onto a neighbouring buffer.
+    pub(crate) id: u64,
+    /// Tab title.
+    pub(crate) title: String,
+    /// Per-buffer language override, falling back to the editor configuration.
+    pub(crate) language: Option<LanguageId>,
+    /// This buffer's text index and mirror.
+    pub(crate) model: SharedModel,
+    /// This buffer's undo history, shared by every view of it.
+    pub(crate) history: Rc<RefCell<UndoStack>>,
+}
+
+/// Prints the identity of a slot, not its contents.
+///
+/// `UndoStack` holds boxed commands and has no `Debug`, and printing a buffer's text from a
+/// debug format would be both huge and a privacy hazard. The title is what a failure message
+/// needs to say which tab went wrong.
+impl core::fmt::Debug for EditorBufferSlot {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("EditorBufferSlot")
+            .field("id", &self.id)
+            .field("title", &self.title)
+            .field("language", &self.language)
+            .finish_non_exhaustive()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -770,38 +700,6 @@ mod tests {
     }
 
     #[test]
-    fn folds_hide_only_interior_lines_and_normalize_after_edits() {
-        let mut model = EditorModel::new();
-        model.set_text("a\nb\nc\nd".to_string());
-        model.set_folds(vec![FoldRegion::new(1, 2, true)]);
-        assert!(!model.is_hidden(0));
-        assert!(!model.is_hidden(1), "the fold header stays visible");
-        assert!(model.is_hidden(2));
-        assert!(!model.is_hidden(3));
-        assert_eq!(model.folded_line_count(), 1);
-        assert_eq!(model.visible_lines(), vec![0, 1, 3]);
-
-        // Shrinking the document must clamp the region, not panic.
-        model.set_text("only".to_string());
-        assert!(model.folds.is_empty());
-    }
-
-    #[test]
-    fn nested_folds_hide_their_interiors() {
-        let mut model = EditorModel::new();
-        model.set_text("a\nb\nc\nd\ne\nf".to_string());
-        // A fold inside a fold: the union is one range, so the inner region's lines stay
-        // hidden even though a later region ends before them (J-P04).
-        model.set_folds(vec![FoldRegion::new(0, 4, true), FoldRegion::new(2, 3, true)]);
-        assert!(!model.is_hidden(0), "the outer header stays visible");
-        assert!(model.is_hidden(1));
-        assert!(model.is_hidden(2));
-        assert!(model.is_hidden(4));
-        assert!(!model.is_hidden(5));
-        assert_eq!(model.visible_lines(), vec![0, 5]);
-    }
-
-    #[test]
     fn the_fast_offset_lookup_matches_the_walk() {
         let mut model = EditorModel::new();
         model.set_text("aé\n日本\nxyz".to_string());
@@ -815,29 +713,6 @@ mod tests {
                 "offset {offset}"
             );
         }
-    }
-
-    #[test]
-    fn tab_switch_persists_outgoing_buffer_text() {
-        let mut model = EditorModel::new();
-        model.set_text("alpha".to_string());
-        model.all_buffers.push(EditorBuffer::new("second", "beta"));
-        model.apply_tab_switch(1);
-        assert_eq!(model.full_text(), "beta");
-        assert_eq!(model.active_tab, 1);
-        assert_eq!(model.all_buffers[0].text, "alpha");
-
-        model.apply_tab_switch(0);
-        assert_eq!(model.full_text(), "alpha");
-    }
-
-    #[test]
-    fn tab_switch_to_invalid_index_is_a_noop() {
-        let mut model = EditorModel::new();
-        model.set_text("alpha".to_string());
-        model.apply_tab_switch(7);
-        assert_eq!(model.active_tab, 0);
-        assert_eq!(model.full_text(), "alpha");
     }
 
     #[test]

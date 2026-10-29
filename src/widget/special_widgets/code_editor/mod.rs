@@ -111,7 +111,10 @@ mod tests_batch6;
 #[cfg(test)]
 mod tests_batch7;
 
-pub use editor::CodeEditor;
+#[cfg(test)]
+mod tests_batch8;
+
+pub use editor::{CodeEditor, CodeEditorDocument, MiniTone, MinimapBucket};
 pub use multicursor::MultiCursor;
 pub use palette::{CommandPalette, PaletteEntry};
 pub use syntax::{BuiltinHighlighter, LanguageId, LineState, SyntaxHighlighter};

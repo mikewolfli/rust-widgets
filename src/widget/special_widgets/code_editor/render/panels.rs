@@ -57,14 +57,13 @@ impl CodeEditor {
         rect: Rect,
         chrome: &EditorChrome,
     ) {
-        // Only the tab titles are needed to paint the strip. Cloning
-        // `all_buffers` would copy every open buffer's full `text` on every frame,
-        // which at a million lines measured 17 ms per frame — the dominant cost in
-        // the whole paint path, and invisible in the profile of any single draw
-        // helper. Titles are short and there are few of them, so this list is
-        // bounded by the tab count rather than by the document.
+        // Only the tab titles are needed to paint the strip. Copying every buffer's
+        // text would cost a whole-document clone per frame, which at a million lines
+        // measured 17 ms — the dominant cost in the whole paint path, and invisible in
+        // the profile of any single draw helper. Titles are short and there are few of
+        // them, so this list is bounded by the tab count rather than by the document.
         let titles: Vec<String> =
-            self.model.borrow().all_buffers.iter().map(|buffer| buffer.title.clone()).collect();
+            self.document.buffer_summaries().into_iter().map(|(title, _, _)| title).collect();
         let active = self.active_buffer();
         // The dirty flag is a maintained boolean, not a string comparison: the
         // saved text is a full copy of the document, so comparing against it

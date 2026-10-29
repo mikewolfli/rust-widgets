@@ -5,6 +5,55 @@ The canonical project changelog is maintained at [docs/reports/CHANGELOG.md](doc
 This root-level file exists for tools and release automation that expect `CHANGELOG.md` at repository root.
 When the two disagree, this file is the one that ships; `tools/check_changelog_sync.sh` keeps them identical.
 
+## 3.1.1 (2026-10-30) — code editor host seams and true multi-view
+
+**Patch**: additive only — no existing public item changed or was removed. Closes the four gaps a host
+reported against 3.1.0 (`docs/issues/feedback-20261029.md` §6/§7) and finishes the multi-view work so
+one document can be shown twice without the host owning a second copy of the text or of the undo
+stack. Evidence: `docs/log/log-20261029-9.md` (seams) and `docs/log/log-20261029-10.md` (multi-view).
+
+### Host seams on `CodeEditor`
+
+- **One document, several views.** `CodeEditorDocument` is a clonable handle to a document *set*;
+  `CodeEditor::with_document(geometry, handle)` builds another view of it, and `document()` /
+  `into_document()` hand a handle out of a live editor. Views share the buffer list, every buffer's
+  text, the revision counter and each buffer's undo history. Each view keeps its own active buffer,
+  caret, selection, extra cursors, scroll position and fold regions, so two views can sit on two
+  tabs of one document at two places. `sync_with_document()` re-homes a view after another view
+  opens or closes a buffer. `active_buffer_id()`, `buffer_ids()`, `activate_buffer_id(id)` and
+  `close_buffer_id(id)` expose the stable buffer identity a host should store instead of a tab
+  position.
+- **Byte offsets ⇄ positions.** `CodeEditor::offset_of(TextPosition)` and
+  `CodeEditor::position_of(byte_offset)` are the public inverse pair; both clamp, and the line lookup
+  uses the document's prefix index (`O(log lines)`). A host mapping a diagnostic byte range onto the
+  caret no longer needs its own column arithmetic.
+- **Minimap summaries.** `MinimapBucket` and `MiniTone` are public, and a bucket carries
+  `start_line` and `non_blank_lines` beside `indent`/`length`/`tone`/`blank`. `minimap_summary(rows)`
+  builds on demand and returns the same summary the control paints from; `minimap_summary_cached()`
+  never triggers a document pass.
+- **Single-point visual rows.** `CodeEditor::visual_row_of` is public and returns `Option<usize>`,
+  with `visual_line_at(byte_offset)` for the offset form. The lookup reads the row-prefix table and
+  measures one line, so its cost does not grow with the document — unlike `visual_lines()`, which
+  materialises every row (55.9 ms on the host's 1,000,000-line file, debug).
+
+### Multi-view is real, not just shared text
+
+- **Each buffer is its own document model**, and `CodeEditorDocument` owns the buffer slots (title,
+  language, text model, history). `CodeEditor` points at the active slot, so switching tabs is a
+  pointer swap: two views can show two different tabs of one document at the same time.
+- **Fold regions are view state.** They moved off the model onto the view and ride along in the
+  per-buffer `BufferViewState` next to caret and scroll, so one view collapsing a block leaves the
+  other expanded.
+- **Undo history is document-level.** Each buffer's `UndoStack` lives in the document and is shared by
+  every view of it, so an edit made in one view is undone from the other. Tab switches never record
+  history.
+- **Buffers close safely.** Closing a buffer in one view lets the other re-home with
+  `sync_with_document()` (also called from `draw` and `handle_event`). Each buffer carries a stable
+  id and the per-buffer snapshot (caret, scroll, folds) is keyed by it, so closing an earlier tab
+  only moves the position: another view keeps its buffer, its caret and its folds, and only a closed
+  *active* buffer re-homes — to the tab that took its place. Re-opening a buffer starts from a fresh
+  snapshot.
+
 ## 3.1.0 (2026-10-29) — optional widget suites, the form group, and a form-completeness round
 
 **Minor**: no public signature changed. One new package and one new factory capability, plus the

@@ -29,12 +29,11 @@ impl CodeEditor {
             // maintained incrementally by the edit path (`DocumentWordIndex::apply_edit`).
             // The index reads the live mirror without cloning it, so even the first trigger
             // after a wholesale replacement pays one scan rather than a text copy (J-P11).
-            if self.completion_index.as_ref().map(DocumentWordIndex::revision)
-                != Some(self.revision)
-            {
+            let revision = self.revision.get();
+            if self.completion_index.as_ref().map(DocumentWordIndex::revision) != Some(revision) {
                 let model = self.model.borrow();
                 let text = model.text.borrow();
-                self.completion_index = Some(DocumentWordIndex::build(&text, self.revision));
+                self.completion_index = Some(DocumentWordIndex::build(&text, revision));
             }
             self.completion_index
                 .as_ref()

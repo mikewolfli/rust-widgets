@@ -20,22 +20,19 @@ impl CodeEditor {
         if end <= start {
             return;
         }
-        {
-            let mut model = self.model.borrow_mut();
-            match model.fold_at(start) {
-                Some(index) => {
-                    if let Some(region) = model.folds.get_mut(index) {
-                        region.end_line = end;
-                        region.folded = true;
-                    }
+        match self.fold_at(start) {
+            Some(index) => {
+                if let Some(region) = self.folds.get_mut(index) {
+                    region.end_line = end;
+                    region.folded = true;
                 }
-                None => model.folds.push(FoldRegion::new(start, end, true)),
             }
-            // `is_hidden` binary-searches the fold list, so its sort order is an invariant of
-            // the model rather than something the callers happen to preserve. Folding line 10
-            // and then line 3 would otherwise leave the list unsorted.
-            model.normalize_folds();
+            None => self.folds.push(FoldRegion::new(start, end, true)),
         }
+        // `is_hidden` binary-searches the fold list, so its sort order is an invariant of
+        // the view rather than something the callers happen to preserve. Folding line 10
+        // and then line 3 would otherwise leave the list unsorted.
+        self.normalize_folds();
         self.after_fold_change();
     }
 
@@ -95,15 +92,12 @@ impl CodeEditor {
 
     /// Expands the region starting at `start_line`.
     pub fn unfold(&mut self, start_line: usize) -> bool {
-        let changed = {
-            let mut model = self.model.borrow_mut();
-            match model.fold_at(start_line).and_then(|index| model.folds.get_mut(index)) {
-                Some(region) => {
-                    region.folded = false;
-                    true
-                }
-                None => false,
+        let changed = match self.fold_at(start_line).and_then(|index| self.folds.get_mut(index)) {
+            Some(region) => {
+                region.folded = false;
+                true
             }
+            None => false,
         };
         if changed {
             self.after_fold_change();
@@ -114,8 +108,6 @@ impl CodeEditor {
     /// Toggles the fold state of `start_line`, inferring the block when needed.
     pub fn toggle_fold(&mut self, start_line: usize) -> bool {
         let state = self
-            .model
-            .borrow()
             .folds
             .iter()
             .find(|region| region.start_line == start_line)
@@ -123,16 +115,14 @@ impl CodeEditor {
         match state {
             Some(true) => self.unfold(start_line),
             Some(false) => {
-                let changed = {
-                    let mut model = self.model.borrow_mut();
-                    match model.fold_at(start_line).and_then(|index| model.folds.get_mut(index)) {
+                let changed =
+                    match self.fold_at(start_line).and_then(|index| self.folds.get_mut(index)) {
                         Some(region) => {
                             region.folded = true;
                             true
                         }
                         None => false,
-                    }
-                };
+                    };
                 if changed {
                     self.after_fold_change();
                 }
@@ -144,17 +134,13 @@ impl CodeEditor {
 
     /// Expands every fold region.
     pub fn unfold_all(&mut self) {
-        let changed = {
-            let mut model = self.model.borrow_mut();
-            let mut changed = false;
-            for region in &mut model.folds {
-                if region.folded {
-                    region.folded = false;
-                    changed = true;
-                }
+        let mut changed = false;
+        for region in &mut self.folds {
+            if region.folded {
+                region.folded = false;
+                changed = true;
             }
-            changed
-        };
+        }
         if changed {
             self.after_fold_change();
         }
@@ -162,28 +148,28 @@ impl CodeEditor {
 
     /// Returns the fold regions of the active buffer.
     pub fn fold_regions(&self) -> Vec<FoldRegion> {
-        self.model.borrow().folds.clone()
+        self.folds.clone()
     }
 
     /// Returns how many lines are hidden by folds.
     pub fn folded_line_count(&self) -> usize {
-        self.model.borrow().folded_line_count()
+        self.folds.iter().map(FoldRegion::hidden_lines).sum()
     }
 
     /// Returns `true` when `line` starts a currently folded region.
     ///
-    /// # Why this reads the model, not the cache
+    /// # Why this reads the view's own fold list, not the cache
     ///
     /// This used to scan `folded_lines`, a *derived* cache rebuilt by
     /// `refresh_derived_state`, while [`CodeEditor::folded_line_count`] and the
-    /// render path's row visibility both answered from the model. Two sources for
+    /// render path's row visibility both answered from the fold list. Two sources for
     /// one fact is how they drift: the cache is only as fresh as the last refresh,
     /// so a state change that had not yet triggered one could be reported
-    /// differently by this predicate than by the count. The model is the single
+    /// differently by this predicate than by the count. The fold list is the single
     /// authority; the cache is a render-path detail and no longer decides public
     /// answers.
     pub fn is_line_folded(&self, line: usize) -> bool {
-        self.model.borrow().folds.iter().any(|region| region.folded && region.start_line == line)
+        self.folds.iter().any(|region| region.folded && region.start_line == line)
     }
 
     /// Returns whether a line is hidden *inside* a folded region.
@@ -192,14 +178,12 @@ impl CodeEditor {
     /// line — the one row a collapsed region still shows. This answers the other
     /// half: is the line currently invisible because some region swallowed it.
     pub fn is_line_hidden(&self, line: usize) -> bool {
-        self.model.borrow().is_hidden(line)
+        self.is_hidden(line)
     }
 
     /// Returns how many lines the fold starting at `line` hides, or 0.
     pub fn hidden_lines_at(&self, line: usize) -> usize {
-        self.model
-            .borrow()
-            .folds
+        self.folds
             .iter()
             .find(|region| region.start_line == line && region.folded)
             .map(FoldRegion::hidden_lines)
@@ -207,9 +191,9 @@ impl CodeEditor {
     }
 
     pub(super) fn after_fold_change(&mut self) {
-        // Every fold mutation lands here, so the model's merged visibility ranges are
-        // refreshed in one place rather than at each of the five call sites (J-P04).
-        self.model.borrow_mut().normalize_folds();
+        // Every fold mutation lands here. `refresh_derived_state` re-derives the merged
+        // visibility ranges and the row projection from the fold list, so the one call
+        // below is the single place that has to remember both (J-P04).
         if self.config.animate_folds {
             self.fold_reveal = 0.0;
         }
@@ -220,22 +204,79 @@ impl CodeEditor {
     }
 
     pub(super) fn clamp_cursor_to_visible(&mut self) {
-        let hidden_region = {
-            let model = self.model.borrow();
-            if model.is_hidden(self.cursor.head.line) {
-                model
-                    .folds
-                    .iter()
-                    .find(|region| region.folded && self.cursor.head.line <= region.end_line)
-                    .map(|region| region.start_line)
-            } else {
-                None
-            }
+        let hidden_region = if self.is_hidden(self.cursor.head.line) {
+            self.folds
+                .iter()
+                .find(|region| region.folded && self.cursor.head.line <= region.end_line)
+                .map(|region| region.start_line)
+        } else {
+            None
         };
         if let Some(start) = hidden_region {
             let position = TextPosition::new(start, self.line_len(start));
             self.cursor = Cursor { head: position, anchor: position };
         }
+    }
+
+    // ── Fold storage ────────────────────────────────────────────────────────
+
+    /// Returns whether a line is hidden by a folded region.
+    ///
+    /// Two binary searches over the merged fold ranges: the last range starting at or
+    /// before `line`, then a containment test. The old form scanned every fold for every
+    /// line, which made scrolling a long folded file `O(lines x folds)` (J-P04).
+    pub(crate) fn is_hidden(&self, line: usize) -> bool {
+        let index = self.hidden_ranges.partition_point(|(start, _)| *start <= line);
+        index > 0 && self.hidden_ranges[index - 1].1 >= line
+    }
+
+    /// Returns the index of the fold region starting at `start_line`.
+    pub(crate) fn fold_at(&self, start_line: usize) -> Option<usize> {
+        self.folds.iter().position(|region| region.start_line == start_line)
+    }
+
+    /// Drops fold regions that no longer span more than one line after an edit.
+    ///
+    /// The list is also put in `start_line` order here. [`Self::is_hidden`] binary-searches
+    /// it, and fold commands append regions in document order anyway — sorting is what keeps
+    /// that an invariant of the type rather than a property the callers happen to have.
+    pub(crate) fn normalize_folds(&mut self) {
+        let last = self.line_count().saturating_sub(1);
+        for region in &mut self.folds {
+            region.start_line = region.start_line.min(last);
+            region.end_line = region.end_line.clamp(region.start_line, last);
+        }
+        self.folds.retain(|region| region.end_line > region.start_line);
+        self.folds.sort_by_key(|region| region.start_line);
+        // Rebuild the merged view the visibility query reads. Regions are sorted by start,
+        // so a single pass unions them: overlapping and adjacent ranges collapse into one
+        // entry, which is what makes a nested fold queryable in `O(log folds)`.
+        self.hidden_ranges.clear();
+        for region in &self.folds {
+            if !region.folded || region.end_line <= region.start_line {
+                continue;
+            }
+            // `start_line` itself stays visible (it carries the fold marker).
+            let start = region.start_line + 1;
+            match self.hidden_ranges.last_mut() {
+                Some((_, last_end)) if start <= *last_end + 1 => {
+                    *last_end = (*last_end).max(region.end_line);
+                }
+                _ => self.hidden_ranges.push((start, region.end_line)),
+            }
+        }
+    }
+
+    /// Replaces the fold set and refreshes the derived visibility ranges.
+    #[cfg(test)]
+    pub(crate) fn set_folds(&mut self, folds: Vec<FoldRegion>) {
+        self.folds = folds;
+        self.normalize_folds();
+    }
+
+    /// Returns the indices of all lines that are not hidden by a fold.
+    pub(crate) fn visible_lines(&self) -> Vec<usize> {
+        (0..self.line_count()).filter(|line| !self.is_hidden(*line)).collect()
     }
 
     /// Finds the line range of the innermost block enclosing `line`.
@@ -263,8 +304,8 @@ impl CodeEditor {
     /// Pairs are matched with a stack over the whole document once per revision;
     /// every fold query afterwards is a binary search or a short backwards scan.
     fn bracket_pairs(&mut self) -> &[(TextPosition, TextPosition)] {
-        let stale =
-            self.bracket_index.as_ref().is_none_or(|(revision, _)| *revision != self.revision);
+        let revision = self.revision.get();
+        let stale = self.bracket_index.as_ref().is_none_or(|(cached, _)| *cached != revision);
         if stale {
             let mut stack: Vec<(TextPosition, char)> = Vec::new();
             let mut matched: Vec<(TextPosition, TextPosition)> = Vec::new();
@@ -286,7 +327,7 @@ impl CodeEditor {
                 }
             }
             matched.sort_by_key(|(open, close)| (*open, *close));
-            self.bracket_index = Some((self.revision, matched));
+            self.bracket_index = Some((revision, matched));
         }
         self.bracket_index.as_ref().map(|(_, pairs)| pairs.as_slice()).unwrap_or(&[])
     }
@@ -295,5 +336,49 @@ impl CodeEditor {
     #[cfg(test)]
     pub(crate) fn cached_bracket_pairs(&self) -> usize {
         self.bracket_index.as_ref().map(|(_, pairs)| pairs.len()).unwrap_or(0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn editor() -> CodeEditor {
+        CodeEditor::new(Rect::new(0, 0, 800, 600))
+    }
+
+    /// A fold hides only its interior; shrinking the document clamps it away.
+    ///
+    /// These two cases moved here with the fold list itself: the state is now the
+    /// view's, so the assertions are made through the widget rather than the model.
+    #[test]
+    fn folds_hide_only_interior_lines_and_normalize_after_edits() {
+        let mut editor = editor();
+        editor.set_text("a\nb\nc\nd");
+        editor.set_folds(vec![FoldRegion::new(1, 2, true)]);
+        assert!(!editor.is_hidden(0));
+        assert!(!editor.is_hidden(1), "the fold header stays visible");
+        assert!(editor.is_hidden(2));
+        assert!(!editor.is_hidden(3));
+        assert_eq!(editor.folded_line_count(), 1);
+        assert_eq!(editor.visible_lines(), vec![0, 1, 3]);
+
+        // Shrinking the document must clamp the region, not panic.
+        editor.set_text("only");
+        assert!(editor.fold_regions().is_empty());
+    }
+
+    /// A fold inside a fold stays hidden even when a later region ends earlier.
+    #[test]
+    fn nested_folds_hide_their_interiors() {
+        let mut editor = editor();
+        editor.set_text("a\nb\nc\nd\ne\nf");
+        editor.set_folds(vec![FoldRegion::new(0, 4, true), FoldRegion::new(2, 3, true)]);
+        assert!(!editor.is_hidden(0), "the outer header stays visible");
+        assert!(editor.is_hidden(1));
+        assert!(editor.is_hidden(2));
+        assert!(editor.is_hidden(4));
+        assert!(!editor.is_hidden(5));
+        assert_eq!(editor.visible_lines(), vec![0, 5]);
     }
 }

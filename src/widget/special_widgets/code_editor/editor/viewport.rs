@@ -223,11 +223,14 @@ impl CodeEditor {
     /// of the document in a way they cannot describe pass `None`, which is always
     /// correct and merely slower.
     pub(super) fn refresh_derived_state_after(&mut self, dirty: Option<(usize, usize, usize)>) {
+        // The line count may have changed under the fold list, so it is clamped and its
+        // merged visibility ranges are rebuilt here — the one place every document-shape
+        // change passes through. Fold state lives on the view, not the model.
+        self.normalize_folds();
         self.bump_layout_generation();
         {
-            let model = self.model.borrow();
             self.folded_lines.clear();
-            for region in &model.folds {
+            for region in &self.folds {
                 if region.folded {
                     self.folded_lines.push(region.start_line);
                 }

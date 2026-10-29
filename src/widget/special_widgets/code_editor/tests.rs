@@ -586,6 +586,23 @@ fn closing_an_inactive_tab_preserves_the_active_content() {
 }
 
 #[test]
+fn closing_an_earlier_tab_keeps_the_active_cursor_and_text() {
+    let mut editor = editor();
+    editor.set_text("A");
+    editor.open_buffer("B", "BB");
+    editor.open_buffer("C", "CCC");
+    editor.set_cursor(0, 2, false);
+
+    // The active buffer is C at index 2; removing A shifts it to index 1. Its own caret
+    // snapshot must move with it rather than being written into a neighbour's slot.
+    assert!(editor.close_buffer(0));
+    assert_eq!(editor.buffers().len(), 2);
+    assert_eq!(editor.active_buffer(), 1);
+    assert_eq!(editor.text(), "CCC");
+    assert_eq!(editor.cursor(), (0, 2));
+}
+
+#[test]
 fn untracked_switch_invalidates_cross_document_history() {
     let mut editor = editor();
     let a = editor.active_buffer();

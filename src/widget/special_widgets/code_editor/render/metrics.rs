@@ -305,8 +305,8 @@ impl CodeEditor {
             return None;
         }
         let map = self.coordinate_map();
-        let start_row = self.visual_row_of(start);
-        let end_row = self.visual_row_of(end);
+        let start_row = self.visual_row_of(start)?;
+        let end_row = self.visual_row_of(end)?;
         let top = map.row_y(start_row);
         // Both edges come from the same measured x the caret uses, so a selection
         // outline starts and ends exactly where the highlight and the cursor do.

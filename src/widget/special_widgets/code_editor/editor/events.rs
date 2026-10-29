@@ -19,6 +19,9 @@ impl EventHandler for CodeEditor {
         if !self.base.is_enabled() {
             return;
         }
+        // Another view may have changed the shared buffer list; re-home before the event is
+        // interpreted against this view's active index.
+        let _ = self.sync_with_document();
         // An attached line-number gutter receives line clicks through this poll before the
         // event's own meaning is applied, so a click on the gutter is a navigation request
         // rather than an edit (COMP-A8).

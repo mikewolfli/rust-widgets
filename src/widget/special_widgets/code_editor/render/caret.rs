@@ -39,20 +39,51 @@ impl CodeEditor {
 
     /// The visual row the caret is painted on, including its wrap segment.
     pub(crate) fn caret_visual_row(&self) -> usize {
-        self.visual_row_of(self.cursor.head)
+        self.visual_row_of(self.cursor.head).unwrap_or(0)
     }
 
-    /// The visual row a document position is painted on.
+    /// The visual row a document position is painted on, or `None` when the position is
+    /// outside the document.
     ///
     /// The line's first row, plus the position's wrap segment. It is the row the
     /// selection rectangle and the caret both need, and deriving it from the shared
     /// `unwrapped_x` keeps it consistent with the x those two get.
-    pub(crate) fn visual_row_of(&self, position: TextPosition) -> usize {
+    ///
+    /// # Cost
+    ///
+    /// The line's start row comes from the row-prefix table (an `O(1)` index) and the wrap
+    /// segment is measured from that line's text alone, so the lookup does **not** grow with
+    /// the number of document lines. That is what makes it usable on the cursor and per-frame
+    /// paths, unlike [`Self::visual_lines`], which materialises the whole document.
+    ///
+    /// A position inside a folded region reports the row of the next visible line, because a
+    /// folded line contributes no rows of its own. Only a line index past the end returns
+    /// `None`; an over-long column is clamped to the line end.
+    pub fn visual_row_of(&self, position: TextPosition) -> Option<usize> {
+        if position.line >= self.line_count() {
+            return None;
+        }
+        Some(self.visual_row_index(position))
+    }
+
+    /// The visual row containing byte `offset` in the joined document.
+    ///
+    /// The convenience form of [`Self::visual_row_of`] for a host that has a byte span (a
+    /// diagnostic or a source map entry) rather than a `TextPosition`. The offset is clamped
+    /// to the document through [`Self::position_of`], so the cost is the same `O(log lines)`
+    /// lookup plus one line measurement.
+    pub fn visual_line_at(&self, offset: usize) -> Option<usize> {
+        self.visual_row_of(self.position_of(offset))
+    }
+
+    /// The visual row of a position already known to be inside the document.
+    fn visual_row_index(&self, position: TextPosition) -> usize {
         let first = self.line_to_visual_row(position.line);
         if !self.config.word_wrap {
             return first;
         }
-        first + self.unwrapped_x(position.line, position.column).0
+        let column = position.column.min(self.line_len(position.line));
+        first + self.unwrapped_x(position.line, column).0
     }
 
     /// The gutter label for `line`, as an owned `String`.

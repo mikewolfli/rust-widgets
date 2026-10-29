@@ -235,7 +235,7 @@ fn a_custom_highlighter_must_be_send_and_sync() {
 
 /// The tab strip must not read the buffer contents.
 ///
-/// `all_buffers.clone()` copied every open buffer's full `text` on every frame;
+/// The old tab strip cloned every open buffer's full `text` on every frame;
 /// at a million lines that was 17 ms per frame — the largest single cost in the
 /// paint path, and invisible when each draw helper is profiled on its own. The
 /// dirty flag is likewise a maintained boolean rather than a string comparison.
