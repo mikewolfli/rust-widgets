@@ -512,7 +512,37 @@ impl PropertyGrid {
         self.group_revision = self.group_revision.wrapping_add(1);
         self.selected_index = None;
         self.scroll_offset = 0;
+        // The open editor, choice popup and delegate editor all name a row index; with no rows
+        // left there is nothing for them to point at.
+        self.editing = None;
+        self.choice_popup = None;
+        self.delegate_editor = None;
         self.base.request_redraw();
+    }
+
+    /// Removes the property at `index`, returning it when the index was valid.
+    ///
+    /// The selection is repaired rather than left dangling: clearing it when it named the removed
+    /// row (or is now past the end), and decrementing it when it named a row after the removal.
+    /// Any open edit state is cleared because it carries an index the removal just shifted.
+    pub fn remove_property(&mut self, index: usize) -> Option<PropertyItem> {
+        if index >= self.properties.len() {
+            return None;
+        }
+        let removed = self.properties.remove(index);
+        self.group_revision = self.group_revision.wrapping_add(1);
+        self.selected_index = match self.selected_index {
+            Some(selected) if selected == index => None,
+            Some(selected) if selected > index => Some(selected - 1),
+            other => other.filter(|&selected| selected < self.properties.len()),
+        };
+        self.hovered_row = None;
+        self.editing = None;
+        self.choice_popup = None;
+        self.delegate_editor = None;
+        self.scroll_offset = self.scroll_offset.min(self.max_scroll());
+        self.base.request_redraw();
+        Some(removed)
     }
 
     /// Returns the number of properties in the grid.
@@ -853,18 +883,16 @@ impl Widget for PropertyGrid {
     fn event_signal_dyn(&self, name: &str) -> Option<crate::signal::EventSignalRef> {
         use crate::signal::EventSignalRef;
         match name {
-            "category_toggled" | "on_category_toggled" => {
-                Some(EventSignalRef::mapped(
-                    "category_toggled",
-                    &self.on_category_toggled,
-                    |value| {
-                        CapabilityValue::Tuple(crate::compat::Vec::from([
-                            CapabilityValue::String(value.0.clone()),
-                            CapabilityValue::Bool(value.1),
-                        ]))
-                    },
-                ))
-            }
+            "category_toggled" | "on_category_toggled" => Some(EventSignalRef::mapped(
+                "category_toggled",
+                &self.on_category_toggled,
+                |value| {
+                    CapabilityValue::Tuple(crate::compat::Vec::from([
+                        CapabilityValue::String(value.0.clone()),
+                        CapabilityValue::Bool(value.1),
+                    ]))
+                },
+            )),
 
             "selected" => Some(EventSignalRef::mapped("selected", &self.selected, |v| {
                 CapabilityValue::UInt(*v as u64)

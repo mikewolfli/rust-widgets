@@ -517,6 +517,15 @@ impl PropertiesPanel {
         if removed {
             self.invalidate_grouping();
             self.invalidate_display();
+            // Every edit-state field below carries an entry index, which the removal just
+            // invalidated: the row it names either no longer exists or now holds a different
+            // property.
+            self.editing = None;
+            self.focused_entry = None;
+            self.choice_popup = None;
+            self.color_popup = None;
+            self.delegate_editor = None;
+            self.hovered_entry = None;
             self.base.request_redraw();
         }
         removed
@@ -527,6 +536,13 @@ impl PropertiesPanel {
         self.properties.clear();
         self.invalidate_grouping();
         self.invalidate_display();
+        // No index-carrying edit state can survive an emptied entry list.
+        self.editing = None;
+        self.focused_entry = None;
+        self.choice_popup = None;
+        self.color_popup = None;
+        self.delegate_editor = None;
+        self.hovered_entry = None;
         self.base.request_redraw();
     }
 

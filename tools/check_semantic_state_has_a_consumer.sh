@@ -23,10 +23,15 @@
 # The rule, stated structurally
 # -----------------------------
 # Read the kinds named in `preset_states.rs`'s `":error"` table, then require that for
-# each one a **single widget source file** carries both halves:
+# each one a **single widget module** carries both halves:
 #   1. a `fn semantic_state(&self)` implementation (so the control reports the meaning), and
 #   2. a `resolved_semantic_border("<kind>", ..)` call (so `draw` reads it).
-# A kind whose two halves never meet in one file is reported as unconsumed.
+# A kind whose two halves never meet in one module is reported as unconsumed.
+#
+# "Module" rather than "file": a control whose paint/events split put the read in `paint.rs`
+# and the report in `events.rs` still has one owner. The module root is the folder (`<dir>/mod.rs`
+# or the sibling `<dir>/<name>/` of `<dir>/<name>.rs`); a control that is still one file is its
+# own root, which is the stricter case this gate used to check only.
 #
 # What this gate does NOT prove
 # -----------------------------
@@ -92,6 +97,21 @@ echo "  found: $(printf '%s' "$declared" | tr '\n' ' ')"
 
 echo "[2/3] one control reports and reads each declared kind"
 
+# The module a file belongs to: its folder when that folder is a module root
+# (`<dir>/mod.rs`, or the sibling `<dir>/<name>/` of `<dir>/<name>.rs`), else the file itself.
+module_root() {
+    local file="$1" dir stem
+    dir="$(dirname "$file")"
+    stem="$(basename "$file" .rs)"
+    if [ -f "$dir/mod.rs" ]; then
+        printf '%s\n' "$dir"
+    elif [ -d "$dir/$stem" ]; then
+        printf '%s\n' "$dir/$stem"
+    else
+        printf '%s\n' "$file"
+    fi
+}
+
 missing_report=""
 while IFS= read -r kind; do
     [ -z "$kind" ] && continue
@@ -105,10 +125,19 @@ while IFS= read -r kind; do
     fi
 
     # ...at least one of which also reports the meaning (the trait default does not count).
+    # The reader and the report may sit in different files of one module folder: a split
+    # control keeps `resolved_semantic_border` in its paint file and `semantic_state` in its
+    # event/property file, and that is still one owner.
     met=false
     while IFS= read -r file; do
         [ -z "$file" ] && continue
-        if grep -qE 'fn semantic_state\(&self\)' "$file"; then
+        root="$(module_root "$file")"
+        if [ -d "$root" ]; then
+            if grep -qE 'fn semantic_state\(&self\)' "$root"/*.rs; then
+                met=true
+                break
+            fi
+        elif grep -qE 'fn semantic_state\(&self\)' "$root"; then
             met=true
             break
         fi

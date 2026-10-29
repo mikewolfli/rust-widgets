@@ -82,6 +82,13 @@ pub struct TextArea {
     pub(crate) first_visible_line: usize,
     /// Maximum text length (0 = unlimited).
     pub(crate) max_length: usize,
+    /// The uncommitted input-method composition, or `None` when no IME session is active.
+    ///
+    /// The preedit is held apart from `text` so an unfinished word never fires `changed` and a
+    /// cancel restores the value by construction. [`Self::commit_composition`] routes the accepted
+    /// string through the ordinary insertion path, so the length budget, undo and `changed` are
+    /// the same ones any other edit uses.
+    pub(crate) composition: Option<String>,
     /// Whether the widget is read-only.
     pub(crate) read_only: bool,
     /// Placeholder text when empty.
@@ -315,6 +322,7 @@ impl TextArea {
             dragging_selection: false,
             first_visible_line: 0,
             max_length: 0,
+            composition: None,
             read_only: false,
             placeholder: String::new(),
             focused: false,
@@ -1048,6 +1056,55 @@ impl TextArea {
         } else if previous != max {
             self.base.request_redraw();
         }
+    }
+
+    /// Starts or updates an input-method composition without changing the value.
+    ///
+    /// An empty preedit clears the composition without committing it, which is what an input
+    /// method sends when it withdraws.
+    pub fn set_composition(&mut self, preedit: &str) {
+        let next = if preedit.is_empty() { None } else { Some(preedit.to_string()) };
+        if self.composition == next {
+            return;
+        }
+        self.composition = next;
+        self.base.request_redraw();
+    }
+
+    /// The uncommitted composition, or `None` when no IME session is active.
+    pub fn composition(&self) -> Option<&str> {
+        self.composition.as_deref()
+    }
+
+    /// Whether an input-method composition is in progress.
+    pub fn has_composition(&self) -> bool {
+        self.composition.is_some()
+    }
+
+    /// Accepts the composition: the preedit becomes text through the ordinary insert path.
+    ///
+    /// Routing through [`Self::insert_str`] means the length budget, the selection replacement,
+    /// undo and `changed` behave exactly as they do for any other insertion. A commit with no
+    /// active composition is a no-op rather than an error.
+    pub fn commit_composition(&mut self) -> bool {
+        let Some(preedit) = self.composition.take() else {
+            return false;
+        };
+        self.insert_str(&preedit);
+        self.base.request_redraw();
+        true
+    }
+
+    /// Drops the composition without changing the value.
+    ///
+    /// Returns `true` when there was one. The text is untouched by construction, not by restoring
+    /// a snapshot: the composition was never written into it.
+    pub fn cancel_composition(&mut self) -> bool {
+        let had = self.composition.take().is_some();
+        if had {
+            self.base.request_redraw();
+        }
+        had
     }
 
     /// Returns whether the text area is read-only.

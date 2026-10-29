@@ -280,6 +280,10 @@ macro_rules! impl_properties_input {
             // echo mode cannot put a field into the one state that protects a credential.
             PropertySchema::enumerated("echo_mode", true, true, &["normal", "password", "no_echo"]),
             PropertySchema::new("cursor_position", PropertyValueKind::UInt, true, true),
+            // The selected range as the historical `"start,end"` pair, the spelling the crate-root
+            // `set_widget_selection` writes and `widget_selection` reads (API-03). It is a string
+            // rather than two properties so the two ends cannot drift apart.
+            PropertySchema::new("selection", PropertyValueKind::String, true, true),
             // The five non-value strings a text entry shows. `prefix`/`suffix` are in-field unit marks;
             // `helper`/`error`/`counter` share the support row below.
             PropertySchema::new("prefix", PropertyValueKind::String, true, true),
@@ -325,6 +329,9 @@ macro_rules! impl_properties_input {
             PropertySchema::new("placeholder_text", PropertyValueKind::String, true, true),
             PropertySchema::new("max_length", PropertyValueKind::UInt, true, true),
             PropertySchema::new("read_only", PropertyValueKind::Bool, true, true),
+            // The selected range as the `"start,end"` pair (API-03), sharing the spelling the
+            // crate-root selection accessors use.
+            PropertySchema::new("selection", PropertyValueKind::String, true, true),
             PropertySchema::new("line_wrap", PropertyValueKind::Bool, true, true),
             // Each line's horizontal alignment. Only the three horizontal tokens are accepted: the
             // document is laid out as rows down the interior, so a `top`/`bottom` write would be one
@@ -392,6 +399,8 @@ macro_rules! impl_properties_input {
             PropertySchema::new("text", PropertyValueKind::String, true, true),
             PropertySchema::new("placeholder", PropertyValueKind::String, true, true),
             PropertySchema::new("read_only", PropertyValueKind::Bool, true, true),
+            // The selected range as the `"start,end"` pair (API-03).
+            PropertySchema::new("selection", PropertyValueKind::String, true, true),
             // Enforced by `set_max_length`, but unpublished: a designer had no way to see or set
             // the control's byte budget. `0` means unlimited, as on `line_edit`.
             PropertySchema::new("max_length", PropertyValueKind::UInt, true, true),

@@ -12,7 +12,9 @@ use crate::core::{Point, Size};
 use crate::event::dnd::{DragPayload, DragSource, DropEffect, DropTarget};
 use crate::event::wheel::WheelScroll;
 use crate::event::{Event, EventHandler};
-use crate::widget::capability::coercion::{expect_bool, expect_string, expect_usize};
+use crate::widget::capability::coercion::{
+    expect_bool, expect_selection_range, expect_string, expect_usize,
+};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
@@ -320,6 +322,14 @@ impl WidgetProperties for TextArea {
             "placeholder" => Ok(CapabilityValue::String(self.placeholder().to_string())),
             "read_only" => Ok(CapabilityValue::Bool(self.is_read_only())),
             "max_length" => Ok(CapabilityValue::UInt(self.max_length() as u64)),
+            // The published selection pair is what `set_widget_selection` / `widget_selection`
+            // speak (API-03); `selection_range` is the single derivation every other reader uses.
+            "selection" => Ok(match self.selection_range() {
+                Some((start, end)) => {
+                    CapabilityValue::String(crate::compat::format!("{start},{end}"))
+                }
+                None => CapabilityValue::Null,
+            }),
             "soft_wrap" => Ok(CapabilityValue::Bool(self.soft_wrap())),
             "content_margin" => Ok(CapabilityValue::UInt(self.content_margin().max(0) as u64)),
             "max_block_count" => match self.max_block_count() {
@@ -349,6 +359,23 @@ impl WidgetProperties for TextArea {
                 self.set_max_length(expect_usize(value)?);
                 Ok(())
             }
+            "selection" => {
+                // `Null` is the getter's "nothing selected" answer and the schema default, so
+                // the write-back round trip accepts it by clearing the range (API-03).
+                if matches!(value, CapabilityValue::Null) {
+                    self.clear_selection();
+                    return Ok(());
+                }
+                let (start, end) = expect_selection_range(value)?;
+                let len = self.text.len();
+                let start = floor_char_boundary(&self.text, start.min(len));
+                let end = floor_char_boundary(&self.text, end.min(len));
+                self.selection_anchor = Some(start);
+                self.cursor_pos = end;
+                self.notify_caret_change();
+                self.base.request_redraw();
+                Ok(())
+            }
             "soft_wrap" => {
                 self.set_soft_wrap(expect_bool(value)?);
                 Ok(())
@@ -376,6 +403,7 @@ impl WidgetProperties for TextArea {
             "placeholder",
             "read_only",
             "max_length",
+            "selection",
             "soft_wrap",
             "content_margin",
             "max_block_count",
@@ -436,11 +464,30 @@ impl EventHandler for TextArea {
             // Platform-committed text (D09-INPUT-01), routed into the ordinary insert path. A
             // read-only area is rejected here, exactly as the `KeyPress` printable arm is, and the
             // `is_enabled` guard above already ran.
-            Event::TextInput { text } | Event::ImeCommit { text } => {
+            Event::TextInput { text } => {
                 if self.read_only {
                     return;
                 }
                 self.insert_committed_text(text);
+            }
+            // A commit ends the composition as well as inserting its text. Clearing the preedit
+            // first keeps the underlined preview from surviving the string it previewed: an input
+            // method may deliver the commit before its `preedit_end`, and the area would otherwise
+            // paint both the committed text and a stale composition.
+            Event::ImeCommit { text } => {
+                if self.read_only {
+                    return;
+                }
+                self.composition = None;
+                self.insert_committed_text(text);
+            }
+            // The uncommitted composition belongs to the area while the user is building it: the
+            // value does not change, but the inline preedit at the caret does.
+            Event::ImePreedit { text, .. } => {
+                if self.read_only {
+                    return;
+                }
+                self.set_composition(text);
             }
             // Wheel: a positive `delta.y` moves the content down, so the viewport moves toward
             // the start of the document. `WheelScroll` converts the notch count to lines with the
@@ -475,7 +522,12 @@ impl EventHandler for TextArea {
                     return;
                 }
                 if primary && *key == 90 {
-                    let _ = self.undo();
+                    // Primary+Z undoes; Primary+Shift+Z is the other conventional redo chord.
+                    if shift {
+                        let _ = self.redo();
+                    } else {
+                        let _ = self.undo();
+                    }
                     return;
                 }
                 if primary && *key == 89 {

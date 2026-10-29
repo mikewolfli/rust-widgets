@@ -1369,6 +1369,30 @@ pub(crate) fn view_for(id: ObjectId) -> Option<id> {
     table.get(&id).map(|ptr| *ptr as id)
 }
 
+/// Detaches and releases the mounted canvas view for `id`.
+///
+/// This is the destroy-side half of the mount/unmount pair (PF-X03), shared by
+/// `unmount_surface_impl` and `destroy_widget` so a surface destroyed without an explicit unmount
+/// still releases the side table's reference. Without it every such surface leaked one `NSView`
+/// and `view_for` kept resolving the stale view (INF-01).
+///
+/// Returns whether a view was mounted for `id`.
+pub(crate) fn detach_canvas_view(id: ObjectId) -> bool {
+    let view = crate::compat::lock(mounted_views()).remove(&id);
+    let Some(view) = view else {
+        return false;
+    };
+    // SAFETY: the side-table entry was removed just above, so the module's reference is the one
+    // being released. `removeFromSuperview` first drops the superview's reference (zero when the
+    // table's is the only other one), then the table's own reference is released — the same order
+    // `macos_objc2::native::remove_native_view` uses.
+    unsafe {
+        let _: () = msg_send![view as id, removeFromSuperview];
+        release_canvas_view(view as id);
+    }
+    true
+}
+
 impl MacOSPlatform {
     /// Creates the canvas view and adds it to the parent window's content view.
     pub(crate) fn mount_surface_impl(&self, parent: ObjectId, id: ObjectId, rect: Rect) -> bool {
@@ -1596,18 +1620,9 @@ impl MacOSPlatform {
             log::error!("[macos] unmount_surface: refused off the AppKit main thread");
             return false;
         }
-        let view = crate::compat::lock(mounted_views()).remove(&id);
-        let Some(view) = view else {
+        if !detach_canvas_view(id) {
             log::error!("[macos] unmount_surface: id={id} is not mounted");
             return false;
-        };
-        // SAFETY: the side-table entry was removed just above, so the module's reference is the
-        // one being released. `removeFromSuperview` first drops the superview's reference (zero
-        // when the table's is the only other one), then the table's own reference is released —
-        // the same order `macos_objc2::native::remove_native_view` uses.
-        unsafe {
-            let _: () = msg_send![view as id, removeFromSuperview];
-            release_canvas_view(view as id);
         }
         crate::compat::lock(&self.handles).remove(&id);
         self.state.destroy_widget(id);

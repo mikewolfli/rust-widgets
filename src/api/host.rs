@@ -696,7 +696,7 @@ pub fn apply_environment_appearance() -> bool {
 ///
 /// The `create_*` functions are the typo-safe spelling for the common widgets
 /// (`create_button`, `create_slider`, …). This function is the general form: hand
-/// Creates a widget of `kind`, painted by the library.
+/// it the same `WidgetKind` spelling the JSON loader and demo shell use.
 ///
 /// # What this does now
 ///

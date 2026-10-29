@@ -1203,7 +1203,11 @@ impl Menu {
             }
         }
         if changed {
-            self.base.request_redraw();
+            // `touch_items` (not just a redraw): the row boxes, popup metrics, mnemonic rows and
+            // trailing shortcut column are all keyed by `items_version`. A text or shortcut change
+            // that left the version alone kept every one of those caches answering from the old
+            // label, and the attached panel was not synced either (INF-02).
+            self.touch_items();
         }
     }
 

@@ -9,6 +9,7 @@ use crate::core::{Font, Rect};
 use crate::event::{Event, EventHandler};
 use crate::widget::capability::WidgetProperties;
 #[cfg(full_widgets)]
+#[cfg(full_widgets)]
 use crate::widget::companions::FindReplaceBar;
 use crate::widget::{Widget, WidgetKind};
 
@@ -291,10 +292,17 @@ fn max_length_bounds_typing_not_only_the_existing_value() {
     te.set_text("a string of any length at all");
     assert_eq!(te.text(), "a string of any length at all");
 
-    // Lowering the limit truncates the text already in the field, on a char boundary.
+    // Lowering the limit truncates the text already in the field, counting **characters** and
+    // cutting on a char boundary — the family-wide budget (TE-01/I-014), not bytes.
     let mut unicode = TextEdit::new(Rect::new(0, 0, 300, 200));
     unicode.set_text("你好世界");
     unicode.set_max_length(Some(7));
+    assert_eq!(
+        unicode.text(),
+        "你好世界",
+        "a character budget above the value's char count keeps it"
+    );
+    unicode.set_max_length(Some(2));
     assert_eq!(unicode.text(), "你好", "a multi-byte truncation lands on a boundary");
 }
 

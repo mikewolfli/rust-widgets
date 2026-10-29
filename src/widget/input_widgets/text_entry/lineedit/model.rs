@@ -868,7 +868,20 @@ impl LineEdit {
     /// compare a character budget against a byte length. Memoised per text revision, because
     /// `draw` and `semantic_state` both read it every frame (I-P13).
     pub(super) fn char_count(&self) -> usize {
-        self.value_readings().0
+        // Count-only path: `value_readings` returns the counter `String` by value, so calling it
+        // here would clone the counter on every limit check even though the caller only reads the
+        // count. The cached counter is still refreshed, so a later `counter_text` stays current.
+        if let Ok(mut cache) = self.value_readings.try_borrow_mut() {
+            if cache.revision != self.text_revision || cache.limit != self.max_length {
+                let count = self.text.chars().count();
+                cache.revision = self.text_revision;
+                cache.limit = self.max_length;
+                cache.count = count;
+                cache.counter = DecorationLayout::counter_text(count, self.max_length);
+            }
+            return cache.count;
+        }
+        self.text.chars().count()
     }
 
     /// The character count and usage counter text for the current value, memoised per revision.
@@ -1579,6 +1592,18 @@ impl LineEdit {
         // recomputed; snap it back onto a boundary inside whatever the field now holds.
         self.clamp_caret();
         self.ensure_caret_visible();
+    }
+
+    /// Inserts a single character at the caret, replacing any selection.
+    ///
+    /// Shares `TextArea`'s
+    /// [`insert_char`](crate::widget::input_widgets::textarea::TextArea::insert_char) name and goes
+    /// through [`Self::insert_str`], so the character budget, the mask/validator routing, the undo
+    /// snapshot and the caret advance are the same ones a pasted string uses. The glyph is
+    /// encoded into a stack buffer, so typing allocates no intermediate `String`.
+    pub fn insert_char(&mut self, ch: char) {
+        let mut glyph = [0u8; 4];
+        self.insert_str(ch.encode_utf8(&mut glyph));
     }
 
     /// Inserts text at the caret.

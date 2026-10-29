@@ -1,5 +1,5 @@
 //! The crate-root procedural control API: widget state, event queues, menus,
-//! chrome, drag/drop and IME.
+//! chrome and drag/drop.
 
 #[cfg(full_widgets)]
 use crate::app;
@@ -316,15 +316,11 @@ pub fn window_icon(widget_id: crate::core::ObjectId) -> Option<String> {
     platform::get_platform().window_icon(widget_id)
 }
 
-/// Set a text entry's selection range as `(start, end)` character offsets.
+/// Set a text entry's selection range as ordered `(start, end)` byte offsets.
 ///
-/// # Current support
-///
-/// No control publishes a selection range as a property (the text controls track
-/// it internally and expose `cursor_position`), so this reports `false` rather
-/// than pretending the range was applied. Routing it through the property
-/// contract means publishing the property on the text controls is the only change
-/// needed to make it work.
+/// The text controls (LineEdit, TextArea, TextEdit) publish a `selection` property carrying the
+/// pair as `"start,end"` (API-03), so this writes the same property their readers answer. The
+/// offsets are clamped and snapped to character boundaries by the control itself.
 #[cfg(not(alloc_frugal))]
 pub fn set_widget_selection(widget_id: crate::core::ObjectId, start: u32, end: u32) -> bool {
     let names: &[&str] = &["selection"];
@@ -364,12 +360,8 @@ pub fn widget_placeholder(widget_id: crate::core::ObjectId) -> Option<String> {
 
 /// Set a text entry's echo mode.
 ///
-/// # Current support
-///
-/// No control publishes an echo property yet, so this reports `false` on every
-/// widget rather than pretending the mode was applied. It is routed through the
-/// property contract — the place a control would express it — so that adding the
-/// property to the text controls is the only change needed to make it work.
+/// Written through the control's `echo_mode` property (the text controls publish it), the same
+/// path the handle's reader prefers (API-04).
 #[cfg(not(alloc_frugal))]
 pub fn set_widget_echo_mode(widget_id: crate::core::ObjectId, mode: platform::EchoMode) -> bool {
     let token = match mode {
@@ -619,40 +611,6 @@ pub fn wait_for_host_events(timeout: std::time::Duration) -> bool {
     platform::frame_wait::generation() != observed
 }
 
-/// Delivers every queued widget trigger, in order, until the queue is empty.
-///
-/// Returns the number of events consumed.
-///
-/// # Why this lives at the crate root rather than in `crate::app`
-///
-/// Every platform backend's event loop needs to call it — GTK's timeout, the Win32
-/// message pass, Wayland's idle step, Android's polling loop — and `crate::app` is gated
-/// `full_widgets` while the trigger queue is available to every profile. A backend that
-/// called `crate::app::drain_triggers` therefore compiled on `desktop` and failed on
-/// `mini` with `cannot find 'app' in 'crate'`, which is the same class of defect as a call
-/// into a gated `create_*`: one unpicked profile hides it completely
-/// (`tools/check_profiles.sh` runs the profile matrix; a `desktop` build never sees it).
-///
-/// The trigger queue is not a widget-set feature — it is how a backend reports "the user
-/// resized the window" — so the drain sits beside the queue it drains, at the widest gate
-/// its dependency has.
-///
-/// # Why it is defined in every profile, not gated
-///
-/// The queue exists in every profile except `alloc_frugal` (`mini`). Gating the function
-/// would mean gating each of the **eleven** backend call sites, and a gate that has to be
-/// repeated eleven times is a gate that will be forgotten in one of them — which is
-/// exactly how this function came to be missing from the crate root in the first place.
-/// Defining it unconditionally moves the condition to one place, and `alloc_frugal`
-/// answers `0` because there is genuinely nothing to drain there.
-///
-/// # Termination
-///
-/// Drains until the queue reports empty, so a tick's cost is bounded by the number of
-/// events that arrived since the last tick. A backend that produced events faster than it
-/// consumed them would starve its own loop, which is why the queue is drained to empty
-/// rather than to a fixed count: "drained" is the only state from which the next tick's
-/// backlog is knowable.
 /// Dispatches **every** queued trigger belonging to `widget_id`, and leaves other widgets' queued.
 ///
 /// # Why this exists next to [`drain_triggers`]
@@ -1292,36 +1250,7 @@ pub fn poll_drop_event() -> Option<DropEvent> {
     }
     event
 }
-/// Queues a drop event as if the user had performed it, for tests.
-///
-/// Returns `false` when the backend will not accept the injected event, in which
-/// case a later poll will not report it.
-#[cfg(not(alloc_frugal))]
-pub fn inject_drop_event(event: DropEvent) -> bool {
-    platform::get_platform().inject_drop_event(event)
-}
-// IME and Accessibility
-/// Enables or disables input-method (IME) input for a text-entry widget.
-///
-/// Returns `false` when the backend refuses — typically because the id is not a
-/// text-entry control, or because the platform has no IME support to switch.
-#[cfg(not(alloc_frugal))]
-pub fn set_widget_ime_enabled(widget_id: crate::core::ObjectId, enabled: bool) -> bool {
-    control_backend::get_control_backend().set_widget_ime_enabled(widget_id, enabled)
-}
-/// Whether input-method input is enabled for a widget.
-///
-/// Reports `false` both for "enabled is off" and for "this id is unknown or not
-/// a text control", so it cannot distinguish the two.
-#[cfg(not(alloc_frugal))]
-pub fn is_widget_ime_enabled(widget_id: crate::core::ObjectId) -> bool {
-    control_backend::get_control_backend().is_widget_ime_enabled(widget_id)
-}
-/// Returns the platform's IME bridge, if available.
-#[cfg(not(alloc_frugal))]
-pub fn platform_ime_bridge() -> Option<&'static dyn crate::platform::ime::ImeBridge> {
-    platform::get_platform().ime_bridge()
-}
+// Accessibility
 /// Sets the accessible name of a widget, as reported to assistive technology.
 ///
 /// This is the label a screen reader announces — distinct from the visible text,

@@ -191,7 +191,6 @@ pub mod data_binding;
 /// hand-written conjunction, per rule #47.
 #[cfg(designer_tooling)]
 pub mod designer;
-/// Embedded system optimizations and support.
 /// Unified error system (ErrorId, RwError, c_try!).
 pub mod error;
 /// Event types and dispatch helpers.
@@ -282,7 +281,6 @@ pub mod undo;
 /// Video module — container format detection, frame extraction, metadata, and playback.
 #[cfg(feature = "video")]
 pub mod video;
-/// Generic utility modules (asset watcher, helpers, etc.).
 /// Declarative-retained view layer: `state → Node → diff → Patch → retained tree`.
 ///
 /// The declarative half of the hybrid architecture. Additive: it consumes the existing
@@ -294,8 +292,6 @@ pub mod video;
 /// stripped-profile rule cannot drift apart (BLUE15 rule #57).
 #[cfg(declarative_view)]
 pub mod view;
-/// Web view and engine components.
-#[cfg(widgets_unstripped)]
 /// Optional WGPU GPU acceleration backend (gated behind `gpu-wgpu` feature).
 #[cfg(feature = "gpu-wgpu")]
 pub mod wgpu_backend;
@@ -346,29 +342,28 @@ pub use api::{
     create_spin_box, create_status_bar, create_tool_bar, create_widget_of_kind, create_window,
     dispatch_event, dispatch_pointer_event, dpi_scale_factor, drain_widget_triggers_for,
     drive_frame, format_shortcut, get_clipboard_text, get_platform, get_widget_accessibility_name,
-    get_widget_text, hide_widget, inject_drop_event, inject_menu_trigger,
-    inject_widget_trigger_event, invalidate_surface, invalidate_surface_rect, is_widget_checked,
-    is_widget_enabled, is_widget_ime_enabled, is_widget_indeterminate, is_widget_read_only,
-    is_widget_tristate, is_widget_visible, is_window_in_state, last_frame_stats, list_box_add_item,
-    list_box_clear_items, list_box_current_index, list_box_item_count, list_box_item_text,
-    list_box_remove_item, list_box_set_current_index, menu_add_item, menu_item_icons_supported,
-    menu_item_shortcut, mount_surface, notify_native_redraw, open_path, platform_clipboard,
-    platform_ime_bridge, platform_init, platform_quit, platform_run, poll_drop_event,
-    poll_menu_triggered, poll_widget_trigger_event, poll_widget_triggered, queue_resize_trigger,
-    reapply_active_theme, report_state, request_repaint_because, resize_surface,
-    restore_save_state, runtime, runtime_gui_mode, runtime_gui_mode_for, save_path,
-    schedule_on_main, select_directory, set_animation_suspended, set_clipboard_text,
-    set_slider_orientation, set_widget_accessibility_name, set_widget_checked,
+    get_widget_text, hide_widget, inject_menu_trigger, inject_widget_trigger_event,
+    invalidate_surface, invalidate_surface_rect, is_widget_checked, is_widget_enabled,
+    is_widget_indeterminate, is_widget_read_only, is_widget_tristate, is_widget_visible,
+    is_window_in_state, last_frame_stats, list_box_add_item, list_box_clear_items,
+    list_box_current_index, list_box_item_count, list_box_item_text, list_box_remove_item,
+    list_box_set_current_index, menu_add_item, menu_item_icons_supported, menu_item_shortcut,
+    mount_surface, notify_native_redraw, open_path, platform_clipboard, platform_init,
+    platform_quit, platform_run, poll_drop_event, poll_menu_triggered, poll_widget_trigger_event,
+    poll_widget_triggered, queue_resize_trigger, reapply_active_theme, report_state,
+    request_repaint_because, resize_surface, restore_save_state, runtime, runtime_gui_mode,
+    runtime_gui_mode_for, save_path, schedule_on_main, select_directory, set_animation_suspended,
+    set_clipboard_text, set_slider_orientation, set_widget_accessibility_name, set_widget_checked,
     set_widget_echo_mode, set_widget_enabled, set_widget_geometry, set_widget_group,
-    set_widget_ime_enabled, set_widget_indeterminate, set_widget_max_length,
-    set_widget_placeholder, set_widget_range, set_widget_read_only, set_widget_scroll_position,
-    set_widget_selected_index, set_widget_selection, set_widget_step, set_widget_text,
-    set_widget_tristate, set_widget_value, set_widget_visible, set_window_icon,
-    set_window_min_size, set_window_state, show_widget, slider_orientation, supports_surfaces,
-    take_pending_repaint, unmount_surface, wait_for_host_events, widget_echo_mode, widget_geometry,
-    widget_group, widget_max_length, widget_placeholder, widget_range, widget_scroll_position,
-    widget_selected_index, widget_selection, widget_step, widget_value, window_client_size,
-    window_icon, window_min_size, FrameOutcome, FrameStats, RepaintReason, StateFact,
+    set_widget_indeterminate, set_widget_max_length, set_widget_placeholder, set_widget_range,
+    set_widget_read_only, set_widget_scroll_position, set_widget_selected_index,
+    set_widget_selection, set_widget_step, set_widget_text, set_widget_tristate, set_widget_value,
+    set_widget_visible, set_window_icon, set_window_min_size, set_window_state, show_widget,
+    slider_orientation, supports_surfaces, take_pending_repaint, unmount_surface,
+    wait_for_host_events, widget_echo_mode, widget_geometry, widget_group, widget_max_length,
+    widget_placeholder, widget_range, widget_scroll_position, widget_selected_index,
+    widget_selection, widget_step, widget_value, window_client_size, window_icon, window_min_size,
+    FrameOutcome, FrameStats, RepaintReason, StateFact,
 };
 
 #[cfg(full_widgets)]

@@ -468,6 +468,7 @@ pub unsafe extern "C" fn rw_get_widget_geometry(
     c_try!({
         let geo = get_control_backend().get_widget_geometry(widget_id);
         if let Some((x, y, w, h)) = geo {
+            // SAFETY: every out pointer was null-checked individually and only non-null pointers are dereferenced for writing.
             unsafe {
                 if !x_out.is_null() {
                     *x_out = x;
@@ -923,6 +924,7 @@ pub unsafe extern "C" fn rw_begin_drag(
         let slice = if payload.is_null() || payload_len == 0 {
             &[]
         } else {
+            // SAFETY: the caller guarantees `payload` points to at least `payload_len` readable bytes; null or zero-length was short-circuited above.
             unsafe { core::slice::from_raw_parts(payload, payload_len as usize) }
         };
         get_control_backend().begin_drag(source, &c_str_or_default(mime_type), slice)
@@ -1334,6 +1336,7 @@ pub unsafe extern "C" fn rw_free_string(s: *mut c_char) {
         if s.is_null() {
             return;
         }
+        // SAFETY: `s` was produced by this module's `into_raw`, so returning it to `CString` balances the same allocation.
         unsafe {
             let _ = CString::from_raw(s);
         }

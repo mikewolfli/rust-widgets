@@ -79,6 +79,48 @@ pub(crate) fn widget_is_checkable(_widget_id: ObjectId) -> bool {
     false
 }
 
+/// Offers a write to the control's own property contract (API-02).
+///
+/// # Why the macro calls this first
+///
+/// `Platform`'s uniform property setters and the crate-root `set_widget_*` helpers used to be
+/// two independent write paths for the same fact: the crate root wrote the control's property,
+/// the platform wrote only [`BackendState`](crate::platform::state::BackendState). Writing one
+/// and reading the other therefore disagreed. Each setter now offers the value to the control
+/// first and keeps the state record as the read cache — and as the only answer for a backend
+/// that owns no widget object (a native control, or a state-tier id that was never mounted).
+///
+/// Returns whether a mounted control accepted the write.
+#[cfg(not(alloc_frugal))]
+pub(crate) fn write_control_property(
+    widget_id: ObjectId,
+    names: &[&str],
+    value: &crate::widget::capability::CapabilityValue,
+) -> bool {
+    crate::widget::capability::widget_access::write_first(widget_id, names, value)
+}
+
+/// [`write_control_property`] for a numeric value, negotiating the control's own integer/float
+/// representation (see `widget_access::write_number`).
+#[cfg(not(alloc_frugal))]
+pub(crate) fn write_control_number(widget_id: ObjectId, names: &[&str], value: f64) -> bool {
+    crate::widget::capability::widget_access::write_number(widget_id, names, value)
+}
+
+/// The published spelling of an [`EchoMode`](crate::platform::EchoMode).
+///
+/// The property contract carries tokens, not Rust variants. The handle layer and the text
+/// controls keep their own exhaustive copy of this mapping; a mode added to the enum fails to
+/// compile at each of them rather than silently losing its token.
+#[cfg(not(alloc_frugal))]
+pub(crate) fn echo_mode_token(mode: crate::platform::EchoMode) -> &'static str {
+    match mode {
+        crate::platform::EchoMode::Normal => "normal",
+        crate::platform::EchoMode::Password => "password",
+        crate::platform::EchoMode::NoEcho => "no_echo",
+    }
+}
+
 /// Implements the uniform widget-property `Platform` methods over `self.state`.
 ///
 /// Expands to method definitions that belong inside an existing
@@ -116,7 +158,18 @@ macro_rules! impl_platform_state_properties {
         fn set_widget_text(&self, widget_id: $crate::core::ObjectId, text: &str) -> bool {
             // `BackendState::set_text` reports whether the id exists; the trait now has the channel
             // to return that answer instead of dropping it, so an unknown id is observable rather
-            // than a silent no-op (P-203).
+            // than a silent no-op (P-203). The control's property is written first (API-02).
+            #[cfg(not(alloc_frugal))]
+            if $crate::platform::state_impl::write_control_property(
+                widget_id,
+                &["text"],
+                &$crate::widget::capability::CapabilityValue::String($crate::compat::String::from(
+                    text,
+                )),
+            ) {
+                let _ = self.state.set_text(widget_id, text);
+                return true;
+            }
             self.state.set_text(widget_id, text)
         }
 
@@ -136,6 +189,14 @@ macro_rules! impl_platform_state_properties {
         }
 
         fn set_widget_enabled(&self, widget_id: $crate::core::ObjectId, enabled: bool) {
+            // The control's `enabled` property is the live state; the record below is its cache
+            // (API-02). This setter keeps its historical `()` return.
+            #[cfg(not(alloc_frugal))]
+            let _ = $crate::platform::state_impl::write_control_property(
+                widget_id,
+                &["enabled"],
+                &$crate::widget::capability::CapabilityValue::Bool(enabled),
+            );
             self.state.set_enabled(widget_id, enabled);
         }
 
@@ -144,6 +205,15 @@ macro_rules! impl_platform_state_properties {
         }
 
         fn set_widget_visible(&self, widget_id: $crate::core::ObjectId, visible: bool) -> bool {
+            #[cfg(not(alloc_frugal))]
+            if $crate::platform::state_impl::write_control_property(
+                widget_id,
+                &["visible"],
+                &$crate::widget::capability::CapabilityValue::Bool(visible),
+            ) {
+                let _ = self.state.set_visible(widget_id, visible);
+                return true;
+            }
             self.state.set_visible(widget_id, visible)
         }
 
@@ -185,6 +255,11 @@ macro_rules! impl_platform_state_properties {
         // accepts a value, a button does not — without a global classification table here.
 
         fn set_widget_value(&self, widget_id: $crate::core::ObjectId, value: f64) -> bool {
+            #[cfg(not(alloc_frugal))]
+            if $crate::platform::state_impl::write_control_number(widget_id, &["value"], value) {
+                let _ = self.state.set_value(widget_id, value);
+                return true;
+            }
             if !self.state.contains_widget(widget_id) {
                 return false;
             }
@@ -196,6 +271,19 @@ macro_rules! impl_platform_state_properties {
         }
 
         fn set_widget_range(&self, widget_id: $crate::core::ObjectId, min: f64, max: f64) -> bool {
+            #[cfg(not(alloc_frugal))]
+            if $crate::platform::state_impl::write_control_number(
+                widget_id,
+                &["minimum", "min", "min_value"],
+                min,
+            ) && $crate::platform::state_impl::write_control_number(
+                widget_id,
+                &["maximum", "max", "max_value"],
+                max,
+            ) {
+                let _ = self.state.set_range(widget_id, min, max);
+                return true;
+            }
             if !self.state.contains_widget(widget_id) {
                 return false;
             }
@@ -207,6 +295,15 @@ macro_rules! impl_platform_state_properties {
         }
 
         fn set_widget_step(&self, widget_id: $crate::core::ObjectId, step: f64) -> bool {
+            #[cfg(not(alloc_frugal))]
+            if $crate::platform::state_impl::write_control_number(
+                widget_id,
+                &["single_step", "step"],
+                step,
+            ) {
+                let _ = self.state.set_step(widget_id, step);
+                return true;
+            }
             if !self.state.contains_widget(widget_id) {
                 return false;
             }
@@ -224,6 +321,23 @@ macro_rules! impl_platform_state_properties {
             widget_id: $crate::core::ObjectId,
             index: Option<usize>,
         ) -> bool {
+            #[cfg(not(alloc_frugal))]
+            {
+                let value = match index {
+                    Some(index) => {
+                        $crate::widget::capability::CapabilityValue::UInt(index as u64)
+                    }
+                    None => $crate::widget::capability::CapabilityValue::Null,
+                };
+                if $crate::platform::state_impl::write_control_property(
+                    widget_id,
+                    &["selected_index", "current_index", "current_row", "active_index"],
+                    &value,
+                ) {
+                    let _ = self.state.set_selected_index(widget_id, index);
+                    return true;
+                }
+            }
             if !self.state.contains_widget(widget_id) {
                 return false;
             }
@@ -240,6 +354,17 @@ macro_rules! impl_platform_state_properties {
             start: u32,
             end: u32,
         ) -> bool {
+            #[cfg(not(alloc_frugal))]
+            if $crate::platform::state_impl::write_control_property(
+                widget_id,
+                &["selection"],
+                &$crate::widget::capability::CapabilityValue::String(
+                    $crate::compat::format!("{start},{end}"),
+                ),
+            ) {
+                let _ = self.state.set_selection(widget_id, start, end);
+                return true;
+            }
             self.state.set_selection(widget_id, start, end)
         }
 
@@ -250,6 +375,15 @@ macro_rules! impl_platform_state_properties {
         // ── Checkable controls ──────────────────────────────────────────────────
 
         fn set_widget_checked(&self, widget_id: $crate::core::ObjectId, checked: bool) -> bool {
+            #[cfg(not(alloc_frugal))]
+            if $crate::platform::state_impl::write_control_property(
+                widget_id,
+                &["checked"],
+                &$crate::widget::capability::CapabilityValue::Bool(checked),
+            ) {
+                let _ = self.state.set_checked(widget_id, checked);
+                return true;
+            }
             if !self.state.contains_widget(widget_id) {
                 return false;
             }
@@ -271,6 +405,15 @@ macro_rules! impl_platform_state_properties {
         /// carry tri-state and the request is refused without reaching for a module that is
         /// not compiled in.
         fn set_widget_tristate(&self, widget_id: $crate::core::ObjectId, enabled: bool) -> bool {
+            #[cfg(not(alloc_frugal))]
+            if $crate::platform::state_impl::write_control_property(
+                widget_id,
+                &["tristate_enabled"],
+                &$crate::widget::capability::CapabilityValue::Bool(enabled),
+            ) {
+                let _ = self.state.set_tristate(widget_id, enabled);
+                return true;
+            }
             if !self.state.contains_widget(widget_id) {
                 return false;
             }
@@ -293,6 +436,24 @@ macro_rules! impl_platform_state_properties {
 
         /// Puts a radio button into a named mutually-exclusive group.
         fn set_widget_group(&self, widget_id: $crate::core::ObjectId, group: &str) -> bool {
+            #[cfg(not(alloc_frugal))]
+            {
+                let value = if group.is_empty() {
+                    $crate::widget::capability::CapabilityValue::Null
+                } else {
+                    $crate::widget::capability::CapabilityValue::String(
+                        $crate::compat::String::from(group),
+                    )
+                };
+                if $crate::platform::state_impl::write_control_property(
+                    widget_id,
+                    &["group_id", "group"],
+                    &value,
+                ) {
+                    let _ = self.state.set_group(widget_id, group);
+                    return true;
+                }
+            }
             if !self.state.contains_widget(widget_id) {
                 return false;
             }
@@ -309,6 +470,17 @@ macro_rules! impl_platform_state_properties {
         // ── Text-entry presentation ─────────────────────────────────────────────
 
         fn set_widget_placeholder(&self, widget_id: $crate::core::ObjectId, text: &str) -> bool {
+            #[cfg(not(alloc_frugal))]
+            if $crate::platform::state_impl::write_control_property(
+                widget_id,
+                &["placeholder_text", "placeholder"],
+                &$crate::widget::capability::CapabilityValue::String($crate::compat::String::from(
+                    text,
+                )),
+            ) {
+                let _ = self.state.set_placeholder(widget_id, text);
+                return true;
+            }
             self.state.set_placeholder(widget_id, text)
         }
 
@@ -324,6 +496,16 @@ macro_rules! impl_platform_state_properties {
             widget_id: $crate::core::ObjectId,
             mode: $crate::platform::EchoMode,
         ) -> bool {
+            #[cfg(not(alloc_frugal))]
+            if $crate::platform::state_impl::write_control_property(
+                widget_id,
+                &["echo_mode"],
+                &$crate::widget::capability::CapabilityValue::String($crate::compat::String::from(
+                    $crate::platform::state_impl::echo_mode_token(mode),
+                )),
+            ) {
+                return self.state.set_echo_mode(widget_id, mode);
+            }
             self.state.set_echo_mode(widget_id, mode)
         }
 
@@ -335,6 +517,15 @@ macro_rules! impl_platform_state_properties {
         }
 
         fn set_widget_read_only(&self, widget_id: $crate::core::ObjectId, read_only: bool) -> bool {
+            #[cfg(not(alloc_frugal))]
+            if $crate::platform::state_impl::write_control_property(
+                widget_id,
+                &["read_only"],
+                &$crate::widget::capability::CapabilityValue::Bool(read_only),
+            ) {
+                let _ = self.state.set_read_only(widget_id, read_only);
+                return true;
+            }
             if !self.state.contains_widget(widget_id) {
                 return false;
             }
@@ -350,6 +541,15 @@ macro_rules! impl_platform_state_properties {
             widget_id: $crate::core::ObjectId,
             max_length: u32,
         ) -> bool {
+            #[cfg(not(alloc_frugal))]
+            if $crate::platform::state_impl::write_control_property(
+                widget_id,
+                &["max_length"],
+                &$crate::widget::capability::CapabilityValue::UInt(u64::from(max_length)),
+            ) {
+                let _ = self.state.set_max_length(widget_id, max_length);
+                return true;
+            }
             if !self.state.contains_widget(widget_id) {
                 return false;
             }
@@ -367,6 +567,15 @@ macro_rules! impl_platform_state_properties {
             widget_id: $crate::core::ObjectId,
             indeterminate: bool,
         ) -> bool {
+            #[cfg(not(alloc_frugal))]
+            if $crate::platform::state_impl::write_control_property(
+                widget_id,
+                &["indeterminate"],
+                &$crate::widget::capability::CapabilityValue::Bool(indeterminate),
+            ) {
+                let _ = self.state.set_indeterminate(widget_id, indeterminate);
+                return true;
+            }
             if !self.state.contains_widget(widget_id) {
                 return false;
             }
@@ -382,6 +591,17 @@ macro_rules! impl_platform_state_properties {
             widget_id: $crate::core::ObjectId,
             orientation: $crate::core::Orientation,
         ) -> bool {
+            #[cfg(not(alloc_frugal))]
+            if $crate::platform::state_impl::write_control_property(
+                widget_id,
+                &["orientation"],
+                &$crate::widget::capability::CapabilityValue::String($crate::compat::String::from(
+                    $crate::widget::capability::orientation_to_str(orientation),
+                )),
+            ) {
+                let _ = self.state.set_orientation(widget_id, orientation);
+                return true;
+            }
             if !self.state.contains_widget(widget_id) {
                 return false;
             }
@@ -401,6 +621,19 @@ macro_rules! impl_platform_state_properties {
             x: i32,
             y: i32,
         ) -> bool {
+            #[cfg(not(alloc_frugal))]
+            if $crate::platform::state_impl::write_control_number(
+                widget_id,
+                &["scroll_position_x"],
+                f64::from(x),
+            ) && $crate::platform::state_impl::write_control_number(
+                widget_id,
+                &["scroll_position_y"],
+                f64::from(y),
+            ) {
+                let _ = self.state.set_scroll(widget_id, x, y);
+                return true;
+            }
             if !self.state.contains_widget(widget_id) {
                 return false;
             }

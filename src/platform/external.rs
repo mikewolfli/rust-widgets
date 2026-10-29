@@ -136,7 +136,7 @@ pub(crate) fn spawn_handler(
     // zombie until this process exits. A one-shot reaper thread collects it instead,
     // keeping this call (and the UI thread that made it) non-blocking.
     let (reaper_tx, reaper_rx) = std::sync::mpsc::channel::<std::process::Child>();
-    match std::thread::Builder::new().name("rw-open-reap".to_owned()).spawn(move || {
+    match std::thread::Builder::new().name(alloc::string::String::from("rw-open-reap")).spawn(move || {
         if let Ok(mut child) = reaper_rx.recv() {
             let _ = child.wait();
         }

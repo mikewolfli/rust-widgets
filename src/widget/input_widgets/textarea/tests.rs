@@ -8,11 +8,12 @@
 
 use super::model::*;
 use super::paint::{PendingEdit, FIRST_LINE_INSET, LINE_H};
-use crate::compat::{Rc, RefCell};
+use crate::compat::{Rc, RefCell, String, ToString, Vec};
 use crate::core::{Font, Point, Rect, Size};
 use crate::event::{Event, EventHandler, FocusReason};
 use crate::widget::capability::types::CapabilityValue;
 use crate::widget::capability::WidgetProperties;
+#[cfg(full_widgets)]
 use crate::widget::companions::FindReplaceBar;
 use crate::widget::metrics::dimensions;
 use crate::widget::{Draw, Widget};

@@ -3,7 +3,7 @@
 
 # Why this exists
 
-`src/platform/types.rs` declares a `create_*` per control shape the platform trait knows.
+`src/platform/types/traits.rs` declares a `create_*` per control shape the platform trait knows.
 The capability registry is smaller, because several platform entries name a *type alias*
 (`ContextMenu` is `Menu`, `DoubleSpinBox` is `SpinBox`) rather than a distinct control.
 

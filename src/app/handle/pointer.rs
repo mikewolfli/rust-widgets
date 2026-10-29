@@ -703,11 +703,17 @@ impl RadioButtonHandle {
                 }
                 siblings
             });
-            // Clear the native state outside the borrow above so a backend
-            // callback cannot re-enter the map while it is borrowed.
-            let platform = crate::platform::get_platform();
+            // Write each sibling's `checked` through its own property contract, exactly as this
+            // button's own selection was written above. `Platform::set_widget_checked` only
+            // touched the in-process mirror, so the crate-root reader (`is_widget_checked`,
+            // property-backed) and this handle's mirror reader disagreed about the same control
+            // (API-01). The mirror update above is kept as the handle's own read cache.
             for id in siblings {
-                platform.set_widget_checked(id, false);
+                write_control_property(
+                    id,
+                    "checked",
+                    crate::widget::capability::CapabilityValue::Bool(false),
+                );
             }
         }
     }

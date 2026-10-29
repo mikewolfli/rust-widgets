@@ -5,12 +5,12 @@
 
 use super::model::*;
 
-use crate::compat::{Box, String, ToString};
+use crate::compat::{Box, String, ToString, Vec};
 use crate::platform::EchoMode;
 
 use crate::property_names_of;
 use crate::widget::capability::coercion::{
-    expect_bool, expect_horizontal_alignment, expect_string, expect_usize,
+    expect_bool, expect_horizontal_alignment, expect_selection_range, expect_string, expect_usize,
     horizontal_alignment_to_str,
 };
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
@@ -390,6 +390,12 @@ impl WidgetProperties for LineEdit {
                 None => Ok(CapabilityValue::Null),
             },
             "read_only" => Ok(CapabilityValue::Bool(self.is_read_only())),
+            "selection" => Ok(match self.selection_range() {
+                Some((start, end)) => {
+                    CapabilityValue::String(crate::compat::format!("{start},{end}"))
+                }
+                None => CapabilityValue::Null,
+            }),
             "cursor_position" => Ok(CapabilityValue::UInt(self.cursor_position() as u64)),
             "echo_mode" => {
                 Ok(CapabilityValue::String(Self::echo_mode_token(self.echo_mode()).to_string()))
@@ -476,6 +482,21 @@ impl WidgetProperties for LineEdit {
                 self.set_cursor_position(expect_usize(value)?);
                 Ok(())
             }
+            "selection" => {
+                // The published pair is ordered `(start, end)` byte offsets; `set_selection`
+                // takes `(start, length)`, so the span is derived here rather than at every
+                // call site (API-03). An inverted pair is treated as its normalised span, and
+                // `Null` is the getter's "nothing selected" answer, so it clears the range.
+                match value {
+                    CapabilityValue::Null => self.clear_selection(),
+                    other => {
+                        let (start, end) = expect_selection_range(other)?;
+                        let end = end.max(start);
+                        self.set_selection(start, end.saturating_sub(start));
+                    }
+                }
+                Ok(())
+            }
             "alignment" => {
                 self.set_alignment(expect_horizontal_alignment(value)?);
                 Ok(())
@@ -517,6 +538,7 @@ impl WidgetProperties for LineEdit {
             "max_length",
             "read_only",
             "echo_mode",
+            "selection",
             "cursor_position",
             "prefix",
             "suffix",
@@ -602,16 +624,38 @@ impl LineEdit {
         self.completion_source = candidates;
     }
 
+    /// The whitespace-delimited word at the caret, as a byte range.
+    ///
+    /// Completion anchors on what the user is typing, which is the word ending at the caret, not
+    /// the trailing word of the whole value: with the caret moved back into the text (or with text
+    /// after it) the two differ, and completing the trailing word would rewrite a place the user
+    /// is not editing. Both [`Self::completion_candidates`] and [`Self::accept_completion`] read
+    /// this one range so the list and the replacement cannot disagree.
+    fn completion_word_range(&self) -> (usize, usize) {
+        let end = crate::widget::text_utils::floor_char_boundary(
+            &self.text,
+            self.cursor_position.min(self.text.len()),
+        );
+        let start = self.text[..end]
+            .char_indices()
+            .rev()
+            .find(|(_, ch)| ch.is_whitespace())
+            .map_or(0, |(index, ch)| index + ch.len_utf8());
+        (start, end)
+    }
+
     /// The candidates matching the word at the caret, in source order.
     ///
-    /// The match is a case-insensitive prefix test against the text after the last whitespace —
-    /// the completion unit every editable control in this family uses. An empty completer, or an
-    /// empty word with no candidates starting empty, yields an empty list.
+    /// The match is a case-insensitive prefix test against the whitespace-delimited word at the
+    /// caret. Each control in the text family defines its own completion unit (see
+    /// `auto_complete_edit`), so this is this field's rule rather than a shared one. An empty
+    /// completer, or an empty word with no candidates starting empty, yields an empty list.
     pub fn completion_candidates(&self) -> Vec<String> {
         if self.completion_source.is_empty() {
             return Vec::new();
         }
-        let word = self.text.rsplit(|ch: char| ch.is_whitespace()).next().unwrap_or("");
+        let (start, end) = self.completion_word_range();
+        let word = &self.text[start..end];
         if word.is_empty() {
             return Vec::new();
         }
@@ -625,21 +669,25 @@ impl LineEdit {
     }
 
     /// Replaces the word at the caret with `candidate`, as one undoable edit.
+    ///
+    /// The replaced range is the same caret-anchored word [`Self::completion_candidates`] matched,
+    /// so text after the caret is preserved and the caret lands immediately after the accepted
+    /// candidate rather than at the end of the value.
     pub fn accept_completion(&mut self, candidate: &str) -> bool {
         if self.read_only || candidate.is_empty() {
             return false;
         }
-        let word = self.text.rsplit(|ch: char| ch.is_whitespace()).next().unwrap_or("");
-        let start = self.text.len().saturating_sub(word.len());
-        if word == candidate {
+        let (start, end) = self.completion_word_range();
+        if &self.text[start..end] == candidate {
             return false;
         }
         let before = self.needs_full_before_image().then(|| self.text.clone());
-        let removed = self.text[start..].to_string();
-        self.text.replace_range(start.., candidate);
-        self.cursor_position = self.text.len();
-        self.selection_start = None;
+        let removed = self.text[start..end].to_string();
+        self.text.replace_range(start..end, candidate);
         self.commit_splice(start, &removed, candidate, before, EditOrigin::User);
+        // `commit_splice` publishes the mutation and moves the caret to the end of the value; a
+        // completion must leave it immediately after the accepted word, wherever the word was.
+        self.set_cursor_position(start + candidate.len());
         self.modified = true;
         true
     }

@@ -7,7 +7,9 @@ use super::*;
 // each keeps its own `use super::*` and therefore sees the board's imports through this file.
 
 #[cfg(test)]
-mod tests {
+// Named `cases`, not `tests`: this file is already the `tests` module, and a nested module of
+// the same name trips clippy::module_inception.
+mod cases {
     use super::*;
     use crate::render::{PaintBackend, SoftwarePaintBackend};
     // The activation tests observe delivery through a shared sink, so they need the

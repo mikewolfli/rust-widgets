@@ -50,12 +50,10 @@ thread_local! {
 impl LineEditHandle {
     /// Set the placeholder text shown when the field is empty.
     ///
-    /// Written to the control through its property contract, and recorded in the
-    /// in-process mirror as well
-    /// through [`crate::platform::Platform::set_widget_placeholder`] (`EM_SETCUEBANNER` on
-    /// Windows, `set_placeholder_text` on GTK). AppKit's `NSTextView` has no
-    /// placeholder concept, so on macOS the platform call reports `false` and only
-    /// the mirror changes — a genuine per-OS difference, not a dropped write.
+    /// Written through the control's `placeholder_text` property contract (the single live
+    /// write path); the in-process mirror is updated as well and serves as this handle's read
+    /// cache. There is no separate native write-through call — a control that does not publish
+    /// the property refuses it, and only the mirror then records the request.
     pub fn set_placeholder(&self, text: &str) {
         LINE_EDIT_STATES.with(|map| {
             map.borrow_mut().entry(self.raw_id()).or_insert_with(Default::default).placeholder =
@@ -70,12 +68,9 @@ impl LineEditHandle {
 
     /// Set whether the line-edit is read-only.
     ///
-    /// Written to the control through its property contract, and recorded in the
-    /// in-process mirror as well
-    /// through [`crate::platform::Platform::set_widget_read_only`], so the native field
-    /// actually stops accepting input. On a backend whose text control is not an
-    /// entry, the platform call reports `false` and only the mirror changes —
-    /// that is a legitimate per-OS difference, not a dropped write.
+    /// Written through the control's `read_only` property contract, so the control itself stops
+    /// accepting input; the in-process mirror is updated as the handle's read cache. No separate
+    /// native write-through is performed — the library paints and owns every control.
     pub fn set_read_only(&self, read_only: bool) {
         LINE_EDIT_STATES.with(|map| {
             map.borrow_mut().entry(self.raw_id()).or_insert_with(Default::default).read_only =
@@ -90,12 +85,9 @@ impl LineEditHandle {
 
     /// Set the maximum number of characters allowed.
     ///
-    /// Written to the control through its property contract, and recorded in the
-    /// in-process mirror as well
-    /// through [`crate::platform::Platform::set_widget_max_length`]. Not every OS text
-    /// control has a settable limit (AppKit's `NSTextField` does not), so the
-    /// platform call may report `false`; the mirror still updates for the
-    /// self-drawn path and for callers that enforce the limit themselves.
+    /// Written through the control's `max_length` property contract; the in-process mirror is
+    /// updated as the handle's read cache. A control that does not publish the property refuses
+    /// the write rather than accepting it into a store nothing reads.
     pub fn set_max_length(&self, len: u32) {
         LINE_EDIT_STATES.with(|map| {
             map.borrow_mut().entry(self.raw_id()).or_insert_with(Default::default).max_length = len;
@@ -114,12 +106,9 @@ impl LineEditHandle {
 
     /// Set the echo mode (Normal / Password / NoEcho).
     ///
-    /// Written to the control through its property contract, and recorded in the
-    /// in-process mirror as well
-    /// through [`crate::platform::Platform::set_widget_echo_mode`] (`EM_SETPASSWORDCHAR` on
-    /// Windows, `set_visibility` on GTK). AppKit picks the text class instead, so
-    /// macOS reports `false` here; and `NoEcho` has no equivalent on any toolkit,
-    /// so it is refused rather than silently treated as `Password`.
+    /// Written through the control's `echo_mode` property contract; the in-process mirror is
+    /// updated as the handle's read cache. The read path ([`Self::echo_mode`]) prefers the same
+    /// property, so a mode written through the crate-root API is observed here too (API-04).
     pub fn set_echo_mode(&self, mode: EchoMode) {
         LINE_EDIT_STATES.with(|map| {
             map.borrow_mut().entry(self.raw_id()).or_insert_with(Default::default).echo_mode = mode;
@@ -151,7 +140,17 @@ impl LineEditHandle {
     }
 
     /// Return the current echo mode.
+    ///
+    /// Reads the control's `echo_mode` property first (the single source of truth) and falls
+    /// back to the in-process mirror for an id that is not a mounted widget.
     pub fn echo_mode(&self) -> EchoMode {
+        if let Some(crate::widget::capability::CapabilityValue::String(token)) =
+            read_control_property(self.raw_id(), "echo_mode")
+        {
+            if let Some(mode) = echo_mode_from_token(&token) {
+                return mode;
+            }
+        }
         LINE_EDIT_STATES.with(|map| {
             map.borrow().get(&self.raw_id()).map(|s| s.echo_mode).unwrap_or(EchoMode::Normal)
         })
@@ -178,10 +177,8 @@ impl LineEditHandle {
 
     /// Select all text in the line-edit.
     ///
-    /// Written through the control's `cursor_position` property as the end of the value, so the
-    /// control's caret matches what the mirror reports. The contract names the caret and not an
-    /// anchor pair, so there is no property that selects *and* keeps an anchor: the caret lands at
-    /// the end rather than a range being highlighted.
+    /// Written through the control's `selection` property as the whole range, so the control and
+    /// the mirror agree and `cursor_position` stays a pure caret query (API-03).
     pub fn select_all(&self) {
         LINE_EDIT_STATES.with(|map| {
             let mut map = map.borrow_mut();
@@ -190,20 +187,22 @@ impl LineEditHandle {
             state.selection_start = 0;
             state.selection_end = u32::MAX;
         });
-        // u32::MAX is the crate's "to the end" sentinel; Win32 and GTK both clamp
-        // it, and macOS clamps the NSRange itself.
+        // u32::MAX is the crate's "to the end" sentinel; the control clamps it to its length.
         write_control_property(
             self.raw_id(),
-            "cursor_position",
-            crate::widget::capability::CapabilityValue::UInt(u64::from(u32::MAX)),
+            "selection",
+            crate::widget::capability::CapabilityValue::String(crate::compat::format!(
+                "0,{}",
+                u32::MAX
+            )),
         );
     }
 
     /// Set the selection range (start..end).
     ///
-    /// Written to the control through its property contract, and recorded in the
-    /// in-process mirror as well
-    /// through [`crate::platform::Platform::set_widget_selection`].
+    /// Written through the control's `selection` property — the same spelling the crate-root
+    /// `set_widget_selection` uses (API-03) — and recorded in the in-process mirror as the
+    /// handle's read cache. The caret is no longer used to carry the range, so both ends survive.
     pub fn set_selection(&self, start: u32, end: u32) {
         LINE_EDIT_STATES.with(|map| {
             let mut map = map.borrow_mut();
@@ -214,8 +213,10 @@ impl LineEditHandle {
         });
         write_control_property(
             self.raw_id(),
-            "cursor_position",
-            crate::widget::capability::CapabilityValue::UInt(u64::from(end.max(start))),
+            "selection",
+            crate::widget::capability::CapabilityValue::String(crate::compat::format!(
+                "{start},{end}"
+            )),
         );
     }
 }

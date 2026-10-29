@@ -685,6 +685,12 @@ impl MenuBar {
         };
         let viewport = Self::popup_viewport(bar, display_area);
         menu.open_at(anchor, viewport);
+        // The open drop-down must own outside presses (INF-03). Every other popup host in this
+        // family (menu_button, tool_button, dropdown, combobox, cascader) takes a grab here;
+        // without it the runtime routed an outside press to the control behind the menu, which
+        // both fired that control and left this menu open.
+        #[cfg(not(alloc_frugal))]
+        crate::widget::runtime::set_popup_grab(self.id());
         self.open_menu_index = Some(index);
         self.active_index = Some(index);
         self.base.request_redraw();
@@ -697,6 +703,8 @@ impl MenuBar {
             if let Some(menu) = self.attached_menu_mut(index) {
                 menu.hide();
             }
+            #[cfg(not(alloc_frugal))]
+            crate::widget::runtime::clear_popup_grab_for(self.id());
             self.active_index = None;
             self.base.request_redraw();
         }
@@ -1068,6 +1076,19 @@ impl Widget for MenuBar {
         self.open_menu_index.is_some()
     }
 
+    /// The bar **and** its open drop-down accept the pointer.
+    ///
+    /// The menu is painted below the bar, outside the bar's own rectangle, so the default hit
+    /// rule would reject every press on a menu row and let it fall through to the widget behind
+    /// (INF-03). The popup and its nested panels answer `contains_point` themselves.
+    fn contains_point(&self, point: Point) -> bool {
+        self.base().contains_point_with_touch_expansion(point)
+            || self
+                .open_menu_index
+                .and_then(|index| self.attached_menu(index))
+                .is_some_and(|menu| menu.contains_point(point))
+    }
+
     /// Advances the tooltip delay/duration clocks.
     fn tick(&mut self, delta_ms: u32) -> bool {
         self.tooltip_now_ms = self.tooltip_now_ms.saturating_add(u64::from(delta_ms));
@@ -1263,6 +1284,13 @@ impl EventHandler for MenuBar {
                 if !open {
                     self.open_menu_index = None;
                     self.active_index = None;
+                } else if matches!(event, Event::MousePress { .. }) {
+                    // The runtime clears the grab after delivering the press that was routed
+                    // through it, so an open menu re-arms it: the next outside press must again
+                    // reach this control rather than the widget behind (same one-shot re-arm
+                    // `MenuButton::close_submenu` performs).
+                    #[cfg(not(alloc_frugal))]
+                    crate::widget::runtime::set_popup_grab(self.id());
                 }
                 return;
             }

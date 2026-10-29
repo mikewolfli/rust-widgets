@@ -20,7 +20,7 @@ use crate::undo::{CommandDescription, CommandId, UndoCommand, UndoStack};
 #[cfg(full_widgets)]
 use crate::widget::companions::FindReplaceBar;
 use crate::widget::metrics::effective_font;
-use crate::widget::text_utils::floor_char_boundary;
+use crate::widget::text_utils::{byte_index_of_char, floor_char_boundary};
 use crate::widget::widget_trait::InputMethodQuery;
 use crate::widget::{BaseWidget, Widget, WidgetKind};
 use std::cell::RefCell;
@@ -279,6 +279,17 @@ pub struct TextEdit {
     pub(crate) cursor_blink: crate::style::CursorBlink,
     /// Horizontal scroll offset in pixels, for an unwrapped row wider than the field (I-122).
     pub(crate) scroll_x: i32,
+    /// The uncommitted input-method composition, or `None` when no IME session is active.
+    ///
+    /// # Why the preedit is held apart from the value
+    ///
+    /// A native input method reports a preedit while it is still building a word. Writing it into
+    /// `text` would emit `text_changed` for text the user has not committed, so every validation
+    /// rule a form installed would run against a half-typed word. Keeping the composition in its
+    /// own slot means cancelling restores the value exactly (it was never touched), and
+    /// [`Self::commit_composition`] routes the accepted string through the ordinary `insert_str`
+    /// path so `max_length`, undo and `text_changed` behave as they do for any other insertion.
+    pub(crate) composition: Option<String>,
     #[cfg(full_widgets)]
     /// The `FindReplaceBar` this editor follows, when one is attached (COMP-A8).
     find_replace: Option<FindReplaceBinding>,
@@ -412,6 +423,7 @@ impl TextEdit {
             marker_advance_cache: RefCell::new(None),
             cursor_blink: crate::style::CursorBlink::new(),
             scroll_x: 0,
+            composition: None,
             #[cfg(full_widgets)]
             find_replace: None,
         }
@@ -737,12 +749,25 @@ impl TextEdit {
         // and the post-edit signal cloned it a third time. Here the only allocation proportional
         // to the *edit* is the removed selection (empty for ordinary typing), and the max-length
         // gate is checked arithmetically before the splice instead of by building a candidate.
+        //
+        // The budget is in **characters**, the same frame `LineEdit` and `TextArea` use (I-014),
+        // so the gate counts both the surviving value and the incoming text in characters rather
+        // than comparing a character limit against byte lengths.
         let selection = self.selection_range();
         let removed_len = selection.map_or(0, |(start, end)| end - start);
-        if !self.within_max_length_len(self.text.len() - removed_len + text.len()) {
-            // Refused **whole**, so the caller knows nothing went in rather than being handed a
-            // silently truncated tail (see `set_text`'s docs for why that is the honest answer).
-            return;
+        // Only a field with a limit pays for the character count; an unlimited one keeps the
+        // byte-length splice below on its allocation-free path.
+        if self.max_length.is_some() {
+            let removed_chars =
+                selection.map_or(0, |(start, end)| self.text[start..end].chars().count());
+            let surviving_chars = self.text.chars().count() - removed_chars;
+            let incoming_chars = text.chars().count();
+            if !self.within_max_length_len(surviving_chars + incoming_chars) {
+                // Refused **whole**, so the caller knows nothing went in rather than being handed
+                // a silently truncated tail (see `set_text`'s docs for why that is the honest
+                // answer).
+                return;
+            }
         }
         let (at, removed) = match selection {
             Some((start, end)) => (start, self.text[start..end].to_string()),
@@ -763,6 +788,18 @@ impl TextEdit {
         self.record_splice(at, removed, text.to_string());
         self.scroll_caret_into_view();
         self.base.request_redraw();
+    }
+
+    /// Inserts a single character at the caret, replacing any selection.
+    ///
+    /// Shares `TextArea`'s
+    /// [`insert_char`](crate::widget::input_widgets::textarea::TextArea::insert_char) name and goes
+    /// through [`Self::insert_str`], so the max-length gate, the undo snapshot and the caret
+    /// advance are the same ones a pasted string uses. The glyph is encoded into a stack buffer,
+    /// so typing does not allocate an intermediate `String` before the splice.
+    pub fn insert_char(&mut self, ch: char) {
+        let mut glyph = [0u8; 4];
+        self.insert_str(ch.encode_utf8(&mut glyph));
     }
 
     /// Deletes the selection, or the character before the caret. Returns whether anything changed.
@@ -1246,7 +1283,7 @@ impl TextEdit {
     ///
     /// Minimal on purpose: the viewport moves only when the caret is above or below the window it
     /// already shows, so reading near the top does not make the field jump.
-    fn scroll_caret_into_view(&mut self) {
+    pub(super) fn scroll_caret_into_view(&mut self) {
         let row = self.row_of_offset(self.cursor);
         self.first_visible_row = crate::widget::text_utils::first_visible_row_for(
             row,
@@ -1404,11 +1441,11 @@ impl TextEdit {
         self.placeholder_text = text;
         self.base.request_redraw();
     }
-    /// Returns maximum text length.
+    /// Returns the maximum text length **in characters**, or `None` when unlimited.
     pub fn max_length(&self) -> Option<usize> {
         self.max_length
     }
-    /// Sets maximum text length.
+    /// Sets maximum text length **in characters**.
     ///
     /// # What was dead, and what proves it is alive now
     ///
@@ -1420,12 +1457,19 @@ impl TextEdit {
     ///
     /// The gate is now `Self::within_max_length`, which every path that appends or replaces text
     /// consults, and this setter keeps its truncation because the *existing* text has to conform too.
+    ///
+    /// # One character budget for the text family (I-014)
+    ///
+    /// `TextArea` and `LineEdit` both count characters, and so does the gate in [`Self::insert_str`].
+    /// This truncation therefore compares `chars().count()` and cuts through [`byte_index_of_char`],
+    /// which keeps the cut on a character boundary; a byte-based cut would split a multi-byte
+    /// character and measure a different value than the counter reports.
     pub fn set_max_length(&mut self, max_length: Option<usize>) {
         self.max_length = max_length;
-        // Truncate if needed (using floor_char_boundary to avoid mid-char panic)
+        // Truncate if needed, cutting at a character boundary and counting characters (I-014).
         if let Some(max) = max_length {
-            if self.text.len() > max {
-                let boundary = floor_char_boundary(&self.text, max);
+            if self.text.chars().count() > max {
+                let boundary = byte_index_of_char(&self.text, max);
                 let truncated = self.text[..boundary].to_string();
                 self.set_text(truncated);
             }
@@ -1434,25 +1478,25 @@ impl TextEdit {
 
     /// Whether `candidate` is short enough to replace the current text.
     ///
-    /// # Why a byte count and not a character count
+    /// # Why characters, like the rest of the text family (I-014)
     ///
-    /// `max_length` is documented as a *length* and the schema publishes it as `UInt`, and the
-    /// truncation already in [`Self::set_max_length`] measures bytes (`self.text.len()`). A gate that
-    /// counted characters would let a CJK document through at three bytes per character and then be
-    /// shortened by the next call to the setter — two rules for one number, which is how a limit
-    /// becomes untrustworthy. Bytes are also what a caller sizing a database column is counting.
+    /// `TextArea` and `LineEdit` treat `max_length` as a **character** budget, and so does the
+    /// truncation in [`Self::set_max_length`]. Counting bytes here would give the same limit value
+    /// two meanings inside one form: a CJK document would pass this gate at three bytes per
+    /// character and then be shortened by the next call to the setter. Characters are also the unit
+    /// the counter shows the user and the unit a caller sizing a form field is counting.
     ///
     /// # Why the whole candidate rather than the appended character
     ///
-    /// `set_text` is the one place text enters the control (typing, pasting and the property route
-    /// all funnel through it), so the check belongs there -- one gate, not one per caller. Checking
-    /// only the appended character would let a *paste* through, which is the case a limit most
-    /// obviously exists for.
+    /// The whole-value entry points (`set_text`, and the splice in `insert_str`) check the complete
+    /// result, so one rule covers typing, pasting and the property route. Checking only the
+    /// appended character would let a *paste* through, which is the case a limit most obviously
+    /// exists for.
     fn within_max_length(&self, candidate: &str) -> bool {
-        self.within_max_length_len(candidate.len())
+        self.within_max_length_len(candidate.chars().count())
     }
 
-    /// The length-only form of the gate, so an in-place edit can be refused before allocating a
+    /// The character-count form of the gate, so an in-place edit can be refused before allocating a
     /// candidate copy (I-P52).
     fn within_max_length_len(&self, len: usize) -> bool {
         match self.max_length {
@@ -1640,6 +1684,58 @@ impl TextEdit {
     /// The allocation-frugal build has no clipboard integration.
     #[cfg(alloc_frugal)]
     pub(crate) fn paste_from_clipboard(&mut self) {}
+
+    /// Starts or updates an input-method composition without changing the value.
+    ///
+    /// The field's value must not change while the user is still building a word: emitting
+    /// `text_changed` here would run a form's validation against text the user has not committed.
+    /// An empty preedit clears the composition without committing it, which is what an input
+    /// method sends when it withdraws.
+    pub fn set_composition(&mut self, preedit: &str) {
+        let next = if preedit.is_empty() { None } else { Some(preedit.to_string()) };
+        if self.composition == next {
+            return;
+        }
+        self.composition = next;
+        self.base.request_redraw();
+    }
+
+    /// The uncommitted composition, or `None` when no IME session is active.
+    pub fn composition(&self) -> Option<&str> {
+        self.composition.as_deref()
+    }
+
+    /// Whether an input-method composition is in progress.
+    pub fn has_composition(&self) -> bool {
+        self.composition.is_some()
+    }
+
+    /// Accepts the composition: the preedit becomes text through the ordinary insert path.
+    ///
+    /// Routing through [`Self::insert_str`] means `max_length`, the selection replacement, undo
+    /// and `text_changed` behave exactly as they do for any other insertion. A commit with no
+    /// active composition is a no-op rather than an error, because an input method may commit and
+    /// clear in either order.
+    pub fn commit_composition(&mut self) -> bool {
+        let Some(preedit) = self.composition.take() else {
+            return false;
+        };
+        self.insert_str(&preedit);
+        self.base.request_redraw();
+        true
+    }
+
+    /// Drops the composition without changing the value.
+    ///
+    /// Returns `true` when there was one. The text is untouched by construction, not by restoring
+    /// a snapshot: the composition was never written into it.
+    pub fn cancel_composition(&mut self) -> bool {
+        let had = self.composition.take().is_some();
+        if had {
+            self.base.request_redraw();
+        }
+        had
+    }
 
     // ── FindReplaceBar wiring (COMP-A8) ──
 

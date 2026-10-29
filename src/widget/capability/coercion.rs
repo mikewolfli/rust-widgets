@@ -136,6 +136,24 @@ pub fn expect_usize(value: CapabilityValue) -> Result<usize, CapabilityAccessErr
     }
 }
 
+/// Extracts a `(start, end)` selection range from its published `"start,end"` spelling.
+///
+/// This is the wire form the text controls publish under the `selection` property and the
+/// crate-root `set_widget_selection` writes (API-03): one string carrying both offsets, so a
+/// control parses one value rather than needing two properties kept in step. The offsets are
+/// **byte** offsets into the control's current value, the same unit `cursor_position` and
+/// `selection` read back in. A pair that is not two unsigned integers is a type mismatch, and
+/// the control clamps or snaps the result to a character boundary itself.
+pub fn expect_selection_range(
+    value: CapabilityValue,
+) -> Result<(usize, usize), CapabilityAccessError> {
+    let text = expect_string(value)?;
+    let (start, end) = text.split_once(',').ok_or(CapabilityAccessError::TypeMismatch)?;
+    let start = start.trim().parse::<usize>().map_err(|_| CapabilityAccessError::TypeMismatch)?;
+    let end = end.trim().parse::<usize>().map_err(|_| CapabilityAccessError::TypeMismatch)?;
+    Ok((start, end))
+}
+
 /// Extracts a single-precision float.
 ///
 /// Accepts [`CapabilityValue::Float`], [`CapabilityValue::UInt`], and

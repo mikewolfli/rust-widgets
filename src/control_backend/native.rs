@@ -304,9 +304,6 @@ impl ControlBackend for NativeControlBackend {
     fn poll_drop_event(&self) -> Option<crate::platform::DropEvent> {
         get_platform().poll_drop_event()
     }
-    fn inject_drop_event(&self, event: crate::platform::DropEvent) -> bool {
-        get_platform().inject_drop_event(event)
-    }
     fn create_dialog(
         &self,
         parent: ObjectId,

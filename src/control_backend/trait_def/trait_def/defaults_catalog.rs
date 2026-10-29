@@ -45,10 +45,6 @@ macro_rules! default_modern_widgets {
         fn poll_drop_event(&self) -> Option<crate::platform::DropEvent> {
             None
         }
-        /// Inject a drop event.
-        fn inject_drop_event(&self, _event: crate::platform::DropEvent) -> bool {
-            false
-        }
 
         // ── Modern widget set (BLUE13 R2.1–R2.14 + mobile/Cupertino/media families) ──
         //

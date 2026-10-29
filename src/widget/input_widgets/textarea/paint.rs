@@ -832,6 +832,26 @@ impl Draw for TextArea {
                 Point::new(cursor_x, cursor_y + LINE_H),
                 text_color,
             );
+
+            // The uncommitted composition is painted inline at the caret, where it will land
+            // when it is committed, with an underline marking it as preedit. This block is
+            // already inside the interior clip, so a long preedit cannot paint over the border.
+            if let Some(preedit) = self.composition.as_deref() {
+                let preedit_width = context.measure_text(preedit, font).width as i32;
+                context.draw_text(
+                    Point::new(cursor_x, cursor_y),
+                    preedit,
+                    font,
+                    text_color,
+                    HorizontalAlignment::Left,
+                );
+                let underline_y = cursor_y + LINE_H;
+                context.draw_line(
+                    Point::new(cursor_x, underline_y),
+                    Point::new(cursor_x + preedit_width, underline_y),
+                    text_color,
+                );
+            }
         }
         context.pop_clip();
         self.draw_scrollbar(context);

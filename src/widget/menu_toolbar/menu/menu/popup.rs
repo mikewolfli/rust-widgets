@@ -620,19 +620,6 @@ impl Menu {
     pub(super) fn row_shows_shortcut(&self, item: &MenuEntry) -> bool {
         !item.shortcut().is_empty() && !item.has_submenu()
     }
-    fn _item_rect(&self, index: usize, base_y: f32) -> Rect {
-        let rect = self.geometry();
-        let mut y = base_y;
-        for (i, item) in self.items.iter().enumerate() {
-            let h =
-                if item.is_separator() { Self::separator_height() } else { Self::item_height() };
-            if i == index {
-                return Rect { x: rect.x, y: y as i32, width: rect.width, height: h as u32 };
-            }
-            y += h;
-        }
-        Rect { x: 0, y: 0, width: 0, height: 0 }
-    }
     pub(super) fn popup_height(&self) -> f32 {
         // The height is a pure function of the visible window and the row kinds, so it is
         // cached against the list revision and the geometry that selects the window. Opening

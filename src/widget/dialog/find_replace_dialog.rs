@@ -143,7 +143,14 @@ pub struct FindReplaceDialog {
     /// The host's match report: `(current, total)`, or `None` for "no matches" (DLG-11).
     match_report: Option<(usize, usize)>,
     /// The painted report text, keyed by the report it was formatted from.
+    ///
+    /// Only the locale-independent `Some((current, total))` branch is cached: the "no matches"
+    /// spelling comes from the i18n catalogue, which is mutable at runtime (language switch,
+    /// translation hot reload), so it must be resolved when the label is drawn.
     status_cache: StatusCache,
+    /// Reusable buffer for the "no matches" label, so the draw loop's lookup stays
+    /// allocation-free (the `localized_label_into` pattern).
+    no_matches_text: crate::compat::String,
 }
 
 impl FindReplaceDialog {
@@ -171,6 +178,7 @@ impl FindReplaceDialog {
             text_input_seen: false,
             match_report: None,
             status_cache: RefCell::new(None),
+            no_matches_text: crate::compat::String::new(),
         }
     }
 
@@ -850,17 +858,31 @@ impl Draw for FindReplaceDialog {
             // user sees "3 / 12" (or "no matches") beside the query that produced it
             // (DLG-11). Only a non-empty query can have a report worth showing.
             if !self.find_text.is_empty() {
-                let mut cache = self.status_cache.borrow_mut();
-                if cache.as_ref().is_none_or(|(report, _)| *report != self.match_report) {
-                    let text = match self.match_report {
-                        Some((current, total)) => format!("{current} / {total}"),
-                        None => {
-                            super::localized_label("dialog.find_replace.no_matches", "No matches")
+                // The numeric branch is locale-independent and cheap to cache; the "no matches"
+                // branch is a catalogue lookup and is resolved at draw time into the reusable
+                // buffer, so a language switch or a late-initialised catalogue takes effect on
+                // the next frame without waiting for `match_report` to change.
+                match self.match_report {
+                    Some((current, total)) => {
+                        let mut cache = self.status_cache.borrow_mut();
+                        if cache.as_ref().is_none_or(|(report, _)| *report != self.match_report) {
+                            *cache = Some((self.match_report, format!("{current} / {total}")));
                         }
-                    };
-                    *cache = Some((self.match_report, text));
+                    }
+                    None => {
+                        self.no_matches_text.clear();
+                        super::localized_label_into(
+                            "dialog.find_replace.no_matches",
+                            "No matches",
+                            &mut self.no_matches_text,
+                        );
+                    }
                 }
-                let status = cache.as_ref().map(|(_, text)| text.as_str()).unwrap_or_default();
+                let numeric = self.status_cache.borrow();
+                let status = match self.match_report {
+                    Some(_) => numeric.as_ref().map(|(_, text)| text.as_str()).unwrap_or_default(),
+                    None => self.no_matches_text.as_str(),
+                };
                 let status_band = Rect::new(
                     input_rect.x + input_rect.width as i32 / 3,
                     input_rect.y,

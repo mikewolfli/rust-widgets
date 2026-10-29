@@ -970,6 +970,10 @@ impl DropdownMenu {
             if self.selected_value.as_deref() == Some(value) {
                 self.selected_value = None;
             }
+            // A shortened list may no longer reach the current scroll offset, which would leave
+            // the visible window past the last row (blank rows, wrong hit tests) until the next
+            // expand or wheel. `Menu::remove_item` already clamps for the same reason (INF-04).
+            self.clamp_scroll();
             self.base.request_redraw();
         }
         removed
@@ -989,6 +993,7 @@ impl DropdownMenu {
         self.item_icon_sources.clear();
         self.icons_revision = self.icons_revision.wrapping_add(1);
         self.close_all_submenus();
+        self.clamp_scroll();
         &mut self.items
     }
 

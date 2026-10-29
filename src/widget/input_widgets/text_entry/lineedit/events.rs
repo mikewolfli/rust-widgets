@@ -5,7 +5,6 @@
 
 use super::model::*;
 
-use crate::compat::ToString;
 use crate::core::{Point, Size};
 use crate::event::dnd::{DragPayload, DragSource, DropEffect, DropTarget};
 use crate::event::{Event, EventHandler};
@@ -328,8 +327,9 @@ impl LineEdit {
             }
             90 if primary && modifiers.contains(crate::shortcut::Modifiers::SHIFT) => {
                 // Primary+Shift+Z is the other conventional redo chord. It used to fall into the
-                // plain undo arm below, so the field undid the edit the user meant to redo; the
-                // other editable controls in this family bind it (I-01).
+                // plain undo arm below, so the field undid the edit the user meant to redo.
+                // I-01 fixed this control only: the family's redo chord is Primary+Y, as
+                // `TextArea` and `TextEdit` bind it, so this arm is not a shared convention.
                 let _ = self.redo();
             }
             90 if primary => {
@@ -360,7 +360,7 @@ impl LineEdit {
                     // text field, and all of them are control codes the host owns.
                     if let Some(ch) = char::from_u32(key).filter(|c| !c.is_control()) {
                         if ch.is_ascii_graphic() || ch == ' ' {
-                            self.insert_str(&ch.to_string());
+                            self.insert_char(ch);
                         }
                     }
                 }

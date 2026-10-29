@@ -496,26 +496,29 @@ pub trait WidgetHandle: Sized {
         crate::platform::get_platform().window_icon(self.raw_id())
     }
 
-    /// Set a text entry's selection range as `(start, end)` character offsets.
+    /// Set a text entry's selection range as ordered `(start, end)` byte offsets.
+    ///
+    /// Written through the control's `selection` property — the same property the crate-root
+    /// `set_widget_selection` writes (API-03). `cursor_position` stays a caret query and no
+    /// longer carries the range, so the write is not collapsed to the caret end.
     fn set_widget_selection(&self, start: u32, end: u32) -> bool {
         write_control_property(
             self.raw_id(),
-            "cursor_position",
-            crate::widget::capability::CapabilityValue::UInt(u64::from(end.max(start))),
+            "selection",
+            crate::widget::capability::CapabilityValue::String(crate::compat::format!(
+                "{start},{end}"
+            )),
         )
     }
 
     /// Read a text entry's selection range, or `None` when nothing is selected.
     fn widget_selection(&self) -> Option<(u32, u32)> {
-        {
-            let caret = match read_control_property(self.raw_id(), "cursor_position") {
-                Some(crate::widget::capability::CapabilityValue::UInt(v)) => {
-                    u32::try_from(v).ok()?
-                }
-                _ => return None,
-            };
-            Some((0, caret))
-        }
+        let raw = match read_control_property(self.raw_id(), "selection") {
+            Some(crate::widget::capability::CapabilityValue::String(raw)) => raw,
+            _ => return None,
+        };
+        let (start, end) = raw.split_once(',')?;
+        Some((start.trim().parse().ok()?, end.trim().parse().ok()?))
     }
 
     /// Set a text entry's placeholder (cue) text.
@@ -1046,10 +1049,18 @@ fn run_local_callback(widget_id: ObjectId, token: u64, signal: &'static str) {
         key: (ObjectId, u64),
         generation: u64,
         callback: Option<Box<dyn FnMut()>>,
+        /// Whether this guard registered itself in [`DISPATCH_IN_FLIGHT`] (ENG-E1).
+        in_flight: bool,
     }
 
     impl Drop for Restore {
         fn drop(&mut self) {
+            // Clear the in-flight note first, mirroring `ClickCallGuard`: the removal readers
+            // below run while the dispatch is still notionally active, and the note describes
+            // the dispatch, which is over either way.
+            if self.in_flight {
+                clear_dispatch_in_flight(self.key.0);
+            }
             let Some(callback) = self.callback.take() else {
                 return;
             };
@@ -1065,7 +1076,12 @@ fn run_local_callback(widget_id: ObjectId, token: u64, signal: &'static str) {
         }
     }
 
-    let mut restore = Restore { key, generation, callback: Some(callback) };
+    // The local path's entry was just taken out of `LOCAL_CALLBACKS`, so `remove_callbacks`
+    // cannot see it there; registering the dispatch in flight is what keeps a removal performed
+    // *inside* the callback from being undone by the restore (D08-A-02). Nested dispatches of
+    // the same id reuse `HashSet::insert`'s answer: only the outermost clears the note.
+    let in_flight = note_dispatch_in_flight(widget_id);
+    let mut restore = Restore { key, generation, callback: Some(callback), in_flight };
     if let Some(callback) = restore.callback.as_mut() {
         callback();
     }
@@ -1880,7 +1896,7 @@ pub(crate) fn echo_mode_token(mode: EchoMode) -> &'static str {
 }
 
 /// The [`EchoMode`] a published token names, or `None` for an unknown token.
-fn echo_mode_from_token(token: &str) -> Option<EchoMode> {
+pub(crate) fn echo_mode_from_token(token: &str) -> Option<EchoMode> {
     match token {
         "normal" => Some(EchoMode::Normal),
         "password" => Some(EchoMode::Password),

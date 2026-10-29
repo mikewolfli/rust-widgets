@@ -427,11 +427,17 @@ fn echo_mode_round_trips_through_the_accessors_and_reaches_the_control() {
 }
 
 #[test]
-fn selection_range_reports_unsupported_until_a_control_publishes_it() {
-    let id = mount("line_edit", "");
+fn selection_round_trips_through_the_accessors_and_reaches_the_control() {
+    // API-03: the text controls publish the `selection` pair, so the crate-root accessor and the
+    // control's own property contract must agree on the same "start,end" spelling.
+    let id = mount("line_edit", "abcdef");
     assert!(
-        !rust_widgets::set_widget_selection(id, 0, 3),
-        "no control publishes `selection` yet, so the write must be reported as refused"
+        rust_widgets::set_widget_selection(id, 1, 4),
+        "`LineEdit` publishes `selection`, so the write must be accepted"
     );
-    assert_eq!(rust_widgets::widget_selection(id), None);
+    assert_eq!(rust_widgets::widget_selection(id), Some((1, 4)));
+    assert_eq!(
+        rust_widgets::read_widget_property_by_id(id, "selection"),
+        Ok(rust_widgets::widget::capability::CapabilityValue::String("1,4".to_string()))
+    );
 }

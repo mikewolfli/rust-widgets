@@ -513,7 +513,7 @@ impl KanbanBoard {
         // underneath stays readable. It is clamped to the board, because a ghost centred on a
         // pointer near the edge would otherwise paint over whatever the layout placed beside
         // the board — nothing clips a widget at this layer.
-        let label = session.payload().label.clone();
+        let label = session.payload().label.as_str();
         let board = self.geometry();
         let ghost_column =
             self.hovered_column.filter(|index| *index < self.columns.len()).unwrap_or(0);
@@ -530,7 +530,7 @@ impl KanbanBoard {
             let ghost_line = context.text_line(ghost, &ghost_font);
             context.draw_text(
                 Point::new(ghost.x + CARD_PADDING, ghost_line.y),
-                &label,
+                label,
                 &ghost_font,
                 chrome.text(),
                 HorizontalAlignment::Left,

@@ -301,6 +301,7 @@ impl DataGrid {
         self.invalidate_projection_cache();
         self.clear_selection_units();
         self.current_cell = None;
+        self.hovered_cell = None;
         self.normalize_projection_state();
         self.emit_visible_window_changed();
         self.base.request_layout();

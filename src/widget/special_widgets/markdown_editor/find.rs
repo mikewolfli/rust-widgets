@@ -86,6 +86,8 @@ pub struct FindBar {
     current: Option<usize>,
     /// The painted `current/total` counter, keyed by the pair it was formatted from.
     counter_cache: RefCell<Option<((usize, usize), String)>>,
+    /// The painted `"N replaced"` receipt, keyed by the count it was formatted from.
+    replaced_cache: (usize, String),
     /// Which field typing goes to.
     focus: FindFocus,
     /// Emitted with the active match's byte range, or `(0, 0)` when there is no match.
@@ -111,6 +113,7 @@ impl FindBar {
             matches: Vec::new(),
             current: None,
             counter_cache: RefCell::new(None),
+            replaced_cache: (0, String::new()),
             focus: FindFocus::Query,
             search_changed: Signal1::new(),
             replace_requested: Signal1::new(),
@@ -312,6 +315,10 @@ impl FindBar {
             return;
         }
         self.last_replaced = count;
+        // The receipt is part of the bar's state, not the frame: rebuild it here so `draw` can
+        // paint the cached text instead of formatting a new string every pass.
+        self.replaced_cache =
+            if count == 0 { (0, String::new()) } else { (count, format!("{count} replaced")) };
         self.base.request_redraw();
     }
 
@@ -830,15 +837,15 @@ impl Draw for FindBar {
                 );
             }
             if self.last_replaced > 0 {
-                let label = format!("{} replaced", self.last_replaced);
+                let label = self.replaced_cache.1.as_str();
                 context.draw_text(
                     Point::new(
                         band.x + band.width as i32
                             - 84
-                            - context.measure_text(&label, font).width as i32,
+                            - context.measure_text(label, font).width as i32,
                         band.y + 7,
                     ),
-                    &label,
+                    label,
                     font,
                     ink.blend(&surface, 0.35),
                     HorizontalAlignment::Left,

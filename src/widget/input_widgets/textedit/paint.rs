@@ -247,7 +247,10 @@ impl Draw for TextEdit {
         // Drawn from the same wrap table the text was laid out with, so the marker sits on the row
         // and column the glyphs actually occupy. Measured any other way it would drift under wrapping,
         // which is the whole reason the table exists.
-        if !self.text.is_empty() && self.focused && self.cursor_blink.is_visible() {
+        if (!self.text.is_empty() || self.composition.is_some())
+            && self.focused
+            && self.cursor_blink.is_visible()
+        {
             let line_height = self.line_box_height();
             let interior_width = rect.width.saturating_sub(padding as u32 * 2);
 
@@ -318,6 +321,34 @@ impl Draw for TextEdit {
                             crate::core::Point::new(x, top + line_height - 2),
                             caret,
                         );
+
+                        // The uncommitted composition is painted inline at the caret, where it
+                        // will land when it is committed, with an underline marking it as preedit.
+                        // It is clipped to the interior so a long preedit cannot paint over the
+                        // border or a neighbouring control.
+                        if let Some(preedit) = self.composition.as_deref() {
+                            let preedit_width = context.measure_text(preedit, font).width as i32;
+                            context.push_clip(
+                                rect.x + padding,
+                                rect.y + padding,
+                                rect.width.saturating_sub(padding as u32 * 2),
+                                rect.height.saturating_sub(padding as u32 * 2),
+                            );
+                            context.draw_text(
+                                crate::core::Point::new(x, top),
+                                preedit,
+                                font,
+                                caret,
+                                HorizontalAlignment::Left,
+                            );
+                            let underline_y = top + line_height - 1;
+                            context.draw_line(
+                                crate::core::Point::new(x, underline_y),
+                                crate::core::Point::new(x + preedit_width, underline_y),
+                                caret,
+                            );
+                            context.pop_clip();
+                        }
                     }
                 }
             });

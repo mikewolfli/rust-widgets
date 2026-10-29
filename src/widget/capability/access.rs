@@ -816,6 +816,8 @@ pub fn default_widget_property_default_value(
             // Mirrors `LineEdit::new`, which starts in `EchoMode::Normal`.
             "echo_mode" => CapabilityValue::String("normal".to_string()),
             "cursor_position" => CapabilityValue::UInt(0),
+            // Nothing is selected in a fresh field (API-03).
+            "selection" => CapabilityValue::Null,
             // A fresh field shows nothing but its value, so every decoration slot is empty and the
             // derived pair is "no counter" / "nothing refused".
             "prefix" | "suffix" | "helper" | "error" => CapabilityValue::String(String::new()),
@@ -1276,6 +1278,8 @@ pub fn default_widget_property_default_value(
             "max_length" => CapabilityValue::Null,
             "read_only" => CapabilityValue::Bool(false),
             "line_wrap" => CapabilityValue::Bool(true),
+            // Nothing is selected in a fresh editor (API-03).
+            "selection" => CapabilityValue::Null,
             "output_line_count" => CapabilityValue::UInt(0),
             "input_line" => CapabilityValue::String(String::new()),
             "alignment" => CapabilityValue::String("left".to_string()),
@@ -1526,6 +1530,8 @@ pub fn default_widget_property_default_value(
             "read_only" => CapabilityValue::Bool(false),
             // `0` is unlimited, matching `TextArea::new`.
             "max_length" => CapabilityValue::UInt(0),
+            // Nothing is selected in a fresh area (API-03).
+            "selection" => CapabilityValue::Null,
             // A fresh area starts unwrapped, flush with its inset, with no block budget and
             // no horizontal scroll.
             "soft_wrap" => CapabilityValue::Bool(false),

@@ -522,8 +522,9 @@ Additional facts to keep the matrix consistent with `src/widget/kind.rs`:
 - `SpinBox`/`ListView`/`ScrollArea` are 🟦 (self-drawn) on **every** platform, Windows
   included. An earlier note claimed ✅ on Windows for real Win32 objects
   (`msctls_updown32`, `SysListView32`, a `WS_HSCROLL | WS_VSCROLL` child window); those
-  implementations, their `src/platform/windows/helpers.rs` home, and the routing that
-  reached them were removed by BLUE15's self-drawn refactor (2026-09-14/15).
+  implementations, the Windows helpers module that housed them, and the routing that
+  reached them were removed by BLUE15's self-drawn refactor (2026-09-14/15). No file under
+  `src/platform/windows/` now defines them.
   `route_preference_for_widget_kind` now returns `CustomRequired` unconditionally
   (`src/control_backend/routing.rs`).
 

@@ -111,7 +111,7 @@ def main(argv: list[str]) -> int:
             print(f"  colors.{field}")
         print()
         print("  Either consume it (a control reads it) or add it to ALLOWED in")
-        print("  tools/check_declared_tokens_have_consumers.py with the reason it is reserved.")
+        print("  tools/declared_tokens_scan.py with the reason it is reserved.")
         return 1
 
     print(f"declared-tokens scan: checked={len(colors_fields())} roles, failed=0")

@@ -160,7 +160,7 @@ pub fn sync_ime_candidate(_widget_id: ObjectId) -> bool {
 ///
 /// A modal dialog blocks delivery to anything outside its own subtree: when a modal
 /// is active and `id` is not the modal (or one of its descendants), the event is
-/// is dropped and `false` is returned — the same "not found" answer a hit outside any
+/// dropped and `false` is returned — the same "not found" answer a hit outside any
 /// widget gives, so the backend treats it as unowned input rather than an error.
 pub fn dispatch_event(id: ObjectId, event: &Event) -> bool {
     if modal_blocks(id) {
@@ -214,9 +214,19 @@ pub fn dispatch_event(id: ObjectId, event: &Event) -> bool {
     let destroyed = guard.finish();
     note_animating(id, animating && !destroyed);
     if destroyed {
-        // A handler unregistered this control. The authoritative cleanup (focus, hover, capture,
-        // cached frame, own-id map) already ran inside `unregister`; only the owned widget remains,
-        // and dropping it here is what actually frees the control.
+        // A handler unregistered this control. The cleanup inside `unregister` ran while the
+        // mount was still out of `MOUNTED` (this dispatch detached it), so the own-id reverse
+        // map could not be resolved there and needs finishing here. Without it every
+        // self-destroying handler accumulates one `OWN_IDS` entry, and the stale own -> dead
+        // registry mapping misattributes later damage. Reading the own id is still possible
+        // because `guard.finish()` returned the widget to us. The rest of `unregister`'s
+        // cleanup (focus, hover, capture, cached frame, modal, popup grab) did run, because it
+        // is keyed by the registry id that the handler passed.
+        let own = mounted.widget.base().id();
+        if own != id {
+            let _ = OWN_IDS.try_with(|map| map.borrow_mut().remove(&own));
+        }
+        // Dropping `mounted` here is what actually frees the control.
         return true;
     }
 

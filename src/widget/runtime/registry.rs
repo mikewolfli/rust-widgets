@@ -23,7 +23,7 @@ pub fn register(widget: Box<dyn Widget>) -> Option<ObjectId> {
 
 /// The bookkeeping every registration path owes a freshly mounted control (G-321).
 ///
-/// `register` and `register_with_id` used to repeat these six steps verbatim after their
+/// `register` and `register_with_id` used to repeat these steps verbatim after their
 /// registry inserts, and the copy was one more place the two entry points could drift.
 /// One body answers for both: once the control is in [`MOUNTED`], the id is the only
 /// difference between the two paths, so it is the only parameter.
@@ -351,25 +351,38 @@ pub fn unregister(id: ObjectId) -> bool {
     }
     // A destroyed control must not leave its modality behind. A dead modal id is on no live
     // widget's ancestor chain, so `modal_blocks` answers `true` for *every* id and input stays
-    // blocked for the rest of the session. Both id spaces are popped because the stack may hold
-    // either (same shape as the popup-grab cleanup above).
+    // blocked for the rest of the session. All three id spaces are popped because the stack may
+    // hold any of them: the passed id itself, its registry counterpart (`registry_id_of` only
+    // searches one way, so a registry id cannot be mapped back to an own id that way), and the
+    // widget's own id, which is the only handle `Dialog::open` pushes.
     let _ = exit_modal(id);
     if let Some(registry) = registry_id_of(id) {
         if registry != id {
             let _ = exit_modal(registry);
         }
     }
+    if let Some(own) = own_id {
+        if own != id {
+            let _ = exit_modal(own);
+        }
+    }
     // The cached frame and any pending damage describe this widget, so both must go
     // with it: a reused id would otherwise start from the previous control's pixels,
-    // and a stale damage rect would repaint a region that no longer exists.
+    // and a stale damage rect would repaint a region that no longer exists. Bumping the
+    // frame epochs first is what makes the removal effective for a *child*: the tree-frame
+    // caches are keyed by the rendering window, so `forget_cached_frame(id)` here is a no-op
+    // for them, and without the bump a destroyed child would keep its pixels and its point-hit
+    // entry. The global bump also invalidates the point-hit cache (TREE_FRAME_EPOCH).
+    note_renderable_change();
+    note_renderable_change_for(id);
     forget_cached_frame(id);
     let _ = REPAINT.try_with(|map| map.borrow_mut().remove(&id));
     // And it cannot stay classified as an open overlay, or a later window would keep painting
     // it above siblings that should cover it (G-316).
     note_overlay_maybe_changed(Some(id));
-    // And the own-id reverse mapping, or a later widget built with the same
-    // `BaseWidget::id()` would resolve to this dead registry id and file its damage
-    // against a widget that no longer exists.
+    // And the own-id reverse mapping, which keeps the table bounded to live widgets and
+    // keeps damage attribution correct: a stale own -> dead registry mapping would file damage
+    // against an id nothing resolves to.
     if let Some(own_id) = own_id {
         let _ = OWN_IDS.try_with(|map| map.borrow_mut().remove(&own_id));
     }

@@ -610,6 +610,13 @@ impl DataGrid {
             }
             self.frozen_columns = self.frozen_columns.min(col_count);
         }
+        // Cell references that survived a shrink would point at rows or columns that no longer
+        // exist, so filter them against the final projected size.
+        self.current_cell =
+            self.current_cell.filter(|(row, column)| *row < row_count && *column < col_count);
+        self.hovered_cell =
+            self.hovered_cell.filter(|(row, column)| *row < row_count && *column < col_count);
+        self.selected_cells.retain(|(row, column)| *row < row_count && *column < col_count);
     }
 
     pub(crate) fn clear_cache(&mut self) {

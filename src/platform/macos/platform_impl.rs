@@ -714,18 +714,25 @@ impl Platform for MacOSPlatform {
         // (D08-P-01). The close/release are main-thread-only, so they are skipped
         // off-main, where `create_window` also never constructed a native object.
         if let Some(handle) = handle {
-            if handle.ptr != 0
-                && matches!(handle.kind, HandleKind::Window)
-                && super::types::is_main_thread()
-            {
-                // SAFETY: `handle.ptr` is the `NSWindow*` this backend obtained from
-                // `NSWindow::alloc(..).initWithContentRect_..(..)` in `create_window`, so
-                // it is a valid owned AppKit object. `close`/`release` are the balanced
-                // teardown for that `alloc`, and both are main-thread-only (checked above).
-                unsafe {
-                    let window = handle.ptr as id;
-                    let _: () = msg_send![window, close];
-                    let _: () = msg_send![window, release];
+            if handle.ptr != 0 && super::types::is_main_thread() {
+                // A mounted surface destroyed without an explicit `unmount_surface` must still
+                // release its view: the mount side registered a `Canvas` handle, and the side
+                // table's reference has no other destroy-side owner (INF-01). The `handles` entry
+                // was already removed above, so this must not repeat that removal.
+                #[cfg(widgets_unstripped)]
+                if matches!(handle.kind, HandleKind::Canvas) {
+                    super::canvas::detach_canvas_view(widget_id);
+                }
+                if matches!(handle.kind, HandleKind::Window) {
+                    // SAFETY: `handle.ptr` is the `NSWindow*` this backend obtained from
+                    // `NSWindow::alloc(..).initWithContentRect_..(..)` in `create_window`, so
+                    // it is a valid owned AppKit object. `close`/`release` are the balanced
+                    // teardown for that `alloc`, and both are main-thread-only (checked above).
+                    unsafe {
+                        let window = handle.ptr as id;
+                        let _: () = msg_send![window, close];
+                        let _: () = msg_send![window, release];
+                    }
                 }
             }
         }

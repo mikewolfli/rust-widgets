@@ -12,7 +12,7 @@ use crate::event::{Event, EventHandler};
 use crate::impl_widget_property_hooks;
 use crate::property_names_of;
 use crate::widget::capability::coercion::{
-    expect_horizontal_alignment, horizontal_alignment_to_str,
+    expect_horizontal_alignment, expect_selection_range, horizontal_alignment_to_str,
 };
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
@@ -164,6 +164,14 @@ impl WidgetProperties for TextEdit {
                 None => Ok(CapabilityValue::Null),
             },
             "read_only" => Ok(CapabilityValue::Bool(self.read_only)),
+            // The published selection pair is what `set_widget_selection` / `widget_selection`
+            // speak (API-03); `selection_range` is the single derivation every other reader uses.
+            "selection" => Ok(match self.selection_range() {
+                Some((start, end)) => {
+                    CapabilityValue::String(crate::compat::format!("{start},{end}"))
+                }
+                None => CapabilityValue::Null,
+            }),
             "line_wrap" => Ok(CapabilityValue::Bool(self.line_wrap)),
             "alignment" => Ok(CapabilityValue::String(
                 horizontal_alignment_to_str(self.alignment()).to_string(),
@@ -215,6 +223,27 @@ impl WidgetProperties for TextEdit {
                 }
                 _ => return Err(CapabilityAccessError::TypeMismatch),
             },
+            "selection" => {
+                // `Null` is the getter's "nothing selected" answer and the schema default, so
+                // the write-back round trip accepts it by clearing the range (API-03).
+                if matches!(value, CapabilityValue::Null) {
+                    self.clear_selection();
+                    return Ok(());
+                }
+                let (start, end) = expect_selection_range(value)?;
+                let len = self.text.len();
+                let start =
+                    crate::widget::text_utils::floor_char_boundary(&self.text, start.min(len));
+                let end = crate::widget::text_utils::floor_char_boundary(&self.text, end.min(len));
+                // `set_cursor` clamps to a character boundary and scrolls the caret into view;
+                // the anchor is then installed so the range is live, and the final notification
+                // announces the pair (API-03).
+                self.set_cursor(end);
+                self.selection_anchor = Some(start);
+                self.notify_caret_change();
+                self.base.request_redraw();
+                return Ok(());
+            }
             "line_wrap" => match value {
                 CapabilityValue::Bool(flag) => {
                     self.set_line_wrap(flag);
@@ -241,6 +270,7 @@ impl WidgetProperties for TextEdit {
             "placeholder_text",
             "max_length",
             "read_only",
+            "selection",
             "line_wrap",
             "alignment",
             BASE_PROPERTY_NAMES
@@ -342,15 +372,34 @@ impl EventHandler for TextEdit {
                 self.end_drag();
             }
             // Platform-committed text (D09-INPUT-01), routed into the same `insert_str` the
-            // `KeyPress` printable arm below calls. This is where a printable character or an IME
-            // commit actually arrives from the desktop backends, so without this branch typing did
-            // not reach the value. `read_only` is checked here for the same reason it is checked in
-            // the key path — a read-only editor must not accept committed text either.
-            Event::TextInput { text } | Event::ImeCommit { text } => {
+            // `KeyPress` printable arm below calls. This is where a printable character arrives
+            // from the desktop backends, so without this branch typing did not reach the value.
+            // `read_only` is checked here for the same reason it is checked in the key path — a
+            // read-only editor must not accept committed text either.
+            Event::TextInput { text } => {
                 if !self.focused || self.read_only {
                     return;
                 }
                 self.insert_str(text);
+            }
+            // A commit ends the composition as well as inserting its text. Clearing the preedit
+            // first keeps the underlined preview from surviving the string it previewed: an input
+            // method may deliver the commit before its `preedit_end`, and the editor would
+            // otherwise paint both the committed text and a stale composition.
+            Event::ImeCommit { text } => {
+                if !self.focused || self.read_only {
+                    return;
+                }
+                self.composition = None;
+                self.insert_str(text);
+            }
+            // The uncommitted composition belongs to the editor while the user is building it:
+            // the value does not change, but the inline preedit at the caret does.
+            Event::ImePreedit { text, .. } => {
+                if !self.focused || self.read_only {
+                    return;
+                }
+                self.set_composition(text);
             }
             // Wheel: positive `delta.y` moves the content down, so the viewport moves toward the
             // start. The shared helper turns wheel notches into lines at the desktop default of
@@ -393,7 +442,12 @@ impl EventHandler for TextEdit {
                     return;
                 }
                 if primary && *key == 90 {
-                    let _ = self.undo();
+                    // Primary+Z undoes; Primary+Shift+Z is the other conventional redo chord.
+                    if shift {
+                        let _ = self.redo();
+                    } else {
+                        let _ = self.undo();
+                    }
                     return;
                 }
                 if primary && *key == 89 {
@@ -543,7 +597,7 @@ impl EventHandler for TextEdit {
                         if !chord {
                             if let Some(ch) = char::from_u32(*key).filter(|c| !c.is_control()) {
                                 if ch.is_ascii_graphic() || ch == ' ' || ch == '\t' {
-                                    self.insert_str(&ch.to_string());
+                                    self.insert_char(ch);
                                 }
                             }
                         }

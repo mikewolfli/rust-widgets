@@ -38,18 +38,6 @@ impl DragDropManager {
     ) -> bool {
         false
     }
-    /// Inject a drop event into the backend queue.
-    ///
-    /// Useful for tests, bridges, and host-driven event forwarding.
-    #[cfg(not(alloc_frugal))]
-    pub fn inject_drop_event(event: DropEvent) -> bool {
-        Self::inject_drop_event_with(get_platform(), event)
-    }
-    /// Drag and drop not available in mini mode.
-    #[cfg(alloc_frugal)]
-    pub fn inject_drop_event(_event: DropEvent) -> bool {
-        false
-    }
     /// Poll the next pending drop event, if any.
     #[cfg(not(alloc_frugal))]
     pub fn poll_drop_event() -> Option<DropEvent> {
@@ -82,7 +70,7 @@ impl DragDropManager {
     }
     /// Inject a drop event into the backend queue via an explicit platform.
     /// Kept under mini so tests (and any `&dyn Platform` caller) can use it.
-    #[cfg_attr(alloc_frugal, allow(dead_code))]
+    #[cfg_attr(any(alloc_frugal, not(test)), allow(dead_code))]
     pub(crate) fn inject_drop_event_with(platform: &dyn Platform, event: DropEvent) -> bool {
         platform.inject_drop_event(event)
     }

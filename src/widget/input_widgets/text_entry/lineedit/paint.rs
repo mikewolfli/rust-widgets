@@ -616,11 +616,19 @@ impl Draw for LineEdit {
                 );
             }
             if let Some(counter_box) = layout.counter {
+                // One reading for both the limit test and the painted string. `value_readings`
+                // returns the counter by value, so asking through `is_over_limit` and
+                // `counter_text` separately cloned it twice per frame.
+                let (count, counter) = self.value_readings();
                 let counter_line = context.text_line(counter_box, font);
                 // The counter is a *budget* reading, so it turns to the error colour once the value
                 // exceeds the limit — the one moment it has something to warn about.
-                let counter_color = if self.is_over_limit() { error_color } else { slot_color };
-                if let Some(counter) = self.counter_text() {
+                let counter_color = if DecorationLayout::over_limit(count, self.max_length) > 0 {
+                    error_color
+                } else {
+                    slot_color
+                };
+                if let Some(counter) = counter {
                     context.draw_text(
                         Point::new(counter_box.x, counter_line.y),
                         &counter,
