@@ -66,8 +66,8 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
 echo "[1/3] the announcement entry point exists"
-if ! grep -qE '^pub fn notify_native_redraw' src/widget/runtime.rs; then
-    echo "  FAIL  src/widget/runtime.rs no longer defines \`pub fn notify_native_redraw\`"
+if ! grep -qE '^pub fn notify_native_redraw' src/widget/runtime/window_map.rs; then
+    echo "  FAIL  src/widget/runtime/window_map.rs no longer defines \`pub fn notify_native_redraw\`"
     echo "        It is the one way a platform tells the library about its own redraws."
     exit 1
 fi

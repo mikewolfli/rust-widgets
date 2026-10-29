@@ -17,7 +17,7 @@ import sys
 TESTS = [
     ("widget::svg::tests::the_emitted_path_reproduces_the_glyph_box_exactly", "src/widget/svg.rs"),
     ("widget::display_widgets::arc::tests::arc_value_is_drawn_only_when_it_fits_in_the_ring_hole", "src/widget/display_widgets/arc.rs"),
-    ("widget::input_widgets::lineedit::tests::a_prefix_is_drawn_before_the_value_and_shifts_it", "src/widget/input_widgets/lineedit.rs"),
+    ("widget::input_widgets::text_entry::lineedit::tests::a_prefix_is_drawn_before_the_value_and_shifts_it", "src/widget/input_widgets/text_entry/lineedit/tests.rs"),
 ]
 
 

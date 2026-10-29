@@ -6,7 +6,7 @@
 # check_drawn_types_are_covered.sh — 每个 `impl Draw` 都要有门禁覆盖
 # ============================================================================
 # Every gate in this crate is built around one number: the 188 controls in
-# `capability/properties.rs`. `check_svg_snapshots.sh` counts 188 x 2 snapshot files,
+# `capability/properties/`. `check_svg_snapshots.sh` counts 188 x 2 snapshot files,
 # `check_control_rendering.sh` sweeps the factory registry, `check_control_has_tests.sh`
 # walks the same names. A struct that implements `Draw` and matches none of those names is
 # outside all three — not by oversight, but by construction.

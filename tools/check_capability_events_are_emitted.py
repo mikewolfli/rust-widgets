@@ -3,7 +3,7 @@
 
 # Why this gate exists
 
-`src/widget/capability/properties.rs` publishes, for each of the 187 capabilities, a list of
+`src/widget/capability/properties/` publishes, for each of the 187 capabilities, a list of
 event *names*:
 
     events: &["clicked", "pressed", "released", "state_changed"],
@@ -74,8 +74,18 @@ import pathlib
 import re
 import sys
 
-PROPERTIES = pathlib.Path("src/widget/capability/properties.rs")
+PROPERTIES_DIR = pathlib.Path("src/widget/capability/properties")
+PROPERTIES = PROPERTIES_DIR / "mod.rs"
 EVENT_PAYLOADS = pathlib.Path("src/widget/capability/event_payloads.rs")
+
+
+def read_properties() -> str:
+    """The capability module as one text: the entry file plus its child modules."""
+    children = sorted(path for path in PROPERTIES_DIR.glob("*.rs") if path != PROPERTIES)
+    return "\n".join(
+        [PROPERTIES.read_text(encoding="utf-8")]
+        + [path.read_text(encoding="utf-8") for path in children]
+    )
 SRC = pathlib.Path("src")
 
 # Signals owned by a data-source trait, emitted by the model rather than the widget layer.
@@ -408,7 +418,7 @@ def main() -> int:
         print(f"❌ {PROPERTIES} not found (run from the repo root)")
         return 1
 
-    source = PROPERTIES.read_text()
+    source = read_properties()
     signals = collect_signals()
     struct_emits = collect_struct_emits()
     struct_declares = collect_struct_declares()

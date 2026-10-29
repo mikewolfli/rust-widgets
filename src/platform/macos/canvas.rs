@@ -43,12 +43,18 @@ use std::os::raw::c_void;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
+mod canvas_views;
+pub(crate) use canvas_views::{forget_window_canvas, release_canvas_view};
+use canvas_views::{
+    is_window_canvas, retain_canvas_view, set_window_canvas, window_canvas_for, window_canvases,
+};
+
 /// `OBJC_ASSOCIATION_ASSIGN` (0): borrow the value rather than retaining it.
 ///
 /// The associated value here is a plain integer id, not an object, so no
 /// ownership policy applies. Declared locally because the `objc` crate exposes
 /// the constant only through the `objc-sys` surface.
-const OBJC_ASSOCIATION_ASSIGN: usize = 0;
+pub(super) const OBJC_ASSOCIATION_ASSIGN: usize = 0;
 
 /// `OBJC_ASSOCIATION_RETAIN_NONATOMIC` (1): retain the associated object, without atomicity.
 ///
@@ -81,9 +87,9 @@ unsafe impl objc::Encode for EncodedRange {
 #[link(name = "objc")]
 unsafe extern "C" {
     /// Returns the associated value for `key` on `object`, or null.
-    fn objc_getAssociatedObject(object: *mut c_void, key: *const c_void) -> *mut c_void;
+    pub(super) fn objc_getAssociatedObject(object: *mut c_void, key: *const c_void) -> *mut c_void;
     /// Sets the associated value for `key` on `object`.
-    fn objc_setAssociatedObject(
+    pub(super) fn objc_setAssociatedObject(
         object: *mut c_void,
         key: *const c_void,
         value: *mut c_void,
@@ -1319,70 +1325,6 @@ unsafe fn set_widget_id(view: id, widget_id: ObjectId) {
     );
 }
 
-/// The association key marking a canvas as a **window** canvas.
-///
-/// Its presence means "this view is a window's content view, so `drawRect:` paints the whole
-/// widget tree" rather than one mounted box. Carried as an associated object for the same reason
-/// the widget id is: a plain `NSView` subclass is not KVC-compliant and `setValue:forKey:` would
-/// raise.
-fn window_flag_key() -> id {
-    static KEY: OnceLock<usize> = OnceLock::new();
-    let ptr = *KEY.get_or_init(|| {
-        // SAFETY: standard `NSString` construction; the value lives for the process.
-        unsafe { NSString::alloc(nil).init_str("RustWidgetsCanvasIsWindow") as id as usize }
-    });
-    ptr as id
-}
-
-/// Marks `view` as a window canvas.
-///
-/// # Safety
-///
-/// `view` must be a live `NSView` on the AppKit main thread.
-unsafe fn set_window_canvas(view: id) {
-    // Any non-null value marks the view; the pointer is never dereferenced.
-    objc_setAssociatedObject(
-        view as *mut c_void,
-        window_flag_key() as *const c_void,
-        std::ptr::null_mut::<c_void>().wrapping_add(1),
-        OBJC_ASSOCIATION_ASSIGN,
-    );
-}
-
-/// Whether `view` is a window canvas (see [`window_flag_key`]).
-///
-/// # Safety
-///
-/// `view` must be a live `NSView`.
-unsafe fn is_window_canvas(view: id) -> bool {
-    let value = objc_getAssociatedObject(view as *mut c_void, window_flag_key() as *const c_void);
-    !value.is_null()
-}
-
-/// Side table from a **host** window id to its canvas content view.
-///
-/// Kept separate from [`mounted_views`]: a window canvas is the window's own content view, not a
-/// mounted surface, so `resize_surface`/`unmount_surface` (which are keyed by surface id) must not
-/// reach it. Only the invalidation path looks here.
-fn window_canvases() -> &'static Mutex<HashMap<ObjectId, usize>> {
-    static VIEWS: OnceLock<Mutex<HashMap<ObjectId, usize>>> = OnceLock::new();
-    VIEWS.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
-/// The window canvas that should repaint `id`.
-///
-/// `id` may be a window's widget-registry id (what `request_repaint_subtree` names for the window)
-/// or a child control's id (which has no native view of its own). Both resolve, through the
-/// recorded host association, to the window whose canvas paints the whole tree.
-fn window_canvas_for(id: ObjectId) -> Option<id> {
-    let host = crate::widget::runtime::host_window_for(id).or_else(|| {
-        crate::widget::runtime::top_level_window_of(id)
-            .and_then(crate::widget::runtime::host_window_for)
-    })?;
-    let table = crate::compat::lock(window_canvases());
-    table.get(&host).map(|ptr| *ptr as id)
-}
-
 /// Creates a canvas content view for the window registered under `host_id`.
 ///
 /// The view is sized to the window's content area, tagged with `host_id`, marked as a window
@@ -1410,42 +1352,6 @@ pub(crate) unsafe fn make_window_canvas(host_id: ObjectId, width: u32, height: u
     set_window_canvas(view);
     crate::compat::lock(window_canvases()).insert(host_id, view as usize);
     Some(view)
-}
-
-/// Drops the [`window_canvases`] entry for a host window that is being destroyed.
-///
-/// The entry holds a raw pointer to the window's content view. Once the window is closed that
-/// pointer is stale, and leaving it in the table let a repaint request route to a view that no
-/// longer belongs to any window. Clearing it here is the destroy-side half of the balance that
-/// `make_window_canvas` establishes.
-pub(crate) fn forget_window_canvas(host_id: ObjectId) {
-    let _ = crate::compat::lock(window_canvases()).remove(&host_id);
-}
-
-/// Takes a reference that this module's side table owns for a canvas view.
-///
-/// The discipline mirrors `macos_objc2::native::store_native_view`: the view is retained for the
-/// side table, so the table's pointer stays valid independently of the superview, and the matching
-/// release happens once at teardown.
-///
-/// # Safety
-///
-/// `view` must be a live canvas view on the AppKit main thread.
-unsafe fn retain_canvas_view(view: id) {
-    let _: *mut c_void = msg_send![view, retain];
-}
-
-/// Releases one reference this module owns to a canvas view.
-///
-/// `mount_surface_impl` calls it for the `alloc` reference once `addSubview:` has retained the
-/// view; `unmount_surface_impl` calls it for the side table's reference after
-/// `removeFromSuperview`. Keeping both halves on one helper is what stops the pair from drifting.
-///
-/// # Safety
-///
-/// `view` must be a live canvas view and the caller must own a reference to it.
-pub(crate) unsafe fn release_canvas_view(view: id) {
-    let _: () = msg_send![view, release];
 }
 
 /// Side table from mounted `ObjectId` to its canvas view pointer.

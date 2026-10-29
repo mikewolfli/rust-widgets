@@ -17,7 +17,7 @@ So the payload kind is *derived*, not typed in:
      (`pub fn clicked_signal(&self) -> &GenericSignal`) — and takes the generic argument;
   3. it maps that Rust type to a `PropertyValueKind` plus an `EventPayloadShape`;
   4. it writes the answer into `src/widget/capability/event_payloads.rs`, which
-     `properties.rs` includes and `events_of!` indexes.
+     `properties/mod.rs` includes and `events_of!` indexes.
 
 The gate that checks the result (`check_event_payload_types.py`) re-derives the same way, so an
 edit that disagrees with the signal is a failure rather than a silent divergence.
@@ -44,8 +44,18 @@ import sys
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
 SRC = REPO / "src"
-PROPERTIES = SRC / "widget/capability/properties.rs"
+PROPERTIES_DIR = SRC / "widget/capability/properties"
+PROPERTIES = PROPERTIES_DIR / "mod.rs"
 OUT = SRC / "widget/capability/event_payloads.rs"
+
+
+def read_properties() -> str:
+    """The capability module as one text: the entry file plus its child modules."""
+    children = sorted(path for path in PROPERTIES_DIR.glob("*.rs") if path != PROPERTIES)
+    return "\n".join(
+        [PROPERTIES.read_text(encoding="utf-8")]
+        + [path.read_text(encoding="utf-8") for path in children]
+    )
 
 # The published-name census: control -> the names its capability publishes.
 #
@@ -56,7 +66,7 @@ OUT = SRC / "widget/capability/event_payloads.rs"
 # derivation reads the names from: a run that overwrote it would leave the next run nothing to
 # derive from, and "nothing to derive" and "this control publishes nothing" would look the same.
 #
-# The census is written once, from the literal lists in `properties.rs`, and is then the fixed
+# The census is written once, from the literal lists in `properties/`, and is then the fixed
 # point both scripts agree on. It is a build-time source like any other: a capability that gains an
 # event adds it here (or re-runs the census from the pre-migration source), and the gate compares
 # the table against it.
@@ -313,7 +323,7 @@ STRUCTURED_PAYLOADS: dict[str, tuple[str, str]] = {
     "TileRequest": ("K::String", "Mixed"),
 }
 
-# ── Capability constructors in `properties.rs` ──────────────────────────────────────
+# ── Capability constructors in `properties/` ────────────────────────────────────────
 CAPABILITY_RE = re.compile(r"pub\(crate\) fn \w+\(\) -> WidgetCapability \{(.*?)\n\}", re.S)
 NAME_RE = re.compile(r'canonical_name:\s*"([^"]+)"')
 # The two spellings of an event list, tried in order. They are separate patterns rather than one
@@ -540,7 +550,7 @@ def resolve_declaration(
 def collect_published() -> dict[str, list[str]]:
     """control -> event names, from the census file, falling back to the literal lists.
 
-    The census is authoritative once it exists. Falling back to `properties.rs` is what makes the
+    The census is authoritative once it exists. Falling back to `properties/` is what makes the
     first run (and a deliberate re-census) work, and it is only reachable while the constructors
     still spell the names out.
     """
@@ -550,8 +560,8 @@ def collect_published() -> dict[str, list[str]]:
 
 
 def census_from_source() -> dict[str, list[str]]:
-    """The names as `properties.rs` spells them literally, or via a lookup into the table."""
-    source = PROPERTIES.read_text()
+    """The names as `properties/` spells them literally, or via a lookup into the table."""
+    source = read_properties()
     generated = read_generated_names()
     published: dict[str, list[str]] = {}
     for match in CAPABILITY_RE.finditer(source):
@@ -581,7 +591,7 @@ def write_census(published: dict[str, list[str]]) -> None:
     lines = [
         "# Published capability events, one control per line: control: name, name, ...",
         "# A row that is a second spelling of another control ends with [alias_of=<canonical>].",
-        "# Generated from src/widget/capability/properties.rs by tools/derive_event_payloads.py.",
+        "# Generated from src/widget/capability/properties/ by tools/derive_event_payloads.py.",
         "# This file is the census the event payload table is derived from; edit it to publish or",
         "# withdraw a name, and re-run the tool.",
     ]
@@ -650,7 +660,7 @@ def read_generated_names() -> dict[str, list[str]]:
 def main() -> int:
     check_only = "--check" in sys.argv
     if not PROPERTIES.exists():
-        print(f"❌ {PROPERTIES} not found (run from the repo root)")
+        print(f"❌ {PROPERTIES_DIR} not found (run from the repo root)")
         return 1
 
     fields, accessors = collect_signals()

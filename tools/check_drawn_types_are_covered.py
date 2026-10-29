@@ -38,7 +38,7 @@ what makes that a decision rather than a silence.
 
 A drawn type is covered when it reaches the gates through any of these routes:
 
-  * its name (snake-cased) is a `canonical_name` in `src/widget/capability/properties.rs`;
+  * its name (snake-cased) is a `canonical_name` in `src/widget/capability/properties/`;
   * a `constructors.rs` function constructs it, which makes it the implementation behind a
     registered control regardless of whether the struct and the control share a name;
   * it is listed in `ACKNOWLEDGED` with a written reason.
@@ -67,16 +67,27 @@ import pathlib
 import re
 import sys
 
-PROPERTIES = "src/widget/capability/properties.rs"
+PROPERTIES_DIR = pathlib.Path("src/widget/capability/properties")
+PROPERTIES = PROPERTIES_DIR / "mod.rs"
 CONSTRUCTORS = "src/widget/capability/constructors.rs"
+
+
+def read_properties() -> str:
+    """The capability module as one text: the entry file plus its child modules."""
+    children = sorted(path for path in PROPERTIES_DIR.glob("*.rs") if path != PROPERTIES)
+    return "\n".join(
+        [PROPERTIES.read_text(encoding="utf-8")]
+        + [path.read_text(encoding="utf-8") for path in children]
+    )
 WIDGET_GLOB = "src/widget/**/*.rs"
 
 CANONICAL = re.compile(r'canonical_name:\s*"([^"]+)"')
 # Anchored at column 0: a production `impl Draw` is a top-level item, while every test
 # fixture is nested inside a `#[cfg(test)] mod tests` and therefore indented. The previous
 # unanchored pattern collected `Surface`/`Counter` from `widget/runtime.rs`'s test module and
-# reported them as uncovered controls. Macro-generated impls (`impl Draw for $ty`) are not
-# matched either way, because `$` is not in the type-name class.
+# reported them as uncovered controls. A child test module (`<dir>/tests.rs`) is dedented, so
+# the walk skips those files by name as well. Macro-generated impls (`impl Draw for $ty`) are
+# not matched either way, because `$` is not in the type-name class.
 DRAW_IMPL = re.compile(r"^impl Draw for ([A-Za-z_][A-Za-z0-9_]*)", re.MULTILINE)
 
 #: Types that implement `Draw` with no gate covering them, and why that is accepted.
@@ -86,11 +97,11 @@ DRAW_IMPL = re.compile(r"^impl Draw for ([A-Za-z_][A-Za-z0-9_]*)", re.MULTILINE)
 #: a finding becomes permanent. An entry whose type later becomes registered is reported stale.
 ACKNOWLEDGED = {
     "ChartCrosshair": (
-        "src/widget/chart_widgets/chart_crosshair.rs",
+        "src/widget/chart_widgets/chart/chart_crosshair.rs",
         "Drawn by `BarChart` / `LineChart` at the hover position; those controls' own snapshots and tests cover the picture. Registering it as a kind would expose a crosshair a host cannot meaningfully mount on its own.",
     ),
     "ColumnChooser": (
-        "src/widget/view_widgets/column_chooser.rs",
+        "src/widget/view_widgets/data_grid/column_chooser.rs",
         "Column-visibility companion for table/tree headers; drawn inside its owner's rect, no own census row.",
     ),
     "CupertinoNavigationStack": (
@@ -98,7 +109,7 @@ ACKNOWLEDGED = {
         "Cupertino navigation container: exported from `widget/mod.rs`, no `create_*` constructor and no canonical name, so nothing snapshots it.",
     ),
     "DataGridCellEditor": (
-        "src/widget/view_widgets/data_grid.rs",
+        "src/widget/view_widgets/data_grid/types.rs",
         "The in-place editor `DataGrid::begin_edit` hands a host and `commit_edit` reads back (V-002). Registering it as a factory kind would let a caller mount an editor with no cell behind it; the grid's own snapshot covers the frame it paints over a cell, and `the_cell_editor_paints_its_box_and_commits_its_text` covers the editor itself.",
     ),
     "DrumColumn": (
@@ -106,11 +117,11 @@ ACKNOWLEDGED = {
         "One scrolling column of the drum picker; the picker's snapshot covers the assembled control.",
     ),
     "FormatToolbar": (
-        "src/widget/input_widgets/input_companions.rs",
+        "src/widget/input_widgets/text_entry/input_companions.rs",
         "Rich-text formatting strip; the editor that owns it draws it, so it has no independent census row.",
     ),
     "GridFindBar": (
-        "src/widget/view_widgets/grid_find_bar.rs",
+        "src/widget/view_widgets/data_grid/grid_find_bar.rs",
         "Find strip for grid views; exported companion, unregistered.",
     ),
     "KeyTipBadge": (
@@ -118,15 +129,15 @@ ACKNOWLEDGED = {
         "Key-tip overlay drawn beside a focused control; unregistered companion.",
     ),
     "MapMarkerDetail": (
-        "src/widget/special_widgets/map_marker_detail.rs",
+        "src/widget/special_widgets/map_view/map_marker_detail.rs",
         "Detail card `MapView` draws beside a selected marker; the map's snapshot covers it.",
     ),
     "MediaScrubber": (
-        "src/widget/media_widgets/media_scrubber.rs",
+        "src/widget/special_widgets/media_player/media_scrubber.rs",
         "Scrub bar of the media player; the player draws it, so it has no independent row.",
     ),
     "MediaTransportBar": (
-        "src/widget/media_widgets/media_transport.rs",
+        "src/widget/special_widgets/media_player/media_transport.rs",
         "Transport controls of the media player; same reasoning as `MediaScrubber`.",
     ),
     "ModalHost": (
@@ -142,15 +153,15 @@ ACKNOWLEDGED = {
         "Row of preset chips; exported companion with no constructor.",
     ),
     "RecentValuesPopup": (
-        "src/widget/input_widgets/recent_values_popup.rs",
+        "src/widget/input_widgets/text_entry/recent_values_popup.rs",
         "Recent-values dropdown of an input; drawn by its owner.",
     ),
     "Scrollbar": (
-        "src/widget/input_widgets/input_companions.rs",
+        "src/widget/input_widgets/text_entry/input_companions.rs",
         "The scroll *indicator* used by scroll areas and lists (distinct from the registered `ScrollBar` kind); drawn inside its owner.",
     ),
     "StepButtons": (
-        "src/widget/input_widgets/input_companions.rs",
+        "src/widget/input_widgets/text_entry/input_companions.rs",
         "Increment/decrement pair of the spin box; the spin box's snapshot covers it.",
     ),
     "StickyHeader": (
@@ -158,11 +169,11 @@ ACKNOWLEDGED = {
         "Container that pins a header over scrolling content; exported, unregistered.",
     ),
     "SubtitleBar": (
-        "src/widget/media_widgets/subtitle_bar.rs",
+        "src/widget/special_widgets/media_player/subtitle_bar.rs",
         "Subtitle overlay of the video player; the player draws it.",
     ),
     "SuggestionPopup": (
-        "src/widget/input_widgets/suggestion_popup.rs",
+        "src/widget/input_widgets/text_entry/suggestion_popup.rs",
         "Suggestions dropdown of an input; drawn by its owner.",
     ),
     "TagGroup": (
@@ -170,7 +181,7 @@ ACKNOWLEDGED = {
         "Group of tags; exported companion, unregistered.",
     ),
     "ValidationBubble": (
-        "src/widget/input_widgets/validation_bubble.rs",
+        "src/widget/input_widgets/text_entry/validation_bubble.rs",
         "Error bubble of a form field; drawn by its owner.",
     ),
     "ValueSpinBox": (
@@ -190,11 +201,16 @@ def main() -> int:
         if arg.startswith("--inject="):
             injected = arg.split("=", 1)[1]
 
-    canonical = set(CANONICAL.findall(pathlib.Path(PROPERTIES).read_text(encoding="utf-8")))
+    canonical = set(CANONICAL.findall(read_properties()))
     constructors = pathlib.Path(CONSTRUCTORS).read_text(encoding="utf-8")
 
     drawn: dict[str, str] = {}
     for path in sorted(glob.glob(WIDGET_GLOB, recursive=True)):
+        # A child test module is exempt (principle #9): its fixtures are dedented out of an
+        # inline `#[cfg(test)] mod tests`, so the column-0 anchor on `DRAW_IMPL` no longer
+        # separates them from controls. They are test-only types by construction.
+        if path.endswith("tests.rs") or path.endswith("_tests.rs"):
+            continue
         text = open(path, encoding="utf-8", errors="ignore").read()
         for match in DRAW_IMPL.finditer(text):
             drawn.setdefault(match.group(1), path.replace("\\", "/"))

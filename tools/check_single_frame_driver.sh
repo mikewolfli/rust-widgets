@@ -51,7 +51,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
-RUNTIME="src/widget/runtime.rs"
+RUNTIME="src/widget/runtime/frame.rs"
 
 echo "[1/3] the frame driver exists"
 if [ ! -f "$RUNTIME" ]; then
@@ -78,7 +78,8 @@ echo "[2/3] the animation bus has exactly one driver"
 # reports the refactor (not the defect) and stops guarding anything.
 BUS_CALLS="$(grep -rEn 'tick_animations(_sweep)?\(' src/ --include=*.rs \
     | sed -e 's://.*::' \
-    | grep -vE '^[^:]+:[0-9]+:[[:space:]]*$')"
+    | grep -vE '^[^:]+:[0-9]+:[[:space:]]*$' \
+    | grep -vE '^src/[^:]*/(tests|[^/:]*_tests)\.rs:')"
 
 # Drop the definition itself and its doc-comment references.
 BUS_CALLS_CODE="$(printf '%s\n' "$BUS_CALLS" | grep -vE 'fn tick_animations(_sweep)?\(' || true)"
@@ -126,6 +127,12 @@ STRAY="$(printf '%s\n' "$BUS_CALLS_CODE" \
 STRAY_CODE="$(printf '%s\n' "$STRAY" | while IFS= read -r line; do
     [ -z "$line" ] && continue
     f="${line%%:*}"; rest="${line#*:}"; ln="${rest%%:*}"
+    # A child test module (`<dir>/tests.rs`, `<dir>/<name>_tests.rs`) is the test double's home
+    # (principle #9): it drove the bus on purpose before the split and still does, but it is
+    # dedented out of its `mod tests` wrapper, so the marker search below cannot see it.
+    case "$f" in
+        */tests.rs|*_tests.rs) continue ;;
+    esac
     # Find the enclosing module boundary above this line; if the nearest
     # `mod tests` starts before it and the file ends with it, it is a test.
     mod_line="$(awk -v target="$ln" '/mod tests/{m=NR} NR==target{print m+0}' "$f")"

@@ -31,12 +31,23 @@ in `src/widget/capability.rs` and the normalisation rule in
 re-stating them.
 """
 
+import pathlib
 import re
 import sys
 
 CAPABILITY = "src/widget/capability.rs"
-PROPERTIES = "src/widget/capability/properties.rs"
+PROPERTIES_DIR = pathlib.Path("src/widget/capability/properties")
+PROPERTIES = PROPERTIES_DIR / "mod.rs"
 PLATFORM = "src/platform/types/traits.rs"
+
+
+def read_properties() -> str:
+    """The capability module as one text: the entry file plus its child modules."""
+    children = sorted(path for path in PROPERTIES_DIR.glob("*.rs") if path != PROPERTIES)
+    return "\n".join(
+        [PROPERTIES.read_text(encoding="utf-8")]
+        + [path.read_text(encoding="utf-8") for path in children]
+    )
 
 
 def normalize_key(value: str) -> str:
@@ -52,7 +63,7 @@ toolchain in the loop, and because the *rule* (strip `_`, `-`, space; lowercase)
 
 def main() -> int:
     capability = open(CAPABILITY, encoding="utf-8").read()
-    properties = open(PROPERTIES, encoding="utf-8").read()
+    properties = read_properties()
     platform = open(PLATFORM, encoding="utf-8").read()
 
     canonical = set(re.findall(r'canonical_name:\s*"([^"]+)"', properties))

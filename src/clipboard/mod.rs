@@ -5,7 +5,7 @@
 //!
 //! # Reachability
 //!
-//! **State:** Production callers: `src/bindings/binding_impl.rs:1` (`rw_set_clipboard_text` / `rw_get_clipboard_text` route here).
+//! **State:** Production callers: `src/bindings/binding_impl/c_abi.rs:892` (`rw_set_clipboard_text` / `rw_get_clipboard_text` route here).
 mod clipboard_manager;
 mod drag_drop_manager;
 mod guard;

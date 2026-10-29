@@ -610,7 +610,7 @@ pub fn factory_name_for_kind(kind: crate::widget::WidgetKind) -> Option<&'static
 /// This table — not the kind declaration and not the aliased type's docs — is the single
 /// fact source for every "kind X is kind Y under another name" relation. `ContextMenu` is
 /// the deliberate example: `WidgetKind::ContextMenu`'s variant comment in `kind.rs` points
-/// here, `Menu`'s type comment in `menu_toolbar/menu.rs` points here, and the
+/// here, `Menu`'s type comment in `menu_toolbar/menu/menu/model.rs` points here, and the
 /// `context_menu` -> `menu` row in [`ALIAS_OF`] records the same pair for the name-keyed
 /// consumers. Those three references describe one mechanism; a second place that decides
 /// a kind alias is what principle #101 rules out.
@@ -657,7 +657,7 @@ fn alias_factory_name(kind: crate::widget::WidgetKind) -> &'static str {
         crate::widget::WidgetKind::DirectoryDialog => "file_dialog",
         // G-305: this arm is the single fact source for "`ContextMenu` is a `Menu` alias
         // kind" (`pub type ContextMenu = Menu;`). `WidgetKind::ContextMenu`'s variant
-        // comment in `kind.rs` and `Menu`'s type comment in `menu_toolbar/menu.rs` point
+        // comment in `kind.rs` and `Menu`'s type comment in `menu_toolbar/menu/menu/model.rs` point
         // here, and the `ALIAS_OF` row below records the same pair for the name-keyed
         // consumers. Change a kind-level alias here, not in those docs.
         crate::widget::WidgetKind::ContextMenu => "menu",
@@ -825,25 +825,25 @@ pub static ALIAS_OF: &[AliasRow] = &[
         alias: "context_menu",
         alias_of: "menu",
         implementation: "Menu",
-        file: "src/widget/menu_toolbar/menu.rs",
+        file: "src/widget/menu_toolbar/menu/menu/events.rs",
     },
     AliasRow {
         alias: "email_input",
         alias_of: "line_edit",
         implementation: "LineEdit",
-        file: "src/widget/input_widgets/lineedit.rs",
+        file: "src/widget/input_widgets/text_entry/lineedit/events.rs",
     },
     AliasRow {
         alias: "password_edit",
         alias_of: "line_edit",
         implementation: "LineEdit",
-        file: "src/widget/input_widgets/lineedit.rs",
+        file: "src/widget/input_widgets/text_entry/lineedit/events.rs",
     },
     AliasRow {
         alias: "phone_input",
         alias_of: "line_edit",
         implementation: "LineEdit",
-        file: "src/widget/input_widgets/lineedit.rs",
+        file: "src/widget/input_widgets/text_entry/lineedit/events.rs",
     },
     AliasRow {
         alias: "split_layout",

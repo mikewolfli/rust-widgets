@@ -166,7 +166,7 @@ macro_rules! impl_properties_advanced {
         /// The control's value is edited through its own API, so the capability surface is exactly the
         /// four names every widget inherits.
         #[cfg(not(alloc_frugal))]
-        const KEY_SEQUENCE_EDITOR_PROPERTIES: &[PropertySchema] = &[
+        pub(crate) const KEY_SEQUENCE_EDITOR_PROPERTIES: &[PropertySchema] = &[
             // ADV-07: the recorded chord, the recording switch and the history flags.
             PropertySchema::new("key_sequence", PropertyValueKind::String, true, true),
             PropertySchema::new("recording", PropertyValueKind::Bool, true, true),

@@ -1,5 +1,5 @@
 # Published capability events, one control per line: control: name, name, ...
-# Generated from src/widget/capability/properties.rs by tools/derive_event_payloads.py.
+# Generated from src/widget/capability/properties/ by tools/derive_event_payloads.py.
 # This file is the census the event payload table is derived from; edit it to publish or
 # withdraw a name, and re-run the tool.
 # Names that are a second spelling of another control's row (`context_menu` for `menu`,

@@ -7,7 +7,7 @@ own module documentation under a `# Reachability` heading:
 * **Production callers** — list `path:line` references. Each is verified to exist
   and to mention the module.
 * **Exposed over the C ABI** — a `rw_*` entry point must exist in
-  `src/bindings/binding_impl.rs`.
+  `src/bindings/binding_impl/`.
 * **Reserved** — an experiment or deliberately kept module. Requires a non-empty
   reason; no caller evidence is demanded.
 
@@ -34,7 +34,7 @@ import re
 import sys
 
 LIB_FILE = "src/lib.rs"
-BINDING_FILE = "src/bindings/binding_impl.rs"
+BINDING_DIR = "src/bindings/binding_impl"
 
 # `pub mod foo;` / `pub mod foo {` — the declaration form, not a use statement.
 MOD_RE = re.compile(r"^pub mod (?P<name>[a-z_0-9]+)", re.MULTILINE)
@@ -52,7 +52,8 @@ PRODUCTION_RE = re.compile(r"Production callers?\b", re.IGNORECASE)
 ABI_RE = re.compile(r"Exposed over the C ABI", re.IGNORECASE)
 RESERVED_RE = re.compile(r"\bReserved\b", re.IGNORECASE)
 
-# `src/app/handle.rs:88` or `app/handle.rs:88` inside the State line.
+# `src/app/handle/types.rs:88` or `app/handle/types.rs:88` inside the State line. (The
+# example used the old single-file `handle.rs`; the handles are now a directory.)
 CALLER_RE = re.compile(r"([A-Za-z0-9_./-]+\.rs):(\d+)")
 
 # `rw_foo` named in the State line of an ABI-exposed module.
@@ -135,7 +136,7 @@ def check_module(root: pathlib.Path, name: str, abi_symbols: set[str]) -> list[s
                 if symbol not in abi_symbols:
                     problems.append(
                         f"{source}: claims C ABI exposure via `{symbol}`, which "
-                        f"{BINDING_FILE} does not define"
+                        f"{BINDING_DIR}/ does not define"
                     )
         elif RESERVED_RE.search(body):
             # A reason must follow the word, not just the label.
@@ -165,7 +166,9 @@ def main() -> int:
     lib_text = (root / LIB_FILE).read_text(encoding="utf-8")
     modules = sorted(set(MOD_RE.findall(lib_text)))
 
-    binding_text = (root / BINDING_FILE).read_text(encoding="utf-8")
+    binding_text = "\n".join(
+        p.read_text(encoding="utf-8") for p in sorted((root / BINDING_DIR).glob("*.rs"))
+    )
     abi_symbols = set(re.findall(r"fn (rw_[a-z0-9_]+)", binding_text))
 
     problems: list[str] = []

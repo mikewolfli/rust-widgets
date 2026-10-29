@@ -591,10 +591,12 @@ def _abi_constructible_kinds() -> set[str]:
     is not knowable from the signature, and claiming it here would make the column
     say "every kind" and therefore say nothing.
     """
-    bindings = pathlib.Path("src/bindings/binding_impl.rs")
-    if not bindings.exists():
+    bindings = pathlib.Path("src/bindings/binding_impl")
+    if not bindings.is_dir():
         return set()
-    text = bindings.read_text(encoding="utf-8")
+    text = "\n".join(
+        p.read_text(encoding="utf-8") for p in sorted(bindings.glob("*.rs"))
+    )
     kinds: set[str] = set()
     for match in re.finditer(r'pub\s+(?:unsafe\s+)?extern\s+"C"\s+fn\s+rw_create_([a-z0-9_]+)', text):
         suffix = match.group(1)
@@ -633,7 +635,7 @@ def generate_matrix() -> str:
     lines.append(
         "> **C**: ✅ when a typed `rw_create_*` function exists for the kind, "
         "⬜ when the only route is the generic `rw_create_widget_of_kind(name)`. "
-        "Derived from `src/bindings/binding_impl.rs`, never hand-maintained."
+        "Derived from `src/bindings/binding_impl/`, never hand-maintained."
     )
     lines.append(
         "> No ✅ cell is currently compile-verified only; see "

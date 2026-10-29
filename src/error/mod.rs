@@ -22,8 +22,8 @@
 //!
 //! # Reachability
 //!
-//! **State:** Production callers: `src/bindings/binding_impl.rs:2300` and
-//! `:2310` (`rw_error_code` / `rw_error_message` read this module's
+//! **State:** Production callers: `src/bindings/binding_impl/c_abi.rs:1308` and
+//! `:1319` (`rw_error_code` / `rw_error_message` read this module's
 //! `ffi` slot).
 
 // ---------------------------------------------------------------------------

@@ -35,8 +35,18 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-PROPERTIES = ROOT / "src" / "widget" / "capability" / "properties.rs"
+PROPERTIES_DIR = ROOT / "src" / "widget" / "capability" / "properties"
+PROPERTIES = PROPERTIES_DIR / "mod.rs"
 TABLE_DIR = ROOT / "src" / "widget" / "capability"
+
+
+def read_properties() -> str:
+    """The capability module as one text: the entry file plus its child modules."""
+    children = sorted(path for path in PROPERTIES_DIR.glob("*.rs") if path != PROPERTIES)
+    return "\n".join(
+        [PROPERTIES.read_text(encoding="utf-8")]
+        + [path.read_text(encoding="utf-8") for path in children]
+    )
 OUT = ROOT / "tools" / "declaration_alignment_census.txt"
 
 HEADER = """\
@@ -56,7 +66,7 @@ HEADER = """\
 
 def capability_records() -> list[str]:
     """The canonical names the factory registers, in file order."""
-    text = PROPERTIES.read_text(encoding="utf-8")
+    text = read_properties()
     return re.findall(r'canonical_name:\s*"([^"]+)"', text)
 
 
@@ -67,7 +77,7 @@ def schema_entries() -> dict[str, list[tuple[str, bool, bool]]]:
     made through the `properties: NAME_PROPERTIES` field of each constructor and the
     `const NAME_PROPERTIES: &[PropertySchema]` declaration in the `.in.rs` includes.
     """
-    constructors = PROPERTIES.read_text(encoding="utf-8")
+    constructors = read_properties()
     tables: dict[str, list[tuple[str, bool, bool]]] = {}
     for path in sorted(TABLE_DIR.glob("properties_*.in.rs")):
         text = path.read_text(encoding="utf-8")

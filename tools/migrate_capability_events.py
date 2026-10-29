@@ -5,7 +5,7 @@
 
 BLUE19 step 1 changes `WidgetCapability.events` from `&'static [&'static str]` to
 `&'static [EventSchema]`. The 187 capability constructors in
-`src/widget/capability/properties.rs` each spell their names inline:
+`src/widget/capability/properties/` each spell their names inline:
 
     events: &["clicked", "pressed", "released", "state_changed"],
 
@@ -29,7 +29,7 @@ would leave the table with nothing to derive from. The generator is aware of bot
 the pair is re-runnable in the order (migrate -> derive) or (derive -> migrate), and the check mode
 here fails loudly if a lookup names a control the table does not cover.
 
-Usage:  python3 tools/migrate_capability_events.py          # rewrite properties.rs
+Usage:  python3 tools/migrate_capability_events.py          # rewrite the properties module
         python3 tools/migrate_capability_events.py --check  # exit 1 if a literal list remains
 """
 
@@ -40,8 +40,15 @@ import re
 import sys
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
-PROPERTIES = REPO / "src/widget/capability/properties.rs"
+PROPERTIES_DIR = REPO / "src/widget/capability/properties"
 PAYLOADS = REPO / "src/widget/capability/event_payloads.rs"
+
+
+def property_files() -> list[pathlib.Path]:
+    """The capability module's files: the entry file plus its child modules."""
+    entry = PROPERTIES_DIR / "mod.rs"
+    return [entry, *sorted(path for path in PROPERTIES_DIR.glob("*.rs") if path != entry)]
+
 
 # One capability constructor: from its `pub(crate) fn` through the closing brace of the struct
 # literal. Non-greedy so a following constructor is never swallowed.
@@ -54,7 +61,7 @@ NAME_RE = re.compile(r'canonical_name:\s*"([^"]+)"')
 
 def main() -> int:
     check_only = "--check" in sys.argv
-    source = PROPERTIES.read_text()
+    sources = {path: path.read_text() for path in property_files()}
     slugs = set(re.findall(r'\("([a-z0-9_]+)",\s*"[a-z0-9_]+"', PAYLOADS.read_text()))
 
     rewritten = 0
@@ -78,7 +85,8 @@ def main() -> int:
         rewritten += 1
         return f'{match.group(1)}events_of!("{capability}")'
 
-    updated = CAPABILITY_RE.sub(replace, source)
+    updated = {path: CAPABILITY_RE.sub(replace, text) for path, text in sources.items()}
+    changed = [path for path in sources if updated[path] != sources[path]]
 
     if unknown:
         print(f"❌ {len(unknown)} capability name(s) missing from {PAYLOADS.name}:")
@@ -89,17 +97,17 @@ def main() -> int:
         return 1
 
     if check_only:
-        if updated != source:
-            print(f"❌ {PROPERTIES} still spells event lists literally")
+        if changed:
+            print(f"❌ {', '.join(str(path) for path in changed)} still spells event lists literally")
             return 1
         # `rewritten` counts *sites*, not capabilities, and the two differ because a capability
         # that publishes nothing is left as an empty list rather than pointed at the table.
         print(f"✅ {rewritten} capability event sites resolve through the generated table")
         return 0
 
-    if updated != source:
-        PROPERTIES.write_text(updated)
-    print(f"rewrote {rewritten} capability event lists in {PROPERTIES}")
+    for path in changed:
+        path.write_text(updated[path])
+    print(f"rewrote {rewritten} capability event lists in {len(changed)} file(s) under {PROPERTIES_DIR}")
     return 0
 
 

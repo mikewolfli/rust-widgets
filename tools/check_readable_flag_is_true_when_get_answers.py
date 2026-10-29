@@ -40,7 +40,7 @@ even in a profile where the control's test module is not compiled.
 For every property schema row with `readable: false`:
 
   * the control that owns the declaring `*_PROPERTIES` table is resolved through the registration
-    chain (`registration.rs` -> `properties.rs` -> `constructors.rs` -> the type's
+    chain (`registration.rs` -> `properties/` -> `constructors.rs` -> the type's
     `impl WidgetProperties`);
   * the control's own `get` must not contain a `"<name>" =>` arm.
 
@@ -70,6 +70,8 @@ import sys
 REPO = pathlib.Path(__file__).resolve().parent.parent
 SRC = REPO / "src"
 CAPABILITY = SRC / "widget" / "capability"
+PROPERTIES_DIR = CAPABILITY / "properties"
+PROPERTIES = PROPERTIES_DIR / "mod.rs"
 
 # The shared four, answered by `base_property_get` for every control. Their `readable` flag is
 # policy about a value the base owns, not a statement about a control's own `get` arm, so a
@@ -146,10 +148,21 @@ def read_sources() -> dict[str, str]:
     Keys are relative so a lookup is identical on every host: an absolute key would make this
     gate's constants depend on where the checkout happens to live.
     """
-    return {
+    sources = {
         path.relative_to(REPO).as_posix(): strip_comments(path.read_text(encoding="utf-8"))
         for path in sorted(SRC.rglob("*.rs"))
     }
+    # The capability constructors moved from `properties.rs` into `properties/*.rs`.
+    # Expose the whole module under the single key the scanners below look up, so the
+    # registration-to-table mapping still sees every family file.
+    children = sorted(path for path in PROPERTIES_DIR.glob("*.rs") if path != PROPERTIES)
+    sources["src/widget/capability/properties.rs"] = strip_comments(
+        "\n".join(
+            [PROPERTIES.read_text(encoding="utf-8")]
+            + [path.read_text(encoding="utf-8") for path in children]
+        )
+    )
+    return sources
 
 
 def property_tables(sources: dict[str, str]) -> dict[str, list[tuple[str, bool, bool]]]:

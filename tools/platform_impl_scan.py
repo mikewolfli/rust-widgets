@@ -133,7 +133,7 @@ OS_SOURCES: Dict[str, List[str]] = {
 
 # File listing canonical control `create_*` methods (ControlBackend contract);
 # used to filter stray non-control helpers out of the reported rows.
-TRAIT_SOURCE = "src/control_backend/trait_def/trait_def.rs"
+TRAIT_SOURCE = "src/control_backend/trait_def/trait_def"
 
 # Widgets whose matrix row maps to a create method (reused to align reports).
 KIND_METHOD_OVERRIDES: Dict[str, str] = {
@@ -427,11 +427,14 @@ def kind_to_method(kind: str) -> str:
 
 def parse_canonical_methods() -> Set[str]:
     path = pathlib.Path(TRAIT_SOURCE)
-    if not path.exists():
+    if path.is_dir():
+        text = "\n".join(
+            p.read_text(encoding="utf-8") for p in sorted(path.glob("*.rs"))
+        )
+    elif path.exists():
+        text = path.read_text(encoding="utf-8")
+    else:
         return set()
-    # Trait declarations have no `{...}` body, so use a simple findall over
-    # `fn create_*(...)` signatures instead of brace matching.
-    text = path.read_text(encoding="utf-8")
     return set(fn_re.findall(text))
 
 

@@ -2,7 +2,7 @@
 
 > **Auto-generated** by `tools/generate_platform_capability_matrix.py`
 > **Legend:** ✅ Primitive-mapped · 🟦 Custom-painted (functional) · 🔶 Limited · ⬜ Placeholder · ➖ N/A
-> **C**: ✅ when a typed `rw_create_*` function exists for the kind, ⬜ when the only route is the generic `rw_create_widget_of_kind(name)`. Derived from `src/bindings/binding_impl.rs`, never hand-maintained.
+> **C**: ✅ when a typed `rw_create_*` function exists for the kind, ⬜ when the only route is the generic `rw_create_widget_of_kind(name)`. Derived from `src/bindings/binding_impl/`, never hand-maintained.
 > No ✅ cell is currently compile-verified only; see [✅ cells not yet verified on a real device](#-cells-not-yet-verified-on-a-real-device未经真机验证的--单元格) under Degradation notes for why that list is empty.
 
 ## Symbol semantics（符号语义）

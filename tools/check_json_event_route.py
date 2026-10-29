@@ -307,7 +307,7 @@ def check_mounted_documents_are_wired() -> list[str]:
             "ids it registers address no live control: handles resolve, are reported to have "
             "resolved, and read nothing"
         )
-    if "register_with_id" not in pathlib.Path("src/widget/runtime.rs").read_text():
+    if "register_with_id" not in pathlib.Path("src/widget/runtime/registry.rs").read_text():
         findings.append(
             "`crate::widget::runtime::register_with_id` is gone, so a document's `\"id\"` "
             "cannot be reserved and its names and the runtime's ids are two id spaces again"
@@ -331,7 +331,18 @@ def check_binding_handles_do_not_unwire_themselves() -> list[str]:
     `tests/json_event_route_test.rs` supplies that. This makes the shape visible in review.
     """
     findings: list[str] = []
-    handle = pathlib.Path("src/app/handle.rs").read_text()
+    # The handle façade is now a directory (`app/handle/*.rs`); concatenate it so this textual
+    # shape check keeps covering every `impl Drop` the macro or a hand-written handle defines.
+    #
+    # Comments are stripped first, the same discipline `check_single_frame_driver.sh` uses: the
+    # restore guards (`ClickCallGuard`, `ValueCallGuard`) explain in prose that their path runs
+    # `remove_callbacks`' readers, and a mention is not a call. Without the strip, this gate
+    # reports the documentation rather than the defect.
+    handle = "\n".join(
+        p.read_text(encoding="utf-8")
+        for p in sorted(pathlib.Path("src/app/handle").glob("*.rs"))
+    )
+    handle = re.sub(r"//[^\n]*", "", handle)
     # Find every `impl Drop for <Handle>` and require an empty body.
     for match in re.finditer(r"impl Drop for (\w+)\s*\{\s*fn drop\(&mut self\)\s*\{(.*?)\n\s*\}", handle, re.S):
         name, body = match.group(1), match.group(2)

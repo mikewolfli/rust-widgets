@@ -508,7 +508,7 @@ pub fn embedded_engine_stats() -> EmbeddedEngineStats {
 /// the target FPS to 72 while another is asserting the same value fails at random.
 ///
 /// The lock has to be **shared across modules**, and that is the whole point of this
-/// function: `src/render_engine/embedded.rs` and `src/bindings/binding_impl.rs` both
+/// function: `src/render_engine/embedded.rs` and `src/bindings/binding_impl/` both
 /// drive the same singleton, and each used to take its own module-local `OnceLock`.
 /// Two locks over one resource exclude nothing, which is how
 /// `embedded_target_fps_clamps` came to fail depending on scheduling.

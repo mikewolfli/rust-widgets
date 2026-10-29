@@ -42,7 +42,18 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 SNAPSHOTS = ROOT / "snapshots" / "svg"
 WIDGET_SRC = ROOT / "src" / "widget"
 KIND_SRC = ROOT / "src" / "widget" / "kind.rs"
+CAPABILITY_DIR = ROOT / "src" / "widget" / "capability" / "properties"
 DEFAULT_OUTPUT = ROOT / "control.md"
+
+
+def read_capability_properties() -> str:
+    """The capability module as one text: the entry file plus its child modules."""
+    entry = CAPABILITY_DIR / "mod.rs"
+    children = sorted(path for path in CAPABILITY_DIR.glob("*.rs") if path != entry)
+    return "\n".join(
+        [entry.read_text(encoding="utf-8")]
+        + [path.read_text(encoding="utf-8") for path in children]
+    )
 
 # A widget type is constructed by `Type::new(..)` / `Type::with_…(..)`, possibly behind a
 # module path and possibly wrapped (`Box::new(..)`, `label(.., Box::new(..))`). The path
@@ -119,14 +130,12 @@ FAMILY_TITLES = {
 def alias_names() -> dict[str, str]:
     """Maps every factory name (canonical and alias) to its canonical name.
 
-    Read out of the capability tables in `src/widget/capability/properties.rs`, whose
+    Read out of the capability tables in `src/widget/capability/properties/`, whose
     `canonical_name: "..."` / `aliases: &["..."]` entries are the same strings
     `WidgetFactory` resolves. Reading them here rather than maintaining a second list is
     what keeps this page's names in step with the registry.
     """
-    source = (ROOT / "src" / "widget" / "capability" / "properties.rs").read_text(
-        encoding="utf-8"
-    )
+    source = read_capability_properties()
     mapping: dict[str, str] = {}
     for block in source.split("canonical_name:")[1:]:
         canonical = re.match(r'\s*"([a-z0-9_]+)"', block)

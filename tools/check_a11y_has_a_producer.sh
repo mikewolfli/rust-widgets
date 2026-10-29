@@ -166,9 +166,9 @@ echo "[3/3] the producer is reachable from the mount path"
 # Comments are stripped before matching, so a doc-comment that merely *names* the call
 # (the shape a removal leaves behind) is not mistaken for the call itself -- the same
 # "the gate reads its own explanation" defect BLUE24 §1 recorded for another gate.
-mount_calls="$(grep -n 'submit_mounted(' src/widget/runtime.rs | sed -e 's://.*::' \
+mount_calls="$(grep -n 'submit_mounted(' src/widget/runtime/registry.rs | sed -e 's://.*::' \
     | grep -E 'crate::widget::a11y_submit::submit_mounted\(' || true)"
-unmount_calls="$(grep -n 'submit_unmounted(' src/widget/runtime.rs | sed -e 's://.*::' \
+unmount_calls="$(grep -n 'submit_unmounted(' src/widget/runtime/registry.rs | sed -e 's://.*::' \
     | grep -E 'crate::widget::a11y_submit::submit_unmounted\(' || true)"
 if [ -z "$mount_calls" ]; then
     echo "  FAIL  \`runtime::register\` no longer submits a mounted control"

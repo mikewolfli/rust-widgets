@@ -66,13 +66,6 @@ MOD_RS_PENDING: dict[str, str] = {
 # Production files still over the limit. Each entry names the split it needs; the entry
 # must disappear as the split lands, and this gate will say so.
 TOO_LONG_PENDING = {
-    "src/app/handle.rs": "event dispatch for five event families → `app/handle/{keys,pointer,window,menu,scroll}.rs`",
-    "src/render/text/cjk_bitmap_data.rs": "generated glyph table → emit `cjk_bitmap.bin` + `include_bytes!`",
-    "src/widget/runtime.rs": "registry / widget ledger / render tree / animation sweep / resize dispatch",
-    "src/lib.rs": "crate façade: group the `pub use` surface into `api/{widgets,platform,signals}.rs`",
-    "src/bindings/binding_impl.rs": "one module per binding family (python/java/c/node)",
-    "src/widget/capability/properties.rs": "the per-kind property table → `properties/table.rs`",
-    "src/control_backend/trait_def/trait_def.rs": "trait + its ~40 defaulted methods → `trait_def/{core,defaults}.rs`",
     "src/platform/types/traits.rs": "`Platform` (2270-line trait) → split by capability group",
     "src/platform/android_jni.rs": "JNI entry points → `android_jni/{lifecycle,input}.rs`",
     "src/image/decoder.rs": "one module per codec (png/jpeg/webp/bmp)",
@@ -80,16 +73,12 @@ TOO_LONG_PENDING = {
     "src/print/print_impl.rs": "layout vs drawing → `print_impl/{layout,draw}.rs`",
     "src/platform/wayland/platform_impl.rs": "window vs input vs surface → `wayland/impl/*.rs`",
     "src/style/animation.rs": "easing curves vs drivers → `style/animation/{curves,drivers}.rs`",
-    "src/wgpu_backend/renderer.rs": "resource caches vs 2D/mesh encoders → `wgpu_backend/renderer/{resources,encode}.rs`",
     "src/widget/base_widgets/button.rs": "state/API vs drawing → `button/{api,paint}.rs`",
     "src/widget/capability/access.rs": "per-kind defaults → `capability/access/{input,view,other}.rs`",
     "src/widget/container_widgets/layout_family.rs": "the six layout wrappers → one module each",
     "src/widget/container_widgets/tabwidget.rs": "strip vs pages vs drag → `tabwidget/{strip,pages,drag}.rs`",
-    "src/widget/input_widgets/lineedit.rs": "text model vs field chrome → `lineedit/{model,paint}.rs`",
     "src/render/backend/surface.rs": "software surface: pixel primitives + layer/back-buffer caches vs damage/present accounting → `surface/{raster,present}.rs`",
     "src/widget/advanced_widgets/tab_bar.rs": "tab model/API vs strip geometry vs paint vs events → `tab_bar/{model,paint,events}.rs`",
-    "src/widget/input_widgets/textarea.rs": "document model vs viewport paint → `textarea/{model,paint}.rs`",
-    "src/widget/menu_toolbar/menu.rs": "menu model vs popup paint/input → `menu/{model,popup}.rs`",
     "src/widget/metrics.rs": "dimension tables vs focus/profile metrics → `metrics/{dimensions,profiles}.rs`",
     # Measured at the 2.9.2 review round. The two entries marked (new) crossed the limit in that
     # round; the rest were already over and are recorded here with the split each needs so the
@@ -108,19 +97,17 @@ TOO_LONG_PENDING = {
     "src/widget/dialog/file_dialog.rs": "navigation vs listing/model vs paint → `file_dialog/{model,list,paint}.rs`",
     "src/widget/input_widgets/combobox.rs": "model vs editor vs popup paint → `combobox/{model,editor,popup}.rs`",
     "src/widget/input_widgets/spinbox.rs": "model vs buttons vs paint → `spinbox/{model,paint}.rs`",
-    "src/widget/input_widgets/textedit.rs": "document/wrap model vs paint → `textedit/{model,paint}.rs`",
     "src/widget/media_widgets/lottie_widget.rs": "composition model vs player vs paint → `lottie/{model,paint}.rs`",
     "src/widget/media_widgets/rive_widget.rs": "composition bounds vs playback vs paint → `rive/{model,paint}.rs`",
     "src/widget/menu_toolbar/tool_bar.rs": "item model vs band layout vs paint → `tool_bar/{model,layout,paint}.rs`",
-    "src/widget/chart_widgets/chart.rs": "series model vs axes/plot paint vs legend → `chart/{model,paint}.rs`",
+    "src/widget/chart_widgets/chart/chart.rs": "series model vs axes/plot paint vs legend → `chart/chart/{model,paint}.rs`",
     "src/widget/special_widgets/diff_viewer.rs": "diff model vs row projection vs paint → `diff_viewer/{model,rows,paint}.rs`",
-    "src/widget/chart_widgets/kanban_board.rs": "board model vs lane layout vs drag/paint → `kanban/{model,layout,drag}.rs`",
-    "src/widget/special_widgets/markdown_editor.rs": "document/line index vs find vs preview vs paint → `markdown_editor/{document,find,preview,paint}.rs`",
-    "src/widget/special_widgets/terminal_view.rs": "screen buffer/ANSI model vs row paint → `terminal_view/{model,paint}.rs`",
-    "src/widget/view_widgets/data_grid.rs": "projection window vs column layout vs paint → `data_grid/{projection,columns,paint}.rs`",
+
+
+    "src/widget/special_widgets/terminal/terminal_view.rs": "screen buffer/ANSI model vs row paint → `terminal_view/{model,paint}.rs`",
     "src/widget/view_widgets/grid_table.rs": "span layout vs selection vs paint → `grid_table/{layout,paint}.rs`",
-    "src/widget/view_widgets/properties_panel.rs": "property rows vs editors vs paint → `properties_panel/{rows,paint}.rs`",
-    "src/widget/view_widgets/tree_view.rs": "projection/index vs selection vs paint → `tree_view/{model,paint}.rs`",
+    "src/widget/view_widgets/properties/properties_panel.rs": "property rows vs editors vs paint → `properties_panel/{rows,paint}.rs`",
+    "src/widget/view_widgets/tree/tree_view.rs": "projection/index vs selection vs paint → `tree_view/{model,paint}.rs`",
     # Recorded 2026-10-28 (round 11): the files the gate named that had no row. Each seam is the
     # split that removes the finding; the row must disappear with it.
     "src/platform/linux/platform_impl.rs": "window/menu/dialog creation vs input vs surface/monitor → `linux/impl/{create,input,display}.rs`",
@@ -129,13 +116,20 @@ TOO_LONG_PENDING = {
     "src/wgpu_backend/raster.rs": "the command walk vs the CPU raster kernels → `raster/{walk,fills,text}.rs`",
     "src/widget/capability/properties_other.in.rs": "an `include!`d table: one file per widget family, mirroring `properties_base.in.rs` / `properties_menu.in.rs`",
     "src/widget/chart_widgets/bar_chart.rs": "series model vs axes/plot paint vs legend/hover → `bar_chart/{model,paint}.rs`",
-    "src/widget/chart_widgets/gantt_widget.rs": "task model vs axis/row paint vs interaction → `gantt/{model,paint,events}.rs`",
+    "src/widget/chart_widgets/gantt/gantt_widget.rs": "task model vs axis/row paint vs interaction → `gantt/{model,paint,events}.rs`",
     "src/widget/chart_widgets/line_chart.rs": "series model vs plot paint vs hover → `line_chart/{model,paint}.rs`",
     "src/widget/container_widgets/mdiarea.rs": "child-window model vs tile/cascade layout vs paint → `mdiarea/{model,layout,paint}.rs`",
     "src/widget/input_widgets/listbox.rs": "item model vs selection vs row paint → `listbox/{model,selection,paint}.rs`",
     "src/widget/input_widgets/rich_edit.rs": "document model vs format spans vs paint → `rich_edit/{model,formats,paint}.rs`",
     "src/widget/media_widgets/video_player.rs": "playback state vs transport/controls chrome vs paint → `video_player/{model,controls,paint}.rs`",
-    "src/widget/view_widgets/tree_table.rs": "tree index vs column layout vs paint → `tree_table/{model,columns,paint}.rs`",
+    "src/widget/view_widgets/tree/tree_table.rs": "tree index vs column layout vs paint → `tree_table/{model,columns,paint}.rs`",
+    # Measured 2026-10-29 (issue-20261028 implementation round). This file crossed the 2000-line
+    # limit before that round started and had no row, so the gate was already red on it. It is
+    # untouched by the round; recording the seam is the debt entry the gate asks for, and the row
+    # must disappear with the split. (The macOS canvas that crossed during the same round had its
+    # canvas-view bookkeeping moved to `macos/canvas/canvas_views.rs` instead of being excused
+    # here, so it is not listed.)
+    "src/widget/input_widgets/cascader.rs": "option/load-state model vs level-row projection vs paint vs events → `cascader/{model,rows,paint,events}.rs`",
 }
 
 

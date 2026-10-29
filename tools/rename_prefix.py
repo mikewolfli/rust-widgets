@@ -3,7 +3,12 @@
 
 FILES = [
     # Rust binding implementations
-    "src/bindings/binding_impl.rs",
+    "src/bindings/binding_impl/binding_status.rs",
+    "src/bindings/binding_impl/c_abi.rs",
+    "src/bindings/binding_impl/c_abi_widgets.rs",
+    "src/bindings/binding_impl/c_abi_platform.rs",
+    "src/bindings/binding_impl/c_abi_surfaces.rs",
+    "src/bindings/binding_impl/harmony.rs",
     "src/bindings/java_jni.rs",
     "src/error/ffi.rs",
     "src/asset/watcher.rs",
@@ -11,7 +16,9 @@ FILES = [
     "src/platform/windows/notify.rs",
     "src/platform/windows/types.rs",
     "src/print/print_impl.rs",
-    "src/wgpu_backend/renderer.rs",
+    "src/wgpu_backend/renderer/resources.rs",
+    "src/wgpu_backend/renderer/frame.rs",
+    "src/wgpu_backend/renderer/encode.rs",
     # C headers
     "include/rw_generated.h",
     "include/rw_errors.h",

@@ -290,7 +290,15 @@ def parse_custom_methods(custom_rs: pathlib.Path) -> Set[str]:
 
 
 def parse_trait_methods(trait_rs: pathlib.Path) -> Set[str]:
-    text = trait_rs.read_text(encoding="utf-8")
+    # The trait may be split across a module folder (`trait_def/trait_def/`); the
+    # fragments are `macro_rules!` bodies invoked inside the trait, so reading them all
+    # in path order reproduces the method set the single file used to hold.
+    if trait_rs.is_dir():
+        text = "\n".join(
+            p.read_text(encoding="utf-8") for p in sorted(trait_rs.glob("*.rs"))
+        )
+    else:
+        text = trait_rs.read_text(encoding="utf-8")
     return set(fn_create_re.findall(text))
 
 
@@ -452,7 +460,7 @@ def main() -> int:
     )
     parser.add_argument(
         "--trait",
-        default="src/control_backend/trait_def/trait_def.rs",
+        default="src/control_backend/trait_def/trait_def",
         help="Path to ControlBackend trait source file",
     )
     parser.add_argument(

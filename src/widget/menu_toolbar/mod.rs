@@ -5,25 +5,24 @@
 pub mod action;
 /// The cascade depth shared by the submenu-painting controls.
 pub mod depth;
-pub mod dropdown_menu;
 /// Effect-policy boundary shared by the menu family.
 pub(crate) mod effects;
+/// The menu composite family: `Menu`, `MenuBar`, `DropdownMenu` and the shared reveal.
 pub mod menu;
-pub mod menu_bar;
 pub mod menu_button;
-/// The shared open/close reveal the popup family animates with.
-pub mod popup_reveal;
 pub mod status_bar;
 pub mod tool_bar;
 pub mod tool_button;
+// Re-export the moved menu modules so their module paths are unchanged.
+pub use menu::{dropdown_menu, menu_bar, popup_reveal};
 // Re-export menu and toolbar types
 pub use action::Action;
 pub use depth::MAX_SUBMENU_DEPTH;
-pub use dropdown_menu::{DropdownItem, DropdownMenu};
-pub use menu::{Menu, PopupDirection};
-pub use menu_bar::{MenuBar, NativeMenuBridge, NativeMenuPosition};
+pub use menu::{
+    DropdownItem, DropdownMenu, Menu, MenuBar, NativeMenuBridge, NativeMenuPosition,
+    PopupDirection, PopupReveal, RevealDirection,
+};
 pub use menu_button::{MenuButton, MenuItem};
-pub use popup_reveal::{PopupReveal, RevealDirection};
 pub use status_bar::StatusBar;
 pub use tool_bar::ToolBar;
 pub use tool_button::ToolButton;

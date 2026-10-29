@@ -46,18 +46,14 @@
 #[cfg(widgets_unstripped)]
 pub mod adapter;
 pub mod bar_chart;
-/// The general-purpose chart panel (series model, axes, legend, crosshair hit-testing).
+/// The chart family: the control and its two overlays (COMP-F01 crosshair, COMP-A1 reference lines).
 pub mod chart;
-/// COMP-F01: vertical/horizontal chart reference lines with axis value chips.
-pub mod chart_crosshair;
-/// COMP-A1: fixed value/threshold reference lines for line and bar charts.
-pub mod chart_reference_line;
 #[cfg(widgets_unstripped)]
 pub mod charts;
 /// Market-data widgets: candles, depth, ladder, quote board, volume and indicators.
 pub mod finance;
-/// Gantt chart and the two companion controls it ships with.
-pub mod gantt_widget;
+/// The Gantt family: the chart control and the two companion controls it ships with.
+pub mod gantt;
 /// Gauge — a radial dial showing one value against a range.
 #[cfg(full_widgets)]
 pub mod gauge;
@@ -80,8 +76,13 @@ pub mod types;
 // ── Control layer re-exports (the bare names mean the widgets) ──
 pub use bar_chart::{BarChart, BarEntry};
 pub use chart::ChartWidget;
-pub use chart_crosshair::{ChartCrosshair, CrosshairMode};
-pub use chart_reference_line::*;
+// Keep the historical flat module paths alive after the family moved into `chart/`.
+pub use chart::{chart_crosshair, chart_reference_line};
+// The same names stay reachable at the family root, as they were before the move.
+pub use chart::chart_crosshair::{ChartCrosshair, CrosshairMode};
+pub use chart::chart_reference_line::{ChartReferenceLine, ReferenceAxis, ReferenceLineSpec};
+// Keep the historical flat module paths alive after the family moved into `gantt/`.
+pub use gantt::{gantt_companions, gantt_widget};
 pub use gantt_widget::{
     DateFormat, Dependency, DependencyEditor, GanttTask, GanttWidget, TimelineAxis,
 };

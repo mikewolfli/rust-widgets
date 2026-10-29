@@ -1,7 +1,7 @@
 #ifndef RW_GENERATED_H
 #define RW_GENERATED_H
 
-/* Auto-generated from src/bindings/binding_impl.rs. Do not edit. */
+/* Auto-generated from src/bindings/binding_impl/. Do not edit. */
 
 #include <stdbool.h>
 #include <stdint.h>

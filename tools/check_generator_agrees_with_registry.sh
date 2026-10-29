@@ -45,7 +45,9 @@ cd "$ROOT_DIR"
 . "$ROOT_DIR/tools/lib_python.sh"
 . "$ROOT_DIR/tools/lib_timeout.sh"
 
-PROPERTIES="src/widget/capability/properties.rs"
+# `button_capability` (and the `btn` alias the reverse injection removes) lives in the
+# `base` family module after the capability table was split into a directory.
+PROPERTIES="src/widget/capability/properties/base.rs"
 
 # Probe output goes to `mktemp` files, not fixed `gate.1.out` / `gate.2.out` names in the working
 # tree: the fixed names polluted `git status` and raced a concurrent run. The variables hold the

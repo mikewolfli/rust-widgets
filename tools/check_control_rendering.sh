@@ -224,7 +224,9 @@ sed -n '1,12p' "$SEMANTIC_LOG"
 # literal here is how a gate starts lying about what it covered.
 CONTROL_COUNT="$("$PYTHON" -c '
 import re, pathlib
-src = pathlib.Path("src/widget/capability/properties.rs").read_text(encoding="utf-8")
+root = pathlib.Path("src/widget/capability/properties")
+parts = [root / "mod.rs"] + sorted(p for p in root.glob("*.rs") if p.name != "mod.rs")
+src = "\n".join(p.read_text(encoding="utf-8") for p in parts)
 print(len(re.findall(r"canonical_name:\s*\x22", src)))
 ')"
 

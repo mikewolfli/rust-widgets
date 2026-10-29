@@ -28,8 +28,18 @@ import pathlib
 import re
 import sys
 
-PROPERTIES = "src/widget/capability/properties.rs"
+PROPERTIES_DIR = pathlib.Path("src/widget/capability/properties")
+PROPERTIES = PROPERTIES_DIR / "mod.rs"
 CONSTRUCTORS = "src/widget/capability/constructors.rs"
+
+
+def read_properties() -> str:
+    """The capability module as one text: the entry file plus its child modules."""
+    children = sorted(path for path in PROPERTIES_DIR.glob("*.rs") if path != PROPERTIES)
+    return "\n".join(
+        [PROPERTIES.read_text(encoding="utf-8")]
+        + [path.read_text(encoding="utf-8") for path in children]
+    )
 
 KIND_AND_NAME = re.compile(r'kind:\s*WidgetKind::(\w+),\s*canonical_name:\s*"([^"]+)"')
 STRUCT = re.compile(r"pub struct (\w+)")
@@ -38,7 +48,7 @@ CONSTRUCTOR = re.compile(r"pub fn create_(\w+)\b([\s\S]*?)(?=\n(?:pub fn |#\[|\}
 
 def main() -> int:
     unwired_only = "--unwired-only" in sys.argv
-    properties = pathlib.Path(PROPERTIES).read_text(encoding="utf-8")
+    properties = read_properties()
     canonical = {name: kind for kind, name in KIND_AND_NAME.findall(properties)}
 
     sources = {

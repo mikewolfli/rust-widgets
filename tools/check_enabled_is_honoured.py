@@ -77,17 +77,17 @@ NON_INTERACTIVE: dict[str, str] = {
         "only forwards to the base",
     "src/widget/display_widgets/clock.rs":
         "pure readout: draws a time, handles no input",
-    "src/widget/media_widgets/subtitle_bar.rs":
+    "src/widget/special_widgets/media_player/subtitle_bar.rs":
         "passive overlay: displays subtitles over the video, handles no input",
-    "src/widget/chart_widgets/chart.rs":
+    "src/widget/chart_widgets/chart/chart.rs":
         "passive overlay: the crosshair is drawn by the chart at the hover position",
-    "src/widget/chart_widgets/chart_crosshair.rs":
+    "src/widget/chart_widgets/chart/chart_crosshair.rs":
         "passive overlay: its handler only stores the pointer position the chart drew it at and "
         "hides on leave/Escape, so there is no action to disable",
-    "src/widget/chart_widgets/chart_reference_line.rs":
+    "src/widget/chart_widgets/chart/chart_reference_line.rs":
         "passive overlay: its handler only tracks which threshold the pointer is near, for the "
         "hover readout; the lines themselves are host-set chrome",
-    "src/widget/special_widgets/map_view_companions.rs":
+    "src/widget/special_widgets/map_view/map_view_companions.rs":
         "passive overlay: a tile loader and a scale bar draw map chrome, handles no input",
     "src/widget/container_widgets/layout_family.rs":
         "container: only forwards, the children it holds are what interact",

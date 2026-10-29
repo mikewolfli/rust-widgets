@@ -338,7 +338,15 @@ def _header(chosen: list[tuple[int, bytes]], codepoint_bytes: int) -> str:
 
 
 def render(chosen: list[tuple[int, bytes]]) -> str:
-    """Render the whole Rust source file."""
+    """Render the whole Rust source file.
+
+    The literals are packed densely (16 codepoints / 48 row bytes per line) so the generated
+    source stays under the repository's 2000-production-line limit (principle #9,
+    `tools/check_source_structure.sh`). A data table has no modules to split, and re-wrapping
+    it is the one change that removes the line count without touching the data, the array
+    types, or the consumers in `glyph_source.rs`. `#[rustfmt::skip]` keeps `cargo fmt --check`
+    stable over these long lines.
+    """
     n = len(chosen)
     rows = b"".join(to_16x16(glyph) for _, glyph in chosen)
     assert len(rows) == n * ROWS_PER_GLYPH * BYTES_PER_ROW, "row buffer size drifted"
@@ -349,7 +357,7 @@ def render(chosen: list[tuple[int, bytes]]) -> str:
         "/// Sorted codepoints, one per glyph in `ROWS`. Ascending order (binary search relies on it).",
         "#[rustfmt::skip]",
         f"pub static CODEPOINTS: [u32; {n}] = [",
-        _wrap([f"0x{cp:04X}" for cp, _ in chosen], 8),
+        _wrap([f"0x{cp:04X}" for cp, _ in chosen], 16),
         "];",
         "",
         "/// `32` bytes per glyph: 16 rows of 2 bytes, row-major, **MSB-first within each byte**,",
@@ -359,7 +367,7 @@ def render(chosen: list[tuple[int, bytes]]) -> str:
         "/// is the leftmost pixel there too.",
         "#[rustfmt::skip]",
         f"pub static ROWS: [u8; {n * 32}] = [",
-        _wrap([f"0x{byte:02X}" for byte in rows], 16),
+        _wrap([f"0x{byte:02X}" for byte in rows], 48),
         "];",
         "",
     ]

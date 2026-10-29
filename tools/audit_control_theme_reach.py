@@ -41,8 +41,18 @@ import pathlib
 import re
 import sys
 
-PROPERTIES = "src/widget/capability/properties.rs"
+PROPERTIES_DIR = pathlib.Path("src/widget/capability/properties")
+PROPERTIES = PROPERTIES_DIR / "mod.rs"
 CONSTRUCTORS = "src/widget/capability/constructors.rs"
+
+
+def read_properties() -> str:
+    """The capability module as one text: the entry file plus its child modules."""
+    children = sorted(path for path in PROPERTIES_DIR.glob("*.rs") if path != PROPERTIES)
+    return "\n".join(
+        [PROPERTIES.read_text(encoding="utf-8")]
+        + [path.read_text(encoding="utf-8") for path in children]
+    )
 
 # Aliases sit between `canonical_name` and `properties` in every declaration (measured across the
 # whole table), and a constructor can be named after an alias: `create_textarea` for `text_area`,
@@ -85,7 +95,7 @@ DELEGATION = re.compile(r"\bcreate_(\w+)\(")
 
 
 def build_index() -> tuple[dict[str, str], dict[str, list[tuple[str, bool]]], dict[str, str], dict[str, list[str]]]:
-    properties = pathlib.Path(PROPERTIES).read_text(encoding="utf-8")
+    properties = read_properties()
     canonical: dict[str, str] = {}
     aliases: dict[str, list[str]] = {}
     anchors = list(CAPABILITY_ANCHOR.finditer(properties))

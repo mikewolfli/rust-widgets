@@ -9,7 +9,7 @@
 //!
 //! # Reachability
 //!
-//! **State:** Production callers: `src/platform/profile.rs:38` (`use crate::render_engine::RenderEngine`), `src/bindings/binding_impl.rs:1465` (`crate::render_engine::set_embedded_target_fps`).
+//! **State:** Production callers: `src/platform/profile.rs:38` (`use crate::render_engine::RenderEngine`), `src/bindings/binding_impl/c_abi_platform.rs:367` (`crate::render_engine::set_embedded_target_fps`).
 /// Embedded runtime state, task queue, and shared engine internals.
 pub mod embedded;
 /// Embedded render engine with independent lifecycle and resource registry.

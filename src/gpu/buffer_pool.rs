@@ -253,7 +253,7 @@ fn align_up_checked(value: usize, alignment: usize) -> Option<usize> {
 /// fallback chain — but it owns no GPU buffer: a ring allocation is an `(offset, size)` pair, and
 /// only a fallback allocation carries storage (a `Vec<u8>`). No renderer allocates from it. The
 /// wgpu renderer uploads with `Queue::write_buffer` into persistent buffers
-/// (`src/wgpu_backend/renderer.rs`, `RenderCache`), which is the native wgpu staging path and
+/// (`src/wgpu_backend/renderer/resources.rs`, `RenderCache`), which is the native wgpu staging path and
 /// already coalesces a batch into one write, so routing that data through this pool would add a
 /// copy and an offset translation without saving an allocation.
 ///

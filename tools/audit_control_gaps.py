@@ -1,8 +1,15 @@
 #!/usr/bin/env python3
 """Check for controls a widget library is normally expected to ship but this one may not."""
+import pathlib
 import re
 
-s = open('src/widget/capability/properties.rs').read()
+PROPERTIES_DIR = pathlib.Path('src/widget/capability/properties')
+PROPERTIES = PROPERTIES_DIR / 'mod.rs'
+children = sorted(path for path in PROPERTIES_DIR.glob('*.rs') if path != PROPERTIES)
+s = "\n".join(
+    [PROPERTIES.read_text(encoding='utf-8')]
+    + [path.read_text(encoding='utf-8') for path in children]
+)
 names = set(re.findall(r'canonical_name:\s*"([^"]+)"', s))
 
 # Names a reviewer would reasonably look for. Grouped by the family they belong to, so a

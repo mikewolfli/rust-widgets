@@ -152,7 +152,7 @@ pub(crate) fn move_focus(current: Option<usize>, count: usize, forward: bool) ->
 // * `src/widget/runtime.rs:6485` (`render_frame_tree`) paints the root and each child, and
 //   `paint_widget_direct` at `6821` has no scrim pass — a true window layer would paint the
 //   plane once per window instead of once per owning control.
-// * `src/lib.rs:2328` (`set_widget_visible`) is the show path six of the eight dialogs use;
+// * `src/api/control.rs:119` (`set_widget_visible`) is the show path six of the eight dialogs use;
 //   a push hook there would make their open order explicit instead of first-paint order.
 thread_local! {
     static SCRIM_STACK: RefCell<Vec<ObjectId>> = const { RefCell::new(Vec::new()) };

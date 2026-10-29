@@ -3,8 +3,6 @@
 
 //! Input widgets: text editors, combo boxes, spin boxes, etc.
 
-#[cfg(widgets_unstripped)]
-pub mod auto_complete_edit;
 #[cfg(full_widgets)]
 /// Multi-level option chooser that walks a path down a tree.
 pub mod cascader;
@@ -16,42 +14,21 @@ pub mod command_link;
 /// Base type for drop-down popups shared by the combo-box family.
 pub mod dropdown;
 #[cfg(widgets_unstripped)]
-pub mod editable_combo_box;
-#[cfg(widgets_unstripped)]
 /// Combo box whose items are font families, with a live preview.
 pub mod font_combo_box;
 #[cfg(widgets_unstripped)]
-pub mod ime_preedit;
-#[cfg(widgets_unstripped)]
 pub mod inplace_editor;
-/// Companion pieces the input family pairs with (COMP-C01..C05).
-///
-/// Not gated on `widgets_unstripped`: these are plain value/geometry types (chips, stepper
-/// buttons, a scroll indicator, a format toolbar) with no `widget::runtime` dependency, so the
-/// `mini` profile can carry them. They were gated only because the modules were introduced under
-/// that blanket, and the gate made `spinbox`/`textarea` — which are *not* gated — fail to build
-/// in `mini`.
-pub mod input_companions;
 /// The input grammars a single-line field can enforce.
 pub mod input_validator;
 pub mod keyboard;
 /// The single-line value editor an editable drop-down field carries (I-06).
 pub(crate) mod line_editor;
-pub mod lineedit;
 pub mod listbox;
 /// The input-mask grammar shared by `MaskedEdit` and `LineEdit::set_input_mask` (I-011).
 ///
 /// Profile-neutral: a value type with no widget kind and no runtime, so `LineEdit` can keep its
 /// mask support in a build that excludes the masked widget.
 pub(crate) mod mask_engine;
-/// Masked text input.
-///
-/// Gated on `widgets_unstripped` because it is a **widget kind**: the profile's
-/// [`WidgetKind`](crate::widget::WidgetKind) census decides which controls a build carries, and
-/// `mini` does not carry this one. The *grammar* it is built on is not gated — see
-/// [`mask_engine`], which is what a single-line field needs.
-#[cfg(widgets_unstripped)]
-pub mod masked_edit;
 /// `@`-triggered candidate completion inside free text.
 #[cfg(full_widgets)]
 pub mod mention;
@@ -65,28 +42,39 @@ pub mod otp_input;
 pub(crate) mod popup_support;
 #[cfg(widgets_unstripped)]
 pub mod range_slider;
-/// Recently committed values, newest first (COMP-B03).
-pub mod recent_values_popup;
 #[cfg(widgets_unstripped)]
 pub mod rich_edit;
 #[cfg(widgets_unstripped)]
-pub mod search_bar;
-#[cfg(widgets_unstripped)]
-pub mod search_box;
-#[cfg(widgets_unstripped)]
 pub mod shortcut_editor;
 pub mod spinbox;
-/// The candidate list an input field hangs under itself (COMP-B01).
-pub mod suggestion_popup;
 #[cfg(widgets_unstripped)]
 pub mod tag_input;
+/// The text-entry family: the single-line field, its variants and the chrome they draw.
+pub mod text_entry;
 /// Allocation-free case-fold comparisons shared by the input family (I-P05).
 pub(crate) mod text_match;
 pub mod textarea;
 #[cfg(widgets_unstripped)]
 pub mod textedit;
-/// A validation message anchored beside the field it accuses (COMP-B02).
-pub mod validation_bubble;
+// The family's module paths stay reachable from this module, so `input_widgets::lineedit::X`,
+// `input_widgets::search_box::Y` and every other published path resolve as before the move.
+#[cfg(widgets_unstripped)]
+pub use text_entry::auto_complete_edit;
+#[cfg(widgets_unstripped)]
+pub use text_entry::editable_combo_box;
+#[cfg(widgets_unstripped)]
+pub use text_entry::ime_preedit;
+pub use text_entry::input_companions;
+pub use text_entry::lineedit;
+#[cfg(widgets_unstripped)]
+pub use text_entry::masked_edit;
+pub use text_entry::recent_values_popup;
+#[cfg(widgets_unstripped)]
+pub use text_entry::search_bar;
+#[cfg(widgets_unstripped)]
+pub use text_entry::search_box;
+pub use text_entry::suggestion_popup;
+pub use text_entry::validation_bubble;
 // Re-export widget types
 #[cfg(widgets_unstripped)]
 pub use auto_complete_edit::AutoCompleteEdit;

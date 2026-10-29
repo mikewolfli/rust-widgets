@@ -36,7 +36,7 @@ ANIM_TICK = re.compile(r"\bfn\s+tick\s*\(\s*&mut\s+self\s*,\s*(?:delta\w*)\s*:")
 TRAIT_TICK = re.compile(r"\bfn\s+tick\s*\(\s*&mut\s+self\s*,\s*delta_ms\s*:\s*u32\s*\)\s*->\s*bool")
 
 # The bus itself lives here and calls the trait method; it is not a control.
-BUS_FILES = {"src/widget/runtime.rs", "src/widget/widget_trait.rs"}
+BUS_FILES = {"src/widget/runtime/frame.rs", "src/widget/widget_trait.rs"}
 
 
 def scanned_files() -> list[pathlib.Path]:

@@ -112,7 +112,7 @@ COMPOSITES: tuple[tuple[str, str], ...] = (
     ("combo_box", "src/widget/input_widgets/combobox.rs"),
     ("group_box", "src/widget/container_widgets/groupbox.rs"),
     ("tool_bar", "src/widget/menu_toolbar/tool_bar.rs"),
-    ("menu", "src/widget/menu_toolbar/menu.rs"),
+    ("menu", "src/widget/menu_toolbar/menu/menu/model.rs"),
     ("status_bar", "src/widget/menu_toolbar/status_bar.rs"),
     ("tab_widget", "src/widget/container_widgets/tabwidget.rs"),
     ("scroll_area", "src/widget/container_widgets/scrollarea.rs"),
@@ -477,7 +477,6 @@ def check_rule_5_paired_links() -> list[str]:
     allowed = {
         "src/widget/base.rs",
         "src/widget/widget_trait.rs",
-        "src/widget/runtime.rs",
     }
     pattern = re.compile(r"self\.base\.add_child\(")
     for path in sorted(pathlib.Path("src/widget").rglob("*.rs")):

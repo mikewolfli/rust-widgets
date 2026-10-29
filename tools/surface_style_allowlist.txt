@@ -57,7 +57,7 @@
 #   src/widget/misc_widgets/bezier_curve_editor.rs
 #   src/widget/misc_widgets/drop_zone.rs
 #   src/widget/special_widgets/canvas.rs
-#   src/widget/special_widgets/terminal_view.rs
+#   src/widget/special_widgets/terminal/terminal_view.rs
 #   src/widget/misc_widgets/barcode_scanner.rs
 #   src/widget/special_widgets/color_picker.rs
 #
@@ -77,10 +77,10 @@
 #   src/widget/dialog/input_dialog.rs                    — a field tint, not a bevel.
 #   src/widget/display_widgets/meter.rs                  — a highlight on the fill bar.
 #   src/widget/display_widgets/switch.rs                 — the thumb's own soft edge.
-#   src/widget/input_widgets/masked_edit.rs              — an "empty field" rendition.
+#   src/widget/input_widgets/text_entry/masked_edit.rs              — an "empty field" rendition.
 #   src/widget/input_widgets/range_slider.rs             — the track's lighter pair.
-#   src/widget/input_widgets/search_bar.rs               — a disabled rendition.
-#   src/widget/input_widgets/search_box.rs               — a disabled rendition + a placeholder ink.
+#   src/widget/input_widgets/text_entry/search_bar.rs               — a disabled rendition.
+#   src/widget/input_widgets/text_entry/search_box.rs               — a disabled rendition + a placeholder ink.
 #   src/widget/input_widgets/tag_input.rs                — a disabled rendition.
 #   src/widget/media_widgets/animated_image.rs            — MIGRATED: the disabled rendition now
 #       routes through `BaseWidget::disabled_surface_near`, so it left this list.
@@ -106,12 +106,12 @@ src/widget/display_widgets/color_well.rs        B-tint: the swatch's border step
 src/widget/display_widgets/lcd_number.rs        A-bevel: the sunken four-edge bezel — a well, the shape Bevel does not model
 src/widget/display_widgets/meter.rs             C-disabled: a highlight on the fill bar
 src/widget/display_widgets/switch.rs            C-disabled: the thumb's own soft edge
-src/widget/input_widgets/masked_edit.rs         C-disabled: the empty-field rendition
+src/widget/input_widgets/text_entry/masked_edit.rs         C-disabled: the empty-field rendition
 src/widget/input_widgets/range_slider.rs       C-disabled: the track's lighter pair
-src/widget/input_widgets/search_bar.rs          C-disabled: the disabled rendition
-src/widget/input_widgets/search_box.rs          C-disabled: the disabled rendition + placeholder ink
+src/widget/input_widgets/text_entry/search_bar.rs          C-disabled: the disabled rendition
+src/widget/input_widgets/text_entry/search_box.rs          C-disabled: the disabled rendition + placeholder ink
 src/widget/input_widgets/tag_input.rs           C-disabled: the disabled rendition
-src/widget/input_widgets/validation_bubble.rs   B-tint: the bubble surface derived from its severity tone, one shade
+src/widget/input_widgets/text_entry/validation_bubble.rs   B-tint: the bubble surface derived from its severity tone, one shade
 src/widget/media_widgets/video_player.rs        A'-border: derives a border *lighter* than the video surface, which is dark by definition
 src/widget/menu_toolbar/tool_button.rs          C-disabled: the active lighten on the icon
 src/widget/misc_widgets/barcode_scanner.rs      B-tint: the letterbox/scrim, one shade
@@ -119,4 +119,4 @@ src/widget/misc_widgets/bezier_curve_editor.rs  B-tint: the canvas gutter, one s
 src/widget/misc_widgets/drop_zone.rs            B-tint: the rejected-state band, one shade
 src/widget/special_widgets/canvas.rs            B-tint: the canvas gutter, one shade
 
-src/widget/special_widgets/terminal_view.rs     B-tint: the chrome bands, one shade each
+src/widget/special_widgets/terminal/terminal_view.rs     B-tint: the chrome bands, one shade each

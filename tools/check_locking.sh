@@ -56,7 +56,7 @@
 #                   not a finding. The widget handle's read/write paths must not build their own
 #                   table, and this is the singleton they share instead.
 #   display_widgets/emoji_picker.rs, display_widgets/font_preview.rs,
-#   input_widgets/masked_edit.rs, view_widgets/query_builder.rs
+#   input_widgets/text_entry/masked_edit.rs, view_widgets/query_builder.rs
 #                   `OnceLock<Font>` caches for fixed, never-changing chrome faces. `Font` owns a
 #                   heap `String`, so the face cannot be a `const`; each cell is initialised once and
 #                   then only read. Same reasoning as `metrics.rs` (the default font), and the same
@@ -132,7 +132,7 @@ EXEMPT_FILES = {
     "src/widget/capability.rs",
     "src/widget/display_widgets/emoji_picker.rs",
     "src/widget/display_widgets/font_preview.rs",
-    "src/widget/input_widgets/masked_edit.rs",
+    "src/widget/input_widgets/text_entry/masked_edit.rs",
     "src/widget/view_widgets/query_builder.rs",
     "src/widget/display_widgets/icon.rs",
     "src/widget/display_widgets/color_history.rs",
@@ -452,6 +452,12 @@ def skip_gated_items(lines: list[str], index: int) -> int:
 
 findings: list[str] = []
 for path in sorted(Path(SCAN_ROOT).rglob("*.rs")):
+    if path.name == "tests.rs" or path.name.endswith("_tests.rs"):
+        # A child test module (`<dir>/tests.rs`, `<dir>/<name>_tests.rs`) carries no
+        # `#![cfg(test)]` of its own: the gate lives on `mod tests;` in the sibling `mod.rs`,
+        # which this scan never sees. Its helpers are test doubles, not widget state
+        # (principle #9 exempts the file by name), so the scan skips it by name too.
+        continue
     if str(path).replace("\\", "/") in EXEMPT_FILES:
         # Exempt by name, with the reason in this script's header. Reported as skipped rather
         # than silently dropped, so a reader can see the exemption was applied.

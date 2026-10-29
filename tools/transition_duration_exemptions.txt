@@ -90,7 +90,7 @@ src/widget/display_widgets/scrollbar.rs    an idle dwell before the fade begins,
 src/widget/display_widgets/arc.rs    the no-theme fallback for a looping revolution; the themed path reads theme.motion.slow (see SPIN_SLOW_MULTIPLE)
 src/widget/display_widgets/color_well.rs    the dwell window that groups a double click, not an interaction transition
 src/widget/display_widgets/icon.rs    the frame step of a multi-frame icon animation, a data duration, not a transition
-src/widget/input_widgets/lineedit.rs    the multi-click grouping window, a dwell timing rather than a transition
+src/widget/input_widgets/text_entry/lineedit/model.rs    the multi-click grouping window, a dwell timing rather than a transition
 src/widget/menu_toolbar/tool_button.rs    the hover dwell before a delayed popup opens, not the popup's transition duration
 
 # ── Dwell timings added when the scan was widened to constant definitions ──
@@ -105,7 +105,7 @@ src/widget/input_widgets/text_match.rs    the type-ahead reset window; a typing 
 src/widget/media_widgets/rive_widget.rs    not a duration at all: `RIV_ANIMATION_DURATION_KEY` is a Rive property **key** (57), matched only because its name contains "DURATION"
 src/widget/menu_toolbar/effects.rs    the hover dwell before a submenu opens, not the submenu's transition
 src/widget/view_widgets/list_view.rs    the double-click grouping window the host must match to the OS, not a transition
-src/widget/view_widgets/properties_panel.rs    the hover dwell before a property tooltip appears, not the tooltip's transition
+src/widget/view_widgets/properties/properties_panel.rs    the hover dwell before a property tooltip appears, not the tooltip's transition
 
 # ── Not durations at all: rates and clocks ──
 #
@@ -115,7 +115,7 @@ src/widget/view_widgets/properties_panel.rs    the hover dwell before a property
 # long a movement takes, so it has no place in `motion`.
 src/widget/cupertino/date_picker.rs    `FLING_DECAY_PER_MS` is a decay rate per millisecond (0.03), not a duration: it is the exponential factor the fling velocity is multiplied by each millisecond
 src/widget/misc_widgets/drum_column.rs    `SETTLE_PX_PER_MS` is a settle speed in pixels per millisecond (0.35), not a duration: the column's remaining distance divided by it gives the time, and a theme token there would re-price the distance
-src/widget/input_widgets/input_companions.rs    `NOMINAL_FRAME_MS` is the animation clock's nominal frame period (16.0 ms, i.e. 60 Hz) used to advance progress by whole frames, not a transition duration
+src/widget/input_widgets/text_entry/input_companions.rs    `NOMINAL_FRAME_MS` is the animation clock's nominal frame period (16.0 ms, i.e. 60 Hz) used to advance progress by whole frames, not a transition duration
 
 # ── Dwell timings ──
 #

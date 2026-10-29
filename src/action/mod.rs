@@ -5,7 +5,7 @@
 //!
 //! # Reachability
 //!
-//! **State:** Production callers: `src/widget/capability/properties.rs:1` (the `action` capability's property contract).
+//! **State:** Production callers: `src/widget/capability/properties/menu.rs:14` (the `action` capability's property contract).
 use crate::compat::{format, String};
 mod app;
 mod manager;

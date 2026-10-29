@@ -56,12 +56,12 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
 echo "[1/3] the reason channel exists"
-if ! grep -qE '^pub enum RepaintReason' src/widget/runtime.rs; then
-    echo "  FAIL  src/widget/runtime.rs no longer defines \`pub enum RepaintReason\`"
+if ! grep -qE '^pub enum RepaintReason' src/widget/runtime/frame.rs; then
+    echo "  FAIL  src/widget/runtime/frame.rs no longer defines \`pub enum RepaintReason\`"
     echo "        It is the vocabulary every submission must name."
     exit 1
 fi
-if ! grep -qE '^pub fn request_repaint_because' src/widget/runtime.rs; then
+if ! grep -qE '^pub fn request_repaint_because' src/widget/runtime/window_map.rs; then
     echo "  FAIL  \`request_repaint_because\` disappeared; submissions have no way to name a cause"
     exit 1
 fi

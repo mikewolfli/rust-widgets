@@ -56,7 +56,7 @@ RUST_ABI_VERSION="$({
         exit;
       }
     }
-  ' src/bindings/binding_impl.rs
+  ' src/bindings/binding_impl/binding_status.rs
 } || true)"
 if [[ -z "$RUST_ABI_VERSION" ]]; then
   echo "Unable to read ABI version from rw_bindings_api_version()." >&2

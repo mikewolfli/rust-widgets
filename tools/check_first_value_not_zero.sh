@@ -152,7 +152,7 @@ shown_at_rest_reason() {
             echo "a freshly built alert is constructed visible (new_visible: true); its reveal is what a later show/hide moves, not what the first frame fades in from" ;;
         src/widget/view_widgets/image_gallery.rs)
             echo "the gallery shows its first image at construction, so its reveal is already at the shown end" ;;
-        src/widget/view_widgets/tree_view.rs)
+        src/widget/view_widgets/tree/tree_view.rs)
             echo "every node is expanded at construction, so expansion_progress rests at 1.0" ;;
         src/widget/overlay_widgets/splash_screen.rs)
             echo "a splash screen is opaque the moment it is mounted; it must not animate itself into existence" ;;

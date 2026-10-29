@@ -68,12 +68,12 @@ for symbol in rw_platform_diagnostics rw_platform_diagnostics_json; do
     fi
 done
 
-if grep -q "pub extern \"C\" fn rw_platform_diagnostics()" "$ROOT/src/bindings/binding_impl.rs"; then
+if grep -q "pub extern \"C\" fn rw_platform_diagnostics()" "$ROOT/src/bindings/binding_impl/c_abi_platform.rs"; then
     pass "Rust defines the C ABI mask export"
 else
     fail "Rust C ABI mask export is missing"
 fi
-if grep -q "pub extern \"C\" fn rw_platform_diagnostics_json()" "$ROOT/src/bindings/binding_impl.rs"; then
+if grep -q "pub extern \"C\" fn rw_platform_diagnostics_json()" "$ROOT/src/bindings/binding_impl/c_abi_platform.rs"; then
     pass "Rust defines the C ABI JSON export"
 else
     fail "Rust C ABI JSON export is missing"

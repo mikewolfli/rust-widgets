@@ -21,16 +21,27 @@ measurement, not a gate. The gate that enforces the sweep unit is
 `tools/check_control_rendering.sh`.
 """
 
+import pathlib
 import re
 import sys
 from collections import Counter, OrderedDict
 
-PROPERTIES = "src/widget/capability/properties.rs"
+PROPERTIES_DIR = pathlib.Path("src/widget/capability/properties")
+PROPERTIES = PROPERTIES_DIR / "mod.rs"
+
+
+def read_properties() -> str:
+    """The capability module as one text: the entry file plus its child modules."""
+    children = sorted(path for path in PROPERTIES_DIR.glob("*.rs") if path != PROPERTIES)
+    return "\n".join(
+        [PROPERTIES.read_text(encoding="utf-8")]
+        + [path.read_text(encoding="utf-8") for path in children]
+    )
 
 
 def main() -> int:
     try:
-        source = open(PROPERTIES, encoding="utf-8").read()
+        source = read_properties()
     except OSError as error:
         print(f"cannot read {PROPERTIES}: {error}", file=sys.stderr)
         return 2

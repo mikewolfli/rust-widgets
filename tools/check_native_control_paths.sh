@@ -18,8 +18,9 @@ pass() { echo "PASS: $*"; }
 # Production files that must never reach the platform's native control constructors.
 FILES=(
     "src/lib.rs"
-    "src/app/handle.rs"
-    "src/widget/runtime.rs"
+    "src/api"/*.rs
+    "src/app/handle"/*.rs
+    "src/widget/runtime"/*.rs
 )
 
 for file in "${FILES[@]}"; do

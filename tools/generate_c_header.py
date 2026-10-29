@@ -98,7 +98,7 @@ def parse_value_kinds(source: str) -> list[tuple[str, int]]:
     the ABI contract, and every language binding must use the same numbers. A
     hard-coded copy in this script would be a third place they could drift (the
     Rust constants and each binding are the other two). Parsing keeps
-    `binding_impl.rs` the single source of truth, and `check_abi.sh` fails when
+    `binding_impl/` the single source of truth, and `check_abi.sh` fails when
     the committed header disagrees with what this produces.
 
     Before this existed the header published no discriminators at all, so each
@@ -110,7 +110,8 @@ def parse_value_kinds(source: str) -> list[tuple[str, int]]:
     its free call.
     """
     pattern = re.compile(
-        r"^const\s+(RW_VALUE_[A-Z_]+):\s*c_int\s*=\s*(-?\d+);", re.MULTILINE
+        r"^(?:pub(?:\([^)]*\))?\s+)?const\s+(RW_VALUE_[A-Z_]+):\s*c_int\s*=\s*(-?\d+);",
+        re.MULTILINE,
     )
     return [(match.group(1), int(match.group(2))) for match in pattern.finditer(source)]
 
@@ -123,7 +124,7 @@ def render_header(
     lines.append("#ifndef RW_GENERATED_H")
     lines.append("#define RW_GENERATED_H")
     lines.append("")
-    lines.append("/* Auto-generated from src/bindings/binding_impl.rs. Do not edit. */")
+    lines.append("/* Auto-generated from src/bindings/binding_impl/. Do not edit. */")
     lines.append("")
     lines.append("#include <stdbool.h>")
     lines.append("#include <stdint.h>")
@@ -181,7 +182,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--bindings",
-        default="src/bindings/binding_impl.rs",
+        default="src/bindings/binding_impl",
         help="Path to Rust bindings implementation module",
     )
     parser.add_argument(
@@ -194,7 +195,12 @@ def main() -> None:
     bindings_path = pathlib.Path(args.bindings)
     output_path = pathlib.Path(args.output)
 
-    source = bindings_path.read_text(encoding="utf-8")
+    if bindings_path.is_dir():
+        source = "\n".join(
+            p.read_text(encoding="utf-8") for p in sorted(bindings_path.glob("*.rs"))
+        )
+    else:
+        source = bindings_path.read_text(encoding="utf-8")
     functions = parse_bindings(source)
     value_kinds = parse_value_kinds(source)
     if not value_kinds:

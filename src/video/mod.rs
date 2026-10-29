@@ -5,7 +5,7 @@
 //!
 //! # Reachability
 //!
-//! **State:** Production callers: `src/widget/special_widgets/media_player.rs:42` (the master clock),
+//! **State:** Production callers: `src/widget/special_widgets/media_player/media_player.rs:42` (the master clock),
 //! `src/video/engine.rs:176` (`VideoEngine::tick_frame`). The decoder itself is behind `--features video`.
 
 /// Codec-agnostic decoder interface plus the built-in MJPEG and

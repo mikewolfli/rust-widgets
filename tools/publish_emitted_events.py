@@ -24,7 +24,14 @@ import re
 import sys
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
-PROPERTIES = REPO / "src/widget/capability/properties.rs"
+PROPERTIES_DIR = REPO / "src/widget/capability/properties"
+
+
+def property_files() -> list[pathlib.Path]:
+    """The capability module's files: the entry file plus its child modules."""
+    entry = PROPERTIES_DIR / "mod.rs"
+    return [entry, *sorted(path for path in PROPERTIES_DIR.glob("*.rs") if path != entry)]
+
 
 # capability -> names its control emits that were not published. Taken from the per-name audit
 # recorded in `docs/log/log-20260920-2.md`, which lists the emit sites it verified in production
@@ -57,12 +64,16 @@ ADDITIONS: dict[str, list[str]] = {
 CAPABILITY_RE = re.compile(r"pub\(crate\) fn \w+\(\) -> WidgetCapability \{(.*?)\n\}", re.S)
 NAME_RE = re.compile(r'canonical_name:\s*"([^"]+)"')
 EVENTS_RE = re.compile(r"events:\s*&\[(.*?)\s*\]", re.S)
+# `events: events_of!("slider")` — the representation `migrate_capability_events.py`
+# produces. List literals no longer exist there, so a lookup means the names are already
+# published through the generated table this tool was written to reach.
+EVENTS_LOOKUP_RE = re.compile(r'events:\s*events_of!\("([^"]+)"\)')
 QUOTED_RE = re.compile(r'"([^"]+)"')
 
 
 def main() -> int:
     check_only = "--check" in sys.argv
-    source = PROPERTIES.read_text()
+    sources = {path: path.read_text() for path in property_files()}
     applied: list[str] = []
     missing: list[str] = []
 
@@ -77,6 +88,8 @@ def main() -> int:
             return body
         events_match = EVENTS_RE.search(body)
         if events_match is None:
+            if EVENTS_LOOKUP_RE.search(body) is not None:
+                return body
             missing.append(f"{capability}: no `events:` list to extend")
             return body
         existing = QUOTED_RE.findall(events_match.group(1))
@@ -97,7 +110,8 @@ def main() -> int:
         )
         return body[: events_match.start()] + replacement + body[events_match.end() :]
 
-    updated = CAPABILITY_RE.sub(patch, source)
+    updated = {path: CAPABILITY_RE.sub(patch, text) for path, text in sources.items()}
+    changed = [path for path in sources if updated[path] != sources[path]]
 
     if check_only:
         if missing:
@@ -108,9 +122,9 @@ def main() -> int:
         print(f"✅ every emitted signal is published ({len(ADDITIONS)} capabilities checked)")
         return 0
 
-    if updated != source:
-        PROPERTIES.write_text(updated)
-    print(f"published {len(applied)} previously unpublished signal(s)")
+    for path in changed:
+        path.write_text(updated[path])
+    print(f"published {len(applied)} previously unpublished signal(s) in {len(changed)} file(s)")
     for entry in applied:
         print(f"   {entry}")
     return 0

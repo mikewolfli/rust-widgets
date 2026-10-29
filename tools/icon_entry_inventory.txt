@@ -19,7 +19,7 @@ item setter | set_item_icon_source | src/widget/container_widgets/mdiarea.rs | -
 item setter | set_item_icon_source | src/widget/container_widgets/tabwidget.rs | - | index
 item setter | set_item_icon_source | src/widget/container_widgets/toolbox.rs | - | user_data id
 item setter | set_item_icon_source | src/widget/cupertino/material.rs | - | -
-item setter | set_item_icon_source | src/widget/menu_toolbar/dropdown_menu.rs | - | text id
+item setter | set_item_icon_source | src/widget/menu_toolbar/menu/dropdown_menu.rs | - | text id
 item setter | set_item_icon_source | src/widget/menu_toolbar/menu_button.rs | - | u64 id
 item setter | set_item_icon_source | src/widget/menu_toolbar/tool_bar.rs | - | -
 item setter | set_item_icon_source | src/widget/nav_widgets/bottom_navigation_bar.rs | - | index

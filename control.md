@@ -40,8 +40,8 @@
 | 分组 | 控件数 | 本节 |
 |---|---|---|
 | Base controls (`base_widgets`) | 6 | [跳转](#base-controls) |
-| Input controls (`input_widgets`) | 29 | [跳转](#input-controls) |
-| Display controls (`display_widgets`) | 27 | [跳转](#display-controls) |
+| Input controls (`input_widgets`) | 31 | [跳转](#input-controls) |
+| Display controls (`display_widgets`) | 26 | [跳转](#display-controls) |
 | Containers (`container_widgets`) | 28 | [跳转](#containers) |
 | Navigation (`nav_widgets`) | 7 | [跳转](#navigation) |
 | Menus and toolbars (`menu_toolbar`) | 9 | [跳转](#menus-and-toolbars) |
@@ -49,7 +49,7 @@
 | Overlays (`overlay_widgets`) | 5 | [跳转](#overlays) |
 | Views (`view_widgets`) | 15 | [跳转](#views) |
 | Charts (`chart_widgets`) | 22 | [跳转](#charts) |
-| Specialised controls (`special_widgets`) | 34 | [跳转](#specialised-controls) |
+| Specialised controls (`special_widgets`) | 33 | [跳转](#specialised-controls) |
 | Advanced controls (`advanced_widgets`) | 10 | [跳转](#advanced-controls) |
 | Media and web (`media_widgets`) | 8 | [跳转](#media-and-web) |
 | Miscellaneous (`misc_widgets`) | 10 | [跳转](#miscellaneous) |
@@ -74,12 +74,13 @@
 
 ## Input controls
 
-`input_widgets` — 29 个控件。
+`input_widgets` — 31 个控件。
 
 | 控件 | 深色 | 浅色 |
 |---|---|---|
 | `auto_complete_edit` | ![auto_complete_edit (dark)](snapshots/svg/auto_complete_edit.svg) | ![auto_complete_edit (light)](snapshots/svg/auto_complete_edit.light.svg) |
 | `cascader` | ![cascader (dark)](snapshots/svg/cascader.svg) | ![cascader (light)](snapshots/svg/cascader.light.svg) |
+| `chip` | ![chip (dark)](snapshots/svg/chip.svg) | ![chip (light)](snapshots/svg/chip.light.svg) |
 | `combo_box` | ![combo_box (dark)](snapshots/svg/combo_box.svg) | ![combo_box (light)](snapshots/svg/combo_box.light.svg) |
 | `command_link` | ![command_link (dark)](snapshots/svg/command_link.svg) | ![command_link (light)](snapshots/svg/command_link.light.svg) |
 | `dropdown` | ![dropdown (dark)](snapshots/svg/dropdown.svg) | ![dropdown (light)](snapshots/svg/dropdown.light.svg) |
@@ -100,6 +101,7 @@
 | `phone_input` | ![phone_input (dark)](snapshots/svg/phone_input.svg) | ![phone_input (light)](snapshots/svg/phone_input.light.svg) |
 | `range_slider` | ![range_slider (dark)](snapshots/svg/range_slider.svg) | ![range_slider (light)](snapshots/svg/range_slider.light.svg) |
 | `rich_edit` | ![rich_edit (dark)](snapshots/svg/rich_edit.svg) | ![rich_edit (light)](snapshots/svg/rich_edit.light.svg) |
+| `scroll_bar` | ![scroll_bar (dark)](snapshots/svg/scroll_bar.svg) | ![scroll_bar (light)](snapshots/svg/scroll_bar.light.svg) |
 | `search_bar` | ![search_bar (dark)](snapshots/svg/search_bar.svg) | ![search_bar (light)](snapshots/svg/search_bar.light.svg) |
 | `search_box` | ![search_box (dark)](snapshots/svg/search_box.svg) | ![search_box (light)](snapshots/svg/search_box.light.svg) |
 | `shortcut_editor` | ![shortcut_editor (dark)](snapshots/svg/shortcut_editor.svg) | ![shortcut_editor (light)](snapshots/svg/shortcut_editor.light.svg) |
@@ -110,7 +112,7 @@
 
 ## Display controls
 
-`display_widgets` — 27 个控件。
+`display_widgets` — 26 个控件。
 
 | 控件 | 深色 | 浅色 |
 |---|---|---|
@@ -135,7 +137,6 @@
 | `progress_circle` | ![progress_circle (dark)](snapshots/svg/progress_circle.svg) | ![progress_circle (light)](snapshots/svg/progress_circle.light.svg) |
 | `rating` | ![rating (dark)](snapshots/svg/rating.svg) | ![rating (light)](snapshots/svg/rating.light.svg) |
 | `roller` | ![roller (dark)](snapshots/svg/roller.svg) | ![roller (light)](snapshots/svg/roller.light.svg) |
-| `scroll_bar` | ![scroll_bar (dark)](snapshots/svg/scroll_bar.svg) | ![scroll_bar (light)](snapshots/svg/scroll_bar.light.svg) |
 | `skeleton_loader` | ![skeleton_loader (dark)](snapshots/svg/skeleton_loader.svg) | ![skeleton_loader (light)](snapshots/svg/skeleton_loader.light.svg) |
 | `slider` | ![slider (dark)](snapshots/svg/slider.svg) | ![slider (light)](snapshots/svg/slider.light.svg) |
 | `spinner` | ![spinner (dark)](snapshots/svg/spinner.svg) | ![spinner (light)](snapshots/svg/spinner.light.svg) |
@@ -296,13 +297,12 @@
 
 ## Specialised controls
 
-`special_widgets` — 34 个控件。
+`special_widgets` — 33 个控件。
 
 | 控件 | 深色 | 浅色 |
 |---|---|---|
 | `breadcrumb` | ![breadcrumb (dark)](snapshots/svg/breadcrumb.svg) | ![breadcrumb (light)](snapshots/svg/breadcrumb.light.svg) |
 | `canvas` | ![canvas (dark)](snapshots/svg/canvas.svg) | ![canvas (light)](snapshots/svg/canvas.light.svg) |
-| `chip` | ![chip (dark)](snapshots/svg/chip.svg) | ![chip (light)](snapshots/svg/chip.light.svg) |
 | `chip_input` | ![chip_input (dark)](snapshots/svg/chip_input.svg) | ![chip_input (light)](snapshots/svg/chip_input.light.svg) |
 | `code_editor` | ![code_editor (dark)](snapshots/svg/code_editor.svg) | ![code_editor (light)](snapshots/svg/code_editor.light.svg) |
 | `color_picker` | ![color_picker (dark)](snapshots/svg/color_picker.svg) | ![color_picker (light)](snapshots/svg/color_picker.light.svg) |

@@ -24,12 +24,16 @@ pub mod camera_preview;
 pub mod chapter_list_panel;
 pub mod hero_animation;
 pub mod lottie_widget;
-pub mod media_scrubber;
-pub mod media_transport;
 pub mod pixels;
 pub mod rive_widget;
-pub mod subtitle_bar;
 pub mod video_player;
+
+// The player family lives in `special_widgets/media_player/`; re-export the three controls here
+// so every `media_widgets::media_scrubber::X` / `::media_transport::X` / `::subtitle_bar::X`
+// path that predates the move keeps resolving.
+pub use crate::widget::special_widgets::media_player::{
+    media_scrubber, media_transport, subtitle_bar,
+};
 
 pub use animated_image::{
     AnimatedFrame, AnimatedFrameProvider, AnimatedImage, AnimatedImageFormat, PlaybackDirection,

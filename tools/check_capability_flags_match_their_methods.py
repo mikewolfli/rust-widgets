@@ -6,7 +6,7 @@
 # Why this gate exists
 
 `PlatformCapabilities` is not documentation — it is a **promise that escapes the process**.
-`rw_platform_capabilities()` (`src/bindings/binding_impl.rs`) packs the flags into a C ABI
+`rw_platform_capabilities()` (`src/bindings/binding_impl/c_abi_platform.rs`) packs the flags into a C ABI
 bitmask, and a host application reads that mask to decide whether to offer an input method, a
 screen reader, or a native menu. So a flag set to `true` without a method behind it is not a
 cosmetic inaccuracy: it is a host-visible false claim.

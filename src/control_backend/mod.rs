@@ -15,7 +15,7 @@
 //!
 //! # Reachability
 //!
-//! **State:** Production callers: `src/bindings/binding_impl.rs:1` (every `rw_create_*` funnels through `get_control_backend`).
+//! **State:** Production callers: `src/bindings/binding_impl/c_abi.rs:97` (every `rw_create_*` funnels through `get_control_backend`).
 
 /// Custom-painted control backend: widgets are drawn by this library rather than
 /// mapped onto platform controls. Compiled only with the `controls-custom`
