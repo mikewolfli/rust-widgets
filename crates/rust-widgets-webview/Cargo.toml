@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT
 [package]
 name = "rust-widgets-webview"
-version = "3.1.0"
+version = "3.1.1"
 edition = "2021"
 rust-version = "1.88"
 license = "MIT"
@@ -28,7 +28,7 @@ web-http = ["dep:ureq"]
 [dependencies]
 # The widget layer this package extends. The dependency runs one way only: the parent cannot
 # depend on this crate, because Cargo rejects package cycles.
-rust_widgets = { version = "3.1.0", path = "../.." }
+rust_widgets = { version = "3.1.1", path = "../.." }
 # The same logging facade the parent uses; `WebViewCore` reports a load failure through it.
 log = "0.4"
 serde_json = "1.0"

@@ -1,6 +1,6 @@
 [package]
 name = "rust-widgets-suites"
-version = "3.1.0"
+version = "3.1.1"
 edition = "2021"
 rust-version = "1.88"
 license = "MIT"
@@ -24,4 +24,4 @@ default = []
 # The dependency runs one way only: the parent cannot depend on this crate (Cargo rejects a
 # package cycle). The suite extends the parent's widget layer, so it takes the parent's default
 # (device) profile — the same shape `rust-widgets-webview` uses.
-rust_widgets = { version = "3.0.0", path = "../.." }
+rust_widgets = { version = "3.1.1", path = "../.." }
