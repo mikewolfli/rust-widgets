@@ -256,6 +256,85 @@ fn the_borrowed_entry_point_draws_what_the_owned_one_draws() {
     assert_eq!(&*borrowed, &owned[..], "the fallback must be the same picture on both entries");
 }
 
+/// The texture entry point draws what the frame entry point draws, and skips the readback: it hands
+/// the caller a view instead of pixels. Both the GPU and the CPU-fallback branch are covered.
+#[test]
+fn the_texture_entry_point_draws_what_the_frame_entry_point_draws() {
+    let Some(renderer) = renderer() else { return };
+    let dispatchable = vec![
+        WgpuDrawCommand::Clear { color: opaque(12, 24, 36) },
+        WgpuDrawCommand::FillRect {
+            rect: PixelRect { x: 2, y: 2, width: 8, height: 8 },
+            color: opaque(200, 120, 40),
+            clip: None,
+        },
+    ];
+    renderer.cache.borrow_mut().ensure_readback(&renderer.device, 16 * 16 * 4);
+    let seen = renderer
+        .with_draw_commands_texture(16, 16, &dispatchable, |_view| read_target_frame(&renderer, 16, 16))
+        .expect("the texture path renders");
+    let owned = renderer.render_draw_commands_rgba8(16, 16, &dispatchable).expect("owned frame");
+    assert_eq!(seen, owned, "the texture the caller gets is the frame the other entry returns");
+
+    // A refused stream takes the CPU branch and is uploaded into the same handle.
+    let refused = vec![
+        WgpuDrawCommand::Clear { color: opaque(0, 0, 0) },
+        WgpuDrawCommand::SetBlendMode { mode: crate::render::BlendMode::Multiply as u8 },
+        WgpuDrawCommand::DrawCircle {
+            center: (8, 8),
+            radius: 5,
+            color: opaque(255, 0, 0),
+            width: 1,
+            clip: None,
+        },
+    ];
+    renderer.cache.borrow_mut().ensure_readback(&renderer.device, 16 * 16 * 4);
+    let seen = renderer
+        .with_draw_commands_texture(16, 16, &refused, |_view| read_target_frame(&renderer, 16, 16))
+        .expect("the fallback texture path renders");
+    let owned = renderer.render_draw_commands_rgba8(16, 16, &refused).expect("owned frame");
+    assert_eq!(seen, owned, "the CPU branch uploads the CPU picture unchanged");
+}
+
+
+/// Reads the renderer's cached target texture back into pixels.
+///
+/// The texture entry point hands a view, not pixels; this copies the target into the renderer's own
+/// readback buffer so a test can compare it with the frame-returning entry point. It must run while
+/// the target still holds the frame, which is why the tests call it from inside the closure, and it
+/// only takes shared borrows because the closure runs with the cache already borrowed.
+fn read_target_frame(renderer: &WgpuRenderer, width: u32, height: u32) -> Vec<u8> {
+    let expected_len = (width as usize) * (height as usize) * 4;
+    let cache = renderer.cache.borrow();
+    let target = cache.target.as_ref().expect("the target exists");
+    let readback = cache.readback.as_ref().expect("the readback buffer exists");
+    let mut encoder =
+        renderer.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+    encoder.copy_texture_to_buffer(
+        wgpu::TexelCopyTextureInfo {
+            texture: &target.texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        wgpu::TexelCopyBufferInfo {
+            buffer: &readback.buffer,
+            layout: wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(crate::wgpu_backend::renderer::resources::padded_row_bytes(width).expect("padded row")),
+                rows_per_image: Some(height),
+            },
+        },
+        wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+    );
+    renderer.queue.submit(Some(encoder.finish()));
+    let mut out = Vec::new();
+    renderer
+        .read_back_into(&readback.buffer, width, height, expected_len, &mut out)
+        .expect("the target reads back");
+    out
+}
+
 /// A clear through the reusable path must match the owned clear exactly.
 #[test]
 fn reusable_clear_frame_matches_the_owned_clear() {

@@ -6,12 +6,11 @@
 use super::super::commands::WgpuDrawCommand;
 use super::super::raster::{
     bbox_for_circle, blend_mode_from_id, combine, effective_clip, gradient_ramp, path_bounds,
-    path_fan_vertices, rasterize_draw_commands_rgba8, GradientAxis,
+    path_fan_vertices, GradientAxis,
 };
 use super::super::types::{PixelRect, Rgba8};
 use super::dispatch::{
-    blend_bbox, commands_gpu_dispatchable_with, draws_under_blend, invalid_image_payload,
-    pack_rect_command, SHAPE_ARC_STROKE, SHAPE_ARC_WEDGE, SHAPE_CIRCLE_STROKE,
+    blend_bbox, draws_under_blend, pack_rect_command, SHAPE_ARC_STROKE, SHAPE_ARC_WEDGE, SHAPE_CIRCLE_STROKE,
     SHAPE_ROUNDED_OUTLINE,
 };
 use super::frame::WgpuRenderer;
@@ -22,7 +21,6 @@ use super::resources::{
 };
 use super::shadow::pack_blurred_shadow;
 use super::uploads::{ImageDraw, PathDraw, RadialDraw, ShapeDraw, TextDraw};
-use std::cell::Ref;
 
 /// Packs a row-major [`crate::render::math3d::Mat4`] as the column-major bytes WGSL expects.
 ///
@@ -982,66 +980,6 @@ impl WgpuRenderer {
     ///
     /// # GPU dispatch (G-218)
     ///
-    /// A stream the existing pipelines can cover — whole-frame clears, unclipped filled
-    /// rectangles and unclipped filled circles, with blending left at `Normal` — is drawn
-    /// entirely on the GPU in one render pass: clears repaint through the full-screen clear
-    /// pipeline, rectangle runs go through the instanced quad pipeline, and each circle is
-    /// one SDF circle draw. Painter order is replayed exactly, so mid-stream clears and
-    /// overlaps behave as on the CPU. The circles' SDF edge is anti-aliased, which is the
-    /// mandated difference from the CPU rasteriser's hard-edged disc.
-    ///
-    /// Every other stream falls back to [`rasterize_draw_commands_rgba8`], **returned
-    /// directly**: the old upload-and-readback round trip reproduced those exact bytes
-    /// (`upload_round_trips_the_given_pixels` pins the identity), so skipping it also skips
-    /// the texture upload, the copy and the blocking readback for frames that never needed
-    /// the GPU (G-217). A caller that only uploads or reads the frame can use
-    /// [`Self::render_draw_commands_cached_rgba8`] to reuse the renderer's buffer instead.
-    pub fn render_draw_commands_rgba8(
-        &self,
-        width: u32,
-        height: u32,
-        commands: &[WgpuDrawCommand],
-    ) -> Result<Vec<u8>, String> {
-        let expected_len = rgba_buffer_len(width, height)?;
-        // Before deciding which path draws the stream: a payload that disagrees with its declared
-        // grid is an error the *caller* asked for, so it is reported here with the CPU rasteriser's
-        // wording instead of being turned into a reason to use the CPU.
-        if let Some(error) = invalid_image_payload(commands) {
-            return Err(error);
-        }
-        if commands_gpu_dispatchable_with(commands, self.blend_modes_on_gpu) {
-            return self.encode_draw_commands_gpu(width, height, expected_len, commands);
-        }
-        rasterize_draw_commands_rgba8(width, height, commands)
-    }
-
-    /// The borrowed counterpart of [`Self::render_draw_commands_rgba8`] (G-221).
-    ///
-    /// Same dispatch decision, same picture, same errors — only the ownership differs: this one
-    /// keeps the bytes in the renderer's reusable buffer and lends them back, so a caller that
-    /// uploads or reads the frame never owns it. A dispatchable stream is encoded on the GPU and
-    /// read back into that buffer (one copy), and anything the dispatcher refuses is rasterised on
-    /// the CPU into it directly, exactly as the owned entry point would have.
-    ///
-    /// An earlier form of this method always rasterised on the CPU, which meant one command stream
-    /// could produce two different pictures depending on which entry point a host happened to call.
-    pub fn render_draw_commands_cached_rgba8(
-        &self,
-        width: u32,
-        height: u32,
-        commands: &[WgpuDrawCommand],
-    ) -> Result<Ref<'_, [u8]>, String> {
-        let expected_len = rgba_buffer_len(width, height)?;
-        if let Some(error) = invalid_image_payload(commands) {
-            return Err(error);
-        }
-        if commands_gpu_dispatchable_with(commands, self.blend_modes_on_gpu) {
-            let pixels = self.encode_draw_commands_gpu(width, height, expected_len, commands)?;
-            return self.commands_frame.store(width, height, &pixels);
-        }
-        self.commands_frame.rasterize(width, height, commands)
-    }
-
     /// Draws a dispatchable command stream entirely on the GPU (G-218).
     ///
     /// One render pass covers the frame. The pass loads transparent — the software
@@ -1059,13 +997,75 @@ impl WgpuRenderer {
     ///
     /// Rows are uploaded at the image's own pitch: `Queue::write_texture` stages the copy itself
     /// and accepts the tightly packed buffer, so no padded copy is made here.
-    fn encode_draw_commands_gpu(
+    pub(super) fn encode_draw_commands_gpu(
         &self,
         width: u32,
         height: u32,
         expected_len: usize,
         commands: &[WgpuDrawCommand],
     ) -> Result<Vec<u8>, String> {
+        let mut frame = Vec::new();
+        self.encode_draw_commands_gpu_into(width, height, expected_len, commands, &mut frame)?;
+        Ok(frame)
+    }
+
+    /// [`Self::encode_draw_commands_gpu`], reading the frame back into `out`.
+    ///
+    /// The caller that already owns a reusable buffer (the borrowed entry point) passes it here, so
+    /// the readback is the only copy the frame pays for.
+    pub(super) fn encode_draw_commands_gpu_into(
+        &self,
+        width: u32,
+        height: u32,
+        expected_len: usize,
+        commands: &[WgpuDrawCommand],
+        out: &mut Vec<u8>,
+    ) -> Result<(), String> {
+        self.encode_draw_commands_frame(width, height, commands)?;
+        // The frame encoder draws without a readback buffer; this half is what needs one.
+        {
+            let mut cache = self.cache.borrow_mut();
+            cache.ensure_readback(&self.device, readback_frame_bytes(width, height)?);
+        }
+        let cache = self.cache.borrow();
+        let readback = cache.readback.as_ref().ok_or_else(|| "readback buffer missing".to_string())?;
+        let padded_bytes_per_row = padded_row_bytes(width)?;
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("gpu_draw_commands_readback"),
+        });
+        let target = cache.target.as_ref().ok_or_else(|| "render target missing".to_string())?;
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture: &target.texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &readback.buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(padded_bytes_per_row),
+                    rows_per_image: Some(height),
+                },
+            },
+            wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+        );
+        self.queue.submit(Some(encoder.finish()));
+        self.read_back_into(&readback.buffer, width, height, expected_len, out)
+    }
+
+    /// Encodes `commands` on the GPU into the cached render target, without reading it back.
+    ///
+    /// The frame-returning entry points add a copy of the target into the readback buffer; a caller
+    /// that only needs the picture *on* the GPU — to sample it, to hand it to another pipeline, or
+    /// to present it — stops here. See [`Self::with_draw_commands_texture`].
+    pub(super) fn encode_draw_commands_frame(
+        &self,
+        width: u32,
+        height: u32,
+        commands: &[WgpuDrawCommand],
+    ) -> Result<(), String> {
         let framebuffer = PixelRect { x: 0, y: 0, width, height };
         let clear_count = commands
             .iter()
@@ -1565,10 +1565,14 @@ impl WgpuRenderer {
                     // the correct frame, in the fallback frame that `cache`'s borrow cannot
                     // reach (G-221).
                     _ => {
-                        return Ok(self
-                            .fallback_frame
-                            .rasterize(width, height, commands)?
-                            .to_vec());
+                        // The dispatcher accepted this stream, so no command can reach here. An
+                        // error is the honest answer now that this half of the encoder produces no
+                        // CPU frame of its own: the caller reports it instead of drawing a partial
+                        // stream.
+                        return Err(
+                            "a command reached the GPU encoder that the dispatcher did not accept"
+                                .to_string(),
+                        );
                     }
                 }
                 if wrapped {
@@ -1630,7 +1634,6 @@ impl WgpuRenderer {
             &self.device,
             (instance_len + circle_vertex_len + path_vertex_len + shadow_vertex_len) as u64,
         );
-        cache.ensure_readback(&self.device, readback_frame_bytes(width, height)?);
         let shadow_specs: Vec<PixelRect> = shadow_draws.iter().map(|draw| draw.layer).collect();
         cache.ensure_shadow_targets(
             &self.device,
@@ -1657,7 +1660,6 @@ impl WgpuRenderer {
             vertices,
             transformed_uniform,
             circle_uniforms,
-            readback,
             shadow,
             blend,
             pack,
@@ -1669,7 +1671,6 @@ impl WgpuRenderer {
         let vertices = vertices.as_ref().expect("the vertex buffer was just ensured");
         let transformed = transformed_uniform.as_ref().expect("the mvp was just ensured");
         let circle_arena = circle_uniforms.as_ref().expect("the circle arena was just ensured");
-        let readback = readback.as_ref().expect("the readback was just ensured");
 
         self.queue.write_buffer(&transformed.buffer, 0, &ortho_mvp_bytes(width, height));
         if uniform_len > 0 {
@@ -1750,27 +1751,10 @@ impl WgpuRenderer {
             blend_pair,
         );
 
-        let padded_bytes_per_row = padded_row_bytes(width)?;
-        encoder.copy_texture_to_buffer(
-            wgpu::TexelCopyTextureInfo {
-                texture: &target.texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            wgpu::TexelCopyBufferInfo {
-                buffer: &readback.buffer,
-                layout: wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(padded_bytes_per_row),
-                    rows_per_image: Some(height),
-                },
-            },
-            wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
-        );
         self.queue.submit(Some(encoder.finish()));
-        self.read_back_owned(&readback.buffer, width, height, expected_len)
+        Ok(())
     }
+
     /// Applies a separable Gaussian blur to an RGBA8 image on the GPU.
     ///
     /// # Why two passes

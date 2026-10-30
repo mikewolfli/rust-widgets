@@ -232,32 +232,6 @@ impl CpuFrame {
         Ok(Ref::map(self.bytes.borrow(), |bytes| &bytes[..byte_len]))
     }
 
-    /// Copies `pixels` into this path's buffer and lends the frame back to the caller.
-    ///
-    /// The GPU counterpart of [`Self::rasterize`]: the pixels were produced by a backend this type
-    /// cannot see, so they are copied in rather than written in place. Keeping one buffer for both
-    /// paths is what lets a caller hand either picture to the same upload without owning it, and it
-    /// keeps the "the allocation is reused" promise the borrowed API makes.
-    pub(crate) fn store(
-        &self,
-        width: u32,
-        height: u32,
-        pixels: &[u8],
-    ) -> Result<Ref<'_, [u8]>, String> {
-        let byte_len = rgba_buffer_len(width, height)?;
-        if pixels.len() != byte_len {
-            return Err(format!(
-                "GPU frame is {} bytes but a {width}x{height} frame needs {byte_len}",
-                pixels.len()
-            ));
-        }
-        {
-            let mut bytes = self.bytes.borrow_mut();
-            bytes.clear();
-            bytes.extend_from_slice(pixels);
-        }
-        Ok(Ref::map(self.bytes.borrow(), |bytes| &bytes[..byte_len]))
-    }
 }
 
 /// One encoded draw of the command-stream pass (G-218).
@@ -526,7 +500,13 @@ impl RenderCache {
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
                 format: wgpu::TextureFormat::Rgba8Unorm,
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+                // `TEXTURE_BINDING` so a caller of `with_draw_commands_texture` can sample the
+                // picture, and `COPY_DST` so a stream the dispatcher refuses can be rasterised on
+                // the CPU and uploaded into the same texture.
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | wgpu::TextureUsages::COPY_SRC
+                    | wgpu::TextureUsages::COPY_DST
+                    | wgpu::TextureUsages::TEXTURE_BINDING,
                 view_formats: &[],
             });
             let view = texture.create_view(&wgpu::TextureViewDescriptor::default());

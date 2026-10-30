@@ -13,6 +13,7 @@ mod frame;
 mod pass;
 mod resources;
 mod shadow;
+mod stream;
 mod uploads;
 
 pub(crate) use super::shaders;

@@ -29,7 +29,7 @@ include = [
     # `tools/` and `examples/` paths below ship as individual entries, so
     # `tools/check_declared_targets_ship.sh` still passes. Dropping this line without
     # shrinking ~250 KB elsewhere re-breaks publishing.
-    # "benches/**/*",
+    "benches/**/*",
     "language/**/*",
     # `crates/` holds nested packages — `rust-widgets-font` (the `fonts-*` payloads) and
     # `mobile-services`. Cargo skips a nested package in the parent's tarball by itself; the
@@ -1119,6 +1119,14 @@ panic = "abort"
 [[bench]]
 name = "render_bench"
 harness = false
+
+# The GPU path's own benchmark: the same command streams through the CPU rasteriser and the GPU
+# pipelines, so "move it to the GPU" is decided by measurement. `required-features` keeps every
+# profile that compiles no WGPU backend from having to build it.
+[[bench]]
+name = "wgpu_bench"
+harness = false
+required-features = ["gpu-wgpu"]
 
 [[bench]]
 name = "signal_bench"

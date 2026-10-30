@@ -104,9 +104,6 @@ pub struct WgpuRenderer {
     pub(crate) clear_frame: CpuFrame,
     /// Reusable CPU frame for command streams (G-221).
     pub(crate) commands_frame: CpuFrame,
-    /// Reusable CPU frame for the dispatcher's inner fallback, which runs while `cache` is
-    /// already borrowed, so it cannot share `commands_frame` (G-221).
-    pub(crate) fallback_frame: CpuFrame,
     /// What `wgpu` reported for the selected adapter, kept so [`GpuRenderer::vendor_info`] can
     /// answer with the real device name instead of a constant (G-232).
     pub(crate) adapter_info: wgpu::AdapterInfo,
@@ -1487,7 +1484,6 @@ impl WgpuRenderer {
             cache: RefCell::new(RenderCache::default()),
             clear_frame: CpuFrame::new(),
             commands_frame: CpuFrame::new(),
-            fallback_frame: CpuFrame::new(),
             adapter_info,
         })
     }
@@ -1701,7 +1697,7 @@ impl WgpuRenderer {
     /// The wait is bounded by [`GPU_READBACK_TIMEOUT`]; on expiry the pending mapping is
     /// cancelled with `unmap` and an error is returned, so a lost device reports a failure
     /// instead of hanging the process (G-63).
-    fn read_back_into(
+    pub(crate) fn read_back_into(
         &self,
         buffer: &wgpu::Buffer,
         width: u32,
