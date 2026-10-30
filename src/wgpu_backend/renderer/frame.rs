@@ -33,6 +33,14 @@ pub struct WgpuRenderer {
     /// The instanced quad pipeline without a stencil state, used to paint a shadow's body into its
     /// own offscreen layer.
     pub(crate) shadow_body_pipeline: wgpu::RenderPipeline,
+    /// The composite pass of a GPU blend run: the run's layer blended with the frame's backdrop.
+    pub(crate) blend_composite_pipeline: wgpu::RenderPipeline,
+    /// Bind group layout of the composite pass: the mode uniform plus the layer and backdrop
+    /// textures.
+    pub(crate) blend_bind_group_layout: wgpu::BindGroupLayout,
+    /// Whether streams that leave `Normal` are drawn on the GPU. Off by default — see
+    /// [`Self::set_blend_modes_on_gpu`].
+    pub(crate) blend_modes_on_gpu: bool,
     pub(crate) bind_group_layout: wgpu::BindGroupLayout,
     /// Bind group layout of the blur pass: a non-filterable input texture and a 32-byte
     /// uniform (`direction`, `radius`, and the G-220 tint block the vertical pass composites).
@@ -58,6 +66,9 @@ pub struct WgpuRenderer {
     /// The text pipeline: one quad per text box, shaded by the box's coverage texture multiplied
     /// by the text colour. Compositing is straight-alpha source-over, like the image pipeline.
     pub(crate) text_pipeline: wgpu::RenderPipeline,
+    /// The same text pipeline writing with `REPLACE`, used inside a blend run's offscreen layer:
+    /// there the coverage has to survive as the pixel's alpha, not be composited away.
+    pub(crate) text_layer_pipeline: wgpu::RenderPipeline,
     /// Bind group layout of the text pipeline: the box's params uniform and its coverage texture
     /// at group 0; the mvp matrix rides group 1.
     pub(crate) text_bind_group_layout: wgpu::BindGroupLayout,
@@ -107,7 +118,7 @@ pub struct WgpuRenderer {
 /// used in a pass to declare a state that matches the attachment's format — even a pipeline that
 /// never touches it. This state writes no depth, compares nothing and leaves the stencil value
 /// alone, so a pipeline declared with it behaves exactly as it did before the attachment existed.
-fn passive_stencil_state() -> wgpu::DepthStencilState {
+pub(super) fn passive_stencil_state() -> wgpu::DepthStencilState {
     wgpu::DepthStencilState {
         format: wgpu::TextureFormat::Stencil8,
         // A stencil-only format has no depth aspect, so both depth fields must be absent.
@@ -239,6 +250,10 @@ impl WgpuRenderer {
         let shadow_blur_fs_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("shadow_blur_fs"),
             source: wgpu::ShaderSource::Wgsl(super::shaders::SHADOW_BLUR_FS.into()),
+        });
+        let blend_composite_fs_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("blend_composite_fs"),
+            source: wgpu::ShaderSource::Wgsl(super::shaders::BLEND_COMPOSITE_FS.into()),
         });
         let circle_vs_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("circle_vs"),
@@ -549,6 +564,9 @@ impl WgpuRenderer {
             multiview_mask: None,
             cache: None,
         });
+
+        let (blend_composite_pipeline, blend_bind_group_layout) =
+            super::effects::blend_composite(&device, &blur_vs_module, &blend_composite_fs_module);
 
         // ── Create the SDF circle pipeline (G-219) ──
         //
@@ -908,54 +926,65 @@ impl WgpuRenderer {
             ],
             immediate_size: 0,
         });
-        let text_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("text_pipeline"),
-            layout: Some(&text_pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &text_vs_module,
-                entry_point: Some("vs_main"),
-                buffers: &[],
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
+        // Two pipelines share that layout and the same shader pair: the frame's text composites
+        // source-over, and a blend run needs the same coverage written *straight* into its
+        // offscreen layer so the mode can be applied to the colour before the coverage.
+        let make_text_pipeline = |label: &str, blend: wgpu::BlendState| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(label),
+                layout: Some(&text_pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &text_vs_module,
+                    entry_point: Some("vs_main"),
+                    buffers: &[],
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &text_fs_module,
+                    entry_point: Some("fs_main"),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: wgpu::TextureFormat::Rgba8Unorm,
+                        blend: Some(blend),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                }),
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleList,
+                    strip_index_format: None,
+                    front_face: wgpu::FrontFace::Ccw,
+                    cull_mode: None,
+                    unclipped_depth: false,
+                    polygon_mode: wgpu::PolygonMode::Fill,
+                    conservative: false,
+                },
+                depth_stencil: Some(passive_stencil_state()),
+                multisample: wgpu::MultisampleState {
+                    count: 1,
+                    mask: !0,
+                    alpha_to_coverage_enabled: false,
+                },
+                multiview_mask: None,
+                cache: None,
+            })
+        };
+        let text_pipeline = make_text_pipeline(
+            "text_pipeline",
+            wgpu::BlendState {
+                color: wgpu::BlendComponent {
+                    src_factor: wgpu::BlendFactor::SrcAlpha,
+                    dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                    operation: wgpu::BlendOperation::Add,
+                },
+                alpha: wgpu::BlendComponent {
+                    src_factor: wgpu::BlendFactor::One,
+                    dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                    operation: wgpu::BlendOperation::Add,
+                },
             },
-            fragment: Some(wgpu::FragmentState {
-                module: &text_fs_module,
-                entry_point: Some("fs_main"),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: wgpu::TextureFormat::Rgba8Unorm,
-                    blend: Some(wgpu::BlendState {
-                        color: wgpu::BlendComponent {
-                            src_factor: wgpu::BlendFactor::SrcAlpha,
-                            dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
-                            operation: wgpu::BlendOperation::Add,
-                        },
-                        alpha: wgpu::BlendComponent {
-                            src_factor: wgpu::BlendFactor::One,
-                            dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
-                            operation: wgpu::BlendOperation::Add,
-                        },
-                    }),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-            }),
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                strip_index_format: None,
-                front_face: wgpu::FrontFace::Ccw,
-                cull_mode: None,
-                unclipped_depth: false,
-                polygon_mode: wgpu::PolygonMode::Fill,
-                conservative: false,
-            },
-            depth_stencil: Some(passive_stencil_state()),
-            multisample: wgpu::MultisampleState {
-                count: 1,
-                mask: !0,
-                alpha_to_coverage_enabled: false,
-            },
-            multiview_mask: None,
-            cache: None,
-        });
+        );
+        let text_layer_pipeline =
+            make_text_pipeline("text_layer_pipeline", wgpu::BlendState::REPLACE);
 
         // ── Create the shape pipeline (rings, wedges, rounded outlines) ──
         //
@@ -1399,6 +1428,7 @@ impl WgpuRenderer {
         shader_cache.insert("blur_vs".to_string(), blur_vs_module);
         shader_cache.insert("blur_fs".to_string(), blur_fs_module);
         shader_cache.insert("shadow_blur_fs".to_string(), shadow_blur_fs_module);
+        shader_cache.insert("blend_composite_fs".to_string(), blend_composite_fs_module);
         shader_cache.insert("rect_vs_transformed".to_string(), transformed_vs_module);
         shader_cache.insert("rect_fs_instanced".to_string(), instanced_fs_module);
         shader_cache.insert("circle_vs".to_string(), circle_vs_module);
@@ -1428,11 +1458,15 @@ impl WgpuRenderer {
             blur_pipeline,
             shadow_blur_pipeline,
             shadow_body_pipeline,
+            blend_composite_pipeline,
+            blend_bind_group_layout,
+            blend_modes_on_gpu: false,
             circle_pipeline,
             circle_bind_group_layout,
             image_pipeline,
             image_bind_group_layout,
             text_pipeline,
+            text_layer_pipeline,
             text_bind_group_layout,
             shape_pipeline,
             shape_bind_group_layout,
@@ -1457,6 +1491,33 @@ impl WgpuRenderer {
             adapter_info,
         })
     }
+    /// Returns whether non-`Normal` blend modes are drawn on the GPU.
+    ///
+    /// See [`Self::set_blend_modes_on_gpu`] for what the switch means.
+    pub fn blend_modes_on_gpu(&self) -> bool {
+        self.blend_modes_on_gpu
+    }
+
+    /// Chooses whether a stream that leaves `Normal` blending is drawn on the GPU.
+    ///
+    /// Off by default, because the GPU path costs a frame copy per blended command: WebGPU cannot
+    /// read the destination from a fragment shader, so a `Multiply`/`Overlay` command is rendered
+    /// into an offscreen layer and composited against a snapshot of the frame that was taken just
+    /// before it. The result is the software rasteriser's own formula (see
+    /// [`super::shaders::BLEND_COMPOSITE_FS`]) applied once per command, which is why it is exact
+    /// for opaque destinations and within one level on a translucent one.
+    ///
+    /// While it is off, a stream containing `SetBlendMode` with any mode but `Normal` is drawn by
+    /// the CPU rasteriser as a whole, exactly as before.
+    ///
+    /// ```text
+    /// let mut renderer = WgpuRenderer::new()?;
+    /// renderer.set_blend_modes_on_gpu(true);
+    /// ```
+    pub fn set_blend_modes_on_gpu(&mut self, enabled: bool) {
+        self.blend_modes_on_gpu = enabled;
+    }
+
     /// Render one offscreen RGBA frame by clearing a texture with the given color and read pixels back.
     ///
     /// A solid clear needs no GPU work, so this fills the buffer on the CPU and returns it

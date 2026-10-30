@@ -6,7 +6,7 @@
 use super::super::commands::WgpuDrawCommand;
 use super::super::raster::rasterize_draw_commands_rgba8;
 use super::super::types::{PixelRect, Rgba8};
-use super::dispatch::commands_gpu_dispatchable;
+use super::dispatch::{commands_gpu_dispatchable, commands_gpu_dispatchable_with};
 use super::encode::{circle_quad, pack_instanced_quads, INSTANCE_BYTES, MAX_INSTANCES_PER_DRAW};
 use super::frame::WgpuRenderer;
 use super::resources::grown_buffer_capacity;
@@ -48,6 +48,7 @@ fn shader_module_registry_matches_pipelines() {
         "blur_vs",
         "blur_fs",
         "shadow_blur_fs",
+        "blend_composite_fs",
         "rect_vs_transformed",
         "rect_fs_instanced",
         "circle_vs",
@@ -215,6 +216,44 @@ fn reusable_cpu_frame_matches_the_owned_raster_and_is_reused() {
     let smaller = renderer.render_draw_commands_cached_rgba8(8, 8, &small).expect("smaller frame");
     assert_eq!(pixel(&smaller, 8, 7, 7), [0, 0, 0, 0], "the reused prefix must be cleared");
     assert_eq!(pixel(&smaller, 8, 0, 0), [0, 255, 0, 255]);
+}
+
+/// The borrowed entry point must draw what the owned one draws: same dispatch decision, same
+/// picture. A dispatchable stream goes to the GPU, a refused one stays on the CPU, and both land in
+/// the renderer's reusable buffer instead of an owned `Vec`.
+#[test]
+fn the_borrowed_entry_point_draws_what_the_owned_one_draws() {
+    let Some(renderer) = renderer() else { return };
+    let dispatchable = vec![
+        WgpuDrawCommand::Clear { color: opaque(5, 6, 7) },
+        WgpuDrawCommand::FillRect {
+            rect: PixelRect { x: 1, y: 1, width: 6, height: 6 },
+            color: opaque(200, 100, 50),
+            clip: None,
+        },
+    ];
+    let owned = renderer.render_draw_commands_rgba8(12, 12, &dispatchable).expect("owned");
+    let borrowed =
+        renderer.render_draw_commands_cached_rgba8(12, 12, &dispatchable).expect("borrowed");
+    assert_eq!(&*borrowed, &owned[..], "the two entry points must agree");
+    drop(borrowed);
+
+    // A refused stream still agrees: both draw it on the CPU.
+    let refused = vec![
+        WgpuDrawCommand::Clear { color: opaque(0, 0, 0) },
+        WgpuDrawCommand::SetBlendMode { mode: crate::render::BlendMode::Multiply as u8 },
+        WgpuDrawCommand::DrawCircle {
+            center: (6, 6),
+            radius: 4,
+            color: opaque(255, 0, 0),
+            width: 2,
+            clip: None,
+        },
+    ];
+    assert!(!commands_gpu_dispatchable_with(&refused, renderer.blend_modes_on_gpu()));
+    let owned = renderer.render_draw_commands_rgba8(12, 12, &refused).expect("owned");
+    let borrowed = renderer.render_draw_commands_cached_rgba8(12, 12, &refused).expect("borrowed");
+    assert_eq!(&*borrowed, &owned[..], "the fallback must be the same picture on both entries");
 }
 
 /// A clear through the reusable path must match the owned clear exactly.
@@ -908,6 +947,231 @@ fn an_image_box_that_draws_nothing_ignores_its_payload() {
     let gpu = renderer.render_draw_commands_rgba8(8, 8, &commands).expect("nothing to draw");
     let software = rasterize_draw_commands_rgba8(8, 8, &commands).expect("rasterises");
     assert_eq!(gpu, software, "an empty box leaves the frame as the stream left it");
+}
+
+/// With the option on, a stream that leaves `Normal` is drawn on the GPU: each blended command is
+/// replayed into an offscreen layer and composited against a snapshot of the frame, using the CPU
+/// rasteriser's own formula. On an opaque frame the two must agree byte for byte.
+#[test]
+fn a_blend_mode_stream_matches_the_software_rasteriser_when_enabled() {
+    let Some(mut renderer) = renderer() else { return };
+    renderer.set_blend_modes_on_gpu(true);
+    assert!(renderer.blend_modes_on_gpu());
+    let commands = [
+        WgpuDrawCommand::Clear { color: opaque(30, 60, 90) },
+        WgpuDrawCommand::FillRect {
+            rect: PixelRect { x: 4, y: 4, width: 12, height: 12 },
+            color: opaque(200, 120, 60),
+            clip: None,
+        },
+        WgpuDrawCommand::SetBlendMode { mode: crate::render::BlendMode::Multiply as u8 },
+        WgpuDrawCommand::FillRect {
+            rect: PixelRect { x: 0, y: 0, width: 16, height: 16 },
+            color: opaque(90, 180, 255),
+            clip: None,
+        },
+    ];
+    assert!(
+        commands_gpu_dispatchable_with(&commands, true),
+        "the option must make this stream claimable"
+    );
+    let gpu = renderer.render_draw_commands_rgba8(16, 16, &commands).expect("the GPU path renders");
+    let cpu = rasterize_draw_commands_rgba8(16, 16, &commands).expect("rasterises");
+    assert_eq!(gpu, cpu, "the blended frame must match the software rasteriser");
+}
+
+/// A translucent source keeps the CPU's rule: the mode blends the colour and the result takes the
+/// source's alpha, so the frame agrees byte for byte rather than only where the source is opaque.
+#[test]
+fn a_translucent_blend_source_matches_the_software_rasteriser() {
+    let Some(mut renderer) = renderer() else { return };
+    renderer.set_blend_modes_on_gpu(true);
+    let commands = [
+        WgpuDrawCommand::Clear { color: opaque(40, 80, 120) },
+        WgpuDrawCommand::SetBlendMode { mode: crate::render::BlendMode::Screen as u8 },
+        WgpuDrawCommand::FillRect {
+            rect: PixelRect { x: 2, y: 2, width: 10, height: 10 },
+            color: Rgba8 { r: 240, g: 60, b: 20, a: 128 },
+            clip: None,
+        },
+    ];
+    let gpu = renderer.render_draw_commands_rgba8(14, 14, &commands).expect("the GPU path renders");
+    let cpu = rasterize_draw_commands_rgba8(14, 14, &commands).expect("rasterises");
+    assert_eq!(gpu, cpu);
+}
+
+/// An opaque image blended through the layer is byte-identical: the image pipeline stores
+/// premultiplied values, and with alpha 255 that round trip is the identity.
+#[test]
+fn an_opaque_image_under_a_blend_mode_matches_the_software_rasteriser() {
+    let Some(mut renderer) = renderer() else { return };
+    renderer.set_blend_modes_on_gpu(true);
+    let image: Vec<u8> = (0..4 * 4)
+        .flat_map(|index| {
+            let band = (index % 4) as u8 * 60;
+            [200 - band, 40 + band, 120, 255]
+        })
+        .collect();
+    let commands = [
+        WgpuDrawCommand::Clear { color: opaque(20, 30, 40) },
+        WgpuDrawCommand::SetBlendMode { mode: crate::render::BlendMode::Multiply as u8 },
+        WgpuDrawCommand::DrawImage {
+            rect: PixelRect { x: 2, y: 2, width: 8, height: 8 },
+            rgba8: image.into(),
+            image_width: 4,
+            image_height: 4,
+            clip: None,
+        },
+    ];
+    assert!(commands_gpu_dispatchable_with(&commands, true));
+    let gpu = renderer.render_draw_commands_rgba8(12, 12, &commands).expect("the GPU path renders");
+    let cpu = rasterize_draw_commands_rgba8(12, 12, &commands).expect("rasterises");
+    assert_eq!(gpu, cpu);
+}
+
+/// A gradient blended through the layer is byte-identical for the same reason: the ramp's texels are
+/// opaque, so the source-over layer and the straight colour agree.
+#[test]
+fn an_opaque_gradient_under_a_blend_mode_matches_the_software_rasteriser() {
+    let Some(mut renderer) = renderer() else { return };
+    renderer.set_blend_modes_on_gpu(true);
+    let ramp: Vec<u8> = vec![255, 0, 0, 255, 0, 0, 255, 255];
+    let commands = [
+        WgpuDrawCommand::Clear { color: opaque(90, 90, 90) },
+        WgpuDrawCommand::SetBlendMode { mode: crate::render::BlendMode::Screen as u8 },
+        WgpuDrawCommand::FillLinearGradient {
+            rect: PixelRect { x: 0, y: 0, width: 16, height: 6 },
+            gradient_data: ramp.into(),
+            clip: None,
+        },
+    ];
+    let gpu = renderer.render_draw_commands_rgba8(16, 8, &commands).expect("the GPU path renders");
+    let cpu = rasterize_draw_commands_rgba8(16, 8, &commands).expect("rasterises");
+    assert_eq!(gpu, cpu);
+}
+
+/// Text is the one family whose CPU arm applies the mode *before* the glyph coverage, so the layer
+/// carries the coverage as alpha and the composite reproduces that order. The two paths agree.
+#[test]
+fn blended_text_matches_the_software_rasteriser() {
+    let Some(mut renderer) = renderer() else { return };
+    renderer.set_blend_modes_on_gpu(true);
+    let commands = [
+        WgpuDrawCommand::Clear { color: opaque(240, 240, 250) },
+        WgpuDrawCommand::FillRect {
+            rect: PixelRect { x: 0, y: 8, width: 24, height: 8 },
+            color: opaque(40, 60, 120),
+            clip: None,
+        },
+        WgpuDrawCommand::SetBlendMode { mode: crate::render::BlendMode::Multiply as u8 },
+        WgpuDrawCommand::DrawText {
+            rect: PixelRect { x: 0, y: 0, width: 24, height: 16 },
+            text: "Ag".into(),
+            color: opaque(255, 200, 90),
+            clip: None,
+        },
+    ];
+    assert!(commands_gpu_dispatchable_with(&commands, true));
+    let gpu = renderer.render_draw_commands_rgba8(24, 16, &commands).expect("the GPU path renders");
+    let cpu = rasterize_draw_commands_rgba8(24, 16, &commands).expect("rasterises");
+    let worst = gpu.iter().zip(&cpu).map(|(a, b)| (*a as i32 - *b as i32).abs()).max().unwrap_or(0);
+    // The layer stores the coverage as an 8-bit alpha, so the composite quantises it once more than
+    // the CPU's `f32` mix does: one level, never two.
+    assert!(worst <= 1, "the coverage composite may cost one level, not {worst}");
+}
+
+/// A translucent image is the documented boundary: the layer stores premultiplied values, so the
+/// recovered straight colour can land one level off the CPU's. Never more than that.
+#[test]
+fn a_translucent_image_under_a_blend_mode_stays_within_one_level() {
+    let Some(mut renderer) = renderer() else { return };
+    renderer.set_blend_modes_on_gpu(true);
+    let image: Vec<u8> = (0..4 * 4).flat_map(|_| [200u8, 60, 30, 128]).collect();
+    let commands = [
+        WgpuDrawCommand::Clear { color: opaque(10, 20, 30) },
+        WgpuDrawCommand::SetBlendMode { mode: crate::render::BlendMode::Multiply as u8 },
+        WgpuDrawCommand::DrawImage {
+            rect: PixelRect { x: 0, y: 0, width: 8, height: 8 },
+            rgba8: image.into(),
+            image_width: 4,
+            image_height: 4,
+            clip: None,
+        },
+    ];
+    let gpu = renderer.render_draw_commands_rgba8(8, 8, &commands).expect("the GPU path renders");
+    let cpu = rasterize_draw_commands_rgba8(8, 8, &commands).expect("rasterises");
+    let worst = gpu.iter().zip(&cpu).map(|(a, b)| (*a as i32 - *b as i32).abs()).max().unwrap_or(0);
+    assert!(worst <= 1, "the premultiplied round trip may cost one level, not {worst}");
+}
+
+/// The same stream with the option off keeps the long-standing behaviour: the whole stream falls
+/// back, and the picture is the software rasteriser's.
+#[test]
+fn a_blend_mode_stream_still_falls_back_when_disabled() {
+    let Some(renderer) = renderer() else { return };
+    let commands = [
+        WgpuDrawCommand::Clear { color: opaque(30, 60, 90) },
+        WgpuDrawCommand::SetBlendMode { mode: crate::render::BlendMode::Multiply as u8 },
+        WgpuDrawCommand::FillRect {
+            rect: PixelRect { x: 0, y: 0, width: 8, height: 8 },
+            color: opaque(90, 180, 255),
+            clip: None,
+        },
+    ];
+    assert!(!commands_gpu_dispatchable_with(&commands, false));
+    let gpu = renderer.render_draw_commands_rgba8(8, 8, &commands).expect("the fallback renders");
+    let cpu = rasterize_draw_commands_rgba8(8, 8, &commands).expect("rasterises");
+    assert_eq!(gpu, cpu);
+}
+
+/// Two blended commands keep their own runs, modes and order, with an ordinary draw between them:
+/// the composite is per command, so the middle rectangle lands *under* the second blend rather than
+/// being swept into the first one.
+#[test]
+fn two_blend_runs_keep_their_own_modes_and_order() {
+    let Some(mut renderer) = renderer() else { return };
+    renderer.set_blend_modes_on_gpu(true);
+    let commands = [
+        WgpuDrawCommand::Clear { color: opaque(10, 20, 30) },
+        WgpuDrawCommand::SetBlendMode { mode: crate::render::BlendMode::Multiply as u8 },
+        WgpuDrawCommand::FillRect {
+            rect: PixelRect { x: 0, y: 0, width: 16, height: 8 },
+            color: opaque(255, 128, 0),
+            clip: None,
+        },
+        WgpuDrawCommand::SetBlendMode { mode: crate::render::BlendMode::Screen as u8 },
+        WgpuDrawCommand::FillRect {
+            rect: PixelRect { x: 4, y: 4, width: 8, height: 8 },
+            color: opaque(0, 64, 200),
+            clip: None,
+        },
+        WgpuDrawCommand::SetBlendMode { mode: crate::render::BlendMode::Normal as u8 },
+        WgpuDrawCommand::FillRect {
+            rect: PixelRect { x: 0, y: 0, width: 4, height: 4 },
+            color: opaque(255, 255, 255),
+            clip: None,
+        },
+    ];
+    let gpu = renderer.render_draw_commands_rgba8(16, 16, &commands).expect("the GPU path renders");
+    let cpu = rasterize_draw_commands_rgba8(16, 16, &commands).expect("rasterises");
+    assert_eq!(gpu, cpu, "each run composites in stream order with its own mode");
+}
+
+/// A class whose layer would not hold straight colour keeps the whole stream on the CPU even with the
+/// option on: a blended circle is drawn by the anti-aliased SDF pipeline, which stores premultiplied
+/// values over a transparent layer.
+#[test]
+fn a_blended_circle_is_not_claimable_even_when_enabled() {
+    let commands = [
+        WgpuDrawCommand::SetBlendMode { mode: crate::render::BlendMode::Multiply as u8 },
+        WgpuDrawCommand::FillCircle {
+            center: (8, 8),
+            radius: 6,
+            color: opaque(255, 0, 0),
+            clip: None,
+        },
+    ];
+    assert!(!commands_gpu_dispatchable_with(&commands, true));
 }
 
 /// A blend mode other than `Normal` is not dispatchable: the pipelines' `REPLACE` write

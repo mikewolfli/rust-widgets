@@ -8,8 +8,8 @@
 //! one record layout a filled rectangle uses.
 use super::super::commands::WgpuDrawCommand;
 use super::super::raster::{
-    bbox_for_path, clip_segment_to_rect, combine, effective_clip, for_each_line_stamp,
-    rect_for_line, rounded_rect_row_spans, stroke_rect_edges,
+    bbox_for_path, blend_mode_from_id, clip_segment_to_rect, combine, effective_clip,
+    for_each_line_stamp, rect_for_line, rounded_rect_row_spans, stroke_rect_edges,
 };
 use super::super::types::PixelRect;
 use super::super::types::Rgba8;
@@ -247,6 +247,88 @@ pub(super) fn invalid_image_payload(commands: &[WgpuDrawCommand]) -> Option<Stri
     })
 }
 
+/// The commands a blend run may contain.
+///
+/// A blended command is replayed into an offscreen layer and composited. Two families qualify:
+///
+/// * the **rectangle class**, drawn by the `REPLACE` instanced pipeline, which writes the packed
+///   colour straight into the layer,
+/// * **images and gradients**, drawn by the image pipeline — one texel per pixel with no coverage
+///   ramp — which stores premultiplied values over a transparent layer; the composite divides that
+///   alpha back out, so the mode sees the same straight colour the CPU blends. Fully opaque content
+///   survives the round trip exactly; translucent content can differ by one level, and
+/// * **text**, drawn into the layer by a `REPLACE` variant of the text pipeline, so the layer holds
+///   the glyph colour as straight RGB and its coverage as alpha. That is the pair the CPU's
+///   `blend_cpu_rgba8_with_mode` needs: the mode is applied to the colour, then composited by the
+///   coverage — which is why the composite has a kind for it instead of folding it into the same
+///   formula as a shape.
+///
+/// Circles, arcs, rounded outlines, filled paths and blurred shadows still stay out: their coverage
+/// comes from an anti-aliased shader, a stencil or a shadow layer, and the CPU's answer for those is
+/// a hard-edged fill rather than a coverage composite.
+pub(super) fn draws_under_blend(command: &WgpuDrawCommand) -> bool {
+    matches!(
+        command,
+        WgpuDrawCommand::FillRect { .. }
+            | WgpuDrawCommand::StrokeRect { .. }
+            | WgpuDrawCommand::FillRoundedRect { .. }
+            | WgpuDrawCommand::BoxShadow { blur_radius: 0, .. }
+            | WgpuDrawCommand::DrawLine { .. }
+            | WgpuDrawCommand::DrawPath { filled: false, .. }
+            | WgpuDrawCommand::DrawImage { .. }
+            | WgpuDrawCommand::DrawGradient { .. }
+            | WgpuDrawCommand::FillLinearGradient { .. }
+            | WgpuDrawCommand::FillRadialGradient { .. }
+            | WgpuDrawCommand::DrawText { .. }
+    )
+}
+
+/// The area a blend run can touch, or `None` when it draws nothing.
+///
+/// Bounds the backdrop copy and the composite, so a blended command costs its own rectangle rather
+/// than a whole-frame copy. Only [`draws_under_blend`] commands reach here, and each of them has an
+/// exact bound: the fill's rectangle, the line's stamped extent, or the stroked path's box.
+pub(super) fn blend_bbox(
+    command: &WgpuDrawCommand,
+    framebuffer: PixelRect,
+    stream_clip: Option<PixelRect>,
+) -> Option<PixelRect> {
+    let bounds = match command {
+        WgpuDrawCommand::FillRect { rect, .. }
+        | WgpuDrawCommand::StrokeRect { rect, .. }
+        | WgpuDrawCommand::FillRoundedRect { rect, .. } => *rect,
+        WgpuDrawCommand::BoxShadow { rect, offset_x, offset_y, .. } => PixelRect {
+            x: rect.x.saturating_add(*offset_x),
+            y: rect.y.saturating_add(*offset_y),
+            width: rect.width,
+            height: rect.height,
+        },
+        WgpuDrawCommand::DrawLine { from, to, width, .. } => rect_for_line(*from, *to, *width),
+        WgpuDrawCommand::DrawPath { points, width, .. } => bbox_for_path(points, *width),
+        WgpuDrawCommand::DrawImage { rect, .. }
+        | WgpuDrawCommand::DrawGradient { rect, .. }
+        | WgpuDrawCommand::FillLinearGradient { rect, .. }
+        | WgpuDrawCommand::FillRadialGradient { rect, .. }
+        | WgpuDrawCommand::DrawText { rect, .. } => *rect,
+        _ => framebuffer,
+    };
+    let clip = match command {
+        WgpuDrawCommand::FillRect { clip, .. }
+        | WgpuDrawCommand::StrokeRect { clip, .. }
+        | WgpuDrawCommand::FillRoundedRect { clip, .. }
+        | WgpuDrawCommand::BoxShadow { clip, .. }
+        | WgpuDrawCommand::DrawLine { clip, .. }
+        | WgpuDrawCommand::DrawPath { clip, .. }
+        | WgpuDrawCommand::DrawImage { clip, .. }
+        | WgpuDrawCommand::DrawGradient { clip, .. }
+        | WgpuDrawCommand::FillLinearGradient { clip, .. }
+        | WgpuDrawCommand::FillRadialGradient { clip, .. }
+        | WgpuDrawCommand::DrawText { clip, .. } => *clip,
+        _ => None,
+    };
+    effective_clip(framebuffer, bounds, combine(&clip, stream_clip))
+}
+
 /// Whether a command stream can be drawn entirely by the GPU pipelines (G-218).
 ///
 /// The covered classes are: whole-frame clears, filled and stroked rectangles, filled circles,
@@ -271,8 +353,47 @@ pub(super) fn invalid_image_payload(commands: &[WgpuDrawCommand]) -> Option<Stri
 /// entry point has already rejected such a stream through [`invalid_image_payload`], which reports
 /// the CPU rasteriser's own error first; this arm is the second line of defence for a caller that
 /// uses the predicate directly, so the encoder is never handed bytes it cannot upload.
+///
+/// `blend_modes_on_gpu` is the renderer's option (see
+/// [`super::frame::WgpuRenderer::set_blend_modes_on_gpu`]): when it is off, a stream that leaves
+/// `Normal` is refused as a whole — the long-standing behaviour. When it is on, such a stream is
+/// claimed if every command drawn under the mode is one [`draws_under_blend`] accepts.
+pub(super) fn commands_gpu_dispatchable_with(
+    commands: &[WgpuDrawCommand],
+    blend_modes_on_gpu: bool,
+) -> bool {
+    let mut blend = crate::render::BlendMode::Normal;
+    commands.iter().all(|command| {
+        if let WgpuDrawCommand::SetBlendMode { mode } = command {
+            blend = blend_mode_from_id(*mode);
+            return blend == crate::render::BlendMode::Normal || blend_modes_on_gpu;
+        }
+        if !claimable(command) {
+            return false;
+        }
+        // State-only commands carry no colour, and `Clear` repaints the frame through the clear
+        // pipeline exactly as it does under `Normal` — the CPU's clear ignores the blend mode too.
+        let stateless = matches!(
+            command,
+            WgpuDrawCommand::PushClip { .. }
+                | WgpuDrawCommand::PopClip
+                | WgpuDrawCommand::Clear { .. }
+        );
+        stateless || blend == crate::render::BlendMode::Normal || draws_under_blend(command)
+    })
+}
+
+/// Whether the GPU claims this stream with the renderer's default options, which is with GPU blend
+/// modes off. Kept as the default-options form for the tests that pin the boundary; the encoder asks
+/// [`commands_gpu_dispatchable_with`] with the renderer's own setting.
+#[cfg(test)]
 pub(super) fn commands_gpu_dispatchable(commands: &[WgpuDrawCommand]) -> bool {
-    commands.iter().all(|command| match command {
+    commands_gpu_dispatchable_with(commands, false)
+}
+
+/// The per-variant claim rule: can the GPU draw this command at all?
+fn claimable(command: &WgpuDrawCommand) -> bool {
+    match command {
         WgpuDrawCommand::Clear { .. } => true,
         WgpuDrawCommand::FillRect { .. } => true,
         WgpuDrawCommand::StrokeRect { thickness, .. } => *thickness > 0,
@@ -313,6 +434,8 @@ pub(super) fn commands_gpu_dispatchable(commands: &[WgpuDrawCommand]) -> bool {
         // one is a separate offscreen layer plus two box-blur passes and a composite, all of which
         // the renderer owns (`super::encode`), so it is dispatchable too.
         WgpuDrawCommand::BoxShadow { rect, .. } => rect.width > 0 && rect.height > 0,
-        WgpuDrawCommand::SetBlendMode { mode } => *mode == 0,
-    })
+        // The running mode is stream state, handled by the caller; here the command itself always
+        // passes, because a `SetBlendMode` never draws.
+        WgpuDrawCommand::SetBlendMode { .. } => true,
+    }
 }

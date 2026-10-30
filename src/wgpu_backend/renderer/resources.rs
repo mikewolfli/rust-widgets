@@ -121,6 +121,50 @@ pub(crate) struct ShadowTargets {
     pub(crate) layers: Vec<ShadowLayer>,
 }
 
+/// One command drawn under a blend mode other than `Normal`.
+///
+/// The command's own steps stay in the frame's plan, immediately after its
+/// [`DrawStep::Blend`] marker, so the renderer can replay exactly those steps into an offscreen
+/// layer without re-deciding what the command was. `bbox` bounds both the backdrop copy and the
+/// composite, so a blended command costs its own rectangle, not the whole frame.
+pub(crate) struct BlendRun {
+    pub(crate) bbox: PixelRect,
+    pub(crate) mode: crate::render::BlendMode,
+    pub(crate) kind: BlendKind,
+}
+
+/// How the run's layer was written, which decides what the composite does with it.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BlendKind {
+    /// Straight colour: the `REPLACE` rectangle class.
+    Straight,
+    /// Premultiplied over a transparent layer: an image or a gradient.
+    Premultiplied,
+    /// Straight colour with the glyph coverage in the alpha channel: text, whose mode is applied to
+    /// the colour and then composited by that coverage.
+    Coverage,
+}
+
+/// One blend run's GPU handles: the composite bind group and the mode uniform it binds.
+pub(crate) struct BlendUnit {
+    pub(crate) bind_group: wgpu::BindGroup,
+    pub(crate) params: wgpu::Buffer,
+}
+
+/// The offscreen pair every blend run shares.
+///
+/// Both textures are the size of the frame, which is what lets the layer pass carry the shared
+/// stencil attachment and reuse the frame's own mvp: the geometry packed for the frame is drawn
+/// unchanged into the layer. `units` holds one composite bind group per run, because a pass cannot
+/// read a uniform another pass has already overwritten.
+pub(crate) struct BlendTargets {
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+    pub(crate) layer_view: wgpu::TextureView,
+    pub(crate) backdrop: wgpu::Texture,
+    pub(crate) units: Vec<BlendUnit>,
+}
+
 /// The model-view-projection uniform used by the instanced quad pipeline.
 ///
 /// One matrix serves a whole call, so this is not a dynamic-offset arena. The 64-byte size is
@@ -187,6 +231,33 @@ impl CpuFrame {
         }
         Ok(Ref::map(self.bytes.borrow(), |bytes| &bytes[..byte_len]))
     }
+
+    /// Copies `pixels` into this path's buffer and lends the frame back to the caller.
+    ///
+    /// The GPU counterpart of [`Self::rasterize`]: the pixels were produced by a backend this type
+    /// cannot see, so they are copied in rather than written in place. Keeping one buffer for both
+    /// paths is what lets a caller hand either picture to the same upload without owning it, and it
+    /// keeps the "the allocation is reused" promise the borrowed API makes.
+    pub(crate) fn store(
+        &self,
+        width: u32,
+        height: u32,
+        pixels: &[u8],
+    ) -> Result<Ref<'_, [u8]>, String> {
+        let byte_len = rgba_buffer_len(width, height)?;
+        if pixels.len() != byte_len {
+            return Err(format!(
+                "GPU frame is {} bytes but a {width}x{height} frame needs {byte_len}",
+                pixels.len()
+            ));
+        }
+        {
+            let mut bytes = self.bytes.borrow_mut();
+            bytes.clear();
+            bytes.extend_from_slice(pixels);
+        }
+        Ok(Ref::map(self.bytes.borrow(), |bytes| &bytes[..byte_len]))
+    }
 }
 
 /// One encoded draw of the command-stream pass (G-218).
@@ -224,6 +295,15 @@ pub(crate) enum DrawStep {
     /// One blurred shadow: the `index`th entry of the frame's shadow table. The blurred layer is
     /// rendered before the main pass (see `super::encode`), so this step only composites it.
     Shadow(usize),
+    /// A command drawn under a non-`Normal` blend mode: `run` indexes the frame's blend table and
+    /// `steps` is how many of the following plan entries belong to it. The renderer replays those
+    /// `steps` into an offscreen layer and composites it, instead of recording them in place.
+    Blend {
+        /// Index into the frame's blend table.
+        run: usize,
+        /// Number of following plan entries that make up this run.
+        steps: usize,
+    },
 }
 
 /// One blurred shadow of a frame: the layer it is rendered into, the instance that paints its
@@ -277,6 +357,8 @@ pub(crate) struct PackScratch {
     /// appended after the path vertices. They are painted into offscreen layers, never into the
     /// frame, so they are kept out of the main instance run.
     pub(crate) shadow_instances: Vec<u8>,
+    /// The commands drawn under a non-`Normal` blend mode, one entry per run.
+    pub(crate) blend_runs: Vec<BlendRun>,
     /// The command-stream dispatcher's draw order (G-218).
     pub(crate) plan: Vec<DrawStep>,
     /// Mesh vertices, 32 bytes per vertex (`3d`).
@@ -349,6 +431,8 @@ pub(crate) struct RenderCache {
     pub(crate) blur: Option<BlurTargets>,
     /// The offscreen layers of the frame's blurred shadows, rebuilt when their extents change.
     pub(crate) shadow: Option<ShadowTargets>,
+    /// The offscreen pair the frame's blend runs share, rebuilt when the size or run count changes.
+    pub(crate) blend: Option<BlendTargets>,
     /// Mvp uniform and bind group for the instanced quad pipeline.
     pub(crate) transformed_uniform: Option<TransformedUniform>,
     /// Grow-only uniform arena for the SDF circle pipeline (G-219).
@@ -666,6 +750,85 @@ impl RenderCache {
             ));
         }
         self.shadow = Some(ShadowTargets { layers: built });
+    }
+
+    /// Ensures the blend pair and one composite bind group per run.
+    ///
+    /// The pair is rebuilt when the frame size or the run count changes, for the same reason the
+    /// shadow layers are: a partially updated set would leave bind groups pointing at textures of
+    /// the wrong size. Each run gets its own 16-byte mode uniform, because all of a frame's runs are
+    /// encoded into one submission and a single shared buffer would show every pass the last value
+    /// written.
+    pub(crate) fn ensure_blend_targets(
+        &mut self,
+        device: &wgpu::Device,
+        layout: &wgpu::BindGroupLayout,
+        width: u32,
+        height: u32,
+        runs: usize,
+    ) {
+        let reusable = self
+            .blend
+            .as_ref()
+            .map(|targets| {
+                targets.width == width && targets.height == height && targets.units.len() == runs
+            })
+            .unwrap_or(false);
+        if reusable {
+            return;
+        }
+        let make_texture = |label: &str| {
+            device.create_texture(&wgpu::TextureDescriptor {
+                label: Some(label),
+                size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8Unorm,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING
+                    | wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | wgpu::TextureUsages::COPY_SRC
+                    | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            })
+        };
+        let layer_view =
+            make_texture("wgpu_blend_layer").create_view(&wgpu::TextureViewDescriptor::default());
+        let backdrop = make_texture("wgpu_blend_backdrop");
+        let backdrop_view = backdrop.create_view(&wgpu::TextureViewDescriptor::default());
+        let mut units = Vec::with_capacity(runs);
+        for index in 0..runs {
+            let params = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("wgpu_blend_params"),
+                size: 16,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some(format!("wgpu_blend_composite_{index}").as_str()),
+                layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                            buffer: &params,
+                            offset: 0,
+                            size: wgpu::BufferSize::new(16),
+                        }),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::TextureView(&layer_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: wgpu::BindingResource::TextureView(&backdrop_view),
+                    },
+                ],
+            });
+            units.push(BlendUnit { bind_group, params });
+        }
+        self.blend = Some(BlendTargets { width, height, layer_view, backdrop, units });
     }
 
     /// Ensures the instanced-quad mvp uniform and its bind group exist.

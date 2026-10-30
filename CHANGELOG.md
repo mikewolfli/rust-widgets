@@ -147,12 +147,35 @@ When the two disagree, this file is the one that ships; `tools/check_changelog_s
   circles and images. The image fragment fetches one texel per destination pixel at the integer
   source coordinate the software rasteriser computes, and the rounded-rectangle row spans come from
   the same function the CPU fill uses, so all of these are **byte-identical** to the software frame
-  (pinned by tests that compare the two paths). A malformed image payload still stays on the CPU
-  path that reports it, so the error a caller sees does not depend on the path the rest of the
-  stream takes. What still falls back as a whole to the CPU rasteriser is now a short list:
-  `SetBlendMode` other than `Normal` (the pipelines write with source-over). The CPU raster path
-  therefore remains, as the fallback for those streams and as the byte reference the GPU tests
-  compare against. One pre-existing difference is now documented rather than silent: the GPU circle
+  (pinned by tests that compare the two paths). A malformed image payload is now rejected **before**
+  the dispatcher decides which path draws the stream, with the CPU rasteriser's own wording — so the
+  error a caller sees is one error, not "depends on which backend you got".
+- **GPU blend modes are an opt-in switch.** `WgpuRenderer::set_blend_modes_on_gpu(true)` (with
+  `blend_modes_on_gpu()` to read it back) lets a stream that leaves `Normal` be drawn on the GPU
+  instead of falling back. Off by default, because the path costs a copy of each blended command's
+  frame rectangle: WebGPU cannot read the destination from a fragment shader, so the command is
+  rendered into an offscreen layer and composited against a snapshot of the frame taken just before
+  it, one composite per command — the formula is the software rasteriser's own, applied once. On an
+  opaque frame the result is byte-identical; on a translucent backdrop the stored premultiplied
+  values make it agree to within one level.
+  The classes that can be blended this way are the rectangle family (`FillRect`, `StrokeRect`,
+  `FillRoundedRect`, an unblurred `BoxShadow`, `DrawLine`, a stroked `DrawPath`) — whose layer is
+  written straight by the `REPLACE` pipeline — plus `DrawImage` and the three gradient commands,
+  whose source-over layer is premultiplied and is divided back out before the mode is applied. An
+  image or gradient whose own pixels are opaque is byte-identical; a translucent one may differ by
+  one level. `DrawText` is blended too: the glyph coverage is written straight into the layer, so the
+  mode is applied to the colour and the result composited by that coverage — the order the CPU's
+  own text path uses — and the two agree to within the one level the layer's 8-bit coverage costs.
+  Circles, arcs, rounded outlines, filled paths and blurred shadows still fall back as a whole,
+  because their coverage comes from an anti-aliased shader, a stencil or a shadow layer rather than
+  from a coverage mask. The CPU raster path therefore
+  remains, as that fallback and as the byte reference the GPU tests compare against.
+- **The borrowed frame entry point draws what the owned one draws.** `render_draw_commands_cached_rgba8`
+  used to rasterise on the CPU no matter what the dispatcher would have done, so one command stream
+  could produce two different pictures — the GPU one from `render_draw_commands_rgba8` and the
+  software one from the borrowed call. It now makes the same dispatch decision, encodes on the GPU
+  when the stream is claimed and copies the readback into the reusable buffer, and rasterises on the
+  CPU when it is refused. The buffer, the borrow and the error contract are unchanged. One pre-existing difference is now documented rather than silent: the GPU circle
   pipeline anti-aliases its rim while the CPU rasteriser fills a hard-edged disc.
 
 ### Tooling

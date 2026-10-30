@@ -698,6 +698,197 @@ fn fs_main(@location(0) pos: vec2f) -> @location(0) vec4f {
     return vec4f(color.rgb, color.a * coverage);
 }"#;
 
+/// Fragment shader that composites a blend run over the backdrop it was drawn against.
+///
+/// # Why this exists
+///
+/// WebGPU has no framebuffer fetch and fixed-function blending cannot use the destination as an
+/// operand, so a mode such as `Multiply` cannot be expressed as a blend state. The renderer instead
+///
+/// 1. copies the frame into a backdrop texture,
+/// 2. draws the command into a transparent offscreen layer, and
+/// 3. composites `f(source, backdrop)` here.
+///
+/// # Bindings
+///
+/// | group | binding | type | name | meaning |
+/// |---|---|---|---|---|
+/// | 0 | 0 | `uniform BlendParams` | `params` | `mode` tag, and whether the layer holds premultiplied values |
+/// | 0 | 1 | `texture_2d<f32>` | `uSource` | the run's layer, read with `textureLoad` |
+/// | 0 | 2 | `texture_2d<f32>` | `uBackdrop` | the frame as it was before the run |
+///
+/// # What it reproduces
+///
+/// [`super::super::raster`]'s `blend_channels`, on the straight (un-premultiplied) values the CPU
+/// compares, with the result's alpha taken from the source — the CPU's own rule. Both textures are
+/// `Rgba8Unorm`, so `textureLoad` returns the exact `u8 / 255` the CPU's `blend_channels` divides by.
+///
+/// A layer pixel with zero alpha is a pixel the run did not paint, so the backdrop is returned
+/// unchanged: the pipeline writes with `REPLACE`, and rewriting the backdrop's own value is the one
+/// way to leave it alone without a stencil test.
+///
+/// Three families reach a blend layer (see [`super::renderer::dispatch::draws_under_blend`]): the
+/// rectangle class, whose `REPLACE` pipeline writes straight colour; images and gradients, whose
+/// source-over pipeline stores premultiplied values; and text, whose coverage rides in the alpha of
+/// a straight-coloured layer. `layer_kind` tells this shader which one it is looking at, and the
+/// backdrop's own alpha is divided out too, because a translucent frame stores premultiplied pixels
+/// as well.
+pub(crate) const BLEND_COMPOSITE_FS: &str = r#"
+struct BlendParams {
+    mode: u32,
+    // How the layer was written: 0 straight, 1 premultiplied, 2 straight + coverage in alpha.
+    layer_kind: u32,
+    pad: vec2<u32>,
+};
+
+@group(0) @binding(0) var<uniform> params: BlendParams;
+@group(0) @binding(1) var uSource: texture_2d<f32>;
+@group(0) @binding(2) var uBackdrop: texture_2d<f32>;
+
+const EPSILON: f32 = 1.1920929e-7;
+
+fn luminance(c: vec3f) -> f32 {
+    return 0.3 * c.x + 0.59 * c.y + 0.11 * c.z;
+}
+
+fn saturation(c: vec3f) -> f32 {
+    return max(max(c.x, c.y), c.z) - min(min(c.x, c.y), c.z);
+}
+
+fn set_luminosity(c: vec3f, goal: f32) -> vec3f {
+    let current = luminance(c);
+    let spread = max(max(c.x, c.y), c.z) - min(min(c.x, c.y), c.z);
+    if (abs(spread) < EPSILON) {
+        return vec3f(goal);
+    }
+    return c + vec3f(goal - current);
+}
+
+fn clip_color(c: vec3f, goal: f32) -> vec3f {
+    let low = min(min(c.x, c.y), c.z);
+    let high = max(max(c.x, c.y), c.z);
+    if (low < 0.0) {
+        let denom = goal - low;
+        if (abs(denom) < EPSILON) {
+            return vec3f(goal);
+        }
+        return vec3f(goal) + (c - vec3f(goal)) * (goal / denom);
+    }
+    if (high > 1.0) {
+        let denom = high - goal;
+        if (abs(denom) < EPSILON) {
+            return vec3f(goal);
+        }
+        return vec3f(goal) + (c - vec3f(goal)) * ((1.0 - goal) / denom);
+    }
+    return c;
+}
+
+fn set_saturation(c: vec3f, goal: f32) -> vec3f {
+    let low = min(min(c.x, c.y), c.z);
+    let high = max(max(c.x, c.y), c.z);
+    if (high <= low) {
+        return c;
+    }
+    let current = saturation(c);
+    if (abs(current) < EPSILON) {
+        return c;
+    }
+    let scale = goal / current;
+    let mid = luminance(c);
+    return vec3f(mid) + (c - vec3f(mid)) * scale;
+}
+
+fn separable(mode: u32, s: f32, d: f32) -> f32 {
+    switch (mode) {
+        case 1u: { return s * d; }
+        case 2u: { return s + d - s * d; }
+        case 3u: {
+            if (d <= 0.5) { return 2.0 * s * d; }
+            return 1.0 - 2.0 * (1.0 - s) * (1.0 - d);
+        }
+        case 4u: { return min(s, d); }
+        case 5u: { return max(s, d); }
+        case 6u: {
+            if (d >= 1.0) { return 1.0; }
+            return min(1.0, s / (1.0 - d));
+        }
+        case 7u: {
+            if (d <= 0.0) { return 0.0; }
+            return 1.0 - min(1.0, (1.0 - s) / d);
+        }
+        case 8u: {
+            if (s <= 0.5) { return 2.0 * s * d; }
+            return 1.0 - 2.0 * (1.0 - s) * (1.0 - d);
+        }
+        case 9u: {
+            if (d <= 0.25) {
+                let delta = ((16.0 * d - 12.0) * d + 4.0) * d;
+                return d - (1.0 - 2.0 * s) * delta;
+            }
+            if (d <= 0.5) {
+                let delta = ((16.0 * d - 12.0) * d + 4.0) * d;
+                return d + (2.0 * s - 1.0) * (delta - d);
+            }
+            return d + (2.0 * s - 1.0) * (sqrt(d) - d);
+        }
+        case 10u: { return abs(s - d); }
+        case 11u: { return s + d - 2.0 * s * d; }
+        default: { return s; }
+    }
+}
+
+fn blend_rgb(mode: u32, s: vec3f, d: vec3f) -> vec3f {
+    let goal = luminance(d);
+    if (mode == 12u) {
+        return set_luminosity(clip_color(s, goal), goal);
+    }
+    if (mode == 13u) {
+        return set_luminosity(set_saturation(d, saturation(s)), goal);
+    }
+    if (mode == 14u) {
+        return set_luminosity(s, goal);
+    }
+    if (mode == 15u) {
+        return set_luminosity(d, luminance(s));
+    }
+    return vec3f(
+        separable(mode, s.x, d.x),
+        separable(mode, s.y, d.y),
+        separable(mode, s.z, d.z),
+    );
+}
+
+@fragment
+fn fs_main(@builtin(position) position: vec4f) -> @location(0) vec4f {
+    let coord = vec2<i32>(floor(position.xy));
+    let layer = textureLoad(uSource, coord, 0);
+    let backdrop = textureLoad(uBackdrop, coord, 0);
+    if (layer.a <= 0.0) {
+        return backdrop;
+    }
+    var dest = backdrop;
+    if (backdrop.a > 0.0) {
+        dest = vec4f(backdrop.rgb / backdrop.a, backdrop.a);
+    }
+    // Text: the layer holds the glyph colour as straight RGB and its coverage as alpha, so the
+    // mode is applied to the colour first and the result composited by that coverage — the same
+    // order `blend_cpu_rgba8_with_mode` uses.
+    if (params.layer_kind == 2u) {
+        let blended = blend_rgb(params.mode, layer.rgb, dest.rgb);
+        let coverage = layer.a;
+        return vec4f(
+            blended * coverage + dest.rgb * (1.0 - coverage),
+            dest.a + coverage * (1.0 - dest.a),
+        );
+    }
+    var source = layer;
+    if (params.layer_kind == 1u) {
+        source = vec4f(layer.rgb / layer.a, layer.a);
+    }
+    return vec4f(blend_rgb(params.mode, source.rgb, dest.rgb), source.a);
+}"#;
+
 /// Shape vertex shader for the ring/wedge/outline family: one quad per draw, positioned from the
 /// draw's own `rect` uniform — there is no vertex buffer.
 ///
