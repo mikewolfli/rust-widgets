@@ -801,6 +801,435 @@ pub enum WidgetKind {
 }
 
 impl WidgetKind {
+    /// The category a designer palette groups this kind under.
+    ///
+    /// # What the token is, and what it is not
+    ///
+    /// It is a **grouping label for a palette** — the answer to "which section does a freshly
+    /// dropped control belong in?" — not a semantic type, not a permission, and not something a
+    /// document stores. It is therefore a stable lower-case ASCII token rather than an enum: a
+    /// designer renders the sections it receives, in the order it receives them, and a new token
+    /// needs no protocol change (the manifest field carries the string).
+    ///
+    /// # Where the answer comes from
+    ///
+    /// The control's own family in this crate (`basic`, `input`, `view`, `container`, `layout`,
+    /// `menu`, `navigation`, `dialog`, `window`, `chart`, `media`, `advanced`, `cupertino`,
+    /// `overlay`, `companion`, `special`, `misc`), plus `external` for kinds a package registers
+    /// rather than this crate. Where a control's family and its purpose disagree — a `Slider` and
+    /// a `ScrollBar` are built under `display_widgets` but are inputs to a user — the purpose wins,
+    /// because the palette groups by what a user picks the control for.
+    ///
+    /// The match is exhaustive, so a new variant cannot arrive without a category. The
+    /// `cfg(widgets_unstripped)` arms mirror the variant declarations: a stripped profile has no
+    /// such kind to categorise.
+    pub const fn designer_category(self) -> &'static str {
+        match self {
+            #[cfg(widgets_unstripped)]
+            Self::Calendar => "advanced",
+            #[cfg(widgets_unstripped)]
+            Self::DatePicker => "advanced",
+            #[cfg(widgets_unstripped)]
+            Self::DateTimePicker => "advanced",
+            #[cfg(widgets_unstripped)]
+            Self::PieMenu => "advanced",
+            #[cfg(widgets_unstripped)]
+            Self::RibbonBar => "advanced",
+            #[cfg(widgets_unstripped)]
+            Self::TabBar => "advanced",
+            #[cfg(widgets_unstripped)]
+            Self::TimePicker => "advanced",
+            Self::Button => "basic",
+            Self::CheckBox => "basic",
+            Self::Frame => "basic",
+            Self::Label => "basic",
+            Self::RadioButton => "basic",
+            #[cfg(widgets_unstripped)]
+            Self::ToggleButton => "basic",
+            #[cfg(widgets_unstripped)]
+            Self::BarChart => "chart",
+            #[cfg(widgets_unstripped)]
+            Self::CandlestickChart => "chart",
+            #[cfg(widgets_unstripped)]
+            Self::Chart => "chart",
+            Self::DependencyEditor => "chart",
+            #[cfg(widgets_unstripped)]
+            Self::DepthChart => "chart",
+            #[cfg(widgets_unstripped)]
+            Self::Gauge => "chart",
+            #[cfg(widgets_unstripped)]
+            Self::Heatmap => "chart",
+            #[cfg(widgets_unstripped)]
+            Self::IndicatorChart => "chart",
+            #[cfg(widgets_unstripped)]
+            Self::KanbanBoard => "chart",
+            Self::KanbanCardView => "chart",
+            Self::KanbanColumnHeader => "chart",
+            #[cfg(widgets_unstripped)]
+            Self::LineChart => "chart",
+            #[cfg(widgets_unstripped)]
+            Self::OrderBook => "chart",
+            #[cfg(widgets_unstripped)]
+            Self::PieChart => "chart",
+            #[cfg(widgets_unstripped)]
+            Self::QuoteBoard => "chart",
+            #[cfg(widgets_unstripped)]
+            Self::RadarChart => "chart",
+            #[cfg(widgets_unstripped)]
+            Self::Sparkline => "chart",
+            Self::TimelineAxis => "chart",
+            #[cfg(widgets_unstripped)]
+            Self::VolumeChart => "chart",
+            Self::ChartTooltip => "companion",
+            Self::DrawerSectionHeader => "companion",
+            Self::FilterRow => "companion",
+            Self::LayerPanel => "companion",
+            Self::Legend => "companion",
+            Self::MenuPanel => "companion",
+            Self::PlaylistPanel => "companion",
+            Self::SpeedDial => "companion",
+            Self::Swatch => "companion",
+            Self::SwipeActions => "companion",
+            Self::ToastHost => "companion",
+            Self::TooltipManager => "companion",
+            Self::ZoomPanController => "companion",
+            #[cfg(widgets_unstripped)]
+            Self::Accordion => "container",
+            #[cfg(widgets_unstripped)]
+            Self::Carousel => "container",
+            #[cfg(widgets_unstripped)]
+            Self::CollapsiblePane => "container",
+            #[cfg(widgets_unstripped)]
+            Self::DockPanel => "container",
+            #[cfg(widgets_unstripped)]
+            Self::DockWidget => "container",
+            Self::GroupBox => "container",
+            #[cfg(widgets_unstripped)]
+            Self::MdiArea => "container",
+            Self::Panel => "container",
+            Self::ScrollArea => "container",
+            #[cfg(widgets_unstripped)]
+            Self::Splitter => "container",
+            #[cfg(widgets_unstripped)]
+            Self::StackedWidget => "container",
+            #[cfg(widgets_unstripped)]
+            Self::TabWidget => "container",
+            #[cfg(widgets_unstripped)]
+            Self::Toolbox => "container",
+            #[cfg(widgets_unstripped)]
+            Self::CupertinoAlertDialog => "cupertino",
+            #[cfg(widgets_unstripped)]
+            Self::CupertinoDatePicker => "cupertino",
+            #[cfg(widgets_unstripped)]
+            Self::CupertinoNavigationBar => "cupertino",
+            #[cfg(widgets_unstripped)]
+            Self::CupertinoSegmentedControl => "cupertino",
+            #[cfg(widgets_unstripped)]
+            Self::CupertinoSlider => "cupertino",
+            #[cfg(widgets_unstripped)]
+            Self::CupertinoSwitch => "cupertino",
+            #[cfg(widgets_unstripped)]
+            Self::MaterialNavigationRail => "cupertino",
+            #[cfg(widgets_unstripped)]
+            Self::MaterialSnackbar => "cupertino",
+            #[cfg(widgets_unstripped)]
+            Self::AboutDialog => "dialog",
+            #[cfg(widgets_unstripped)]
+            Self::AlertDialog => "dialog",
+            #[cfg(widgets_unstripped)]
+            Self::BottomSheet => "dialog",
+            #[cfg(widgets_unstripped)]
+            Self::ColorDialog => "dialog",
+            #[cfg(widgets_unstripped)]
+            Self::ConfirmDialog => "dialog",
+            #[cfg(widgets_unstripped)]
+            Self::Dialog => "dialog",
+            #[cfg(widgets_unstripped)]
+            Self::DirectoryDialog => "dialog",
+            #[cfg(widgets_unstripped)]
+            Self::FileDialog => "dialog",
+            #[cfg(widgets_unstripped)]
+            Self::FindReplaceDialog => "dialog",
+            #[cfg(widgets_unstripped)]
+            Self::FontDialog => "dialog",
+            #[cfg(widgets_unstripped)]
+            Self::InputDialog => "dialog",
+            #[cfg(widgets_unstripped)]
+            Self::MessageBox => "dialog",
+            #[cfg(widgets_unstripped)]
+            Self::ModalBottomSheet => "dialog",
+            #[cfg(widgets_unstripped)]
+            Self::PopupWindow => "dialog",
+            #[cfg(widgets_unstripped)]
+            Self::ProgressDialog => "dialog",
+            #[cfg(widgets_unstripped)]
+            Self::Wizard => "dialog",
+            #[cfg(widgets_unstripped)]
+            Self::WizardDialog => "dialog",
+            #[cfg(widgets_unstripped)]
+            Self::ActivityIndicator => "display",
+            Self::Arc => "display",
+            #[cfg(widgets_unstripped)]
+            Self::Badge => "display",
+            #[cfg(widgets_unstripped)]
+            Self::Clock => "display",
+            #[cfg(widgets_unstripped)]
+            Self::Divider => "display",
+            #[cfg(widgets_unstripped)]
+            Self::EmojiPicker => "display",
+            #[cfg(widgets_unstripped)]
+            Self::EmptyState => "display",
+            #[cfg(widgets_unstripped)]
+            Self::FloatingLabel => "display",
+            #[cfg(widgets_unstripped)]
+            Self::FontPreview => "display",
+            #[cfg(widgets_unstripped)]
+            Self::Icon => "display",
+            Self::ImageView => "display",
+            #[cfg(widgets_unstripped)]
+            Self::LCDNumber => "display",
+            Self::Line => "display",
+            Self::Meter => "display",
+            Self::MiniCanvas => "display",
+            Self::MiniChart => "display",
+            Self::ProgressBar => "display",
+            #[cfg(widgets_unstripped)]
+            Self::ProgressCircle => "display",
+            Self::Roller => "display",
+            #[cfg(widgets_unstripped)]
+            Self::SkeletonLoader => "display",
+            Self::Spinner => "display",
+            #[cfg(widgets_unstripped)]
+            Self::Stepper => "display",
+            #[cfg(widgets_unstripped)]
+            Self::Tag => "display",
+            Self::Form => "external",
+            Self::FormSet => "external",
+            #[cfg(widgets_unstripped)]
+            Self::WebEngineView => "external",
+            #[cfg(widgets_unstripped)]
+            Self::AutoCompleteEdit => "input",
+            #[cfg(widgets_unstripped)]
+            Self::Cascader => "input",
+            #[cfg(widgets_unstripped)]
+            Self::CheckListBox => "input",
+            #[cfg(widgets_unstripped)]
+            Self::Chip => "input",
+            #[cfg(widgets_unstripped)]
+            Self::ColorHistory => "input",
+            #[cfg(widgets_unstripped)]
+            Self::ColorPicker => "input",
+            #[cfg(widgets_unstripped)]
+            Self::ColorWell => "input",
+            Self::ComboBox => "input",
+            #[cfg(widgets_unstripped)]
+            Self::CommandLink => "input",
+            #[cfg(widgets_unstripped)]
+            Self::Dial => "input",
+            #[cfg(widgets_unstripped)]
+            Self::DoubleSpinBox => "input",
+            Self::Dropdown => "input",
+            #[cfg(widgets_unstripped)]
+            Self::EditableComboBox => "input",
+            #[cfg(widgets_unstripped)]
+            Self::FontComboBox => "input",
+            #[cfg(widgets_unstripped)]
+            Self::ImePreedit => "input",
+            #[cfg(widgets_unstripped)]
+            Self::InplaceEditor => "input",
+            Self::Keyboard => "input",
+            Self::LineEdit => "input",
+            Self::ListBox => "input",
+            #[cfg(widgets_unstripped)]
+            Self::MaskedEdit => "input",
+            #[cfg(widgets_unstripped)]
+            Self::Mention => "input",
+            #[cfg(widgets_unstripped)]
+            Self::MultiSelectComboBox => "input",
+            #[cfg(widgets_unstripped)]
+            Self::NumberPicker => "input",
+            #[cfg(widgets_unstripped)]
+            Self::OtpInput => "input",
+            #[cfg(widgets_unstripped)]
+            Self::RangeSlider => "input",
+            #[cfg(widgets_unstripped)]
+            Self::Rating => "input",
+            #[cfg(widgets_unstripped)]
+            Self::RichEdit => "input",
+            Self::ScrollBar => "input",
+            #[cfg(widgets_unstripped)]
+            Self::SearchBar => "input",
+            #[cfg(widgets_unstripped)]
+            Self::SearchBox => "input",
+            #[cfg(widgets_unstripped)]
+            Self::SegmentedControl => "input",
+            #[cfg(widgets_unstripped)]
+            Self::ShortcutEditor => "input",
+            Self::Slider => "input",
+            Self::SpinBox => "input",
+            Self::Switch => "input",
+            #[cfg(widgets_unstripped)]
+            Self::TagInput => "input",
+            Self::TextArea => "input",
+            #[cfg(widgets_unstripped)]
+            Self::TextEdit => "input",
+            #[cfg(widgets_unstripped)]
+            Self::Align => "layout",
+            #[cfg(widgets_unstripped)]
+            Self::AspectRatio => "layout",
+            #[cfg(widgets_unstripped)]
+            Self::Center => "layout",
+            #[cfg(widgets_unstripped)]
+            Self::Expanded => "layout",
+            #[cfg(widgets_unstripped)]
+            Self::Flex => "layout",
+            #[cfg(widgets_unstripped)]
+            Self::Flexible => "layout",
+            #[cfg(widgets_unstripped)]
+            Self::FlowLayout => "layout",
+            #[cfg(widgets_unstripped)]
+            Self::IntrinsicWidth => "layout",
+            #[cfg(widgets_unstripped)]
+            Self::MasonryLayout => "layout",
+            #[cfg(widgets_unstripped)]
+            Self::Padding => "layout",
+            #[cfg(widgets_unstripped)]
+            Self::SafeArea => "layout",
+            #[cfg(widgets_unstripped)]
+            Self::SizedBox => "layout",
+            #[cfg(widgets_unstripped)]
+            Self::Spacer => "layout",
+            #[cfg(widgets_unstripped)]
+            Self::WrapLayout => "layout",
+            #[cfg(widgets_unstripped)]
+            Self::AnimatedImage => "media",
+            #[cfg(widgets_unstripped)]
+            Self::AudioVisualizer => "media",
+            #[cfg(widgets_unstripped)]
+            Self::CameraPreview => "media",
+            #[cfg(widgets_unstripped)]
+            Self::HeroAnimation => "media",
+            #[cfg(widgets_unstripped)]
+            Self::LottieWidget => "media",
+            #[cfg(widgets_unstripped)]
+            Self::RiveWidget => "media",
+            #[cfg(widgets_unstripped)]
+            Self::VideoPlayer => "media",
+            #[cfg(widgets_unstripped)]
+            Self::Action => "menu",
+            #[cfg(widgets_unstripped)]
+            Self::ContextMenu => "menu",
+            #[cfg(widgets_unstripped)]
+            Self::DropdownMenu => "menu",
+            #[cfg(widgets_unstripped)]
+            Self::Menu => "menu",
+            #[cfg(widgets_unstripped)]
+            Self::MenuBar => "menu",
+            #[cfg(widgets_unstripped)]
+            Self::MenuButton => "menu",
+            #[cfg(widgets_unstripped)]
+            Self::MenuItem => "menu",
+            #[cfg(widgets_unstripped)]
+            Self::StatusBar => "menu",
+            #[cfg(widgets_unstripped)]
+            Self::ToolBar => "menu",
+            #[cfg(widgets_unstripped)]
+            Self::ToolButton => "menu",
+            #[cfg(widgets_unstripped)]
+            Self::Avatar => "misc",
+            #[cfg(widgets_unstripped)]
+            Self::BarcodeScanner => "misc",
+            #[cfg(widgets_unstripped)]
+            Self::BezierCurveEditor => "misc",
+            #[cfg(widgets_unstripped)]
+            Self::DateRangePicker => "misc",
+            #[cfg(widgets_unstripped)]
+            Self::DropZone => "misc",
+            #[cfg(widgets_unstripped)]
+            Self::MobileDatePicker => "misc",
+            #[cfg(widgets_unstripped)]
+            Self::QRCode => "misc",
+            Self::RangePresetBar => "misc",
+            #[cfg(widgets_unstripped)]
+            Self::SegmentedButton => "misc",
+            #[cfg(widgets_unstripped)]
+            Self::AdaptiveScaffold => "navigation",
+            #[cfg(widgets_unstripped)]
+            Self::AppBar => "navigation",
+            #[cfg(widgets_unstripped)]
+            Self::BottomNavigationBar => "navigation",
+            #[cfg(widgets_unstripped)]
+            Self::NavigationDrawer => "navigation",
+            #[cfg(widgets_unstripped)]
+            Self::NavigationStack => "navigation",
+            #[cfg(widgets_unstripped)]
+            Self::Pagination => "navigation",
+            #[cfg(widgets_unstripped)]
+            Self::TabView => "navigation",
+            #[cfg(widgets_unstripped)]
+            Self::Banner => "overlay",
+            #[cfg(widgets_unstripped)]
+            Self::FAB => "overlay",
+            #[cfg(widgets_unstripped)]
+            Self::Popover => "overlay",
+            #[cfg(widgets_unstripped)]
+            Self::RefreshControl => "overlay",
+            #[cfg(widgets_unstripped)]
+            Self::SplashScreen => "overlay",
+            #[cfg(widgets_unstripped)]
+            Self::SwipeToDismiss => "overlay",
+            #[cfg(widgets_unstripped)]
+            Self::Tooltip => "overlay",
+            #[cfg(widgets_unstripped)]
+            Self::Breadcrumb => "special",
+            #[cfg(widgets_unstripped)]
+            Self::Canvas => "special",
+            Self::Compass => "special",
+            Self::DiffFileList => "special",
+            Self::FindBar => "special",
+            #[cfg(widgets_unstripped)]
+            Self::FreeformShape => "special",
+            #[cfg(widgets_unstripped)]
+            Self::Grid => "special",
+            Self::MarkdownOutlinePanel => "special",
+            Self::ScaleBar => "special",
+            Self::ShapeCanvas => "special",
+            #[cfg(widgets_unstripped)]
+            Self::SignaturePad => "special",
+            Self::TileLoader => "special",
+            #[cfg(widgets_unstripped)]
+            Self::Toast => "special",
+            Self::WebFindBar => "special",
+            Self::ZoomControl => "special",
+            #[cfg(widgets_unstripped)]
+            Self::ColumnView => "view",
+            #[cfg(widgets_unstripped)]
+            Self::DataView => "view",
+            #[cfg(widgets_unstripped)]
+            Self::GridTable => "view",
+            Self::GridViewHeader => "view",
+            #[cfg(widgets_unstripped)]
+            Self::ImageGallery => "view",
+            #[cfg(widgets_unstripped)]
+            Self::ListView => "view",
+            #[cfg(widgets_unstripped)]
+            Self::PropertiesPanel => "view",
+            #[cfg(widgets_unstripped)]
+            Self::PropertyGrid => "view",
+            #[cfg(widgets_unstripped)]
+            Self::QueryBuilder => "view",
+            #[cfg(widgets_unstripped)]
+            Self::Table => "view",
+            #[cfg(widgets_unstripped)]
+            Self::TreeTable => "view",
+            #[cfg(widgets_unstripped)]
+            Self::TreeView => "view",
+            #[cfg(widgets_unstripped)]
+            Self::UndoView => "view",
+            Self::Window => "window",
+        }
+    }
+
     /// The `Debug` spelling of this kind, as a `'static` string.
     ///
     /// The stylesheet and theme layers address controls by this spelling (`Button`, not

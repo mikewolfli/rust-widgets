@@ -139,6 +139,9 @@ macro_rules! impl_properties_menu {
             PropertySchema::new("text", PropertyValueKind::String, true, true),
             PropertySchema::new("checked", PropertyValueKind::Bool, true, true),
             PropertySchema::new("icon_source", PropertyValueKind::IconSpec, true, true),
+            // The icon's own colour channel. `null` means "follow the label ink", which is what
+            // every control did before this property existed.
+            PropertySchema::new("icon_tint", PropertyValueKind::Color, true, true),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),

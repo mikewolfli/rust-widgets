@@ -614,6 +614,37 @@ pub enum RenderCommand {
         /// RGBA pixel data (4 bytes per pixel), shared so replay does not copy it (G-02).
         data: Arc<[u8]>,
     },
+    /// Draw an RGBA image **resampled** into the destination rectangle.
+    ///
+    /// # Why this exists next to [`RenderCommand::DrawImage`]
+    ///
+    /// `DrawImage` blits a buffer whose dimensions *are* the rectangle's: a shorter buffer is
+    /// ignored and a longer one is cropped. A control that fits an icon into a slot, or a photo
+    /// into a frame, means "resample", and it needs a command that says so — before this variant
+    /// such a caller had to resample into a temporary buffer and emit a `DrawImage`, which cost an
+    /// allocation and a copy per frame in every deferred path (region buckets, recorders, replay).
+    ///
+    /// # Why it is not `DrawImageQuad`
+    ///
+    /// The quad command carries a projective mapping and is gated on the `3d` feature; scaling an
+    /// image is not a 3D concern. This variant is available in every profile, carries the source
+    /// grid so a backend can sample it directly, and leaves the destination axis-aligned.
+    DrawImageScaled {
+        /// Top-left screen position in logical pixels.
+        x: i32,
+        /// Top-left screen position in logical pixels.
+        y: i32,
+        /// Destination width in logical pixels.
+        width: u32,
+        /// Destination height in logical pixels.
+        height: u32,
+        /// Width of the source grid `data` was laid out in.
+        source_width: u32,
+        /// Height of the source grid `data` was laid out in.
+        source_height: u32,
+        /// RGBA pixel data (4 bytes per pixel), shared so replay does not copy it (G-02).
+        data: Arc<[u8]>,
+    },
     /// Push a clipping rectangle onto the clip stack.
     PushClip {
         /// Left edge in logical pixels.
@@ -977,7 +1008,10 @@ impl RenderCommand {
             | Self::PushLayer { bounds: rect, .. }
             | Self::PushLayerGroup { bounds: rect, .. }
             | Self::PushMatte { bounds: rect, .. } => Some(*rect),
-            Self::DrawImage { x, y, width, height, .. } => Some(Rect::new(*x, *y, *width, *height)),
+            Self::DrawImage { x, y, width, height, .. }
+            | Self::DrawImageScaled { x, y, width, height, .. } => {
+                Some(Rect::new(*x, *y, *width, *height))
+            }
             #[cfg(feature = "3d")]
             Self::FillQuad { corners, .. }
             | Self::FillQuadAA { corners, .. }

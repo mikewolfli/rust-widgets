@@ -131,6 +131,41 @@ impl SvgPaintBackend {
         svg
     }
 
+    /// Emits one `<image>` element, or the "no data" placeholder when there is nothing to embed.
+    ///
+    /// `source_width`/`source_height` describe the pixel grid `data` was laid out in;
+    /// `width`/`height` are where it goes. SVG scales the raster to the element's box, so a scaled
+    /// draw and an exactly-sized draw differ only in whether those two pairs are equal — and this
+    /// helper is the single place that encoding is written.
+    #[allow(clippy::too_many_arguments)]
+    fn push_image_element(
+        &mut self,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+        source_width: u32,
+        source_height: u32,
+        data: &[u8],
+    ) {
+        if !data.is_empty() && width > 0 && height > 0 && source_width > 0 && source_height > 0 {
+            let bmp = rgba_to_bmp(source_width, source_height, data);
+            let b64 = base64_encode(&bmp);
+            self.push_element(format!(
+                r##"<image x="{x}" y="{y}" width="{width}" height="{height}" preserveAspectRatio="none" href="data:image/bmp;base64,{b64}" />"##
+            ));
+        } else {
+            self.push_element(format!(
+                r##"<rect x="{x}" y="{y}" width="{width}" height="{height}" fill="#fee" stroke="#c00" stroke-width="2" />"##
+            ));
+            let cx = x + (width as i32) / 2;
+            let cy = y + (height as i32) / 2;
+            self.push_element(format!(
+                r##"<text x="{cx}" y="{cy}" text-anchor="middle" dominant-baseline="central" font-family="sans-serif" font-size="11" fill="#c00">Image (no data)</text>"##
+            ));
+        }
+    }
+
     /// Add a raw SVG element string to the internal list.
     fn push_element(&mut self, element: String) {
         self.elements.push(element);
@@ -1343,27 +1378,30 @@ impl PaintBackend for SvgPaintBackend {
 
             // ── Image ──────────────────────────────────────────────────
             RenderCommand::DrawImage { x, y, width, height, data } => {
-                if !data.is_empty() && *width > 0 && *height > 0 {
-                    // Convert RGBA pixel data to BMP and base64-encode for embedding. The BMP holds
-                    // the pixels' own extent and the `<image>` element holds the requested box, so a
-                    // scaled draw scales rather than reading past the buffer -- the two were the same
-                    // number until a control drew an image at a size its pixels did not have.
-                    let bmp = rgba_to_bmp(*width, *height, data);
-                    let b64 = base64_encode(&bmp);
-                    self.push_element(format!(
-                        r##"<image x="{x}" y="{y}" width="{width}" height="{height}" preserveAspectRatio="none" href="data:image/bmp;base64,{b64}" />"##
-                    ));
-                } else {
-                    // No pixel data: render an error placeholder rectangle.
-                    self.push_element(format!(
-                        r##"<rect x="{x}" y="{y}" width="{width}" height="{height}" fill="#fee" stroke="#c00" stroke-width="2" />"##
-                    ));
-                    let cx = x + (*width as i32) / 2;
-                    let cy = y + (*height as i32) / 2;
-                    self.push_element(format!(
-                        r##"<text x="{cx}" y="{cy}" text-anchor="middle" dominant-baseline="central" font-family="sans-serif" font-size="11" fill="#c00">Image (no data)</text>"##
-                    ));
-                }
+                // The buffer is expected to have the destination's extent.
+                self.push_image_element(*x, *y, *width, *height, *width, *height, data);
+            }
+            RenderCommand::DrawImageScaled {
+                x,
+                y,
+                width,
+                height,
+                source_width,
+                source_height,
+                data,
+            } => {
+                // The raster keeps its own extent and the element carries the destination box, so
+                // the viewer scales it. Embedding it at the destination size would read past a
+                // smaller buffer, which is exactly the defect this variant exists to remove.
+                self.push_image_element(
+                    *x,
+                    *y,
+                    *width,
+                    *height,
+                    *source_width,
+                    *source_height,
+                    data,
+                );
             }
 
             // ── Clipping ───────────────────────────────────────────────
@@ -1879,6 +1917,43 @@ mod tests {
         assert!(result.contains("<svg"));
         assert!(result.contains("</svg>"));
         assert!(result.contains("fill=\"rgba(255,0,0,1.00)\""));
+    }
+
+    /// A scaled image is embedded at its **own** extent inside a destination-sized `<image>`.
+    ///
+    /// The raster and the element must not be the same number here: a 2x1 buffer drawn into an
+    /// 8x4 box is scaled by the viewer, and emitting the BMP at the destination size would read
+    /// past the buffer.
+    #[test]
+    fn svg_backend_embeds_a_scaled_image_at_its_destination_extent() {
+        let data: [u8; 8] = [255, 0, 0, 255, 0, 0, 255, 255];
+        let mut svg = SvgPaintBackend::new(Size::new(16, 16));
+        svg.begin_frame(Color::WHITE);
+        svg.execute_command(&RenderCommand::DrawImageScaled {
+            x: 1,
+            y: 2,
+            width: 8,
+            height: 4,
+            source_width: 2,
+            source_height: 1,
+            data: Arc::from(&data[..]),
+        });
+        svg.end_frame();
+        let result = svg.finish();
+        assert!(
+            result.contains(r#"width="8" height="4""#),
+            "the element carries the destination box: {result}"
+        );
+        assert!(result.contains("preserveAspectRatio=\"none\""), "{result}");
+        // End to end: the embedded raster must be the **source** grid. Encoding it at the
+        // destination extent instead would read past a 2x1 buffer, and a viewer that stretches a
+        // wrong-sized raster draws different pixels even though the element box looks right.
+        let expected =
+            format!("data:image/bmp;base64,{}", base64_encode(&rgba_to_bmp(2, 1, &data)));
+        assert!(
+            result.contains(&expected),
+            "the raster is embedded at its source extent: {result}"
+        );
     }
 
     /// A quad is emitted as a closed four-corner path, not as its bounding rectangle.
@@ -2485,6 +2560,7 @@ mod tests {
                 RenderCommand::DrawText { .. } => "DrawText",
                 RenderCommand::DrawTextDecorated { .. } => "DrawTextDecorated",
                 RenderCommand::DrawImage { .. } => "DrawImage",
+                RenderCommand::DrawImageScaled { .. } => "DrawImageScaled",
                 RenderCommand::PushClip { .. } => "PushClip",
                 RenderCommand::PushClipRoundedRect { .. } => "PushClipRoundedRect",
                 RenderCommand::PopClip => "PopClip",

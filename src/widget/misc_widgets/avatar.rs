@@ -61,7 +61,12 @@ pub struct Avatar {
     /// RGBA8 pixels for [`Self::image_source`], decoded once per source.
     ///
     /// `None` is cached too, so a source that failed to load is not re-read every frame.
-    decoded_source: Option<alloc::sync::Arc<Vec<u8>>>,
+    /// The decoded picture and its own extent.
+    ///
+    /// The extent travels with the pixels because the draw has to resample the picture into the
+    /// avatar's box: `draw_image` blits a buffer whose dimensions *are* the rectangle, so handing it
+    /// a full-size portrait for a 32-pixel avatar painted nothing (or a corner of the picture).
+    decoded_source: Option<(alloc::sync::Arc<Vec<u8>>, u32, u32)>,
     /// The source string [`Self::decoded_source`] was produced for, so a change to the source
     /// invalidates the pixels without the caller having to clear them.
     decoded_source_key: Option<String>,
@@ -591,7 +596,7 @@ impl Avatar {
         if self.image_source.is_empty() || size == 0 {
             return false;
         }
-        let Some(pixels) = self.resolved_image_source() else {
+        let Some((pixels, source_width, source_height)) = self.resolved_image_source() else {
             return false;
         };
         // The picture is clipped to the avatar's own shape before it is drawn, so a square bitmap
@@ -599,7 +604,15 @@ impl Avatar {
         // the primitive the renderer has; a rounded-square avatar's own radius is close enough to
         // the rectangle that clipping to it would only remove pixels the radius already rounds off.
         context.push_clip(rect.x, rect.y, rect.width, rect.height);
-        context.draw_image(rect.x, rect.y, rect.width, rect.height, &pixels);
+        context.draw_image_scaled(
+            rect.x,
+            rect.y,
+            rect.width,
+            rect.height,
+            source_width,
+            source_height,
+            &pixels,
+        );
         context.pop_clip();
         // A square clip still leaves the corners of a picture outside a *circle*, so those four
         // corner squares are repainted in the disc's colour. Four rectangles rather than a mask,
@@ -636,14 +649,15 @@ impl Avatar {
     /// What is *stored* is now the shared [`Arc<Vec<u8>>`](alloc::sync::Arc) rather than a `Vec` this
     /// control owns, so the pixels are the cache's allocation and a hit here hands back the same one
     /// an `image_view` of the same file would get.
-    fn resolved_image_source(&mut self) -> Option<alloc::sync::Arc<Vec<u8>>> {
+    fn resolved_image_source(&mut self) -> Option<(alloc::sync::Arc<Vec<u8>>, u32, u32)> {
         #[cfg(all(feature = "image", not(alloc_frugal)))]
         {
             if self.decoded_source_key.as_deref() != Some(self.image_source.as_str()) {
                 // One entry point for "a file's RGBA8 pixels", shared by every control that wants
                 // one -- so an avatar and an image view of the same file cannot disagree about what
                 // the file looks like, and cannot decode it twice.
-                self.decoded_source = crate::image::cache::file_rgba8_or_none(&self.image_source);
+                self.decoded_source =
+                    crate::image::cache::file_rgba8_sized_or_none(&self.image_source);
                 // The key is set whether or not the decode succeeded, so a bad path is not re-read
                 // every frame -- an avatar that cannot load must not make every frame a disk read.
                 self.decoded_source_key = Some(self.image_source.clone());

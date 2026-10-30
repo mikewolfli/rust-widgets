@@ -52,6 +52,10 @@ HELPER_CARRIERS = {
     "dependency_value": "Tuple",
     "tile_key_value": "Tuple",
     "point_value": "Tuple",
+    # The pointer gesture every drawing surface publishes (`["x,y", button]`). One helper rather
+    # than a closure per surface, so `mouse_pressed` cannot mean a different wire form on the
+    # canvas than on the mini canvas (principle #54).
+    "pointer_capability_value": "Tuple",
     "optional_rect_value": "Rect",
     "colors_value": "Tuple",
     "legend_entry_value": "Tuple",

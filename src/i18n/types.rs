@@ -2,8 +2,32 @@
 // SPDX-License-Identifier: MIT
 
 //! i18n types - data structures for internationalization
-use crate::compat::{HashMap, String};
+use crate::compat::{HashMap, String, Vec};
 use serde::{Deserialize, Serialize};
+
+/// The two directions of a key-set comparison between a catalogue and a required set.
+///
+/// # Why both directions, and why they are different defects
+///
+/// A **missing** key is a label the program will paint as a raw identifier (or in the fallback
+/// language): the catalogue is incomplete, and the file should be refused at load time rather
+/// than shipping. An **unexpected** key is a label nothing asks for: usually a stale entry left
+/// behind by a rename, which silently accumulates and makes a translator's work look complete when
+/// part of it is dead. Reporting them separately is what lets a tool say which of the two it found.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct KeyAudit {
+    /// Keys the caller requires that the catalogue does not provide, sorted.
+    pub missing: Vec<String>,
+    /// Keys the catalogue provides that the caller does not require, sorted.
+    pub unexpected: Vec<String>,
+}
+
+impl KeyAudit {
+    /// Whether both directions are empty — the catalogue is exactly the required set.
+    pub fn is_empty(&self) -> bool {
+        self.missing.is_empty() && self.unexpected.is_empty()
+    }
+}
 /// Translation entry
 ///
 /// One message in one language, as loaded from a translation file.

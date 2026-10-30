@@ -135,7 +135,7 @@ pub use apply::{
 pub use breakpoint::{is_current, with_breakpoint, Breakpoint};
 pub use diff::{diff, DiffReport, Patch};
 pub use engine::{Context, View, ViewEngine};
-pub use identity::TreeIndex;
+pub use identity::{TreeIndex, TreeIndexBuilder};
 pub use node::{Host, Node};
 pub use reactive::{reactive_pump_event, ReactiveHost, REACTIVE_PUMP_EVENT};
 pub use row_signal::{RowChange, RowModel, RowRef, RowRole, RowSignal};

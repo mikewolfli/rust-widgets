@@ -339,6 +339,71 @@ fn fs_main(@builtin(position) position: vec4f) -> @location(0) vec4f {
     return vec4f(rgb, out_alpha);
 }"#;
 
+/// One direction of the shadow layer's **box** blur, matching the CPU rasteriser's kernel exactly.
+///
+/// # Bindings
+///
+/// | group | binding | type | name | stage | meaning |
+/// |---|---|---|---|---|---|
+/// | 0 | 0 | `texture_2d<f32>` | `source` | fragment | the shadow layer being filtered |
+/// | 0 | 1 | uniform | `params` | fragment | direction and radius |
+///
+/// The 32-byte uniform is the same shape [`blur_bind_group_layout`] already declares —
+/// `direction: vec2f`, `radius: f32`, one unused `f32` — so the shadow passes reuse the backdrop
+/// blur's layout and vertex shader ([`BLUR_VS`]) and differ only in this fragment stage.
+///
+/// # Why a box and not the backdrop blur's Gaussian
+///
+/// [`super::super::raster`]'s `box_blur_layer_rgba8` filters the shadow layer with a separable
+/// moving average whose window is **clamped to the layer** (`lo = x - r`, `hi = x + r`, both
+/// clamped to the layer's own extent) and divided by that clamped tap count. This shader performs
+/// the same integer arithmetic — eight-bit values recovered with `round(texel * 255)`, accumulated
+/// as integers, divided with truncation — so the two paths agree instead of merely looking alike.
+/// A Gaussian would feather the same shadow differently, which is why the shadow passes cannot
+/// reuse [`BLUR_FS`].
+///
+/// The layer is allocated at exactly the CPU's layer extent, so "clamped to the texture" and
+/// "clamped to the layer" are the same bounds, and no separate bound uniform is needed.
+pub(crate) const SHADOW_BLUR_FS: &str = r#"
+struct ShadowBlurParams {
+    direction: vec2f,
+    radius: f32,
+    unused: f32,
+};
+
+@group(0) @binding(0) var source: texture_2d<f32>;
+@group(0) @binding(1) var<uniform> params: ShadowBlurParams;
+
+@fragment
+fn fs_main(@builtin(position) position: vec4f) -> @location(0) vec4f {
+    let dimensions = vec2<i32>(textureDimensions(source));
+    let center = vec2<i32>(position.xy);
+    let radius = i32(params.radius);
+    if (radius <= 0) {
+        return textureLoad(source, center, 0);
+    }
+    // The window is clamped once, per axis, exactly as the CPU's sliding window is: a window that
+    // stops at the layer edge averages fewer taps rather than repeating the border texel.
+    let vertical = params.direction.y > 0.5;
+    var start = center;
+    var span = 0;
+    if (vertical) {
+        start = vec2<i32>(center.x, max(center.y - radius, 0));
+        span = min(center.y + radius, dimensions.y - 1) - start.y;
+    } else {
+        start = vec2<i32>(max(center.x - radius, 0), center.y);
+        span = min(center.x + radius, dimensions.x - 1) - start.x;
+    }
+    let step = vec2<i32>(vec2f(1.0 - params.direction.y, params.direction.y));
+    var sum = vec4<i32>(0);
+    for (var tap = 0; tap <= span; tap = tap + 1) {
+        let texel = textureLoad(source, start + step * tap, 0);
+        sum = sum + vec4<i32>(round(texel * 255.0));
+    }
+    let count = span + 1;
+    return vec4f(vec4<f32>(sum / vec4<i32>(count))) / 255.0;
+}"#;
+
 /// Vertex shader for the SDF circle pipeline (G-219).
 ///
 /// One **draw** covers one circle: the vertex buffer carries the six vertices of the circle's
@@ -379,83 +444,170 @@ fn vs_main(input: CircleVertexInput) -> CircleVertexOutput {
     return output;
 }"#;
 
-/// Image fragment shader.
-/// Samples a texture and blends with uniform color.
-/// Expects UV coordinates at @location(0) from the vertex shader.
+/// Image vertex shader: one axis-aligned quad per image draw, positioned from the draw's own
+/// uniform — there is no vertex buffer.
 ///
-/// Bind group layout (group 0):
+/// | group | binding | type | name | stage | meaning |
+/// |---|---|---|---|---|---|
+/// | 0 | 0 | `uniform ImageParams` | `uParams` | vertex | `dest` = (x, y, w, h) in framebuffer pixels |
+/// | 1 | 0 | `uniform mat4x4f` | `uMVP` | vertex | pixel space to clip space |
+///
+/// Group 1 is the shared matrix every other 2D pipeline in this renderer uses, so the quad covers
+/// exactly the destination rectangle. The fragment half is [`IMAGE_FRAG`].
+pub(crate) const IMAGE_VS: &str = r#"
+struct ImageParams {
+    dest: vec4f,
+    source: vec4f,
+};
+
+@group(0) @binding(0) var<uniform> uParams: ImageParams;
+@group(1) @binding(0) var<uniform> uMVP: mat4x4f;
+
+struct VertexOutput {
+    @builtin(position) position: vec4f,
+    @location(0) pixel: vec2f,
+};
+
+@vertex
+fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
+    let d = uParams.dest;
+    var corners = array<vec2f, 6>(
+        vec2f(d.x, d.y),
+        vec2f(d.x + d.z, d.y),
+        vec2f(d.x + d.z, d.y + d.w),
+        vec2f(d.x, d.y),
+        vec2f(d.x + d.z, d.y + d.w),
+        vec2f(d.x, d.y + d.w),
+    );
+    let pixel = corners[vertex_index];
+    var output: VertexOutput;
+    output.position = uMVP * vec4f(pixel, 0.0, 1.0);
+    output.pixel = pixel;
+    return output;
+}"#;
+
+/// Image fragment shader: one texel fetch per fragment, with the **integer** source mapping the
+/// software rasteriser uses.
+///
+/// # Bind group layout (group 0)
 ///
 /// | binding | type | name | meaning |
 /// |---|---|---|---|
-/// | 0 | `uniform vec4f` | `color` | tint / base colour, straight RGBA in `0.0..=1.0` |
-/// | 1 | `texture_2d<f32>` | `image_tex` | the image being drawn |
-/// | 2 | `sampler` | `image_sampler` | filtering and addressing for `image_tex` |
+/// | 0 | `uniform ImageParams` | `uParams` | `dest` = (x, y, w, h) in pixels; `source` = (w, h) |
+/// | 1 | `texture_2d<f32>` | `uSource` | the source image, in its own grid |
 ///
-/// All three bindings are required and must be declared in this order; a bind
-/// group that omits binding 2, or a pipeline layout without it, fails wgpu
-/// validation at draw time.
+/// # Why `textureLoad` and not `textureSample`
 ///
-/// UVs are expected in the texture's `0.0..=1.0` range, with the origin at the
-/// image's top-left. A source larger than the destination scales down under
-/// whatever filter `image_sampler` provides.
+/// The software rasteriser computes `src = local * source_dim / dest_dim` in integers, so a scaled
+/// draw picks exactly one texel per destination pixel and applies no filter. A sampler would let
+/// the driver choose linear filtering and round the boundary pixels differently; `textureLoad` at
+/// an integer coordinate reproduces the crate's rule, which is what makes a GPU frame comparable
+/// to a software one byte for byte instead of "close enough".
 ///
-/// The RGB output is a per-channel `mix` towards the texture weighted by the
-/// texture's alpha, and the output alpha is the product `color.a * tex_color.a`.
-/// The comment calls this "alpha-premultiplied", but the arithmetic is not: the
-/// RGB result is not scaled by the output alpha and the texture's RGB is used
-/// raw, so a texture carrying straight alpha produces an over-bright edge
-/// rather than a premultiplied one. Treat it as a coverage-weighted lerp with
-/// a straight-alpha texture until the shader is fixed.
+/// Fragments are shaded at pixel centres (`@builtin(position)` is `x + 0.5`), so `floor` of the
+/// interpolated pixel-space position is the destination pixel index — the same `local` the CPU
+/// loop uses. The output is straight RGBA; source-over compositing is the pipeline's blend state,
+/// not this shader's job.
 ///
 /// This module is exposed through [`ShaderModule::DrawImage`].
 pub(crate) const IMAGE_FRAG: &str = r#"
-@group(0) @binding(0) var<uniform> color: vec4f;
+struct ImageParams {
+    dest: vec4f,
+    source: vec4f,
+};
 
-@group(0) @binding(1) var image_tex: texture_2d<f32>;
-@group(0) @binding(2) var image_sampler: sampler;
+@group(0) @binding(0) var<uniform> uParams: ImageParams;
+@group(0) @binding(1) var uSource: texture_2d<f32>;
 
 @fragment
-fn fs_main(@location(0) uv: vec2f) -> @location(0) vec4f {
-    let tex_color = textureSample(image_tex, image_sampler, uv);
-    // Alpha-premultiplied blend of uniform color and texture
-    return vec4f(mix(color.rgb, tex_color.rgb, tex_color.a), color.a * tex_color.a);
+fn fs_main(@location(0) pixel: vec2f) -> @location(0) vec4f {
+    let d = uParams.dest;
+    let s = uParams.source.xy;
+    let local = floor(pixel) - d.xy;
+    let last = max(s - vec2f(1.0), vec2f(0.0));
+    let src = clamp(floor(local * s / d.zw), vec2f(0.0), last);
+    return textureLoad(uSource, vec2i(i32(src.x), i32(src.y)), 0);
 }"#;
 
-/// Text fragment shader.
-/// Renders glyphs using an SDF texture with smoothstep anti-aliasing.
-/// Expects UV coordinates at @location(0) from the vertex shader.
+/// Text vertex shader: one axis-aligned quad per text box, positioned from the box's uniform —
+/// there is no vertex buffer.
 ///
-/// Bind group layout (group 0):
+/// | group | binding | type | name | stage | meaning |
+/// |---|---|---|---|---|---|
+/// | 0 | 0 | `uniform TextParams` | `uParams` | vertex | `dest` = (x, y, w, h) in framebuffer pixels |
+/// | 1 | 0 | `uniform mat4x4f` | `uMVP` | vertex | pixel space to clip space |
+///
+/// The fragment half is [`TEXT_FRAG`].
+pub(crate) const TEXT_VS: &str = r#"
+struct TextParams {
+    dest: vec4f,
+    color: vec4f,
+};
+
+@group(0) @binding(0) var<uniform> uParams: TextParams;
+@group(1) @binding(0) var<uniform> uMVP: mat4x4f;
+
+struct VertexOutput {
+    @builtin(position) position: vec4f,
+    @location(0) pixel: vec2f,
+};
+
+@vertex
+fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
+    let d = uParams.dest;
+    var corners = array<vec2f, 6>(
+        vec2f(d.x, d.y),
+        vec2f(d.x + d.z, d.y),
+        vec2f(d.x + d.z, d.y + d.w),
+        vec2f(d.x, d.y),
+        vec2f(d.x + d.z, d.y + d.w),
+        vec2f(d.x, d.y + d.w),
+    );
+    let pixel = corners[vertex_index];
+    var output: VertexOutput;
+    output.position = uMVP * vec4f(pixel, 0.0, 1.0);
+    output.pixel = pixel;
+    return output;
+}"#;
+
+/// Text fragment shader: one coverage fetch per destination pixel, multiplied by the text colour.
+///
+/// # Bind group layout (group 0)
 ///
 /// | binding | type | name | meaning |
 /// |---|---|---|---|
-/// | 0 | `uniform vec4f` | `color` | glyph colour, straight RGBA in `0.0..=1.0` |
-/// | 1 | `texture_2d<f32>` | `glyph_tex` | signed-distance field or coverage atlas for the glyphs |
-/// | 2 | `sampler` | `glyph_sampler` | filtering and addressing for `glyph_tex` |
+/// | 0 | `uniform TextParams` | `uParams` | `dest` = (x, y, w, h) in pixels; `color` = straight RGBA |
+/// | 1 | `texture_2d<f32>` | `uCoverage` | one coverage byte per pixel of the text box (`R8Unorm`) |
 ///
-/// All three bindings are required. Only the texture's **red** channel is read,
-/// which is a single-channel coverage/SDF atlas rather than a colour image; the
-/// shader detects the glyph edge by thresholding that channel on `0.4..=0.6`,
-/// so a plain 1-bit bitmap mask produces hard edges and a smooth distance field
-/// produces anti-aliased ones.
+/// # Why coverage is uploaded rather than sampled from an atlas
 ///
-/// UVs are in the texture's `0.0..=1.0` range, origin at the top-left. The
-/// output RGB is the uniform colour unchanged and the output alpha is
-/// `color.a * smoothstep(0.4, 0.6, glyph_alpha)`, so the glyph coverage
-/// modulates opacity only.
+/// The CPU rasteriser paints glyphs through the font stack into an 8x8 coverage cell and then
+/// composites each pixel. Uploading the box's coverage keeps the glyph painting on exactly that
+/// code — so a glyph has the same shape on both paths — and moves only the per-pixel colour
+/// multiply and the source-over composite to the GPU. There is no sampler: the fetch is at the
+/// destination pixel's own coordinate, so no filtering can blur a stem.
+///
+/// The output is straight alpha (`color.rgb`, `color.a * coverage`); compositing is the pipeline's
+/// blend state, which is why this shader has no blend arithmetic of its own.
 ///
 /// This module is exposed through [`ShaderModule::DrawText`].
 pub(crate) const TEXT_FRAG: &str = r#"
-@group(0) @binding(0) var<uniform> color: vec4f;
-@group(0) @binding(1) var glyph_tex: texture_2d<f32>;
-@group(0) @binding(2) var glyph_sampler: sampler;
+struct TextParams {
+    dest: vec4f,
+    color: vec4f,
+};
+
+@group(0) @binding(0) var<uniform> uParams: TextParams;
+@group(0) @binding(1) var uCoverage: texture_2d<f32>;
 
 @fragment
-fn fs_main(@location(0) uv: vec2f) -> @location(0) vec4f {
-    let glyph_alpha = textureSample(glyph_tex, glyph_sampler, uv).r;
-    // Smoothstep for anti-aliased SDF edge rendering
-    let alpha = smoothstep(0.4, 0.6, glyph_alpha);
-    return vec4f(color.rgb, color.a * alpha);
+fn fs_main(@location(0) pixel: vec2f) -> @location(0) vec4f {
+    let d = uParams.dest;
+    let local = vec2i(i32(floor(pixel.x) - d.x), i32(floor(pixel.y) - d.y));
+    let last = vec2i(max(i32(d.z) - 1, 0), max(i32(d.w) - 1, 0));
+    let coord = clamp(local, vec2i(0, 0), last);
+    let coverage = textureLoad(uCoverage, coord, 0).r;
+    return vec4f(uParams.color.rgb, uParams.color.a * coverage);
 }"#;
 
 /// Rounded rectangle fill fragment shader.
@@ -546,7 +698,194 @@ fn fs_main(@location(0) pos: vec2f) -> @location(0) vec4f {
     return vec4f(color.rgb, color.a * coverage);
 }"#;
 
-/// Shader module identifiers for the WgpuRenderer pipeline (BLUE11 R5.2).
+/// Shape vertex shader for the ring/wedge/outline family: one quad per draw, positioned from the
+/// draw's own `rect` uniform — there is no vertex buffer.
+///
+/// The fragment half is [`SHAPE_FRAG`]; `rect` is the shape's bounding box for circles and arcs and
+/// the outlined rectangle for a rounded stroke.
+pub(crate) const SHAPE_VS: &str = r#"
+struct ShapeParams {
+    center_radius: vec4f,
+    window: vec4f,
+    color: vec4f,
+    rect: vec4f,
+};
+
+@group(0) @binding(0) var<uniform> p: ShapeParams;
+@group(1) @binding(0) var<uniform> uMVP: mat4x4f;
+
+struct VertexOutput {
+    @builtin(position) position: vec4f,
+    @location(0) pixel: vec2f,
+};
+
+@vertex
+fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
+    let d = p.rect;
+    var corners = array<vec2f, 6>(
+        vec2f(d.x, d.y),
+        vec2f(d.x + d.z, d.y),
+        vec2f(d.x + d.z, d.y + d.w),
+        vec2f(d.x, d.y),
+        vec2f(d.x + d.z, d.y + d.w),
+        vec2f(d.x, d.y + d.w),
+    );
+    let pixel = corners[vertex_index];
+    var output: VertexOutput;
+    output.position = uMVP * vec4f(pixel, 0.0, 1.0);
+    output.pixel = pixel;
+    return output;
+}"#;
+
+/// Shape fragment shader: the ring / pie-wedge / rounded-outline family, one SDF per mode.
+///
+/// # Modes (`window.z`)
+///
+/// | mode | shape | inside | uniform use |
+/// |---|---|---|---|
+/// | 0 | circle stroke | `\|d − r\| ≤ w` | `center_radius` = (cx, cy, r, w) |
+/// | 1 | filled arc (pie wedge) | `d ≤ r` within the angular window | `center_radius`, `window.xy` |
+/// | 2 | stroked arc | `\|d − r\| ≤ 1` within the window | `center_radius`, `window.xy` |
+/// | 3 | rounded-rectangle outline | `−t ≤ sdf ≤ 0` | `rect`, `window.w` = corner radius, `half_width` = t |
+///
+/// # Why the coverage carries the anti-aliasing
+///
+/// Each mode reduces to "signed distance to the shape's boundary, negative inside". The fragment
+/// returns the colour with `1 − smoothstep(0, 1, distance)` as alpha, so the pipeline's source-over
+/// blend feathers the edge over one pixel. The software rasteriser fills these shapes with integer
+/// predicates (no anti-aliasing), so the two agree on *which shape* is drawn but not on the edge
+/// pixel's exact value — the same, already documented, difference the SDF circle fill has.
+///
+/// The angular test is hard-edged: an arc's cut ends are exact, so a wedge's straight sides are not
+/// feathered. That matches how the software path treats them and keeps the sweep endpoints testable.
+///
+/// This module is exposed through [`ShaderModule::Shape`].
+pub(crate) const SHAPE_FRAG: &str = r#"
+struct ShapeParams {
+    center_radius: vec4f,
+    window: vec4f,
+    color: vec4f,
+    rect: vec4f,
+};
+
+@group(0) @binding(0) var<uniform> p: ShapeParams;
+
+const TAU: f32 = 6.283185307179586;
+
+fn rounded_box_sdf(q: vec2f, half_size: vec2f, radius: f32) -> f32 {
+    let d = abs(q) - half_size + vec2f(radius);
+    return length(max(d, vec2f(0.0))) + min(max(d.x, d.y), 0.0) - radius;
+}
+
+@fragment
+fn fs_main(@location(0) pixel: vec2f) -> @location(0) vec4f {
+    let mode = i32(round(p.window.z));
+    let px = floor(pixel);
+    let center = p.center_radius.xy;
+    let radius = p.center_radius.z;
+    let half_width = p.center_radius.w;
+    var edge = 0.0;
+    if (mode == 3) {
+        let rect = p.rect;
+        let box_center = rect.xy + rect.zw * 0.5;
+        let sdf = rounded_box_sdf(px - box_center, rect.zw * 0.5, p.window.w);
+        // Outside the outer shape (sdf > 0) and inside the hole (sdf < -t) are both "outside".
+        edge = max(sdf, -half_width - sdf);
+    } else {
+        let d = distance(px, center);
+        if (mode == 0) {
+            edge = abs(d - radius) - half_width;
+        } else {
+            let angle = atan2(px.y - center.y, px.x - center.x);
+            let turned = select(angle + TAU, angle, angle >= 0.0);
+            if (turned < p.window.x || turned > p.window.y) {
+                return vec4f(0.0);
+            }
+            edge = select(abs(d - radius) - 1.0, d - radius, mode == 1);
+        }
+    }
+    let coverage = 1.0 - smoothstep(0.0, 1.0, edge);
+    if (coverage <= 0.0) {
+        return vec4f(0.0);
+    }
+    return vec4f(p.color.rgb, p.color.a * coverage);
+}"#;
+
+/// Radial-gradient vertex shader: one quad per gradient, positioned from the draw's uniform.
+pub(crate) const RADIAL_VS: &str = r#"
+struct RadialParams {
+    center_radius: vec4f,
+    rect: vec4f,
+    stops: vec4f,
+};
+
+@group(0) @binding(0) var<uniform> p: RadialParams;
+@group(1) @binding(0) var<uniform> uMVP: mat4x4f;
+
+struct VertexOutput {
+    @builtin(position) position: vec4f,
+    @location(0) pixel: vec2f,
+};
+
+@vertex
+fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
+    let d = p.rect;
+    var corners = array<vec2f, 6>(
+        vec2f(d.x, d.y),
+        vec2f(d.x + d.z, d.y),
+        vec2f(d.x + d.z, d.y + d.w),
+        vec2f(d.x, d.y),
+        vec2f(d.x + d.z, d.y + d.w),
+        vec2f(d.x, d.y + d.w),
+    );
+    let pixel = corners[vertex_index];
+    var output: VertexOutput;
+    output.position = uMVP * vec4f(pixel, 0.0, 1.0);
+    output.pixel = pixel;
+    return output;
+}"#;
+
+/// Radial-gradient fragment shader: distance to the centre, scaled to `0..=1`, then the **nearest**
+/// stop — the same rule [`super::super::raster`]'s `gradient_stop` applies.
+///
+/// # Layout
+///
+/// | group | binding | type | name | meaning |
+/// |---|---|---|---|---|
+/// | 0 | 0 | `uniform RadialParams` | `p` | `center_radius` = (cx, cy, radius, stops), `rect`, `stops` = (count, 0, 0, 0) |
+/// | 0 | 1 | `texture_2d<f32>` | `p.stops_tex` is bound separately | the stop table, one texel per stop |
+/// | 1 | 0 | `uniform mat4x4f` | `uMVP` | pixel space to clip space |
+///
+/// # Why the index is computed here rather than sampled from a ramp
+///
+/// An axis-aligned gradient has one colour per row (or column), so the software rasteriser's ramp
+/// can be uploaded and repeated. A radial gradient's colour changes with the **distance**, so the
+/// only way to keep it one draw is to compute `t` and pick the stop in the shader. The arithmetic is
+/// deliberately the same expression the CPU uses — `sqrt(dx² + dy²) * (1 / radius)` in `f32`, then
+/// `floor((stops − 1) * t)` — so the two agree wherever the two `sqrt` implementations round alike;
+/// the test measures that rather than assuming it.
+pub(crate) const RADIAL_FRAG: &str = r#"
+struct RadialParams {
+    center_radius: vec4f,
+    rect: vec4f,
+    stops: vec4f,
+};
+
+@group(0) @binding(0) var<uniform> p: RadialParams;
+@group(0) @binding(1) var uStops: texture_2d<f32>;
+
+@fragment
+fn fs_main(@location(0) pixel: vec2f) -> @location(0) vec4f {
+    let px = floor(pixel);
+    let d = px - p.center_radius.xy;
+    let distance = sqrt(d.x * d.x + d.y * d.y);
+    let t = clamp(distance * p.center_radius.w, 0.0, 1.0);
+    let count = i32(p.stops.x);
+    let last = max(count - 1, 0);
+    let index = clamp(i32(floor(f32(last) * t)), 0, last);
+    return textureLoad(uStops, vec2i(index, 0), 0);
+}"#;
+
 ///
 /// Each variant names a fragment shader and is the key callers use to fetch its
 /// WGSL source with [`ShaderModule::source`]. The variants cover every fragment
@@ -565,11 +904,74 @@ fn fs_main(@location(0) pos: vec2f) -> @location(0) vec4f {
 ///
 /// # Current pipeline coverage (G-213, G-219)
 ///
-/// [`ShaderModule::FillRect`] and [`ShaderModule::FillCircle`] are consumed by pipelines:
-/// the single-rectangle path builds `rect_fs` from [`FILL_RECT_FS`], and the SDF circle
-/// pipeline (G-219) builds `circle_fs` from [`CIRCLE_FRAG`]. The image, text and rounded-rect
-/// programs are reserved — their WGSL and bind-group tables are complete, but this backend's
-/// CPU rasteriser draws those commands, so no pipeline is created for them.
+/// Path-fill vertex shader: fan triangles in pixel space, transformed by the shared mvp.
+///
+/// The geometry comes from a vertex buffer (two `f32` per point) because a fan has one vertex per
+/// polygon point, not a fixed quad. The stencil passes write nothing to the colour target; the cover
+/// pass that follows does the painting.
+pub(crate) const PATH_FAN_VS: &str = r#"
+@group(0) @binding(0) var<uniform> uMVP: mat4x4f;
+
+@vertex
+fn vs_main(@location(0) pos: vec2f) -> @builtin(position) vec4f {
+    return uMVP * vec4f(pos, 0.0, 1.0);
+}"#;
+
+/// Path-fill fragment shader for the stencil passes: the colour target is masked off, so this only
+/// has to exist for the pipeline to be valid.
+pub(crate) const PATH_STENCIL_FS: &str = r#"
+@fragment
+fn fs_main() -> @location(0) vec4f {
+    return vec4f(0.0);
+}"#;
+
+/// Path-cover vertex shader: one quad over the path's bounding box, from the draw's uniform.
+pub(crate) const PATH_COVER_VS: &str = r#"
+struct CoverParams {
+    rect: vec4f,
+    color: vec4f,
+};
+
+@group(0) @binding(0) var<uniform> p: CoverParams;
+@group(1) @binding(0) var<uniform> uMVP: mat4x4f;
+
+@vertex
+fn vs_main(@builtin(vertex_index) vertex_index: u32) -> @builtin(position) vec4f {
+    let d = p.rect;
+    var corners = array<vec2f, 6>(
+        vec2f(d.x, d.y),
+        vec2f(d.x + d.z, d.y),
+        vec2f(d.x + d.z, d.y + d.w),
+        vec2f(d.x, d.y),
+        vec2f(d.x + d.z, d.y + d.w),
+        vec2f(d.x, d.y + d.w),
+    );
+    return uMVP * vec4f(corners[vertex_index], 0.0, 1.0);
+}"#;
+
+/// Path-cover fragment shader: the fill colour. The stencil test on the pipeline is what decides
+/// which pixels survive, so this shader has no geometry test of its own.
+pub(crate) const PATH_COVER_FS: &str = r#"
+struct CoverParams {
+    rect: vec4f,
+    color: vec4f,
+};
+
+@group(0) @binding(0) var<uniform> p: CoverParams;
+
+@fragment
+fn fs_main() -> @location(0) vec4f {
+    return p.color;
+}"#;
+
+/// [`ShaderModule::FillRect`], [`ShaderModule::FillCircle`], [`ShaderModule::DrawImage`] and
+/// [`ShaderModule::DrawText`] are consumed by pipelines: the single-rectangle path builds `rect_fs`
+/// from [`FILL_RECT_FS`], the SDF circle pipeline (G-219) builds `circle_fs` from [`CIRCLE_FRAG`],
+/// the image pipeline builds `image_fs` from [`IMAGE_FRAG`] (vertex [`IMAGE_VS`]), and the text
+/// pipeline builds `text_fs` from [`TEXT_FRAG`] (vertex [`TEXT_VS`]).
+/// The rounded-rect program remains reserved — its WGSL and bind-group table are complete, but
+/// filled rounded rectangles are drawn as row-span instances and the outline still comes from the
+/// CPU rasteriser, so no pipeline is created for it.
 /// `ShaderModule::pipeline_cache_key` records exactly that split and the
 /// `shader_module_registry_matches_pipelines` test fails if a `Some(key)` entry does not
 /// correspond to a shader the renderer actually registers.
@@ -577,11 +979,13 @@ fn fs_main(@location(0) pos: vec2f) -> @location(0) vec4f {
 pub enum ShaderModule {
     /// `FILL_RECT_FS`: a solid rectangle's colour from a uniform.
     FillRect,
-    /// `IMAGE_FRAG`: a sampled image tinted by a uniform colour; needs a
-    /// texture and a sampler as well as the colour uniform.
+    /// `IMAGE_FRAG`: one texel fetch per destination pixel, at the source coordinate the
+    /// software rasteriser's integer rule selects; needs the draw's params uniform and the
+    /// source texture as well.
     DrawImage,
-    /// `TEXT_FRAG`: an SDF or coverage glyph atlas, sampled on its red
-    /// channel and anti-aliased by a threshold.
+    /// `TEXT_FRAG`: the text box's coverage texture, fetched at each destination pixel's own
+    /// coordinate and multiplied by the text colour; needs the box's params uniform and the
+    /// coverage texture as well.
     DrawText,
     /// `ROUNDED_RECT_FRAG`: a rounded box SDF over a colour and a
     /// `radius`/`width`/`height` parameter vector.
@@ -589,6 +993,12 @@ pub enum ShaderModule {
     /// `CIRCLE_FRAG`: a circle SDF over a colour and a
     /// `radius`/`centre` parameter vector.
     FillCircle,
+    /// `SHAPE_FRAG`: the ring / pie-wedge / rounded-outline family, one SDF selected by mode;
+    /// needs the shape's params uniform only.
+    Shape,
+    /// `RADIAL_FRAG`: distance-to-centre lookup into the stop table; needs the gradient's params
+    /// uniform and the stop texture.
+    RadialGradient,
 }
 
 impl ShaderModule {
@@ -600,12 +1010,11 @@ impl ShaderModule {
     /// group 0. It contains no vertex entry point, so a shader module built from
     /// it must be paired with a vertex module when creating a pipeline.
     ///
-    /// For [`ShaderModule::DrawImage`], [`ShaderModule::DrawText`],
-    /// [`ShaderModule::FillRoundedRect`] and [`ShaderModule::FillCircle`] the
-    /// module declares more than one binding, and the caller must supply a bind
-    /// group layout that matches the tables on each constant — the text and
-    /// image samplers expect external textures that this backend's CPU
-    /// rasterizer never creates.
+    /// For [`ShaderModule::DrawImage`], [`ShaderModule::DrawText`] and
+    /// [`ShaderModule::FillRoundedRect`] the module declares more than one binding, and the
+    /// caller must supply a bind group layout that matches the tables on each constant. The
+    /// image module expects the source texture this backend uploads per draw; the text and
+    /// rounded-rect modules expect inputs the CPU rasteriser still supplies on its own.
     pub fn source(&self) -> &'static str {
         match self {
             ShaderModule::FillRect => FILL_RECT_FS,
@@ -613,6 +1022,8 @@ impl ShaderModule {
             ShaderModule::DrawText => TEXT_FRAG,
             ShaderModule::FillRoundedRect => ROUNDED_RECT_FRAG,
             ShaderModule::FillCircle => CIRCLE_FRAG,
+            ShaderModule::Shape => SHAPE_FRAG,
+            ShaderModule::RadialGradient => RADIAL_FRAG,
         }
     }
 
@@ -629,9 +1040,11 @@ impl ShaderModule {
         match self {
             ShaderModule::FillRect => Some("rect_fs"),
             ShaderModule::FillCircle => Some("circle_fs"),
-            ShaderModule::DrawImage | ShaderModule::DrawText | ShaderModule::FillRoundedRect => {
-                None
-            }
+            ShaderModule::DrawImage => Some("image_fs"),
+            ShaderModule::DrawText => Some("text_fs"),
+            ShaderModule::Shape => Some("shape_fs"),
+            ShaderModule::RadialGradient => Some("radial_fs"),
+            ShaderModule::FillRoundedRect => None,
         }
     }
 }

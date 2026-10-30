@@ -17,13 +17,31 @@
 //! # Installing
 //!
 //! The dependency runs one way — this package depends on `rust_widgets`, never the reverse — so a
-//! host registers the group into its own factory:
+//! host installs the group into the **shared** factory, before the first control is created:
 //!
 //! ```ignore
-//! let mut factory = rust_widgets::widget::capability::WidgetFactory::new_with_defaults();
-//! rust_widgets_suites::install(&mut factory)?;
-//! let form = factory.create("form", Rect::new(0, 0, 360, 320), "Account");
-//! let set = factory.create("form_set", Rect::new(0, 0, 480, 360), "");
+//! // At startup, before anything builds a control or parses a document:
+//! rust_widgets::widget::register_shared_extension(rust_widgets_suites::install)
+//!     .expect("the shared table was not built yet");
+//!
+//! // From here on the shared table can build this package's controls by name. That is the same
+//! // table `create_widget_of_kind`, the JSON loader and the designer catalogue read, so a
+//! // document can drop a `form` next to a core control with no extra wiring.
+//! let form = rust_widgets::widget::WidgetFactory::shared()
+//!     .create("form", Rect::new(0, 0, 360, 320), "Account")
+//!     .expect("the suite registered `form`");
+//! ```
+//!
+//! `register_shared_extension` freezes the list on the first `WidgetFactory::shared()` call; a
+//! registration after that returns `SharedFactoryError::AlreadyBuilt` rather than succeeding into
+//! a list nothing will read. An extension that collides with an existing name leaves that control
+//! out and is reported by `shared_extension_failures()`.
+//!
+//! A host that wants its own table instead of the shared one can build it directly — the result is
+//! the same table with the same controls, just not the one the rest of the library reads:
+//!
+//! ```ignore
+//! let factory = rust_widgets::widget::WidgetFactory::new_with_extensions(&[install])?;
 //! ```
 //!
 //! `install` returns the first `RegistrationError` instead of shadowing a name the parent (or an
@@ -65,4 +83,29 @@ pub fn install_form_group(factory: &mut WidgetFactory) -> Result<(), Registratio
 /// duplicate name an error rather than a silent last-writer-wins.
 pub fn install(factory: &mut WidgetFactory) -> Result<(), RegistrationError> {
     install_form_group(factory)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `install` must be usable **directly** as a shared-factory extension.
+    ///
+    /// The example in this crate's docs passes `install` to
+    /// `rust_widgets::widget::register_shared_extension`, so the two signatures are one contract:
+    /// if either changes, this line stops compiling and the documented installation stops working
+    /// at the same moment.
+    #[test]
+    fn install_has_the_shared_extension_signature() {
+        let extension: rust_widgets::widget::SharedFactoryExtension = install;
+        let group: rust_widgets::widget::SharedFactoryExtension = install_form_group;
+
+        // Both must also be accepted by the constructor that applies a list, which is the
+        // non-global path a host with its own table takes.
+        let result = WidgetFactory::new_with_extensions(&[extension, group]);
+        assert!(
+            matches!(result, Err(RegistrationError::NameTaken { .. })),
+            "the second install of `form` must report the name it collided on"
+        );
+    }
 }

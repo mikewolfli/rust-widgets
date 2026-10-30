@@ -5,7 +5,7 @@
 //! their uniform arenas, and the byte-size helpers they share.
 use super::super::commands::WgpuDrawCommand;
 use super::super::raster::{align_to, rasterize_draw_commands_into_rgba8};
-use super::super::types::Rgba8;
+use super::super::types::{PixelRect, Rgba8};
 use std::cell::{Ref, RefCell};
 use std::time::Duration;
 
@@ -43,6 +43,17 @@ pub(crate) struct TargetCache {
     pub(crate) view: wgpu::TextureView,
 }
 
+/// The stencil attachment the 2D passes carry, cached per `(width, height)`.
+///
+/// WebGPU requires *every* pipeline used in a pass to declare a depth-stencil state matching the
+/// attachment's format, so this target exists for all 2D passes even though only path fills read or
+/// write it. The view owns its texture, so the handle itself does not need to be stored.
+pub(crate) struct StencilTarget {
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+    pub(crate) view: wgpu::TextureView,
+}
+
 /// A grow-only vertex buffer reused across calls.
 ///
 /// The same cache holds both the per-rectangle vertex positions and the instanced quad records:
@@ -75,6 +86,39 @@ pub(crate) struct BlurTargets {
     pub(crate) vertical: wgpu::BindGroup,
     pub(crate) horizontal_params: wgpu::Buffer,
     pub(crate) vertical_params: wgpu::Buffer,
+}
+
+/// One blurred-shadow layer: the offscreen target its body is painted into, the two directional
+/// blur bind groups and the composite bind group that paints the result back.
+///
+/// The layer is allocated at exactly the extent the CPU rasteriser uses — the shadow body grown by
+/// the blur radius and clamped to the frame — so the box blur's clamped window is bounded by the
+/// same edges on both paths (see [`super::super::shaders::SHADOW_BLUR_FS`]).
+///
+/// `body_uniform` carries the layer's own pixel-to-clip matrix, which is what lets the body be
+/// packed in layer-local coordinates; `scratch_view` is the ping-pong partner of the horizontal
+/// pass, the same size as the layer so one fullscreen triangle covers it exactly.
+pub(crate) struct ShadowLayer {
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+    pub(crate) view: wgpu::TextureView,
+    pub(crate) scratch_view: wgpu::TextureView,
+    pub(crate) body_uniform: TransformedUniform,
+    pub(crate) horizontal: wgpu::BindGroup,
+    pub(crate) horizontal_params: wgpu::Buffer,
+    pub(crate) vertical: wgpu::BindGroup,
+    pub(crate) vertical_params: wgpu::Buffer,
+    /// The blurred layer composited over the frame at its own rectangle: the image pipeline's
+    /// params uniform plus the layer texture.
+    pub(crate) composite: wgpu::BindGroup,
+    /// The params buffer `composite` binds. The caller writes it, because only the caller can see
+    /// the queue.
+    pub(crate) composite_params: wgpu::Buffer,
+}
+
+/// The mirrored shadow layers of one call, one per [`DrawStep::Shadow`].
+pub(crate) struct ShadowTargets {
+    pub(crate) layers: Vec<ShadowLayer>,
 }
 
 /// The model-view-projection uniform used by the instanced quad pipeline.
@@ -149,7 +193,14 @@ impl CpuFrame {
 ///
 /// The dispatcher packs the frame's geometry first and records the draw order here, so the
 /// render pass replays painter order exactly without re-deciding anything while encoding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DrawStep {
+    /// Sets the scissor rectangle for the draws that follow.
+    ///
+    /// Rectangle runs set the full frame themselves (their clipping is baked into the geometry),
+    /// so this step is emitted only before draws whose clipping cannot be expressed as geometry:
+    /// circles and images.
+    Scissor(PixelRect),
     /// Full-screen repaint through the clear pipeline; the payload is the colour slot index
     /// in the shared uniform arena.
     Clear(usize),
@@ -158,6 +209,47 @@ pub(crate) enum DrawStep {
     Rects(usize, usize),
     /// One SDF circle draw over the bounding quad at `quad_index`.
     Circle(usize),
+    /// One image draw: the `index`th entry of the frame's image-draw table (a texture and its
+    /// params uniform).
+    Image(usize),
+    /// One text box: the `index`th entry of the frame's text-draw table (a coverage texture and
+    /// its params uniform).
+    Text(usize),
+    /// One ring / wedge / rounded outline: the `index`th entry of the frame's shape-draw table.
+    Shape(usize),
+    /// One radial gradient: the `index`th entry of the frame's radial-gradient table.
+    Radial(usize),
+    /// One filled path: the `index`th entry of the frame's path table.
+    Path(usize),
+    /// One blurred shadow: the `index`th entry of the frame's shadow table. The blurred layer is
+    /// rendered before the main pass (see `super::encode`), so this step only composites it.
+    Shadow(usize),
+}
+
+/// One blurred shadow of a frame: the layer it is rendered into, the instance that paints its
+/// body, and the kernel radius.
+///
+/// The body instance lives in the frame's `shadow_instances` region rather than in the main
+/// instance run, because it is drawn into the layer before the frame's pass begins.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ShadowDraw {
+    /// The layer's rectangle in frame pixels; the layer texture is this size.
+    pub(crate) layer: PixelRect,
+    /// Index of the body's instance record in the packed `shadow_instances` region.
+    pub(crate) body_instance: usize,
+    pub(crate) blur_radius: u32,
+}
+
+/// The `ShadowBlurParams` uniform of one directional pass: direction, radius and one unused word.
+///
+/// The 32-byte size is the one `blur_bind_group_layout` declares; the trailing word is padding
+/// the shader never reads.
+pub(crate) fn shadow_blur_params(direction: [f32; 2], radius: u32) -> [u8; 32] {
+    let mut bytes = [0u8; 32];
+    bytes[0..4].copy_from_slice(&direction[0].to_le_bytes());
+    bytes[4..8].copy_from_slice(&direction[1].to_le_bytes());
+    bytes[8..12].copy_from_slice(&(radius as f32).to_le_bytes());
+    bytes
 }
 
 /// CPU-side packing buffers reused across calls (G-216).
@@ -179,6 +271,12 @@ pub(crate) struct PackScratch {
     pub(crate) circle_vertices: Vec<u8>,
     /// SDF circle uniform slots, two aligned slots per circle (G-219).
     pub(crate) circle_uniforms: Vec<u8>,
+    /// Path fan vertices, two `f32` per point, appended after the instances and circle quads.
+    pub(crate) path_vertices: Vec<u8>,
+    /// The instanced records of the shadow bodies, one `INSTANCE_BYTES` record per blurred shadow,
+    /// appended after the path vertices. They are painted into offscreen layers, never into the
+    /// frame, so they are kept out of the main instance run.
+    pub(crate) shadow_instances: Vec<u8>,
     /// The command-stream dispatcher's draw order (G-218).
     pub(crate) plan: Vec<DrawStep>,
     /// Mesh vertices, 32 bytes per vertex (`3d`).
@@ -242,11 +340,15 @@ pub(crate) fn create_matrix_uniform(
 pub(crate) struct RenderCache {
     pub(crate) uniform: Option<UniformArena>,
     pub(crate) target: Option<TargetCache>,
+    /// Stencil attachment shared by every 2D pass, sized with the colour target.
+    pub(crate) stencil: Option<StencilTarget>,
     pub(crate) upload_target: Option<TargetCache>,
     pub(crate) vertices: Option<VertexCache>,
     pub(crate) readback: Option<ReadbackCache>,
     /// Ping-pong targets and bind groups for the separable blur pass.
     pub(crate) blur: Option<BlurTargets>,
+    /// The offscreen layers of the frame's blurred shadows, rebuilt when their extents change.
+    pub(crate) shadow: Option<ShadowTargets>,
     /// Mvp uniform and bind group for the instanced quad pipeline.
     pub(crate) transformed_uniform: Option<TransformedUniform>,
     /// Grow-only uniform arena for the SDF circle pipeline (G-219).
@@ -345,6 +447,32 @@ impl RenderCache {
             });
             let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
             self.target = Some(TargetCache { width, height, texture, view });
+        }
+    }
+
+    /// Ensures the stencil attachment matches `width × height`.
+    ///
+    /// `Stencil8` is the smallest format the path fills can use: even-odd needs one bit, and the
+    /// non-zero rule needs a signed count, which eight bits carry with wrapped increments.
+    pub(crate) fn ensure_stencil(&mut self, device: &wgpu::Device, width: u32, height: u32) {
+        let matches = self
+            .stencil
+            .as_ref()
+            .map(|target| target.width == width && target.height == height)
+            .unwrap_or(false);
+        if !matches {
+            let texture = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("wgpu_2d_stencil"),
+                size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Stencil8,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                view_formats: &[],
+            });
+            let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+            self.stencil = Some(StencilTarget { width, height, view });
         }
     }
 
@@ -493,6 +621,51 @@ impl RenderCache {
             horizontal_params,
             vertical_params,
         });
+    }
+
+    /// Ensures one offscreen layer exists per entry of `layers`.
+    ///
+    /// The layers are reused when the count and every extent still match, which is the common case
+    /// for a host that redraws the same widget tree. A changed extent rebuilds the whole set rather
+    /// than patching one entry: the bind groups of a rebuilt layer differ in size, so a partial
+    /// update would need the same work as a full one and would leave mismatched pairs if it
+    /// aborted.
+    ///
+    /// Nothing is written into the layers here — the caller owns the queue and writes the body
+    /// matrix, the blur radii and the composite params before it encodes.
+    pub(crate) fn ensure_shadow_targets(
+        &mut self,
+        device: &wgpu::Device,
+        blur_layout: &wgpu::BindGroupLayout,
+        image_layout: &wgpu::BindGroupLayout,
+        mvp_layout: &wgpu::BindGroupLayout,
+        layers: &[PixelRect],
+    ) {
+        let reusable = self
+            .shadow
+            .as_ref()
+            .map(|targets| {
+                targets.layers.len() == layers.len()
+                    && targets.layers.iter().zip(layers).all(|(layer, rect)| {
+                        layer.width == rect.width && layer.height == rect.height
+                    })
+            })
+            .unwrap_or(false);
+        if reusable {
+            return;
+        }
+        let mut built = Vec::with_capacity(layers.len());
+        for (index, rect) in layers.iter().enumerate() {
+            built.push(create_shadow_layer(
+                device,
+                blur_layout,
+                image_layout,
+                mvp_layout,
+                *rect,
+                index,
+            ));
+        }
+        self.shadow = Some(ShadowTargets { layers: built });
     }
 
     /// Ensures the instanced-quad mvp uniform and its bind group exist.
@@ -656,6 +829,115 @@ pub(crate) fn rgba_buffer_len(width: u32, height: u32) -> Result<usize, String> 
         ));
     }
     Ok(bytes)
+}
+
+/// Builds one shadow layer at `rect`'s extent: the two textures, the body matrix uniform, the two
+/// directional blur bind groups and the composite bind group.
+///
+/// `rect` is in frame pixels and its origin rides in the composite params, so the layer itself only
+/// ever knows its own local grid. That is what allows the same box-blur shader to clamp its window
+/// to the layer's edges: those edges are exactly the CPU rasteriser's layer edges.
+fn create_shadow_layer(
+    device: &wgpu::Device,
+    blur_layout: &wgpu::BindGroupLayout,
+    image_layout: &wgpu::BindGroupLayout,
+    mvp_layout: &wgpu::BindGroupLayout,
+    rect: PixelRect,
+    index: usize,
+) -> ShadowLayer {
+    let make_texture = |label: String| {
+        device.create_texture(&wgpu::TextureDescriptor {
+            label: Some(label.as_str()),
+            size: wgpu::Extent3d {
+                width: rect.width,
+                height: rect.height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        })
+    };
+    let view = make_texture(format!("wgpu_shadow_layer_{index}"))
+        .create_view(&wgpu::TextureViewDescriptor::default());
+    let scratch_view = make_texture(format!("wgpu_shadow_scratch_{index}"))
+        .create_view(&wgpu::TextureViewDescriptor::default());
+    let body_uniform =
+        create_matrix_uniform(device, mvp_layout, &format!("wgpu_shadow_body_{index}"));
+
+    let make_params = |label: String| {
+        device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some(label.as_str()),
+            size: 32,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        })
+    };
+    let horizontal_params = make_params(format!("wgpu_shadow_horizontal_params_{index}"));
+    let vertical_params = make_params(format!("wgpu_shadow_vertical_params_{index}"));
+    let make_blur_group = |label: String, source: &wgpu::TextureView, buffer: &wgpu::Buffer| {
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some(label.as_str()),
+            layout: blur_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(source),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                        buffer,
+                        offset: 0,
+                        size: wgpu::BufferSize::new(32),
+                    }),
+                },
+            ],
+        })
+    };
+    let horizontal =
+        make_blur_group(format!("wgpu_shadow_horizontal_{index}"), &view, &horizontal_params);
+    let vertical =
+        make_blur_group(format!("wgpu_shadow_vertical_{index}"), &scratch_view, &vertical_params);
+
+    // The composite draws the layer at its own frame rectangle and reads it 1:1: the image
+    // shader maps `local * source / dest`, and both are the layer's grid.
+    let composite_params = make_params(format!("wgpu_shadow_composite_params_{index}"));
+    let composite = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some(format!("wgpu_shadow_composite_{index}").as_str()),
+        layout: image_layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                    buffer: &composite_params,
+                    offset: 0,
+                    size: wgpu::BufferSize::new(32),
+                }),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::TextureView(&view),
+            },
+        ],
+    });
+
+    ShadowLayer {
+        width: rect.width,
+        height: rect.height,
+        view,
+        scratch_view,
+        body_uniform,
+        horizontal,
+        horizontal_params,
+        vertical,
+        vertical_params,
+        composite,
+        composite_params,
+    }
 }
 
 /// Quantises a unit-interval colour to the 8-bit RGBA the rasteriser consumes.

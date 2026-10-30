@@ -22,6 +22,8 @@
 //! density an attribute of the stored source.
 
 use crate::compat::String;
+#[cfg(all(feature = "image", not(alloc_frugal)))]
+use crate::compat::Vec;
 use crate::widget::display_widgets::icon::{IconData, IconName};
 #[cfg(all(feature = "image", not(alloc_frugal)))]
 use alloc::sync::Arc;
@@ -187,6 +189,53 @@ impl SharedIconPixels {
     /// Returns whether two handles reference the same pixel allocation.
     pub fn shares_allocation_with(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.pixels, &other.pixels)
+    }
+
+    /// A copy of these pixels recoloured as a **monochrome mask**.
+    ///
+    /// The alpha channel is kept (so an icon's anti-aliased edges survive) and scaled by the
+    /// tint's own alpha; the RGB channels are replaced by the tint's. That is what
+    /// [`IconColorMode::Monochrome`] declares a tintable resource to be, and it is the only
+    /// reading under which "tint a picture" is well defined — a photographic source keeps its own
+    /// colours and should not be tinted at all.
+    ///
+    /// The result is an ordinary [`SharedIconPixels`], so a caller can cache it and share it like
+    /// the source. The invariant `pixels.len() == width * height * 4` holds by construction, which
+    /// is why this does not route through the validating constructor and cannot fail.
+    pub fn tinted(&self, tint: crate::core::Color) -> Self {
+        // The handle's own constructor refused a zero extent and a mismatched length, so the
+        // borrowed form cannot fail here; the expectation names that invariant instead of silently
+        // falling back to an untinted copy.
+        Self::tinted_rgba8(self.pixels.as_slice(), self.width, self.height, tint)
+            .expect("a validated shared icon always satisfies the tint invariants")
+    }
+
+    /// [`Self::tinted`] from **borrowed** RGBA8 bytes.
+    ///
+    /// Exists for a source that is not a handle yet — a control's legacy `Image` keeps its bytes in
+    /// its own allocation — so tinting it does not need a throw-away handle first. The tint rule
+    /// and its arithmetic live in one place ([`Self::tinted`] delegates here), so the two entry
+    /// points cannot disagree.
+    ///
+    /// `None` when the extent is zero or `pixels` is not exactly `width * height * 4` bytes. The
+    /// refusal is reported rather than padded: a buffer of the wrong length describes an extent
+    /// this handle would then report wrongly.
+    pub fn tinted_rgba8(
+        pixels: &[u8],
+        width: u32,
+        height: u32,
+        tint: crate::core::Color,
+    ) -> Option<Self> {
+        let expected = (width as usize).checked_mul(height as usize)?.checked_mul(4)?;
+        if expected == 0 || pixels.len() != expected {
+            return None;
+        }
+        let mut out = Vec::with_capacity(expected);
+        for pixel in pixels.as_chunks::<4>().0 {
+            let alpha = ((pixel[3] as u16 * tint.a as u16) / 255) as u8;
+            out.extend_from_slice(&[tint.r, tint.g, tint.b, alpha]);
+        }
+        Some(Self { pixels: Arc::new(out), width, height })
     }
 }
 
@@ -806,6 +855,34 @@ mod tests {
 
     fn source(name: IconName) -> IconSource {
         IconSource::Builtin(name)
+    }
+
+    /// A tinted copy recolours the mask and keeps the alpha, which is what "tint" means here.
+    ///
+    /// The source is 2x1: a half-transparent white pixel and an opaque one. The result must carry
+    /// the tint's RGB, scale each alpha by the tint's own alpha, and leave the dimensions alone —
+    /// the draw fits the icon slot from them.
+    #[cfg(all(feature = "image", not(alloc_frugal)))]
+    #[test]
+    fn tinting_replaces_rgb_and_keeps_a_scaled_alpha() {
+        let pixels =
+            SharedIconPixels::from_rgba8(vec![255, 255, 255, 128, 255, 255, 255, 255], 2, 1)
+                .expect("valid RGBA8 data");
+
+        let tinted = pixels.tinted(crate::core::Color::rgba(10, 20, 30, 255));
+        assert_eq!((tinted.width(), tinted.height()), (2, 1));
+        assert_eq!(tinted.pixels(), &[10, 20, 30, 128, 10, 20, 30, 255]);
+
+        let half = pixels.tinted(crate::core::Color::rgba(10, 20, 30, 128));
+        assert_eq!(
+            half.pixels()[3],
+            64,
+            "a half-transparent tint must halve the source alpha rather than ignore it"
+        );
+        assert!(
+            !tinted.shares_allocation_with(&pixels),
+            "a tint must produce its own pixels, not alias the source"
+        );
     }
 
     /// The fallback chain is the whole contract: a partially declared group still paints.

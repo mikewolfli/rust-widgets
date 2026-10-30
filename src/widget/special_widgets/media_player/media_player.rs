@@ -1251,7 +1251,17 @@ impl Draw for MediaPlayer {
                 let height = (frame.height() as f32 * scale).round().max(1.0) as u32;
                 let x = area.x + (area.width as i32 - width as i32) / 2;
                 let y = area.y + (area.height as i32 - height as i32) / 2;
-                context.draw_image(x, y, width, height, frame.pixels());
+                // The frame is letterboxed into the display area, so its own size is the source
+                // extent, not the destination.
+                context.draw_image_scaled(
+                    x,
+                    y,
+                    width,
+                    height,
+                    frame.width(),
+                    frame.height(),
+                    frame.pixels(),
+                );
             }
         }
 
@@ -1547,11 +1557,17 @@ mod tests {
             // pass with the panel restored to the literal.
             let mut fills: Vec<(u8, u8, u8)> = Vec::new();
             for element in svg.split("/>") {
-                let Some(open) = element.find("<rect ") else { continue };
+                let Some(open) = element.find("<rect ") else {
+                    continue;
+                };
                 let element = &element[open + "<rect ".len()..];
-                let Some(from) = element.find("fill=\"rgba(") else { continue };
+                let Some(from) = element.find("fill=\"rgba(") else {
+                    continue;
+                };
                 let from = from + "fill=\"rgba(".len();
-                let Some(to) = element[from..].find(')') else { continue };
+                let Some(to) = element[from..].find(')') else {
+                    continue;
+                };
                 let mut parts = element[from..from + to].split(',');
                 let r: u8 = parts.next().and_then(|v| v.trim().parse().ok()).unwrap_or(0);
                 let g: u8 = parts.next().and_then(|v| v.trim().parse().ok()).unwrap_or(0);

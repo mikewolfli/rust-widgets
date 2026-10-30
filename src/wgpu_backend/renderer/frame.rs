@@ -27,6 +27,12 @@ pub struct WgpuRenderer {
     /// The separable-blur pipeline: one full-screen triangle, no vertex buffer, two directional
     /// passes. A 2D effect, so it is compiled in every build rather than behind `3d`.
     pub(crate) blur_pipeline: wgpu::RenderPipeline,
+    /// The shadow layer's box-blur pipeline: the backdrop blur's layout and vertex stage, with the
+    /// clamped moving-average fragment stage a `BoxShadow` needs.
+    pub(crate) shadow_blur_pipeline: wgpu::RenderPipeline,
+    /// The instanced quad pipeline without a stencil state, used to paint a shadow's body into its
+    /// own offscreen layer.
+    pub(crate) shadow_body_pipeline: wgpu::RenderPipeline,
     pub(crate) bind_group_layout: wgpu::BindGroupLayout,
     /// Bind group layout of the blur pass: a non-filterable input texture and a 32-byte
     /// uniform (`direction`, `radius`, and the G-220 tint block the vertical pass composites).
@@ -42,6 +48,40 @@ pub struct WgpuRenderer {
     /// Bind group layout of the SDF circle pipeline: two dynamic-offset uniforms (the fill
     /// colour and the radius/centre parameters) at group 0; the mvp matrix rides group 1.
     pub(crate) circle_bind_group_layout: wgpu::BindGroupLayout,
+    /// The image pipeline: one axis-aligned quad per draw, shaded by a single texel fetch at the
+    /// source coordinate [`super::shaders::IMAGE_FRAG`] derives from the draw's own uniform.
+    /// Compositing is straight-alpha source-over, matching the CPU rasteriser's blend rule.
+    pub(crate) image_pipeline: wgpu::RenderPipeline,
+    /// Bind group layout of the image pipeline: the draw's params uniform and its source texture
+    /// at group 0; the mvp matrix rides group 1, as in the SDF circle pipeline.
+    pub(crate) image_bind_group_layout: wgpu::BindGroupLayout,
+    /// The text pipeline: one quad per text box, shaded by the box's coverage texture multiplied
+    /// by the text colour. Compositing is straight-alpha source-over, like the image pipeline.
+    pub(crate) text_pipeline: wgpu::RenderPipeline,
+    /// Bind group layout of the text pipeline: the box's params uniform and its coverage texture
+    /// at group 0; the mvp matrix rides group 1.
+    pub(crate) text_bind_group_layout: wgpu::BindGroupLayout,
+    /// The ring / wedge / rounded-outline pipeline: one SDF per draw, selected by a mode uniform.
+    pub(crate) shape_pipeline: wgpu::RenderPipeline,
+    /// Bind group layout of the shape pipeline: the draw's 64-byte params uniform at group 0; the
+    /// mvp matrix rides group 1.
+    pub(crate) shape_bind_group_layout: wgpu::BindGroupLayout,
+    /// The radial-gradient pipeline: one quad, shaded by a distance-to-stop lookup.
+    pub(crate) radial_pipeline: wgpu::RenderPipeline,
+    /// Bind group layout of the radial-gradient pipeline: the params uniform and the stop texture
+    /// at group 0; the mvp matrix rides group 1.
+    pub(crate) radial_bind_group_layout: wgpu::BindGroupLayout,
+    /// Path fill, pass 1: fan triangles into the stencil buffer, even-odd rule.
+    pub(crate) path_stencil_evenodd_pipeline: wgpu::RenderPipeline,
+    /// Path fill, pass 1: fan triangles into the stencil buffer, non-zero winding rule.
+    pub(crate) path_stencil_nonzero_pipeline: wgpu::RenderPipeline,
+    /// Path fill, pass 2: the covering quad, kept where the stencil is non-zero.
+    pub(crate) path_cover_pipeline: wgpu::RenderPipeline,
+    /// Path fill, pass 3: redraws the same fan with a `Zero` store, resetting the stencil for the
+    /// next path in the same render pass.
+    pub(crate) path_stencil_clear_pipeline: wgpu::RenderPipeline,
+    /// Bind group layout of the path cover pass: the bounding box and fill colour at group 0.
+    pub(crate) path_cover_bind_group_layout: wgpu::BindGroupLayout,
     /// Depth-tested triangle pipeline for mesh draws (`3d` only).
     #[cfg(feature = "3d")]
     pub(crate) mesh_pipeline: wgpu::RenderPipeline,
@@ -59,6 +99,28 @@ pub struct WgpuRenderer {
     /// What `wgpu` reported for the selected adapter, kept so [`GpuRenderer::vendor_info`] can
     /// answer with the real device name instead of a constant (G-232).
     pub(crate) adapter_info: wgpu::AdapterInfo,
+}
+
+/// The depth-stencil state every 2D pipeline in this renderer declares.
+///
+/// The 2D passes carry a `Stencil8` attachment for path fills, and WebGPU requires every pipeline
+/// used in a pass to declare a state that matches the attachment's format — even a pipeline that
+/// never touches it. This state writes no depth, compares nothing and leaves the stencil value
+/// alone, so a pipeline declared with it behaves exactly as it did before the attachment existed.
+fn passive_stencil_state() -> wgpu::DepthStencilState {
+    wgpu::DepthStencilState {
+        format: wgpu::TextureFormat::Stencil8,
+        // A stencil-only format has no depth aspect, so both depth fields must be absent.
+        depth_write_enabled: None,
+        depth_compare: None,
+        stencil: wgpu::StencilState {
+            front: wgpu::StencilFaceState::IGNORE,
+            back: wgpu::StencilFaceState::IGNORE,
+            read_mask: 0,
+            write_mask: 0,
+        },
+        bias: wgpu::DepthBiasState::default(),
+    }
 }
 
 impl WgpuRenderer {
@@ -174,6 +236,10 @@ impl WgpuRenderer {
             label: Some("blur_fs"),
             source: wgpu::ShaderSource::Wgsl(super::shaders::BLUR_FS.into()),
         });
+        let shadow_blur_fs_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("shadow_blur_fs"),
+            source: wgpu::ShaderSource::Wgsl(super::shaders::SHADOW_BLUR_FS.into()),
+        });
         let circle_vs_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("circle_vs"),
             source: wgpu::ShaderSource::Wgsl(super::shaders::CIRCLE_VS.into()),
@@ -181,6 +247,54 @@ impl WgpuRenderer {
         let circle_fs_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("circle_fs"),
             source: wgpu::ShaderSource::Wgsl(super::shaders::CIRCLE_FRAG.into()),
+        });
+        let image_vs_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("image_vs"),
+            source: wgpu::ShaderSource::Wgsl(super::shaders::IMAGE_VS.into()),
+        });
+        let image_fs_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("image_fs"),
+            source: wgpu::ShaderSource::Wgsl(super::shaders::IMAGE_FRAG.into()),
+        });
+        let text_vs_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("text_vs"),
+            source: wgpu::ShaderSource::Wgsl(super::shaders::TEXT_VS.into()),
+        });
+        let text_fs_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("text_fs"),
+            source: wgpu::ShaderSource::Wgsl(super::shaders::TEXT_FRAG.into()),
+        });
+        let shape_vs_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("shape_vs"),
+            source: wgpu::ShaderSource::Wgsl(super::shaders::SHAPE_VS.into()),
+        });
+        let shape_fs_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("shape_fs"),
+            source: wgpu::ShaderSource::Wgsl(super::shaders::SHAPE_FRAG.into()),
+        });
+        let radial_vs_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("radial_vs"),
+            source: wgpu::ShaderSource::Wgsl(super::shaders::RADIAL_VS.into()),
+        });
+        let radial_fs_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("radial_fs"),
+            source: wgpu::ShaderSource::Wgsl(super::shaders::RADIAL_FRAG.into()),
+        });
+        let path_fan_vs_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("path_fan_vs"),
+            source: wgpu::ShaderSource::Wgsl(super::shaders::PATH_FAN_VS.into()),
+        });
+        let path_stencil_fs_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("path_stencil_fs"),
+            source: wgpu::ShaderSource::Wgsl(super::shaders::PATH_STENCIL_FS.into()),
+        });
+        let path_cover_vs_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("path_cover_vs"),
+            source: wgpu::ShaderSource::Wgsl(super::shaders::PATH_COVER_VS.into()),
+        });
+        let path_cover_fs_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("path_cover_fs"),
+            source: wgpu::ShaderSource::Wgsl(super::shaders::PATH_COVER_FS.into()),
         });
 
         // Create bind group layout for uniform color (shared between clear and rect pipelines)
@@ -251,7 +365,7 @@ impl WgpuRenderer {
                 polygon_mode: wgpu::PolygonMode::Fill,
                 conservative: false,
             },
-            depth_stencil: None,
+            depth_stencil: Some(passive_stencil_state()),
             multisample: wgpu::MultisampleState {
                 count: 1,
                 mask: !0,
@@ -307,7 +421,7 @@ impl WgpuRenderer {
                 polygon_mode: wgpu::PolygonMode::Fill,
                 conservative: false,
             },
-            depth_stencil: None,
+            depth_stencil: Some(passive_stencil_state()),
             multisample: wgpu::MultisampleState {
                 count: 1,
                 mask: !0,
@@ -366,6 +480,49 @@ impl WgpuRenderer {
             },
             fragment: Some(wgpu::FragmentState {
                 module: &blur_fs_module,
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: wgpu::TextureFormat::Rgba8Unorm,
+                    blend: Some(wgpu::BlendState::REPLACE),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: None,
+                unclipped_depth: false,
+                polygon_mode: wgpu::PolygonMode::Fill,
+                conservative: false,
+            },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState {
+                count: 1,
+                mask: !0,
+                alpha_to_coverage_enabled: false,
+            },
+            multiview_mask: None,
+            cache: None,
+        });
+
+        // ── Create the shadow blur pipeline ──
+        //
+        // Same layout, vertex shader and blend state as the backdrop blur; only the fragment stage
+        // differs, because a shadow layer is filtered with the CPU rasteriser's clamped box kernel
+        // rather than the backdrop's Gaussian (see `SHADOW_BLUR_FS`).
+        let shadow_blur_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("shadow_blur_pipeline"),
+            layout: Some(&blur_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &blur_vs_module,
+                entry_point: Some("vs_main"),
+                buffers: &[],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shadow_blur_fs_module,
                 entry_point: Some("fs_main"),
                 targets: &[Some(wgpu::ColorTargetState {
                     format: wgpu::TextureFormat::Rgba8Unorm,
@@ -462,7 +619,21 @@ impl WgpuRenderer {
                 entry_point: Some("fs_main"),
                 targets: &[Some(wgpu::ColorTargetState {
                     format: wgpu::TextureFormat::Rgba8Unorm,
-                    blend: Some(wgpu::BlendState::REPLACE),
+                    // Source-over, **not** `REPLACE`: the quad is the disc's bounding box and most
+                    // of it returns transparent coverage, so replacing would erase whatever the
+                    // frame had drawn inside that box.
+                    blend: Some(wgpu::BlendState {
+                        color: wgpu::BlendComponent {
+                            src_factor: wgpu::BlendFactor::SrcAlpha,
+                            dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                            operation: wgpu::BlendOperation::Add,
+                        },
+                        alpha: wgpu::BlendComponent {
+                            src_factor: wgpu::BlendFactor::One,
+                            dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                            operation: wgpu::BlendOperation::Add,
+                        },
+                    }),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
@@ -476,7 +647,7 @@ impl WgpuRenderer {
                 polygon_mode: wgpu::PolygonMode::Fill,
                 conservative: false,
             },
-            depth_stencil: None,
+            depth_stencil: Some(passive_stencil_state()),
             multisample: wgpu::MultisampleState {
                 count: 1,
                 mask: !0,
@@ -494,73 +665,654 @@ impl WgpuRenderer {
         // reason to drop the quad. No depth attachment is added: this is a 2D affine composed
         // with an orthographic matrix, not a depth-tested 3D scene. The 2D rectangle path uses it
         // for every run longer than one rectangle (G-64).
-        let transformed_pipeline = {
-            let transformed_pipeline_layout =
-                device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                    label: Some("rect_transformed_pipeline_layout"),
-                    bind_group_layouts: &[Some(&transformed_bind_group_layout)],
-                    immediate_size: 0,
-                });
-            // Locations 0/1 are the four corners as two vectors; location 2 is the colour.
-            let instance_buffer_layout = wgpu::VertexBufferLayout {
-                array_stride: INSTANCE_BYTES as u64,
-                step_mode: wgpu::VertexStepMode::Instance,
-                attributes: &[
-                    wgpu::VertexAttribute {
-                        format: wgpu::VertexFormat::Float32x4,
-                        offset: 0,
-                        shader_location: 0,
+        let transformed_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("rect_transformed_pipeline_layout"),
+                bind_group_layouts: &[Some(&transformed_bind_group_layout)],
+                immediate_size: 0,
+            });
+        // Locations 0/1 are the four corners as two vectors; location 2 is the colour.
+        let instance_buffer_layout = || wgpu::VertexBufferLayout {
+            array_stride: INSTANCE_BYTES as u64,
+            step_mode: wgpu::VertexStepMode::Instance,
+            attributes: &[
+                wgpu::VertexAttribute {
+                    format: wgpu::VertexFormat::Float32x4,
+                    offset: 0,
+                    shader_location: 0,
+                },
+                wgpu::VertexAttribute {
+                    format: wgpu::VertexFormat::Float32x4,
+                    offset: 16,
+                    shader_location: 1,
+                },
+                wgpu::VertexAttribute {
+                    format: wgpu::VertexFormat::Float32x4,
+                    offset: 32,
+                    shader_location: 2,
+                },
+            ],
+        };
+        let transformed_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("rect_instanced_pipeline"),
+            layout: Some(&transformed_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &transformed_vs_module,
+                entry_point: Some("vs_main"),
+                buffers: &[Some(instance_buffer_layout())],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &instanced_fs_module,
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: wgpu::TextureFormat::Rgba8Unorm,
+                    blend: Some(wgpu::BlendState::REPLACE),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Cw,
+                cull_mode: None,
+                unclipped_depth: false,
+                polygon_mode: wgpu::PolygonMode::Fill,
+                conservative: false,
+            },
+            depth_stencil: Some(passive_stencil_state()),
+            multisample: wgpu::MultisampleState {
+                count: 1,
+                mask: !0,
+                alpha_to_coverage_enabled: false,
+            },
+            multiview_mask: None,
+            cache: None,
+        });
+
+        // ── Create the shadow body pipeline ──
+        //
+        // The same instanced quad pipeline, minus the stencil state: a shadow body is painted into
+        // its own offscreen layer, and a layer pass carries no stencil attachment (WebGPU requires
+        // every attachment in a pass to have the same size, and the layer is smaller than the
+        // frame). The layer is cleared first, so `REPLACE` writes the body exactly.
+        let shadow_body_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("shadow_body_pipeline"),
+            layout: Some(&transformed_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &transformed_vs_module,
+                entry_point: Some("vs_main"),
+                buffers: &[Some(instance_buffer_layout())],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &instanced_fs_module,
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: wgpu::TextureFormat::Rgba8Unorm,
+                    blend: Some(wgpu::BlendState::REPLACE),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Cw,
+                cull_mode: None,
+                unclipped_depth: false,
+                polygon_mode: wgpu::PolygonMode::Fill,
+                conservative: false,
+            },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState {
+                count: 1,
+                mask: !0,
+                alpha_to_coverage_enabled: false,
+            },
+            multiview_mask: None,
+            cache: None,
+        });
+
+        // ── Create the image pipeline ──
+        //
+        // Group 0 carries the draw's params uniform and its source texture; group 1 is the shared
+        // mvp matrix layout. There is no vertex buffer: the six corners come from the params, so
+        // a frame of images uploads geometry-free draws. The fragment stage fetches one texel per
+        // destination pixel, so the sampler this layout deliberately omits would have nothing to
+        // do — and its absence is what keeps the result identical to the CPU rasteriser's.
+        let image_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("image_bind_group_layout"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: Some(wgpu::BufferSize::new(32).unwrap()),
+                        },
+                        count: None,
                     },
-                    wgpu::VertexAttribute {
-                        format: wgpu::VertexFormat::Float32x4,
-                        offset: 16,
-                        shader_location: 1,
-                    },
-                    wgpu::VertexAttribute {
-                        format: wgpu::VertexFormat::Float32x4,
-                        offset: 32,
-                        shader_location: 2,
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
                     },
                 ],
+            });
+        let image_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("image_pipeline_layout"),
+                bind_group_layouts: &[
+                    Some(&image_bind_group_layout),
+                    Some(&transformed_bind_group_layout),
+                ],
+                immediate_size: 0,
+            });
+        let image_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("image_pipeline"),
+            layout: Some(&image_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &image_vs_module,
+                entry_point: Some("vs_main"),
+                buffers: &[],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &image_fs_module,
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: wgpu::TextureFormat::Rgba8Unorm,
+                    // Straight-alpha source-over: the shader returns the texel unchanged and
+                    // compositing is this state's job, exactly as the CPU blend does it.
+                    blend: Some(wgpu::BlendState {
+                        color: wgpu::BlendComponent {
+                            src_factor: wgpu::BlendFactor::SrcAlpha,
+                            dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                            operation: wgpu::BlendOperation::Add,
+                        },
+                        alpha: wgpu::BlendComponent {
+                            src_factor: wgpu::BlendFactor::One,
+                            dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                            operation: wgpu::BlendOperation::Add,
+                        },
+                    }),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: None,
+                unclipped_depth: false,
+                polygon_mode: wgpu::PolygonMode::Fill,
+                conservative: false,
+            },
+            depth_stencil: Some(passive_stencil_state()),
+            multisample: wgpu::MultisampleState {
+                count: 1,
+                mask: !0,
+                alpha_to_coverage_enabled: false,
+            },
+            multiview_mask: None,
+            cache: None,
+        });
+
+        // ── Create the text pipeline ──
+        //
+        // The same shape as the image pipeline: group 0 carries the box's params (destination and
+        // colour) and its coverage texture, group 1 the shared mvp. The coverage texture is
+        // `R8Unorm` — one byte per destination pixel — and the fragment stage fetches it at the
+        // pixel's own coordinate, so no sampler is declared and no filtering can blur a stem.
+        let text_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("text_bind_group_layout"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: Some(wgpu::BufferSize::new(32).unwrap()),
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                ],
+            });
+        let text_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("text_pipeline_layout"),
+            bind_group_layouts: &[
+                Some(&text_bind_group_layout),
+                Some(&transformed_bind_group_layout),
+            ],
+            immediate_size: 0,
+        });
+        let text_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("text_pipeline"),
+            layout: Some(&text_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &text_vs_module,
+                entry_point: Some("vs_main"),
+                buffers: &[],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &text_fs_module,
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: wgpu::TextureFormat::Rgba8Unorm,
+                    blend: Some(wgpu::BlendState {
+                        color: wgpu::BlendComponent {
+                            src_factor: wgpu::BlendFactor::SrcAlpha,
+                            dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                            operation: wgpu::BlendOperation::Add,
+                        },
+                        alpha: wgpu::BlendComponent {
+                            src_factor: wgpu::BlendFactor::One,
+                            dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                            operation: wgpu::BlendOperation::Add,
+                        },
+                    }),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: None,
+                unclipped_depth: false,
+                polygon_mode: wgpu::PolygonMode::Fill,
+                conservative: false,
+            },
+            depth_stencil: Some(passive_stencil_state()),
+            multisample: wgpu::MultisampleState {
+                count: 1,
+                mask: !0,
+                alpha_to_coverage_enabled: false,
+            },
+            multiview_mask: None,
+            cache: None,
+        });
+
+        // ── Create the shape pipeline (rings, wedges, rounded outlines) ──
+        //
+        // One pipeline covers the family: the fragment stage picks an SDF by the draw's mode and
+        // feathers the boundary over one pixel. Blending is source-over — the shapes are partial
+        // coverage, so the pipeline must composite rather than replace.
+        let shape_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("shape_bind_group_layout"),
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: Some(wgpu::BufferSize::new(64).unwrap()),
+                    },
+                    count: None,
+                }],
+            });
+        let shape_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("shape_pipeline_layout"),
+                bind_group_layouts: &[
+                    Some(&shape_bind_group_layout),
+                    Some(&transformed_bind_group_layout),
+                ],
+                immediate_size: 0,
+            });
+        let shape_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("shape_pipeline"),
+            layout: Some(&shape_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shape_vs_module,
+                entry_point: Some("vs_main"),
+                buffers: &[],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shape_fs_module,
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: wgpu::TextureFormat::Rgba8Unorm,
+                    blend: Some(wgpu::BlendState {
+                        color: wgpu::BlendComponent {
+                            src_factor: wgpu::BlendFactor::SrcAlpha,
+                            dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                            operation: wgpu::BlendOperation::Add,
+                        },
+                        alpha: wgpu::BlendComponent {
+                            src_factor: wgpu::BlendFactor::One,
+                            dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                            operation: wgpu::BlendOperation::Add,
+                        },
+                    }),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: None,
+                unclipped_depth: false,
+                polygon_mode: wgpu::PolygonMode::Fill,
+                conservative: false,
+            },
+            depth_stencil: Some(passive_stencil_state()),
+            multisample: wgpu::MultisampleState {
+                count: 1,
+                mask: !0,
+                alpha_to_coverage_enabled: false,
+            },
+            multiview_mask: None,
+            cache: None,
+        });
+
+        // ── Create the radial-gradient pipeline ──
+        //
+        // Group 0 carries the gradient's params (centre, radius, stop count, destination) and its
+        // stop texture; group 1 the shared mvp. Blending is source-over, since the gradient fills
+        // the rectangle like any other opaque draw.
+        let radial_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("radial_bind_group_layout"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: Some(wgpu::BufferSize::new(48).unwrap()),
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                ],
+            });
+        let radial_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("radial_pipeline_layout"),
+                bind_group_layouts: &[
+                    Some(&radial_bind_group_layout),
+                    Some(&transformed_bind_group_layout),
+                ],
+                immediate_size: 0,
+            });
+        let radial_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("radial_pipeline"),
+            layout: Some(&radial_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &radial_vs_module,
+                entry_point: Some("vs_main"),
+                buffers: &[],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &radial_fs_module,
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: wgpu::TextureFormat::Rgba8Unorm,
+                    blend: Some(wgpu::BlendState {
+                        color: wgpu::BlendComponent {
+                            src_factor: wgpu::BlendFactor::SrcAlpha,
+                            dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                            operation: wgpu::BlendOperation::Add,
+                        },
+                        alpha: wgpu::BlendComponent {
+                            src_factor: wgpu::BlendFactor::One,
+                            dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                            operation: wgpu::BlendOperation::Add,
+                        },
+                    }),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: None,
+                unclipped_depth: false,
+                polygon_mode: wgpu::PolygonMode::Fill,
+                conservative: false,
+            },
+            depth_stencil: Some(passive_stencil_state()),
+            multisample: wgpu::MultisampleState {
+                count: 1,
+                mask: !0,
+                alpha_to_coverage_enabled: false,
+            },
+            multiview_mask: None,
+            cache: None,
+        });
+
+        // ── Create the path-fill pipelines ──
+        //
+        // A path cannot be expressed as a shape per draw: even-odd and non-zero winding both need a
+        // per-pixel count, so the fill is three passes over the same fan — write the count into the
+        // stencil buffer, cover where the count says "inside", then reset the count for the next
+        // path. Only the cover pass writes colour.
+        let cover_stencil =
+            |pass_op: wgpu::StencilOperation, compare: wgpu::CompareFunction, write_mask: u32| {
+                wgpu::DepthStencilState {
+                    format: wgpu::TextureFormat::Stencil8,
+                    depth_write_enabled: None,
+                    depth_compare: None,
+                    stencil: wgpu::StencilState {
+                        front: wgpu::StencilFaceState {
+                            compare,
+                            fail_op: wgpu::StencilOperation::Keep,
+                            depth_fail_op: wgpu::StencilOperation::Keep,
+                            pass_op,
+                        },
+                        back: wgpu::StencilFaceState {
+                            compare,
+                            fail_op: wgpu::StencilOperation::Keep,
+                            depth_fail_op: wgpu::StencilOperation::Keep,
+                            pass_op,
+                        },
+                        read_mask: 0xFF,
+                        write_mask,
+                    },
+                    bias: wgpu::DepthBiasState::default(),
+                }
             };
-            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some("rect_instanced_pipeline"),
-                layout: Some(&transformed_pipeline_layout),
-                vertex: wgpu::VertexState {
-                    module: &transformed_vs_module,
-                    entry_point: Some("vs_main"),
-                    buffers: &[Some(instance_buffer_layout)],
-                    compilation_options: wgpu::PipelineCompilationOptions::default(),
-                },
-                fragment: Some(wgpu::FragmentState {
-                    module: &instanced_fs_module,
-                    entry_point: Some("fs_main"),
-                    targets: &[Some(wgpu::ColorTargetState {
-                        format: wgpu::TextureFormat::Rgba8Unorm,
-                        blend: Some(wgpu::BlendState::REPLACE),
-                        write_mask: wgpu::ColorWrites::ALL,
-                    })],
-                    compilation_options: wgpu::PipelineCompilationOptions::default(),
-                }),
-                primitive: wgpu::PrimitiveState {
-                    topology: wgpu::PrimitiveTopology::TriangleList,
-                    strip_index_format: None,
-                    front_face: wgpu::FrontFace::Cw,
-                    cull_mode: None,
-                    unclipped_depth: false,
-                    polygon_mode: wgpu::PolygonMode::Fill,
-                    conservative: false,
-                },
-                depth_stencil: None,
-                multisample: wgpu::MultisampleState {
-                    count: 1,
-                    mask: !0,
-                    alpha_to_coverage_enabled: false,
-                },
-                multiview_mask: None,
-                cache: None,
-            })
+        let path_fan_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("path_fan_pipeline_layout"),
+            bind_group_layouts: &[Some(&transformed_bind_group_layout)],
+            immediate_size: 0,
+        });
+        let path_cover_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("path_cover_bind_group_layout"),
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: Some(wgpu::BufferSize::new(32).unwrap()),
+                    },
+                    count: None,
+                }],
+            });
+        let path_cover_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("path_cover_pipeline_layout"),
+            bind_group_layouts: &[
+                Some(&path_cover_bind_group_layout),
+                Some(&transformed_bind_group_layout),
+            ],
+            immediate_size: 0,
+        });
+        // Two `f32` per fan vertex; the fan's triangle list is built on the CPU.
+        let path_fan_vertex_layout = wgpu::VertexBufferLayout {
+            array_stride: 8,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &[wgpu::VertexAttribute {
+                format: wgpu::VertexFormat::Float32x2,
+                offset: 0,
+                shader_location: 0,
+            }],
         };
+        let make_path_stencil_pipeline =
+            |label: &str,
+             stencil: wgpu::DepthStencilState,
+             front_pass: wgpu::StencilOperation,
+             back_pass: wgpu::StencilOperation| {
+                let mut stencil = stencil;
+                stencil.stencil.front.pass_op = front_pass;
+                stencil.stencil.back.pass_op = back_pass;
+                device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                    label: Some(label),
+                    layout: Some(&path_fan_layout),
+                    vertex: wgpu::VertexState {
+                        module: &path_fan_vs_module,
+                        entry_point: Some("vs_main"),
+                        buffers: &[Some(path_fan_vertex_layout.clone())],
+                        compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    },
+                    fragment: Some(wgpu::FragmentState {
+                        module: &path_stencil_fs_module,
+                        entry_point: Some("fs_main"),
+                        targets: &[Some(wgpu::ColorTargetState {
+                            format: wgpu::TextureFormat::Rgba8Unorm,
+                            blend: Some(wgpu::BlendState::REPLACE),
+                            // The stencil pass only counts; it must not touch the colour target.
+                            write_mask: wgpu::ColorWrites::empty(),
+                        })],
+                        compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    }),
+                    primitive: wgpu::PrimitiveState {
+                        topology: wgpu::PrimitiveTopology::TriangleList,
+                        strip_index_format: None,
+                        front_face: wgpu::FrontFace::Ccw,
+                        cull_mode: None,
+                        unclipped_depth: false,
+                        polygon_mode: wgpu::PolygonMode::Fill,
+                        conservative: false,
+                    },
+                    depth_stencil: Some(stencil),
+                    multisample: wgpu::MultisampleState {
+                        count: 1,
+                        mask: !0,
+                        alpha_to_coverage_enabled: false,
+                    },
+                    multiview_mask: None,
+                    cache: None,
+                })
+            };
+        let path_stencil_evenodd_pipeline = make_path_stencil_pipeline(
+            "path_stencil_evenodd_pipeline",
+            cover_stencil(wgpu::StencilOperation::Invert, wgpu::CompareFunction::Always, 0xFF),
+            wgpu::StencilOperation::Invert,
+            wgpu::StencilOperation::Invert,
+        );
+        let path_stencil_nonzero_pipeline = make_path_stencil_pipeline(
+            "path_stencil_nonzero_pipeline",
+            cover_stencil(
+                wgpu::StencilOperation::IncrementWrap,
+                wgpu::CompareFunction::Always,
+                0xFF,
+            ),
+            wgpu::StencilOperation::IncrementWrap,
+            wgpu::StencilOperation::DecrementWrap,
+        );
+        let path_stencil_clear_pipeline = make_path_stencil_pipeline(
+            "path_stencil_clear_pipeline",
+            cover_stencil(wgpu::StencilOperation::Zero, wgpu::CompareFunction::Always, 0xFF),
+            wgpu::StencilOperation::Zero,
+            wgpu::StencilOperation::Zero,
+        );
+        let path_cover_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("path_cover_pipeline"),
+            layout: Some(&path_cover_layout),
+            vertex: wgpu::VertexState {
+                module: &path_cover_vs_module,
+                entry_point: Some("vs_main"),
+                buffers: &[],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &path_cover_fs_module,
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: wgpu::TextureFormat::Rgba8Unorm,
+                    blend: Some(wgpu::BlendState {
+                        color: wgpu::BlendComponent {
+                            src_factor: wgpu::BlendFactor::SrcAlpha,
+                            dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                            operation: wgpu::BlendOperation::Add,
+                        },
+                        alpha: wgpu::BlendComponent {
+                            src_factor: wgpu::BlendFactor::One,
+                            dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                            operation: wgpu::BlendOperation::Add,
+                        },
+                    }),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: None,
+                unclipped_depth: false,
+                polygon_mode: wgpu::PolygonMode::Fill,
+                conservative: false,
+            },
+            // Keep only where the winding count is non-zero, and leave the count alone.
+            depth_stencil: Some(cover_stencil(
+                wgpu::StencilOperation::Keep,
+                wgpu::CompareFunction::NotEqual,
+                0,
+            )),
+            multisample: wgpu::MultisampleState {
+                count: 1,
+                mask: !0,
+                alpha_to_coverage_enabled: false,
+            },
+            multiview_mask: None,
+            cache: None,
+        });
 
         // ── Create the depth-tested `3d` mesh pipeline ──
         //
@@ -646,10 +1398,23 @@ impl WgpuRenderer {
         shader_cache.insert("rect_fs".to_string(), rect_fs_module);
         shader_cache.insert("blur_vs".to_string(), blur_vs_module);
         shader_cache.insert("blur_fs".to_string(), blur_fs_module);
+        shader_cache.insert("shadow_blur_fs".to_string(), shadow_blur_fs_module);
         shader_cache.insert("rect_vs_transformed".to_string(), transformed_vs_module);
         shader_cache.insert("rect_fs_instanced".to_string(), instanced_fs_module);
         shader_cache.insert("circle_vs".to_string(), circle_vs_module);
         shader_cache.insert("circle_fs".to_string(), circle_fs_module);
+        shader_cache.insert("image_vs".to_string(), image_vs_module);
+        shader_cache.insert("image_fs".to_string(), image_fs_module);
+        shader_cache.insert("text_vs".to_string(), text_vs_module);
+        shader_cache.insert("text_fs".to_string(), text_fs_module);
+        shader_cache.insert("shape_vs".to_string(), shape_vs_module);
+        shader_cache.insert("shape_fs".to_string(), shape_fs_module);
+        shader_cache.insert("radial_vs".to_string(), radial_vs_module);
+        shader_cache.insert("radial_fs".to_string(), radial_fs_module);
+        shader_cache.insert("path_fan_vs".to_string(), path_fan_vs_module);
+        shader_cache.insert("path_stencil_fs".to_string(), path_stencil_fs_module);
+        shader_cache.insert("path_cover_vs".to_string(), path_cover_vs_module);
+        shader_cache.insert("path_cover_fs".to_string(), path_cover_fs_module);
         #[cfg(feature = "3d")]
         shader_cache.insert("mesh3d_vs".to_string(), mesh_vs_module);
         #[cfg(feature = "3d")]
@@ -661,8 +1426,23 @@ impl WgpuRenderer {
             clear_pipeline,
             rect_pipeline,
             blur_pipeline,
+            shadow_blur_pipeline,
+            shadow_body_pipeline,
             circle_pipeline,
             circle_bind_group_layout,
+            image_pipeline,
+            image_bind_group_layout,
+            text_pipeline,
+            text_bind_group_layout,
+            shape_pipeline,
+            shape_bind_group_layout,
+            radial_pipeline,
+            radial_bind_group_layout,
+            path_stencil_evenodd_pipeline,
+            path_stencil_nonzero_pipeline,
+            path_cover_pipeline,
+            path_stencil_clear_pipeline,
+            path_cover_bind_group_layout,
             bind_group_layout,
             blur_bind_group_layout,
             transformed_pipeline,
@@ -736,9 +1516,11 @@ impl WgpuRenderer {
         let mut cache = self.cache.borrow_mut();
         cache.ensure_uniform(&self.device, &self.bind_group_layout, 1)?;
         cache.ensure_target(&self.device, width, height);
+        cache.ensure_stencil(&self.device, width, height);
         cache.ensure_readback(&self.device, frame_bytes);
         let uniform = cache.uniform.as_ref().expect("the arena was just ensured");
         let target = cache.target.as_ref().expect("the target was just ensured");
+        let stencil = cache.stencil.as_ref().expect("the stencil target was just ensured");
         let readback = cache.readback.as_ref().expect("the readback was just ensured");
 
         self.queue.write_buffer(&uniform.buffer, 0, &colour_bytes);
@@ -756,7 +1538,16 @@ impl WgpuRenderer {
                     resolve_target: None,
                     ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
                 })],
-                depth_stencil_attachment: None,
+                // The clear pipeline declares the 2D passes' `Stencil8` state, so this pass must
+                // carry the attachment too; it is unused and discarded.
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &stencil.view,
+                    depth_ops: None,
+                    stencil_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(0),
+                        store: wgpu::StoreOp::Discard,
+                    }),
+                }),
                 timestamp_writes: None,
                 occlusion_query_set: None,
                 multiview_mask: None,

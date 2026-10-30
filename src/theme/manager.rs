@@ -1261,6 +1261,101 @@ pub fn global_theme_manager() -> MutexGuard<'static, ThemeManager> {
     }
 }
 
+/// An immutable copy of the facts a caller reads from the global theme registry.
+///
+/// # Why a snapshot rather than a second guard
+///
+/// [`global_theme_manager`] hands out a **non-reentrant** mutex guard. Code that read two facts
+/// from it in one expression (a struct literal, a tuple, an argument list) held the guard for the
+/// whole statement and deadlocked when the second read asked for it again, so callers had to learn
+/// to split such reads into one statement per fact — a rule enforced nowhere, failing closed at run
+/// time. This type is the replacement: [`theme_snapshot`] takes the lock **once**, copies what a
+/// caller needs, and releases it, so composing several facts cannot deadlock.
+///
+/// The copy is exact rather than approximate: it is taken under the same guard every mutation
+/// takes, and it carries the [`theme_revision`] it was taken at, so a caller can tell whether the
+/// snapshot still describes the current theme.
+///
+/// # What is deliberately absent
+///
+/// The registry itself (registration, switching, loading). A snapshot is read-only; a caller that
+/// wants to mutate the theme keeps using [`global_theme_manager`] and its guard.
+#[derive(Debug, Clone)]
+pub struct ThemeSnapshot {
+    name: String,
+    theme: Option<Theme>,
+    colors: Colors,
+    high_contrast: HighContrastMode,
+    reduce_transparency: bool,
+    crossfading: bool,
+    theme_names: Vec<String>,
+    revision: u64,
+}
+
+impl ThemeSnapshot {
+    /// The active theme's name (the empty string when nothing is registered).
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// The active theme, or `None` when the registry holds no theme by that name.
+    pub fn theme(&self) -> Option<&Theme> {
+        self.theme.as_ref()
+    }
+
+    /// The colours a control should paint with, including any in-progress crossfade.
+    ///
+    /// Identical to [`ThemeManager::effective_colors`] at the moment the snapshot was taken.
+    pub fn colors(&self) -> &Colors {
+        &self.colors
+    }
+
+    /// The active high-contrast override.
+    pub fn high_contrast(&self) -> HighContrastMode {
+        self.high_contrast
+    }
+
+    /// Whether the caller reduced transparency, so materials should fall back to opaque fills.
+    pub fn reduce_transparency(&self) -> bool {
+        self.reduce_transparency
+    }
+
+    /// Whether a colour transition was in progress when the snapshot was taken.
+    pub fn is_crossfading(&self) -> bool {
+        self.crossfading
+    }
+
+    /// Every registered theme name, in registration order.
+    pub fn theme_names(&self) -> &[String] {
+        &self.theme_names
+    }
+
+    /// The [`theme_revision`] this snapshot was taken at.
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+}
+
+/// Copies the facts a caller reads from the global theme registry, under one lock.
+///
+/// See [`ThemeSnapshot`] for why this exists instead of a second [`global_theme_manager`] call:
+/// the manager's guard is not reentrant, and two reads in one expression would deadlock.
+///
+pub fn theme_snapshot() -> ThemeSnapshot {
+    let manager = global_theme_manager();
+    ThemeSnapshot {
+        name: manager.current_theme_name().to_string(),
+        theme: manager.current_theme().cloned(),
+        colors: manager.effective_colors(),
+        high_contrast: manager.high_contrast(),
+        reduce_transparency: manager.reduce_transparency(),
+        crossfading: manager.is_crossfading(),
+        theme_names: manager.theme_names().into_iter().map(String::from).collect(),
+        // Read under the guard so the revision and the copied facts describe one state.
+        revision: theme_revision(),
+    }
+}
+
 /// Creates the registry a fresh process (or a fresh test thread) starts with.
 ///
 /// The dark preset is registered alongside the light default so a caller can switch without
@@ -3546,5 +3641,48 @@ mod resolution_cache_tests {
         assert_eq!(manager.icon_size(IconSlot::Small), Some(20));
         assert_eq!(manager.icon_size(IconSlot::Medium), Some(24));
         assert_eq!(manager.icon_size(IconSlot::Large), Some(40));
+    }
+
+    /// One `theme_snapshot()` call must answer every global-theme question a caller composes.
+    ///
+    /// This is the regression test for the non-reentrant guard: the assertions below are written
+    /// as one expression over one snapshot, which is the shape that deadlocked when each field was
+    /// a separate `global_theme_manager()` call inside a struct literal.
+    #[test]
+    fn a_snapshot_answers_every_global_question_in_one_lock() {
+        let _guard = theme_test_guard();
+        let before = theme_snapshot();
+        assert!(
+            before.theme_names().iter().any(|name| name == "dark"),
+            "the seeded registry must register the dark preset"
+        );
+        let (name, colors, contrast, opaque) = {
+            let snapshot = theme_snapshot();
+            (
+                snapshot.name().to_string(),
+                snapshot.colors().clone(),
+                snapshot.high_contrast(),
+                snapshot.reduce_transparency(),
+            )
+        };
+        assert_eq!(name, before.name());
+        assert_eq!(colors, *before.colors());
+        assert_eq!(contrast, before.high_contrast());
+        assert_eq!(opaque, before.reduce_transparency());
+
+        // A snapshot is a copy: switching the theme afterwards leaves it describing the old one.
+        let captured = theme_snapshot();
+        let switched = {
+            let mut manager = global_theme_manager();
+            manager.set_theme("dark")
+        };
+        assert!(switched, "the dark preset must be selectable");
+        assert_eq!(captured.revision(), before.revision());
+        assert_eq!(captured.name(), before.name());
+        assert_eq!(theme_snapshot().name(), "dark", "a fresh snapshot sees the switch");
+
+        // Leave the registry as this test found it: the per-thread manager is reused by the next
+        // test on the same harness thread, and a leftover dark theme would decide its assertions.
+        assert!(global_theme_manager().set_theme(before.name()));
     }
 }

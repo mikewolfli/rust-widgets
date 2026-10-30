@@ -1874,7 +1874,17 @@ fn draw_subwindow_icon(
                     image.height(),
                     icon_rect,
                 );
-                context.draw_image(fitted.x, fitted.y, fitted.width, fitted.height, pixels);
+                // A fitted slot is a different rectangle from the source in general, so the draw
+                // resamples rather than blitting (which would crop or paint nothing).
+                context.draw_image_scaled(
+                    fitted.x,
+                    fitted.y,
+                    fitted.width,
+                    fitted.height,
+                    image.width(),
+                    image.height(),
+                    pixels,
+                );
             }
         }
     }
@@ -2193,7 +2203,9 @@ impl MdiArea {
         // (D09-STYLE-01).
         let font = effective_font(self.style());
         for index in 0..self.subwindows.len() {
-            let Some(tab) = self.tab_rect(index) else { break };
+            let Some(tab) = self.tab_rect(index) else {
+                break;
+            };
             let is_active = self.active_subwindow == Some(index);
             // The active tab is drawn in the accent and the rest in the strip's own surface, which
             // is what makes "which window am I looking at" answerable without reading the title.

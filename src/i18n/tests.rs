@@ -1104,3 +1104,220 @@ fn a_rejected_reload_does_not_block_a_later_valid_one() {
     manager.reload_translation_quiet("de").expect("the corrected reload must succeed");
     assert_eq!(manager.translate("k"), "Neu");
 }
+
+// ── Template placeholders (feedback-20261030 F-9) ───────────────────────────────
+
+fn interpolating_manager() -> I18nManager {
+    let mut manager = I18nManager::new();
+    let mut translations = HashMap::new();
+    translations.insert(
+        "files_selected".to_string(),
+        Translation {
+            context: None,
+            message: "{count} of {total} files selected in {folder}".to_string(),
+            plural: None,
+        },
+    );
+    translations.insert(
+        "greeting".to_string(),
+        Translation { context: None, message: "Hello, {name}!".to_string(), plural: None },
+    );
+    translations.insert(
+        "literal_braces".to_string(),
+        Translation { context: None, message: "use { } or {a-b}".to_string(), plural: None },
+    );
+    translations.insert(
+        "empty_placeholder".to_string(),
+        Translation { context: None, message: "value {} here".to_string(), plural: None },
+    );
+    manager.set_language("en");
+    manager.inject_translations(
+        "en".to_string(),
+        TranslationFile { language: "en".to_string(), translations },
+    );
+    manager
+}
+
+/// A named placeholder is replaced, every occurrence, and the rest of the text is untouched.
+#[test]
+fn a_placeholder_is_replaced_by_its_argument() {
+    let manager = interpolating_manager();
+    let filled = manager.translate_with_args(
+        "files_selected",
+        None,
+        1,
+        &[("count", "3"), ("total", "7"), ("folder", "Inbox")],
+    );
+    assert_eq!(filled, "3 of 7 files selected in Inbox");
+    assert_eq!(manager.translate_with_args("greeting", None, 1, &[("name", "Ada")]), "Hello, Ada!");
+}
+
+/// A placeholder with no argument stays verbatim, so a missing value is visible.
+#[test]
+fn a_placeholder_without_an_argument_is_left_as_written() {
+    let manager = interpolating_manager();
+    assert_eq!(
+        manager.translate_with_args("greeting", None, 1, &[]),
+        "Hello, {name}!",
+        "an empty argument list must not erase the placeholder"
+    );
+    assert_eq!(
+        manager.translate_with_args("greeting", None, 1, &[("nickname", "Ada")]),
+        "Hello, {name}!",
+        "arguments are matched exactly, not as prefixes"
+    );
+}
+
+/// `{ }`, `{}` and `{a-b}` are not placeholders: only `[A-Za-z0-9_]` names are.
+#[test]
+fn only_identifier_shaped_names_are_placeholders() {
+    let manager = interpolating_manager();
+    assert_eq!(
+        manager.translate_with_args("literal_braces", None, 1, &[("a", "1"), ("b", "2")]),
+        "use { } or {a-b}",
+        "a message may legitimately contain braces that are not placeholders"
+    );
+    assert_eq!(
+        manager.translate_with_args("empty_placeholder", None, 1, &[("", "x")]),
+        "value {} here",
+        "an empty name is not a placeholder"
+    );
+}
+
+/// The zero-argument path is unchanged, and the free-function form fills a resolved message.
+#[test]
+fn interpolation_works_without_a_manager_and_without_arguments() {
+    let mut out = String::from("prefix: ");
+    super::manager::interpolate_into("{a}-{b}-{a}", &[("a", "x"), ("b", "y")], &mut out);
+    assert_eq!(out, "prefix: x-y-x", "each occurrence is replaced, not only the first");
+
+    let manager = interpolating_manager();
+    let mut buffer = String::new();
+    manager.translate_with_args_into("greeting", None, 1, &[], &mut buffer);
+    assert_eq!(buffer, "Hello, {name}!");
+}
+
+/// An unterminated or nested brace run must not panic or swallow the tail.
+#[test]
+fn malformed_placeholders_are_copied_through() {
+    let mut out = String::new();
+    super::manager::interpolate_into("a {b {c} d", &[("c", "X")], &mut out);
+    assert_eq!(out, "a {b X d", "the inner placeholder still resolves");
+    let mut out = String::new();
+    super::manager::interpolate_into("tail {unclosed", &[("unclosed", "X")], &mut out);
+    assert_eq!(out, "tail {unclosed");
+}
+
+// ── Load-time key contract (feedback-20261030 F-11) ─────────────────────────────
+
+fn write_catalogue(dir: &TempDir, language: &str, body: &str) -> std::path::PathBuf {
+    let path = dir.path().join(format!("{language}.json"));
+    fs::write(&path, body).unwrap();
+    path
+}
+
+/// A catalogue missing a declared key is refused, and the previous catalogue is kept.
+#[test]
+fn a_catalogue_missing_a_required_key_is_refused() {
+    let dir = TempDir::new().unwrap();
+    let complete = write_catalogue(
+        &dir,
+        "en",
+        r#"{"language":"en","translations":{"a":{"message":"A"},"b":{"message":"B"}}}"#,
+    );
+    let mut manager = I18nManager::new();
+    manager.set_required_keys(vec!["a".to_string(), "b".to_string()]);
+    manager.load_translations(complete.to_str().unwrap()).unwrap();
+    manager.set_language("en");
+    assert_eq!(manager.translate("a"), "A");
+
+    let incomplete =
+        write_catalogue(&dir, "fr", r#"{"language":"fr","translations":{"a":{"message":"A"}}}"#);
+    let error = manager
+        .load_translations(incomplete.to_str().unwrap())
+        .expect_err("a catalogue missing `b` must be refused");
+    assert!(error.to_string().contains('b'), "the error must name the missing key: {error}");
+    assert_eq!(manager.translation_count(), 1, "the refused file must not be installed");
+    assert_eq!(manager.translate("a"), "A", "the loaded catalogue must survive the refusal");
+
+    // A reload that drops a key is refused for the same reason, keeping the old catalogue.
+    let shortened =
+        write_catalogue(&dir, "en", r#"{"language":"en","translations":{"a":{"message":"A2"}}}"#);
+    assert!(manager.reload_translation_quiet("en").is_err());
+    assert_eq!(manager.translate("a"), "A", "a refused reload must leave the catalogue intact");
+    let _ = shortened;
+}
+
+/// The two directions are reported separately: missing keys and stale keys.
+#[test]
+fn the_audit_reports_missing_and_unexpected_keys_in_both_directions() {
+    let dir = TempDir::new().unwrap();
+    let path = write_catalogue(
+        &dir,
+        "en",
+        r#"{"language":"en","translations":{"a":{"message":"A"},"stale":{"message":"S"}}}"#,
+    );
+    let mut manager = I18nManager::new();
+    manager.set_required_keys(vec!["b".to_string(), "a".to_string(), "a".to_string()]);
+    assert_eq!(manager.required_keys().len(), 2, "the contract is sorted and de-duplicated");
+    manager
+        .load_translations(path.to_str().unwrap())
+        .expect_err("`b` is missing, so this load fails");
+
+    // Injecting bypasses the load check (documented), so the audit is the way to inspect it.
+    manager.inject_translations(
+        "en".to_string(),
+        TranslationFile {
+            language: "en".to_string(),
+            translations: {
+                let mut map = HashMap::new();
+                map.insert(
+                    "a".to_string(),
+                    Translation { context: None, message: "A".to_string(), plural: None },
+                );
+                map.insert(
+                    "stale".to_string(),
+                    Translation { context: None, message: "S".to_string(), plural: None },
+                );
+                map
+            },
+        },
+    );
+    let audit = manager.audit_against_required("en").expect("a loaded language with a contract");
+    assert_eq!(audit.missing, vec!["b".to_string()]);
+    assert_eq!(audit.unexpected, vec!["stale".to_string()]);
+    assert!(!audit.is_empty());
+    assert!(
+        manager.audit_against_required("de").is_none(),
+        "an unloaded language has nothing to compare, which must not read as a pass"
+    );
+
+    // With no contract declared there is nothing to compare either.
+    let mut bare = I18nManager::new();
+    bare.inject_translations(
+        "en".to_string(),
+        TranslationFile { language: "en".to_string(), translations: HashMap::new() },
+    );
+    assert!(bare.audit_against_required("en").is_none());
+}
+
+// ── System language (feedback-20261030 F-10) ────────────────────────────────────
+
+/// The detected language is a single lower-case primary subtag, or absent — never a raw locale.
+#[test]
+fn the_system_language_is_a_primary_subtag() {
+    let detected = super::options::system_language();
+    if let Some(tag) = detected {
+        assert!(!tag.is_empty());
+        assert!(
+            !tag.contains('-') && !tag.contains('_') && !tag.contains('.'),
+            "the i18n code is the primary subtag, got {tag:?}"
+        );
+        assert_eq!(tag, tag.to_lowercase(), "catalogue names are lower case");
+    }
+
+    let options = InitOptions::from_system();
+    assert!(!options.language.is_empty(), "there is always a language to start from");
+    assert!(options.preload_dir.is_none());
+    assert!(!options.diagnostics);
+}

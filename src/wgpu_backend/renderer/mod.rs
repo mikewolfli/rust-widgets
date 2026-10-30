@@ -4,11 +4,14 @@
 //! WGPU renderer implementation.
 //!
 //! Split by responsibility: `resources` owns the device resources kept across calls, `frame` owns
-//! the renderer itself together with its readback plumbing, and `encode` owns the 2D and mesh
-//! encoders.
+//! the renderer itself together with its readback plumbing, `shadow` owns the blurred-shadow
+//! layer passes, and `encode` owns the 2D and mesh encoders.
+mod dispatch;
 mod encode;
 mod frame;
 mod resources;
+mod shadow;
+mod uploads;
 
 pub(crate) use super::shaders;
 pub use frame::WgpuRenderer;

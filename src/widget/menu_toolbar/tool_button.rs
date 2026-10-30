@@ -17,7 +17,7 @@ use crate::widget::menu_toolbar::menu_button::{
 };
 use crate::widget::menu_toolbar::popup_reveal::{PopupReveal, RevealDirection};
 use crate::widget::metrics::{dimensions, effective_font, estimate_line_height, ControlMetrics};
-use crate::widget::{BaseWidget, Draw, IconName, IconSource, Widget, WidgetKind};
+use crate::widget::{BaseWidget, Draw, IconName, IconSource, IconTint, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 use std::path::{Path, PathBuf};
 
@@ -111,6 +111,11 @@ pub struct ToolButton {
     /// fit the image instead of stretching it to the slot.
     #[cfg(all(feature = "image", not(alloc_frugal)))]
     icon_pixels: Option<crate::widget::icon_source::SharedIconPixels>,
+    /// The icon's own colour channel, independent of the label ink.
+    ///
+    /// Shared with `Button` ([`crate::widget::IconTint`]) so the two controls cannot disagree
+    /// about what tinting means or about how the composed copy is cached.
+    icon_tint: IconTint,
     /// The path [`Self::icon_pixels`] was produced for, so changing the path invalidates the pixels
     /// without the caller having to clear them.
     #[cfg(all(feature = "image", not(alloc_frugal)))]
@@ -172,6 +177,7 @@ impl ToolButton {
             text,
             icon: None,
             icon_source: None,
+            icon_tint: IconTint::new(),
             #[cfg(all(feature = "image", not(alloc_frugal)))]
             icon_pixels: None,
             #[cfg(all(feature = "image", not(alloc_frugal)))]
@@ -284,6 +290,7 @@ impl ToolButton {
             self.icon_pixels = None;
             self.icon_pixels_key = None;
             self.shared_icon_pixels = None;
+            self.icon_tint.clear();
         }
         self.base.request_redraw();
     }
@@ -309,6 +316,7 @@ impl ToolButton {
             self.icon_pixels = None;
             self.icon_pixels_key = None;
             self.shared_icon_pixels = None;
+            self.icon_tint.clear();
         }
         self.base.request_redraw();
     }
@@ -328,6 +336,7 @@ impl ToolButton {
         self.icon_source = None;
         self.icon_pixels = None;
         self.icon_pixels_key = None;
+        self.icon_tint.clear();
         self.base.request_redraw();
     }
 
@@ -340,6 +349,30 @@ impl ToolButton {
     /// Returns the typed icon source, if one was most recently assigned.
     pub fn icon_source(&self) -> Option<IconSource> {
         self.icon_source
+    }
+
+    /// Returns the colour the icon is tinted with, if any.
+    pub fn icon_tint(&self) -> Option<Color> {
+        self.icon_tint.tint()
+    }
+
+    /// Sets or clears the icon's tint colour.
+    ///
+    /// # What is tinted
+    ///
+    /// * A vector icon ([`IconSource`]) is painted in this colour instead of the label's ink.
+    /// * A decoded image is treated as a **monochrome mask** and recoloured: its alpha is kept and
+    ///   its RGB is replaced by the tint. That is the reading
+    ///   [`IconColorMode::Monochrome`](crate::widget::icon_source::IconColorMode) already declares
+    ///   for a tintable resource; a photographic icon should keep `None` rather than lose its
+    ///   colours.
+    ///
+    /// `None` restores the pre-existing behaviour exactly: a vector icon follows the label ink, an
+    /// image is drawn with its own colours.
+    pub fn set_icon_tint(&mut self, tint: Option<Color>) {
+        if self.icon_tint.set(tint) {
+            self.base.request_redraw();
+        }
     }
 
     /// The RGBA8 pixels for the current icon path, shared process-wide.
@@ -909,6 +942,10 @@ impl WidgetProperties for ToolButton {
                     Err(CapabilityAccessError::IconSourceNotPersistable)
                 }
             },
+            "icon_tint" => Ok(match self.icon_tint() {
+                Some(color) => CapabilityValue::Color(color),
+                None => CapabilityValue::Null,
+            }),
             _ => base_property_get(self, name),
         }
     }
@@ -936,6 +973,14 @@ impl WidgetProperties for ToolButton {
                 }
                 Ok(())
             }
+            "icon_tint" => {
+                match value {
+                    CapabilityValue::Null => self.set_icon_tint(None),
+                    CapabilityValue::Color(color) => self.set_icon_tint(Some(color)),
+                    _ => return Err(CapabilityAccessError::TypeMismatch),
+                }
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
@@ -949,7 +994,7 @@ impl WidgetProperties for ToolButton {
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["text", "checked", "icon_source", BASE_PROPERTY_NAMES]
+        property_names_of!["text", "checked", "icon_source", "icon_tint", BASE_PROPERTY_NAMES]
     }
 
     /// Runs one of the commands `tool_button` publishes.
@@ -1189,20 +1234,28 @@ impl Draw for ToolButton {
         // pixels drawn cannot disagree. Pixels are painted only when the path actually decoded:
         // a missing file leaves the slot empty instead of shifting the label onto the icon.
         if let (Some(source), Some(box_)) = (self.icon_source, self.icon_rect()) {
-            if let Err(error) = crate::widget::paint_icon(context, source.into(), box_, fg) {
+            // A vector icon has no colours of its own, so its colour is a parameter: the explicit
+            // tint when the host set one, otherwise the label's ink (the pre-existing behaviour).
+            let color = self.icon_tint.color_or(fg);
+            if let Err(error) = crate::widget::paint_icon(context, source.into(), box_, color) {
                 log::warn!("tool button icon could not be painted: {error:?}");
             }
         }
         #[cfg(all(feature = "image", not(alloc_frugal)))]
         if self.icon_source.is_none() && self.shared_icon_pixels.is_some() {
-            if let (Some(pixels), Some(box_)) = (self.shared_icon_pixels.as_ref(), self.icon_rect())
+            if let (Some(pixels), Some(box_)) = (self.shared_icon_pixels.clone(), self.icon_rect())
             {
+                let pixels = self.icon_tint.compose_pixels(&pixels).unwrap_or(pixels);
                 let fitted = pixels.fit_into(box_);
-                context.draw_image(
+                // The slot and the source are different sizes in general, and `draw_image` blits a
+                // buffer that already matches its rectangle — so this asks for the resample.
+                context.draw_image_scaled(
                     fitted.x,
                     fitted.y,
                     fitted.width,
                     fitted.height,
+                    pixels.width(),
+                    pixels.height(),
                     pixels.pixels(),
                 );
             }
@@ -1211,12 +1264,15 @@ impl Draw for ToolButton {
         if self.icon_source.is_none() && self.shared_icon_pixels.is_none() {
             if let (Some(pixels), Some(box_)) = (self.resolved_icon(), self.icon_rect()) {
                 if !pixels.pixels().is_empty() {
+                    let pixels = self.icon_tint.compose_pixels(&pixels).unwrap_or(pixels);
                     let fitted = pixels.fit_into(box_);
-                    context.draw_image(
+                    context.draw_image_scaled(
                         fitted.x,
                         fitted.y,
                         fitted.width,
                         fitted.height,
+                        pixels.width(),
+                        pixels.height(),
                         pixels.pixels(),
                     );
                 }
@@ -1355,6 +1411,103 @@ mod tests {
         assert_eq!(btn.icon(), Some(PathBuf::from("icons/open.png").as_path()));
         btn.set_icon(None);
         assert!(btn.icon().is_none());
+    }
+
+    /// Shared pixels smaller than the icon slot must be resampled rather than skipped.
+    #[cfg(all(feature = "image", not(alloc_frugal)))]
+    #[test]
+    fn a_shared_icon_smaller_than_its_slot_is_resampled() {
+        use crate::render::{PaintBackend, SoftwarePaintBackend};
+
+        let mut button = ToolButton::new(String::new(), rect());
+        button.set_button_style(ToolButtonStyle::IconOnly);
+        let red = crate::widget::SharedIconPixels::from_rgba8(vec![255, 0, 0, 255], 1, 1)
+            .expect("a valid one-pixel icon");
+        button.set_shared_icon_pixels(Some(red.clone()));
+        let slot = button.icon_rect().expect("shared pixels reserve the slot");
+
+        let mut backend = SoftwarePaintBackend::new(Size::new(200, 60), 1.0);
+        backend.begin_frame(Color::WHITE);
+        {
+            let mut context = RenderContext::new(&mut backend);
+            button.draw(&mut context);
+        }
+        backend.end_frame();
+
+        let rgba = backend.frame_rgba();
+        let mut red_in_slot = 0;
+        for y in slot.y..slot.y + slot.height as i32 {
+            for x in slot.x..slot.x + slot.width as i32 {
+                let index = (y as usize * 200 + x as usize) * 4;
+                if rgba[index] > 200 && rgba[index + 1] < 60 && rgba[index + 2] < 60 {
+                    red_in_slot += 1;
+                }
+            }
+        }
+        assert!(red_in_slot > 0, "a 1x1 shared icon must fill the {slot:?} slot");
+    }
+
+    /// The tint is a property of its own, so it must round-trip through both the setters and the
+    /// property contract.
+    ///
+    /// Before it existed the only colour channel on this control was the label ink: a host that
+    /// wanted a red destructive glyph had to recolour the whole button, which also recoloured the
+    /// text beside it.
+    #[test]
+    fn an_icon_tint_round_trips_through_the_property_contract() {
+        let mut button = ToolButton::new("Delete", rect());
+        assert_eq!(button.icon_tint(), None);
+        assert_eq!(button.get("icon_tint").expect("readable"), CapabilityValue::Null);
+
+        let red = Color::rgb(220, 40, 40);
+        button.set("icon_tint", CapabilityValue::Color(red)).expect("writable");
+        assert_eq!(button.icon_tint(), Some(red));
+        assert_eq!(button.get("icon_tint").expect("readable"), CapabilityValue::Color(red));
+
+        button.set("icon_tint", CapabilityValue::Null).expect("clearable");
+        assert_eq!(button.icon_tint(), None);
+        assert!(
+            button.set("icon_tint", CapabilityValue::Bool(true)).is_err(),
+            "a non-colour value must be refused rather than silently coerced"
+        );
+    }
+
+    /// A vector icon must actually be painted in the tint colour.
+    ///
+    /// Asserted on the pixels rather than on the property, because the property alone cannot show
+    /// that the draw reads it — the failure this pins is "the setter stores the value and nothing
+    /// paints with it", which is exactly what a property-only test would miss.
+    #[test]
+    fn a_tinted_vector_icon_is_painted_in_the_tint_colour() {
+        use crate::render::{PaintBackend, SoftwarePaintBackend};
+
+        fn pure_red_pixels(button: &mut ToolButton) -> usize {
+            let mut backend = SoftwarePaintBackend::new(Size::new(200, 60), 1.0);
+            backend.begin_frame(Color::WHITE);
+            {
+                let mut context = RenderContext::new(&mut backend);
+                button.draw(&mut context);
+            }
+            backend.end_frame();
+            backend
+                .frame_rgba()
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .filter(|pixel| pixel[0] > 200 && pixel[1] < 60 && pixel[2] < 60)
+                .count()
+        }
+
+        let mut button = ToolButton::new("Delete", rect());
+        button.set_button_style(ToolButtonStyle::IconOnly);
+        button.set_icon_source(Some(IconSource::builtin(IconName::Info)));
+        assert_eq!(pure_red_pixels(&mut button), 0, "the default ink is not red");
+
+        button.set_icon_tint(Some(Color::rgb(255, 0, 0)));
+        assert!(
+            pure_red_pixels(&mut button) > 0,
+            "the icon must be painted in the tint colour the control was given"
+        );
     }
 
     #[test]

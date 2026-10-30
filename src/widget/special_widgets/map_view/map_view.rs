@@ -898,7 +898,12 @@ impl MapView {
                 let screen_y = screen_y.round() as i32;
                 let key = TileKey::new(zoom, x as u32, y as u32);
                 if let Some(pixels) = self.tile_loader.tile_pixels(key) {
-                    context.draw_image(screen_x, screen_y, tile_px, tile_px, pixels);
+                    // Host tiles are decoded at the loader's tile extent and painted at the
+                    // camera's scale, so the two sizes differ whenever the view is zoomed.
+                    let source = self.tile_loader.tile_size();
+                    context.draw_image_scaled(
+                        screen_x, screen_y, tile_px, tile_px, source, source, pixels,
+                    );
                     continue;
                 }
                 if zoom == 0 {
@@ -920,11 +925,14 @@ impl MapView {
                 let parent_y = center_screen_y
                     + (f64::from(parent.y) * parent_world - center_proj_y) * painted;
                 let size = (tile_px as f64 * 2.0).round().max(1.0) as u32;
-                context.draw_image(
+                let source = self.tile_loader.tile_size();
+                context.draw_image_scaled(
                     parent_x.round() as i32,
                     parent_y.round() as i32,
                     size,
                     size,
+                    source,
+                    source,
                     pixels,
                 );
             }

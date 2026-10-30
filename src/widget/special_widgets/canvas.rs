@@ -12,7 +12,6 @@ use crate::compat::Arc;
 use crate::core::{Color, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::{PaintBackend, RenderCommand, RenderContext};
-use crate::signal::GenericSignal;
 use crate::signal::Signal1;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
@@ -22,7 +21,6 @@ use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 use alloc::collections::VecDeque;
 use core::cell::{Ref, RefCell};
-use core::ops::Deref;
 
 /// A uniform scale and translation applied to every drawing command a [`Canvas`] stores.
 ///
@@ -87,50 +85,10 @@ impl CanvasTransform {
 
 /// One pointer event that carries both the legacy payload-free signal and the typed payload.
 ///
-/// # Why both signals are kept
-///
-/// The field type used to be [`GenericSignal`], so existing callers connect zero-argument
-/// slots (and the deliberate example `canvas.mouse_pressed.connect_scoped(..)` does exactly
-/// that). The published event, however, must carry *where* and *which button*, which the
-/// widget trait already declares as `(Point, u32)`. Rather than delete the old signal, this
-/// type keeps it and emits the typed one alongside it: old subscribers still fire, and a
-/// dynamic subscriber receives the payload the schema declares.
-///
-/// [`Self::deref`] hands out the legacy signal, so every existing method call
-/// (`connect`, `connect_scoped`, `disconnect`, `slot_count`, …) keeps compiling unchanged.
-#[derive(Clone, Default)]
-pub struct CanvasPointerEvent {
-    /// The payload-free compatibility signal.
-    unit: GenericSignal,
-    /// The typed signal the published event resolves to.
-    payload: Signal1<(Point, u32)>,
-}
-
-impl CanvasPointerEvent {
-    /// Creates an event pair with no subscribers.
-    pub fn new() -> Self {
-        Self { unit: GenericSignal::new(), payload: Signal1::new() }
-    }
-
-    /// The typed signal carrying `(position, button)`.
-    pub fn payload_signal(&self) -> &Signal1<(Point, u32)> {
-        &self.payload
-    }
-
-    /// Emits the event: the legacy signal first, then the typed one.
-    pub fn emit_at(&self, position: Point, button: u32) {
-        self.unit.emit();
-        self.payload.emit((position, button));
-    }
-}
-
-impl Deref for CanvasPointerEvent {
-    type Target = GenericSignal;
-
-    fn deref(&self) -> &Self::Target {
-        &self.unit
-    }
-}
+/// Kept as a re-export of [`crate::widget::pointer_event::PointerEvent`] so the historical path
+/// `canvas::CanvasPointerEvent` keeps working while every drawing surface shares one definition
+/// (principle #54).
+pub use crate::widget::pointer_event::PointerEvent as CanvasPointerEvent;
 
 /// One stored drawing command, tagged with the order it was added in.
 ///
@@ -558,7 +516,9 @@ impl Canvas {
 
     /// Shows or hides the layer at `index`, returning whether it exists.
     pub fn set_layer_visible(&mut self, index: usize, visible: bool) -> bool {
-        let Some(layer) = self.layers.get_mut(index) else { return false };
+        let Some(layer) = self.layers.get_mut(index) else {
+            return false;
+        };
         if layer.visible == visible {
             return true;
         }
@@ -841,7 +801,9 @@ impl Canvas {
 
     /// Ends the open command group, returning whether it contained any command.
     pub fn end_group(&mut self) -> bool {
-        let Some(group) = self.pending_group.take() else { return false };
+        let Some(group) = self.pending_group.take() else {
+            return false;
+        };
         if group.is_empty() {
             return false;
         }
@@ -853,7 +815,9 @@ impl Canvas {
     /// Removes the most recently added command, returning whether one was undone.
     pub fn undo(&mut self) -> bool {
         loop {
-            let Some(step) = self.undo_stack.pop_back() else { return false };
+            let Some(step) = self.undo_stack.pop_back() else {
+                return false;
+            };
             let mut removed = Vec::new();
             // Undo the newest command of the step first, so a grouped stroke comes
             // apart in the reverse order it was drawn.
@@ -878,10 +842,14 @@ impl Canvas {
     /// Re-applies the command step most recently removed by [`Self::undo`].
     pub fn redo(&mut self) -> bool {
         loop {
-            let Some(step) = self.redo_stack.pop_back() else { return false };
+            let Some(step) = self.redo_stack.pop_back() else {
+                return false;
+            };
             let mut restored = Vec::new();
             for undone in step {
-                let Some(layer_index) = self.layer_index_by_id(undone.layer_id) else { continue };
+                let Some(layer_index) = self.layer_index_by_id(undone.layer_id) else {
+                    continue;
+                };
                 let seq = self.next_command_seq;
                 self.next_command_seq += 1;
                 self.layers[layer_index].commands.push_back(StoredCommand {
@@ -984,9 +952,13 @@ impl Canvas {
     /// now-dead references from the history so undo cannot resurrect them.
     fn trim_to_limit(&mut self) {
         while self.command_count() > self.command_limit {
-            let Some(layer_index) = self.oldest_command_layer() else { break };
+            let Some(layer_index) = self.oldest_command_layer() else {
+                break;
+            };
             let layer_id = self.layers[layer_index].id;
-            let Some(removed) = self.layers[layer_index].commands.pop_front() else { break };
+            let Some(removed) = self.layers[layer_index].commands.pop_front() else {
+                break;
+            };
             self.layers[layer_index].touch();
             self.invalidate_hit_cache();
             self.command_total = self.command_total.saturating_sub(1);
@@ -1300,28 +1272,17 @@ impl Widget for Canvas {
     /// optional property uses — so "no selection" is distinguishable from "selection 0".
     fn event_signal_dyn(&self, name: &str) -> Option<crate::signal::EventSignalRef> {
         use crate::signal::EventSignalRef;
+        use crate::widget::pointer_event::pointer_capability_value;
         match name {
             "mouse_pressed" => Some(EventSignalRef::mapped(
                 "mouse_pressed",
                 self.mouse_pressed_signal(),
-                |value| {
-                    let (position, button) = value;
-                    CapabilityValue::Tuple(crate::compat::Vec::from([
-                        CapabilityValue::String(format!("{},{}", position.x, position.y)),
-                        CapabilityValue::UInt(*button as u64),
-                    ]))
-                },
+                pointer_capability_value,
             )),
             "mouse_released" => Some(EventSignalRef::mapped(
                 "mouse_released",
                 self.mouse_released_signal(),
-                |value| {
-                    let (position, button) = value;
-                    CapabilityValue::Tuple(crate::compat::Vec::from([
-                        CapabilityValue::String(format!("{},{}", position.x, position.y)),
-                        CapabilityValue::UInt(*button as u64),
-                    ]))
-                },
+                pointer_capability_value,
             )),
             "mouse_moved" => Some(EventSignalRef::mapped("mouse_moved", &self.mouse_moved, |v| {
                 CapabilityValue::String(format!("{v:?}"))
@@ -1329,13 +1290,7 @@ impl Widget for Canvas {
             "double_clicked" => Some(EventSignalRef::mapped(
                 "double_clicked",
                 self.double_clicked_signal(),
-                |value| {
-                    let (position, button) = value;
-                    CapabilityValue::Tuple(crate::compat::Vec::from([
-                        CapabilityValue::String(format!("{},{}", position.x, position.y)),
-                        CapabilityValue::UInt(*button as u64),
-                    ]))
-                },
+                pointer_capability_value,
             )),
             "context_menu_requested" => Some(EventSignalRef::mapped(
                 "context_menu_requested",
@@ -1787,6 +1742,24 @@ fn transform_command(command: &RenderCommand, transform: CanvasTransform) -> Ren
             height: width(*h),
             data: Arc::clone(data),
         },
+        RenderCommand::DrawImageScaled {
+            x,
+            y,
+            width: w,
+            height: h,
+            source_width,
+            source_height,
+            data,
+        } => RenderCommand::DrawImageScaled {
+            x: transform.point(Point::new(*x, *y)).x,
+            y: transform.point(Point::new(*x, *y)).y,
+            width: width(*w),
+            height: width(*h),
+            // The source grid is a property of the pixels, not of the transform.
+            source_width: *source_width,
+            source_height: *source_height,
+            data: Arc::clone(data),
+        },
         other => other.clone(),
     }
 }
@@ -1869,6 +1842,26 @@ fn snap_command(command: RenderCommand, step: i32) -> RenderCommand {
                 y: rect.y,
                 width: rect.width,
                 height: rect.height,
+                data,
+            }
+        }
+        RenderCommand::DrawImageScaled {
+            x,
+            y,
+            width,
+            height,
+            source_width,
+            source_height,
+            data,
+        } => {
+            let rect = snap_rect(Rect::new(x, y, width, height), step);
+            RenderCommand::DrawImageScaled {
+                x: rect.x,
+                y: rect.y,
+                width: rect.width,
+                height: rect.height,
+                source_width,
+                source_height,
                 data,
             }
         }
@@ -1964,7 +1957,8 @@ fn command_bounds(command: &RenderCommand) -> Option<Rect> {
             radius.saturating_mul(2).max(1),
             radius.saturating_mul(2).max(1),
         )),
-        RenderCommand::DrawImage { x, y, width, height, .. } => {
+        RenderCommand::DrawImage { x, y, width, height, .. }
+        | RenderCommand::DrawImageScaled { x, y, width, height, .. } => {
             Some(Rect::new(*x, *y, *width, *height))
         }
         _ => None,

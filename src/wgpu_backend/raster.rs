@@ -465,7 +465,7 @@ pub fn rasterize_draw_commands_rgba8(
     rasterize_draw_commands_into_rgba8(width, height, commands, &mut pixels)?;
     Ok(pixels)
 }
-fn effective_clip(
+pub(crate) fn effective_clip(
     framebuffer: PixelRect,
     rect: PixelRect,
     clip: Option<PixelRect>,
@@ -480,7 +480,7 @@ fn effective_clip(
 /// Intersects a command's own `clip` field with the enclosing `PushClip` region. `None` means
 /// "no clip requested"; a non-overlapping pair becomes a zero-area rect so the draw is skipped
 /// rather than silently unclipped.
-fn combine(own: &Option<PixelRect>, enclosing: Option<PixelRect>) -> Option<PixelRect> {
+pub(crate) fn combine(own: &Option<PixelRect>, enclosing: Option<PixelRect>) -> Option<PixelRect> {
     match (own, enclosing) {
         (Some(own), Some(enclosing)) => {
             Some(own.intersect(enclosing).unwrap_or(PixelRect { x: 0, y: 0, width: 0, height: 0 }))
@@ -524,7 +524,7 @@ fn fill_rect_cpu_rgba8(pixels: &mut [u8], width: u32, rect: PixelRect, color: Rg
         pixels.copy_within(first..first_end, dst);
     }
 }
-fn stroke_rect_edges(rect: PixelRect, thickness: u32) -> [PixelRect; 4] {
+pub(crate) fn stroke_rect_edges(rect: PixelRect, thickness: u32) -> [PixelRect; 4] {
     let t = thickness.min(rect.width).min(rect.height);
     [
         PixelRect { x: rect.x, y: rect.y, width: rect.width, height: t },
@@ -533,6 +533,77 @@ fn stroke_rect_edges(rect: PixelRect, thickness: u32) -> [PixelRect; 4] {
         PixelRect { x: rect.right() - t as i32, y: rect.y, width: t, height: rect.height },
     ]
 }
+/// Calls `visit` once per glyph of `text` with its cell origin and the 8x8 coverage buffer.
+///
+/// This is the **one** definition of the text grid: the glyph cell is 8x8, characters fill the box
+/// left-to-right then top-to-bottom, and each glyph's ink comes from the active font stack through
+/// `paint_active`. The CPU rasteriser blends the coverage it receives; the encoder copies it into
+/// the coverage texture it uploads. Keeping both on this loop is what stops the two paths from
+/// disagreeing about where a character sits or what shape it has.
+pub(crate) fn for_each_text_cell(
+    rect: PixelRect,
+    text: &str,
+    mut visit: impl FnMut(i32, i32, &[u8]),
+) {
+    let glyph_w = 8i32;
+    let glyph_h = 8i32;
+    let columns = (rect.width as i32 / glyph_w).max(1);
+    let rows = (rect.height as i32 / glyph_h).max(1);
+    let cell = crate::render::text::Cell::new(glyph_w as u32, glyph_h as u32);
+    // One scratch for the whole string, reused per glyph: a glyph is rasterised, consumed, and
+    // overwritten. That keeps this path free of per-glyph allocation and of any glyph cache —
+    // the same contract the software rasteriser honours (BLUE23 §0A.4, constraint 3). The
+    // scratch itself is retained across commands (G-222).
+    let mut coverage = TEXT_COVERAGE.with(|cell| std::mem::take(&mut *cell.borrow_mut()));
+    coverage.clear();
+    coverage.resize(cell.area(), 0);
+    for (char_index, scalar) in text.chars().enumerate() {
+        let grid_index = char_index as i32;
+        if grid_index >= columns * rows {
+            break;
+        }
+        let col = grid_index % columns;
+        let row = grid_index / columns;
+        let origin_x = rect.x + col * glyph_w;
+        let origin_y = rect.y + row * glyph_h;
+        if crate::render::text::paint_active(scalar, cell, &mut coverage).is_none() {
+            continue;
+        }
+        visit(origin_x, origin_y, &coverage[..cell.area()]);
+    }
+    // Hand the scratch (and its capacity) back for the next text command (G-222).
+    TEXT_COVERAGE.with(|cell| *cell.borrow_mut() = std::mem::take(&mut coverage));
+}
+
+/// Paints the text box's glyph coverage into `out`, one byte per pixel of `rect`.
+///
+/// `out` must be exactly `rect.width * rect.height` bytes. The encoder uploads this as the coverage
+/// texture its fragment shader multiplies by the text colour, so glyph rasterisation stays on the
+/// same code the CPU rasteriser uses while the per-pixel compositing moves to the GPU.
+pub(crate) fn text_coverage_into(rect: PixelRect, text: &str, out: &mut [u8]) {
+    out.fill(0);
+    let width = rect.width as i32;
+    let height = rect.height as i32;
+    for_each_text_cell(rect, text, |origin_x, origin_y, coverage| {
+        for py in 0..8i32 {
+            let target_y = origin_y - rect.y + py;
+            if target_y < 0 || target_y >= height {
+                continue;
+            }
+            for px in 0..8i32 {
+                let target_x = origin_x - rect.x + px;
+                if target_x < 0 || target_x >= width {
+                    continue;
+                }
+                let value = coverage[(py * 8 + px) as usize];
+                if value != 0 {
+                    out[target_y as usize * width as usize + target_x as usize] = value;
+                }
+            }
+        }
+    });
+}
+
 fn draw_text_cpu_rgba8(
     pixels: &mut [u8],
     width: u32,
@@ -547,48 +618,20 @@ fn draw_text_cpu_rgba8(
         None => return,
     };
     let mut sink = PixelSink { pixels, width, mode: blend };
-    let glyph_w = 8i32;
-    let glyph_h = 8i32;
-    let columns = (rect.width as i32 / glyph_w).max(1);
-    let rows = (rect.height as i32 / glyph_h).max(1);
-    let cell = crate::render::text::Cell::new(glyph_w as u32, glyph_h as u32);
-    // One scratch for the whole string, reused per glyph: a glyph is rasterised, blended, and
-    // overwritten. That keeps this path free of per-glyph allocation and of any glyph cache —
-    // the same contract the software rasteriser honours (BLUE23 §0A.4, constraint 3). The
-    // scratch itself is retained across commands (G-222); re-zeroing below gives a reused
-    // buffer exactly the fresh `vec![0u8; n]` start state.
-    let mut coverage = TEXT_COVERAGE.with(|cell| std::mem::take(&mut *cell.borrow_mut()));
-    coverage.clear();
-    coverage.resize(cell.area(), 0);
-    for (char_index, scalar) in text.chars().enumerate() {
-        let grid_index = char_index as i32;
-        if grid_index >= columns * rows {
-            break;
-        }
-        let col = grid_index % columns;
-        let row = grid_index / columns;
-        let origin_x = rect.x + col * glyph_w;
-        let origin_y = rect.y + row * glyph_h;
-        // The glyph's ink comes from the **font stack**, through the same `paint` the software
-        // rasteriser blends. This path used to walk the 8x8 table itself, so feature faces (CJK,
-        // vector) were invisible to it and it answered "unsupported" a third way.
-        let Some(painted) = crate::render::text::paint_active(scalar, cell, &mut coverage) else {
-            continue;
-        };
-        // The scratch is glyph-sized, so every pixel of it is inside the cell, and coverage
-        // arrives per pixel, so antialiased ink would draw correctly without new code.
-        let _ = painted;
-        for py in 0..glyph_h {
+    let (x_start, y_start) = (clip_rect.x, clip_rect.y);
+    let (x_end, y_end) = (clip_rect.right(), clip_rect.bottom());
+    for_each_text_cell(rect, text, |origin_x, origin_y, coverage| {
+        for py in 0..8i32 {
             let screen_y = origin_y + py;
-            if screen_y < clip_rect.y || screen_y >= clip_rect.bottom() {
+            if screen_y < y_start || screen_y >= y_end {
                 continue;
             }
-            for px in 0..glyph_w {
+            for px in 0..8i32 {
                 let screen_x = origin_x + px;
-                if screen_x < clip_rect.x || screen_x >= clip_rect.right() {
+                if screen_x < x_start || screen_x >= x_end {
                     continue;
                 }
-                let value = coverage[(py * glyph_w + px) as usize];
+                let value = coverage[(py * 8 + px) as usize];
                 if value == 0 {
                     continue;
                 }
@@ -607,9 +650,7 @@ fn draw_text_cpu_rgba8(
                 }
             }
         }
-    }
-    // Hand the scratch (and its capacity) back for the next text command (G-222).
-    TEXT_COVERAGE.with(|cell| *cell.borrow_mut() = std::mem::take(&mut coverage));
+    });
 }
 fn draw_image_scaled_cpu_rgba8(
     pixels: &mut [u8],
@@ -714,7 +755,7 @@ fn rect_for_line(from: (i32, i32), to: (i32, i32), line_width: u32) -> PixelRect
 /// pixels outside the radius, so the box must grow by `width` per side (the old `2r` clipped
 /// the outer half of the ring away), plus one pixel so the inclusive far edge
 /// (`center + r + width`) is covered (N-S-65).
-fn bbox_for_circle(center: (i32, i32), radius: u32, stroke_width: u32) -> PixelRect {
+pub(crate) fn bbox_for_circle(center: (i32, i32), radius: u32, stroke_width: u32) -> PixelRect {
     // Widened to i64 so a large radius/stroke cannot overflow before clamping.
     let reach = radius as i64 + stroke_width as i64 + 1;
     let r = reach.clamp(0, i32::MAX as i64) as i32;
@@ -754,6 +795,39 @@ fn bbox_for_path(points: &[(i32, i32)], stroke_width: u32) -> PixelRect {
         height: h.clamp(1, u32::MAX as i64) as u32,
     }
 }
+/// The horizontal span the filled rounded rectangle covers on each row it touches.
+///
+/// The shape is convex and horizontal, so every row is one contiguous span: rows between the two
+/// corner bands are the full width, and a corner row's span is `[left + r - k, right - r + k)`
+/// with `k = floor(sqrt(r² - dy²))` — the integer predicate the per-pixel form evaluated, resolved
+/// once per row (G-803). This is the **single** definition of that rule: the CPU fill and the GPU
+/// instance packer both consume it, which is what makes the two paths pixel-identical.
+pub(crate) fn rounded_rect_row_spans(
+    rect: PixelRect,
+    radius: u32,
+) -> impl Iterator<Item = PixelRect> {
+    let r = radius.min(rect.width / 2).min(rect.height / 2) as i32;
+    let r2 = r * r;
+    let (top, bottom) = (rect.y, rect.bottom());
+    (top..bottom).filter_map(move |y| {
+        let (start, end) = if r <= 0 || (y >= rect.y + r && y < bottom - r) {
+            (rect.x, rect.right())
+        } else {
+            let dy = if y < rect.y + r { rect.y + r - y } else { y - (bottom - r - 1) };
+            let remaining = r2 - dy * dy;
+            if remaining < 0 {
+                return None;
+            }
+            let k = (remaining as u32).isqrt() as i32;
+            (rect.x + r - k, rect.right() - r + k)
+        };
+        if end <= start {
+            return None;
+        }
+        Some(PixelRect { x: start, y, width: (end - start) as u32, height: 1 })
+    })
+}
+
 fn fill_rounded_rect_cpu_rgba8(
     pixels: &mut [u8],
     fb_width: u32,
@@ -768,34 +842,18 @@ fn fill_rounded_rect_cpu_rgba8(
         None => return,
     };
     let mut sink = PixelSink { pixels, width: fb_width, mode: blend };
-    let r = radius.min(rect.width / 2).min(rect.height / 2) as i32;
-    let x_start = clip_rect.x.max(rect.x);
-    let y_start = clip_rect.y.max(rect.y);
-    let x_end = clip_rect.right().min(rect.right());
-    let y_end = clip_rect.bottom().min(rect.bottom());
-    // The shape is convex and horizontal, so every row is a single span. Rows between the two
-    // corner bands are the full width; a corner row's span is `[left + r - k, right - r - 1 + k]`
-    // with `k = floor(sqrt(r^2 - dy^2))`, which is the same integer predicate the per-pixel form
-    // evaluated, resolved once per row instead of once per pixel (G-803).
-    let r2 = r * r;
-    for y in y_start..y_end {
-        let (span_start, span_end) = if r <= 0 {
-            (rect.x, rect.right())
-        } else if y >= rect.y + r && y < rect.bottom() - r {
-            (rect.x, rect.right())
-        } else {
-            let dy = if y < rect.y + r { rect.y + r - y } else { y - (rect.bottom() - r - 1) };
-            let remaining = r2 - dy * dy;
-            if remaining < 0 {
-                continue;
-            }
-            let k = (remaining as u32).isqrt() as i32;
-            (rect.x + r - k, rect.right() - r + k)
-        };
-        let from = span_start.max(x_start);
-        let to = span_end.min(x_end);
+    let x_start = clip_rect.x;
+    let y_start = clip_rect.y;
+    let x_end = clip_rect.right();
+    let y_end = clip_rect.bottom();
+    for span in rounded_rect_row_spans(rect, radius) {
+        if span.y < y_start || span.y >= y_end {
+            continue;
+        }
+        let from = span.x.max(x_start);
+        let to = span.right().min(x_end);
         for x in from..to {
-            sink.set(x as u32, y as u32, color);
+            sink.set(x as u32, span.y as u32, color);
         }
     }
 }
@@ -1327,6 +1385,91 @@ fn gradient_stop(gradient_data: &[u8], stops: usize, t: f32) -> Rgba8 {
     }
 }
 
+/// The triangle fan that fills a path, as `(x, y)` pixel pairs.
+///
+/// Each contour becomes a fan around its first point, which is the standard way to turn a polygon
+/// into geometry the stencil buffer can count: a fan's triangles overlap exactly as often as the
+/// polygon covers each pixel, so the even-odd and non-zero rules both come out of the stencil
+/// operations rather than any CPU-side winding analysis.
+///
+/// Contours are `(start, end)` ranges into `points`; a contour with fewer than three points
+/// contributes no triangles.
+pub(crate) fn path_fan_vertices(
+    points: &[(i32, i32)],
+    contours: &[(usize, usize)],
+) -> Vec<(f32, f32)> {
+    let mut fan = Vec::new();
+    for &(start, end) in contours {
+        let end = end.min(points.len());
+        if end.saturating_sub(start) < 3 {
+            continue;
+        }
+        let origin = points[start];
+        for index in start + 1..end - 1 {
+            let (a, b) = (points[index], points[index + 1]);
+            fan.push((origin.0 as f32, origin.1 as f32));
+            fan.push((a.0 as f32, a.1 as f32));
+            fan.push((b.0 as f32, b.1 as f32));
+        }
+    }
+    fan
+}
+
+/// Bounding box of a set of path points, clamped to `framebuffer`.
+pub(crate) fn path_bounds(points: &[(i32, i32)], framebuffer: PixelRect) -> Option<PixelRect> {
+    let mut iter = points.iter();
+    let (first_x, first_y) = *iter.next()?;
+    let (mut min_x, mut min_y, mut max_x, mut max_y) = (first_x, first_y, first_x, first_y);
+    for &(x, y) in iter {
+        min_x = min_x.min(x);
+        min_y = min_y.min(y);
+        max_x = max_x.max(x);
+        max_y = max_y.max(y);
+    }
+    // The cover quad must contain the filled area: the fan's triangles reach at most one pixel
+    // beyond the extreme vertices, so the extent is widened by one before clipping.
+    let rect = PixelRect {
+        x: min_x,
+        y: min_y,
+        width: (max_x - min_x + 2).max(1) as u32,
+        height: (max_y - min_y + 2).max(1) as u32,
+    };
+    rect.intersect(framebuffer)
+}
+
+/// One colour per destination pixel along an axis-aligned gradient's ramp.
+///
+/// `Vertical` yields `rect.height` entries (one per row), `Horizontal` `rect.width` (one per
+/// column). The `t` and the stop lookup are the ones [`draw_gradient_cpu_rgba8`] uses, so a GPU
+/// gradient built from this ramp **is** the CPU picture, byte for byte.
+///
+/// This is also what makes the GPU path cheaper rather than merely different: the CPU rasteriser
+/// costs one lookup per *pixel*, while the ramp costs one per row (or column) and the GPU repeats
+/// it across the span.
+pub(crate) fn gradient_ramp(rect: PixelRect, gradient_data: &[u8], axis: GradientAxis) -> Vec<u8> {
+    let stops = gradient_data.len() / 4;
+    let (span, origin) = match axis {
+        GradientAxis::Vertical => ((rect.height as f32 - 1.0).max(1.0), rect.y as f32),
+        GradientAxis::Horizontal => ((rect.width as f32 - 1.0).max(1.0), rect.x as f32),
+    };
+    let inv_span = 1.0 / span;
+    let count = match axis {
+        GradientAxis::Vertical => rect.height,
+        GradientAxis::Horizontal => rect.width,
+    } as usize;
+    let mut ramp = Vec::with_capacity(count * 4);
+    for index in 0..count {
+        let position = match axis {
+            GradientAxis::Vertical => rect.y + index as i32,
+            GradientAxis::Horizontal => rect.x + index as i32,
+        };
+        let t = ((position as f32 - origin) * inv_span).clamp(0.0, 1.0);
+        let color = gradient_stop(gradient_data, stops, t);
+        ramp.extend_from_slice(&[color.r, color.g, color.b, color.a]);
+    }
+    ramp
+}
+
 fn draw_gradient_cpu_rgba8(
     pixels: &mut [u8],
     fb_width: u32,
@@ -1385,7 +1528,7 @@ fn draw_gradient_cpu_rgba8(
 
 /// Which direction a gradient ramp advances along.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum GradientAxis {
+pub(crate) enum GradientAxis {
     /// Top to bottom — what [`WgpuDrawCommand::DrawGradient`] means.
     Vertical,
     /// Left to right — what [`WgpuDrawCommand::FillLinearGradient`] means.
@@ -1813,8 +1956,10 @@ fn box_shadow_cpu_rgba8(
                 if alpha == 255 {
                     blend_pixel_cpu_rgba8(pixels, width, x as u32, y as u32, src, blend);
                 } else {
-                    // Partial coverage from the blur ramp: source-over the scene.
-                    blend_cpu_rgba8(pixels, width, x as u32, y as u32, src, alpha as f32 / 255.0);
+                    // The ramp **is** the source alpha, so it is composited once: passing it as a
+                    // coverage mask as well squared it and faded the shadow twice, which the
+                    // GPU/CPU shadow comparison exposed (R4-2).
+                    blend_cpu_rgba8(pixels, width, x as u32, y as u32, src, 1.0);
                 }
             }
         }
@@ -3042,7 +3187,8 @@ mod tests {
             blur_radius: 2,
             clip: None,
         };
-        let full = rasterize_draw_commands_rgba8(20, 20, &[shadow.clone()]).expect("rasterizes");
+        let full = rasterize_draw_commands_rgba8(20, 20, core::slice::from_ref(&shadow))
+            .expect("rasterizes");
         // The clip contains the body (so the blurred source is identical in both renders)
         // but cuts the ramp: the layer reaches x/y 14, the paint region stops at 12.
         let clip = rect(0, 0, 12, 12);

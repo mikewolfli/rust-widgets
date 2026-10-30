@@ -1736,7 +1736,18 @@ impl Draw for Label {
                     _ => content.y + ((content.height.saturating_sub(height)) / 2) as i32,
                 };
                 if let Some(pixels) = pixmap.rgba8_data() {
-                    context.draw_image(x, y, width, height, pixels);
+                    // `scaled_contents` asks for the pixmap to fill the content box, and the
+                    // unconstrained case clamps it to the content box — either way the destination
+                    // can differ from the pixmap's own size, so the draw has to resample.
+                    context.draw_image_scaled(
+                        x,
+                        y,
+                        width,
+                        height,
+                        pixmap.width(),
+                        pixmap.height(),
+                        pixels,
+                    );
                 }
             }
         }

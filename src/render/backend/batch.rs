@@ -223,18 +223,20 @@ pub enum BatchCommand {
     },
     /// Draw a clipped region of an image.
     ///
-    /// `source_width` / `source_height` describe the full source image the
-    /// `source` rectangle indexes into. They are stored with the command because
-    /// the image cache holds only raw pixel bytes, which do not say how many
-    /// pixels a row has (G-14).
+    /// `source_width` / `source_height` are a **checked duplicate** of the registration's grid
+    /// ([`SoftwarePaintBackend::register_image`](super::paint::SoftwarePaintBackend::register_image)):
+    /// the registration is authoritative, and the command carries them only so a batch recorded
+    /// against the older byte-cache contract still type-checks. A translation that sees them
+    /// disagree logs a warning and uses the registration, which is the only value a crop can be
+    /// read with safely.
     DrawImageSubrect {
         /// Destination rectangle on the surface.
         dest: Rect,
         /// Sub-rectangle of the source image to draw, in source pixels.
         source: Rect,
-        /// Full source image width in pixels.
+        /// Source image width in pixels; must agree with the registration.
         source_width: u32,
-        /// Full source image height in pixels.
+        /// Source image height in pixels; must agree with the registration.
         source_height: u32,
         /// Cache key of the source image.
         image_id: ObjectId,
@@ -359,6 +361,33 @@ pub trait BatchRenderer {
     fn batch_count(&self) -> usize;
 }
 
+/// An image registered for batch replay: its pixels **and** the grid they are laid out in.
+///
+/// # Why the grid is part of the registration
+///
+/// RGBA bytes alone do not say how many pixels a row has, and a batch command's rectangle is a
+/// *destination*, which may be any size. Without the grid a replay cannot tell "blit these pixels
+/// into their own size" (zero-copy) from "resample them into a different box" (`DrawImageScaled`),
+/// so it had to assume the two were the same — and drew nothing when the destination was smaller
+/// than the buffer, or the top-left corner when it was larger. The cached bytes are shared, so
+/// cloning a registration is a refcount increment.
+#[derive(Debug, Clone)]
+pub struct BatchImage {
+    /// Tightly packed RGBA8 pixels, row-major, top row first.
+    pub pixels: Arc<[u8]>,
+    /// Width of the grid `pixels` is laid out in.
+    pub width: u32,
+    /// Height of the grid `pixels` is laid out in.
+    pub height: u32,
+}
+
+impl BatchImage {
+    /// Registers `pixels` as an image `width` x `height` pixels.
+    pub fn new(pixels: Arc<[u8]>, width: u32, height: u32) -> Self {
+        Self { pixels, width, height }
+    }
+}
+
 /// Default font family used when replaying a `DrawText` batch command.
 const BATCH_DEFAULT_FONT_FAMILY: &str = "Arial";
 
@@ -375,13 +404,14 @@ pub(crate) struct BatchState {
     current_batch: Option<BatchId>,
     /// All recorded batches, keyed by `BatchId`.
     batches: HashMap<BatchId, Vec<BatchCommand>>,
-    /// Optional image data cache mapping `ObjectId` → RGBA pixel bytes.
+    /// Optional image data cache mapping `ObjectId` → [`BatchImage`] (pixels **and** the grid they
+    /// are laid out in).
     /// Populated externally before replay so that `DrawImage` /
     /// `DrawImageSubrect` commands can be translated into `RenderCommand`s.
     ///
     /// The bytes are shared (`Arc`), so replay clones a refcount instead of the
     /// whole RGBA payload (G-02).
-    pub(crate) images: HashMap<ObjectId, Arc<[u8]>>,
+    pub(crate) images: HashMap<ObjectId, BatchImage>,
 }
 
 impl BatchState {
@@ -681,7 +711,7 @@ impl Default for TransformState {
 /// `SoftwarePaintBackend`'s fields and pass them without any clone.
 fn transform_command(
     cmd: &BatchCommand,
-    images: &HashMap<ObjectId, Arc<[u8]>>,
+    images: &HashMap<ObjectId, BatchImage>,
     state: &mut TransformState,
 ) -> Option<RenderCommand> {
     match cmd {
@@ -807,12 +837,29 @@ fn transform_command(
         }),
 
         BatchCommand::DrawImage { rect, image_id, opacity } => {
-            let Some(source) = images.get(image_id).cloned() else {
+            let Some(image) = images.get(image_id).cloned() else {
                 log::warn!("[batch] DrawImage references unknown image id {image_id}; dropping");
                 return None;
             };
+            let source = image.pixels;
             if source.is_empty() {
                 log::warn!("[batch] DrawImage references an empty image id {image_id}; dropping");
+                return None;
+            }
+            // The registration says how the bytes are laid out. A buffer shorter than its own grid
+            // is a caller error; dropping it with a warning is the same honest outcome the
+            // software blit has (it draws nothing for a short buffer) but says why.
+            let expected = (image.width as usize)
+                .checked_mul(image.height as usize)
+                .and_then(|pixels| pixels.checked_mul(4));
+            if expected.filter(|bytes| source.len() >= *bytes).is_none() {
+                log::warn!(
+                    "[batch] DrawImage (image={image_id}) is registered as {}x{} but carries {} \
+                     bytes; dropping",
+                    image.width,
+                    image.height,
+                    source.len()
+                );
                 return None;
             }
             // Test-only accounting of how many source pixel bytes this translation
@@ -834,15 +881,16 @@ fn transform_command(
             #[cfg(feature = "3d")]
             {
                 // A rotated image keeps its pixels: the destination is the mapped quad, and the
-                // source grid is the rectangle the 2D path would have stretched the data across.
-                // Under a projective transform the quad is a general quadrilateral, which the
-                // surface maps with a homography rather than an affine inverse.
+                // source grid is the registered one — not `rect`, which is only where a *2D* draw
+                // would have put it. Under a projective transform the quad is a general
+                // quadrilateral, which the surface maps with a homography rather than an affine
+                // inverse.
                 if state.is_projective() {
                     return state.apply_to_projective_quad(rect).map(|corners| {
                         RenderCommand::DrawImageQuad {
                             corners,
-                            width: rect.width,
-                            height: rect.height,
+                            width: image.width,
+                            height: image.height,
                             data,
                         }
                     });
@@ -850,17 +898,31 @@ fn transform_command(
                 if state.matrix != Mat3::IDENTITY {
                     return Some(RenderCommand::DrawImageQuad {
                         corners: state.apply_to_quad(rect),
-                        width: rect.width,
-                        height: rect.height,
+                        width: image.width,
+                        height: image.height,
                         data,
                     });
                 }
             }
-            Some(RenderCommand::DrawImage {
+            // `rect` is the destination; the pixels are the registered grid. Those are the same
+            // size only when the caller happened to draw the image at its native size, and that
+            // is the only case a plain blit is correct for.
+            if applied_rect.width == image.width && applied_rect.height == image.height {
+                return Some(RenderCommand::DrawImage {
+                    x: applied_rect.x,
+                    y: applied_rect.y,
+                    width: applied_rect.width,
+                    height: applied_rect.height,
+                    data,
+                });
+            }
+            Some(RenderCommand::DrawImageScaled {
                 x: applied_rect.x,
                 y: applied_rect.y,
                 width: applied_rect.width,
                 height: applied_rect.height,
+                source_width: image.width,
+                source_height: image.height,
                 data,
             })
         }
@@ -873,24 +935,48 @@ fn transform_command(
             image_id,
             opacity,
         } => {
-            let Some(data) = images.get(image_id) else {
+            let Some(image) = images.get(image_id) else {
                 log::warn!(
                     "[batch] DrawImageSubrect references unknown image id {image_id}; dropping"
                 );
                 return None;
             };
+            // The registration is the single source of truth for the grid. The command's copy
+            // predates it and is kept so recording stays source-compatible, but it is only an
+            // assertion: a host that tells two different stories about one image gets a warning
+            // instead of a silently mis-strided crop.
+            let grid = (image.width, image.height);
+            if (*source_width, *source_height) != grid {
+                log::warn!(
+                    "[batch] DrawImageSubrect (image={image_id}) declares {source_width}x{source_height} \
+                     but the registration is {}x{}; using the registration",
+                    grid.0,
+                    grid.1
+                );
+            }
             // Crop the requested source rectangle into its own tightly packed RGBA buffer and
             // stretch that to `dest`. Replaying the full image would draw the wrong pixels, and
             // dropping it (the old behaviour) lost the command entirely (G-14).
-            let Some(cropped) =
-                crop_source_rect_cached(data, *source_width, *source_height, *source)
+            // The crop's source grid is the rectangle that was actually extracted, which may be a
+            // clipped part of the requested one. `dest` is where it goes, and the two are usually
+            // different sizes — a `DrawImage` would read the *destination's* stride out of a buffer
+            // laid out at the crop's, drawing the top-left corner (or nothing, when the crop is
+            // smaller). The scaled command carries both grids, so the replay stretches it.
+            let Some((_, _, crop_width, crop_height)) =
+                clipped_source_rect(*source, image.width, image.height)
             else {
                 log::warn!(
                     "[batch] DrawImageSubrect (image={image_id}) has an empty or out-of-bounds \
-                     source rectangle {source:?} for a {source_width}x{source_height} image; dropping"
+                     source rectangle {source:?} for a {}x{} image; dropping",
+                    grid.0,
+                    grid.1
                 );
                 return None;
             };
+            // `crop_source_rect` logs its own reason when the buffer is shorter than the source
+            // dimensions it claims, so there is nothing to add here.
+            let cropped =
+                crop_source_rect_cached(&image.pixels, image.width, image.height, *source)?;
             #[cfg(test)]
             note_image_bytes_translated(cropped.len());
             let applied_rect = state.apply_to_rect(dest);
@@ -901,11 +987,24 @@ fn transform_command(
             } else {
                 data
             };
-            Some(RenderCommand::DrawImage {
+            if applied_rect.width as usize == crop_width
+                && applied_rect.height as usize == crop_height
+            {
+                return Some(RenderCommand::DrawImage {
+                    x: applied_rect.x,
+                    y: applied_rect.y,
+                    width: applied_rect.width,
+                    height: applied_rect.height,
+                    data,
+                });
+            }
+            Some(RenderCommand::DrawImageScaled {
                 x: applied_rect.x,
                 y: applied_rect.y,
                 width: applied_rect.width,
                 height: applied_rect.height,
+                source_width: crop_width as u32,
+                source_height: crop_height as u32,
                 data,
             })
         }
@@ -1030,6 +1129,26 @@ fn baked_image(source: &Arc<[u8]>, opacity: f32) -> Arc<[u8]> {
     baked
 }
 
+/// The part of `rect` that exists inside a `source_width x source_height` image.
+///
+/// Returns `(left, top, width, height)` clipped to the image, or `None` when no pixel of the
+/// rectangle is inside it. This is the **one** definition of that clipping: the crop reads with it,
+/// and the replay path needs the same extent to declare the source grid of a scaled draw.
+fn clipped_source_rect(
+    rect: Rect,
+    source_width: u32,
+    source_height: u32,
+) -> Option<(usize, usize, usize, usize)> {
+    let left = i64::from(rect.x).max(0);
+    let top = i64::from(rect.y).max(0);
+    let right = (i64::from(rect.x) + i64::from(rect.width)).min(i64::from(source_width));
+    let bottom = (i64::from(rect.y) + i64::from(rect.height)).min(i64::from(source_height));
+    if right <= left || bottom <= top {
+        return None;
+    }
+    Some((left as usize, top as usize, (right - left) as usize, (bottom - top) as usize))
+}
+
 /// Copies `source`'s requested sub-rectangle into a tightly packed RGBA buffer.
 ///
 /// The rectangle is clipped to the source image; `None` means the crop is empty or the source
@@ -1055,20 +1174,12 @@ fn crop_source_rect(
         );
         return None;
     }
-    let left = i64::from(source.x).max(0);
-    let top = i64::from(source.y).max(0);
-    let right = (i64::from(source.x) + i64::from(source.width)).min(i64::from(source_width));
-    let bottom = (i64::from(source.y) + i64::from(source.height)).min(i64::from(source_height));
-    if right <= left || bottom <= top {
-        return None;
-    }
-    let width = (right - left) as usize;
-    let height = (bottom - top) as usize;
+    let (left, top, width, height) = clipped_source_rect(source, source_width, source_height)?;
     let mut cropped = vec![0u8; width * height * 4];
     let source_stride = source_width as usize * 4;
     let row_bytes = width * 4;
     for row in 0..height {
-        let src = (top as usize + row) * source_stride + left as usize * 4;
+        let src = (top + row) * source_stride + left * 4;
         let dst = row * row_bytes;
         cropped[dst..dst + row_bytes].copy_from_slice(&data[src..src + row_bytes]);
     }
@@ -1183,7 +1294,7 @@ fn take_image_bytes_translated() -> usize {
 /// produces.
 fn replay_into(
     batches: &HashMap<BatchId, Vec<BatchCommand>>,
-    images: &HashMap<ObjectId, Arc<[u8]>>,
+    images: &HashMap<ObjectId, BatchImage>,
     surface: &mut SoftwareSurface,
     id: BatchId,
 ) {
@@ -1383,6 +1494,327 @@ mod tests {
         }
     }
 
+    // ── Replay of a cropped image: the crop's grid versus the destination ──
+
+    /// A crop is laid out at the source rectangle's size, and `dest` is where it goes. Those two
+    /// are different almost always, so the replay must carry **both** grids.
+    ///
+    /// Translating it to `DrawImage` (the behaviour this pins against) reads the destination's
+    /// stride out of a buffer laid out at the crop's: a 32x16 destination showing an 8x4 crop drew
+    /// only the crop's first 32 pixels' worth of rows and left the rest of the rectangle untouched.
+    #[test]
+    fn a_cropped_subrect_stretched_to_its_destination_declares_both_grids() {
+        let mut state = TransformState::default();
+        let mut images = HashMap::new();
+        images.insert(5u64, BatchImage::new(Arc::from(vec![0u8; 8 * 4 * 4]), 8, 4));
+
+        let translated = transform_command(
+            &BatchCommand::DrawImageSubrect {
+                dest: Rect::new(10, 20, 32, 16),
+                source: Rect::new(0, 0, 8, 4),
+                source_width: 8,
+                source_height: 4,
+                image_id: 5,
+                opacity: 1.0,
+            },
+            &images,
+            &mut state,
+        );
+
+        match translated {
+            Some(RenderCommand::DrawImageScaled {
+                x,
+                y,
+                width,
+                height,
+                source_width,
+                source_height,
+                data,
+            }) => {
+                assert_eq!((x, y, width, height), (10, 20, 32, 16), "the destination is `dest`");
+                assert_eq!(
+                    (source_width, source_height),
+                    (8, 4),
+                    "the source grid is the crop's, not the destination's"
+                );
+                assert_eq!(data.len(), 8 * 4 * 4, "the cropped pixels travel with the command");
+            }
+            other => panic!(
+                "a crop stretched to a different destination must be a scaled draw, got {other:?}"
+            ),
+        }
+    }
+
+    /// The identity case stays a plain blit, so a batch that crops an image to exactly the size it
+    /// draws keeps the zero-copy path.
+    #[test]
+    fn a_cropped_subrect_already_at_its_destination_size_stays_a_plain_blit() {
+        let mut state = TransformState::default();
+        let mut images = HashMap::new();
+        images.insert(6u64, BatchImage::new(Arc::from(vec![0u8; 8 * 4 * 4]), 8, 4));
+
+        let translated = transform_command(
+            &BatchCommand::DrawImageSubrect {
+                dest: Rect::new(10, 20, 4, 4),
+                source: Rect::new(1, 0, 4, 4),
+                source_width: 8,
+                source_height: 4,
+                image_id: 6,
+                opacity: 1.0,
+            },
+            &images,
+            &mut state,
+        );
+
+        match translated {
+            Some(RenderCommand::DrawImage { x, y, width, height, data }) => {
+                assert_eq!((x, y, width, height), (10, 20, 4, 4));
+                assert_eq!(data.len(), 4 * 4 * 4);
+            }
+            other => panic!("an already-sized crop must stay a plain blit, got {other:?}"),
+        }
+    }
+
+    /// A source rectangle that runs off the image is clipped, and the **clipped** extent is the
+    /// grid the scaled draw declares — otherwise the sampler would read pixels the crop never had.
+    #[test]
+    fn a_clipped_crop_declares_the_extent_it_actually_extracted() {
+        let mut state = TransformState::default();
+        let mut images = HashMap::new();
+        images.insert(7u64, BatchImage::new(Arc::from(vec![0u8; 8 * 4 * 4]), 8, 4));
+
+        let translated = transform_command(
+            &BatchCommand::DrawImageSubrect {
+                dest: Rect::new(0, 0, 20, 10),
+                // Only the last 2 columns exist in an 8-wide source.
+                source: Rect::new(6, 0, 8, 4),
+                source_width: 8,
+                source_height: 4,
+                image_id: 7,
+                opacity: 1.0,
+            },
+            &images,
+            &mut state,
+        );
+
+        match translated {
+            Some(RenderCommand::DrawImageScaled {
+                width,
+                height,
+                source_width,
+                source_height,
+                data,
+                ..
+            }) => {
+                assert_eq!((width, height), (20, 10));
+                assert_eq!((source_width, source_height), (2, 4), "the clipped extent");
+                assert_eq!(data.len(), 2 * 4 * 4);
+            }
+            other => panic!("a clipped crop must declare its clipped grid, got {other:?}"),
+        }
+    }
+
+    // ── Registration carries the grid, so a replay can tell blit from resample ──
+
+    /// A registered image larger than its destination must be **scaled down**, not cropped.
+    #[test]
+    fn a_registered_image_larger_than_its_destination_is_a_scaled_draw() {
+        let mut state = TransformState::default();
+        let mut images = HashMap::new();
+        images.insert(11u64, BatchImage::new(Arc::from(vec![0u8; 8 * 4 * 4]), 8, 4));
+
+        let translated = transform_command(
+            &BatchCommand::DrawImage { rect: Rect::new(2, 3, 4, 2), image_id: 11u64, opacity: 1.0 },
+            &images,
+            &mut state,
+        );
+
+        match translated {
+            Some(RenderCommand::DrawImageScaled {
+                x,
+                y,
+                width,
+                height,
+                source_width,
+                source_height,
+                ..
+            }) => {
+                assert_eq!((x, y, width, height), (2, 3, 4, 2));
+                assert_eq!((source_width, source_height), (8, 4), "the registered grid");
+            }
+            other => panic!("a downscaled destination must be a scaled draw, got {other:?}"),
+        }
+    }
+
+    /// Drawing at exactly the registered size keeps the zero-copy blit.
+    #[test]
+    fn a_registered_image_at_its_destination_size_stays_a_plain_blit() {
+        let mut state = TransformState::default();
+        let mut images = HashMap::new();
+        images.insert(12u64, BatchImage::new(Arc::from(vec![0u8; 8 * 4 * 4]), 8, 4));
+
+        let translated = transform_command(
+            &BatchCommand::DrawImage { rect: Rect::new(2, 3, 8, 4), image_id: 12u64, opacity: 1.0 },
+            &images,
+            &mut state,
+        );
+
+        match translated {
+            Some(RenderCommand::DrawImage { x, y, width, height, data }) => {
+                assert_eq!((x, y, width, height), (2, 3, 8, 4));
+                assert_eq!(data.len(), 8 * 4 * 4, "the pixels are handed over untouched");
+            }
+            other => panic!("a native-size draw must stay a plain blit, got {other:?}"),
+        }
+    }
+
+    /// End to end through the public registration path: a 2x2 image drawn into an 8x8 rectangle
+    /// must cover the rectangle. Before registration carried the grid, the replay treated the
+    /// 8x8 rectangle as the buffer's layout and painted only the corner the 2x2 buffer could
+    /// supply.
+    #[test]
+    fn a_registered_image_is_resampled_across_its_whole_destination_on_replay() {
+        let mut backend = SoftwarePaintBackend::new(Size::new(8, 8), 1.0);
+        backend.begin_frame(Color::BLACK);
+        let pixels: Arc<[u8]> = Arc::from(vec![
+            255u8, 0, 0, 255, // red
+            0, 0, 255, 255, // blue
+            0, 0, 255, 255, // blue
+            255, 0, 0, 255, // red
+        ]);
+        backend.register_image(13u64, pixels, 2, 2);
+
+        let batch = backend.begin_batch();
+        backend
+            .record(BatchCommand::DrawImage {
+                rect: Rect::new(0, 0, 8, 8),
+                image_id: 13u64,
+                opacity: 1.0,
+            })
+            .unwrap();
+        backend.end_batch();
+        backend.replay(batch);
+        backend.end_frame();
+
+        let rgba = backend.frame_rgba();
+        let (frame, remainder) = rgba.as_chunks::<4>();
+        assert!(remainder.is_empty(), "the frame is RGBA8");
+        assert!(
+            frame.iter().all(|pixel| pixel[3] == 255),
+            "every destination pixel must be covered, not only the corner the 2x2 source reached"
+        );
+        assert!(frame.iter().any(|pixel| pixel[..3] == [0, 0, 255]), "blue column drawn");
+        assert!(frame.iter().any(|pixel| pixel[..3] == [255, 0, 0]), "red column drawn");
+    }
+
+    /// A registration whose buffer is shorter than the grid it claims is dropped, with a warning,
+    /// rather than painting an image whose rows do not exist.
+    #[test]
+    fn a_registered_image_shorter_than_its_grid_is_dropped() {
+        let mut state = TransformState::default();
+        let mut images = HashMap::new();
+        images.insert(14u64, BatchImage::new(Arc::from(vec![0u8; 8 * 4 * 4]), 8, 8));
+
+        let translated = transform_command(
+            &BatchCommand::DrawImage { rect: Rect::new(0, 0, 8, 8), image_id: 14u64, opacity: 1.0 },
+            &images,
+            &mut state,
+        );
+        assert!(translated.is_none(), "a short buffer must not be painted as a partial image");
+    }
+
+    /// Two places used to declare the same grid: the command and (since registration) the cache.
+    /// The registration is authoritative — a stale declaration is corrected, not obeyed — so it
+    /// cannot mis-stride the crop or silently clip the request to nothing.
+    ///
+    /// With the declared 4-wide grid this source rectangle would clip to empty (6 >= 4) and the
+    /// command would be dropped; the registered 8-wide grid leaves its last two columns.
+    #[test]
+    fn a_subrect_declaration_that_disagrees_with_the_registration_is_corrected() {
+        let mut state = TransformState::default();
+        let mut images = HashMap::new();
+        images.insert(15u64, BatchImage::new(Arc::from(vec![0u8; 8 * 4 * 4]), 8, 4));
+
+        let translated = transform_command(
+            &BatchCommand::DrawImageSubrect {
+                dest: Rect::new(0, 0, 20, 10),
+                source: Rect::new(6, 0, 8, 4),
+                source_width: 4,
+                source_height: 4,
+                image_id: 15u64,
+                opacity: 1.0,
+            },
+            &images,
+            &mut state,
+        );
+
+        match translated {
+            Some(RenderCommand::DrawImageScaled { source_width, source_height, data, .. }) => {
+                assert_eq!(
+                    (source_width, source_height),
+                    (2, 4),
+                    "the clip is taken from the registered grid"
+                );
+                assert_eq!(data.len(), 2 * 4 * 4);
+            }
+            other => panic!("the registration's grid must decide the clip, got {other:?}"),
+        }
+    }
+
+    /// A host streaming frames re-registers **one** id. Replacing the registration must change
+    /// what the *same* recorded batch paints, and must not grow the cache: the id is the slot the
+    /// batch refers to, not a per-frame key.
+    #[test]
+    fn re_registering_an_id_replaces_the_frame_without_growing_the_cache() {
+        fn paint_with(
+            backend: &mut SoftwarePaintBackend,
+            batch: BatchId,
+            pixels: Vec<u8>,
+        ) -> Vec<u8> {
+            backend.begin_frame(Color::BLACK);
+            backend.register_image(21u64, Arc::from(pixels), 2, 2);
+            assert_eq!(backend.batch_state.images.len(), 1, "one id holds one entry");
+            backend.replay(batch);
+            backend.end_frame();
+            backend.frame_rgba().to_vec()
+        }
+
+        let mut backend = SoftwarePaintBackend::new(Size::new(4, 4), 1.0);
+        let batch = backend.begin_batch();
+        backend
+            .record(BatchCommand::DrawImage {
+                rect: Rect::new(0, 0, 4, 4),
+                image_id: 21u64,
+                opacity: 1.0,
+            })
+            .unwrap();
+        backend.end_batch();
+
+        // Four identical opaque pixels: a 2x2 frame.
+        let frame = |r: u8, g: u8, b: u8| -> Vec<u8> {
+            let mut pixels = Vec::with_capacity(16);
+            for _ in 0..4 {
+                pixels.extend_from_slice(&[r, g, b, 255]);
+            }
+            pixels
+        };
+
+        let first = paint_with(&mut backend, batch, frame(255, 0, 0));
+        let second = paint_with(&mut backend, batch, frame(0, 0, 255));
+
+        assert_eq!(
+            [first[0], first[1], first[2], first[3]],
+            [255, 0, 0, 255],
+            "the first frame paints red"
+        );
+        assert_eq!(
+            [second[0], second[1], second[2], second[3]],
+            [0, 0, 255, 255],
+            "after re-registration the same batch paints the new frame"
+        );
+        assert_eq!(backend.batch_state.images.len(), 1, "and the cache never grew");
+    }
+
     #[test]
     fn batch_command_draw_text_roundtrip() {
         let cmd = BatchCommand::DrawText {
@@ -1557,7 +1989,7 @@ mod tests {
     fn a_rotated_image_maps_its_source_grid_onto_the_quad() {
         let mut state = TransformState::default();
         let mut images = HashMap::new();
-        images.insert(7u64, Arc::from(vec![255u8; 2 * 2 * 4]));
+        images.insert(7u64, BatchImage::new(Arc::from(vec![255u8; 2 * 2 * 4]), 2, 2));
         let rotation = Mat3::rotation(core::f32::consts::FRAC_PI_4);
         assert!(transform_command(
             &BatchCommand::PushTransform { matrix: rotation },
@@ -1798,10 +2230,10 @@ mod tests {
             // Two unrelated batches, each holding a cached image of the given size.
             for image_index in 0..2u64 {
                 let object_id = 1000 + image_index;
-                backend
-                    .batch_state
-                    .images
-                    .insert(object_id, Arc::from(vec![7u8; unrelated_image_bytes]));
+                backend.batch_state.images.insert(
+                    object_id,
+                    BatchImage::new(Arc::from(vec![7u8; unrelated_image_bytes]), 64, 64),
+                );
                 let other = backend.begin_batch();
                 backend
                     .record(BatchCommand::DrawImage {

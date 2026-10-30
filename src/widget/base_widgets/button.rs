@@ -34,7 +34,7 @@ use crate::widget::metrics::{
 };
 #[cfg(feature = "image")]
 use crate::widget::Image;
-use crate::widget::{BaseWidget, Draw, IconSource, Widget, WidgetKind};
+use crate::widget::{BaseWidget, Draw, IconSource, IconTint, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
 /// Stroke width of the emphasis ring on a **default** button, in pixels.
@@ -129,6 +129,12 @@ pub struct Button {
     icon_source: Option<IconSource>,
     #[cfg(all(feature = "image", not(alloc_frugal)))]
     shared_icon_pixels: Option<crate::widget::icon_source::SharedIconPixels>,
+    /// The icon's own colour channel, independent of the label ink.
+    ///
+    /// `None` keeps the pre-existing behaviour: a vector icon is painted in the label's colour and
+    /// an image is drawn with its own colours. Shared with `ToolButton`
+    /// ([`crate::widget::IconTint`]) so "tint an icon" has one definition and one cache strategy.
+    icon_tint: IconTint,
     default_button: bool,
     /// The icon slot's size in logical pixels.
     ///
@@ -287,6 +293,7 @@ impl Button {
             icon_source: None,
             #[cfg(all(feature = "image", not(alloc_frugal)))]
             shared_icon_pixels: None,
+            icon_tint: IconTint::new(),
             default_button: false,
             icon_size: dimensions::BUTTON_ICON_SIZE,
             icon_position: IconPosition::default(),
@@ -956,6 +963,7 @@ impl Button {
             self.shared_icon_pixels = None;
         }
         self.icon = Some(icon);
+        self.icon_tint.clear();
         self.invalidate_hint();
         self.base.request_redraw();
     }
@@ -978,6 +986,7 @@ impl Button {
         self.shared_icon_pixels = pixels;
         self.icon = None;
         self.icon_source = None;
+        self.icon_tint.clear();
         self.invalidate_hint();
         self.base.request_redraw();
     }
@@ -1002,6 +1011,7 @@ impl Button {
         {
             self.shared_icon_pixels = None;
         }
+        self.icon_tint.clear();
         self.invalidate_hint();
         self.base.request_redraw();
     }
@@ -1009,6 +1019,30 @@ impl Button {
     /// Returns the typed icon source, if one was most recently assigned.
     pub fn icon_source(&self) -> Option<IconSource> {
         self.icon_source
+    }
+
+    /// Returns the colour the icon is tinted with, if any.
+    pub fn icon_tint(&self) -> Option<crate::core::Color> {
+        self.icon_tint.tint()
+    }
+
+    /// Sets or clears the icon's tint colour.
+    ///
+    /// # What is tinted
+    ///
+    /// * A vector icon ([`IconSource`]) is painted in this colour instead of the label's ink.
+    /// * An image — [`Self::set_shared_icon_pixels`] or the legacy [`Self::set_icon`] — is treated
+    ///   as a **monochrome mask**: its alpha is kept and its RGB is replaced by the tint. That is
+    ///   the reading [`IconColorMode::Monochrome`](crate::widget::icon_source::IconColorMode)
+    ///   already declares for a tintable resource; a photograph should keep `None` rather than lose
+    ///   its colours.
+    ///
+    /// `None` restores the pre-existing behaviour exactly: a vector icon follows the label ink, an
+    /// image is drawn with its own colours, and no copy is composed.
+    pub fn set_icon_tint(&mut self, tint: Option<crate::core::Color>) {
+        if self.icon_tint.set(tint) {
+            self.base.request_redraw();
+        }
     }
     /// Sets whether this button is the default button.
     pub fn set_default(&mut self, default: bool) {
@@ -1817,6 +1851,10 @@ impl WidgetProperties for Button {
                     Err(CapabilityAccessError::IconSourceNotPersistable)
                 }
             },
+            "icon_tint" => Ok(match self.icon_tint() {
+                Some(color) => CapabilityValue::Color(color),
+                None => CapabilityValue::Null,
+            }),
             _ => base_property_get(self, name),
         }
     }
@@ -1916,6 +1954,14 @@ impl WidgetProperties for Button {
                 }
                 Ok(())
             }
+            "icon_tint" => {
+                match value {
+                    CapabilityValue::Null => self.set_icon_tint(None),
+                    CapabilityValue::Color(color) => self.set_icon_tint(Some(color)),
+                    _ => return Err(CapabilityAccessError::TypeMismatch),
+                }
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
@@ -1939,6 +1985,7 @@ impl WidgetProperties for Button {
             "pressed",
             "default",
             "icon_source",
+            "icon_tint",
             "icon_size",
             "shortcut",
             "auto_default",
@@ -1960,6 +2007,7 @@ impl WidgetProperties for Button {
             "pressed",
             "default",
             "icon_source",
+            "icon_tint",
             "icon_size",
             "shortcut",
             "auto_default",
@@ -2319,6 +2367,23 @@ impl Draw for Button {
         // falling back to state-based defaults when style values are not set.
         let rect = self.geometry();
         let state = self.state();
+        // The icon is composed **before** the style borrow below. Tinting mutates this control's
+        // composed-copy cache, and the style is an immutable borrow of the whole control that lasts
+        // until its last field read — so a `&mut self` call inside that span cannot compile, and a
+        // per-frame style clone to work around it would cost more than the tint.
+        let icon_box = self.icon_rect();
+        #[cfg(all(feature = "image", not(alloc_frugal)))]
+        let tinted_shared_icon = self
+            .shared_icon_pixels
+            .clone()
+            .and_then(|pixels| self.icon_tint.compose_pixels(&pixels));
+        #[cfg(all(feature = "image", not(alloc_frugal)))]
+        let tinted_legacy_icon = match (self.icon.as_ref(), icon_box) {
+            (Some(image), Some(box_)) => {
+                self.icon_tint.compose_image(image, (box_.width, box_.height))
+            }
+            _ => None,
+        };
         let style = self.style();
 
         // ── The box actually painted ──
@@ -2428,15 +2493,15 @@ impl Draw for Button {
         // derivation `implicit_size` reserves room with — rather than from a second, hand-written
         // offset. §B.9's point is exactly this: a wider icon pushes the label along instead of
         // overlapping it.
-        let icon_color = style.text_color.unwrap_or_else(|| {
+        let icon_color = self.icon_tint.color_or(style.text_color.unwrap_or_else(|| {
             let fill = style.background_color.unwrap_or(Color::WHITE);
             if state == ButtonState::Disabled {
                 fill.contrast_color().with_alpha(150)
             } else {
                 fill.contrast_color()
             }
-        });
-        if let (Some(source), Some(box_)) = (self.icon_source, self.icon_rect()) {
+        }));
+        if let (Some(source), Some(box_)) = (self.icon_source, icon_box) {
             if let Err(error) = crate::widget::paint_icon(context, source.into(), box_, icon_color)
             {
                 log::warn!("button icon could not be painted: {error:?}");
@@ -2446,33 +2511,55 @@ impl Draw for Button {
         #[cfg(feature = "image")]
         if self.icon_source.is_none() {
             #[cfg(not(alloc_frugal))]
-            if let (Some(pixels), Some(box_)) = (self.shared_icon_pixels.as_ref(), self.icon_rect())
+            if let (Some(box_), Some(pixels)) =
+                (icon_box, tinted_shared_icon.as_ref().or(self.shared_icon_pixels.as_ref()))
             {
-                context.draw_image(box_.x, box_.y, box_.width, box_.height, pixels.pixels());
-            } else if let (Some(icon), Some(box_)) = (self.icon.as_ref(), self.icon_rect()) {
-                // The icon is scaled to the slot the metric derivation reserved for it, so the room
-                // `implicit_size` added and the pixels drawn are the same square. An icon whose own
-                // bitmap is a different size is scaled rather than drawn at its native extent —
-                // otherwise the button's reserved advance and its ink would disagree.
-                context.draw_image(
+                context.draw_image_scaled(
                     box_.x,
                     box_.y,
                     box_.width,
                     box_.height,
-                    icon.rgba8_data().unwrap_or(&[]),
+                    pixels.width(),
+                    pixels.height(),
+                    pixels.pixels(),
                 );
+            } else if let (Some(icon), Some(box_)) = (self.icon.as_ref(), icon_box) {
+                // The icon is scaled to the slot the metric derivation reserved for it, so the room
+                // `implicit_size` added and the pixels drawn are the same square. An icon whose own
+                // bitmap is a different size is scaled rather than drawn at its native extent —
+                // otherwise the button's reserved advance and its ink would disagree.
+                //
+                // With a tint the copy is drawn into the **same** box, so a tint changes the
+                // colours and nothing else about the layout.
+                match tinted_legacy_icon.as_ref() {
+                    // The composed handle is already at the slot size.
+                    Some(pixels) => {
+                        context.draw_image(box_.x, box_.y, box_.width, box_.height, pixels.pixels())
+                    }
+                    None => context.draw_image_scaled(
+                        box_.x,
+                        box_.y,
+                        box_.width,
+                        box_.height,
+                        icon.width(),
+                        icon.height(),
+                        icon.rgba8_data().unwrap_or(&[]),
+                    ),
+                }
             }
             #[cfg(alloc_frugal)]
-            if let (Some(icon), Some(box_)) = (self.icon.as_ref(), self.icon_rect()) {
+            if let (Some(icon), Some(box_)) = (self.icon.as_ref(), icon_box) {
                 // The icon is scaled to the slot the metric derivation reserved for it, so the room
                 // `implicit_size` added and the pixels drawn are the same square. An icon whose own
-                // bitmap is a different size is scaled rather than drawn at its native extent —
+                // bitmap is a different size is resampled rather than drawn at its native extent —
                 // otherwise the button's reserved advance and its ink would disagree.
-                context.draw_image(
+                context.draw_image_scaled(
                     box_.x,
                     box_.y,
                     box_.width,
                     box_.height,
+                    icon.width(),
+                    icon.height(),
                     icon.rgba8_data().unwrap_or(&[]),
                 );
             }
@@ -2728,6 +2815,145 @@ mod tests {
 
     fn rect() -> Rect {
         Rect::new(10, 20, 120, 36)
+    }
+
+    // ── Icon tint (feedback-20261030 F-4, extended to Button) ──────────
+
+    /// The tint is a property of its own and round-trips through the contract.
+    #[test]
+    fn an_icon_tint_round_trips_through_the_property_contract() {
+        let mut button = make_button();
+        assert_eq!(button.icon_tint(), None);
+        assert_eq!(button.get("icon_tint").expect("readable"), CapabilityValue::Null);
+
+        let red = Color::rgb(220, 40, 40);
+        button.set("icon_tint", CapabilityValue::Color(red)).expect("writable");
+        assert_eq!(button.icon_tint(), Some(red));
+        assert_eq!(button.get("icon_tint").expect("readable"), CapabilityValue::Color(red));
+
+        button.set("icon_tint", CapabilityValue::Null).expect("clearable");
+        assert_eq!(button.icon_tint(), None);
+        assert!(
+            button.set("icon_tint", CapabilityValue::Bool(true)).is_err(),
+            "a non-colour value must be refused rather than silently coerced"
+        );
+    }
+
+    /// Counts the pure-red pixels a paint produces, which is where a red tint must show up.
+    #[test]
+    fn a_tinted_button_icon_is_painted_in_the_tint_colour() {
+        use crate::render::{PaintBackend, SoftwarePaintBackend};
+
+        fn red_pixels(button: &mut Button) -> usize {
+            let mut backend = SoftwarePaintBackend::new(Size::new(240, 60), 1.0);
+            backend.begin_frame(Color::WHITE);
+            {
+                let mut context = RenderContext::new(&mut backend);
+                button.draw(&mut context);
+            }
+            backend.end_frame();
+            backend
+                .frame_rgba()
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .filter(|pixel| pixel[0] > 200 && pixel[1] < 60 && pixel[2] < 60)
+                .count()
+        }
+
+        let mut button = Button::new(String::new(), Rect::new(0, 0, 120, 40));
+        button.set_icon_source(Some(IconSource::builtin(crate::widget::IconName::Info)));
+        assert_eq!(red_pixels(&mut button), 0, "the default ink is not red");
+
+        button.set_icon_tint(Some(Color::rgb(255, 0, 0)));
+        assert!(
+            red_pixels(&mut button) > 0,
+            "the icon must be painted in the tint colour the control was given"
+        );
+    }
+
+    /// A legacy image whose own size differs from the icon slot must be resampled, not skipped.
+    ///
+    /// This is the defect the tint work exposed: `draw_image` requires a buffer at least as large
+    /// as its rectangle, so a 1x1 icon drawn into a 16x16 slot painted **nothing** (and a larger
+    /// one painted its top-left corner). The assertion counts the icon's own colour inside the
+    /// slot, which was zero before the resample existed.
+    #[cfg(all(feature = "image", not(alloc_frugal)))]
+    #[test]
+    fn a_legacy_button_icon_that_differs_from_the_slot_is_resampled() {
+        use crate::render::{PaintBackend, SoftwarePaintBackend};
+
+        let mut button = Button::new(String::new(), Rect::new(0, 0, 120, 40));
+        let slot = Rect::new(0, 0, 16, 16);
+        let black =
+            crate::image::Image::from_raw(crate::image::ImageData::Rgba8(vec![0, 0, 0, 255]), 1, 1);
+        button.set_icon(black);
+        button.set_icon_size(16);
+
+        let mut backend = SoftwarePaintBackend::new(Size::new(120, 40), 1.0);
+        backend.begin_frame(Color::WHITE);
+        {
+            let mut context = RenderContext::new(&mut backend);
+            button.draw(&mut context);
+        }
+        backend.end_frame();
+
+        let icon_box = button.icon_rect().unwrap_or(slot);
+        let rgba = backend.frame_rgba();
+        let mut dark_in_slot = 0;
+        for y in icon_box.y..icon_box.y + icon_box.height as i32 {
+            for x in icon_box.x..icon_box.x + icon_box.width as i32 {
+                let index = (y as usize * 120 + x as usize) * 4;
+                if rgba[index] < 60 && rgba[index + 1] < 60 && rgba[index + 2] < 60 {
+                    dark_in_slot += 1;
+                }
+            }
+        }
+        assert!(
+            dark_in_slot > 0,
+            "a 1x1 icon must be resampled into the {icon_box:?} slot instead of painting nothing"
+        );
+    }
+
+    /// A tinted image icon is recoloured, not left in its original colours.
+    #[cfg(all(feature = "image", not(alloc_frugal)))]
+    #[test]
+    fn a_tinted_button_image_icon_is_recoloured() {
+        use crate::render::{PaintBackend, SoftwarePaintBackend};
+
+        fn green_pixels(button: &mut Button) -> usize {
+            let mut backend = SoftwarePaintBackend::new(Size::new(240, 60), 1.0);
+            backend.begin_frame(Color::WHITE);
+            {
+                let mut context = RenderContext::new(&mut backend);
+                button.draw(&mut context);
+            }
+            backend.end_frame();
+            backend
+                .frame_rgba()
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .filter(|pixel| pixel[1] > 200 && pixel[0] < 60 && pixel[2] < 60)
+                .count()
+        }
+
+        let mut button = Button::new(String::new(), Rect::new(0, 0, 120, 40));
+        let white = crate::image::Image::from_raw(
+            crate::image::ImageData::Rgba8(vec![255, 255, 255, 255]),
+            1,
+            1,
+        );
+        button.set_icon(white);
+        assert_eq!(green_pixels(&mut button), 0, "a white icon has no green pixels");
+
+        button.set_icon_tint(Some(Color::rgb(0, 255, 0)));
+        assert!(green_pixels(&mut button) > 0, "the image must be recoloured by the tint");
+
+        // The legacy path draws the tinted copy into the same box, so swapping the icon back to a
+        // vector source must drop the composed image rather than keep drawing it.
+        button.set_icon_source(None);
+        assert_eq!(green_pixels(&mut button), 0);
     }
 
     // ── Property contract (BLUE15 C-1) ─────────────────────────────────

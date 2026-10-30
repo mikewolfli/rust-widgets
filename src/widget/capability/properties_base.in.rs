@@ -17,6 +17,8 @@ macro_rules! impl_properties_base {
             PropertySchema::new("default", PropertyValueKind::Bool, true, true),
             PropertySchema::new("icon_source", PropertyValueKind::IconSpec, true, true),
             PropertySchema::new("icon_size", PropertyValueKind::UInt, true, true),
+            // The icon's own colour channel; `null` means "follow the label ink".
+            PropertySchema::new("icon_tint", PropertyValueKind::Color, true, true),
             // The shortcut reads as its canonical text and writes as the same spelling; an
             // unset shortcut is `null`.
             PropertySchema::new("shortcut", PropertyValueKind::String, true, true),

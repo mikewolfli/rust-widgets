@@ -45,6 +45,8 @@ use crate::compat::{format, String, Vec};
 /// a typo in one of them is a key that silently reads back as absent.
 mod keys {
     pub(crate) const CONTROL: &str = "control";
+    /// The designer-palette grouping token for this control.
+    pub(crate) const CATEGORY: &str = "category";
     pub(crate) const NAME: &str = "name";
     pub(crate) const ALIASES: &str = "aliases";
     /// The canonical control an alias row spells; empty for a canonical row.
@@ -116,7 +118,10 @@ mod keys {
 /// * `3` — adds structured IconSpec property defaults (BLUE27 U5).
 /// * `4` — adds `alias_of` (COMP-27 alias identity). Absent in older documents and read as the
 ///   empty string, which means "this row is canonical".
-pub const MANIFEST_PROTOCOL_VERSION: u32 = 4;
+/// * `5` — adds `category`, the designer-palette grouping token
+///   ([`WidgetKind::designer_category`](crate::widget::WidgetKind::designer_category)). Absent in
+///   older documents and read as the empty string, so a protocol-4 file still opens.
+pub const MANIFEST_PROTOCOL_VERSION: u32 = 5;
 
 /// The oldest protocol version this reader still accepts.
 ///
@@ -298,6 +303,13 @@ pub struct DesignerManifest {
     pub triple: String,
     /// The canonical control name.
     pub control: String,
+    /// The designer-palette section this control belongs in.
+    ///
+    /// One token per control, from [`WidgetKind::designer_category`]. A palette that had only the
+    /// control name could group by spelling (`l`, `li`, `lis`…), which is alphabetic rather than
+    /// functional; this is the fact it needs instead. Empty when the document predates protocol 5
+    /// — a reader that sees an empty string groups the row under "other" rather than guessing.
+    pub category: String,
     /// Every name the factory also accepts for this control.
     pub aliases: Vec<String>,
     /// When this control is a second spelling of another, the canonical control it spells.
@@ -602,6 +614,10 @@ fn write_manifest(out: &mut String, manifest: &DesignerManifest) {
     push_json_string(out, keys::CONTROL);
     out.push_str(": ");
     push_json_string(out, &manifest.control);
+    out.push_str(",\n  ");
+    push_json_string(out, keys::CATEGORY);
+    out.push_str(": ");
+    push_json_string(out, &manifest.category);
     out.push_str(",\n  ");
     push_json_string(out, keys::ALIAS_OF);
     out.push_str(": ");
@@ -1620,6 +1636,7 @@ impl DesignerManifest {
         let mut profile = String::new();
         let mut triple = String::new();
         let mut control = None;
+        let mut category = String::new();
         let mut aliases = Vec::new();
         let mut alias_of = String::new();
         let mut properties = Vec::new();
@@ -1634,6 +1651,9 @@ impl DesignerManifest {
                 k if k == keys::PROFILE => profile = reader.read_string()?,
                 k if k == keys::TRIPLE => triple = reader.read_string()?,
                 k if k == keys::CONTROL => control = Some(reader.read_string()?),
+                // Optional so a protocol-4 document still reads; an absent category is the empty
+                // string, which a palette renders as "other" instead of inventing a section.
+                k if k == keys::CATEGORY => category = reader.read_string()?,
                 k if k == keys::ALIASES => aliases = read_string_array(&mut reader)?,
                 // Optional so a document written before the identity field existed still reads:
                 // an absent `alias_of` means "this is a canonical row".
@@ -1714,6 +1734,7 @@ impl DesignerManifest {
             control: control.ok_or(ManifestParseError {
                 detail: "the document does not name its control".into(),
             })?,
+            category,
             aliases,
             alias_of,
             properties,
@@ -1806,6 +1827,7 @@ pub fn designer_manifest(
         profile: String::from(crate::widget::capability::TargetSpec::current().profile),
         triple: String::from(crate::widget::capability::TargetSpec::current().triple),
         control: capability.canonical_name.into(),
+        category: String::from(capability.kind.designer_category()),
         aliases,
         alias_of: crate::widget::capability::resolve(capability.canonical_name)
             .map(String::from)
@@ -1945,6 +1967,7 @@ mod tests {
             profile: String::from("desktop"),
             triple: String::from("aarch64-apple-darwin"),
             control: String::from("slider"),
+            category: String::from("input"),
             aliases: vec![String::from("range")],
             alias_of: String::new(),
             properties: vec![DesignerProperty {
@@ -2203,6 +2226,63 @@ mod tests {
             first, second,
             "export → load → export must be stable; a value that changes kind on load is the
              reason it is not"
+        );
+    }
+
+    /// A protocol-4 document has no `category`; it must still open, with the field empty.
+    ///
+    /// Empty is the honest value: the document did not say, and inventing a section would put the
+    /// row somewhere the file never asked for.
+    #[test]
+    fn a_document_without_a_category_reads_as_an_empty_one() {
+        let json = manifest_to_json(&sample())
+            .lines()
+            .filter(|line| !line.contains("\"category\":"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let reloaded = DesignerManifest::from_json(&json).expect("the field is optional");
+        assert_eq!(reloaded.category, "");
+        assert_eq!(reloaded.control, "slider", "the rest of the document must be intact");
+    }
+
+    /// Every exported control must carry a palette category, and every token must be a stable
+    /// lower-case ASCII word.
+    ///
+    /// This is the designer-readiness count in its smallest form: a control with no category is a
+    /// row the palette cannot place, and a token with capitals or punctuation is one a consumer
+    /// would have to normalise before comparing.
+    ///
+    /// Gated with the factory and the export it reads: a build without the full widget set has no
+    /// registration table to enumerate, and `capability_manifest_json` does not exist there.
+    #[cfg(full_widgets)]
+    #[test]
+    fn every_registered_control_declares_a_palette_category() {
+        let factory = crate::widget::WidgetFactory::new_with_defaults();
+        let mut uncategorised = Vec::new();
+        for capability in factory.capabilities() {
+            let category = capability.kind.designer_category();
+            if category.is_empty()
+                || !category.bytes().all(|byte| byte.is_ascii_lowercase() || byte == b'_')
+            {
+                uncategorised.push((capability.canonical_name, category));
+            }
+        }
+        assert!(
+            uncategorised.is_empty(),
+            "these controls have no usable palette category: {uncategorised:?}"
+        );
+
+        // The wiring is the part a per-kind method alone cannot prove: the exported document must
+        // carry the token, not only the enum.
+        let button = capability_manifest_json(&factory, "button").expect("button exports");
+        assert!(
+            button.contains("\"category\": \"basic\""),
+            "the manifest must carry the category: {button}"
+        );
+        let slider = capability_manifest_json(&factory, "slider").expect("slider exports");
+        assert!(
+            slider.contains("\"category\": \"input\""),
+            "a slider is chosen as an input, regardless of the module it is built in: {slider}"
         );
     }
 

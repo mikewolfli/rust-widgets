@@ -314,7 +314,9 @@ impl BackBuffer {
     /// off-screen rectangle and still get a damage list that every consumer can index safely.
     /// Zero-area and fully off-screen rectangles are dropped.
     pub fn mark_damage(&mut self, rect: crate::core::Rect) {
-        let Some(mut region) = clipped_damage(rect, self.size) else { return };
+        let Some(mut region) = clipped_damage(rect, self.size) else {
+            return;
+        };
         // Containment is the common case: a control repaints inside a region an ancestor already
         // reported. Dropping it keeps the list small without changing which pixels are published.
         if self.damage.iter().any(|existing| contains_region(*existing, region)) {
@@ -763,7 +765,9 @@ pub(crate) fn for_each_dash_segment(
 ) {
     let mut done = false;
     let _ = DASH_SEGMENT_SCRATCH.try_with(|scratch| {
-        let Ok(mut segments) = scratch.try_borrow_mut() else { return };
+        let Ok(mut segments) = scratch.try_borrow_mut() else {
+            return;
+        };
         dash_line_segments_into(points, closed, dash, &mut segments);
         for &(from, to) in segments.iter() {
             visit(from, to);
@@ -2698,6 +2702,57 @@ impl<'a> RenderContext<'a> {
             });
         } else {
             self.backend.draw_image(x, y, width, height, data);
+        }
+    }
+
+    /// Draws `data` (`source_width` x `source_height` RGBA8) **resampled** into the
+    /// `width` x `height` rectangle.
+    ///
+    /// # Why this is a separate entry from [`Self::draw_image`]
+    ///
+    /// `draw_image` blits a buffer that already matches its rectangle: a shorter buffer is ignored
+    /// and a longer one is cropped, so a control that hands over native pixels for a differently
+    /// sized slot paints nothing (smaller source) or the top-left corner (larger source). Fitting
+    /// an icon into a slot or a photo into a frame means resampling, and this is the call that
+    /// says so. The identity case delegates to `draw_image`, so an image already at its slot size
+    /// is byte-identical and allocation-free.
+    ///
+    /// A region-bucketed pass (partial repaint) records an owning
+    /// [`RenderCommand::DrawImageScaled`], which carries the source grid and resamples when the
+    /// bucket replays.
+    pub fn draw_image_scaled(
+        &mut self,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+        source_width: u32,
+        source_height: u32,
+        data: &[u8],
+    ) {
+        if width == 0 || height == 0 || source_width == 0 || source_height == 0 {
+            return;
+        }
+        if width == source_width && height == source_height {
+            self.draw_image(x, y, width, height, data);
+            return;
+        }
+        let x = x + self.offset_x;
+        let y = y + self.offset_y;
+        if self.bucket_recording() {
+            // The command carries the source grid and the pixels, so a bucket replay resamples
+            // once per region at most — and pays one owning copy, not a resampled temporary.
+            self.dispatch_owned(RenderCommand::DrawImageScaled {
+                x,
+                y,
+                width,
+                height,
+                source_width,
+                source_height,
+                data: crate::compat::Arc::from(data),
+            });
+        } else {
+            self.backend.draw_image_scaled(x, y, width, height, source_width, source_height, data);
         }
     }
 

@@ -185,6 +185,46 @@ pub fn translate_with_context(key: &str, context: Option<&str>, count: u32) -> S
         None => key.to_string(),
     }
 }
+
+/// Translate a key and fill its `{name}` placeholders.
+///
+/// The global counterpart of [`I18nManager::translate_with_args`]; the substitution rule is
+/// [`crate::i18n::interpolate_into`], so there is one definition of what a placeholder means.
+pub fn translate_with_args(
+    key: &str,
+    context: Option<&str>,
+    count: u32,
+    args: &[(&str, &str)],
+) -> String {
+    let mut out = String::new();
+    translate_into_with_args(key, context, count, args, &mut out);
+    out
+}
+
+/// Translate a key and fill its placeholders into `out`.
+///
+/// When the global manager is not initialised the key itself is emitted and then filled: a host
+/// that reads `"{count} files"` before `init()` gets `"3 files"` rather than a raw identifier
+/// with the argument lost.
+pub fn translate_into_with_args(
+    key: &str,
+    context: Option<&str>,
+    count: u32,
+    args: &[(&str, &str)],
+    out: &mut String,
+) {
+    let mut guard = crate::compat::lock(&GLOBAL_I18N);
+    if !ensure_initialized(&mut guard) {
+        crate::i18n::interpolate_into(key, args, out);
+        return;
+    }
+    match *guard {
+        Some(ref mut manager) => {
+            manager.translate_with_args_into(key, context, count, args, out);
+        }
+        None => crate::i18n::interpolate_into(key, args, out),
+    }
+}
 /// Get the global i18n manager
 pub fn get_manager() -> MutexGuard<'static, Option<I18nManager>> {
     crate::compat::lock(&GLOBAL_I18N)

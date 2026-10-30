@@ -1740,7 +1740,17 @@ impl LottieWidget {
             if opacity <= 0.01 {
                 continue;
             }
-            context.draw_image(x.round() as i32, y.round() as i32, width, height, &image.data);
+            // The layer is painted at the animation's scale, so the destination differs from the
+            // asset's own extent and the draw has to resample.
+            context.draw_image_scaled(
+                x.round() as i32,
+                y.round() as i32,
+                width,
+                height,
+                image.width,
+                image.height,
+                &image.data,
+            );
         }
     }
 

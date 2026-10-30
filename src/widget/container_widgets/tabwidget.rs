@@ -1546,7 +1546,13 @@ impl TabWidget {
             .iter()
             .filter(|tab| if horizontal { tab.width > 0 } else { tab.height > 0 })
             .map(
-                |tab| if horizontal { tab.x + tab.width as i32 } else { tab.y + tab.height as i32 },
+                |tab| {
+                    if horizontal {
+                        tab.x + tab.width as i32
+                    } else {
+                        tab.y + tab.height as i32
+                    }
+                },
             )
             .max()
             .unwrap_or(0);
@@ -1788,7 +1794,17 @@ fn paint_tab_icon(context: &mut RenderContext, tab: &Tab, icon_rect: Rect, color
                     image.height(),
                     icon_rect,
                 );
-                context.draw_image(fitted.x, fitted.y, fitted.width, fitted.height, pixels);
+                // A fitted slot is a different rectangle from the source in general, so the draw
+                // resamples rather than blitting (which would crop or paint nothing).
+                context.draw_image_scaled(
+                    fitted.x,
+                    fitted.y,
+                    fitted.width,
+                    fitted.height,
+                    image.width(),
+                    image.height(),
+                    pixels,
+                );
             }
         }
     }
@@ -4273,6 +4289,9 @@ mod tests {
         let rect = Rect::new(0, 0, 100, 30);
         let font = crate::widget::metrics::effective_font(tw.style()).clone();
         assert!(tw.close_button_rect(0, rect, &font).is_some());
-        assert!(tw.close_button_rect(1, rect, &font).is_none(), "the override hides the affordance");
+        assert!(
+            tw.close_button_rect(1, rect, &font).is_none(),
+            "the override hides the affordance"
+        );
     }
 }

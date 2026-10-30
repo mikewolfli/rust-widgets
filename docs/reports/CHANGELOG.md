@@ -5,6 +5,159 @@ The canonical project changelog is maintained at [docs/reports/CHANGELOG.md](doc
 This root-level file exists for tools and release automation that expect `CHANGELOG.md` at repository root.
 When the two disagree, this file is the one that ships; `tools/check_changelog_sync.sh` keeps them identical.
 
+## Unreleased
+
+**Additive only.** Closes the host-facing gaps reported in
+`docs/issues/feedback-20261030.md` (F-1…F-12). Evidence: `docs/log/log-20261030-1.md`.
+
+### Host seams
+
+- **`TreeIndex` is generic over the id type** (`TreeIndex<Id = ObjectId>`) and
+  `TreeIndexBuilder` builds one from a tree the caller owns, applying the same key-scoping and
+  duplicate-key rules the engine uses. A designer canvas with durable node ids no longer needs a
+  parallel index implementation.
+- **The shared factory can be extended.** `WidgetFactory::new_with_extensions` and
+  `register_shared_extension` install a package's controls into the one table `create_widget_of_kind`,
+  the JSON loader and the designer catalogue read. Registration after the table is built is refused
+  (`SharedFactoryError::AlreadyBuilt`), and an extension that collided is reported by
+  `shared_extension_failures()`.
+- **`Button` and `ToolButton` have an icon colour channel.** `set_icon_tint` / the `icon_tint`
+  property give the icon its own colour, independent of the label ink; image icons are treated as
+  monochrome masks. Both controls share one implementation (`widget::IconTint`), which composes
+  once per `(source, tint, box)`.
+- **Scaled image draws are a first-class primitive.** `RenderContext::draw_image_scaled` /
+  `PaintBackend::draw_image_scaled` resample a `source_width × source_height` RGBA8 buffer into any
+  destination rectangle. `draw_image` requires the buffer to *be* the rectangle's size, so every
+  control that fitted an icon into a slot (or a photo into a frame) painted nothing when its source
+  was smaller and the top-left corner when it was larger. All 32 `draw_image` call sites were
+  audited; the 16 that pass native pixels into a different rectangle now use the scaled entry
+  (`Button`, `ToolButton`, `Label`, `Avatar`, `TabWidget`, `MdiArea`, `Icon`, `LottieWidget`,
+  `MediaPlayer`, `MapView`×2), while the 16 that already hand over an exactly-sized buffer keep the
+  zero-copy blit. The identity case delegates to `draw_image`, so an image already at its slot size
+  is byte-identical to before. The bilinear resampler moved to the ungated `crate::resample` so the
+  render layer can use it in profiles that compile no image decoder.
+- **`RenderCommand::DrawImageScaled`** carries a scaled draw through a backend that defers
+  rasterisation, so the deferred path no longer resamples the source into a temporary buffer and
+  copies it into an owned command — it records the destination box and the source extent once. The
+  variant is ungated (it does not depend on the `3d` profile), and both the software surface and the
+  SVG exporter render it at the destination extent. Batch replay uses it too: a
+  `BatchCommand::DrawImageSubrect` whose crop is not already the destination's size used to be
+  translated to a plain blit, which read the destination's stride out of a crop-sized buffer (the
+  top-left corner, or nothing); the crop's clipped extent is now declared as the source grid.
+- **Batch images carry their grid.** `SoftwarePaintBackend::register_image(id, pixels, width,
+  height)` registers the pixels a `BatchCommand::DrawImage` / `DrawImageSubrect` names, and
+  `BatchImage` keeps the size beside the bytes. A replay draws a plain blit when the command's
+  rectangle *is* the registered size and `RenderCommand::DrawImageScaled` when it is not, so a
+  batch that shows a 2×2 thumbnail in an 8×8 cell paints the cell instead of its corner. A
+  registration whose buffer is shorter than its grid is dropped with a warning rather than painted
+  partially. The registration is also the **single source of truth** for the grid:
+  `BatchCommand::DrawImageSubrect` still carries `source_width`/`source_height` for source
+  compatibility, but they are a checked duplicate — a declaration that disagrees gets a warning and
+  the registration wins, so two stories about one image cannot silently mis-stride a crop. (The image
+  cache used to hold bare bytes and had no public entry point at all, so a host could record
+  `DrawImage` but never hand the replay its pixels.)
+- **`CommandPalette` publishes `dismissed`**, emitted after Escape clears the query, so a host can
+  close the surface without inferring the intent from focus loss.
+- **Pointer gestures carry their position.** `PointerEvent` is now one shared type for press,
+  release and double click; `MiniCanvas` reports `(position, button)` exactly as `Canvas` does, so a
+  drag can start at the press point instead of a mirrored `mouse_moved` position.
+- **`theme_snapshot()` / `ThemeSnapshot`.** One lock acquisition answers every global-theme question
+  a caller composes, so reading two facts in one expression no longer deadlocks on the
+  non-reentrant manager guard.
+- **Designer manifest protocol 5 adds `category`**, the palette grouping token from
+  `WidgetKind::designer_category`. Older documents read with an empty category.
+
+### i18n
+
+- **`{name}` template interpolation**: `translate_with_args`, `translate_into_with_args` and the
+  standalone `i18n::interpolate_into`. Names match exactly and a placeholder with no value stays
+  visible in the output.
+- **System language detection**: `i18n::system_language()` and `InitOptions::from_system()` follow
+  the platform locale, reduced to the primary subtag a catalogue is keyed by.
+- **Load-time key-set validation**: `set_required_keys` plus `audit_against_required` (and
+  `KeyAudit`) compare a catalogue with the declared contract in both directions;
+  `load_translations` and reloads refuse a catalogue that lacks a required key.
+
+### Suites
+
+- **`rust-widgets-suites` installs into the shared table.** The crate's documented installation is
+  now `register_shared_extension(rust_widgets_suites::install)` at startup, so `form` / `form_set`
+  are visible to `create_widget_of_kind`, the JSON loader and the designer catalogue — one table
+  instead of a host-maintained parallel factory. A compile-time test pins `install` against the
+  `SharedFactoryExtension` signature.
+
+### Rendering
+
+- **Axis-aligned stroke paths are drawn by the GPU.** A stroked `DrawPath` is one `DrawLine` per
+  segment on the CPU, so a path whose segments are all horizontal or vertical is a run of
+  rectangles and is byte-identical. A single diagonal segment sends the whole path back to the CPU.
+- **Axis-aligned lines are drawn by the GPU.** The software rasteriser stamps a square of
+  `2 × half_w` pixels at every Bresenham step; along a horizontal or vertical run those stamps tile
+  into exactly one rectangle, so the GPU paints the same pixels and the test asserts byte equality.
+  A **diagonal** line deliberately stays on the CPU: its stamps do not tile into a rectangle, and
+  redrawing it as a capsule would change the picture.
+- **Unblurred shadows are drawn by the GPU.** A `BoxShadow` with `blur_radius: 0` is a fill of the
+  rectangle translated by its offset, so it is byte-identical to the software frame. A blurred
+  shadow still comes from the CPU path: it needs an offscreen layer and two blur passes, which one
+  render pass cannot express.
+- **Filled paths are drawn by the GPU.** `DrawPath { filled: true }` (even-odd) and
+  `FillPathNonZero` (non-zero winding) are rendered in three passes over a triangle fan: the fan
+  counts into a `Stencil8` attachment with the rule the command names, a cover quad paints where
+  the count says "inside", and a third pass resets the count so the next path starts from zero.
+  This is the one family whose edge cannot match the software rasteriser's scanline rule, so the
+  tests assert geometry: the interior is filled, the outside is not, and a pentagram's centre is a
+  hole under even-odd while non-zero fills it. Every 2D pass now carries the stencil attachment,
+  which is a small per-frame cost even when no path is drawn.
+- **The radial gradient is drawn by the GPU.** Its colour depends on the distance to a centre, so
+  there is no per-row ramp to upload: the stop table travels as a texture and the fragment shader
+  computes `sqrt(dx² + dy²) · (1 / radius)` in `f32` and picks the nearest stop, which is the
+  software rasteriser's own expression. Measured byte-identical across stop counts and rectangle
+  shapes, so the test asserts equality rather than a tolerance.
+- **Axis-aligned gradients are drawn by the GPU.** `DrawGradient` (vertical) and
+  `FillLinearGradient` (horizontal) are reduced to one colour per row (or column) by the software
+  rasteriser's own stop rule and drawn as a one-pixel-wide image, so the frame is byte-identical
+  while the per-pixel stop lookups disappear from the CPU.
+- **Circle strokes, arcs and rounded-rectangle outlines are drawn by the GPU too.** One `shape`
+  pipeline renders all three from a per-draw signed-distance field, selected by a mode uniform:
+  a ring band for `DrawCircle`, a pie wedge or a two-pixel band for `DrawArc` (limited to the
+  command's angular window), and the inset band for `StrokeRoundedRect`. Edges are feathered over
+  one pixel, which is the GPU's convention here rather than the software rasteriser's hard edge;
+  the tests assert the shape (band, hole, angular window, interior) and the background surviving
+  around it.
+- **Fixed: a drawn circle no longer erases its bounding box.** The SDF circle pipeline returns
+  transparent coverage across most of its quad; with `REPLACE` blending that transparent black
+  overwrote whatever the frame had already painted there, leaving a rectangular hole around every
+  disc. It now composites source-over, like the image and text pipelines.
+- **The `gpu-wgpu` backend draws text on the GPU too.** A text box's glyph coverage is painted by
+  the same font-stack loop the software rasteriser blends, uploaded as a one-byte-per-pixel
+  texture, and multiplied by the text colour in the fragment stage — so glyph shapes are identical
+  and only the per-pixel colour work and the composite move to the GPU. Opaque text is
+  byte-identical to the software frame; translucent text can differ by one level per channel,
+  because fixed-function blending cannot reproduce the crate's un-premultiplied composite bit for
+  bit (documented on the module, and asserted as "at most one level" in the test).
+- **The `gpu-wgpu` backend draws more of the 2D command set on the GPU.** `WgpuDrawCommand::DrawImage`
+  used to be rasterised on the CPU and then round-tripped through a texture; it is now one quad in
+  the same single render pass as clears, rectangles and circles. **Filled rectangles, stroked
+  rectangles and filled rounded rectangles** join it, and **`PushClip`/`PopClip` are now part of the
+  dispatched stream**: a rectangle clip narrows the geometry it covers and becomes a scissor for
+  circles and images. The image fragment fetches one texel per destination pixel at the integer
+  source coordinate the software rasteriser computes, and the rounded-rectangle row spans come from
+  the same function the CPU fill uses, so all of these are **byte-identical** to the software frame
+  (pinned by tests that compare the two paths). A malformed image payload still stays on the CPU
+  path that reports it, so the error a caller sees does not depend on the path the rest of the
+  stream takes. Text, path/arc commands, circle and rounded-rectangle *strokes*, gradients and
+  shadows still fall back as a whole to the CPU rasteriser, which is why the CPU raster path
+  remains. One pre-existing difference is now documented rather than silent: the GPU circle
+  pipeline anti-aliases its rim while the CPU rasteriser fills a hard-edged disc.
+
+### Tooling
+
+- **`tools/view_platform_gate_probe.rs` is back to its documented committed form.** It had been
+  committed as the gate's *generated* copy, whose unconditional `use` broke
+  `cargo check --all-targets` on `mini`/`embedded`; the import and the assertion are now gated on
+  the same fact `cfg(declarative_view)` derives from, so the probe compiles trivially on every
+  profile and `check_view_platform_gate.sh` still forces its own copy.
+
 ## 3.1.1 (2026-10-30) — code editor host seams and true multi-view
 
 **Patch**: additive only — no existing public item changed or was removed. Closes the four gaps a host

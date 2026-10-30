@@ -1106,6 +1106,109 @@ impl Default for WidgetFactory {
     }
 }
 
+/// One process-wide extension applied to [`WidgetFactory::shared`] before it is built.
+///
+/// The shape is exactly the `install(&mut WidgetFactory)` entry a suite package already exposes
+/// (`rust_widgets_suites::install`), so a host registers a package instead of maintaining a
+/// parallel factory that the shared table cannot see (principle #101: one table, one path).
+///
+/// A plain function pointer rather than a boxed closure, matching [`WidgetCtor`]: registration
+/// stays allocation-free and the extension is nameable in a `static`.
+#[cfg(full_widgets)]
+pub type SharedFactoryExtension = fn(&mut WidgetFactory) -> Result<(), RegistrationError>;
+
+/// Why a shared-factory extension was not accepted.
+#[cfg(full_widgets)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SharedFactoryError {
+    /// The shared table has already been built, so an extension registered now would never run.
+    ///
+    /// Reported rather than ignored: a host that registers after the first `shared()` call has a
+    /// packaging bug (a control it believes it installed is missing), and a success return would
+    /// hide it until the control failed to create.
+    AlreadyBuilt,
+}
+
+#[cfg(full_widgets)]
+impl core::fmt::Display for SharedFactoryError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::AlreadyBuilt => f.write_str(concat!(
+                "the shared widget factory has already been built; register extensions before ",
+                "the first `WidgetFactory::shared()` call",
+            )),
+        }
+    }
+}
+
+/// The extension list, and whether it has been frozen by a build of the shared table.
+#[cfg(full_widgets)]
+#[derive(Default)]
+struct SharedExtensionRegistry {
+    /// Set once [`WidgetFactory::shared`] has read the list; later registrations are refused.
+    frozen: bool,
+    extensions: Vec<SharedFactoryExtension>,
+}
+
+#[cfg(full_widgets)]
+fn shared_extension_registry() -> &'static crate::compat::Mutex<SharedExtensionRegistry> {
+    static REGISTRY: crate::compat::OnceLock<crate::compat::Mutex<SharedExtensionRegistry>> =
+        crate::compat::OnceLock::new();
+    REGISTRY.get_or_init(|| crate::compat::Mutex::new(SharedExtensionRegistry::default()))
+}
+
+/// The extensions that failed while the shared table was built.
+#[cfg(full_widgets)]
+fn shared_extension_failure_cell() -> &'static crate::compat::Mutex<Vec<RegistrationError>> {
+    static FAILURES: crate::compat::OnceLock<crate::compat::Mutex<Vec<RegistrationError>>> =
+        crate::compat::OnceLock::new();
+    FAILURES.get_or_init(|| crate::compat::Mutex::new(Vec::new()))
+}
+
+/// Registers an extension that [`WidgetFactory::shared`] applies when it builds the table.
+///
+/// # Ordering is the contract
+///
+/// Extensions must be registered **before** the first `shared()` call — usually at the top of the
+/// host's startup, before any control is created. After that the table is frozen and this returns
+/// [`SharedFactoryError::AlreadyBuilt`]; the alternative (accepting the registration into a list
+/// nobody reads) would report success for something that did not happen.
+///
+/// # What an extension may and may not do
+///
+/// It registers controls with [`WidgetFactory::try_register`], so a name that already belongs to a
+/// core control is an error rather than a silent replacement. An extension that returns an error
+/// has its control left out: the rest of the table still builds, and
+/// [`shared_extension_failures`] reports what was refused.
+///
+/// It must **not** call [`WidgetFactory::shared`] itself — it runs *inside* that build, and the
+/// once-cell cannot be re-entered. An extension that needs to resolve a control reads the factory
+/// it was handed.
+#[cfg(full_widgets)]
+pub fn register_shared_extension(
+    extension: SharedFactoryExtension,
+) -> Result<(), SharedFactoryError> {
+    let mut registry = crate::compat::lock(shared_extension_registry());
+    if registry.frozen {
+        return Err(SharedFactoryError::AlreadyBuilt);
+    }
+    registry.extensions.push(extension);
+    Ok(())
+}
+
+/// The extensions the shared table refused, in registration order.
+///
+/// Empty when every extension ran. A host that installs a package can assert this after startup
+/// rather than discovering a missing control the first time a document asks for it.
+///
+/// Before the table has been built this is empty because nothing has been attempted yet; call
+/// [`WidgetFactory::shared`] first when the timing matters, which is what a host's startup does
+/// anyway.
+#[cfg(full_widgets)]
+pub fn shared_extension_failures() -> Vec<RegistrationError> {
+    crate::compat::lock(shared_extension_failure_cell()).clone()
+}
+
 /// Runtime widget factory: builds a control by name or kind.
 ///
 /// See the module docs; gated with the profile-specific control set, because every
@@ -1137,6 +1240,34 @@ impl WidgetFactory {
         factory
     }
 
+    /// Creates the core table with `extensions` applied, refusing on the first collision.
+    ///
+    /// # What a suite uses this for
+    ///
+    /// A package that adds controls (`rust-widgets-suites` adds `form` and `form_set`) cannot be
+    /// registered into a table that has already been frozen, and building a **separate** factory
+    /// leaves two tables that drift: the suite's controls are visible to its own factory and
+    /// invisible to [`Self::shared`], which is what the JSON loader, the designer catalogue and
+    /// `create_widget_of_kind` actually read. This is the construction entry that produces one
+    /// table containing both.
+    ///
+    /// # Errors
+    ///
+    /// The first [`RegistrationError`] from an extension. Nothing is returned in that case — a
+    /// partially extended factory would be a table whose contents depend on extension order, which
+    /// is exactly the drift this entry exists to prevent. Use [`Self::try_register`] directly for a
+    /// "best effort" build.
+    #[cfg(full_widgets)]
+    pub fn new_with_extensions(
+        extensions: &[SharedFactoryExtension],
+    ) -> Result<Self, RegistrationError> {
+        let mut factory = Self::new_with_defaults();
+        for extension in extensions {
+            extension(&mut factory)?;
+        }
+        Ok(factory)
+    }
+
     /// The process-wide default factory, built once and then borrowed.
     ///
     /// # Why this exists
@@ -1151,7 +1282,30 @@ impl WidgetFactory {
     /// own with [`Self::new`] + [`Self::register`].
     pub fn shared() -> &'static Self {
         static SHARED: crate::compat::OnceLock<WidgetFactory> = crate::compat::OnceLock::new();
-        SHARED.get_or_init(Self::new_with_defaults)
+        SHARED.get_or_init(|| {
+            // Freeze the extension list first, so a registration racing this build either ran
+            // (`frozen` was still false and it is in the list) or is refused below — never accepted
+            // into a list that has already been read.
+            let extensions = {
+                let mut registry = crate::compat::lock(shared_extension_registry());
+                registry.frozen = true;
+                registry.extensions.clone()
+            };
+            let mut factory = Self::new_with_defaults();
+            let mut failures = Vec::new();
+            for extension in extensions {
+                if let Err(error) = extension(&mut factory) {
+                    // A failing extension is reported twice on purpose: a log line where the
+                    // problem happened, and a queryable record for a host that builds its
+                    // diagnostics after startup. Dropping it silently would leave that host
+                    // wondering why a control it registered cannot be found.
+                    log::error!("shared widget factory extension failed: {error}");
+                    failures.push(error);
+                }
+            }
+            *crate::compat::lock(shared_extension_failure_cell()) = failures;
+            factory
+        })
     }
 
     /// Registers one widget capability and constructor.

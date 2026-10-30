@@ -6,7 +6,7 @@ use crate::compat::Vec;
 use crate::core::{Color, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::{RenderCommand, RenderContext};
-use crate::signal::GenericSignal;
+use crate::signal::{GenericSignal, Signal1};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
@@ -52,9 +52,13 @@ pub struct MiniCanvas {
     /// Emitted when a click-like interaction (press then release) is detected.
     pub clicked: GenericSignal,
     /// Emitted when the mouse button is pressed over the canvas.
-    pub mouse_pressed: GenericSignal,
-    /// Emitted when the mouse button is released over the canvas.
-    pub mouse_released: GenericSignal,
+    ///
+    /// Carries `(position, button)` on its typed signal, so a host can start a drag at the press
+    /// point instead of mirroring the pointer position from `mouse_moved`. The legacy zero-argument
+    /// signal is kept: this field derefs to it, so `canvas.mouse_pressed.connect(..)` still works.
+    pub mouse_pressed: crate::widget::pointer_event::PointerEvent,
+    /// Emitted when the mouse button is released over the canvas; carries `(position, button)`.
+    pub mouse_released: crate::widget::pointer_event::PointerEvent,
 }
 
 impl MiniCanvas {
@@ -77,9 +81,23 @@ impl MiniCanvas {
             cache_counter: u64::MAX,
             auto_flush: false,
             clicked: GenericSignal::new(),
-            mouse_pressed: GenericSignal::new(),
-            mouse_released: GenericSignal::new(),
+            mouse_pressed: crate::widget::pointer_event::PointerEvent::new(),
+            mouse_released: crate::widget::pointer_event::PointerEvent::new(),
         }
+    }
+
+    /// The typed pointer-press signal the published `mouse_pressed` event resolves to.
+    ///
+    /// The accessor exists for the same reason `Canvas::mouse_pressed_signal` does: the capability's
+    /// payload table is derived from a signal declaration it can reach by name, and a field whose
+    /// type is a composite event would otherwise be untypable.
+    pub fn mouse_pressed_signal(&self) -> &Signal1<(Point, u32)> {
+        self.mouse_pressed.payload_signal()
+    }
+
+    /// The typed pointer-release signal behind the published `mouse_released` event.
+    pub fn mouse_released_signal(&self) -> &Signal1<(Point, u32)> {
+        self.mouse_released.payload_signal()
     }
 
     /// Appends one command, dropping the oldest when the bounded history is full.
@@ -342,8 +360,16 @@ impl Widget for MiniCanvas {
         use crate::signal::EventSignalRef;
         match name {
             "clicked" => Some(EventSignalRef::unit("clicked", &self.clicked)),
-            "mouse_pressed" => Some(EventSignalRef::unit("mouse_pressed", &self.mouse_pressed)),
-            "mouse_released" => Some(EventSignalRef::unit("mouse_released", &self.mouse_released)),
+            "mouse_pressed" => Some(EventSignalRef::mapped(
+                "mouse_pressed",
+                self.mouse_pressed.payload_signal(),
+                crate::widget::pointer_event::pointer_capability_value,
+            )),
+            "mouse_released" => Some(EventSignalRef::mapped(
+                "mouse_released",
+                self.mouse_released.payload_signal(),
+                crate::widget::pointer_event::pointer_capability_value,
+            )),
             _ => None,
         }
     }
@@ -407,19 +433,19 @@ impl EventHandler for MiniCanvas {
             return;
         }
         match event {
-            Event::MousePress { pos, .. } => {
+            Event::MousePress { pos, button, .. } => {
                 // A press outside is not an interaction; without this check the event was
                 // reported for any pointer-down the host routed here.
                 if !self.geometry().contains_point(*pos) {
                     return;
                 }
-                self.mouse_pressed.emit();
+                self.mouse_pressed.emit_at(*pos, *button);
             }
-            Event::MouseRelease { pos, .. } => {
+            Event::MouseRelease { pos, button, .. } => {
                 if !self.geometry().contains_point(*pos) {
                     return;
                 }
-                self.mouse_released.emit();
+                self.mouse_released.emit_at(*pos, *button);
                 self.clicked.emit();
             }
             _ => {}
@@ -642,6 +668,51 @@ mod tests {
             _ => panic!("Expected FillCircle command"),
         }
     }
+    /// A press and a release must report where they happened and which button was used.
+    ///
+    /// The published events used to be payload-free, so a host had to mirror the pointer position
+    /// from `mouse_moved` to recover the press point — which loses the exact position when the
+    /// pointer moves between the two events, and cannot report a press at all if no move preceded it.
+    #[test]
+    fn mini_canvas_pointer_events_carry_position_and_button() {
+        use crate::event::Event;
+        use std::sync::{Arc, Mutex};
+
+        let mut canvas = MiniCanvas::new(Rect::new(0, 0, 100, 100));
+        let pressed: Arc<Mutex<Vec<(Point, u32)>>> = Arc::new(Mutex::new(Vec::new()));
+        let released: Arc<Mutex<Vec<(Point, u32)>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&pressed);
+        canvas.mouse_pressed.payload_signal().connect(move |value| {
+            if let Ok(mut guard) = sink.lock() {
+                guard.push((value.0, value.1));
+            }
+        });
+        let sink = Arc::clone(&released);
+        canvas.mouse_released.payload_signal().connect(move |value| {
+            if let Ok(mut guard) = sink.lock() {
+                guard.push((value.0, value.1));
+            }
+        });
+
+        canvas.handle_event(&Event::MousePress {
+            pos: Point::new(12, 34),
+            button: 1,
+            modifiers: 0,
+        });
+        canvas.handle_event(&Event::MouseRelease { pos: Point::new(56, 78), button: 1 });
+
+        assert_eq!(
+            pressed.lock().map(|guard| guard.clone()).unwrap_or_default(),
+            vec![(Point::new(12, 34), 1)],
+            "the press must carry its own position, not a mirrored one"
+        );
+        assert_eq!(
+            released.lock().map(|guard| guard.clone()).unwrap_or_default(),
+            vec![(Point::new(56, 78), 1)],
+            "the release must carry its own position, not the press position"
+        );
+    }
+
     /// A disabled canvas reports nothing, and a press outside it is not an interaction.
     ///
     /// Neither guard existed: the handler emitted `mouse_pressed`, `mouse_released` and `clicked`

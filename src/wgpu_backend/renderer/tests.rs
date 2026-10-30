@@ -6,6 +6,7 @@
 use super::super::commands::WgpuDrawCommand;
 use super::super::raster::rasterize_draw_commands_rgba8;
 use super::super::types::{PixelRect, Rgba8};
+use super::dispatch::commands_gpu_dispatchable;
 use super::encode::{circle_quad, pack_instanced_quads, INSTANCE_BYTES, MAX_INSTANCES_PER_DRAW};
 use super::frame::WgpuRenderer;
 use super::resources::grown_buffer_capacity;
@@ -46,10 +47,23 @@ fn shader_module_registry_matches_pipelines() {
         "rect_fs",
         "blur_vs",
         "blur_fs",
+        "shadow_blur_fs",
         "rect_vs_transformed",
         "rect_fs_instanced",
         "circle_vs",
         "circle_fs",
+        "image_vs",
+        "image_fs",
+        "text_vs",
+        "text_fs",
+        "shape_vs",
+        "shape_fs",
+        "radial_vs",
+        "radial_fs",
+        "path_fan_vs",
+        "path_stencil_fs",
+        "path_cover_vs",
+        "path_cover_fs",
     ];
     #[cfg(feature = "3d")]
     expected.extend(["mesh3d_vs", "mesh3d_fs"]);
@@ -574,11 +588,20 @@ fn sdf_circle_paints_an_anti_aliased_edge_the_strips_did_not() {
     assert_eq!(pixel(&pixels, 32, 16, 12), [255, 0, 0, 255]);
     // (22, 10): distance 0.485 beyond the radius, so the SDF shades partial alpha. The
     // strip approximation painted nothing here (its column at x = 22 spans y 11..21).
+    //
+    // This frame has no clear, so the destination is transparent and the pipeline composites
+    // source-over: the stored colour is the source premultiplied by its coverage. Over an opaque
+    // background the same coverage lands as `(255, 0, 0, ...)` — that case is asserted by
+    // `a_circle_drawn_over_content_keeps_the_content_around_it` below.
     let edge = pixel(&pixels, 32, 22, 10);
-    assert_eq!(&edge[..3], &[255, 0, 0], "the SDF edge keeps the fill colour: {edge:?}");
     assert!(
         edge[3] > 0 && edge[3] < 255,
         "the SDF edge must be anti-aliased (partial alpha), got {edge:?}"
+    );
+    assert_eq!(
+        &edge[..3],
+        &[edge[3], 0, 0],
+        "the edge is the fill colour premultiplied by its coverage over a transparent frame: {edge:?}"
     );
     // A corner of the bounding quad outside the disc stays transparent.
     assert_eq!(pixel(&pixels, 32, 8, 8), [0, 0, 0, 0]);
@@ -919,4 +942,865 @@ fn an_over_cap_dispatch_run_streams_every_chunk_in_order() {
     assert_eq!(sample(last), [0, 0, 255, 255], "the second chunk must draw its own rect");
     assert_eq!(sample(last - 1), [255, 0, 0, 255], "the first chunk's last rect must draw");
     assert_eq!(sample(0), [255, 0, 0, 255], "the first chunk's first rect must draw");
+}
+
+// ── The image pipeline ──────────────────────────────────────────────────────────
+
+/// A scaled image draw must produce the software rasteriser's bytes, not merely something that
+/// looks like an image.
+///
+/// The two paths agree by construction — the fragment shader fetches the texel at the same
+/// integer coordinate the CPU loop computes — so this is an exact equality, and the explicit
+/// pixel expectations below keep it from passing on a shared mistake.
+#[test]
+fn a_scaled_image_draw_matches_the_software_rasteriser() {
+    let Some(renderer) = renderer() else { return };
+    let commands = [
+        WgpuDrawCommand::Clear { color: Rgba8 { r: 0, g: 0, b: 0, a: 255 } },
+        WgpuDrawCommand::DrawImage {
+            rect: PixelRect { x: 1, y: 2, width: 8, height: 4 },
+            // One row, two columns: red then blue.
+            rgba8: vec![255, 0, 0, 255, 0, 0, 255, 255].into(),
+            image_width: 2,
+            image_height: 1,
+            clip: None,
+        },
+    ];
+    let gpu = renderer
+        .render_draw_commands_rgba8(12, 8, &commands)
+        .expect("the image stream must render on the GPU");
+    let cpu = rasterize_draw_commands_rgba8(12, 8, &commands).expect("the CPU rasteriser renders");
+    assert_eq!(gpu, cpu, "the GPU image must be the software rasteriser's picture");
+
+    assert_eq!(pixel(&gpu, 12, 1, 2), [255, 0, 0, 255], "the left half is the first source column");
+    assert_eq!(pixel(&gpu, 12, 4, 2), [255, 0, 0, 255], "the last left-half pixel is still red");
+    assert_eq!(pixel(&gpu, 12, 5, 2), [0, 0, 255, 255], "the right half is the second column");
+    assert_eq!(pixel(&gpu, 12, 8, 2), [0, 0, 255, 255], "the last destination column is blue");
+    assert_eq!(pixel(&gpu, 12, 0, 2), [0, 0, 0, 255], "nothing left of the destination");
+    assert_eq!(pixel(&gpu, 12, 1, 6), [0, 0, 0, 255], "nothing below the destination");
+}
+
+/// A clipped image draw is the same picture, restricted: the scissor the encoder derives from the
+/// command's clip must match the region the CPU rasteriser writes.
+#[test]
+fn a_clipped_image_draw_matches_the_software_rasteriser() {
+    let Some(renderer) = renderer() else { return };
+    let commands = [
+        WgpuDrawCommand::Clear { color: Rgba8 { r: 0, g: 0, b: 0, a: 255 } },
+        WgpuDrawCommand::DrawImage {
+            rect: PixelRect { x: 1, y: 2, width: 8, height: 4 },
+            rgba8: vec![255, 0, 0, 255, 0, 0, 255, 255].into(),
+            image_width: 2,
+            image_height: 1,
+            clip: Some(PixelRect { x: 5, y: 2, width: 2, height: 4 }),
+        },
+    ];
+    let gpu = renderer
+        .render_draw_commands_rgba8(12, 8, &commands)
+        .expect("the clipped image stream must render on the GPU");
+    let cpu = rasterize_draw_commands_rgba8(12, 8, &commands).expect("the CPU rasteriser renders");
+    assert_eq!(gpu, cpu, "the clip must select the same pixels on both paths");
+    assert_eq!(pixel(&gpu, 12, 4, 2), [0, 0, 0, 255], "left of the clip: untouched");
+    assert_eq!(pixel(&gpu, 12, 5, 2), [0, 0, 255, 255], "inside the clip: drawn");
+    assert_eq!(pixel(&gpu, 12, 6, 3), [0, 0, 255, 255], "inside the clip: drawn");
+    assert_eq!(pixel(&gpu, 12, 7, 3), [0, 0, 0, 255], "the clip's right edge is exclusive");
+}
+
+/// A malformed payload is not dispatchable, so the caller gets the CPU rasteriser's explicit
+/// error instead of a GPU frame that silently skipped the image.
+#[test]
+fn a_malformed_image_payload_is_reported_instead_of_dispatched() {
+    let Some(renderer) = renderer() else { return };
+    let error = renderer
+        .render_draw_commands_rgba8(
+            4,
+            4,
+            &[
+                WgpuDrawCommand::Clear { color: Rgba8 { r: 0, g: 0, b: 0, a: 255 } },
+                WgpuDrawCommand::DrawImage {
+                    rect: PixelRect { x: 0, y: 0, width: 4, height: 4 },
+                    // 12 bytes for a 2x2 image: short by four.
+                    rgba8: vec![0; 12].into(),
+                    image_width: 2,
+                    image_height: 2,
+                    clip: None,
+                },
+            ],
+        )
+        .expect_err("a short payload must fail, not paint");
+    assert!(error.contains("invalid DrawImage payload"), "{error}");
+}
+
+/// The image arm of the dispatcher must actually claim an image stream.
+///
+/// The parity test above cannot tell "the GPU drew this" from "the CPU did": both produce the
+/// same bytes by design. This asserts the dispatch decision itself, so a stream of clears and
+/// images is proven to take the GPU pass, and a malformed payload is proven to stay on the CPU
+/// path that reports it.
+#[test]
+fn an_image_stream_is_claimed_by_the_gpu_dispatcher() {
+    let image = |pixels: Vec<u8>| WgpuDrawCommand::DrawImage {
+        rect: PixelRect { x: 0, y: 0, width: 4, height: 4 },
+        rgba8: pixels.into(),
+        image_width: 2,
+        image_height: 2,
+        clip: None,
+    };
+    let clear = WgpuDrawCommand::Clear { color: Rgba8 { r: 0, g: 0, b: 0, a: 255 } };
+
+    assert!(
+        commands_gpu_dispatchable(&[clear.clone(), image(vec![0; 2 * 2 * 4])]),
+        "a well-formed image stream must be dispatched"
+    );
+    assert!(
+        !commands_gpu_dispatchable(&[clear, image(vec![0; 12])]),
+        "a short payload must stay on the CPU path that reports it"
+    );
+    assert!(
+        commands_gpu_dispatchable(&[WgpuDrawCommand::PushClip {
+            rect: PixelRect { x: 0, y: 0, width: 4, height: 4 }
+        }]),
+        "a rectangle clip is expressible as narrowed geometry and a scissor"
+    );
+    assert!(
+        commands_gpu_dispatchable(&[WgpuDrawCommand::DrawText {
+            rect: PixelRect { x: 0, y: 0, width: 8, height: 8 },
+            text: "A".into(),
+            color: Rgba8 { r: 255, g: 255, b: 255, a: 255 },
+            clip: None,
+        }]),
+        "a text box is drawn from its own coverage texture"
+    );
+    assert!(
+        !commands_gpu_dispatchable(&[WgpuDrawCommand::DrawPath {
+            points: vec![(0, 0), (4, 0), (4, 4)].into(),
+            closed: true,
+            color: Rgba8 { r: 255, g: 255, b: 255, a: 255 },
+            filled: false,
+            width: 1,
+            clip: None,
+        }]),
+        "paths still need the CPU rasteriser"
+    );
+}
+
+// ── Clips, strokes and rounded fills on the GPU ────────────────────────────────
+
+/// Renders the same stream through both paths and requires the bytes to be identical.
+///
+/// It also asserts the stream is *claimed* by the GPU dispatcher: without that, this helper would
+/// compare the CPU rasteriser with itself and pass while proving nothing.
+fn assert_gpu_matches_software(width: u32, height: u32, commands: &[WgpuDrawCommand]) {
+    let Some(renderer) = renderer() else { return };
+    assert!(commands_gpu_dispatchable(commands), "the stream under test must be GPU-dispatchable");
+    let gpu = renderer
+        .render_draw_commands_rgba8(width, height, commands)
+        .expect("the GPU path renders this stream");
+    let cpu = rasterize_draw_commands_rgba8(width, height, commands)
+        .expect("the CPU rasteriser renders this stream");
+    if gpu != cpu {
+        let first = gpu.iter().zip(&cpu).position(|(a, b)| a != b).unwrap_or(0) / 4;
+        let (x, y) = (first as u32 % width, first as u32 / width);
+        let differing = gpu.iter().zip(&cpu).filter(|(a, b)| a != b).count();
+        panic!(
+            "first difference at ({x},{y}): gpu {:?} cpu {:?} ({differing} differing bytes)",
+            pixel(&gpu, width, x, y),
+            pixel(&cpu, width, x, y)
+        );
+    }
+}
+
+/// As [`assert_gpu_matches_software`], but allows one level of difference per channel.
+///
+/// Fixed-function blending cannot reproduce the crate's un-premultiplied composite bit for bit:
+/// the GPU rounds the blend result when it stores it, and the CPU rounds the same expression after
+/// a division by the output alpha. On an opaque destination the two expressions are identical, so
+/// the only places they can disagree are the rounding ties — measured here as a single LSB, never
+/// more. Partial-coverage antialiasing (a glyph edge, a translucent colour) is exactly that case.
+fn assert_gpu_matches_software_within_one_level(
+    width: u32,
+    height: u32,
+    commands: &[WgpuDrawCommand],
+) {
+    let Some(renderer) = renderer() else { return };
+    assert!(commands_gpu_dispatchable(commands), "the stream under test must be GPU-dispatchable");
+    let gpu = renderer
+        .render_draw_commands_rgba8(width, height, commands)
+        .expect("the GPU path renders this stream");
+    let cpu = rasterize_draw_commands_rgba8(width, height, commands)
+        .expect("the CPU rasteriser renders this stream");
+    let mut worst = 0i32;
+    let mut worst_at = (0u32, 0u32);
+    for (index, (a, b)) in gpu.iter().zip(&cpu).enumerate() {
+        let delta = (*a as i32 - *b as i32).abs();
+        if delta > worst {
+            worst = delta;
+            worst_at = (index as u32 / 4 % width, index as u32 / 4 / width);
+        }
+    }
+    assert!(
+        worst <= 1,
+        "the GPU frame differs by {worst} at {worst_at:?}; only a single LSB of blend rounding \
+         is acceptable, and nothing else"
+    );
+}
+
+/// A rectangle clip is stream state: `PushClip` narrows the fill, `PopClip` restores it.
+#[test]
+fn a_clipped_rectangle_stream_matches_the_software_rasteriser() {
+    assert_gpu_matches_software(
+        20,
+        20,
+        &[
+            WgpuDrawCommand::Clear { color: Rgba8 { r: 0, g: 0, b: 0, a: 255 } },
+            WgpuDrawCommand::PushClip { rect: PixelRect { x: 2, y: 2, width: 6, height: 6 } },
+            WgpuDrawCommand::FillRect {
+                rect: PixelRect { x: 0, y: 0, width: 20, height: 20 },
+                color: Rgba8 { r: 255, g: 0, b: 0, a: 255 },
+                clip: None,
+            },
+            WgpuDrawCommand::PopClip,
+            WgpuDrawCommand::FillRect {
+                rect: PixelRect { x: 14, y: 14, width: 4, height: 4 },
+                color: Rgba8 { r: 0, g: 255, b: 0, a: 255 },
+                clip: None,
+            },
+        ],
+    );
+}
+
+/// The four edges of a stroked rectangle are the same rectangles the CPU fills, so the picture
+/// must be identical — including under a clip.
+#[test]
+fn a_stroked_rectangle_matches_the_software_rasteriser() {
+    assert_gpu_matches_software(
+        24,
+        24,
+        &[
+            WgpuDrawCommand::Clear { color: Rgba8 { r: 0, g: 0, b: 0, a: 255 } },
+            WgpuDrawCommand::StrokeRect {
+                rect: PixelRect { x: 2, y: 3, width: 16, height: 12 },
+                color: Rgba8 { r: 40, g: 120, b: 255, a: 255 },
+                thickness: 3,
+                clip: Some(PixelRect { x: 0, y: 0, width: 12, height: 24 }),
+            },
+        ],
+    );
+}
+
+/// The corner arcs must be *the same* arcs: both paths take their row spans from one function,
+/// so this is an equality rather than a tolerance.
+#[test]
+fn a_rounded_rectangle_fill_matches_the_software_rasteriser() {
+    assert_gpu_matches_software(
+        28,
+        24,
+        &[
+            WgpuDrawCommand::Clear { color: Rgba8 { r: 0, g: 0, b: 0, a: 255 } },
+            WgpuDrawCommand::FillRoundedRect {
+                rect: PixelRect { x: 2, y: 1, width: 22, height: 20 },
+                radius: 6,
+                color: Rgba8 { r: 255, g: 180, b: 0, a: 255 },
+                clip: None,
+            },
+        ],
+    );
+}
+
+/// A disc under a clip is scissored, and the scissor is the only thing the clip changes.
+///
+/// The disc itself is **not** compared against the CPU rasteriser: this backend's circle pipeline
+/// anti-aliases its edge with an SDF while the CPU rasteriser fills a hard-edged disc, so the two
+/// differ by construction on the rim (that was already true before any clipping was involved).
+/// What must hold is that clipping takes away exactly the pixels outside the clip and leaves every
+/// other pixel byte-identical to the unclipped draw.
+#[test]
+fn a_clipped_circle_is_the_unclipped_circle_minus_the_clip() {
+    let Some(renderer) = renderer() else { return };
+    let clear = WgpuDrawCommand::Clear { color: Rgba8 { r: 0, g: 0, b: 0, a: 255 } };
+    let circle = WgpuDrawCommand::FillCircle {
+        center: (12, 12),
+        radius: 7,
+        color: Rgba8 { r: 0, g: 200, b: 120, a: 255 },
+        clip: None,
+    };
+    let clip = PixelRect { x: 6, y: 6, width: 10, height: 8 };
+
+    let unclipped = renderer
+        .render_draw_commands_rgba8(24, 24, &[clear.clone(), circle.clone()])
+        .expect("the unclipped disc renders");
+    let clipped = renderer
+        .render_draw_commands_rgba8(
+            24,
+            24,
+            &[clear, WgpuDrawCommand::PushClip { rect: clip }, circle, WgpuDrawCommand::PopClip],
+        )
+        .expect("the clipped disc renders");
+
+    for y in 0..24u32 {
+        for x in 0..24u32 {
+            let inside = x >= clip.x as u32
+                && y >= clip.y as u32
+                && x < clip.right() as u32
+                && y < clip.bottom() as u32;
+            if inside {
+                assert_eq!(
+                    pixel(&clipped, 24, x, y),
+                    pixel(&unclipped, 24, x, y),
+                    "the clip must not change a pixel inside it (({x},{y}))"
+                );
+            } else {
+                assert_eq!(
+                    pixel(&clipped, 24, x, y),
+                    [0, 0, 0, 255],
+                    "outside the clip only the clear colour may remain (({x},{y}))"
+                );
+            }
+        }
+    }
+}
+
+// ── Text on the GPU ────────────────────────────────────────────────────────────
+
+/// Text is the command that decides whether a real frame can stay on the GPU, so it must be an
+/// equality and not a resemblance: the glyphs come from the same font-stack call, and the
+/// compositing is source-over on an opaque background, which is the case fixed-function blending
+/// reproduces exactly.
+#[test]
+fn a_text_box_matches_the_software_rasteriser() {
+    assert_gpu_matches_software(
+        40,
+        16,
+        &[
+            WgpuDrawCommand::Clear { color: Rgba8 { r: 20, g: 20, b: 24, a: 255 } },
+            WgpuDrawCommand::DrawText {
+                rect: PixelRect { x: 2, y: 2, width: 36, height: 12 },
+                text: "Hi!".into(),
+                color: Rgba8 { r: 235, g: 225, b: 190, a: 255 },
+                clip: None,
+            },
+        ],
+    );
+}
+
+/// A half-transparent text colour still composites identically on an opaque background, and a clip
+/// takes away exactly the pixels it covers.
+#[test]
+fn a_clipped_translucent_text_box_matches_the_software_rasteriser() {
+    assert_gpu_matches_software_within_one_level(
+        40,
+        16,
+        &[
+            WgpuDrawCommand::Clear { color: Rgba8 { r: 0, g: 0, b: 0, a: 255 } },
+            WgpuDrawCommand::PushClip { rect: PixelRect { x: 4, y: 0, width: 20, height: 16 } },
+            WgpuDrawCommand::DrawText {
+                rect: PixelRect { x: 2, y: 2, width: 36, height: 12 },
+                text: "Ag".into(),
+                color: Rgba8 { r: 120, g: 200, b: 255, a: 160 },
+                clip: None,
+            },
+            WgpuDrawCommand::PopClip,
+        ],
+    );
+}
+
+// ── Rings, wedges and rounded outlines (R1) ────────────────────────────────────
+
+const RED: Rgba8 = Rgba8 { r: 255, g: 0, b: 0, a: 255 };
+const BLACK: Rgba8 = Rgba8 { r: 0, g: 0, b: 0, a: 255 };
+
+/// A stroked circle paints its band and leaves both the hole and the outside alone.
+#[test]
+fn a_circle_stroke_paints_its_band_only() {
+    let Some(renderer) = renderer() else { return };
+    let pixels = renderer
+        .render_draw_commands_rgba8(
+            32,
+            32,
+            &[
+                WgpuDrawCommand::Clear { color: BLACK },
+                WgpuDrawCommand::DrawCircle {
+                    center: (16, 16),
+                    radius: 10,
+                    color: RED,
+                    width: 2,
+                    clip: None,
+                },
+            ],
+        )
+        .expect("the ring renders");
+    assert_eq!(pixel(&pixels, 32, 26, 16), [255, 0, 0, 255], "right of centre, on the band");
+    assert_eq!(pixel(&pixels, 32, 16, 26), [255, 0, 0, 255], "below centre, on the band");
+    assert_eq!(pixel(&pixels, 32, 16, 16), [0, 0, 0, 255], "the hole stays clear");
+    assert_eq!(pixel(&pixels, 32, 30, 16), [0, 0, 0, 255], "outside the ring stays clear");
+}
+
+/// An arc is the same band limited to its angular window: the sweep start is included and the
+/// opposite side of the circle is not painted at all.
+#[test]
+fn an_arc_band_is_limited_to_its_window() {
+    let Some(renderer) = renderer() else { return };
+    let pixels = renderer
+        .render_draw_commands_rgba8(
+            32,
+            32,
+            &[
+                WgpuDrawCommand::Clear { color: BLACK },
+                WgpuDrawCommand::DrawArc {
+                    center: (16, 16),
+                    radius: 10,
+                    start_angle: 0.0,
+                    end_angle: core::f32::consts::FRAC_PI_2,
+                    color: RED,
+                    filled: false,
+                    clip: None,
+                },
+            ],
+        )
+        .expect("the arc renders");
+    // Screen space: +x is angle 0 and +y (down) is PI/2, so the 45-degree point of the window is
+    // down-right of the centre.
+    assert_eq!(pixel(&pixels, 32, 23, 23), [255, 0, 0, 255], "inside the sweep");
+    assert_eq!(pixel(&pixels, 32, 9, 9), [0, 0, 0, 255], "the opposite quadrant is not painted");
+}
+
+/// A filled arc is a pie wedge: the same angular window, filled back to the centre.
+#[test]
+fn a_filled_arc_is_a_pie_wedge() {
+    let Some(renderer) = renderer() else { return };
+    let pixels = renderer
+        .render_draw_commands_rgba8(
+            32,
+            32,
+            &[
+                WgpuDrawCommand::Clear { color: BLACK },
+                WgpuDrawCommand::DrawArc {
+                    center: (16, 16),
+                    radius: 10,
+                    start_angle: 0.0,
+                    end_angle: core::f32::consts::FRAC_PI_2,
+                    color: RED,
+                    filled: true,
+                    clip: None,
+                },
+            ],
+        )
+        .expect("the wedge renders");
+    assert_eq!(pixel(&pixels, 32, 20, 20), [255, 0, 0, 255], "inside the wedge");
+    assert_eq!(pixel(&pixels, 32, 12, 12), [0, 0, 0, 255], "outside the wedge");
+}
+
+/// A rounded outline is the band between the outer rounded rectangle and the rectangle inset by
+/// the thickness: the edge is painted, the interior is not.
+#[test]
+fn a_rounded_outline_paints_its_band_only() {
+    let Some(renderer) = renderer() else { return };
+    let pixels = renderer
+        .render_draw_commands_rgba8(
+            32,
+            32,
+            &[
+                WgpuDrawCommand::Clear { color: BLACK },
+                WgpuDrawCommand::StrokeRoundedRect {
+                    rect: PixelRect { x: 4, y: 4, width: 24, height: 20 },
+                    radius: 6,
+                    color: RED,
+                    thickness: 3,
+                    clip: None,
+                },
+            ],
+        )
+        .expect("the outline renders");
+    assert_eq!(pixel(&pixels, 32, 16, 4), [255, 0, 0, 255], "the top edge is painted");
+    assert_eq!(pixel(&pixels, 32, 16, 12), [0, 0, 0, 255], "the interior is not");
+    assert_eq!(pixel(&pixels, 32, 0, 0), [0, 0, 0, 255], "outside the rectangle is not");
+}
+
+/// The SDF circle returns transparent coverage across most of its bounding quad, so its pipeline
+/// must composite rather than replace — otherwise drawing a disc would erase a rectangular hole in
+/// whatever the frame had already painted.
+#[test]
+fn a_circle_drawn_over_content_keeps_the_content_around_it() {
+    let Some(renderer) = renderer() else { return };
+    let pixels = renderer
+        .render_draw_commands_rgba8(
+            32,
+            32,
+            &[
+                WgpuDrawCommand::Clear { color: BLACK },
+                WgpuDrawCommand::FillRect {
+                    rect: PixelRect { x: 0, y: 0, width: 32, height: 32 },
+                    color: Rgba8 { r: 0, g: 0, b: 200, a: 255 },
+                    clip: None,
+                },
+                WgpuDrawCommand::FillCircle { center: (16, 16), radius: 6, color: RED, clip: None },
+            ],
+        )
+        .expect("the frame renders");
+    assert_eq!(pixel(&pixels, 32, 16, 16), [255, 0, 0, 255], "the disc is painted");
+    assert_eq!(
+        pixel(&pixels, 32, 11, 11),
+        [0, 0, 200, 255],
+        "inside the disc's bounding box but outside the disc, the background must survive"
+    );
+}
+
+// ── Gradients on the GPU (R2) ──────────────────────────────────────────────────
+
+/// A vertical ramp is computed once per row by the CPU's own stop rule and repeated across the
+/// row by the image pipeline, so the frame must be the software rasteriser's picture exactly.
+#[test]
+fn a_vertical_gradient_matches_the_software_rasteriser() {
+    assert_gpu_matches_software(
+        16,
+        12,
+        &[
+            WgpuDrawCommand::Clear { color: BLACK },
+            WgpuDrawCommand::DrawGradient {
+                rect: PixelRect { x: 2, y: 1, width: 10, height: 8 },
+                gradient_data: vec![255, 0, 0, 255, 0, 0, 255, 255, 0, 255, 0, 255].into(),
+                clip: None,
+            },
+        ],
+    );
+}
+
+/// The horizontal counterpart, including a clip: the ramp must not be re-phased by the clip.
+#[test]
+fn a_horizontal_gradient_matches_the_software_rasteriser() {
+    assert_gpu_matches_software(
+        20,
+        10,
+        &[
+            WgpuDrawCommand::Clear { color: BLACK },
+            WgpuDrawCommand::FillLinearGradient {
+                rect: PixelRect { x: 1, y: 2, width: 16, height: 6 },
+                gradient_data: vec![10, 20, 30, 255, 200, 210, 220, 255].into(),
+                clip: Some(PixelRect { x: 5, y: 0, width: 10, height: 10 }),
+            },
+        ],
+    );
+}
+
+/// A radial gradient computes `t` in the shader rather than sampling a ramp, so this is the one
+/// gradient whose parity depends on the two `sqrt` implementations rounding alike. The assertion
+/// is exact: if it ever stops being exact, the test fails and the difference is the finding.
+#[test]
+fn a_radial_gradient_matches_the_software_rasteriser() {
+    assert_gpu_matches_software(
+        24,
+        24,
+        &[
+            WgpuDrawCommand::Clear { color: BLACK },
+            WgpuDrawCommand::FillRadialGradient {
+                rect: PixelRect { x: 2, y: 3, width: 18, height: 16 },
+                gradient_data: vec![255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255].into(),
+                clip: None,
+            },
+        ],
+    );
+}
+
+/// The same parity across stop counts and rectangle shapes, so the first case cannot be luck: the
+/// stop count changes where the index boundaries fall, and a non-square rectangle changes the
+/// radius against which `t` is scaled.
+#[test]
+fn radial_gradients_match_across_stop_counts_and_sizes() {
+    for (stops, width, height) in [(2u8, 17u32, 13u32), (5, 32, 9), (9, 11, 11), (4, 5, 40)] {
+        let mut gradient_data = Vec::new();
+        for index in 0..stops {
+            gradient_data.extend_from_slice(&[
+                index.wrapping_mul(37),
+                index.wrapping_mul(59),
+                index.wrapping_mul(83),
+                255,
+            ]);
+        }
+        assert_gpu_matches_software(
+            width + 4,
+            height + 4,
+            &[
+                WgpuDrawCommand::Clear { color: BLACK },
+                WgpuDrawCommand::FillRadialGradient {
+                    rect: PixelRect { x: 2, y: 2, width, height },
+                    gradient_data: gradient_data.into(),
+                    clip: None,
+                },
+            ],
+        );
+    }
+}
+
+// ── Filled paths on the GPU (R3) ──────────────────────────────────────────────
+
+/// A convex polygon fills its interior and nothing else. The stencil buffer counts the fan's
+/// triangles, so this is the base case the two rules have to agree on.
+#[test]
+fn a_filled_path_paints_its_interior() {
+    let Some(renderer) = renderer() else { return };
+    let pixels = renderer
+        .render_draw_commands_rgba8(
+            32,
+            32,
+            &[
+                WgpuDrawCommand::Clear { color: BLACK },
+                WgpuDrawCommand::DrawPath {
+                    points: vec![(8, 8), (24, 8), (24, 24), (8, 24)].into(),
+                    closed: true,
+                    color: RED,
+                    filled: true,
+                    width: 1,
+                    clip: None,
+                },
+            ],
+        )
+        .expect("the filled path renders");
+    assert_eq!(pixel(&pixels, 32, 16, 16), [255, 0, 0, 255], "the interior is filled");
+    assert_eq!(pixel(&pixels, 32, 4, 16), [0, 0, 0, 255], "left of the polygon is untouched");
+    assert_eq!(pixel(&pixels, 32, 28, 16), [0, 0, 0, 255], "right of it is untouched");
+    assert_eq!(pixel(&pixels, 32, 16, 4), [0, 0, 0, 255], "above it is untouched");
+}
+
+/// The even-odd and non-zero rules differ exactly where the shape is covered twice. A pentagram
+/// is the canonical case: both rules paint its five points, but only non-zero paints the pentagon
+/// at the centre, which the outline crosses twice.
+///
+/// Both fills use the **same** point list, so the difference is the rule and nothing else.
+#[test]
+fn even_odd_and_nonzero_disagree_on_a_pentagram() {
+    let Some(renderer) = renderer() else { return };
+    // Star order: each vertex already connects across the figure, so the centre is traversed twice.
+    let points: Vec<(i32, i32)> = vec![(16, 3), (24, 28), (3, 12), (29, 12), (8, 28)];
+
+    let even_odd = renderer
+        .render_draw_commands_rgba8(
+            32,
+            32,
+            &[
+                WgpuDrawCommand::Clear { color: BLACK },
+                WgpuDrawCommand::DrawPath {
+                    points: points.clone().into(),
+                    closed: true,
+                    color: RED,
+                    filled: true,
+                    width: 1,
+                    clip: None,
+                },
+            ],
+        )
+        .expect("the even-odd fill renders");
+    let nonzero = renderer
+        .render_draw_commands_rgba8(
+            32,
+            32,
+            &[
+                WgpuDrawCommand::Clear { color: BLACK },
+                WgpuDrawCommand::FillPathNonZero {
+                    points: points.into(),
+                    contours: vec![(0usize, 5usize)].into(),
+                    color: RED,
+                    clip: None,
+                },
+            ],
+        )
+        .expect("the non-zero fill renders");
+
+    // A point of the star: both rules fill it.
+    assert_eq!(pixel(&even_odd, 32, 16, 6), [255, 0, 0, 255], "even-odd fills a point");
+    assert_eq!(pixel(&nonzero, 32, 16, 6), [255, 0, 0, 255], "non-zero fills a point");
+    // The centre pentagon: crossed twice, so even-odd leaves it empty and non-zero fills it.
+    assert_eq!(pixel(&even_odd, 32, 16, 17), [0, 0, 0, 255], "even-odd leaves the centre");
+    assert_eq!(pixel(&nonzero, 32, 16, 17), [255, 0, 0, 255], "non-zero fills the centre");
+}
+
+/// An unblurred shadow is a translated rectangle, so the GPU can paint it exactly: the assertion is
+/// the usual byte-for-byte comparison, clip included.
+#[test]
+fn an_unblurred_shadow_matches_the_software_rasteriser() {
+    assert_gpu_matches_software(
+        24,
+        24,
+        &[
+            WgpuDrawCommand::Clear { color: BLACK },
+            WgpuDrawCommand::BoxShadow {
+                rect: PixelRect { x: 4, y: 4, width: 12, height: 10 },
+                color: Rgba8 { r: 90, g: 90, b: 110, a: 255 },
+                offset_x: 3,
+                offset_y: 4,
+                blur_radius: 0,
+                clip: Some(PixelRect { x: 0, y: 0, width: 18, height: 24 }),
+            },
+        ],
+    );
+}
+
+/// A blurred shadow is the first command whose GPU form is more than one pass: the body is painted
+/// into an offscreen layer, filtered twice and composited. The layer is allocated at exactly the
+/// CPU rasteriser's extent and the shader repeats its clamped integer moving average, so the two
+/// paths must agree pixel for pixel, not merely look alike.
+#[test]
+fn a_blurred_shadow_matches_the_software_rasteriser() {
+    assert_gpu_matches_software(
+        24,
+        24,
+        &[
+            WgpuDrawCommand::Clear { color: BLACK },
+            WgpuDrawCommand::BoxShadow {
+                rect: PixelRect { x: 6, y: 6, width: 8, height: 6 },
+                color: Rgba8 { r: 90, g: 90, b: 110, a: 255 },
+                offset_x: 2,
+                offset_y: 3,
+                blur_radius: 3,
+                clip: None,
+            },
+        ],
+    );
+}
+
+/// The paint region bounds the feathered shadow: a clip that cuts through it must leave every pixel
+/// outside exactly as the stream left it, while the layer's own blur still reaches the edge.
+#[test]
+fn a_clipped_blurred_shadow_keeps_the_pixels_outside_its_clip() {
+    assert_gpu_matches_software(
+        24,
+        24,
+        &[
+            WgpuDrawCommand::Clear { color: BLACK },
+            WgpuDrawCommand::BoxShadow {
+                rect: PixelRect { x: 6, y: 6, width: 8, height: 6 },
+                color: Rgba8 { r: 200, g: 40, b: 40, a: 255 },
+                offset_x: 0,
+                offset_y: 0,
+                blur_radius: 2,
+                clip: Some(PixelRect { x: 4, y: 4, width: 10, height: 8 }),
+            },
+        ],
+    );
+}
+
+/// Two blurred shadows in one frame get their own layers, radii and positions, and a later draw
+/// still paints over both: the per-layer parameter buffers exist so one pass cannot read another
+/// shadow's radius, and the composite keeps its stream position.
+#[test]
+fn two_blurred_shadows_keep_their_own_layers_and_order() {
+    assert_gpu_matches_software(
+        32,
+        32,
+        &[
+            WgpuDrawCommand::Clear { color: BLACK },
+            WgpuDrawCommand::BoxShadow {
+                rect: PixelRect { x: 2, y: 2, width: 8, height: 8 },
+                color: Rgba8 { r: 0, g: 0, b: 255, a: 200 },
+                offset_x: 0,
+                offset_y: 0,
+                blur_radius: 2,
+                clip: None,
+            },
+            WgpuDrawCommand::BoxShadow {
+                rect: PixelRect { x: 20, y: 18, width: 6, height: 6 },
+                color: Rgba8 { r: 0, g: 200, b: 0, a: 255 },
+                offset_x: 1,
+                offset_y: 1,
+                blur_radius: 4,
+                clip: None,
+            },
+            WgpuDrawCommand::FillRect {
+                rect: PixelRect { x: 10, y: 10, width: 6, height: 6 },
+                color: RED,
+                clip: None,
+            },
+        ],
+    );
+}
+
+/// A blurred shadow is claimed by the dispatcher: without this the two tests above would compare the
+/// CPU rasteriser with itself.
+#[test]
+fn a_blurred_shadow_is_claimed_by_the_gpu() {
+    assert!(commands_gpu_dispatchable(&[WgpuDrawCommand::BoxShadow {
+        rect: PixelRect { x: 0, y: 0, width: 4, height: 4 },
+        color: RED,
+        offset_x: 1,
+        offset_y: 1,
+        blur_radius: 4,
+        clip: None,
+    }]));
+}
+
+/// An axis-aligned line is a rectangle under the CPU's stamped-square thickness rule, so the GPU
+/// can reproduce it exactly — the assertion is the usual byte-for-byte comparison.
+#[test]
+fn axis_aligned_lines_match_the_software_rasteriser() {
+    assert_gpu_matches_software(
+        24,
+        20,
+        &[
+            WgpuDrawCommand::Clear { color: BLACK },
+            // Horizontal rule, thickness 4 → half_w = 2.
+            WgpuDrawCommand::DrawLine {
+                from: (3, 5),
+                to: (18, 5),
+                color: RED,
+                width: 4,
+                clip: None,
+            },
+            // Vertical rule, thickness 3 → half_w = 1 (integer halving of 3 is 1).
+            WgpuDrawCommand::DrawLine {
+                from: (8, 8),
+                to: (8, 16),
+                color: Rgba8 { r: 0, g: 200, b: 0, a: 255 },
+                width: 3,
+                clip: Some(PixelRect { x: 0, y: 10, width: 24, height: 10 }),
+            },
+        ],
+    );
+}
+
+/// A diagonal line stays on the CPU: the dispatcher must not claim it, because a capsule would not
+/// be the picture the software rasteriser's stamped squares produce.
+#[test]
+fn a_diagonal_line_stays_on_the_cpu() {
+    assert!(!commands_gpu_dispatchable(&[WgpuDrawCommand::DrawLine {
+        from: (0, 0),
+        to: (8, 8),
+        color: RED,
+        width: 2,
+        clip: None,
+    }]));
+}
+
+/// A polyline whose segments are all axis-aligned is a run of rectangles under the CPU's
+/// per-segment line rule, so the whole path is byte-identical.
+#[test]
+fn an_axis_aligned_stroke_path_matches_the_software_rasteriser() {
+    assert_gpu_matches_software(
+        24,
+        24,
+        &[
+            WgpuDrawCommand::Clear { color: BLACK },
+            // A rectangle outline drawn as a closed 4-segment polyline.
+            WgpuDrawCommand::DrawPath {
+                points: vec![(4, 4), (19, 4), (19, 16), (4, 16)].into(),
+                closed: true,
+                color: RED,
+                filled: false,
+                width: 2,
+                clip: Some(PixelRect { x: 0, y: 0, width: 24, height: 18 }),
+            },
+        ],
+    );
+}
+
+/// One diagonal segment sends the whole path back to the CPU, for the same reason a single
+/// diagonal line does.
+#[test]
+fn a_diagonal_stroke_path_stays_on_the_cpu() {
+    assert!(!commands_gpu_dispatchable(&[WgpuDrawCommand::DrawPath {
+        points: vec![(0, 0), (8, 8), (8, 16)].into(),
+        closed: false,
+        color: RED,
+        filled: false,
+        width: 2,
+        clip: None,
+    }]));
 }

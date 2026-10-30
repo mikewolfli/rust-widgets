@@ -3,13 +3,17 @@
 
 //! Rendering backends: software surface, paint, batch, and scene.
 pub(crate) mod batch;
+/// Resampling blits shared by [`paint::PaintBackend::draw_image_scaled`] and its software path.
+pub(crate) mod image_scale;
 pub(crate) mod paint;
+/// The box-blur kernel the software backend runs for shadows and blur layers.
+pub(crate) mod paint_blur;
 pub(crate) mod scene;
 pub(crate) mod surface;
 
 // Public re-exports consumed by downstream — suppress intra-crate unused warning.
 #[allow(unused_imports)]
-pub use batch::{BatchCommand, BatchError, BatchId, BatchRenderer};
+pub use batch::{BatchCommand, BatchError, BatchId, BatchImage, BatchRenderer};
 pub use paint::{PaintBackend, SoftwarePaintBackend};
 
 #[cfg(feature = "quality-management")]

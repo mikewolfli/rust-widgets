@@ -3,7 +3,7 @@
 
 //! i18n manager - core internationalization management
 use crate::compat::{HashMap, String, ToString, Vec};
-use crate::i18n::types::{ReloadEvent, TranslationFile};
+use crate::i18n::types::{KeyAudit, ReloadEvent, TranslationFile};
 use crossbeam_channel::Sender;
 use std::fs::File;
 use std::io::Read;
@@ -65,6 +65,14 @@ pub struct I18nManager {
     file_fingerprints: HashMap<String, FileFingerprint>,
     hot_reload_enabled: bool,
     reload_sender: Option<Sender<ReloadEvent>>,
+    /// The keys a catalogue must provide, when the host declared them.
+    ///
+    /// Empty means "no declared contract", and every load is accepted unchanged — the historical
+    /// behaviour. Non-empty turns a file load into a checked operation: a catalogue that lacks a
+    /// required key is **refused** rather than installed, because a partially loaded catalogue
+    /// paints the missing labels as raw identifiers, which reads as a broken application instead
+    /// of as the packaging error it is.
+    required_keys: Vec<String>,
 }
 impl I18nManager {
     /// Create a new i18n manager
@@ -76,6 +84,7 @@ impl I18nManager {
             file_fingerprints: HashMap::new(),
             hot_reload_enabled: false,
             reload_sender: None,
+            required_keys: Vec::new(),
         }
     }
     /// Enable hot reload functionality
@@ -165,6 +174,21 @@ impl I18nManager {
                     path.display(),
                     translation_file.language
                 ));
+            }
+            // The declared key contract applies to a reload exactly as it does to the first
+            // load: an edit that drops a key must be refused, otherwise the running application
+            // silently starts painting that label as a raw identifier until restart.
+            if !self.required_keys.is_empty() {
+                let audit = audit_against(&translation_file, &self.required_keys);
+                if !audit.missing.is_empty() {
+                    return Err(format!(
+                        "translation file '{}' is missing {} required key(s): {}; keeping the \
+                         previously loaded catalogue",
+                        path.display(),
+                        audit.missing.len(),
+                        audit.missing.join(", ")
+                    ));
+                }
             }
             self.translations.insert(language.to_string(), translation_file);
             if let Some(fingerprint) = FileFingerprint::read(path) {
@@ -274,6 +298,23 @@ impl I18nManager {
             ));
         }
 
+        // A declared key contract turns this load into a checked one. The check happens before
+        // anything is stored, so a refused file leaves the previous catalogue in place — a
+        // partially installed catalogue is worse than none, because it looks loaded.
+        if !self.required_keys.is_empty() {
+            let audit = audit_against(&translation_file, &self.required_keys);
+            if !audit.missing.is_empty() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!(
+                        "translation file '{path}' is missing {} required key(s): {}",
+                        audit.missing.len(),
+                        audit.missing.join(", ")
+                    ),
+                ));
+            }
+        }
+
         self.translations.insert(language.clone(), translation_file);
         self.translation_paths.insert(language.clone(), path_buf.clone());
         if let Some(fingerprint) = FileFingerprint::read(&path_buf) {
@@ -305,6 +346,46 @@ impl I18nManager {
         keys.into_iter().collect()
     }
 
+    /// Declares the keys every catalogue must provide.
+    ///
+    /// # What it changes
+    ///
+    /// Once set, [`Self::load_translations`] **refuses** a file that lacks any of them, so an
+    /// incomplete catalogue fails at load time instead of painting raw keys at run time. A
+    /// catalogue is also checked in the other direction by [`Self::audit_against_required`], which
+    /// reports stale entries that nothing asks for.
+    ///
+    /// The list is sorted and de-duplicated, so two hosts that declare the same keys in different
+    /// orders get the same audit. An empty list restores the unchecked behaviour.
+    ///
+    /// [`Self::inject_translations`] is **not** checked: it returns no error channel, and an
+    /// embedded catalogue compiled into the binary is validated by the build rather than at run
+    /// time. A host that wants the same guarantee for an embedded file can call
+    /// [`Self::audit_against_required`] after injecting it.
+    pub fn set_required_keys(&mut self, keys: Vec<String>) {
+        let mut keys = keys;
+        keys.sort();
+        keys.dedup();
+        self.required_keys = keys;
+    }
+
+    /// The declared key contract, sorted; empty when none was declared.
+    pub fn required_keys(&self) -> &[String] {
+        &self.required_keys
+    }
+
+    /// Compares one loaded catalogue against the declared key contract.
+    ///
+    /// `None` when `language` is not loaded or no contract was declared — the honest "there is
+    /// nothing to compare" answer rather than an audit that reads as a pass.
+    pub fn audit_against_required(&self, language: &str) -> Option<KeyAudit> {
+        let file = self.translations.get(language)?;
+        if self.required_keys.is_empty() {
+            return None;
+        }
+        Some(audit_against(file, &self.required_keys))
+    }
+
     /// Return loaded translation file count.
     pub fn translation_count(&self) -> usize {
         self.translations.len()
@@ -331,6 +412,53 @@ impl I18nManager {
         let mut out = String::new();
         self.translate_with_context_into(key, context, count, &mut out);
         out
+    }
+
+    /// Translate and fill `{name}` placeholders in one call.
+    ///
+    /// # Why this is one call and not two
+    ///
+    /// A message such as `"{count} files selected"` needs a lookup and then a substitution. Exposing
+    /// only the lookup left hosts writing their own filler (the reason the consuming host still
+    /// carries one), and a second filler is a second answer to "what does a placeholder look like"
+    /// — two implementations that drift (principle #101). The substitution rule is documented on
+    /// [`interpolate_into`], which this delegates to, so there is exactly one definition.
+    ///
+    /// `args` are `(name, value)` pairs matched **exactly** (no prefix matching): `{name}` is
+    /// replaced only by an argument literally named `name`. A placeholder with no matching argument
+    /// is left verbatim, so a missing value is visible in the output instead of silently vanishing.
+    pub fn translate_with_args(
+        &self,
+        key: &str,
+        context: Option<&str>,
+        count: u32,
+        args: &[(&str, &str)],
+    ) -> String {
+        let mut out = String::new();
+        self.translate_with_args_into(key, context, count, args, &mut out);
+        out
+    }
+
+    /// [`Self::translate_with_args`], appending to `out`.
+    ///
+    /// One scratch buffer is allocated for the resolved message; the substituted text goes into
+    /// the caller's buffer, so a draw loop still reuses its own allocation for the result.
+    pub fn translate_with_args_into(
+        &self,
+        key: &str,
+        context: Option<&str>,
+        count: u32,
+        args: &[(&str, &str)],
+        out: &mut String,
+    ) {
+        if args.is_empty() {
+            // No placeholders to fill: stay on the zero-allocation path.
+            self.translate_with_context_into(key, context, count, out);
+            return;
+        }
+        let mut message = String::new();
+        self.translate_with_context_into(key, context, count, &mut message);
+        interpolate_into(&message, args, out);
     }
 
     /// Zero-allocation counterpart of [`Self::translate`]: appends the resolved message to `out`.
@@ -404,3 +532,87 @@ impl I18nManager {
     }
 }
 crate::impl_default_via_new!(I18nManager);
+
+/// Appends `message` to `out` with every `{name}` placeholder replaced by its argument.
+///
+/// # The rule, in full
+///
+/// * A placeholder is `{` + a name + `}`, where the name is one or more ASCII alphanumerics or
+///   `_`. Anything else — `{ }`, `{}`, `{a-b}`, an unterminated `{` — is copied through literally.
+/// * A matching argument's value is inserted **once per occurrence**, and arguments are matched
+///   exactly (not as prefixes), so `{count}` never picks up `{count_total}`.
+/// * A placeholder with no matching argument is left verbatim. This is deliberate: silently
+///   substituting an empty string would make a missing value indistinguishable from an empty one,
+///   and the raw `{name}` in a label is a defect a translator or a test can see.
+/// * The first argument with a given name wins; a duplicate later in the list is ignored rather
+///   than reported, because a caller that passes the same name twice has already lost which value
+///   it meant.
+/// * There is no escape syntax: `{{` is a literal `{` followed by the rest of the text, and a
+///   message that legitimately contains `{name}` with no argument keeps it as written.
+///
+/// # Why a free function
+///
+/// Filling is a property of the message, not of the manager. A host that already holds a resolved
+/// string (from a cached translation, a name table, or a plural rule of its own) can fill it
+/// without a manager, which is what lets one filler serve both the lookup path and the direct
+/// path instead of each having its own.
+pub fn interpolate_into(message: &str, args: &[(&str, &str)], out: &mut String) {
+    let bytes = message.as_bytes();
+    let mut copied = 0usize;
+    let mut index = 0usize;
+    while index < bytes.len() {
+        if bytes[index] != b'{' {
+            index += 1;
+            continue;
+        }
+        // Find the closing brace before any nested `{`; anything else is not a placeholder.
+        let mut end = index + 1;
+        while end < bytes.len() && bytes[end] != b'}' && bytes[end] != b'{' {
+            end += 1;
+        }
+        if end >= bytes.len() || bytes[end] != b'}' {
+            index += 1;
+            continue;
+        }
+        let name = &message[index + 1..end];
+        let is_placeholder = !name.is_empty()
+            && name.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'_');
+        if !is_placeholder {
+            index += 1;
+            continue;
+        }
+        if let Some((_, value)) = args.iter().find(|(arg, _)| *arg == name) {
+            out.push_str(&message[copied..index]);
+            out.push_str(value);
+            copied = end + 1;
+        }
+        // No value: leave the braces in place, which the `copied..index` run keeps intact.
+        index = end + 1;
+    }
+    out.push_str(&message[copied..]);
+}
+
+/// Both directions of the comparison between one catalogue and a required key set.
+///
+/// Sorted on both sides so an audit is stable regardless of the map's iteration order (a
+/// `HashMap` on desktop, a `BTreeMap` under mini).
+fn audit_against(file: &TranslationFile, required: &[String]) -> KeyAudit {
+    let mut missing: Vec<String> = required
+        .iter()
+        .filter(|key| !file.translations.contains_key(key.as_str()))
+        .cloned()
+        .collect();
+    missing.sort();
+    missing.dedup();
+
+    let mut unexpected: Vec<String> = file
+        .translations
+        .keys()
+        .filter(|key| !required.iter().any(|required| required == *key))
+        .cloned()
+        .collect();
+    unexpected.sort();
+    unexpected.dedup();
+
+    KeyAudit { missing, unexpected }
+}

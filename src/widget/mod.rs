@@ -101,6 +101,8 @@ pub mod window_decorations;
 /// The old name described window decoration, which this module never implemented; the
 /// canonical path is [`field_decorations`].
 pub use field_decorations as decorations;
+/// One control's icon tint, shared by the controls that publish an independent icon colour.
+pub mod icon_tint;
 /// The shared hover/press fade used by pointer-driven controls.
 pub mod interaction_fade;
 /// Content-driven control metrics — the "implicit size" system.
@@ -116,6 +118,12 @@ pub mod metrics;
 /// instead of an aborted process. See the module docs for the sequence that used
 /// to panic.
 pub mod numeric;
+/// The pointer gesture every drawing surface publishes: a legacy unit signal plus its payload.
+///
+/// One type for every control that reports a press, a release or a double click, so the wire
+/// form of a pointer event cannot differ between surfaces (principle #54).
+pub mod pointer_event;
+pub use icon_tint::IconTint;
 #[cfg(not(alloc_frugal))]
 pub mod runtime;
 /// Hand-written sample data for the data-bearing controls.
@@ -227,6 +235,13 @@ pub use capability::{
 // profile compiles them out, so the re-export carries the same gate.
 #[cfg(widgets_unstripped)]
 pub use capability::{read_widget_property_by_id, write_widget_property_by_id};
+// Extending the shared factory is the package-installation entry (BLUE24 U-7): a suite adds its
+// controls to the one table every other consumer reads, instead of holding a parallel one.
+#[cfg(full_widgets)]
+pub use capability::{
+    register_shared_extension, shared_extension_failures, SharedFactoryError,
+    SharedFactoryExtension,
+};
 pub use draw::Draw;
 pub use interaction_fade::InteractionFade;
 // The canonical types live in `crate::image`; re-exported here so a caller that

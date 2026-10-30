@@ -443,6 +443,8 @@ pub fn default_widget_property_default_value(
             "pressed" => CapabilityValue::Bool(false),
             "default" => CapabilityValue::Bool(false),
             "icon_source" => CapabilityValue::Null,
+            // No tint: the icon follows the label's ink, the pre-existing behaviour.
+            "icon_tint" => CapabilityValue::Null,
             // Mirrors `Button::new`'s field initialisers, so a fresh button and the
             // schema's defaults agree.
             "icon_size" => {
@@ -2325,6 +2327,8 @@ pub fn default_widget_property_default_value(
             "text" => CapabilityValue::String(String::new()),
             "checked" => CapabilityValue::Bool(false),
             "icon_source" => CapabilityValue::Null,
+            // No tint: the icon follows the label's ink, the pre-existing behaviour.
+            "icon_tint" => CapabilityValue::Null,
             "menu_open" => CapabilityValue::Bool(false),
             "action_count" => CapabilityValue::UInt(0),
             "row_height" => CapabilityValue::UInt(24),

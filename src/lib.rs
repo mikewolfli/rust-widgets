@@ -237,6 +237,11 @@ pub mod quality;
 pub mod render;
 /// Runtime render-engine abstraction.
 pub mod render_engine;
+/// Bilinear RGBA8 resampling shared by the image layer and the render layer.
+///
+/// Ungated because the paint layer needs it in profiles that compile no image decoder: a host tile
+/// or captured frame is raw RGBA8, not a `crate::image` value.
+pub mod resample;
 /// Persistent application settings (`settings store`-equivalent key/value store).
 ///
 /// Gated like the existing menu-config persistence precedent (`advanced-widgets`) plus
@@ -420,6 +425,12 @@ pub use api::{
     ShortcutEditor, ShortcutEntry, SkeletonLoader, Splitter, StackedWidget, Stepper, TabWidget,
     TagInput, TextEdit, ToggleButton, ToggleButtonState, ToolBox, Toolbox, WidgetAndDraw,
     WidgetFactory, MAX_REGISTERED_ICONS,
+};
+
+#[cfg(full_widgets)]
+pub use widget::{
+    register_shared_extension, shared_extension_failures, SharedFactoryError,
+    SharedFactoryExtension,
 };
 
 #[cfg(feature = "image")]

@@ -129,6 +129,14 @@ pub enum WgpuDrawCommand {
     /// exactly `image_width * image_height * 4` is a hard error — the
     /// rasterizer returns `Err` and abandons the whole frame rather than
     /// drawing a partial frame.
+    ///
+    /// # Which path draws it
+    ///
+    /// A stream the GPU dispatcher claims is drawn by the image pipeline: one quad per draw, one
+    /// texel fetch per destination pixel at the source coordinate the CPU rule selects, and
+    /// source-over compositing. The command's own `clip` becomes that draw's scissor rectangle.
+    /// Any other stream (a mix with text, paths, rounded rectangles or clip push/pop) falls back
+    /// to the CPU rasteriser as a whole, and both produce the same bytes.
     DrawImage {
         /// Destination rectangle in physical pixels.
         rect: PixelRect,

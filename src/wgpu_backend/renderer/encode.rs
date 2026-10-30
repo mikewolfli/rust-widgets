@@ -4,12 +4,21 @@
 //! The 2D and mesh encoders: the packing helpers plus every entry point that records GPU draws
 //! through the renderer's cached resources.
 use super::super::commands::WgpuDrawCommand;
-use super::super::raster::rasterize_draw_commands_rgba8;
+use super::super::raster::{
+    bbox_for_circle, combine, effective_clip, gradient_ramp, path_bounds, path_fan_vertices,
+    rasterize_draw_commands_rgba8, GradientAxis,
+};
 use super::super::types::{PixelRect, Rgba8};
+use super::dispatch::{
+    commands_gpu_dispatchable, pack_rect_command, SHAPE_ARC_STROKE, SHAPE_ARC_WEDGE,
+    SHAPE_CIRCLE_STROKE, SHAPE_ROUNDED_OUTLINE,
+};
 use super::frame::WgpuRenderer;
 use super::resources::{
-    padded_row_bytes, readback_frame_bytes, rgba_buffer_len, DrawStep, RenderCache,
+    padded_row_bytes, readback_frame_bytes, rgba_buffer_len, DrawStep, RenderCache, ShadowDraw,
 };
+use super::shadow::pack_blurred_shadow;
+use super::uploads::{ImageDraw, PathDraw, RadialDraw, ShapeDraw, TextDraw};
 use std::cell::Ref;
 
 /// Packs a row-major [`crate::render::math3d::Mat4`] as the column-major bytes WGSL expects.
@@ -49,7 +58,7 @@ pub(crate) const MAX_INSTANCES_PER_DRAW: usize = 4096;
 /// `x` maps `0..width` to `-1..1` and `y` maps `0..height` to `1..-1`, matching the renderer's
 /// top-left origin. These are the bytes `Mat4::from_affine(ortho)` produces, written directly so
 /// the 2D rectangle path can use the instanced pipeline without the `3d` feature's maths module.
-fn ortho_mvp_bytes(width: u32, height: u32) -> [u8; 64] {
+pub(super) fn ortho_mvp_bytes(width: u32, height: u32) -> [u8; 64] {
     let w = width as f32;
     let h = height as f32;
     // Column-major: scale x, flip and scale y, keep z, then translate to the clip-space corner.
@@ -102,7 +111,7 @@ pub(crate) fn circle_quad(
 /// positions the vertex stage interpolates.
 fn pack_circle(
     pack_vertices: &mut Vec<u8>,
-    pack_uniforms: &mut Vec<u8>,
+    pack_uniforms: &mut [u8],
     stride: usize,
     index: usize,
     center: (i32, i32),
@@ -134,24 +143,6 @@ fn pack_circle(
     let base = index * 2 * stride;
     pack_uniforms[base..base + 16].copy_from_slice(&colour_slot);
     pack_uniforms[base + stride..base + stride + 16].copy_from_slice(&params_slot);
-}
-
-/// Whether a command stream can be drawn entirely by the GPU pipelines (G-218).
-///
-/// Only the classes the existing pipelines cover qualify: whole-frame clears, unclipped filled
-/// rectangles (the instanced quad pipeline) and unclipped filled circles (the SDF circle
-/// pipeline). [`WgpuDrawCommand::SetBlendMode`] is allowed only at `Normal` (mode `0`),
-/// because every pipeline writes with `REPLACE` blending, which is exactly the Normal write;
-/// any other mode needs blending the pipelines do not implement. Clips, text, images, paths,
-/// gradients, shadows and strokes stay on the CPU rasteriser, which remains the fallback.
-fn commands_gpu_dispatchable(commands: &[WgpuDrawCommand]) -> bool {
-    commands.iter().all(|command| match command {
-        WgpuDrawCommand::Clear { .. } => true,
-        WgpuDrawCommand::FillRect { clip: None, .. } => true,
-        WgpuDrawCommand::FillCircle { clip: None, .. } => true,
-        WgpuDrawCommand::SetBlendMode { mode } => *mode == 0,
-        _ => false,
-    })
 }
 
 /// Packs a run of quads into the 48-byte-per-instance layout described on
@@ -237,6 +228,7 @@ impl WgpuRenderer {
         let mut cache = self.cache.borrow_mut();
         cache.ensure_uniform(&self.device, &self.bind_group_layout, rects.len())?;
         cache.ensure_target(&self.device, width, height);
+        cache.ensure_stencil(&self.device, width, height);
         let stride = cache.uniform.as_ref().expect("the arena was just ensured").stride as usize;
 
         // Generate transformed vertex positions in NDC and one clamped colour slot per rect,
@@ -271,9 +263,10 @@ impl WgpuRenderer {
             pack.vertices.len()
         };
         cache.ensure_vertices(&self.device, vertex_len as u64);
-        let RenderCache { uniform, target, vertices, pack, .. } = &mut *cache;
+        let RenderCache { uniform, target, stencil, vertices, pack, .. } = &mut *cache;
         let uniform = uniform.as_ref().expect("the arena was just ensured");
         let target = target.as_ref().expect("the target was just ensured");
+        let stencil = stencil.as_ref().expect("the stencil target was just ensured");
         let vertices = vertices.as_ref().expect("the vertices were just ensured");
 
         // One upload for the whole colour arena and one for every vertex, instead of one of
@@ -300,7 +293,17 @@ impl WgpuRenderer {
                         store: wgpu::StoreOp::Store,
                     },
                 })],
-                depth_stencil_attachment: None,
+                // The stencil attachment every 2D pass carries: path fills read and write it, and
+                // WebGPU requires the pipelines in a pass to name the attachment's format even if
+                // they never touch it. Cleared here and discarded at the end of the pass.
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &stencil.view,
+                    depth_ops: None,
+                    stencil_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(0),
+                        store: wgpu::StoreOp::Discard,
+                    }),
+                }),
                 timestamp_writes: None,
                 occlusion_query_set: None,
                 multiview_mask: None,
@@ -379,10 +382,12 @@ impl WgpuRenderer {
             pack.instances.len()
         };
         cache.ensure_target(&self.device, width, height);
+        cache.ensure_stencil(&self.device, width, height);
         cache.ensure_vertices(&self.device, instance_len as u64);
         cache.ensure_transformed_uniform(&self.device, &self.transformed_bind_group_layout);
-        let RenderCache { target, vertices, transformed_uniform, pack, .. } = &mut *cache;
+        let RenderCache { target, stencil, vertices, transformed_uniform, pack, .. } = &mut *cache;
         let target = target.as_ref().expect("the target was just ensured");
+        let stencil = stencil.as_ref().expect("the stencil target was just ensured");
         let instances = vertices.as_ref().expect("the instance buffer was just ensured");
         let transformed = transformed_uniform.as_ref().expect("the mvp was just ensured");
 
@@ -406,7 +411,17 @@ impl WgpuRenderer {
                         store: wgpu::StoreOp::Store,
                     },
                 })],
-                depth_stencil_attachment: None,
+                // The stencil attachment every 2D pass carries: path fills read and write it, and
+                // WebGPU requires the pipelines in a pass to name the attachment's format even if
+                // they never touch it. Cleared here and discarded at the end of the pass.
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &stencil.view,
+                    depth_ops: None,
+                    stencil_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(0),
+                        store: wgpu::StoreOp::Discard,
+                    }),
+                }),
                 timestamp_writes: None,
                 occlusion_query_set: None,
                 multiview_mask: None,
@@ -832,6 +847,7 @@ impl WgpuRenderer {
             circles.len(),
         )?;
         cache.ensure_target(&self.device, width, height);
+        cache.ensure_stencil(&self.device, width, height);
         cache.ensure_transformed_uniform(&self.device, &self.transformed_bind_group_layout);
         let stride = RenderCache::uniform_stride(&self.device) as usize;
 
@@ -869,6 +885,7 @@ impl WgpuRenderer {
         cache.ensure_readback(&self.device, readback_frame_bytes(width, height)?);
         let RenderCache {
             target,
+            stencil,
             vertices,
             transformed_uniform,
             circle_uniforms,
@@ -877,6 +894,7 @@ impl WgpuRenderer {
             ..
         } = &mut *cache;
         let target = target.as_ref().expect("the target was just ensured");
+        let stencil = stencil.as_ref().expect("the stencil target was just ensured");
         let vertices = vertices.as_ref().expect("the vertex buffer was just ensured");
         let transformed = transformed_uniform.as_ref().expect("the mvp was just ensured");
         let circle_arena = circle_uniforms.as_ref().expect("the circle arena was just ensured");
@@ -905,7 +923,17 @@ impl WgpuRenderer {
                         store: wgpu::StoreOp::Store,
                     },
                 })],
-                depth_stencil_attachment: None,
+                // The stencil attachment every 2D pass carries: path fills read and write it, and
+                // WebGPU requires the pipelines in a pass to name the attachment's format even if
+                // they never touch it. Cleared here and discarded at the end of the pass.
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &stencil.view,
+                    depth_ops: None,
+                    stencil_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(0),
+                        store: wgpu::StoreOp::Discard,
+                    }),
+                }),
                 timestamp_writes: None,
                 occlusion_query_set: None,
                 multiview_mask: None,
@@ -1002,6 +1030,15 @@ impl WgpuRenderer {
     /// as the command documentation promises. Geometry is packed once into the reused scratch
     /// buffers (one instance upload, one circle-quad upload, one uniform upload) and the draw
     /// order is recorded in `DrawStep`s, which the pass replays in list order.
+    /// Uploads one image draw and returns the bind group and scissor the pass draws it with.
+    ///
+    /// The texture is created per draw because the pixels belong to this frame's image. The
+    /// params uniform is 32 bytes (the destination rectangle and the source grid, each a
+    /// `vec4f`), and the bind group binds the two together; the bind group keeps the texture, its
+    /// view and the buffer alive for as long as the pass needs them, so nothing else holds them.
+    ///
+    /// Rows are uploaded at the image's own pitch: `Queue::write_texture` stages the copy itself
+    /// and accepts the tightly packed buffer, so no padded copy is made here.
     fn encode_draw_commands_gpu(
         &self,
         width: u32,
@@ -1016,9 +1053,7 @@ impl WgpuRenderer {
             .count();
         let circle_count = commands
             .iter()
-            .filter(|command| {
-                matches!(command, WgpuDrawCommand::FillCircle { radius, clip: None, .. } if *radius > 0)
-            })
+            .filter(|command| matches!(command, WgpuDrawCommand::FillCircle { radius, .. } if *radius > 0))
             .count();
 
         // Cached resources for the whole call (REND-02). The clear pipeline's colour slots
@@ -1027,21 +1062,47 @@ impl WgpuRenderer {
         cache.ensure_uniform(&self.device, &self.bind_group_layout, clear_count)?;
         cache.ensure_circle_uniforms(&self.device, &self.circle_bind_group_layout, circle_count)?;
         cache.ensure_target(&self.device, width, height);
+        cache.ensure_stencil(&self.device, width, height);
         cache.ensure_transformed_uniform(&self.device, &self.transformed_bind_group_layout);
         let stride = RenderCache::uniform_stride(&self.device) as usize;
 
         // Pack the frame: instance records for rectangles, bounding quads and two uniform
-        // slots per circle, one colour slot per clear, and the draw order (G-216).
-        let (instance_len, circle_vertex_len, uniform_len, circle_uniform_len, plan_len) = {
+        // slots per circle, one colour slot per clear, one uploaded texture per image, and the
+        // draw order (G-216).
+        //
+        // The image table is not part of the pack scratch because its entries own GPU handles;
+        // it lives for the whole call so the pass can bind each one.
+        let mut image_draws: Vec<ImageDraw> = Vec::new();
+        let mut text_draws: Vec<TextDraw> = Vec::new();
+        let mut shape_draws: Vec<ShapeDraw> = Vec::new();
+        let mut radial_draws: Vec<RadialDraw> = Vec::new();
+        let mut path_draws: Vec<PathDraw> = Vec::new();
+        let mut shadow_draws: Vec<ShadowDraw> = Vec::new();
+        let (
+            instance_len,
+            circle_vertex_len,
+            path_vertex_len,
+            shadow_vertex_len,
+            uniform_len,
+            circle_uniform_len,
+            plan_len,
+        ) = {
             let pack = &mut cache.pack;
             pack.instances.clear();
             pack.circle_vertices.clear();
+            pack.path_vertices.clear();
+            pack.shadow_instances.clear();
             pack.uniform.resize(stride * clear_count, 0);
             pack.circle_uniforms.resize(stride * 2 * circle_count, 0);
             pack.plan.clear();
             let mut clear_slot = 0usize;
             let mut circle_index = 0usize;
             let mut run_start = 0usize;
+            // The running clip is stream state, exactly as it is for the CPU rasteriser: a push
+            // intersects the visible region and a pop restores the previous one. Rectangle draws
+            // consume it by narrowing their geometry; circles and images consume it as a scissor.
+            let mut clip_stack: Vec<PixelRect> = Vec::new();
+            let mut current_clip: Option<PixelRect> = None;
             for command in commands {
                 match command {
                     WgpuDrawCommand::Clear { color } => {
@@ -1063,39 +1124,81 @@ impl WgpuRenderer {
                         }
                         pack.plan.push(DrawStep::Clear(slot));
                     }
-                    WgpuDrawCommand::FillRect { rect, color, .. } => {
-                        // The CPU rasteriser clips every fill to the framebuffer first; the
-                        // same clip here keeps the instance coordinates in range.
-                        let Some(draw_rect) = rect.intersect(framebuffer) else {
+                    // A blurred shadow's form is a separate pass (`super::shadow`): its body into
+                    // an offscreen layer, two box-blur passes, then a composite here in stream order.
+                    WgpuDrawCommand::BoxShadow { blur_radius, .. } if *blur_radius > 0 => {
+                        let Some((draw, paint_region)) = pack_blurred_shadow(
+                            command,
+                            framebuffer,
+                            current_clip,
+                            &mut pack.shadow_instances,
+                        ) else {
                             continue;
                         };
-                        if draw_rect.width == 0 || draw_rect.height == 0 {
-                            continue;
+                        // Flush the rectangle run so the shadow composites in painter order.
+                        if run_start < pack.instances.len() / INSTANCE_BYTES {
+                            pack.plan.push(DrawStep::Rects(
+                                run_start,
+                                pack.instances.len() / INSTANCE_BYTES,
+                            ));
+                            run_start = pack.instances.len() / INSTANCE_BYTES;
                         }
-                        let (x, y) = (draw_rect.x, draw_rect.y);
-                        let (x1, y1) = (draw_rect.right(), draw_rect.bottom());
-                        let mut record = [0u8; INSTANCE_BYTES];
-                        for (corner, (px, py)) in
-                            [(x, y), (x1, y), (x1, y1), (x, y1)].iter().enumerate()
-                        {
-                            record[corner * 8..corner * 8 + 4]
-                                .copy_from_slice(&(*px as f32).to_le_bytes());
-                            record[corner * 8 + 4..corner * 8 + 8]
-                                .copy_from_slice(&(*py as f32).to_le_bytes());
-                        }
-                        for (channel, value) in
-                            [color.r, color.g, color.b, color.a].iter().enumerate()
-                        {
-                            record[32 + channel * 4..32 + channel * 4 + 4]
-                                .copy_from_slice(&((*value as f64 / 255.0) as f32).to_le_bytes());
-                        }
-                        pack.instances.extend_from_slice(&record);
+                        shadow_draws.push(draw);
+                        pack.plan.push(DrawStep::Scissor(paint_region));
+                        pack.plan.push(DrawStep::Shadow(shadow_draws.len() - 1));
                     }
-                    WgpuDrawCommand::FillCircle { center, radius, color, .. } => {
+                    WgpuDrawCommand::FillRect { .. }
+                    | WgpuDrawCommand::StrokeRect { .. }
+                    | WgpuDrawCommand::FillRoundedRect { .. }
+                    | WgpuDrawCommand::BoxShadow { .. }
+                    | WgpuDrawCommand::DrawLine { .. }
+                    | WgpuDrawCommand::DrawPath { filled: false, .. }
+                        if pack_rect_command(
+                            command,
+                            framebuffer,
+                            current_clip,
+                            &mut pack.instances,
+                        ) => {}
+                    WgpuDrawCommand::PushClip { rect } => {
+                        // Intersect rather than replace: a nested clip can only shrink the visible
+                        // area, and a non-overlapping pair becomes an empty region that suppresses
+                        // drawing rather than silently ignoring the inner clip.
+                        let next = match current_clip {
+                            Some(existing) => existing.intersect(*rect).unwrap_or(PixelRect {
+                                x: 0,
+                                y: 0,
+                                width: 0,
+                                height: 0,
+                            }),
+                            None => *rect,
+                        };
+                        clip_stack.push(current_clip.unwrap_or(framebuffer));
+                        current_clip = Some(next);
+                    }
+                    WgpuDrawCommand::PopClip => match clip_stack.pop() {
+                        Some(restored) => {
+                            current_clip =
+                                if restored == framebuffer { None } else { Some(restored) };
+                        }
+                        None => log::warn!(
+                            "[wgpu-encode] PopClip without a matching PushClip; the current clip \
+                             is left unchanged"
+                        ),
+                    },
+                    WgpuDrawCommand::FillCircle { center, radius, color, clip } => {
                         if *radius == 0 {
                             continue;
                         }
                         let Some(quad) = circle_quad(*center, *radius, width, height) else {
+                            continue;
+                        };
+                        // A disc cannot be clipped by narrowing a rectangle, so the running clip
+                        // becomes the scissor. The CPU arm clips against the circle's bounding box,
+                        // which is the same region.
+                        let bounds = bbox_for_circle(*center, *radius, 0);
+                        let Some(scissor) =
+                            effective_clip(framebuffer, bounds, combine(clip, current_clip))
+                        else {
                             continue;
                         };
                         if run_start < pack.instances.len() / INSTANCE_BYTES {
@@ -1105,6 +1208,7 @@ impl WgpuRenderer {
                             ));
                             run_start = pack.instances.len() / INSTANCE_BYTES;
                         }
+                        pack.plan.push(DrawStep::Scissor(scissor));
                         pack_circle(
                             &mut pack.circle_vertices,
                             &mut pack.circle_uniforms,
@@ -1122,6 +1226,291 @@ impl WgpuRenderer {
                         );
                         pack.plan.push(DrawStep::Circle(circle_index));
                         circle_index += 1;
+                    }
+                    WgpuDrawCommand::DrawCircle { center, radius, color, width: w, clip } => {
+                        if *radius == 0 || *w == 0 {
+                            continue;
+                        }
+                        let bounds = bbox_for_circle(*center, *radius, *w);
+                        let Some(scissor) =
+                            effective_clip(framebuffer, bounds, combine(clip, current_clip))
+                        else {
+                            continue;
+                        };
+                        if run_start < pack.instances.len() / INSTANCE_BYTES {
+                            pack.plan.push(DrawStep::Rects(
+                                run_start,
+                                pack.instances.len() / INSTANCE_BYTES,
+                            ));
+                            run_start = pack.instances.len() / INSTANCE_BYTES;
+                        }
+                        let draw = self.upload_shape_draw(
+                            bounds,
+                            [center.0 as f32, center.1 as f32, *radius as f32, *w as f32],
+                            [0.0, 0.0, SHAPE_CIRCLE_STROKE, 0.0],
+                            *color,
+                        );
+                        shape_draws.push(draw);
+                        pack.plan.push(DrawStep::Scissor(scissor));
+                        pack.plan.push(DrawStep::Shape(shape_draws.len() - 1));
+                    }
+                    WgpuDrawCommand::DrawArc {
+                        center,
+                        radius,
+                        start_angle,
+                        end_angle,
+                        color,
+                        filled,
+                        clip,
+                    } => {
+                        if *radius == 0 {
+                            continue;
+                        }
+                        // Full circles are expressed as a 0..TAU window, exactly as the CPU arm
+                        // normalises them, so the shader never has to special-case it.
+                        let (start, end) = if (start_angle - end_angle).abs() < 0.001 {
+                            (0.0f32, core::f32::consts::TAU)
+                        } else {
+                            let start = start_angle.rem_euclid(core::f32::consts::TAU);
+                            let mut end = end_angle.rem_euclid(core::f32::consts::TAU);
+                            if end <= start {
+                                end += core::f32::consts::TAU;
+                            }
+                            (start, end)
+                        };
+                        let bounds = bbox_for_circle(*center, *radius, if *filled { 0 } else { 1 });
+                        let Some(scissor) =
+                            effective_clip(framebuffer, bounds, combine(clip, current_clip))
+                        else {
+                            continue;
+                        };
+                        if run_start < pack.instances.len() / INSTANCE_BYTES {
+                            pack.plan.push(DrawStep::Rects(
+                                run_start,
+                                pack.instances.len() / INSTANCE_BYTES,
+                            ));
+                            run_start = pack.instances.len() / INSTANCE_BYTES;
+                        }
+                        let mode = if *filled { SHAPE_ARC_WEDGE } else { SHAPE_ARC_STROKE };
+                        let draw = self.upload_shape_draw(
+                            bounds,
+                            [center.0 as f32, center.1 as f32, *radius as f32, 1.0],
+                            [start, end, mode, 0.0],
+                            *color,
+                        );
+                        shape_draws.push(draw);
+                        pack.plan.push(DrawStep::Scissor(scissor));
+                        pack.plan.push(DrawStep::Shape(shape_draws.len() - 1));
+                    }
+                    WgpuDrawCommand::StrokeRoundedRect { rect, radius, color, thickness, clip } => {
+                        if *radius == 0 || *thickness == 0 {
+                            continue;
+                        }
+                        let Some(scissor) =
+                            effective_clip(framebuffer, *rect, combine(clip, current_clip))
+                        else {
+                            continue;
+                        };
+                        if run_start < pack.instances.len() / INSTANCE_BYTES {
+                            pack.plan.push(DrawStep::Rects(
+                                run_start,
+                                pack.instances.len() / INSTANCE_BYTES,
+                            ));
+                            run_start = pack.instances.len() / INSTANCE_BYTES;
+                        }
+                        // The same corner clamp the CPU arm applies, so the arcs agree.
+                        let corner = (*radius).min(rect.width / 2).min(rect.height / 2) as f32;
+                        let draw = self.upload_shape_draw(
+                            *rect,
+                            [0.0, 0.0, 0.0, *thickness as f32],
+                            [0.0, 0.0, SHAPE_ROUNDED_OUTLINE, corner],
+                            *color,
+                        );
+                        shape_draws.push(draw);
+                        pack.plan.push(DrawStep::Scissor(scissor));
+                        pack.plan.push(DrawStep::Shape(shape_draws.len() - 1));
+                    }
+                    WgpuDrawCommand::DrawImage { rect, rgba8, image_width, image_height, clip } => {
+                        // The CPU rasteriser writes only the intersection of the destination, the
+                        // framebuffer and the running clip. That intersection becomes this draw's
+                        // scissor rectangle, so both paths paint the same pixels.
+                        let Some(scissor) =
+                            effective_clip(framebuffer, *rect, combine(clip, current_clip))
+                        else {
+                            continue;
+                        };
+                        // An image is its own draw, so the rectangle run built so far is flushed
+                        // first: painter order must survive the mixed frame.
+                        if run_start < pack.instances.len() / INSTANCE_BYTES {
+                            pack.plan.push(DrawStep::Rects(
+                                run_start,
+                                pack.instances.len() / INSTANCE_BYTES,
+                            ));
+                            run_start = pack.instances.len() / INSTANCE_BYTES;
+                        }
+                        let draw =
+                            self.upload_image_draw(*rect, rgba8, *image_width, *image_height);
+                        image_draws.push(draw);
+                        pack.plan.push(DrawStep::Scissor(scissor));
+                        pack.plan.push(DrawStep::Image(image_draws.len() - 1));
+                    }
+                    WgpuDrawCommand::DrawGradient { rect, gradient_data, clip }
+                    | WgpuDrawCommand::FillLinearGradient { rect, gradient_data, clip } => {
+                        if rect.width == 0 || rect.height == 0 || gradient_data.len() < 4 {
+                            continue;
+                        }
+                        let axis = if matches!(command, WgpuDrawCommand::DrawGradient { .. }) {
+                            GradientAxis::Vertical
+                        } else {
+                            GradientAxis::Horizontal
+                        };
+                        let Some(scissor) =
+                            effective_clip(framebuffer, *rect, combine(clip, current_clip))
+                        else {
+                            continue;
+                        };
+                        if run_start < pack.instances.len() / INSTANCE_BYTES {
+                            pack.plan.push(DrawStep::Rects(
+                                run_start,
+                                pack.instances.len() / INSTANCE_BYTES,
+                            ));
+                            run_start = pack.instances.len() / INSTANCE_BYTES;
+                        }
+                        // One colour per row (vertical) or per column (horizontal), from the CPU's
+                        // own stop rule; the image pipeline repeats it across the span with its
+                        // identity integer mapping, so no new shader is needed.
+                        let (ramp, tex_w, tex_h) = match axis {
+                            GradientAxis::Vertical => {
+                                (gradient_ramp(*rect, gradient_data, axis), 1, rect.height)
+                            }
+                            GradientAxis::Horizontal => {
+                                (gradient_ramp(*rect, gradient_data, axis), rect.width, 1)
+                            }
+                        };
+                        let draw = self.upload_image_draw(*rect, &ramp, tex_w, tex_h);
+                        image_draws.push(draw);
+                        pack.plan.push(DrawStep::Scissor(scissor));
+                        pack.plan.push(DrawStep::Image(image_draws.len() - 1));
+                    }
+                    WgpuDrawCommand::FillRadialGradient { rect, gradient_data, clip } => {
+                        if rect.width == 0 || rect.height == 0 || gradient_data.len() < 4 {
+                            continue;
+                        }
+                        let Some(scissor) =
+                            effective_clip(framebuffer, *rect, combine(clip, current_clip))
+                        else {
+                            continue;
+                        };
+                        if run_start < pack.instances.len() / INSTANCE_BYTES {
+                            pack.plan.push(DrawStep::Rects(
+                                run_start,
+                                pack.instances.len() / INSTANCE_BYTES,
+                            ));
+                            run_start = pack.instances.len() / INSTANCE_BYTES;
+                        }
+                        radial_draws.push(self.upload_radial_draw(*rect, gradient_data));
+                        pack.plan.push(DrawStep::Scissor(scissor));
+                        pack.plan.push(DrawStep::Radial(radial_draws.len() - 1));
+                    }
+                    WgpuDrawCommand::FillPathNonZero { points, contours, color, clip } => {
+                        if points.len() < 3 || contours.is_empty() {
+                            continue;
+                        }
+                        let Some(bounds) = path_bounds(points, framebuffer) else {
+                            continue;
+                        };
+                        let Some(scissor) =
+                            effective_clip(framebuffer, bounds, combine(clip, current_clip))
+                        else {
+                            continue;
+                        };
+                        let fan = path_fan_vertices(points, contours);
+                        if fan.is_empty() {
+                            continue;
+                        }
+                        if run_start < pack.instances.len() / INSTANCE_BYTES {
+                            pack.plan.push(DrawStep::Rects(
+                                run_start,
+                                pack.instances.len() / INSTANCE_BYTES,
+                            ));
+                            run_start = pack.instances.len() / INSTANCE_BYTES;
+                        }
+                        let first_vertex = pack.path_vertices.len() as u32 / 8;
+                        for (x, y) in &fan {
+                            pack.path_vertices.extend_from_slice(&x.to_le_bytes());
+                            pack.path_vertices.extend_from_slice(&y.to_le_bytes());
+                        }
+                        path_draws.push(PathDraw {
+                            cover_bind_group: self.upload_path_cover(bounds, *color),
+                            first_vertex,
+                            vertex_count: fan.len() as u32,
+                            even_odd: false,
+                        });
+                        pack.plan.push(DrawStep::Scissor(scissor));
+                        pack.plan.push(DrawStep::Path(path_draws.len() - 1));
+                    }
+                    WgpuDrawCommand::DrawPath { points, color, filled: true, clip, .. } => {
+                        if points.len() < 3 {
+                            continue;
+                        }
+                        let Some(bounds) = path_bounds(points, framebuffer) else {
+                            continue;
+                        };
+                        let Some(scissor) =
+                            effective_clip(framebuffer, bounds, combine(clip, current_clip))
+                        else {
+                            continue;
+                        };
+                        // A filled `DrawPath` is one implicitly closed contour and uses the
+                        // even-odd rule, which is what the command documents.
+                        let contours = [(0usize, points.len())];
+                        let fan = path_fan_vertices(points, &contours);
+                        if fan.is_empty() {
+                            continue;
+                        }
+                        if run_start < pack.instances.len() / INSTANCE_BYTES {
+                            pack.plan.push(DrawStep::Rects(
+                                run_start,
+                                pack.instances.len() / INSTANCE_BYTES,
+                            ));
+                            run_start = pack.instances.len() / INSTANCE_BYTES;
+                        }
+                        let first_vertex = pack.path_vertices.len() as u32 / 8;
+                        for (x, y) in &fan {
+                            pack.path_vertices.extend_from_slice(&x.to_le_bytes());
+                            pack.path_vertices.extend_from_slice(&y.to_le_bytes());
+                        }
+                        path_draws.push(PathDraw {
+                            cover_bind_group: self.upload_path_cover(bounds, *color),
+                            first_vertex,
+                            vertex_count: fan.len() as u32,
+                            even_odd: true,
+                        });
+                        pack.plan.push(DrawStep::Scissor(scissor));
+                        pack.plan.push(DrawStep::Path(path_draws.len() - 1));
+                    }
+                    WgpuDrawCommand::DrawText { rect, text, color, clip } => {
+                        if rect.width == 0 || rect.height == 0 || text.is_empty() {
+                            continue;
+                        }
+                        // The CPU arm clips the text box; the same intersection is this draw's
+                        // scissor, so glyphs outside it are never shaded.
+                        let Some(scissor) =
+                            effective_clip(framebuffer, *rect, combine(clip, current_clip))
+                        else {
+                            continue;
+                        };
+                        // Text is its own draw: flush the rectangle run so painter order survives.
+                        if run_start < pack.instances.len() / INSTANCE_BYTES {
+                            pack.plan.push(DrawStep::Rects(
+                                run_start,
+                                pack.instances.len() / INSTANCE_BYTES,
+                            ));
+                            run_start = pack.instances.len() / INSTANCE_BYTES;
+                        }
+                        text_draws.push(self.upload_text_draw(*rect, text, *color));
+                        pack.plan.push(DrawStep::Scissor(scissor));
+                        pack.plan.push(DrawStep::Text(text_draws.len() - 1));
                     }
                     // Normal blending is the pipelines' `REPLACE` write; anything else was
                     // filtered out before this pass was chosen.
@@ -1144,6 +1533,8 @@ impl WgpuRenderer {
             (
                 pack.instances.len(),
                 pack.circle_vertices.len(),
+                pack.path_vertices.len(),
+                pack.shadow_instances.len(),
                 pack.uniform.len(),
                 pack.circle_uniforms.len(),
                 pack.plan.len(),
@@ -1153,20 +1544,36 @@ impl WgpuRenderer {
         // One grow-only vertex buffer serves both the instance records and the circle quads:
         // instances at `[0, instance_len)`, circle quads appended after.
         let circle_vertex_offset = instance_len as u64;
-        cache.ensure_vertices(&self.device, (instance_len + circle_vertex_len) as u64);
+        let path_vertex_offset = (instance_len + circle_vertex_len) as u64;
+        let shadow_vertex_offset = (instance_len + circle_vertex_len + path_vertex_len) as u64;
+        cache.ensure_vertices(
+            &self.device,
+            (instance_len + circle_vertex_len + path_vertex_len + shadow_vertex_len) as u64,
+        );
         cache.ensure_readback(&self.device, readback_frame_bytes(width, height)?);
+        let shadow_specs: Vec<PixelRect> = shadow_draws.iter().map(|draw| draw.layer).collect();
+        cache.ensure_shadow_targets(
+            &self.device,
+            &self.blur_bind_group_layout,
+            &self.image_bind_group_layout,
+            &self.transformed_bind_group_layout,
+            &shadow_specs,
+        );
         let RenderCache {
             uniform,
             target,
+            stencil,
             vertices,
             transformed_uniform,
             circle_uniforms,
             readback,
+            shadow,
             pack,
             ..
         } = &mut *cache;
         let uniform = uniform.as_ref().expect("the colour arena was just ensured");
         let target = target.as_ref().expect("the target was just ensured");
+        let stencil = stencil.as_ref().expect("the stencil target was just ensured");
         let vertices = vertices.as_ref().expect("the vertex buffer was just ensured");
         let transformed = transformed_uniform.as_ref().expect("the mvp was just ensured");
         let circle_arena = circle_uniforms.as_ref().expect("the circle arena was just ensured");
@@ -1185,10 +1592,26 @@ impl WgpuRenderer {
         if circle_vertex_len > 0 {
             self.queue.write_buffer(&vertices.buffer, circle_vertex_offset, &pack.circle_vertices);
         }
+        if path_vertex_len > 0 {
+            self.queue.write_buffer(&vertices.buffer, path_vertex_offset, &pack.path_vertices);
+        }
+        if shadow_vertex_len > 0 {
+            self.queue.write_buffer(&vertices.buffer, shadow_vertex_offset, &pack.shadow_instances);
+        }
+        let shadow_targets = shadow.as_mut().expect("the shadow layers were just ensured");
+        self.write_shadow_layer_inputs(&shadow_draws, &mut shadow_targets.layers);
 
         let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("gpu_draw_commands_encoder"),
         });
+        // Every blurred shadow is rendered first, so the frame's pass only sees finished layers.
+        self.encode_shadow_layers(
+            &mut encoder,
+            &shadow_draws,
+            &shadow_targets.layers,
+            &vertices.buffer,
+            shadow_vertex_offset,
+        );
         {
             let mut rp = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("gpu_draw_commands_pass"),
@@ -1203,21 +1626,36 @@ impl WgpuRenderer {
                         store: wgpu::StoreOp::Store,
                     },
                 })],
-                depth_stencil_attachment: None,
+                // The stencil attachment every 2D pass carries: path fills read and write it, and
+                // WebGPU requires the pipelines in a pass to name the attachment's format even if
+                // they never touch it. Cleared here and discarded at the end of the pass.
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &stencil.view,
+                    depth_ops: None,
+                    stencil_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(0),
+                        store: wgpu::StoreOp::Discard,
+                    }),
+                }),
                 timestamp_writes: None,
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
             for step in &pack.plan[..plan_len] {
                 match step {
+                    DrawStep::Scissor(rect) => {
+                        rp.set_scissor_rect(rect.x as u32, rect.y as u32, rect.width, rect.height);
+                    }
                     DrawStep::Clear(slot) => {
                         rp.set_pipeline(&self.clear_pipeline);
                         rp.set_bind_group(0, &uniform.bind_group, &[(*slot * stride) as u32]);
+                        rp.set_scissor_rect(0, 0, width, height);
                         rp.draw(0..3, 0..1);
                     }
                     DrawStep::Rects(start, end) => {
                         rp.set_pipeline(&self.transformed_pipeline);
                         rp.set_bind_group(0, &transformed.bind_group, &[]);
+                        rp.set_scissor_rect(0, 0, width, height);
                         let mut cursor = *start;
                         while cursor < *end {
                             let chunk_end = (cursor + MAX_INSTANCES_PER_DRAW).min(*end);
@@ -1241,6 +1679,71 @@ impl WgpuRenderer {
                         let quad_start = circle_vertex_offset + (*index * CIRCLE_QUAD_BYTES) as u64;
                         let quad_end = quad_start + CIRCLE_QUAD_BYTES as u64;
                         rp.set_vertex_buffer(0, vertices.buffer.slice(quad_start..quad_end));
+                        rp.draw(0..6, 0..1);
+                    }
+                    DrawStep::Image(index) => {
+                        let draw = &image_draws[*index];
+                        rp.set_pipeline(&self.image_pipeline);
+                        rp.set_bind_group(0, &draw.bind_group, &[]);
+                        rp.set_bind_group(1, &transformed.bind_group, &[]);
+                        rp.draw(0..6, 0..1);
+                    }
+                    DrawStep::Text(index) => {
+                        let draw = &text_draws[*index];
+                        rp.set_pipeline(&self.text_pipeline);
+                        rp.set_bind_group(0, &draw.bind_group, &[]);
+                        rp.set_bind_group(1, &transformed.bind_group, &[]);
+                        rp.draw(0..6, 0..1);
+                    }
+                    DrawStep::Path(index) => {
+                        let draw = &path_draws[*index];
+                        // Three passes over the same fan: count into the stencil buffer with the
+                        // rule the command asked for, cover where the count says "inside", then
+                        // reset the count so the next path starts from zero.
+                        let byte_start = path_vertex_offset + draw.first_vertex as u64 * 8;
+                        let byte_end = byte_start + draw.vertex_count as u64 * 8;
+                        let stencil_pipeline = if draw.even_odd {
+                            &self.path_stencil_evenodd_pipeline
+                        } else {
+                            &self.path_stencil_nonzero_pipeline
+                        };
+                        rp.set_pipeline(stencil_pipeline);
+                        rp.set_bind_group(0, &transformed.bind_group, &[]);
+                        rp.set_vertex_buffer(0, vertices.buffer.slice(byte_start..byte_end));
+                        rp.draw(0..draw.vertex_count, 0..1);
+
+                        rp.set_pipeline(&self.path_cover_pipeline);
+                        rp.set_bind_group(0, &draw.cover_bind_group, &[]);
+                        rp.set_bind_group(1, &transformed.bind_group, &[]);
+                        rp.draw(0..6, 0..1);
+
+                        rp.set_pipeline(&self.path_stencil_clear_pipeline);
+                        rp.set_bind_group(0, &transformed.bind_group, &[]);
+                        rp.set_vertex_buffer(0, vertices.buffer.slice(byte_start..byte_end));
+                        rp.draw(0..draw.vertex_count, 0..1);
+                    }
+                    DrawStep::Radial(index) => {
+                        let draw = &radial_draws[*index];
+                        rp.set_pipeline(&self.radial_pipeline);
+                        rp.set_bind_group(0, &draw.bind_group, &[]);
+                        rp.set_bind_group(1, &transformed.bind_group, &[]);
+                        rp.draw(0..6, 0..1);
+                    }
+                    DrawStep::Shape(index) => {
+                        let draw = &shape_draws[*index];
+                        rp.set_pipeline(&self.shape_pipeline);
+                        rp.set_bind_group(0, &draw.bind_group, &[]);
+                        rp.set_bind_group(1, &transformed.bind_group, &[]);
+                        rp.draw(0..6, 0..1);
+                    }
+                    // The finished blurred layer, drawn as an image whose params map it 1:1 onto
+                    // its own frame rectangle; the scissor step before this one is the paint
+                    // region, so nothing outside the caller's clip is touched.
+                    DrawStep::Shadow(index) => {
+                        let layer = &shadow_targets.layers[*index];
+                        rp.set_pipeline(&self.image_pipeline);
+                        rp.set_bind_group(0, &layer.composite, &[]);
+                        rp.set_bind_group(1, &transformed.bind_group, &[]);
                         rp.draw(0..6, 0..1);
                     }
                 }

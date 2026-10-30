@@ -74,6 +74,100 @@ fn the_shared_factory_is_built_once_and_matches_a_fresh_registry() {
     assert_eq!(first.widget_names(), fresh.widget_names());
 }
 
+/// A probe control an extension registers. Named so it cannot collide with a core control — the
+/// collision case has its own test.
+fn probe_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::Label,
+        canonical_name: "extension_probe_label",
+        aliases: &[],
+        properties: &[],
+        events: &[],
+        commands: &[],
+    }
+}
+
+fn install_probe(factory: &mut WidgetFactory) -> Result<(), RegistrationError> {
+    factory.try_register(probe_capability(), create_label)
+}
+
+/// An extension must make its control visible in **the same table** every consumer reads.
+///
+/// This is the defect the extension entry exists to remove: the suite built its own factory, so
+/// its controls were reachable by name only from that factory, while `create_widget_of_kind`, the
+/// JSON loader and the designer catalogue all read `WidgetFactory::shared()`.
+#[test]
+fn an_extension_adds_its_control_to_the_extended_table() {
+    let factory =
+        WidgetFactory::new_with_extensions(&[install_probe]).expect("a free name must register");
+
+    assert!(
+        factory.capability("extension_probe_label").is_some(),
+        "the extended table must answer the extension's name"
+    );
+    assert!(
+        factory.constructible_names().iter().any(|name| name == "extension_probe_label"),
+        "the name must also be discoverable, which is how a designer lists controls"
+    );
+    assert!(
+        factory.create("extension_probe_label", Rect::new(0, 0, 10, 10), "probe").is_some(),
+        "registering a capability without a working constructor would be a name with no control"
+    );
+
+    let core = WidgetFactory::new_with_defaults();
+    assert_eq!(
+        factory.capabilities().len(),
+        core.capabilities().len() + 1,
+        "the extension must add exactly its own row"
+    );
+}
+
+/// A name that already belongs to a core control is refused, not silently replaced.
+///
+/// Silent replacement is the failure mode `try_register` exists to prevent: the symptom is not a
+/// failed load but a core control that looks wrong in a build whose only difference is that a
+/// package was installed.
+#[test]
+fn an_extension_cannot_shadow_a_core_name() {
+    fn shadow_label(factory: &mut WidgetFactory) -> Result<(), RegistrationError> {
+        factory.try_register(
+            WidgetCapability {
+                kind: WidgetKind::Label,
+                canonical_name: "label",
+                aliases: &[],
+                properties: &[],
+                events: &[],
+                commands: &[],
+            },
+            create_label,
+        )
+    }
+
+    let result = WidgetFactory::new_with_extensions(&[shadow_label]);
+    assert!(
+        matches!(result, Err(RegistrationError::NameTaken { name: "label", .. })),
+        "a colliding extension must fail instead of taking the core name"
+    );
+}
+
+/// Registering after the table is built must be reported, not accepted into a list nobody reads.
+#[test]
+fn registering_after_the_shared_table_is_built_is_refused() {
+    // Force the build first: the assertion is about the ordering, so it must not depend on which
+    // other test happened to call `shared()` first.
+    let _ = WidgetFactory::shared();
+
+    assert_eq!(
+        register_shared_extension(install_probe),
+        Err(SharedFactoryError::AlreadyBuilt),
+        "a late extension would never run, so accepting it would report a success that did not happen"
+    );
+    assert!(
+        WidgetFactory::shared().capability("extension_probe_label").is_none(),
+        "a refused extension must not reach the table"
+    );
+}
+
 #[test]
 fn default_factory_registers_core_capabilities() {
     let factory = WidgetFactory::new_with_defaults();

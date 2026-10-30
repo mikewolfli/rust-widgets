@@ -7,7 +7,7 @@ use crate::compat::HashMap;
 use crate::core::{Color, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
-use crate::signal::Signal1;
+use crate::signal::{GenericSignal, Signal1};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
@@ -203,6 +203,19 @@ pub struct CommandPalette {
     pub command_activated: Signal1<String>,
     /// Emitted when query changes. Payload is current query.
     pub query_changed: Signal1<String>,
+    /// Emitted when the user asks the palette to close.
+    ///
+    /// # Why this exists
+    ///
+    /// Escape used to only clear the query, which is not the same thing as closing: the host had
+    /// no way to learn that the user wanted the palette gone, so it had to infer a dismissal from
+    /// `focus_lost` or wait for a second invocation. The palette cannot close itself -- whether a
+    /// floating surface exists, and what happens to it, belongs to the host that placed it -- so
+    /// the signal is the whole of the contract: clear the query, then report the request.
+    ///
+    /// Carries no value: the *request* is the event, and a payload would imply the host could
+    /// distinguish causes it has no way to observe.
+    pub dismissed: GenericSignal,
     /// The painted prompt line, rebuilt only when `query` changes (VP-006).
     prompt_buffer: String,
 }
@@ -231,6 +244,7 @@ impl CommandPalette {
             hint_text: String::new(),
             command_activated: Signal1::new(),
             query_changed: Signal1::new(),
+            dismissed: GenericSignal::new(),
             prompt_buffer: String::from("> "),
         }
     }
@@ -864,6 +878,7 @@ impl Widget for CommandPalette {
                     CapabilityValue::String(v.clone())
                 }))
             }
+            "dismissed" => Some(EventSignalRef::unit("dismissed", &self.dismissed)),
             _ => None,
         }
     }
@@ -1019,7 +1034,12 @@ impl EventHandler for CommandPalette {
                     Some(crate::shortcut::Key::Enter) => {
                         let _ = self.activate_highlighted();
                     }
-                    Some(crate::shortcut::Key::Escape) => self.clear_query(),
+                    Some(crate::shortcut::Key::Escape) => {
+                        // Clear first, then report: a host that closes the surface on the signal
+                        // and re-opens the same palette later must not find the old query in it.
+                        self.clear_query();
+                        self.dismissed.emit();
+                    }
                     Some(crate::shortcut::Key::Backspace) => self.backspace_query(),
                     Some(crate::shortcut::Key::N) if primary => {
                         self.move_highlight(1);
@@ -1341,6 +1361,47 @@ mod tests {
         palette.handle_event(&Event::key_press(27, 0));
         assert_eq!(palette.query(), "");
         assert_eq!(palette.filtered_count(), 3);
+    }
+
+    /// Escape must report a dismissal request, not only empty the query.
+    ///
+    /// Before the signal existed the host had no way to learn that the user pressed Escape: the
+    /// palette cleared its query and went on existing, so "close the palette" was indistinguishable
+    /// from "clear the filter" and the host had to infer the intent from focus loss.
+    #[test]
+    fn escape_clears_the_query_and_asks_to_be_dismissed() {
+        let mut palette = CommandPalette::new(Rect::new(0, 0, 320, 160));
+        palette.set_entries(sample_entries());
+        palette.set_query("save");
+
+        let dismissals = Arc::new(Mutex::new(0usize));
+        let counter = Arc::clone(&dismissals);
+        palette.dismissed.connect(move || {
+            if let Ok(mut guard) = counter.lock() {
+                *guard += 1;
+            }
+        });
+
+        palette.handle_event(&Event::key_press(27, 0));
+
+        assert_eq!(palette.query(), "", "Escape still clears the query");
+        assert_eq!(palette.filtered_count(), 3, "clearing restores the full result set");
+        assert_eq!(
+            dismissals.lock().ok().map(|guard| *guard),
+            Some(1),
+            "Escape must report exactly one dismissal request"
+        );
+    }
+
+    /// The published name must reach the signal, which is what a dynamic wiring uses.
+    #[test]
+    fn the_dismissed_event_resolves_to_the_controls_signal() {
+        let palette = CommandPalette::new(Rect::new(0, 0, 320, 160));
+        let resolved = palette
+            .event_signal_dyn("dismissed")
+            .expect("`dismissed` is a published event and must resolve");
+        assert_eq!(resolved.name(), "dismissed");
+        assert_eq!(resolved.slot_count(), 0, "a fresh palette has no subscribers");
     }
 
     #[test]

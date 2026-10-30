@@ -462,7 +462,15 @@ pub fn draw_icon_image(
         return false;
     }
     let fitted = crate::widget::icon_source::fit_image_into(image.width(), image.height(), slot);
-    context.draw_image(fitted.x, fitted.y, fitted.width, fitted.height, pixels);
+    context.draw_image_scaled(
+        fitted.x,
+        fitted.y,
+        fitted.width,
+        fitted.height,
+        image.width(),
+        image.height(),
+        pixels,
+    );
     true
 }
 
@@ -1285,7 +1293,17 @@ impl Icon {
         let disabled = !self.base.is_enabled() || self.state == IconState::Disabled;
         let selected = self.state == IconState::Selected && self.base.is_enabled();
         if !disabled && !selected {
-            ctx.draw_image(fitted.x, fitted.y, fitted.width, fitted.height, pixels);
+            // The frame is fitted into the box, so the destination is usually a different size
+            // from the source frame; the draw resamples instead of cropping a block out of it.
+            ctx.draw_image_scaled(
+                fitted.x,
+                fitted.y,
+                fitted.width,
+                fitted.height,
+                frame.width(),
+                frame.height(),
+                pixels,
+            );
             return;
         }
         // The tint is a pure function of the frame, the dither state and the source buffer's
@@ -1316,7 +1334,16 @@ impl Icon {
             }
             self.frame_tint_key = Some(key);
         }
-        ctx.draw_image(fitted.x, fitted.y, fitted.width, fitted.height, &self.frame_tint);
+        // The tinted buffer has the frame's own extent, so it needs the same resample.
+        ctx.draw_image_scaled(
+            fitted.x,
+            fitted.y,
+            fitted.width,
+            fitted.height,
+            frame.width(),
+            frame.height(),
+            &self.frame_tint,
+        );
     }
 
     /// Draws the icon, preferring the bundled outline data and falling back to generated geometry.

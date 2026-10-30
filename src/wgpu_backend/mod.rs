@@ -16,12 +16,13 @@
 //!
 //! # Cost (G-63 / G-212)
 //!
-//! The `rgba8` entry points are **not** a hardware-accelerated scene path. They rasterise the
-//! command list on the CPU (`raster.rs`), upload the finished frame to a texture, and block on a
-//! readback. The GPU therefore only copies the frame, and the round trip makes the call expected
-//! **slower** than returning the software rasteriser's buffer directly. `read_back` bounds that
-//! wait with a timeout so a lost device reports an error instead of hanging, but it cannot remove
-//! the trip itself.
+//! A stream the dispatcher claims — clears, unclipped rectangles and circles, and image draws
+//! ([`renderer`]'s `commands_gpu_dispatchable`) — is drawn by **one GPU pass and one readback**, so
+//! its pixels never exist on the CPU until they are read back. Any other stream falls back to the
+//! CPU rasteriser and then uploads the finished frame, and on that path the round trip makes the
+//! call expected **slower** than returning the software rasteriser's buffer directly. `read_back`
+//! bounds the wait with a timeout so a lost device reports an error instead of hanging, but it
+//! cannot remove the trip itself.
 //!
 //! # Planned on-GPU order (G-63)
 //!
@@ -31,12 +32,73 @@
 //!    instanced quad batches of at most `MAX_INSTANCES_PER_DRAW` (G-64), preserving painter order.
 //! 2. Move the remaining command variants (`DrawImage`, `DrawText`, rounded rectangles, circles
 //!    and paths) from `raster.rs` onto their reserved shaders (`shaders::ShaderModule`, G-213).
+//!    **`DrawImage` is done:** `IMAGE_VS`/`IMAGE_FRAG` draw it as one quad with a single texel
+//!    fetch per destination pixel, and the fragment uses `textureLoad` at the same integer source
+//!    coordinate the CPU loop computes, so the two paths agree byte for byte (the
+//!    `a_scaled_image_draw_matches_the_software_rasteriser` test asserts the equality).
+//!    **Rectangles, stroked rectangles and filled rounded rectangles are done:** their clipping
+//!    and (for rounded corners) their row spans come from the same functions the CPU rasteriser
+//!    uses, so they are drawn as instanced quads with identical bytes. **`PushClip`/`PopClip` are
+//!    done:** a rectangle clip narrows that geometry and becomes a scissor for circles, images and
+//!    text. **`DrawText` is done:** the glyph coverage is painted by the same font-stack loop the
+//!    CPU rasteriser blends (`raster::for_each_text_cell`), uploaded as a one-byte-per-pixel
+//!    texture, and multiplied by the text colour in the fragment stage.
+//!    **Circle strokes, arcs (wedge and band) and rounded-rectangle outlines are done** through
+//!    the `shape` pipeline: one SDF per mode, feathered over one pixel.
+//!    **Axis-aligned gradients are done** (`DrawGradient`, `FillLinearGradient`): the ramp is one
+//!    colour per row (or column), computed by the CPU's own stop rule
+//!    (`raster::gradient_ramp`) and drawn as a one-pixel-wide image, so it is byte-identical and the
+//!    per-pixel lookups are gone.
+//!    **The radial gradient is done too** (`FillRadialGradient`): the stop table is uploaded as a
+//!    texture and the fragment computes `t = sqrt(dx² + dy²) · (1/radius)` in `f32` exactly as the
+//!    CPU does before the nearest-stop lookup, which measures byte-identical.
+//!    **Filled paths are done** (`DrawPath { filled: true }`, `FillPathNonZero`): the CPU turns each
+//!    contour into a triangle fan, the stencil buffer counts the fan with the rule the command asks
+//!    for (invert for even-odd, increment/decrement for non-zero), a cover quad paints where the
+//!    count says "inside", and a third pass resets the count for the next path.
+//!    **Axis-aligned stroke paths are done too** (`DrawPath { filled: false }` whose every segment
+//!    is horizontal or vertical): the CPU draws a stroked path as one line per segment, so a path
+//!    of axis-aligned segments is a run of rectangles.
+//!    **Axis-aligned lines are done** (`DrawLine` with `from.y == to.y` or `from.x == to.x`): the
+//!    CPU stamps a `2·half_w` square at every Bresenham step, and along an axis those stamps tile
+//!    into exactly one rectangle, so the GPU reproduces the line byte for byte. A diagonal line
+//!    stays with the CPU rather than being redrawn as a capsule of a different shape.
+//!    **Unblurred shadows are done** (`BoxShadow { blur_radius: 0 }`): the body is the rectangle
+//!    translated by the offset, which is exactly a fill, so it is byte-identical. Stroked paths and
+//!    *blurred* shadows still come from the CPU rasteriser — a blurred shadow needs an offscreen
+//!    layer plus two blur passes, which a single render pass cannot express — so a stream
+//!    containing one of them falls back as a whole, which is why the CPU raster path cannot be
+//!    deleted yet.
 //! 3. Replace `WgpuRenderer::render_draw_commands_rgba8`'s CPU raster + upload + readback with one
 //!    GPU pass and a single readback, then delete the duplicate software implementation from this
 //!    module so the two cannot drift.
 //!
-//! Until step 3 lands, callers must treat the `rgba8` entry points as the software rasteriser plus
-//! a measurable round-trip cost, never as hardware acceleration.
+//! Step 3 is already true for a stream the dispatcher claims (one pass, one readback); it becomes
+//! true for *every* stream when step 2 finishes. Until then callers must treat the `rgba8` entry
+//! points as: GPU when the stream is fully covered, software otherwise — never as hardware
+//! acceleration for a mixed UI frame.
+//!
+//! # A known divergence, recorded rather than hidden
+//!
+//! The SDF pipelines (circle fill, rings, arcs, rounded outlines) anti-alias their edges; the CPU
+//! rasteriser fills those shapes with integer predicates and no anti-aliasing. A stream containing
+//! one of them is therefore *geometrically* the same shape but not byte-identical at the edge — the
+//! tests assert the shape (band, hole, angular window, interior) rather than the rim.
+//!
+//! All of these pipelines composite source-over, which is what keeps a shape from erasing the
+//! content under its bounding quad. The consequence is a storage detail worth stating: on a
+//! **transparent** destination the stored colour is the source premultiplied by its coverage
+//! (fixed-function blending cannot read the destination, so it cannot un-premultiply), while on an
+//! opaque destination the result is the ordinary composite. The software path always stores straight
+//! alpha, so a frame with no clear can differ beyond the edge pixels.
+//!
+//! Compositing has one LSB-level caveat with the same cause: the crate's CPU rule composites
+//! **un-premultiplied** alpha (`out = (Cs·αs + Cd·αd·(1−αs)) / αout`, then rounds), while
+//! fixed-function blending multiplies and rounds in the render target. On an opaque destination
+//! the two expressions are the same arithmetic and agree exactly (all the equality tests run on an
+//! opaque clear). On a translucent destination they can differ by one level per channel, which no
+//! fragment shader can fix — reading the destination is not part of the fragment stage. The
+//! translucent-text test therefore allows exactly one level and fails on anything larger.
 mod bridge;
 mod commands;
 mod raster;
@@ -124,6 +186,48 @@ mod tests {
         )
         .expect_err("invalid payload should fail");
         assert!(error.contains("invalid DrawImage payload"));
+    }
+    /// A `RenderCommand::DrawImageScaled` is expressible as one image command in this set: the
+    /// destination is `rect`, and the source grid travels alongside the pixels as
+    /// `image_width`/`image_height`. The rasteriser stretches a source smaller than the rectangle
+    /// across the whole rectangle — the semantics the render-layer variant promises — rather than
+    /// reading the rectangle's stride out of the source.
+    ///
+    /// This pins the correspondence the GPU path depends on; it is not a bridge, because no
+    /// production code drives this module yet (`mod.rs` documents that reachability).
+    #[test]
+    fn a_scaled_image_draw_stretches_its_source_across_the_whole_rectangle() {
+        // The fields `RenderCommand::DrawImageScaled` carries: destination box + source grid.
+        let (x, y, width, height) = (0, 0, 8u32, 4u32);
+        let (source_width, source_height) = (2u32, 1u32);
+        // One row, two columns: red then blue.
+        let data = vec![255u8, 0, 0, 255, 0, 0, 255, 255];
+
+        let pixels = raster::rasterize_draw_commands_rgba8(
+            width,
+            height,
+            &[commands::WgpuDrawCommand::DrawImage {
+                rect: types::PixelRect { x, y, width, height },
+                rgba8: data.into(),
+                image_width: source_width,
+                image_height: source_height,
+                clip: None,
+            }],
+        )
+        .expect("a scaled image rasterises");
+
+        let sample = |x: u32, y: u32| -> [u8; 4] {
+            let offset = ((y * width + x) * 4) as usize;
+            [pixels[offset], pixels[offset + 1], pixels[offset + 2], pixels[offset + 3]]
+        };
+        assert_eq!(sample(0, 0), [255, 0, 0, 255], "the left half is the source's first column");
+        assert_eq!(sample(7, 3), [0, 0, 255, 255], "the right half is its second column");
+        let (frame, remainder) = pixels.as_chunks::<4>();
+        assert!(remainder.is_empty(), "the frame is RGBA8");
+        assert!(
+            frame.iter().all(|pixel| pixel[3] == 255),
+            "the whole destination must be covered, not the corner the source could reach"
+        );
     }
     #[test]
     fn test_render_clear_gpu_produces_valid_pixels() {

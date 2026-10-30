@@ -57,7 +57,7 @@ color_picker: color_changed, hex_changed, canceled, color_committed, color_previ
 color_well: clicked, picker_requested, color_changed
 combo_box: current_index_changed, current_text_changed, activated, popup_visibility_changed, highlighted, text_edited
 command_link: clicked, hovered
-command_palette: command_activated, query_changed
+command_palette: command_activated, query_changed, dismissed
 command_palette_host: command_activated, filter_changed, cancelled
 compass: reset_north_requested
 confirm_dialog: accepted, rejected, focus_changed
