@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: MIT
 
 //! Form layout manager — two-column label/field row pairs.
-use super::{ChildInfo, Layout, LayoutContext};
 use super::types::ChildPlacements;
+use super::{ChildInfo, Layout, LayoutContext};
 use crate::compat::{Any, HashMap, RefCell, Vec};
 use crate::core::{ObjectId, Rect};
 use crate::style::EdgeOffsets;

@@ -6,8 +6,8 @@
 //! A simplified constraint-based layout that resolves spatial relationships
 //! between widgets sequentially (not a full Cassowary solver). Each constraint
 //! references a target widget and describes how this widget relates to it.
-use super::{ChildInfo, Layout, LayoutContext};
 use super::types::ChildPlacements;
+use super::{ChildInfo, Layout, LayoutContext};
 use crate::compat::{Any, HashMap, Rc, RefCell, Vec};
 use crate::core::{ObjectId, Rect};
 

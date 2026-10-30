@@ -977,11 +977,11 @@ impl Widget for DockWidget {
     fn event_signal_dyn(&self, name: &str) -> Option<crate::signal::EventSignalRef> {
         use crate::signal::EventSignalRef;
         match name {
-            "visibility_changed" => {
-                Some(EventSignalRef::mapped("visibility_changed", &self.visibility_changed, |shown| {
-                    CapabilityValue::Bool(*shown)
-                }))
-            }
+            "visibility_changed" => Some(EventSignalRef::mapped(
+                "visibility_changed",
+                &self.visibility_changed,
+                |shown| CapabilityValue::Bool(*shown),
+            )),
 
             "dock_location_changed" => Some(EventSignalRef::mapped(
                 "dock_location_changed",

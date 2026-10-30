@@ -24,6 +24,43 @@
 //! bounds the wait with a timeout so a lost device reports an error instead of hanging, but it
 //! cannot remove the trip itself.
 //!
+//! # Path selection: intent (L0), delivery surface (L1), cost (L2)
+//!
+//! Three facts decide which of the existing implementations answers a call; none of them changes
+//! pixels, and all three are documented in `docs/plans/blue29.md`.
+//!
+//! **The host's quality intent comes first** ([`RenderQuality`], default `Antialiased`).
+//! `ByteExact` keeps two classes on the reference rasteriser so the bytes match it exactly: a
+//! stream containing an edge-feathered shape (`FillCircle`, `DrawCircle`, `DrawArc`,
+//! `StrokeRoundedRect`), and a stream drawn onto a transparent target with no whole-frame opaque
+//! `Clear`. The second class is not an edge artefact — on a transparent target the pipelines store
+//! coverage-premultiplied colour while the reference stores straight alpha — so no edge setting can
+//! remove it. A filled rounded rectangle is **not** in the first class: it is drawn as the same row
+//! spans the reference fills.
+//!
+//! **The delivery surface is the caller's choice, not a policy** (`renderer/stream.rs`):
+//! `with_draw_commands_texture` hands the frame over on the GPU with no readback;
+//! `render_draw_commands_cached_rgba8` returns borrowed pixels from the renderer's reused buffer;
+//! `render_draw_commands_rgba8` returns an owned frame. The three are measured in
+//! `benches/wgpu_bench.rs`.
+//!
+//! **The pixel-returning paths are cost-gated** (`renderer::policy::CostGate`). A claimed stream is
+//! still delivered by the reference rasteriser unless its largest qualifying shape reaches the
+//! whitelist's area threshold. The whitelist is the two families the benchmark measured a GPU win
+//! for at a large area — a gradient whose own rectangle is large, and geometry drawn under a
+//! non-`Normal` blend mode — which keeps a half-frame gradient or a small blended rectangle on the
+//! cheap path. The threshold is `COST_GATE_AREA_THRESHOLD` with the evidence for its value in its
+//! doc comment; a nearly identical area reuses the previous answer (±10% hysteresis) so a frame
+//! that jitters around the boundary does not alternate paths. `WgpuRenderer::set_cost_gate_enabled`
+//! disarms it for a host that wants to re-calibrate on its adapter. **The texture entry point is
+//! deliberately not gated**: its alternative form is a CPU raster followed by an upload, and
+//! B29.04 measured that cost, but the first version still applies no gate there (plan §2.4).
+//!
+//! Two resulting numbers are easy to over-read. `wait_idle` waits for the device, so a texture
+//! hand-off can be timed with its GPU completion included; and the gated pixel path may be the CPU
+//! rasteriser even though the dispatcher would have claimed the stream. The benchmark prints both
+//! the raw GPU column (gate disarmed) and the selected column (gate armed) for that reason.
+//!
 //! # Planned on-GPU order (G-63)
 //!
 //! The module is retained as the carrier for a real GPU pipeline. The integration order is:
@@ -107,7 +144,7 @@ pub mod shaders;
 mod types;
 pub use bridge::bridge_non_zero_fill_commands;
 pub use commands::WgpuDrawCommand;
-pub use renderer::WgpuRenderer;
+pub use renderer::{RenderQuality, WgpuRenderer};
 pub use types::{PixelRect, Rgba8};
 #[cfg(test)]
 mod tests {

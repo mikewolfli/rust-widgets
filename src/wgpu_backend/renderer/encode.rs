@@ -10,8 +10,8 @@ use super::super::raster::{
 };
 use super::super::types::{PixelRect, Rgba8};
 use super::dispatch::{
-    blend_bbox, draws_under_blend, pack_rect_command, SHAPE_ARC_STROKE, SHAPE_ARC_WEDGE, SHAPE_CIRCLE_STROKE,
-    SHAPE_ROUNDED_OUTLINE,
+    blend_bbox, draws_under_blend, pack_rect_command, SHAPE_ARC_STROKE, SHAPE_ARC_WEDGE,
+    SHAPE_CIRCLE_STROKE, SHAPE_ROUNDED_OUTLINE,
 };
 use super::frame::WgpuRenderer;
 use super::pass::StepRecorder;
@@ -1028,7 +1028,8 @@ impl WgpuRenderer {
             cache.ensure_readback(&self.device, readback_frame_bytes(width, height)?);
         }
         let cache = self.cache.borrow();
-        let readback = cache.readback.as_ref().ok_or_else(|| "readback buffer missing".to_string())?;
+        let readback =
+            cache.readback.as_ref().ok_or_else(|| "readback buffer missing".to_string())?;
         let padded_bytes_per_row = padded_row_bytes(width)?;
         let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("gpu_draw_commands_readback"),

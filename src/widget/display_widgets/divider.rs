@@ -199,9 +199,7 @@ impl Divider {
             // this reason. Before this, a divider fell back to whatever `border_color` the theme
             // resolved for it, which on several presets is the *same* colour a focused control
             // draws its ring in: the two separated quantities had one value.
-            .or_else(|| {
-                crate::style::palette_shared().map(|active| active.outline_variant)
-            })
+            .or_else(|| crate::style::palette_shared().map(|active| active.outline_variant))
             .unwrap_or(self.color)
     }
 }

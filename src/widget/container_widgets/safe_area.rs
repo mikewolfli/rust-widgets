@@ -580,8 +580,8 @@ mod tests {
 
         let label = Label::new("content".to_string(), Rect::new(0, 0, 160, 70));
         let expected = label.size_hint();
-        let id = crate::widget::runtime::register(Box::new(label))
-            .expect("the test control mounts");
+        let id =
+            crate::widget::runtime::register(Box::new(label)).expect("the test control mounts");
         let mut area = SafeArea::new(Rect::new(0, 0, 300, 200));
         area.set_content(Some(id));
         let insets = area.insets();

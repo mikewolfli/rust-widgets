@@ -1284,8 +1284,8 @@ mod tests {
 
         let label = Label::new("page".to_string(), Rect::new(0, 0, 160, 70));
         let expected = label.size_hint();
-        let id = crate::widget::runtime::register(Box::new(label))
-            .expect("the test control mounts");
+        let id =
+            crate::widget::runtime::register(Box::new(label)).expect("the test control mounts");
         let mut stack = StackedWidget::new(Rect::new(0, 0, 300, 200));
         stack.add_widget(id);
         assert_eq!(stack.size_hint(), expected);

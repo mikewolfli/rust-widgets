@@ -19,9 +19,9 @@
 //! stated as "the value takes what the indicator does not", which makes "the value yields to the
 //! indicator" true by construction rather than by two subtractions that happen to agree.
 
-use crate::compat::{HashMap, Instant, Rc, RefCell, String, ToString, Vec};
 #[cfg(full_widgets)]
 use crate::compat::{lock, Arc, Mutex};
+use crate::compat::{HashMap, Instant, Rc, RefCell, String, ToString, Vec};
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{wheel::WheelScroll, Event, EventHandler};
 use crate::render::RenderContext;

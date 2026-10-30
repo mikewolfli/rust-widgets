@@ -9,6 +9,7 @@ use super::super::types::{PixelRect, Rgba8};
 use super::dispatch::{commands_gpu_dispatchable, commands_gpu_dispatchable_with};
 use super::encode::{circle_quad, pack_instanced_quads, INSTANCE_BYTES, MAX_INSTANCES_PER_DRAW};
 use super::frame::WgpuRenderer;
+use super::policy::{quality_refuses_stream, RenderQuality};
 use super::resources::grown_buffer_capacity;
 
 /// A renderer on this host, or `None` when no adapter can be reached.
@@ -18,7 +19,13 @@ use super::resources::grown_buffer_capacity;
 /// contract the platform code uses for an unavailable capability.
 fn renderer() -> Option<WgpuRenderer> {
     match WgpuRenderer::new() {
-        Ok(renderer) => Some(renderer),
+        Ok(mut renderer) => {
+            // These tests exercise the pipelines themselves. The pixel-path cost gate is a
+            // separate policy with its own tests (`policy.rs`), and leaving it armed here would
+            // route the small test frames to the CPU, turning a GPU comparison into CPU == CPU.
+            renderer.set_cost_gate_enabled(false);
+            Some(renderer)
+        }
         Err(error) => {
             eprintln!("skipping GPU test: no wgpu adapter available ({error})");
             None
@@ -271,7 +278,9 @@ fn the_texture_entry_point_draws_what_the_frame_entry_point_draws() {
     ];
     renderer.cache.borrow_mut().ensure_readback(&renderer.device, 16 * 16 * 4);
     let seen = renderer
-        .with_draw_commands_texture(16, 16, &dispatchable, |_view| read_target_frame(&renderer, 16, 16))
+        .with_draw_commands_texture(16, 16, &dispatchable, |_view| {
+            read_target_frame(&renderer, 16, 16)
+        })
         .expect("the texture path renders");
     let owned = renderer.render_draw_commands_rgba8(16, 16, &dispatchable).expect("owned frame");
     assert_eq!(seen, owned, "the texture the caller gets is the frame the other entry returns");
@@ -295,7 +304,6 @@ fn the_texture_entry_point_draws_what_the_frame_entry_point_draws() {
     let owned = renderer.render_draw_commands_rgba8(16, 16, &refused).expect("owned frame");
     assert_eq!(seen, owned, "the CPU branch uploads the CPU picture unchanged");
 }
-
 
 /// Reads the renderer's cached target texture back into pixels.
 ///
@@ -321,7 +329,10 @@ fn read_target_frame(renderer: &WgpuRenderer, width: u32, height: u32) -> Vec<u8
             buffer: &readback.buffer,
             layout: wgpu::TexelCopyBufferLayout {
                 offset: 0,
-                bytes_per_row: Some(crate::wgpu_backend::renderer::resources::padded_row_bytes(width).expect("padded row")),
+                bytes_per_row: Some(
+                    crate::wgpu_backend::renderer::resources::padded_row_bytes(width)
+                        .expect("padded row"),
+                ),
                 rows_per_image: Some(height),
             },
         },
@@ -2237,4 +2248,137 @@ fn a_diagonal_stroke_path_matches_the_software_rasteriser() {
             },
         ],
     );
+}
+
+/// An edge-feathered stream under `ByteExact` must produce the reference rasteriser's bytes.
+///
+/// The stream is otherwise GPU-dispatchable (an opaque clear followed by a filled circle), so the
+/// only thing keeping it on the reference is the host's intent.
+#[test]
+fn byte_exact_keeps_an_edge_feathered_stream_on_the_reference_rasteriser() {
+    let Some(mut renderer) = renderer() else { return };
+    let commands = [
+        WgpuDrawCommand::Clear { color: BLACK },
+        WgpuDrawCommand::FillCircle { center: (8, 8), radius: 5, color: RED, clip: None },
+    ];
+    assert!(commands_gpu_dispatchable_with(&commands, renderer.blend_modes_on_gpu()));
+    assert!(quality_refuses_stream(RenderQuality::ByteExact, &commands));
+
+    renderer.set_render_quality(RenderQuality::ByteExact);
+    assert_eq!(renderer.render_quality(), RenderQuality::ByteExact);
+    let pixels = renderer.render_draw_commands_rgba8(16, 16, &commands).expect("renders");
+    let reference = rasterize_draw_commands_rgba8(16, 16, &commands).expect("reference");
+    assert_eq!(pixels, reference, "ByteExact must reproduce the reference byte for byte");
+}
+
+/// `ByteExact` must not touch a stream whose pixels the pipelines already reproduce exactly: an
+/// opaque clear plus a rectangle is effect A, and the tier may not turn it into a fallback.
+#[test]
+fn byte_exact_keeps_a_plain_rectangle_stream_byte_identical() {
+    let Some(mut renderer) = renderer() else { return };
+    let commands = [
+        WgpuDrawCommand::Clear { color: BLACK },
+        WgpuDrawCommand::FillRect {
+            rect: PixelRect { x: 2, y: 2, width: 8, height: 6 },
+            color: RED,
+            clip: None,
+        },
+    ];
+    assert!(!quality_refuses_stream(RenderQuality::ByteExact, &commands));
+
+    renderer.set_render_quality(RenderQuality::ByteExact);
+    let pixels = renderer.render_draw_commands_rgba8(16, 16, &commands).expect("renders");
+    let reference = rasterize_draw_commands_rgba8(16, 16, &commands).expect("reference");
+    assert_eq!(pixels, reference);
+}
+
+/// `Antialiased` must actually reach the edge-feathered pipeline: at least one rim pixel differs
+/// from the reference, while the shape itself (interior and outside) still agrees.
+#[test]
+fn antialiased_lets_the_edge_of_a_circle_differ_from_the_reference() {
+    let Some(mut renderer) = renderer() else { return };
+    let commands = [
+        WgpuDrawCommand::Clear { color: BLACK },
+        WgpuDrawCommand::FillCircle { center: (8, 8), radius: 5, color: RED, clip: None },
+    ];
+    renderer.set_render_quality(RenderQuality::Antialiased);
+    let smooth = renderer.render_draw_commands_rgba8(16, 16, &commands).expect("renders");
+    let reference = rasterize_draw_commands_rgba8(16, 16, &commands).expect("reference");
+
+    let differing = smooth.iter().zip(&reference).filter(|(a, b)| a != b).count();
+    assert!(differing > 0, "Antialiased must feather the rim, not reproduce the hard edge");
+    // The shape itself is unchanged: the centre is the fill colour and the far corner is the clear
+    // colour on both paths.
+    assert_eq!(pixel(&smooth, 16, 8, 8), pixel(&reference, 16, 8, 8));
+    assert_eq!(pixel(&smooth, 16, 0, 0), pixel(&reference, 16, 0, 0));
+}
+
+/// The tier only affects edge-feathered streams: a plain rectangle stream must come out the same
+/// under both qualities.
+#[test]
+fn both_qualities_draw_a_plain_rectangle_stream_identically() {
+    let Some(mut renderer) = renderer() else { return };
+    let commands = [
+        WgpuDrawCommand::Clear { color: BLACK },
+        WgpuDrawCommand::FillRect {
+            rect: PixelRect { x: 3, y: 3, width: 7, height: 5 },
+            color: RED,
+            clip: None,
+        },
+    ];
+    renderer.set_render_quality(RenderQuality::ByteExact);
+    let exact = renderer.render_draw_commands_rgba8(16, 16, &commands).expect("ByteExact");
+    renderer.set_render_quality(RenderQuality::Antialiased);
+    let smooth = renderer.render_draw_commands_rgba8(16, 16, &commands).expect("Antialiased");
+    assert_eq!(exact, smooth, "the tier must not move an effect-A stream");
+    let reference = rasterize_draw_commands_rgba8(16, 16, &commands).expect("reference");
+    assert_eq!(exact, reference);
+}
+
+/// A translucent stream on a transparent target has no whole-frame opaque clear, so `ByteExact`
+/// must keep it on the reference rasteriser: the premultiplied storage difference is not an edge
+/// artefact and the edge setting cannot remove it.
+#[test]
+fn byte_exact_keeps_a_translucent_stream_on_the_reference_rasteriser() {
+    let Some(mut renderer) = renderer() else { return };
+    let commands = [WgpuDrawCommand::FillRect {
+        rect: PixelRect { x: 0, y: 0, width: 16, height: 16 },
+        color: Rgba8 { r: 10, g: 20, b: 30, a: 128 },
+        clip: None,
+    }];
+    assert!(commands_gpu_dispatchable_with(&commands, renderer.blend_modes_on_gpu()));
+    assert!(quality_refuses_stream(RenderQuality::ByteExact, &commands));
+
+    renderer.set_render_quality(RenderQuality::ByteExact);
+    let pixels = renderer.render_draw_commands_rgba8(16, 16, &commands).expect("renders");
+    let reference = rasterize_draw_commands_rgba8(16, 16, &commands).expect("reference");
+    assert_eq!(pixels, reference);
+}
+
+/// `wait_idle` must not add or drop a frame: the picture read back after it is the picture the
+/// renderer submitted, and waiting again changes nothing.
+#[test]
+fn wait_idle_leaves_the_pending_frame_ready_to_read_back() {
+    let Some(renderer) = renderer() else { return };
+    let commands = [
+        WgpuDrawCommand::Clear { color: opaque(5, 6, 7) },
+        WgpuDrawCommand::FillRect {
+            rect: PixelRect { x: 1, y: 1, width: 6, height: 6 },
+            color: opaque(200, 100, 50),
+            clip: None,
+        },
+    ];
+    renderer.cache.borrow_mut().ensure_readback(&renderer.device, 16 * 16 * 4);
+    renderer
+        .with_draw_commands_texture(16, 16, &commands, |_view| {})
+        .expect("the texture path renders");
+
+    renderer.wait_idle().expect("the device reaches idle");
+    let first = read_target_frame(&renderer, 16, 16);
+    renderer.wait_idle().expect("a second wait is a no-op");
+    let second = read_target_frame(&renderer, 16, 16);
+    assert_eq!(first, second, "waiting again must not add or drop a frame");
+
+    let reference = rasterize_draw_commands_rgba8(16, 16, &commands).expect("reference");
+    assert_eq!(first, reference, "the idle texture holds the frame the pixel entry returns");
 }

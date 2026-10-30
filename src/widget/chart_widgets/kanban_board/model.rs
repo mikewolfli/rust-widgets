@@ -251,7 +251,9 @@ pub const KANBAN_CARD_SCHEMA: crate::widget::capability::RecordSchema =
     };
 
 /// One row of [`KANBAN_COLUMN_SCHEMA`].
-pub(super) fn kanban_column_record(column: &KanbanColumn) -> crate::widget::capability::RecordValue {
+pub(super) fn kanban_column_record(
+    column: &KanbanColumn,
+) -> crate::widget::capability::RecordValue {
     let mut record = crate::widget::capability::RecordValue::new()
         .with("id", CapabilityValue::String(column.id.clone()))
         .with("title", CapabilityValue::String(column.title.clone()))

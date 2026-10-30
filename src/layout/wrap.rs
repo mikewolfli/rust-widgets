@@ -11,8 +11,8 @@
 //! told; [`FlowLayout`](crate::layout::FlowLayout) calls them with the sizes its children report.
 //! The two layouts keep their own size sources and configuration surfaces, but not two
 //! algorithms — see LAY-N08.
-use super::{ChildInfo, Layout, LayoutContext};
 use super::types::ChildPlacements;
+use super::{ChildInfo, Layout, LayoutContext};
 use crate::compat::{Any, RefCell, Vec};
 use crate::core::{ObjectId, Rect, Size, TextDirection};
 

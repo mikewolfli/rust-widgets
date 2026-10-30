@@ -2,7 +2,6 @@
 // the control, so the historical `…::chart::chart` path stays valid. `module_inception` would
 // prefer a different inner name; renaming here would move a published module path for a lint.
 #![allow(clippy::module_inception)]
-
 // SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
 // SPDX-License-Identifier: MIT
 

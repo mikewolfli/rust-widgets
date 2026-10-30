@@ -11,6 +11,7 @@ mod effects;
 mod encode;
 mod frame;
 mod pass;
+mod policy;
 mod resources;
 mod shadow;
 mod stream;
@@ -18,6 +19,7 @@ mod uploads;
 
 pub(crate) use super::shaders;
 pub use frame::WgpuRenderer;
+pub use policy::RenderQuality;
 
 #[cfg(test)]
 mod tests;

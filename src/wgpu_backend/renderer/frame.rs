@@ -7,6 +7,7 @@ use super::super::commands::WgpuDrawCommand;
 use super::super::raster::rasterize_draw_commands_rgba8;
 use super::super::shaders::ShaderModule;
 use super::encode::INSTANCE_BYTES;
+use super::policy::{CostGate, RenderQuality};
 use super::resources::{
     padded_row_bytes, readback_frame_bytes, rgba8_from_unit, rgba_buffer_len, CpuFrame,
     RenderCache, GPU_READBACK_TIMEOUT,
@@ -41,6 +42,10 @@ pub struct WgpuRenderer {
     /// Whether streams that leave `Normal` are drawn on the GPU. Off by default — see
     /// [`Self::set_blend_modes_on_gpu`].
     pub(crate) blend_modes_on_gpu: bool,
+    /// The host's quality intent. See [`Self::set_render_quality`].
+    pub(crate) quality: RenderQuality,
+    /// The pixel-path cost gate. See [`Self::set_cost_gate_enabled`].
+    pub(super) cost_gate: CostGate,
     pub(crate) bind_group_layout: wgpu::BindGroupLayout,
     /// Bind group layout of the blur pass: a non-filterable input texture and a 32-byte
     /// uniform (`direction`, `radius`, and the G-220 tint block the vertical pass composites).
@@ -1458,6 +1463,8 @@ impl WgpuRenderer {
             blend_composite_pipeline,
             blend_bind_group_layout,
             blend_modes_on_gpu: false,
+            quality: RenderQuality::default(),
+            cost_gate: CostGate::new(),
             circle_pipeline,
             circle_bind_group_layout,
             image_pipeline,
@@ -1512,6 +1519,64 @@ impl WgpuRenderer {
     /// ```
     pub fn set_blend_modes_on_gpu(&mut self, enabled: bool) {
         self.blend_modes_on_gpu = enabled;
+    }
+
+    /// Returns the host's quality intent.
+    ///
+    /// See [`Self::set_render_quality`] for what the two values mean.
+    pub fn render_quality(&self) -> RenderQuality {
+        self.quality
+    }
+
+    /// States what the host needs from the picture.
+    ///
+    /// [`RenderQuality::ByteExact`] keeps the streams that cannot be reproduced byte for byte on
+    /// the reference rasteriser: a stream containing an edge-feathered shape (circle fill, ring,
+    /// arc, rounded outline), and a stream drawn onto a transparent target with no whole-frame
+    /// opaque clear. Every other stream is unaffected. [`RenderQuality::Antialiased`] is the
+    /// default, because it preserves the picture this renderer produced before the intent existed.
+    ///
+    /// The intent only describes the result; it never names the mechanism that produces it.
+    pub fn set_render_quality(&mut self, quality: RenderQuality) {
+        self.quality = quality;
+    }
+
+    /// Returns whether the cost gate may move a pixel-returning stream off the GPU path.
+    pub fn cost_gate_enabled(&self) -> bool {
+        self.cost_gate.enabled()
+    }
+
+    /// Arms or disarms the pixel-path cost gate.
+    ///
+    /// Armed (the default), a stream the dispatcher claims is still drawn on the reference
+    /// rasteriser unless its largest qualifying shape reaches the whitelist's area threshold. This
+    /// is what stops a small frame from paying the GPU's delivery cost for no gain. Disarming
+    /// restores the pre-gate behaviour, which is what the benchmark uses to measure the raw GPU
+    /// column and what a host uses to re-calibrate the threshold on its own adapter.
+    ///
+    /// The texture entry point is not gated in either case: its alternative form is a CPU raster
+    /// followed by an upload. B29.04 measured that branch, but the first version still does not
+    /// gate the texture path (`docs/plans/blue29.md` §2.4).
+    pub fn set_cost_gate_enabled(&mut self, enabled: bool) {
+        self.cost_gate.set_enabled(enabled);
+    }
+
+    /// Blocks until every submission already handed to the device has completed.
+    ///
+    /// The public API exposes no queue or fence, and this method deliberately does not: it answers
+    /// the caller's question ("is the device idle?") rather than exposing the mechanism. The wait
+    /// is bounded by `GPU_READBACK_TIMEOUT`, the same budget the readback uses, so a lost device
+    /// reports an error instead of hanging the process.
+    pub fn wait_idle(&self) -> Result<(), String> {
+        self.device
+            .poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: Some(GPU_READBACK_TIMEOUT),
+            })
+            .map(|_| ())
+            .map_err(|error| {
+                format!("GPU did not reach idle within {GPU_READBACK_TIMEOUT:?}: {error}")
+            })
     }
 
     /// Render one offscreen RGBA frame by clearing a texture with the given color and read pixels back.

@@ -231,7 +231,6 @@ impl CpuFrame {
         }
         Ok(Ref::map(self.bytes.borrow(), |bytes| &bytes[..byte_len]))
     }
-
 }
 
 /// One encoded draw of the command-stream pass (G-218).

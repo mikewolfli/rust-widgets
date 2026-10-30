@@ -31,8 +31,8 @@
 //! layout the caller asked for. Controls that need a larger target belong in the center
 //! region, or inside a nested layout that owns that policy.
 
-use super::{ChildInfo, Layout, LayoutContext};
 use super::types::ChildPlacements;
+use super::{ChildInfo, Layout, LayoutContext};
 use crate::compat::{Any, RefCell, Vec};
 use crate::core::{ObjectId, Rect};
 

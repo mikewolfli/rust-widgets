@@ -528,9 +528,8 @@ impl Draw for LCDNumber {
         // draw (the mutex is not re-entrant).
         let style = self.base.style();
         let theme = crate::style::resolved_theme_style_shared("lcd_number");
-        let theme_background = crate::style::palette_shared()
-            .map(|theme| theme.background)
-            .unwrap_or(Color::BLACK);
+        let theme_background =
+            crate::style::palette_shared().map(|theme| theme.background).unwrap_or(Color::BLACK);
         let resolved = style
             .background_color
             .or_else(|| theme.as_ref().and_then(|t| t.background_color))

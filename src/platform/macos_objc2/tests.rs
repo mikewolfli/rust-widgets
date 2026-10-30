@@ -251,10 +251,7 @@ fn a_runtime_registered_surface_mounts_without_a_backend_widget_record() {
     );
     assert!(backend.resize_surface(id, crate::core::Rect::new(0, 0, 200, 80)), "resizable");
     assert!(backend.unmount_surface(id), "releasable");
-    assert!(
-        !backend.unmount_surface(id),
-        "a second unmount must report that the surface is gone"
-    );
+    assert!(!backend.unmount_surface(id), "a second unmount must report that the surface is gone");
 
     crate::widget::runtime::unregister(id);
 }

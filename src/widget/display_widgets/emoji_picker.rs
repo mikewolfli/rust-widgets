@@ -1105,9 +1105,8 @@ impl EmojiPicker {
         // it. A window-fill resolution is treated as "no answer" and stepped away from, the
         // same guard `drop_zone` and `otp_input` use, so a theme that genuinely wants the panel
         // flush with the page can still set `background_color` explicitly.
-        let window_fill = crate::style::palette_shared()
-            .map(|active| active.background)
-            .unwrap_or(Color::WHITE);
+        let window_fill =
+            crate::style::palette_shared().map(|active| active.background).unwrap_or(Color::WHITE);
         let panel = style
             .background_color
             .filter(|resolved| *resolved != window_fill)

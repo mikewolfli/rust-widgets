@@ -6,11 +6,11 @@
 use super::model::*;
 use crate::compat::{Box, MiniToString, String, Vec};
 // Used only by the `#[cfg(not(alloc_frugal))]` measurement helpers below.
-#[cfg(not(alloc_frugal))]
-use crate::render::RenderContext;
 use crate::core::{Point, Rect};
 use crate::event::{Event, EventHandler, FocusReason};
 use crate::platform::EchoMode;
+#[cfg(not(alloc_frugal))]
+use crate::render::RenderContext;
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::input_widgets::input_validator::{InputValidator, ValidationState, Validator};

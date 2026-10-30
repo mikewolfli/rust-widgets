@@ -214,7 +214,10 @@ impl WgpuRenderer {
                 started = true;
             }
             if let Some((targets, runs)) = blend {
-                debug_assert!(runs.get(run).is_some(), "the plan named a blend run that was not packed");
+                debug_assert!(
+                    runs.get(run).is_some(),
+                    "the plan named a blend run that was not packed"
+                );
                 if let Some(entry) = runs.get(run) {
                     self.record_blend_run(
                         encoder,
