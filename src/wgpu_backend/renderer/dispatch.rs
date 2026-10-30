@@ -7,7 +7,10 @@
 //! already accepted: this module answers "can the GPU draw all of this without help?" and owns the
 //! one record layout a filled rectangle uses.
 use super::super::commands::WgpuDrawCommand;
-use super::super::raster::{combine, effective_clip, rounded_rect_row_spans, stroke_rect_edges};
+use super::super::raster::{
+    bbox_for_path, clip_segment_to_rect, combine, effective_clip, for_each_line_stamp,
+    rect_for_line, rounded_rect_row_spans, stroke_rect_edges,
+};
 use super::super::types::PixelRect;
 use super::super::types::Rgba8;
 use super::encode::INSTANCE_BYTES;
@@ -38,58 +41,55 @@ pub(super) fn push_instance(instances: &mut Vec<u8>, rect: PixelRect, color: Rgb
     instances.extend_from_slice(&record);
 }
 
-/// The rectangle an **axis-aligned** line covers, or `None` when it is diagonal or empty.
+/// Appends one instance per stamped square of a line, narrowed exactly as the CPU blends them.
 ///
-/// The CPU rasteriser stamps a square of `2 * half_w` pixels at every Bresenham step, with the
-/// range inclusive at both ends (`x0 - half_w + 1 ..= x0 + half_w`). Along an axis those stamps
-/// tile into exactly this rectangle — which is why the GPU can paint the line byte for byte. Along
-/// a diagonal they do not, so such a line is reported as `None` and stays on the CPU rather than
-/// being redrawn as a capsule of a different shape.
-pub(super) fn axis_aligned_line_rect(
+/// The CPU walks Bresenham from the segment **clamped to the visible rect** and stamps a square of
+/// `2 * half_w` pixels at every step, so one instance per step is the same picture — which is why a
+/// diagonal line no longer has to stay on the CPU. Clamping the segment first is not an
+/// optimisation of the picture: it is what the CPU does, and it also bounds the walk.
+pub(super) fn push_line_instances(
+    instances: &mut Vec<u8>,
+    framebuffer: PixelRect,
+    clip: Option<PixelRect>,
+    stream_clip: Option<PixelRect>,
     from: (i32, i32),
     to: (i32, i32),
     width: u32,
-) -> Option<PixelRect> {
-    if width == 0 || (from.0 != to.0 && from.1 != to.1) {
-        return None;
-    }
-    let half_w = (width as i64 / 2).max(1) as i32;
-    if from.1 == to.1 {
-        let left = from.0.min(to.0) - half_w + 1;
-        let right = from.0.max(to.0) + half_w + 1;
-        return Some(PixelRect {
-            x: left,
-            y: from.1 - half_w + 1,
-            width: (right - left).max(0) as u32,
-            height: (2 * half_w).max(0) as u32,
-        });
-    }
-    let top = from.1.min(to.1) - half_w + 1;
-    let bottom = from.1.max(to.1) + half_w + 1;
-    Some(PixelRect {
-        x: from.0 - half_w + 1,
-        y: top,
-        width: (2 * half_w).max(0) as u32,
-        height: (bottom - top).max(0) as u32,
-    })
+    color: Rgba8,
+) {
+    let Some(clip_rect) =
+        effective_clip(framebuffer, rect_for_line(from, to, width), combine(&clip, stream_clip))
+    else {
+        return;
+    };
+    let Some((from, to)) = clip_segment_to_rect(from, to, &clip_rect) else { return };
+    push_line_stamps(instances, framebuffer, Some(clip_rect), from, to, width, color);
 }
 
-/// Whether every segment of a stroked path is axis-aligned.
-///
-/// The CPU draws a stroked path as one `DrawLine` per segment, and an axis-aligned line is exactly
-/// a rectangle; a path made only of such segments is therefore reproducible byte for byte. One
-/// diagonal segment is enough to send the whole path back to the CPU, because that segment cannot
-/// be drawn without changing its shape.
-pub(super) fn stroke_is_axis_aligned(points: &[(i32, i32)], closed: bool) -> bool {
-    if points.len() < 2 {
-        return false;
-    }
-    let segments = if closed { points.len() } else { points.len() - 1 };
-    (0..segments).all(|index| {
-        let from = points[index];
-        let to = points[(index + 1) % points.len()];
-        from.0 == to.0 || from.1 == to.1
-    })
+/// Appends one instance per stamped square of `from → to`, clipped to `clip` (already narrowed).
+fn push_line_stamps(
+    instances: &mut Vec<u8>,
+    framebuffer: PixelRect,
+    clip: Option<PixelRect>,
+    from: (i32, i32),
+    to: (i32, i32),
+    width: u32,
+    color: Rgba8,
+) {
+    for_each_line_stamp(from, to, width, |x, y, half| {
+        // The square the CPU fills, in the same inclusive `centre - half + 1 ..= centre + half`
+        // rule. Saturation only matters for arithmetic that a clip will discard anyway.
+        let left = x - half + 1;
+        let top = y - half + 1;
+        let size = (2 * half).clamp(0, u32::MAX as i64);
+        let rect = PixelRect {
+            x: left.clamp(i32::MIN as i64, i32::MAX as i64) as i32,
+            y: top.clamp(i32::MIN as i64, i32::MAX as i64) as i32,
+            width: size as u32,
+            height: size as u32,
+        };
+        push_clipped_instance(instances, framebuffer, clip, None, rect, color);
+    });
 }
 
 /// Appends the instance for `rect` narrowed by the command's own clip and the running stream
@@ -154,31 +154,97 @@ pub(super) fn pack_rect_command(
             };
             push_clipped_instance(instances, framebuffer, *clip, stream_clip, shadow, *color);
         }
-        // See [`axis_aligned_line_rect`]: along an axis the CPU's stamped squares tile into
-        // exactly one rectangle.
+        // See [`push_line_instances`]: one instance per stamped square, at any angle.
         WgpuDrawCommand::DrawLine { from, to, color, width, clip } => {
-            let Some(rect) = axis_aligned_line_rect(*from, *to, *width) else { return true };
-            push_clipped_instance(instances, framebuffer, *clip, stream_clip, rect, *color);
+            push_line_instances(
+                instances,
+                framebuffer,
+                *clip,
+                stream_clip,
+                *from,
+                *to,
+                *width,
+                *color,
+            );
         }
-        // One instance per axis-aligned segment, in path order. `width == 0` means one pixel to the
-        // CPU's line helper, so the rectangle uses the same substituted width.
+        // One run of stamped squares per segment, in path order. The CPU gives each segment its own
+        // `rect_for_line ∩ clip` window and draws nothing at all when the width is zero, so the same
+        // window and the same early exit are used here.
         WgpuDrawCommand::DrawPath { points, closed, color, filled: false, width, clip } => {
-            if points.len() < 2 {
+            if points.len() < 2 || *width == 0 {
                 return true;
             }
+            let Some(window) = effective_clip(
+                framebuffer,
+                bbox_for_path(points, *width),
+                combine(clip, stream_clip),
+            ) else {
+                return true;
+            };
             let segments = if *closed { points.len() } else { points.len() - 1 };
             for index in 0..segments {
                 let from = points[index];
                 let to = points[(index + 1) % points.len()];
-                let Some(rect) = axis_aligned_line_rect(from, to, (*width).max(1)) else {
+                let Some(segment_clip) = rect_for_line(from, to, *width).intersect(window) else {
                     continue;
                 };
-                push_clipped_instance(instances, framebuffer, *clip, stream_clip, rect, *color);
+                push_line_stamps(
+                    instances,
+                    framebuffer,
+                    Some(segment_clip),
+                    from,
+                    to,
+                    *width,
+                    *color,
+                );
             }
         }
         _ => return false,
     }
     true
+}
+
+/// Whether a `DrawImage`'s payload is exactly the grid its `image_width × image_height` declares.
+///
+/// The multiplication is checked: two large dimensions must not wrap into a small "expected" length
+/// that a short buffer could accidentally satisfy.
+fn image_payload_fits(image_width: u32, image_height: u32, rgba8: &[u8]) -> bool {
+    (image_width as usize)
+        .checked_mul(image_height as usize)
+        .and_then(|pixels| pixels.checked_mul(4))
+        == Some(rgba8.len())
+}
+
+/// The first image whose payload does not match its declared grid, with the message the CPU
+/// rasteriser would produce for it.
+///
+/// The command stream is a caller-owned list of bytes, so a payload can disagree with its grid.
+/// The CPU rasteriser reports that as an error rather than drawing part of the image, and the GPU
+/// path must report the *same* error — otherwise the answer would depend on which path happened to
+/// draw the rest of the stream. Checking here, before the dispatcher decides, is what lets a stream
+/// containing one such image still be answered by one path: the error comes first.
+///
+/// The skip order is the CPU's: an image command that draws nothing (an empty box or an empty
+/// declared grid) returns before the payload is looked at, so such a stream is not an error even
+/// when its payload is short.
+pub(super) fn invalid_image_payload(commands: &[WgpuDrawCommand]) -> Option<String> {
+    commands.iter().enumerate().find_map(|(index, command)| {
+        let WgpuDrawCommand::DrawImage { rect, rgba8, image_width, image_height, .. } = command
+        else {
+            return None;
+        };
+        if rect.width == 0 || rect.height == 0 || *image_width == 0 || *image_height == 0 {
+            return None;
+        }
+        if image_payload_fits(*image_width, *image_height, rgba8) {
+            return None;
+        }
+        Some(format!(
+            "invalid DrawImage payload at index {index}: expected {} bytes, got {}",
+            (*image_width as usize) * (*image_height as usize) * 4,
+            rgba8.len()
+        ))
+    })
 }
 
 /// Whether a command stream can be drawn entirely by the GPU pipelines (G-218).
@@ -190,9 +256,10 @@ pub(super) fn pack_rect_command(
 /// are per-draw states rather than reasons to abandon the frame.
 /// [`WgpuDrawCommand::SetBlendMode`] is allowed only at `Normal` (mode `0`), because every pipeline
 /// writes with `REPLACE` blending except the image one, which composites source-over; any other mode
-/// needs blending the pipelines do not implement. Text, path, arc and circle-stroke commands,
-/// rounded-rectangle strokes, gradients and shadows stay on the CPU rasteriser, which remains the
-/// fallback.
+/// needs blending the pipelines do not implement.
+///
+/// Lines and stroked paths are claimed at any angle: the CPU's stamps are reproduced one instance
+/// per Bresenham step, so a diagonal is no longer a reason to fall back.
 ///
 /// # What clipping costs, per class
 ///
@@ -200,9 +267,10 @@ pub(super) fn pack_rect_command(
 /// byte-identical to what the CPU rasteriser writes for the same command. The two classes therefore
 /// need no clip-aware shader code at all.
 ///
-/// An image whose payload does not match its declared grid is **not** dispatchable: the CPU
-/// rasteriser turns that into an explicit `Err`, and the caller must not see one answer or the
-/// other depending on which path the rest of the stream takes.
+/// An image whose payload does not match its declared grid is **not** dispatchable. In practice the
+/// entry point has already rejected such a stream through [`invalid_image_payload`], which reports
+/// the CPU rasteriser's own error first; this arm is the second line of defence for a caller that
+/// uses the predicate directly, so the encoder is never handed bytes it cannot upload.
 pub(super) fn commands_gpu_dispatchable(commands: &[WgpuDrawCommand]) -> bool {
     commands.iter().all(|command| match command {
         WgpuDrawCommand::Clear { .. } => true,
@@ -229,25 +297,18 @@ pub(super) fn commands_gpu_dispatchable(commands: &[WgpuDrawCommand]) -> bool {
         WgpuDrawCommand::DrawImage { rgba8, image_width, image_height, .. } => {
             *image_width > 0
                 && *image_height > 0
-                && (*image_width as usize)
-                    .checked_mul(*image_height as usize)
-                    .and_then(|pixels| pixels.checked_mul(4))
-                    == Some(rgba8.len())
+                && image_payload_fits(*image_width, *image_height, rgba8)
         }
         WgpuDrawCommand::FillPathNonZero { points, contours, .. } => {
             points.len() >= 3 && !contours.is_empty()
         }
         WgpuDrawCommand::DrawPath { points, filled: true, .. } => points.len() >= 3,
-        WgpuDrawCommand::DrawPath { points, closed, filled: false, .. } => {
-            stroke_is_axis_aligned(points, *closed)
-        }
-        // An axis-aligned line is exactly a rectangle: the CPU stamps a `2*half_w` square at every
-        // Bresenham step, and along a horizontal or vertical run those squares tile into one
-        // rectangle. A diagonal line's stamps do not, so it stays with the CPU rasteriser rather
-        // than being redrawn as a capsule and changing what the frame looks like.
-        WgpuDrawCommand::DrawLine { from, to, width, .. } => {
-            *width > 0 && (from.0 == to.0 || from.1 == to.1)
-        }
+        // A stroked path is one `DrawLine` per segment on the CPU, and each of those is a run of
+        // stamped squares the GPU can instance.
+        WgpuDrawCommand::DrawPath { points, filled: false, .. } => points.len() >= 2,
+        // An axis-aligned line's stamps tile into one rectangle; a diagonal's do not, but they are
+        // still squares, so the GPU emits one instance per Bresenham step instead.
+        WgpuDrawCommand::DrawLine { width, .. } => *width > 0,
         // An unblurred shadow is a fill of the offset body, which is exactly a rectangle. A blurred
         // one is a separate offscreen layer plus two box-blur passes and a composite, all of which
         // the renderer owns (`super::encode`), so it is dispatchable too.

@@ -865,6 +865,51 @@ fn a_non_dispatchable_stream_falls_back_to_the_software_raster() {
     assert_eq!(gpu, software, "the fallback returns the software picture directly");
 }
 
+/// A payload that disagrees with its declared grid is reported with the CPU rasteriser's wording,
+/// from the GPU entry point too: the error comes before the dispatcher decides, so the message a
+/// caller sees cannot depend on which path would have drawn the rest of the stream.
+#[test]
+fn a_malformed_image_payload_reports_the_cpu_error_from_both_paths() {
+    let Some(renderer) = renderer() else { return };
+    let commands = vec![
+        WgpuDrawCommand::Clear { color: opaque(0, 0, 0) },
+        WgpuDrawCommand::DrawImage {
+            rect: PixelRect { x: 0, y: 0, width: 4, height: 4 },
+            rgba8: vec![0u8; 12].into(),
+            image_width: 2,
+            image_height: 2,
+            clip: None,
+        },
+    ];
+    let gpu = renderer
+        .render_draw_commands_rgba8(8, 8, &commands)
+        .expect_err("a short payload must be an error, not a frame");
+    let software = rasterize_draw_commands_rgba8(8, 8, &commands)
+        .expect_err("the CPU rasteriser reports the same error");
+    assert_eq!(gpu, software, "the two paths must report one error, word for word");
+    assert!(gpu.contains("index 1"), "the message names the offending command: {gpu}");
+}
+
+/// An image box that draws nothing is skipped **before** its payload is looked at, exactly as the
+/// CPU rasteriser does: a short payload in a zero-sized box is not an error.
+#[test]
+fn an_image_box_that_draws_nothing_ignores_its_payload() {
+    let Some(renderer) = renderer() else { return };
+    let commands = vec![
+        WgpuDrawCommand::Clear { color: opaque(0, 0, 0) },
+        WgpuDrawCommand::DrawImage {
+            rect: PixelRect { x: 0, y: 0, width: 0, height: 4 },
+            rgba8: vec![0u8; 12].into(),
+            image_width: 2,
+            image_height: 2,
+            clip: None,
+        },
+    ];
+    let gpu = renderer.render_draw_commands_rgba8(8, 8, &commands).expect("nothing to draw");
+    let software = rasterize_draw_commands_rgba8(8, 8, &commands).expect("rasterises");
+    assert_eq!(gpu, software, "an empty box leaves the frame as the stream left it");
+}
+
 /// A blend mode other than `Normal` is not dispatchable: the pipelines' `REPLACE` write
 /// cannot reproduce it, so the stream must fall back to the CPU rasteriser.
 #[test]
@@ -1006,8 +1051,8 @@ fn a_clipped_image_draw_matches_the_software_rasteriser() {
     assert_eq!(pixel(&gpu, 12, 7, 3), [0, 0, 0, 255], "the clip's right edge is exclusive");
 }
 
-/// A malformed payload is not dispatchable, so the caller gets the CPU rasteriser's explicit
-/// error instead of a GPU frame that silently skipped the image.
+/// A malformed payload is an error the caller asked for, not a reason to pick the CPU path: it is
+/// reported before the dispatcher decides, with the same wording the CPU rasteriser uses.
 #[test]
 fn a_malformed_image_payload_is_reported_instead_of_dispatched() {
     let Some(renderer) = renderer() else { return };
@@ -1035,8 +1080,8 @@ fn a_malformed_image_payload_is_reported_instead_of_dispatched() {
 ///
 /// The parity test above cannot tell "the GPU drew this" from "the CPU did": both produce the
 /// same bytes by design. This asserts the dispatch decision itself, so a stream of clears and
-/// images is proven to take the GPU pass, and a malformed payload is proven to stay on the CPU
-/// path that reports it.
+/// images is proven to take the GPU pass, and a malformed payload is proven to be refused by the
+/// dispatcher as well — a second line of defence behind the entry point's validation.
 #[test]
 fn an_image_stream_is_claimed_by_the_gpu_dispatcher() {
     let image = |pixels: Vec<u8>| WgpuDrawCommand::DrawImage {
@@ -1072,7 +1117,7 @@ fn an_image_stream_is_claimed_by_the_gpu_dispatcher() {
         "a text box is drawn from its own coverage texture"
     );
     assert!(
-        !commands_gpu_dispatchable(&[WgpuDrawCommand::DrawPath {
+        commands_gpu_dispatchable(&[WgpuDrawCommand::DrawPath {
             points: vec![(0, 0), (4, 0), (4, 4)].into(),
             closed: true,
             color: Rgba8 { r: 255, g: 255, b: 255, a: 255 },
@@ -1080,7 +1125,7 @@ fn an_image_stream_is_claimed_by_the_gpu_dispatcher() {
             width: 1,
             clip: None,
         }]),
-        "paths still need the CPU rasteriser"
+        "a stroked path is a run of stamped squares, whatever its angles"
     );
 }
 
@@ -1678,6 +1723,27 @@ fn a_clipped_blurred_shadow_keeps_the_pixels_outside_its_clip() {
     );
 }
 
+/// A shadow body at the framebuffer's edge is the case where the layer is clamped on two sides: the
+/// blur must still match the CPU rasteriser exactly, whose layer is clamped the same way.
+#[test]
+fn a_blurred_shadow_at_the_frame_edge_matches_the_software_rasteriser() {
+    assert_gpu_matches_software(
+        20,
+        20,
+        &[
+            WgpuDrawCommand::Clear { color: BLACK },
+            WgpuDrawCommand::BoxShadow {
+                rect: PixelRect { x: -2, y: -2, width: 10, height: 10 },
+                color: Rgba8 { r: 0, g: 0, b: 0, a: 255 },
+                offset_x: 2,
+                offset_y: 3,
+                blur_radius: 3,
+                clip: None,
+            },
+        ],
+    );
+}
+
 /// Two blurred shadows in one frame get their own layers, radii and positions, and a later draw
 /// still paints over both: the per-layer parameter buffers exist so one pass cannot read another
 /// shadow's radius, and the composite keeps its stream position.
@@ -1756,17 +1822,33 @@ fn axis_aligned_lines_match_the_software_rasteriser() {
     );
 }
 
-/// A diagonal line stays on the CPU: the dispatcher must not claim it, because a capsule would not
-/// be the picture the software rasteriser's stamped squares produce.
+/// A diagonal line is byte-identical: the GPU emits the same stamped squares the CPU fills, rather
+/// than a capsule of a different shape.
 #[test]
-fn a_diagonal_line_stays_on_the_cpu() {
-    assert!(!commands_gpu_dispatchable(&[WgpuDrawCommand::DrawLine {
-        from: (0, 0),
-        to: (8, 8),
-        color: RED,
-        width: 2,
-        clip: None,
-    }]));
+fn a_diagonal_line_matches_the_software_rasteriser() {
+    // The CPU stamps a square at every Bresenham step; the GPU emits one instance per step, so a
+    // diagonal is byte-identical too — clipped, offset and inside the frame.
+    assert_gpu_matches_software(
+        20,
+        20,
+        &[
+            WgpuDrawCommand::Clear { color: BLACK },
+            WgpuDrawCommand::DrawLine {
+                from: (1, 1),
+                to: (17, 12),
+                color: RED,
+                width: 3,
+                clip: None,
+            },
+            WgpuDrawCommand::DrawLine {
+                from: (18, 0),
+                to: (2, 19),
+                color: Rgba8 { r: 0, g: 200, b: 0, a: 255 },
+                width: 2,
+                clip: Some(PixelRect { x: 0, y: 0, width: 12, height: 20 }),
+            },
+        ],
+    );
 }
 
 /// A polyline whose segments are all axis-aligned is a run of rectangles under the CPU's
@@ -1794,13 +1876,22 @@ fn an_axis_aligned_stroke_path_matches_the_software_rasteriser() {
 /// One diagonal segment sends the whole path back to the CPU, for the same reason a single
 /// diagonal line does.
 #[test]
-fn a_diagonal_stroke_path_stays_on_the_cpu() {
-    assert!(!commands_gpu_dispatchable(&[WgpuDrawCommand::DrawPath {
-        points: vec![(0, 0), (8, 8), (8, 16)].into(),
-        closed: false,
-        color: RED,
-        filled: false,
-        width: 2,
-        clip: None,
-    }]));
+fn a_diagonal_stroke_path_matches_the_software_rasteriser() {
+    // Each segment is one `DrawLine` on the CPU, so a diagonal path is a run of stamped squares —
+    // one instance per stamp here. A closed path adds its closing segment.
+    assert_gpu_matches_software(
+        24,
+        24,
+        &[
+            WgpuDrawCommand::Clear { color: BLACK },
+            WgpuDrawCommand::DrawPath {
+                points: vec![(2, 2), (18, 9), (22, 20), (5, 16)].into(),
+                closed: true,
+                color: RED,
+                filled: false,
+                width: 3,
+                clip: None,
+            },
+        ],
+    );
 }

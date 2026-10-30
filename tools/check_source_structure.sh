@@ -113,7 +113,6 @@ TOO_LONG_PENDING = {
     "src/platform/linux/platform_impl.rs": "window/menu/dialog creation vs input vs surface/monitor → `linux/impl/{create,input,display}.rs`",
     "src/platform/windows/platform_impl.rs": "window/menu/dialog creation vs input vs display → `windows/impl/{create,input,display}.rs`",
     "src/style/css.rs": "selector model vs declaration parse vs cascade/lookup caches → `style/css/{selector,parse,cascade}.rs`",
-    "src/wgpu_backend/raster.rs": "the command walk vs the CPU raster kernels → `raster/{walk,fills,text}.rs`",
     "src/widget/capability/properties_other.in.rs": "an `include!`d table: one file per widget family, mirroring `properties_base.in.rs` / `properties_menu.in.rs`",
     "src/widget/chart_widgets/bar_chart.rs": "series model vs axes/plot paint vs legend/hover → `bar_chart/{model,paint}.rs`",
     "src/widget/chart_widgets/gantt/gantt_widget.rs": "task model vs axis/row paint vs interaction → `gantt/{model,paint,events}.rs`",

@@ -88,18 +88,22 @@ When the two disagree, this file is the one that ships; `tools/check_changelog_s
 
 ### Rendering
 
-- **Axis-aligned stroke paths are drawn by the GPU.** A stroked `DrawPath` is one `DrawLine` per
-  segment on the CPU, so a path whose segments are all horizontal or vertical is a run of
-  rectangles and is byte-identical. A single diagonal segment sends the whole path back to the CPU.
-- **Axis-aligned lines are drawn by the GPU.** The software rasteriser stamps a square of
-  `2 × half_w` pixels at every Bresenham step; along a horizontal or vertical run those stamps tile
-  into exactly one rectangle, so the GPU paints the same pixels and the test asserts byte equality.
-  A **diagonal** line deliberately stays on the CPU: its stamps do not tile into a rectangle, and
-  redrawing it as a capsule would change the picture.
-- **Unblurred shadows are drawn by the GPU.** A `BoxShadow` with `blur_radius: 0` is a fill of the
-  rectangle translated by its offset, so it is byte-identical to the software frame. A blurred
-  shadow still comes from the CPU path: it needs an offscreen layer and two blur passes, which one
-  render pass cannot express.
+- **Lines and stroked paths are drawn by the GPU at any angle.** The software rasteriser stamps a
+  square of `2 × half_w` pixels at every Bresenham step and blends it, so the GPU now emits one
+  instanced quad per step — the same squares, in the same order, byte-for-byte. An earlier round
+  only claimed axis-aligned segments (where the stamps tile into a single rectangle); a diagonal
+  segment used to send the line, and any path containing it, back to the CPU. Both now reproduce
+  the stamped squares directly, and a stroked path keeps the CPU's per-segment clip window and its
+  "zero width draws nothing" rule.
+- **Blurred shadows are drawn by the GPU, and the software path's composite had a real bug.** A
+  `BoxShadow` with a radius is now painted into its own offscreen layer (the CPU's own extent:
+  `body ± radius`, clamped to the frame), filtered twice by a box kernel that repeats the software
+  rasteriser's clamped integer moving average, and composited back where the command sits in the
+  stream — the one 2D command whose GPU form is more than one pass. The shadow passes run before the
+  frame's pass, so the frame only composites finished layers. Trying to match the CPU byte for byte
+  exposed a defect on the CPU side: the feathered ramp was applied as both the source alpha and a
+  coverage mask, squaring it and fading every blurred shadow twice. It is now composited once, which
+  also makes software-rendered shadows slightly (and correctly) wider-edged.
 - **Filled paths are drawn by the GPU.** `DrawPath { filled: true }` (even-odd) and
   `FillPathNonZero` (non-zero winding) are rendered in three passes over a triangle fan: the fan
   counts into a `Stencil8` attachment with the rule the command names, a cover quad paints where
@@ -145,9 +149,10 @@ When the two disagree, this file is the one that ships; `tools/check_changelog_s
   the same function the CPU fill uses, so all of these are **byte-identical** to the software frame
   (pinned by tests that compare the two paths). A malformed image payload still stays on the CPU
   path that reports it, so the error a caller sees does not depend on the path the rest of the
-  stream takes. Text, path/arc commands, circle and rounded-rectangle *strokes*, gradients and
-  shadows still fall back as a whole to the CPU rasteriser, which is why the CPU raster path
-  remains. One pre-existing difference is now documented rather than silent: the GPU circle
+  stream takes. What still falls back as a whole to the CPU rasteriser is now a short list:
+  `SetBlendMode` other than `Normal` (the pipelines write with source-over). The CPU raster path
+  therefore remains, as the fallback for those streams and as the byte reference the GPU tests
+  compare against. One pre-existing difference is now documented rather than silent: the GPU circle
   pipeline anti-aliases its rim while the CPU rasteriser fills a hard-edged disc.
 
 ### Tooling

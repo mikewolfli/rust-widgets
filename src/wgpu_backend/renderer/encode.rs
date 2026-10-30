@@ -10,8 +10,8 @@ use super::super::raster::{
 };
 use super::super::types::{PixelRect, Rgba8};
 use super::dispatch::{
-    commands_gpu_dispatchable, pack_rect_command, SHAPE_ARC_STROKE, SHAPE_ARC_WEDGE,
-    SHAPE_CIRCLE_STROKE, SHAPE_ROUNDED_OUTLINE,
+    commands_gpu_dispatchable, invalid_image_payload, pack_rect_command, SHAPE_ARC_STROKE,
+    SHAPE_ARC_WEDGE, SHAPE_CIRCLE_STROKE, SHAPE_ROUNDED_OUTLINE,
 };
 use super::frame::WgpuRenderer;
 use super::resources::{
@@ -1000,6 +1000,12 @@ impl WgpuRenderer {
         commands: &[WgpuDrawCommand],
     ) -> Result<Vec<u8>, String> {
         let expected_len = rgba_buffer_len(width, height)?;
+        // Before deciding which path draws the stream: a payload that disagrees with its declared
+        // grid is an error the *caller* asked for, so it is reported here with the CPU rasteriser's
+        // wording instead of being turned into a reason to use the CPU.
+        if let Some(error) = invalid_image_payload(commands) {
+            return Err(error);
+        }
         if commands_gpu_dispatchable(commands) {
             return self.encode_draw_commands_gpu(width, height, expected_len, commands);
         }
