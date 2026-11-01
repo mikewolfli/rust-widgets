@@ -233,7 +233,8 @@ fn costly_shape_area(
         }
         if let WgpuDrawCommand::DrawGradient { rect, .. }
         | WgpuDrawCommand::FillLinearGradient { rect, .. }
-        | WgpuDrawCommand::FillRadialGradient { rect, .. } = command
+        | WgpuDrawCommand::FillRadialGradient { rect, .. }
+        | WgpuDrawCommand::FillGradient { rect, .. } = command
         {
             consider(CostlyShape::Gradient, *rect, &mut best);
         }

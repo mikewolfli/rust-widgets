@@ -441,8 +441,9 @@ impl Draw for TooltipManager {
             let style = self.style();
             let (surface, ink) = surface_ink(style);
             let font = effective_font(style);
-            let width = context.measure_text(text, font).width.min(self.max_width).max(24);
-            let height = context.measure_text(text, font).height.max(16) + 8;
+            let measured = context.measure_text(text, font);
+            let width = measured.width.min(self.max_width).max(24);
+            let height = measured.height.max(16) + 8;
             let origin = if self.follow_pointer {
                 self.pointer + (12, 20)
             } else {

@@ -410,6 +410,13 @@ struct SurfaceState {
     /// an `#[allow(dead_code)]` that would also silence a real future dead field.
     #[cfg(target_env = "ohos")]
     alive: bool,
+    /// The `OHNativeWindow*` ArkUI handed over in `on_surface_created` / `on_surface_changed`.
+    ///
+    /// Stored as an address so the state stays `Send`; it is only turned back into a pointer
+    /// while the surface is alive, and cleared in `on_surface_destroyed` so nothing can present
+    /// into a window ArkUI has freed.
+    #[cfg(target_env = "ohos")]
+    native_window: usize,
 }
 
 impl SurfaceState {
@@ -420,6 +427,8 @@ impl SurfaceState {
             offset: Point::new(0, 0),
             #[cfg(target_env = "ohos")]
             alive: false,
+            #[cfg(target_env = "ohos")]
+            native_window: 0,
         }
     }
 }
@@ -785,6 +794,29 @@ pub fn surface_offset() -> Point {
     surface().lock().unwrap_or_else(|poisoned| poisoned.into_inner()).offset
 }
 
+/// The live `OHNativeWindow*` for the bound XComponent, as a non-null pointer.
+///
+/// `None` until ArkUI has reported a created surface, and again after it reported the surface
+/// destroyed: a pointer ArkUI has freed must not be handed out. That is why the answer is read
+/// from the lifecycle-recorded address rather than kept by the caller.
+///
+/// Off an OpenHarmony target there is no ArkUI callback and no native window, so the answer is
+/// `None` in host builds too — the state field it reads only exists for `target_env = "ohos"`.
+pub(crate) fn native_window() -> Option<core::ptr::NonNull<core::ffi::c_void>> {
+    #[cfg(target_env = "ohos")]
+    {
+        let state = surface().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if !state.alive || state.native_window == 0 {
+            return None;
+        }
+        core::ptr::NonNull::new(state.native_window as *mut core::ffi::c_void)
+    }
+    #[cfg(not(target_env = "ohos"))]
+    {
+        None
+    }
+}
+
 // ── Callbacks ───────────────────────────────────────────────────────────────────
 
 /// Reads the surface size ArkUI just reported and stores it.
@@ -852,7 +884,11 @@ extern "C" fn on_surface_created(component: *mut NativeXComponent, window: *mut 
     BOUND_COMPONENT.store(component as usize, Ordering::Release);
     // SAFETY: forwarded from ArkUI's own call.
     unsafe { record_surface_size(component, window) };
-    surface().lock().unwrap_or_else(|poisoned| poisoned.into_inner()).alive = true;
+    {
+        let mut state = surface().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.alive = true;
+        state.native_window = window as usize;
+    }
     log::info!("[harmony] xcomponent: surface created");
 }
 
@@ -861,6 +897,10 @@ extern "C" fn on_surface_created(component: *mut NativeXComponent, window: *mut 
 extern "C" fn on_surface_changed(component: *mut NativeXComponent, window: *mut core::ffi::c_void) {
     // SAFETY: forwarded from ArkUI's own call.
     unsafe { record_surface_size(component, window) };
+    // A resize may hand over a different native window, so the stored address is refreshed here
+    // rather than assumed stable across the callback.
+    surface().lock().unwrap_or_else(|poisoned| poisoned.into_inner()).native_window =
+        window as usize;
     // The library's layout is re-run from the queued size, not from inside this callback:
     // ArkUI is mid-layout here, and running a control tree's layout re-entrantly is how a
     // resize turns into a stall.
@@ -880,6 +920,7 @@ extern "C" fn on_surface_destroyed(
 ) {
     let mut state = surface().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     state.alive = false;
+    state.native_window = 0;
     log::info!("[harmony] xcomponent: surface destroyed");
 }
 

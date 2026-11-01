@@ -249,6 +249,139 @@ pub(crate) fn rounded_rect_row_spans(
     })
 }
 
+/// The row spans of a rounded rectangle with **per-corner** radii.
+///
+/// The uniform [`rounded_rect_row_spans`] uses one radius for both sides of every row. A card with
+/// only its top corners rounded needs the top-left radius on the left of the top rows and the
+/// top-right radius on the right, with the bottom pair taking over near the bottom edge. The
+/// radius arithmetic is the reference's [`crate::render::rounded_rect_effective_radii`], so a
+/// radius that overruns an edge resolves the same way the CPU rasteriser resolves it.
+pub(crate) fn rounded_rect_row_spans_radii(rect: PixelRect, radii: [u32; 4]) -> Vec<PixelRect> {
+    if rect.width == 0 || rect.height == 0 {
+        return Vec::new();
+    }
+    let effective = crate::render::rounded_rect_effective_radii(
+        crate::core::Rect::new(rect.x, rect.y, rect.width, rect.height),
+        radii,
+    );
+    let [top_left, top_right, bottom_right, bottom_left] = effective.map(|r| r as i64);
+    let (top, bottom) = (rect.y as i64, rect.bottom() as i64);
+    let (left, right) = (rect.x as i64, rect.right() as i64);
+    let mut spans = Vec::with_capacity(rect.height as usize);
+    for y in top..bottom {
+        let start = if top_left > 0 && y < top + top_left {
+            let dy = top + top_left - y;
+            let remaining = top_left * top_left - dy * dy;
+            left + top_left - isqrt_i64(remaining.max(0))
+        } else if bottom_left > 0 && y >= bottom - bottom_left {
+            let dy = y - (bottom - bottom_left - 1);
+            let remaining = bottom_left * bottom_left - dy * dy;
+            left + bottom_left - isqrt_i64(remaining.max(0))
+        } else {
+            left
+        };
+        let end = if top_right > 0 && y < top + top_right {
+            let dy = top + top_right - y;
+            let remaining = top_right * top_right - dy * dy;
+            right - top_right + isqrt_i64(remaining.max(0))
+        } else if bottom_right > 0 && y >= bottom - bottom_right {
+            let dy = y - (bottom - bottom_right - 1);
+            let remaining = bottom_right * bottom_right - dy * dy;
+            right - bottom_right + isqrt_i64(remaining.max(0))
+        } else {
+            right
+        };
+        if end <= start {
+            continue;
+        }
+        spans.push(PixelRect {
+            x: start.clamp(i32::MIN as i64, i32::MAX as i64) as i32,
+            y: y as i32,
+            width: (end - start).clamp(0, u32::MAX as i64) as u32,
+            height: 1,
+        });
+    }
+    spans
+}
+
+/// Integer square root for the corner arcs' `isqrt(r² - dy²)` term.
+fn isqrt_i64(value: i64) -> i64 {
+    if value <= 0 {
+        return 0;
+    }
+    let mut root = (value as f64).sqrt() as i64;
+    // Correct the floating-point estimate with integer arithmetic, so a value near a perfect
+    // square can never select a span one pixel wider or narrower than the exact integer root.
+    while root * root > value {
+        root -= 1;
+    }
+    while (root + 1) * (root + 1) <= value {
+        root += 1;
+    }
+    root
+}
+
+/// The row spans of the area **inside** `rect` but outside the same rectangle inset by
+/// `thickness`, with both shapes rounded by `radius` (the inner radius shrinking by `thickness`).
+///
+/// This is the shape `RenderCommand::DrawRoundedRectStroke` documents: the stroke is drawn within
+/// the bounds, so a caller that wants a ring inside a card does not get half of it outside. The
+/// spans come from the same `rounded_rect_row_spans` the filled form uses, so the outer and inner
+/// edges cannot disagree about which pixels a radius selects.
+pub(crate) fn rounded_ring_row_spans(
+    rect: PixelRect,
+    radius: u32,
+    thickness: u32,
+) -> Vec<PixelRect> {
+    if thickness == 0 || rect.width == 0 || rect.height == 0 {
+        return Vec::new();
+    }
+    let t = thickness.min(i32::MAX as u32) as i32;
+    let inner = PixelRect {
+        x: rect.x.saturating_add(t),
+        y: rect.y.saturating_add(t),
+        width: rect.width.saturating_sub(thickness.saturating_mul(2)),
+        height: rect.height.saturating_sub(thickness.saturating_mul(2)),
+    };
+    let inner_radius = radius.saturating_sub(thickness);
+    let has_inner = inner.width > 0 && inner.height > 0;
+    let inner_spans: Vec<PixelRect> =
+        if has_inner { rounded_rect_row_spans(inner, inner_radius).collect() } else { Vec::new() };
+    let mut spans = Vec::new();
+    let mut inner_index = 0usize;
+    for outer in rounded_rect_row_spans(rect, radius) {
+        while inner_index < inner_spans.len() && inner_spans[inner_index].y < outer.y {
+            inner_index += 1;
+        }
+        let inner_row = inner_spans.get(inner_index).filter(|row| row.y == outer.y).copied();
+        let (outer_left, outer_right) = (outer.x, outer.right());
+        match inner_row {
+            Some(inner_row) => {
+                let inner_left = inner_row.x.max(outer_left);
+                let inner_right = inner_row.right().min(outer_right);
+                if inner_left > outer_left {
+                    spans.push(PixelRect {
+                        x: outer_left,
+                        y: outer.y,
+                        width: (inner_left - outer_left) as u32,
+                        height: 1,
+                    });
+                }
+                if outer_right > inner_right {
+                    spans.push(PixelRect {
+                        x: inner_right,
+                        y: outer.y,
+                        width: (outer_right - inner_right) as u32,
+                        height: 1,
+                    });
+                }
+            }
+            None => spans.push(outer),
+        }
+    }
+    spans
+}
+
 pub(crate) fn fill_rounded_rect_cpu_rgba8(
     pixels: &mut [u8],
     fb_width: u32,
@@ -1011,6 +1144,105 @@ pub(crate) fn draw_radial_gradient_cpu_rgba8(
             let t = ((dx * dx + dy2).sqrt() * inv_radius).clamp(0.0, 1.0);
             let color = gradient_stop(gradient_data, stops, t);
             blend_pixel_cpu_rgba8(pixels, fb_width, x as u32, y as u32, color, blend);
+        }
+    }
+}
+
+/// Rasterises one `FillGradient`: the reference's own 256-entry ramp, indexed by the position its
+/// software rasteriser computes.
+///
+/// `kind` selects the geometry exactly as `GRADIENT_FRAG` does (`0` linear, `1` radial, `2` conic),
+/// and `verbatim` selects the write rule — the standalone conic command stores the ramp colour
+/// as-is, while a gradient **fill** composites it through `blend`.
+///
+/// # Why every formula is spelled out again instead of calling `fill_rect_gradient`
+///
+/// That function is a method on `SoftwareSurface` and writes through its own back buffer, blend
+/// mode and clip stack. This path already has all three as arguments, and the ramp is the CPU-side
+/// table rather than a `Gradient`, so the arithmetic is restated here — term for term, including the
+/// linear walk's `anchor + (x - anchor) * step` form, which rounds differently from evaluating the
+/// projection directly.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn draw_ramp_gradient_cpu_rgba8(
+    pixels: &mut [u8],
+    fb_width: u32,
+    rect: PixelRect,
+    kind: u8,
+    start: (f32, f32),
+    end: (f32, f32),
+    ramp: &[u8],
+    clip_rect: Option<PixelRect>,
+    blend: BlendMode,
+    verbatim: bool,
+) {
+    let clip_rect = match clip_rect {
+        Some(value) => value,
+        None => return,
+    };
+    let x_start = clip_rect.x.max(rect.x);
+    let y_start = clip_rect.y.max(rect.y);
+    let x_end = clip_rect.right().min(rect.right());
+    let y_end = clip_rect.bottom().min(rect.bottom());
+    if x_end <= x_start || y_end <= y_start {
+        return;
+    }
+    const TAU: f32 = core::f32::consts::TAU;
+    // The reference anchors the linear walk at the **unclipped** `max(rect.x, 0)`: a clip narrows
+    // which pixels are written, never the ramp's phase.
+    let anchor = rect.x.max(0) as f32;
+    let (linear_dx, linear_dy, linear_dot, linear_step) = if kind == 0 {
+        let dx = end.0 - start.0;
+        let dy = end.1 - start.1;
+        let dot = dx * dx + dy * dy;
+        (dx, dy, dot, if dot == 0.0 { 0.0 } else { dx / dot })
+    } else {
+        (0.0, 0.0, 0.0, 0.0)
+    };
+    for y in y_start..y_end {
+        let row_start = if linear_dot != 0.0 {
+            ((anchor - start.0) * linear_dx + (y as f32 - start.1) * linear_dy) / linear_dot
+        } else {
+            0.0
+        };
+        let radial_dy = y as f32 - start.1;
+        let radial_dy2 = radial_dy * radial_dy;
+        for x in x_start..x_end {
+            let position = match kind {
+                1 => {
+                    let dx = x as f32 - start.0;
+                    let distance = (dx * dx + radial_dy2).sqrt();
+                    if end.0 > 0.0 {
+                        (distance / end.0).clamp(0.0, 1.0)
+                    } else {
+                        0.0
+                    }
+                }
+                2 => {
+                    let dx = x as f32 - start.0;
+                    let mut angle = radial_dy.atan2(dx) + core::f32::consts::PI;
+                    angle = (angle + end.0) % TAU;
+                    if angle < 0.0 {
+                        angle += TAU;
+                    }
+                    (angle / TAU).clamp(0.0, 1.0)
+                }
+                _ => {
+                    let position = if linear_dot == 0.0 {
+                        0.0
+                    } else {
+                        row_start + (x as f32 - anchor) * linear_step
+                    };
+                    position.clamp(0.0, 1.0)
+                }
+            };
+            let index = ((position * 255.0) as usize).min(255);
+            let at = index * 4;
+            let color = Rgba8 { r: ramp[at], g: ramp[at + 1], b: ramp[at + 2], a: ramp[at + 3] };
+            if verbatim {
+                set_pixel_cpu_rgba8(pixels, fb_width, x as u32, y as u32, color);
+            } else {
+                blend_cpu_rgba8_with_mode(pixels, fb_width, x as u32, y as u32, color, 1.0, blend);
+            }
         }
     }
 }

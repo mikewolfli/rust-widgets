@@ -586,6 +586,29 @@ impl Platform for HarmonyPlatform {
         true
     }
 
+    /// The XComponent's `OHNativeWindow*` as a `raw-window-handle` 0.6 OpenHarmony handle.
+    ///
+    /// `None` before ArkUI reported a created surface and again after it reported the surface
+    /// destroyed. Requires both the `xcomponent` bridge (which records the pointer) and the
+    /// `raw-window-handle` feature (which provides the handle type): without either, there is
+    /// nothing to name.
+    #[cfg(all(feature = "raw-window-handle", feature = "xcomponent"))]
+    fn raw_window_handle(&self, _window: ObjectId) -> Option<raw_window_handle::RawWindowHandle> {
+        let native_window = super::xcomponent::native_window()?;
+        Some(raw_window_handle::RawWindowHandle::OhosNdk(
+            raw_window_handle::OhosNdkWindowHandle::new(native_window),
+        ))
+    }
+
+    /// HarmonyOS can present when the XComponent has a live native window.
+    ///
+    /// Delegates to [`Platform::raw_window_handle`] so the capability cannot claim more than the
+    /// handle can deliver (BLUE29 B29.07).
+    #[cfg(all(feature = "raw-window-handle", feature = "xcomponent"))]
+    fn frame_presentation_supported(&self, window: ObjectId) -> bool {
+        Platform::raw_window_handle(self, window).is_some()
+    }
+
     /// This backend is a mobile target, so the mobile runtime helpers configure this instance
     /// rather than a separate preview singleton (BLUE28 B28.24).
     #[cfg(feature = "mobile-api")]

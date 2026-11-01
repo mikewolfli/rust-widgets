@@ -1092,6 +1092,31 @@ fn bounds_of_corners(corners: &[Point; 4]) -> Rect {
     )
 }
 
+/// The rectangle a box shadow actually covers.
+///
+/// Both shadow commands paint this rectangle: offset by the shadow's displacement, then grown (or
+/// shrunk) by `spread` on every side. Every term is `i32` and comes from a public command field, so
+/// the arithmetic saturates: a wrapped `spread` used to flip a large shadow into a tiny one, or a
+/// negative width that `.max(0)` collapsed, which is a wrong picture rather than a rejected one.
+///
+/// It lives here, next to [`RenderCommand::bounds`], because the software backend's command arm and
+/// the GPU bridge must agree about where a shadow is; two copies of this expression is exactly how
+/// they would drift apart.
+pub(crate) fn box_shadow_spread_rect(
+    rect: Rect,
+    offset_x: i32,
+    offset_y: i32,
+    spread: i32,
+) -> Rect {
+    use crate::render::pipeline::{sat_add_i32, sat_mul_i32, sat_neg_i32, u32_to_i32_saturating};
+    Rect::new(
+        sat_add_i32(sat_add_i32(rect.x, offset_x), sat_neg_i32(spread)),
+        sat_add_i32(sat_add_i32(rect.y, offset_y), sat_neg_i32(spread)),
+        sat_mul_i32(spread, 2).saturating_add(u32_to_i32_saturating(rect.width)).max(0) as u32,
+        sat_mul_i32(spread, 2).saturating_add(u32_to_i32_saturating(rect.height)).max(0) as u32,
+    )
+}
+
 /// The bounding box of `points`, expanded by `stroke` pixels on each side.
 pub(crate) fn bounds_of_points(points: &[Point], stroke: u32) -> Rect {
     let Some(first) = points.first() else {

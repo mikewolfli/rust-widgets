@@ -816,6 +816,30 @@ impl Platform for AndroidPlatform {
         true
     }
 
+    /// The host's registered `ANativeWindow*` as a `raw-window-handle` 0.6 Android handle.
+    ///
+    /// `None` until the host has registered a surface (and again after it clears it). Android
+    /// may replace the native window at any point, so this is a *current* answer, never a cached
+    /// one: the host calls `register_surface_handle` from `surfaceCreated` and clears it from
+    /// `surfaceDestroyed`.
+    #[cfg(feature = "raw-window-handle")]
+    fn raw_window_handle(&self, window: u64) -> Option<raw_window_handle::RawWindowHandle> {
+        let pointer = super::native_window(window)?;
+        let native_window = core::ptr::NonNull::new(pointer as *mut core::ffi::c_void)?;
+        Some(raw_window_handle::RawWindowHandle::AndroidNdk(
+            raw_window_handle::AndroidNdkWindowHandle::new(native_window),
+        ))
+    }
+
+    /// Android can present when the host has registered a native window for this id.
+    ///
+    /// Delegates to [`Platform::raw_window_handle`], so a host that never registered a surface
+    /// keeps `false` and stays on the default frame delivery (BLUE29 B29.07).
+    #[cfg(feature = "raw-window-handle")]
+    fn frame_presentation_supported(&self, window: u64) -> bool {
+        Platform::raw_window_handle(self, window).is_some()
+    }
+
     // ─── Widget manipulation ─────────────────────────────────────────────
 
     // ─── Clipboard ───────────────────────────────────────────────────

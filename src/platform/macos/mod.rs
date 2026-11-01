@@ -72,6 +72,18 @@ pub(crate) mod cg;
 #[cfg(all(feature = "cocoa-legacy", widgets_unstripped))]
 pub(crate) mod canvas;
 
+/// The canvas' presentation half: offer a finished frame, then decide who draws it (BLUE29 §7).
+///
+/// Gated with the presenter it calls: without `gpu-wgpu` and `raw-window-handle` there is no
+/// presentation path to offer a frame to.
+#[cfg(all(
+    feature = "cocoa-legacy",
+    widgets_unstripped,
+    feature = "gpu-wgpu",
+    feature = "raw-window-handle"
+))]
+pub(crate) mod canvas_present;
+
 /// CoreVideo display-link callback that paces the canvas frame heartbeat.
 ///
 /// Gated with `canvas.rs`, its only consumer: the callback exists to wake the same frame loop,

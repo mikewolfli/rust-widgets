@@ -53,6 +53,9 @@ mod pipeline;
 // Projection/presentation-mode rendering (BLUE8 P4-5b, gated behind `projection`)
 #[cfg(feature = "projection")]
 pub mod projection;
+
+// Delivering a finished frame to a window (BLUE29 §7): intent, damage, status and the presenter.
+pub mod present;
 // GPU-accelerated rendering backend
 #[cfg(feature = "gpu-wgpu")]
 pub mod gpu;
@@ -92,7 +95,7 @@ pub mod grapheme;
 // Core
 pub use core::{
     BlendMode, CompoundPath, CompoundPathError, LayerEffect, MatteMode, RenderCommand, ShapedText,
-    TextCluster, TextMetrics,
+    TextCluster, TextDecoration, TextMetrics,
 };
 
 // SVG
@@ -140,6 +143,32 @@ pub use projection::{PresentationController, ProjectionLayoutHelper, ProjectionR
 // 3D mesh and camera types
 #[cfg(feature = "3d")]
 pub use mesh3d::{Camera, Mesh3D, Mesh3DError, ProjectedTriangle, ProjectedVertex, Vec3, Vertex3D};
+
+/// The effective (CSS-resolved) and uniform corner-radius helpers, shared with the WGPU fill
+// bridge so a per-corner fill uses the same radius arithmetic the reference does.
+pub(crate) use pipeline::rounded_rect_effective_radii;
+
+/// The reference's own 256-entry ramp builder, shared with the WGPU bridge so a bridged gradient
+/// uploads the table the software rasteriser would have sampled.
+#[cfg(feature = "gpu-wgpu")]
+pub(crate) use pipeline::gradient_ramp_lut;
+#[cfg(feature = "gpu-wgpu")]
+pub(crate) use pipeline::ramp_lut_for_stops;
+
+/// The dash kernel a dashed polyline expands through, shared with the WGPU bridge so a bridged
+/// dashed stroke is the reference's own segment list rather than a second walk of the polyline.
+#[cfg(feature = "gpu-wgpu")]
+pub(crate) use backend::surface::for_each_dash_segment;
+
+/// Where a box shadow sits, shared with the WGPU bridge so a bridged unblurred shadow covers the
+/// same rectangle the reference's command arm fills.
+#[cfg(feature = "gpu-wgpu")]
+pub(crate) use core::command::box_shadow_spread_rect;
+
+/// The anti-aliased stroke coverage the reference rasteriser samples, shared with the WGPU bridge
+/// so a bridged AA line reproduces the reference's own coverage instead of re-deriving it.
+#[cfg(feature = "gpu-wgpu")]
+pub(crate) use pipeline::line_stroke_coverage_grid;
 
 /// Shared helper accessible to surface.rs and backend
 pub(crate) use pipeline::pixel_bytes_len;

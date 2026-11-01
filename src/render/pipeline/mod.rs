@@ -39,13 +39,34 @@ pub(crate) use pixel_ops::pixel_bytes_len;
 #[cfg(feature = "runtime-fonts")]
 pub(crate) use containers::invalidate_text_measurements;
 
+// The one text fingerprint and the epoch that invalidates it, shared with the shaped-coverage
+// cache in `render::text::coverage`. A second spelling of the key would drift from the one the
+// software surface's own measurement cache uses. Both the cache and its consumers exist only with
+// the GPU feature.
+#[cfg(feature = "gpu-wgpu")]
+pub(crate) use containers::{text_fingerprint, text_metrics_epoch};
+
 // The one conic rasteriser and its ramp builder, shared by `fill_rect_gradient` and the
 // `DrawConicGradient` command arm (G-203).
 pub(crate) use containers::{fill_conic_ramp, ramp_lut_for_stops, ConicWrite};
+
+// The reference's own 256-entry ramp builder, shared with the WGPU bridge so a bridged gradient
+// uploads the table the software rasteriser would have sampled rather than re-interpolating the
+// stops on the GPU (which would drift at every stop boundary).
+#[cfg(feature = "gpu-wgpu")]
+pub(crate) use containers::gradient_ramp_lut;
 
 // Bounded coordinate arithmetic shared by the software and SVG backends.
 pub(crate) use pixel_ops::{sat_add_i32, sat_mul_i32, sat_neg_i32, u32_to_i32_saturating};
 
 // The glyph geometry both renderers read.
+#[cfg(feature = "gpu-wgpu")]
+pub(crate) use pixel_ops::glyph_coverage_byte;
 pub(crate) use pixel_ops::glyph_rects;
+
+// The anti-aliased stroke coverage the reference samples for `DrawLineAA`, re-exported so the
+// WGPU bridge asks the same kernel instead of re-deriving the sample grid (one implementation,
+// principle #101).
+#[cfg(feature = "gpu-wgpu")]
+pub(crate) use pixel_ops::line_stroke_coverage_grid;
 pub(crate) use pixel_ops::{rounded_rect_effective_radii, uniform_radii};

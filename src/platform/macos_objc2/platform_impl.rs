@@ -544,9 +544,9 @@ impl Platform for MacOSObjc2Platform {
             let host = resolve_host(window_id);
             let view = super::native::raw_view_handle(host)?;
             let ns_view = core::ptr::NonNull::new(view)?;
-            return Some(raw_window_handle::RawWindowHandle::AppKit(
+            Some(raw_window_handle::RawWindowHandle::AppKit(
                 raw_window_handle::AppKitWindowHandle::new(ns_view),
-            ));
+            ))
         }
         #[cfg(not(all(target_os = "macos", feature = "macos")))]
         {
@@ -567,6 +567,31 @@ impl Platform for MacOSObjc2Platform {
         #[cfg(not(all(target_os = "macos", feature = "macos")))]
         {
             None
+        }
+    }
+
+    /// This backend's canvas offers each finished frame to the presentation path before blitting.
+    ///
+    /// Compiled in only with `gpu-wgpu` **and** `raw-window-handle`; without either there is no
+    /// presenter for the canvas to call, so the honest answer is `false`.
+    fn canvas_presents_frames(&self) -> bool {
+        cfg!(all(feature = "gpu-wgpu", feature = "raw-window-handle"))
+    }
+
+    /// AppKit can present this window's frames when it has a live view to name.
+    ///
+    /// Delegates to [`Platform::raw_window_handle`] so the capability never claims more than the
+    /// handle can deliver (BLUE29 B29.07).
+    #[cfg(feature = "raw-window-handle")]
+    fn frame_presentation_supported(&self, window_id: u64) -> bool {
+        #[cfg(all(target_os = "macos", feature = "macos"))]
+        {
+            Platform::raw_window_handle(self, window_id).is_some()
+        }
+        #[cfg(not(all(target_os = "macos", feature = "macos")))]
+        {
+            let _ = window_id;
+            false
         }
     }
 
@@ -1073,6 +1098,9 @@ impl Platform for MacOSObjc2Platform {
     }
 
     fn destroy_widget(&self, widget_id: ObjectId) -> bool {
+        // The presentation target borrows the window's view, so it goes first (BLUE29 B29.13).
+        #[cfg(all(feature = "gpu-wgpu", feature = "raw-window-handle"))]
+        crate::render::present::forget_window(widget_id);
         // Native teardown runs **before** the logical state is dropped, so that a
         // main-thread refusal can be reported without having already lost the handle.
         //

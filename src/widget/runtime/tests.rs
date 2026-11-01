@@ -5177,7 +5177,192 @@ fn the_tree_painter_clips_descendants_to_the_container_content_box() {
     unregister(root);
 }
 
-/// A window-tree frame is reused while nothing that affects it has changed.
+/// Painting a tree into an arbitrary backend produces the frame the tree path produces.
+///
+/// # What this pins
+///
+/// `render_frame_tree` is tied to the software backend, so the `Smooth` presentation path had no
+/// way to obtain the tree's *commands* — the plan's named gap (BLUE29 B29.10). [`paint_tree_into`]
+/// is that entry point, and the only thing worth asserting about it is that it draws the same
+/// tree: same root, same child order, same inherited clips, same frame origin. A pixel comparison
+/// against the established path is the assertion that cannot drift.
+#[test]
+fn painting_a_tree_into_any_backend_draws_the_frame_the_tree_path_draws() {
+    use crate::core::{Color, Rect};
+    use crate::render::{RenderContext, SoftwarePaintBackend};
+    use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+
+    struct Surface {
+        base: BaseWidget,
+        clip: Option<Rect>,
+        color: Color,
+    }
+    impl Widget for Surface {
+        fn base(&self) -> &BaseWidget {
+            &self.base
+        }
+        fn base_mut(&mut self) -> &mut BaseWidget {
+            &mut self.base
+        }
+        fn children_clip(&self) -> Option<Rect> {
+            self.clip
+        }
+        fn as_draw_mut(&mut self) -> Option<&mut dyn Draw> {
+            Some(self)
+        }
+    }
+    impl crate::event::EventHandler for Surface {
+        fn handle_event(&mut self, _event: &crate::event::Event) {}
+    }
+    impl Draw for Surface {
+        fn draw(&mut self, context: &mut RenderContext) {
+            context.fill_rect(self.base.geometry(), self.color);
+        }
+    }
+
+    let size = Size::new(60, 60);
+    let root = register(Box::new(Surface {
+        base: BaseWidget::new(WidgetKind::Panel, Rect::new(0, 0, 60, 60), "root"),
+        clip: Some(Rect::new(10, 10, 20, 20)),
+        color: Color::WHITE,
+    }))
+    .expect("mount root");
+    let child = register(Box::new(Surface {
+        base: BaseWidget::new(WidgetKind::Panel, Rect::new(0, 0, 60, 60), "child"),
+        clip: None,
+        color: Color::RED,
+    }))
+    .expect("mount child");
+    let nested = register(Box::new(Surface {
+        base: BaseWidget::new(WidgetKind::Panel, Rect::new(0, 30, 40, 20), "nested"),
+        clip: None,
+        color: Color::BLUE,
+    }))
+    .expect("mount nested");
+    with_widget_mut(root, |widget| {
+        widget.base_mut().add_child_linked(child);
+    })
+    .expect("the root is mounted");
+    with_widget_mut(child, |widget| {
+        widget.base_mut().add_child_linked(nested);
+    })
+    .expect("the child is mounted");
+
+    let expected = render_frame_tree(root, size, Color::GREEN).expect("tree frame");
+
+    let mut backend = SoftwarePaintBackend::new(size, 1.0);
+    assert!(paint_tree_into(root, size, Color::GREEN, &mut backend), "a mounted tree must paint");
+    let painted = backend.take_frame_rgba();
+    assert_eq!(painted.len(), expected.len(), "both paths must produce a whole {size:?} frame");
+    assert!(
+        painted == expected,
+        "the command-stream path must draw the same pixels as the tree path"
+    );
+
+    unregister(nested);
+    unregister(child);
+    unregister(root);
+}
+
+/// A tree whose label is real text records a stream the GPU can draw.
+///
+/// The unit tests prove the bridge family by family; this is the integration claim: the *tree* path
+/// (root, children, clip, a filled background and a label) records commands that the census accepts
+/// and the GPU draws. The comparison is against the reference backend's frame, so a moved glyph cell
+/// or a lost clip shows up as a pixel difference rather than as a passing bridge test.
+#[cfg(feature = "gpu-wgpu")]
+#[test]
+fn a_tree_with_a_label_records_a_stream_the_gpu_can_draw() {
+    use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
+    use crate::render::present::GpuPaintBackend;
+    use crate::render::{RenderContext, SoftwarePaintBackend};
+    use crate::wgpu_backend::WgpuRenderer;
+    use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+
+    struct Labelled {
+        base: BaseWidget,
+    }
+    impl Widget for Labelled {
+        fn base(&self) -> &BaseWidget {
+            &self.base
+        }
+        fn base_mut(&mut self) -> &mut BaseWidget {
+            &mut self.base
+        }
+        fn as_draw_mut(&mut self) -> Option<&mut dyn Draw> {
+            Some(self)
+        }
+    }
+    impl crate::event::EventHandler for Labelled {
+        fn handle_event(&mut self, _event: &crate::event::Event) {}
+    }
+    impl Draw for Labelled {
+        fn draw(&mut self, context: &mut RenderContext) {
+            context.fill_rect(self.base.geometry(), Color::rgba(32, 96, 180, 255));
+            context.draw_text(
+                Point::new(self.base.geometry().x + 3, self.base.geometry().y + 2),
+                "Ag",
+                &Font::default(),
+                Color::WHITE,
+                HorizontalAlignment::Left,
+            );
+        }
+    }
+
+    let size = Size::new(48, 24);
+    let root = register(Box::new(Labelled {
+        base: BaseWidget::new(WidgetKind::Panel, Rect::new(0, 0, 48, 24), "label"),
+    }))
+    .expect("mount the labelled panel");
+
+    let mut software = SoftwarePaintBackend::new(size, 1.0);
+    assert!(paint_tree_into(root, size, Color::WHITE, &mut software));
+    let expected = software.take_frame_rgba();
+
+    let mut recorder = GpuPaintBackend::new(size, 1.0);
+    assert!(paint_tree_into(root, size, Color::WHITE, &mut recorder));
+    let audit = recorder.census();
+    assert_eq!(
+        audit.forces_cpu, 0,
+        "a rectangle and a label have GPU forms: {:?}",
+        audit.forces_cpu_names
+    );
+    assert_eq!(audit.forces_cpu_names, Vec::<&str>::new());
+
+    let renderer = match WgpuRenderer::new() {
+        Ok(mut renderer) => {
+            renderer.set_cost_gate_enabled(false);
+            renderer
+        }
+        Err(error) => {
+            eprintln!("skipping GPU comparison: no wgpu adapter available ({error})");
+            unregister(root);
+            return;
+        }
+    };
+    let mut commands =
+        crate::wgpu_backend::bridge_render_commands(recorder.commands(), 1.0, (48, 32))
+            .expect("the recorded frame is bridged");
+    commands.insert(
+        0,
+        crate::wgpu_backend::WgpuDrawCommand::Clear {
+            color: crate::wgpu_backend::Rgba8 { r: 255, g: 255, b: 255, a: 255 },
+        },
+    );
+    assert!(renderer.selects_accelerated_pixels(size.width, size.height, &commands));
+    let actual = renderer
+        .render_draw_commands_rgba8(size.width, size.height, &commands)
+        .expect("a GPU frame");
+    let worst =
+        expected.iter().zip(&actual).map(|(left, right)| left.abs_diff(*right)).max().unwrap_or(0);
+    assert!(
+        worst <= 1,
+        "the tree frame may differ only by the text composite's one-LSB rounding; worst {worst}"
+    );
+
+    unregister(root);
+}
+
 ///
 /// # What this pins
 ///

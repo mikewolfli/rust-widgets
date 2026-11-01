@@ -1036,7 +1036,14 @@ impl ListView {
     /// band from one function is what makes the drawn rows and the clickable rows the same rows; the
     /// caller cannot forget one of the four numbers because it never handles them.
     fn row_rect(&self, index: usize) -> Option<Rect> {
-        let layout = self.list_layout();
+        self.row_rect_with(self.list_layout(), index)
+    }
+
+    /// [`Self::row_rect`] against a layout the caller already holds.
+    ///
+    /// The paint loop derives the layout once per frame; calling the public accessor per item
+    /// re-derived it for every cell, twice each time `item_rect` was involved.
+    fn row_rect_with(&self, layout: ListLayout, index: usize) -> Option<Rect> {
         // A *row* is one line of the grid, so the index walks lines and the column is what varies
         // within one. That is also what keeps this function's contract unchanged for `List`: with one
         // column, line `index` and item `index` are the same thing.
@@ -1174,8 +1181,12 @@ impl ListView {
     /// highlight and a label have to be drawn inside — and its x comes from the *same* cell width
     /// [`Self::row_at_point`] divides by, so a tile's paint and its hit test land on one another.
     fn item_rect(&self, index: usize) -> Option<Rect> {
-        let row = self.row_rect(index)?;
-        let layout = self.list_layout();
+        self.item_rect_with(self.list_layout(), index)
+    }
+
+    /// [`Self::item_rect`] against a layout the caller already holds.
+    fn item_rect_with(&self, layout: ListLayout, index: usize) -> Option<Rect> {
+        let row = self.row_rect_with(layout, index)?;
         if layout.columns <= 1 {
             return Some(row);
         }
@@ -1505,7 +1516,7 @@ impl Draw for ListView {
             let delegate = self.item_delegate.as_deref();
             let start = self.scroll_row.saturating_mul(layout.columns.max(1) as usize);
             for i in start..row_count {
-                let Some(cell) = self.item_rect(i) else { break };
+                let Some(cell) = self.item_rect_with(layout, i) else { break };
                 // Hover is painted *under* focus: a row that is both hovered and focused keeps the
                 // focused weight, so the persistent fact is not visually displaced by the pointer
                 // merely passing over it.

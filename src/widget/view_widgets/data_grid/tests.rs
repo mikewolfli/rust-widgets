@@ -98,6 +98,77 @@ fn the_cell_editor_paints_its_box_and_commits_its_text() {
     assert_eq!(grid.editing_cell(), None, "committing closes the edit");
 }
 
+/// Painting a cell with its box already computed draws exactly what the standalone entry draws.
+///
+/// # What this pins
+///
+/// The scrolling pass derives each cell's box anyway (`cell_rect` is what tells the row loop where
+/// to stop), so asking for it again inside the paint repeated the projection arithmetic for
+/// every visible cell, twice per frame. `paint_cell_at_rect` takes the box the caller already has.
+/// The delegation is only correct if the two agree **byte for byte**, including the one case that
+/// does not use the caller's box at all: a cell that anchors a merged run paints the run's union
+/// rectangle, so a deliberately wrong rectangle must still produce the span's own picture.
+#[test]
+fn painting_a_cell_with_a_precomputed_box_draws_the_same_pixels() {
+    use crate::core::Size;
+    use crate::render::{PaintBackend, RenderContext, SoftwarePaintBackend};
+
+    let size = Size::new(600, 300);
+    let paint = |grid: &DataGrid, precomputed: Option<Rect>| {
+        let mut backend = SoftwarePaintBackend::new(size, 1.0);
+        backend.begin_frame(Color::WHITE);
+        {
+            let mut context = RenderContext::new(&mut backend);
+            let (row, column) = (1usize, 0usize);
+            let value = grid.data_source.as_ref().and_then(|source| source.data(row, column));
+            match precomputed {
+                Some(rect) => {
+                    grid.paint_cell_at_rect(
+                        &mut context,
+                        value.as_ref(),
+                        row,
+                        column,
+                        rect,
+                        Color::BLACK,
+                        Color::BLACK,
+                        Color::WHITE,
+                    );
+                }
+                None => {
+                    grid.paint_cell_at_rect(
+                        &mut context,
+                        value.as_ref(),
+                        row,
+                        column,
+                        grid.cell_rect(row, column),
+                        Color::BLACK,
+                        Color::BLACK,
+                        Color::WHITE,
+                    );
+                }
+            }
+        }
+        backend.end_frame();
+        backend.frame_rgba().to_vec()
+    };
+
+    let grid = static_grid(4, 3);
+    let derived = grid.cell_rect(1, 0);
+    assert!(
+        paint(&grid, None) == paint(&grid, Some(derived)),
+        "a precomputed box must produce the same cell as the derived one"
+    );
+
+    // The span path must ignore the caller's rectangle: the anchor paints the union of the run.
+    let mut spanned = static_grid(4, 3);
+    assert!(spanned.set_cell_span(1, 0, 1, 2), "the anchor is inside the model");
+    let wrong = Rect::new(0, 0, 1, 1);
+    assert!(
+        paint(&spanned, None) == paint(&spanned, Some(wrong)),
+        "a merged anchor must paint its run, not the box it was handed"
+    );
+}
+
 /// V-015: a chooser toggle reaches the grid's hidden-column state.
 #[test]
 fn a_chooser_toggle_hides_the_column_in_the_grid() {

@@ -363,7 +363,7 @@ pub fn render_window_frame(id: ObjectId, size: Size, clear: crate::core::Color) 
             continue;
         }
         let Some(surface_frame) =
-            render_frame_cached(surface, surface_size, crate::core::Color::TRANSPARENT)
+            render_frame_cached_shared(surface, surface_size, crate::core::Color::TRANSPARENT)
         else {
             continue;
         };
@@ -372,7 +372,7 @@ pub fn render_window_frame(id: ObjectId, size: Size, clear: crate::core::Color) 
             size.width,
             size.height,
             (rect.x, rect.y),
-            &surface_frame,
+            surface_frame.as_slice(),
             (surface_size.width, surface_size.height),
         );
     }
@@ -897,6 +897,232 @@ pub fn render_frame_tree(id: ObjectId, size: Size, clear: crate::core::Color) ->
     let frame = backend.take_frame_rgba();
     return_frame_backend(backend, size);
     Some(frame)
+}
+
+/// Paints **one** widget — not its children — into any [`PaintBackend`], the way [`render_frame`]
+/// does.
+///
+/// [`render_frame`] exists for a mounted surface (one control in its own box); this is that paint
+/// aimed at a caller that wants the commands instead of the pixels. The differences from
+/// [`paint_tree_into`] are the two that separate the two frame paths: a surface paints only itself
+/// ([`paint_tree_into`] also walks children), and it translates by its own frame origin the same
+/// way.
+///
+/// Returns `false` when `id` is not mounted, has no `Draw`, or the size is empty — the conditions
+/// under which [`render_frame`] answers `None`.
+pub fn paint_widget_into(
+    id: ObjectId,
+    size: Size,
+    clear: crate::core::Color,
+    backend: &mut dyn PaintBackend,
+) -> bool {
+    if size.width == 0 || size.height == 0 {
+        return false;
+    }
+    let origin = frame_origin(id);
+    backend.begin_frame(clear);
+    let painted = with_widget_mut(id, |widget| {
+        let Some(drawable) = widget.as_draw_mut() else {
+            return false;
+        };
+        let mut context = RenderContext::new(backend);
+        context.push_offset(-origin.0, -origin.1);
+        drawable.draw(&mut context);
+        context.pop_offset();
+        true
+    })
+    .unwrap_or(false);
+    backend.end_frame();
+    painted
+}
+
+/// Paints a widget **tree** into any [`PaintBackend`], without the pixel cache or the layer cache.
+///
+/// # Why this exists
+///
+/// [`render_frame_tree`] is tied to [`SoftwarePaintBackend`]: the layer cache holds software
+/// surfaces and the damage replay lives in that backend. A caller that wants the frame's
+/// **commands** rather than its pixels therefore has no entry point — which is exactly what the
+/// `Smooth` presentation path needs, since it records the tree into a
+/// [`crate::render::present::GpuPaintBackend`] and hands the stream to the pipelines. This is that
+/// entry point: the same traversal `render_frame_tree` uses (root first, then the root's children
+/// in paint order, each carrying the clip its ancestors impose, everything translated by the frame
+/// origin), drawn straight into `backend`.
+///
+/// # What it deliberately does not do
+///
+/// **No layer cache.** Every visible node is asked to draw, so the recorded stream is complete —
+/// a consumer of commands cannot replay a cached layer it never saw. The cost is re-rasterising
+/// subtrees that did not change; [`render_frame_tree_cached_shared`] stays the path for callers
+/// that want pixels, and it is where the caching (and the "nothing changed" answer) lives.
+///
+/// **No frame cache.** This function does not read or write `LAST_FRAME` / `LAST_TREE_FRAME`, so a
+/// caller may ask for pixels and commands in either order without one invalidating the other.
+///
+/// # Return value
+///
+/// `false` when `id` is not mounted, when the size is empty, or when the root has no `Draw` — the
+/// same conditions under which [`render_frame_tree`] answers `None`. `end_frame` is called either
+/// way, so the backend pair (`begin_frame` / `end_frame`) is never left unbalanced.
+pub fn paint_tree_into(
+    id: ObjectId,
+    size: Size,
+    clear: crate::core::Color,
+    backend: &mut dyn PaintBackend,
+) -> bool {
+    if size.width == 0 || size.height == 0 {
+        return false;
+    }
+    let origin = frame_origin(id);
+    backend.begin_frame(clear);
+
+    let mut root_children = ROOT_CHILD_IDS.with(|slot| core::mem::take(&mut *slot.borrow_mut()));
+    root_children.clear();
+    let mut root_clip = None;
+    let painted_root = with_widget_mut(id, |widget| {
+        root_clip = widget.children_clip();
+        root_children.extend_from_slice(widget.base().children());
+        let Some(drawable) = widget.as_draw_mut() else {
+            return false;
+        };
+        let mut context = RenderContext::new(backend);
+        context.push_offset(-origin.0, -origin.1);
+        drawable.draw(&mut context);
+        context.pop_offset();
+        true
+    })
+    .unwrap_or(false);
+
+    if painted_root {
+        ordered_root_children(&mut root_children);
+        // The window-level modal scrim (DLG-001) is part of the frame, so the painter that wants
+        // the same picture has to reproduce it. It needs to know whether the owning modal is
+        // painted somewhere in this pass, which is what `painted_ids` records — and that tracking
+        // only pays when there is a scrim owner to ask about.
+        #[cfg(full_widgets)]
+        let scrim_owner = crate::widget::dialog::scrim_owner_for_root(id);
+        #[cfg(not(full_widgets))]
+        let scrim_owner: Option<ObjectId> = None;
+        let track_painted = scrim_owner.is_some();
+        let mut painted_ids: Vec<ObjectId> = Vec::new();
+        #[cfg(full_widgets)]
+        crate::widget::dialog::reset_plane_painted();
+
+        // A zero-area ancestor clip means neither the root's children nor their descendants can
+        // show, so the whole descent is skipped rather than tested per node.
+        let root_can_show = !root_clip.is_some_and(|rect| rect.width == 0 || rect.height == 0);
+        for child in root_children.iter().copied() {
+            #[cfg(full_widgets)]
+            if scrim_owner == Some(child) {
+                let mut context = RenderContext::new(backend);
+                context.fill_rect(
+                    Rect::new(0, 0, size.width, size.height),
+                    crate::widget::dialog::scrim_plane_color(),
+                );
+                crate::widget::dialog::note_plane_painted(child);
+            }
+            if !root_can_show {
+                continue;
+            }
+            paint_subtree_into(
+                child,
+                root_clip,
+                backend,
+                origin,
+                0,
+                &mut painted_ids,
+                track_painted,
+            );
+        }
+
+        #[cfg(full_widgets)]
+        if let Some(owner) = scrim_owner {
+            if !painted_ids.contains(&owner) {
+                let mut context = RenderContext::new(backend);
+                context.fill_rect(
+                    Rect::new(0, 0, size.width, size.height),
+                    crate::widget::dialog::scrim_plane_color(),
+                );
+            }
+        }
+    }
+
+    ROOT_CHILD_IDS.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        if root_children.capacity() > slot.capacity() {
+            root_children.clear();
+            *slot = root_children;
+        }
+    });
+    backend.end_frame();
+    painted_root
+}
+
+/// Paints one node and its descendants into `backend`, clipped by `clip`.
+///
+/// The recursion contract is [`render_frame_tree`]'s: a node draws at its absolute position
+/// translated by the frame origin, then its children draw with the clip it imposes
+/// (`children_clip`) intersected with the one it inherited. Invisible nodes draw nothing and take
+/// their subtree with them. Depth is bounded by [`MAX_LAYER_DEPTH`] so a corrupted parent/child
+/// cycle cannot overflow the stack.
+///
+/// `painted_ids` receives every node that actually drew, but only when `track` is set: the window's
+/// scrim plane needs that question answered and nothing else does.
+fn paint_subtree_into(
+    id: ObjectId,
+    clip: Option<Rect>,
+    backend: &mut dyn PaintBackend,
+    origin: (i32, i32),
+    depth: u32,
+    painted_ids: &mut Vec<ObjectId>,
+    track: bool,
+) -> bool {
+    if depth >= MAX_LAYER_DEPTH {
+        return false;
+    }
+    let mut children = take_paint_children();
+    children.clear();
+    let mut child_clip = None;
+    let mut self_drew = false;
+    let rendered = with_widget_mut(id, |widget| {
+        if !widget.is_visible() {
+            return;
+        }
+        children.extend_from_slice(widget.base().children());
+        child_clip = intersect_clip(clip, widget.children_clip());
+        let Some(drawable) = widget.as_draw_mut() else {
+            return;
+        };
+        let mut context = RenderContext::new(backend);
+        context.push_offset(-origin.0, -origin.1);
+        if let Some(rect) = clip {
+            context.push_clip(rect.x, rect.y, rect.width, rect.height);
+        }
+        drawable.draw(&mut context);
+        if clip.is_some() {
+            context.pop_clip();
+        }
+        context.pop_offset();
+        self_drew = true;
+    });
+    if rendered.is_none() {
+        return_paint_children(children);
+        return false;
+    }
+    if self_drew && track {
+        painted_ids.push(id);
+    }
+    let mut drew = self_drew;
+    if child_clip.is_some_and(|rect| rect.width == 0 || rect.height == 0) {
+        return_paint_children(children);
+        return drew;
+    }
+    for &child in &children {
+        drew |=
+            paint_subtree_into(child, child_clip, backend, origin, depth + 1, painted_ids, track);
+    }
+    return_paint_children(children);
+    drew
 }
 
 /// Bounds and painting facts for one widget subtree, computed once per frame.

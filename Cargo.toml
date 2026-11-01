@@ -1333,6 +1333,15 @@ name = "macos_canvas_lifecycle_probe"
 path = "examples/macos_canvas_lifecycle_probe.rs"
 required-features = ["desktop"]
 
+# End-to-end presentation probe (BLUE29 §7, B29.09/B29.12/B29.13): presents a known frame into a
+# real window, reads the presented pixels back and asserts byte equality, then exercises the
+# damaged-band path and a resize. `tools/run_present_macos.sh` runs it with a bounded timeout.
+# `required-features` keeps every profile without a presentation path from building it.
+[[example]]
+name = "present_smoke"
+path = "examples/present_smoke.rs"
+required-features = ["desktop", "gpu-wgpu", "raw-window-handle"]
+
 # Runtime proof that the host creates no controls and one creation mechanism
 # exists. Needs the `app` module and a real backend, so it is gated like the other
 # desktop probes. Replaces `macos_created_controls_are_usable`, whose subject (the

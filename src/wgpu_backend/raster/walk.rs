@@ -10,11 +10,13 @@
 use super::super::commands::WgpuDrawCommand;
 use super::super::types::PixelRect;
 use super::fills::{
-    bbox_for_circle, bbox_for_path, blend_mode_from_id, box_shadow_cpu_rgba8, clear_cpu_rgba8,
-    clip_segment_to_rect, draw_arc_cpu_rgba8, draw_circle_cpu_rgba8, draw_gradient_cpu_rgba8,
-    draw_image_scaled_cpu_rgba8, draw_line_cpu_rgba8, draw_path_cpu_rgba8,
-    draw_path_non_zero_cpu_rgba8, draw_radial_gradient_cpu_rgba8, fill_circle_cpu_rgba8,
-    fill_rect_cpu_rgba8_blended, fill_rounded_rect_cpu_rgba8, rect_for_line, stroke_rect_edges,
+    bbox_for_circle, bbox_for_path, blend_cpu_rgba8_with_mode, blend_mode_from_id,
+    box_shadow_cpu_rgba8, clear_cpu_rgba8, clip_segment_to_rect, draw_arc_cpu_rgba8,
+    draw_circle_cpu_rgba8, draw_gradient_cpu_rgba8, draw_image_scaled_cpu_rgba8,
+    draw_line_cpu_rgba8, draw_path_cpu_rgba8, draw_path_non_zero_cpu_rgba8,
+    draw_radial_gradient_cpu_rgba8, draw_ramp_gradient_cpu_rgba8, fill_circle_cpu_rgba8,
+    fill_rect_cpu_rgba8_blended, fill_rounded_rect_cpu_rgba8, for_each_line_stamp, rect_for_line,
+    rounded_rect_row_spans_radii, rounded_ring_row_spans, stroke_rect_edges,
     stroke_rounded_rect_cpu_rgba8, ArcParams, CpuPathDraw, GradientAxis,
 };
 use super::text::draw_text_cpu_rgba8;
@@ -40,6 +42,45 @@ pub(crate) fn framebuffer_byte_len(width: u32, height: u32) -> Result<usize, Str
         ));
     }
     Ok(byte_len)
+}
+
+/// Rasterises a line with the reference's centred brush into `pixels`.
+///
+/// This is the CPU half of [`WgpuDrawCommand::DrawLineCentered`]: it walks the whole segment (the
+/// reference does too) and clips every stamped square individually, so the phase of the Bresenham
+/// walk cannot shift near a clip edge. The step bound is a hang guard for a degenerate endpoint far
+/// outside the frame; real UI geometry never approaches it.
+#[allow(clippy::too_many_arguments)]
+fn draw_centered_line_cpu(
+    pixels: &mut [u8],
+    framebuffer_width: u32,
+    framebuffer: PixelRect,
+    clip: Option<PixelRect>,
+    from: (i32, i32),
+    to: (i32, i32),
+    width: u32,
+    color: super::super::types::Rgba8,
+    blend: BlendMode,
+) {
+    if width == 0 {
+        return;
+    }
+    let steps = (to.0 as i64 - from.0 as i64).abs() + (to.1 as i64 - from.1 as i64).abs();
+    if steps > 16_000_000 {
+        return;
+    }
+    let offset = (width / 2) as i64;
+    for_each_line_stamp(from, to, width, |x, y, _half| {
+        let stamped = PixelRect {
+            x: (x - offset).clamp(i32::MIN as i64, i32::MAX as i64) as i32,
+            y: (y - offset).clamp(i32::MIN as i64, i32::MAX as i64) as i32,
+            width,
+            height: width,
+        };
+        let Some(visible) = stamped.intersect(framebuffer) else { return };
+        let Some(visible) = effective_clip(framebuffer, visible, clip) else { return };
+        fill_rect_cpu_rgba8_blended(pixels, framebuffer_width, visible, color, blend);
+    });
 }
 
 /// Rasterises `commands` into a caller-owned frame of exactly `width × height × 4` bytes.
@@ -150,6 +191,50 @@ pub fn rasterize_draw_commands_into_rgba8(
                 let clip_rect = effective_clip(framebuffer, *rect, combine(clip, current_clip));
                 draw_text_cpu_rgba8(&mut *pixels, width, *rect, text, *color, clip_rect, blend);
             }
+            WgpuDrawCommand::DrawTextCoverage { rect, coverage, color, clip } => {
+                if rect.width == 0 || rect.height == 0 || coverage.is_empty() {
+                    continue;
+                }
+                let expected = rect.width as usize * rect.height as usize;
+                if coverage.len() != expected {
+                    return Err(format!(
+                        "invalid DrawTextCoverage payload at index {index}: expected {expected} \
+                         bytes for a {}x{} box, got {}",
+                        rect.width,
+                        rect.height,
+                        coverage.len()
+                    ));
+                }
+                let Some(clip_rect) =
+                    effective_clip(framebuffer, *rect, combine(clip, current_clip))
+                else {
+                    continue;
+                };
+                let x_start = clip_rect.x.max(rect.x);
+                let y_start = clip_rect.y.max(rect.y);
+                let x_end = clip_rect.right().min(rect.right());
+                let y_end = clip_rect.bottom().min(rect.bottom());
+                for y in y_start..y_end {
+                    let row = (y - rect.y) as usize;
+                    for x in x_start..x_end {
+                        let value = coverage[row * rect.width as usize + (x - rect.x) as usize];
+                        if value == 0 {
+                            continue;
+                        }
+                        // The byte is already display-encoded (see `shaped_text_coverage`), so it
+                        // is used directly as the alpha weight; the GPU shader does the same.
+                        blend_cpu_rgba8_with_mode(
+                            &mut *pixels,
+                            width,
+                            x as u32,
+                            y as u32,
+                            *color,
+                            value as f32 / 255.0,
+                            blend,
+                        );
+                    }
+                }
+            }
             WgpuDrawCommand::DrawImage { rect, rgba8, image_width, image_height, clip } => {
                 if rect.width == 0 || rect.height == 0 || *image_width == 0 || *image_height == 0 {
                     continue;
@@ -188,6 +273,26 @@ pub fn rasterize_draw_commands_into_rgba8(
                     blend,
                 );
             }
+            WgpuDrawCommand::StrokeRoundedRectInside { rect, radius, color, thickness, clip } => {
+                let clip_rect = combine(clip, current_clip);
+                for span in rounded_ring_row_spans(*rect, *radius, *thickness) {
+                    let Some(visible) = span.intersect(framebuffer) else { continue };
+                    let Some(visible) = effective_clip(framebuffer, visible, clip_rect) else {
+                        continue;
+                    };
+                    fill_rect_cpu_rgba8_blended(&mut *pixels, width, visible, *color, blend);
+                }
+            }
+            WgpuDrawCommand::FillRoundedRectRadii { rect, radii, color, clip } => {
+                let clip_rect = combine(clip, current_clip);
+                for span in rounded_rect_row_spans_radii(*rect, *radii) {
+                    let Some(visible) = span.intersect(framebuffer) else { continue };
+                    let Some(visible) = effective_clip(framebuffer, visible, clip_rect) else {
+                        continue;
+                    };
+                    fill_rect_cpu_rgba8_blended(&mut *pixels, width, visible, *color, blend);
+                }
+            }
             WgpuDrawCommand::StrokeRoundedRect { rect, radius, color, thickness, clip } => {
                 if *radius == 0 || *thickness == 0 || rect.width == 0 || rect.height == 0 {
                     continue;
@@ -201,6 +306,45 @@ pub fn rasterize_draw_commands_into_rgba8(
                     *color,
                     *thickness,
                     clip_rect,
+                    blend,
+                );
+            }
+            WgpuDrawCommand::StrokeRectCentered { rect, color, thickness, clip } => {
+                if *thickness == 0 || rect.width == 0 || rect.height == 0 {
+                    continue;
+                }
+                let x1 = rect.right().saturating_sub(1);
+                let y1 = rect.bottom().saturating_sub(1);
+                let edge_clip = combine(clip, current_clip);
+                for (from, to) in [
+                    ((rect.x, rect.y), (x1, rect.y)),
+                    ((rect.x, y1), (x1, y1)),
+                    ((rect.x, rect.y), (rect.x, y1)),
+                    ((x1, rect.y), (x1, y1)),
+                ] {
+                    draw_centered_line_cpu(
+                        &mut *pixels,
+                        width,
+                        framebuffer,
+                        edge_clip,
+                        from,
+                        to,
+                        *thickness,
+                        *color,
+                        blend,
+                    );
+                }
+            }
+            WgpuDrawCommand::DrawLineCentered { from, to, color, width: line_width, clip } => {
+                draw_centered_line_cpu(
+                    &mut *pixels,
+                    width,
+                    framebuffer,
+                    combine(clip, current_clip),
+                    *from,
+                    *to,
+                    *line_width,
+                    *color,
                     blend,
                 );
             }
@@ -240,6 +384,47 @@ pub fn rasterize_draw_commands_into_rgba8(
                 let clip_rect =
                     effective_clip(framebuffer, circle_bounds, combine(clip, current_clip));
                 fill_circle_cpu_rgba8(&mut *pixels, width, *center, *r, *color, clip_rect, blend);
+            }
+            WgpuDrawCommand::DrawCircleInside {
+                center,
+                radius,
+                color,
+                width: ring_width,
+                clip,
+            } => {
+                if *radius == 0 || *ring_width == 0 {
+                    continue;
+                }
+                let Some(clip_rect) = effective_clip(
+                    framebuffer,
+                    bbox_for_circle(*center, *radius, 0),
+                    combine(clip, current_clip),
+                ) else {
+                    continue;
+                };
+                let outer = *radius as f32;
+                let inner = (outer - *ring_width as f32).max(0.0);
+                for y in clip_rect.y..clip_rect.bottom() {
+                    let dy = y as f32 - center.1 as f32;
+                    for x in clip_rect.x..clip_rect.right() {
+                        let dx = x as f32 - center.0 as f32;
+                        let distance = (dx * dx + dy * dy).sqrt();
+                        let edge = (distance - outer).max(inner - distance);
+                        let t = edge.clamp(0.0, 1.0);
+                        let coverage = 1.0 - t * t * (3.0 - 2.0 * t);
+                        if coverage > 0.0 {
+                            blend_cpu_rgba8_with_mode(
+                                &mut *pixels,
+                                width,
+                                x as u32,
+                                y as u32,
+                                *color,
+                                coverage,
+                                blend,
+                            );
+                        }
+                    }
+                }
             }
             WgpuDrawCommand::DrawCircle { center, radius: r, color, width: circle_width, clip } => {
                 if *r == 0 || *circle_width == 0 {
@@ -376,6 +561,36 @@ pub fn rasterize_draw_commands_into_rgba8(
                     clip_rect,
                     GradientAxis::Horizontal,
                     blend,
+                );
+            }
+            WgpuDrawCommand::FillGradient { rect, kind, start, end, ramp, clip, verbatim } => {
+                if rect.width == 0 || rect.height == 0 {
+                    continue;
+                }
+                let expected = 256 * 4;
+                if ramp.len() != expected {
+                    return Err(format!(
+                        "invalid FillGradient payload at index {index}: expected {expected} \
+                         ramp byte(s), got {}",
+                        ramp.len()
+                    ));
+                }
+                let Some(clip_rect) =
+                    effective_clip(framebuffer, *rect, combine(clip, current_clip))
+                else {
+                    continue;
+                };
+                draw_ramp_gradient_cpu_rgba8(
+                    &mut *pixels,
+                    width,
+                    *rect,
+                    *kind,
+                    *start,
+                    *end,
+                    ramp,
+                    Some(clip_rect),
+                    blend,
+                    *verbatim,
                 );
             }
             WgpuDrawCommand::FillRadialGradient { rect, gradient_data, clip } => {
@@ -908,6 +1123,73 @@ mod tests {
             "a corner is past the outer radius and must take the last stop, got {edge} — \
              a lower value would mean the rect was not fully covered"
         );
+    }
+
+    /// `FillGradient` must reproduce the software surface's own gradient fill **byte for byte** on
+    /// the CPU path, in all three geometries.
+    ///
+    /// This is the parity half of the bridge: the GPU case is asserted in
+    /// `render::present::smooth`, and this one proves that a stream the dispatcher leaves on the CPU
+    /// draws exactly the picture the reference backend would have drawn — the table is the
+    /// reference's, and the position arithmetic is its per-pixel expression.
+    #[test]
+    fn a_fill_gradient_reproduces_the_software_surface_on_the_cpu_path() {
+        use crate::core::Size as CoreSize;
+        use crate::render::{PaintBackend, SoftwarePaintBackend};
+
+        let size = CoreSize::new(24, 20);
+        let stops = [
+            (0.0f32, crate::core::Color::rgba(12, 24, 36, 255)),
+            (0.5, crate::core::Color::rgba(100, 90, 150, 255)),
+            (1.0, crate::core::Color::rgba(200, 180, 255, 255)),
+        ];
+        let gradient = stops.iter().fold(
+            crate::style::Gradient::linear(
+                crate::core::Point::new(2, 1),
+                crate::core::Point::new(21, 18),
+            ),
+            |gradient, (position, color)| gradient.add_stop(*position, *color),
+        );
+        let area = rect(1, 1, 22, 18);
+
+        // The reference: the command through the software backend.
+        let mut reference = SoftwarePaintBackend::new(size, 1.0);
+        reference.begin_frame(crate::core::Color::WHITE);
+        reference.execute_command(&crate::render::RenderCommand::DrawGradient {
+            rect: crate::core::Rect::new(1, 1, 22, 18),
+            gradient: gradient.clone().into(),
+        });
+        reference.end_frame();
+        let expected = reference.frame_rgba().to_vec();
+
+        // The parity path: the bridged form through the command rasteriser.
+        let ramp = crate::render::gradient_ramp_lut(&gradient);
+        let mut bytes = Vec::with_capacity(256 * 4);
+        for color in ramp.iter() {
+            bytes.extend_from_slice(&[color.r, color.g, color.b, color.a]);
+        }
+        let pixels = rasterize_draw_commands_rgba8(
+            size.width,
+            size.height,
+            &[
+                WgpuDrawCommand::FillRect {
+                    rect: rect(0, 0, size.width, size.height),
+                    color: crate::wgpu_backend::Rgba8 { r: 255, g: 255, b: 255, a: 255 },
+                    clip: None,
+                },
+                WgpuDrawCommand::FillGradient {
+                    rect: area,
+                    kind: 0,
+                    start: (2.0, 1.0),
+                    end: (21.0, 18.0),
+                    ramp: bytes.into(),
+                    verbatim: false,
+                    clip: None,
+                },
+            ],
+        )
+        .expect("rasterizes");
+        assert_eq!(pixels, expected, "the bridged gradient must match the software surface");
     }
 
     /// `BoxShadow` must darken pixels outside the shadow's own rect, and `blur_radius`

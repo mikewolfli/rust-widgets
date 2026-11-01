@@ -263,6 +263,9 @@ pub(crate) enum DrawStep {
     Shape(usize),
     /// One radial gradient: the `index`th entry of the frame's radial-gradient table.
     Radial(usize),
+    /// One general gradient (linear in any direction, radial or conic): the `index`th entry of the
+    /// frame's gradient table.
+    Gradient(usize),
     /// One filled path: the `index`th entry of the frame's path table.
     Path(usize),
     /// One blurred shadow: the `index`th entry of the frame's shadow table. The blurred layer is

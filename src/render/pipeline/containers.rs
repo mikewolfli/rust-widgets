@@ -97,6 +97,21 @@ thread_local! {
 /// cost of every lookup for no extra safety (REND-14); it now hashes the length plus the first and
 /// last eight bytes, which still distinguishes the strings a label cache actually sees (a status
 /// line that ends differently, a number that grew) without reading the middle again.
+#[cfg(feature = "gpu-wgpu")]
+pub(crate) fn text_fingerprint(text: &str, font: &Font, scale: f32) -> (u64, u64) {
+    text_measurement_fingerprint(text, font, scale)
+}
+
+/// The current text-measurement epoch, bumped when the faces a family resolves to change.
+///
+/// A cache that stores shaped or rasterised text must record this value with its entry: the
+/// epoch is what makes an entry built against a previously-resolved face unreachable instead of
+/// silently stale (see [`invalidate_text_measurements`]).
+#[cfg(feature = "gpu-wgpu")]
+pub(crate) fn text_metrics_epoch() -> u64 {
+    TEXT_METRICS_EPOCH.load(Ordering::Relaxed)
+}
+
 fn text_measurement_fingerprint(text: &str, font: &Font, scale: f32) -> (u64, u64) {
     const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
     const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
@@ -294,7 +309,7 @@ fn build_ramp(stops: &[(f32, Color)]) -> [Color; GRADIENT_LUT_SIZE] {
 }
 
 /// Returns the resolved 256-sample ramp for `gradient`, building it at most once per content.
-fn gradient_ramp_lut(gradient: &Gradient) -> Rc<[Color; GRADIENT_LUT_SIZE]> {
+pub(crate) fn gradient_ramp_lut(gradient: &Gradient) -> Rc<[Color; GRADIENT_LUT_SIZE]> {
     cached_ramp_lut(gradient_ramp_fingerprint(gradient), || {
         // The sampler and its cache speak the `(position, color)` pairs a conic command carries;
         // bridge once per build, not once per lookup.

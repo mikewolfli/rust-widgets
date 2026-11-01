@@ -68,6 +68,8 @@ fn shader_module_registry_matches_pipelines() {
         "shape_fs",
         "radial_vs",
         "radial_fs",
+        "gradient_vs",
+        "gradient_fs",
         "path_fan_vs",
         "path_stencil_fs",
         "path_cover_vs",

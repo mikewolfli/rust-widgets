@@ -5,14 +5,17 @@
 //!
 //! Split by responsibility: `resources` owns the device resources kept across calls, `frame` owns
 //! the renderer itself together with its readback plumbing, `shadow` owns the blurred-shadow
-//! layer passes, and `encode` owns the 2D and mesh encoders.
+//! layer passes, `encode` owns the 2D and mesh encoders, and `encode_blur` owns the separable
+//! blur passes.
+mod build;
 mod dispatch;
 mod effects;
 mod encode;
+mod encode_blur;
 mod frame;
 mod pass;
 mod policy;
-mod resources;
+pub(crate) mod resources;
 mod shadow;
 mod stream;
 mod uploads;

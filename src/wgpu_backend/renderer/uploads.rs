@@ -38,6 +38,14 @@ pub(super) struct RadialDraw {
     pub(super) bind_group: wgpu::BindGroup,
 }
 
+/// One general gradient in the command-stream pass: the params uniform and the ramp texture it
+/// samples.
+pub(super) struct GradientDraw {
+    pub(super) bind_group: wgpu::BindGroup,
+    /// Whether the pass writes the ramp colour verbatim (`REPLACE`) instead of compositing it.
+    pub(super) verbatim: bool,
+}
+
 /// One filled path in the command-stream pass.
 ///
 /// The fan vertices live in the shared vertex buffer; this entry carries the range and the cover
@@ -150,6 +158,22 @@ impl WgpuRenderer {
     pub(super) fn upload_text_draw(&self, rect: PixelRect, text: &str, color: Rgba8) -> TextDraw {
         let mut coverage = vec![0u8; rect.width as usize * rect.height as usize];
         text_coverage_into(rect, text, &mut coverage);
+        self.upload_coverage_draw(rect, &coverage, color)
+    }
+
+    /// Uploads a caller-supplied coverage mask and returns the bind group that draws it.
+    ///
+    /// This is the shaped-text half of [`Self::upload_text_draw`]: the bytes are already in the
+    /// layout the reference compositor used, so this method only uploads them. `coverage` must be
+    /// exactly `rect.width * rect.height` bytes; the frame encoder checks that before calling, and
+    /// a mismatch here would make `write_texture` read the wrong number of rows.
+    pub(super) fn upload_coverage_draw(
+        &self,
+        rect: PixelRect,
+        coverage: &[u8],
+        color: Rgba8,
+    ) -> TextDraw {
+        debug_assert_eq!(coverage.len(), rect.width as usize * rect.height as usize);
         let size =
             wgpu::Extent3d { width: rect.width, height: rect.height, depth_or_array_layers: 1 };
         let texture = self.device.create_texture(&wgpu::TextureDescriptor {
@@ -169,7 +193,7 @@ impl WgpuRenderer {
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
             },
-            &coverage,
+            coverage,
             wgpu::TexelCopyBufferLayout {
                 offset: 0,
                 bytes_per_row: Some(rect.width),
@@ -342,6 +366,98 @@ impl WgpuRenderer {
             ],
         });
         RadialDraw { bind_group }
+    }
+
+    /// Uploads one general gradient's ramp and params, and returns the bind group it draws with.
+    ///
+    /// The ramp is uploaded verbatim — 256 `RGBA8` entries — so the shader's `textureLoad` returns
+    /// exactly the bytes the reference's own table holds. `kind`/`start`/`end` are the geometry the
+    /// command carries; `rect` is both the quad and the linear ramp's anchor (`max(x, 0)` is derived
+    /// in the shader, as the reference derives it).
+    pub(super) fn upload_gradient_draw(
+        &self,
+        rect: PixelRect,
+        kind: u8,
+        start: (f32, f32),
+        end: (f32, f32),
+        ramp: &[u8],
+        verbatim: bool,
+    ) -> GradientDraw {
+        let size = wgpu::Extent3d { width: 256, height: 1, depth_or_array_layers: 1 };
+        let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("gradient_ramp_texture"),
+            size,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        self.queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            ramp,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(1024),
+                rows_per_image: Some(1),
+            },
+            size,
+        );
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let params = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("gradient_draw_params"),
+            size: 64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let mut data = [0u8; 64];
+        write_f32s(
+            &mut data,
+            &[
+                rect.x as f32,
+                rect.y as f32,
+                rect.width as f32,
+                rect.height as f32,
+                start.0,
+                start.1,
+                0.0,
+                0.0,
+                end.0,
+                end.1,
+                0.0,
+                0.0,
+                kind as f32,
+                0.0,
+                0.0,
+                0.0,
+            ],
+        );
+        self.queue.write_buffer(&params, 0, &data);
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("gradient_draw_bind_group"),
+            layout: &self.gradient_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                        buffer: &params,
+                        offset: 0,
+                        size: wgpu::BufferSize::new(64),
+                    }),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&view),
+                },
+            ],
+        });
+        GradientDraw { bind_group, verbatim }
     }
 
     /// Uploads one shape draw's 64-byte params and returns the bind group the pass draws it with.

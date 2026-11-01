@@ -486,6 +486,45 @@ fn every_mirror_backed_getter_defers_to_the_platform_first() {
     assert!(window.is_decorated(), "a fresh window is decorated");
 }
 
+/// A presentation request is honoured only when the backend can present that window.
+///
+/// # What this pins
+///
+/// The honest answer for a host with no native target is `false`, and a `false` must leave the
+/// window on [`crate::render::present::FramePresentation::Default`] rather than recording an
+/// intent nothing will act on (BLUE29 B29.16). The test uses an id no backend has a window for,
+/// so it exercises the refusal branch on every platform, including the ones that do present.
+#[test]
+fn a_presentation_request_is_refused_honestly_when_the_window_cannot_present() {
+    use crate::render::present::FramePresentation;
+
+    // An id no `create_window` returned: even a backend that can present answers `false` for it,
+    // because it has no handle to give.
+    let window = WindowHandle::from_raw(u64::MAX - 7);
+    assert!(!window.set_frame_presentation(FramePresentation::Exact));
+    assert_eq!(
+        window.frame_presentation(),
+        FramePresentation::Default,
+        "a refused request must not be recorded"
+    );
+    assert!(!window.set_frame_presentation(FramePresentation::Smooth));
+    assert_eq!(window.frame_presentation(), FramePresentation::Default);
+}
+
+/// Returning to the default delivery path is always possible, even for an unknown window.
+///
+/// `Default` carries no capability requirement: it is the behaviour that exists without the
+/// presentation path, so refusing it would leave a caller unable to undo a request. The call is
+/// therefore `true`, and the window's recorded intent stays `Default`.
+#[test]
+fn returning_to_the_default_delivery_path_always_succeeds() {
+    use crate::render::present::FramePresentation;
+
+    let window = WindowHandle::from_raw(u64::MAX - 8);
+    assert!(window.set_frame_presentation(FramePresentation::Default));
+    assert_eq!(window.frame_presentation(), FramePresentation::Default);
+}
+
 /// The two geometry mirrors exist because `apply_window_layout` reads them.
 ///
 /// `w`/`h` are not platform-read for the window: they are the client size a layout is solved

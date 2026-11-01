@@ -8,8 +8,9 @@
 //! one record layout a filled rectangle uses.
 use super::super::commands::WgpuDrawCommand;
 use super::super::raster::{
-    bbox_for_path, blend_mode_from_id, clip_segment_to_rect, combine, effective_clip,
-    for_each_line_stamp, rect_for_line, rounded_rect_row_spans, stroke_rect_edges,
+    bbox_for_circle, bbox_for_path, blend_mode_from_id, clip_segment_to_rect, combine,
+    effective_clip, for_each_line_stamp, rect_for_line, rounded_rect_row_spans,
+    rounded_rect_row_spans_radii, rounded_ring_row_spans, stroke_rect_edges,
 };
 use super::super::types::PixelRect;
 use super::super::types::Rgba8;
@@ -20,6 +21,8 @@ pub(super) const SHAPE_CIRCLE_STROKE: f32 = 0.0;
 pub(super) const SHAPE_ARC_WEDGE: f32 = 1.0;
 pub(super) const SHAPE_ARC_STROKE: f32 = 2.0;
 pub(super) const SHAPE_ROUNDED_OUTLINE: f32 = 3.0;
+/// The reference's inside-stroke ring: outer edge at `radius`, inner edge at `radius - width`.
+pub(super) const SHAPE_CIRCLE_INSIDE: f32 = 4.0;
 
 /// Appends one instanced-quad record for `rect` filled with `color`.
 ///
@@ -108,6 +111,36 @@ fn push_clipped_instance(
     push_instance(instances, draw_rect, color);
 }
 
+/// Appends one instance per stepped pixel of the reference's centred line brush.
+///
+/// The reference walks the segment without clamping it first and clips every stamped square on its
+/// own, so this helper does the same: clamping the endpoints would change which Bresenham steps are
+/// produced inside the visible region, and a stroke near a clip edge would then shift.
+fn push_centered_line_stamps(
+    instances: &mut Vec<u8>,
+    framebuffer: PixelRect,
+    clip: Option<PixelRect>,
+    stream_clip: Option<PixelRect>,
+    from: (i32, i32),
+    to: (i32, i32),
+    width: u32,
+    color: Rgba8,
+) {
+    if width == 0 {
+        return;
+    }
+    let offset = (width / 2) as i64;
+    for_each_line_stamp(from, to, width, |x, y, _half| {
+        let rect = PixelRect {
+            x: (x - offset).clamp(i32::MIN as i64, i32::MAX as i64) as i32,
+            y: (y - offset).clamp(i32::MIN as i64, i32::MAX as i64) as i32,
+            width,
+            height: width,
+        };
+        push_clipped_instance(instances, framebuffer, clip, stream_clip, rect, color);
+    });
+}
+
 /// Packs the **rectangle class** of commands, whose entire GPU form is instanced rectangles.
 ///
 /// Every arm narrows its geometry by the framebuffer and the running clip exactly as the CPU
@@ -134,11 +167,59 @@ pub(super) fn pack_rect_command(
                 push_clipped_instance(instances, framebuffer, *clip, stream_clip, edge, *color);
             }
         }
+        // The reference outline: four edges stroked with its centred brush, in its own order.
+        WgpuDrawCommand::StrokeRectCentered { rect, color, thickness, clip } => {
+            if *thickness == 0 || rect.width == 0 || rect.height == 0 {
+                return true;
+            }
+            let x1 = rect.right().saturating_sub(1);
+            let y1 = rect.bottom().saturating_sub(1);
+            for (from, to) in [
+                ((rect.x, rect.y), (x1, rect.y)),
+                ((rect.x, y1), (x1, y1)),
+                ((rect.x, rect.y), (rect.x, y1)),
+                ((x1, rect.y), (x1, y1)),
+            ] {
+                push_centered_line_stamps(
+                    instances,
+                    framebuffer,
+                    *clip,
+                    stream_clip,
+                    from,
+                    to,
+                    *thickness,
+                    *color,
+                );
+            }
+        }
+        WgpuDrawCommand::DrawLineCentered { from, to, color, width, clip } => {
+            push_centered_line_stamps(
+                instances,
+                framebuffer,
+                *clip,
+                stream_clip,
+                *from,
+                *to,
+                *width,
+                *color,
+            );
+        }
         // One instance per row span, from the same integer rule the CPU arm uses. What moves to the
         // GPU is the per-pixel fill, not the geometry, so the corner arcs are identical rather
         // than approximated.
         WgpuDrawCommand::FillRoundedRect { rect, radius, color, clip } => {
             for span in rounded_rect_row_spans(*rect, *radius) {
+                push_clipped_instance(instances, framebuffer, *clip, stream_clip, span, *color);
+            }
+        }
+        WgpuDrawCommand::FillRoundedRectRadii { rect, radii, color, clip } => {
+            for span in rounded_rect_row_spans_radii(*rect, *radii) {
+                push_clipped_instance(instances, framebuffer, *clip, stream_clip, span, *color);
+            }
+        }
+        // The reference's inside-stroke ring, row by row, from the shared span derivation.
+        WgpuDrawCommand::StrokeRoundedRectInside { rect, radius, color, thickness, clip } => {
+            for span in rounded_ring_row_spans(*rect, *radius, *thickness) {
                 push_clipped_instance(instances, framebuffer, *clip, stream_clip, span, *color);
             }
         }
@@ -279,8 +360,53 @@ pub(super) fn draws_under_blend(command: &WgpuDrawCommand) -> bool {
             | WgpuDrawCommand::DrawGradient { .. }
             | WgpuDrawCommand::FillLinearGradient { .. }
             | WgpuDrawCommand::FillRadialGradient { .. }
+            | WgpuDrawCommand::FillGradient { .. }
             | WgpuDrawCommand::DrawText { .. }
+            | WgpuDrawCommand::DrawTextCoverage { .. }
     )
+}
+
+/// The bounding box of a line drawn with the reference's centred brush.
+///
+/// `rect_for_line` describes the older brush's geometry (a `2 * max(w/2, 1)` square centred on the
+/// pixel's upper-left). This one describes the centred brush: a `w × w` square at
+/// `(cx - w/2, cy - w/2)`, so the segment's box grows by `w` rather than `2 * (w/2)`.
+fn rect_for_line_centered(from: (i32, i32), to: (i32, i32), width: u32) -> PixelRect {
+    let offset = (width / 2) as i64;
+    let min_x = from.0.min(to.0) as i64 - offset;
+    let min_y = from.1.min(to.1) as i64 - offset;
+    let max_x = from.0.max(to.0) as i64;
+    let max_y = from.1.max(to.1) as i64;
+    let w = (max_x - min_x) + width as i64;
+    let h = (max_y - min_y) + width as i64;
+    PixelRect {
+        x: min_x.clamp(i32::MIN as i64, i32::MAX as i64) as i32,
+        y: min_y.clamp(i32::MIN as i64, i32::MAX as i64) as i32,
+        width: w.clamp(1, u32::MAX as i64) as u32,
+        height: h.clamp(1, u32::MAX as i64) as u32,
+    }
+}
+
+/// The alpha a command's colour carries when the GPU draws it with the **rect pipeline**.
+///
+/// That pipeline writes with `REPLACE` (opaque), so a command with alpha below 255 must be drawn
+/// into an offscreen layer and composited instead. Returning `None` for the other families is what
+/// keeps them out of that path: their own pipelines already blend.
+pub(super) fn rect_command_alpha(command: &WgpuDrawCommand) -> Option<u8> {
+    match command {
+        WgpuDrawCommand::FillRect { color, .. }
+        | WgpuDrawCommand::StrokeRect { color, .. }
+        | WgpuDrawCommand::StrokeRectCentered { color, .. }
+        | WgpuDrawCommand::FillRoundedRect { color, .. }
+        | WgpuDrawCommand::FillRoundedRectRadii { color, .. }
+        | WgpuDrawCommand::StrokeRoundedRectInside { color, .. }
+        | WgpuDrawCommand::DrawLine { color, .. }
+        | WgpuDrawCommand::DrawLineCentered { color, .. }
+        | WgpuDrawCommand::DrawPath { color, filled: false, .. } => Some(color.a),
+        // The unblurred shadow body is a staircase of rectangles through the same pipeline.
+        WgpuDrawCommand::BoxShadow { color, blur_radius: 0, .. } => Some(color.a),
+        _ => None,
+    }
 }
 
 /// The area a blend run can touch, or `None` when it draws nothing.
@@ -296,7 +422,8 @@ pub(super) fn blend_bbox(
     let bounds = match command {
         WgpuDrawCommand::FillRect { rect, .. }
         | WgpuDrawCommand::StrokeRect { rect, .. }
-        | WgpuDrawCommand::FillRoundedRect { rect, .. } => *rect,
+        | WgpuDrawCommand::FillRoundedRect { rect, .. }
+        | WgpuDrawCommand::FillRoundedRectRadii { rect, .. } => *rect,
         WgpuDrawCommand::BoxShadow { rect, offset_x, offset_y, .. } => PixelRect {
             x: rect.x.saturating_add(*offset_x),
             y: rect.y.saturating_add(*offset_y),
@@ -304,26 +431,51 @@ pub(super) fn blend_bbox(
             height: rect.height,
         },
         WgpuDrawCommand::DrawLine { from, to, width, .. } => rect_for_line(*from, *to, *width),
+        WgpuDrawCommand::DrawLineCentered { from, to, width, .. } => {
+            rect_for_line_centered(*from, *to, *width)
+        }
+        WgpuDrawCommand::StrokeRectCentered { rect, thickness, .. } => {
+            let reach = (*thickness / 2) as i32;
+            PixelRect {
+                x: rect.x.saturating_sub(reach),
+                y: rect.y.saturating_sub(reach),
+                width: rect.width.saturating_add((reach as u32).saturating_mul(2)),
+                height: rect.height.saturating_add((reach as u32).saturating_mul(2)),
+            }
+        }
+        WgpuDrawCommand::StrokeRoundedRectInside { rect, .. } => *rect,
+        WgpuDrawCommand::DrawCircleInside { center, radius, .. } => {
+            bbox_for_circle(*center, *radius, 0)
+        }
         WgpuDrawCommand::DrawPath { points, width, .. } => bbox_for_path(points, *width),
         WgpuDrawCommand::DrawImage { rect, .. }
         | WgpuDrawCommand::DrawGradient { rect, .. }
         | WgpuDrawCommand::FillLinearGradient { rect, .. }
         | WgpuDrawCommand::FillRadialGradient { rect, .. }
-        | WgpuDrawCommand::DrawText { rect, .. } => *rect,
+        | WgpuDrawCommand::FillGradient { rect, .. }
+        | WgpuDrawCommand::DrawText { rect, .. }
+        | WgpuDrawCommand::DrawTextCoverage { rect, .. } => *rect,
         _ => framebuffer,
     };
     let clip = match command {
         WgpuDrawCommand::FillRect { clip, .. }
         | WgpuDrawCommand::StrokeRect { clip, .. }
         | WgpuDrawCommand::FillRoundedRect { clip, .. }
+        | WgpuDrawCommand::FillRoundedRectRadii { clip, .. }
         | WgpuDrawCommand::BoxShadow { clip, .. }
         | WgpuDrawCommand::DrawLine { clip, .. }
+        | WgpuDrawCommand::DrawLineCentered { clip, .. }
+        | WgpuDrawCommand::StrokeRectCentered { clip, .. }
+        | WgpuDrawCommand::StrokeRoundedRectInside { clip, .. }
+        | WgpuDrawCommand::DrawCircleInside { clip, .. }
         | WgpuDrawCommand::DrawPath { clip, .. }
         | WgpuDrawCommand::DrawImage { clip, .. }
         | WgpuDrawCommand::DrawGradient { clip, .. }
         | WgpuDrawCommand::FillLinearGradient { clip, .. }
         | WgpuDrawCommand::FillRadialGradient { clip, .. }
-        | WgpuDrawCommand::DrawText { clip, .. } => *clip,
+        | WgpuDrawCommand::FillGradient { clip, .. }
+        | WgpuDrawCommand::DrawText { clip, .. }
+        | WgpuDrawCommand::DrawTextCoverage { clip, .. } => *clip,
         _ => None,
     };
     effective_clip(framebuffer, bounds, combine(&clip, stream_clip))
@@ -397,10 +549,18 @@ fn claimable(command: &WgpuDrawCommand) -> bool {
         WgpuDrawCommand::Clear { .. } => true,
         WgpuDrawCommand::FillRect { .. } => true,
         WgpuDrawCommand::StrokeRect { thickness, .. } => *thickness > 0,
+        WgpuDrawCommand::StrokeRectCentered { thickness, rect, .. } => {
+            *thickness > 0 && rect.width > 0 && rect.height > 0
+        }
         WgpuDrawCommand::FillCircle { .. } => true,
         WgpuDrawCommand::DrawCircle { radius, width, .. } => *radius > 0 && *width > 0,
+        WgpuDrawCommand::DrawCircleInside { radius, width, .. } => *radius > 0 && *width > 0,
         WgpuDrawCommand::DrawArc { radius, .. } => *radius > 0,
         WgpuDrawCommand::FillRoundedRect { radius, .. } => *radius > 0,
+        WgpuDrawCommand::FillRoundedRectRadii { rect, .. } => rect.width > 0 && rect.height > 0,
+        WgpuDrawCommand::StrokeRoundedRectInside { thickness, rect, .. } => {
+            *thickness > 0 && rect.width > 0 && rect.height > 0
+        }
         WgpuDrawCommand::StrokeRoundedRect { radius, thickness, .. } => {
             *radius > 0 && *thickness > 0
         }
@@ -411,8 +571,16 @@ fn claimable(command: &WgpuDrawCommand) -> bool {
         WgpuDrawCommand::FillRadialGradient { rect, gradient_data, .. } => {
             rect.width > 0 && rect.height > 0 && gradient_data.len() / 4 >= 1
         }
+        WgpuDrawCommand::FillGradient { rect, ramp, .. } => {
+            rect.width > 0 && rect.height > 0 && ramp.len() == 256 * 4
+        }
         WgpuDrawCommand::DrawText { rect, text, .. } => {
             rect.width > 0 && rect.height > 0 && !text.is_empty()
+        }
+        WgpuDrawCommand::DrawTextCoverage { rect, coverage, .. } => {
+            rect.width > 0
+                && rect.height > 0
+                && coverage.len() == rect.width as usize * rect.height as usize
         }
         WgpuDrawCommand::PushClip { .. } | WgpuDrawCommand::PopClip => true,
         WgpuDrawCommand::DrawImage { rgba8, image_width, image_height, .. } => {
@@ -430,6 +598,7 @@ fn claimable(command: &WgpuDrawCommand) -> bool {
         // An axis-aligned line's stamps tile into one rectangle; a diagonal's do not, but they are
         // still squares, so the GPU emits one instance per Bresenham step instead.
         WgpuDrawCommand::DrawLine { width, .. } => *width > 0,
+        WgpuDrawCommand::DrawLineCentered { width, .. } => *width > 0,
         // An unblurred shadow is a fill of the offset body, which is exactly a rectangle. A blurred
         // one is a separate offscreen layer plus two box-blur passes and a composite, all of which
         // the renderer owns (`super::encode`), so it is dispatchable too.

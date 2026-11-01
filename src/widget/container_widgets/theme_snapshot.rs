@@ -63,19 +63,19 @@ impl ThemeSnapshot {
     /// Reads the theme once for a container named `widget_name`.
     pub(crate) fn capture(widget_name: &str) -> Self {
         let style = crate::style::resolved_theme_style_shared(widget_name);
-        // One manager visit for every palette role used by the container family. The
-        // guard is dropped at the end of this block; see [`Palette`].
-        let palette = {
-            let manager = crate::style::theme_manager();
-            manager.current_theme().map(|theme| Palette {
-                background: theme.colors.background,
-                foreground: theme.colors.foreground,
-                accent: theme.colors.accent,
-                primary: theme.colors.primary,
-                secondary: theme.colors.secondary,
-                surface_container_high: theme.colors.surface_container_high,
-            })
-        };
+        // The shared palette read, not a manager lock: every container in the family calls this
+        // once per frame, and taking the theme mutex there serialised all of them behind one
+        // guard. `palette_shared` answers a refcounted snapshot, so the six fields below are
+        // copies of the *active* palette — the blended one during a theme crossfade, which is
+        // what every other control paints with. At rest the two are identical.
+        let palette = crate::style::palette_shared().map(|colors| Palette {
+            background: colors.background,
+            foreground: colors.foreground,
+            accent: colors.accent,
+            primary: colors.primary,
+            secondary: colors.secondary,
+            surface_container_high: colors.surface_container_high,
+        });
         Self { style, palette }
     }
 

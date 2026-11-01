@@ -1216,20 +1216,29 @@ impl Draw for TableWidget {
                     if c < self.scroll_column {
                         continue;
                     }
+                    // Past the right edge nothing can be painted — the cell is clipped away — so
+                    // stop instead of fetching data and measuring text for every column to the
+                    // right of the viewport. The header loop above breaks for the same reason.
+                    if x >= content.x + content.width as i32 {
+                        break;
+                    }
                     self.cell_text.clear();
+                    // One data-source read per cell: the delegate and the fallback text draw want
+                    // the same value, and asking a model twice per cell doubled the per-frame
+                    // cost of every table with a delegate.
+                    let has_cell = model.fill_data(r, c, &mut self.cell_text);
                     let mut painted_by_delegate = false;
                     if let Some(delegate) = self.delegate.as_ref() {
                         let cell = crate::core::Rect::new(x, y, col_w, row_h as u32);
-                        let has = model.fill_data(r, c, &mut self.cell_text);
                         painted_by_delegate = delegate.paint(
                             context,
                             cell,
                             r,
                             c,
-                            if has { Some(self.cell_text.as_str()) } else { None },
+                            if has_cell { Some(self.cell_text.as_str()) } else { None },
                         );
                     }
-                    if !painted_by_delegate && model.fill_data(r, c, &mut self.cell_text) {
+                    if !painted_by_delegate && has_cell {
                         // The cell is the band: a text origin of `y + row_h / 2` would put the
                         // glyph box's *top* edge on the row's middle line and draw every label
                         // half a line low. `text_line` derives the centred line box instead, and

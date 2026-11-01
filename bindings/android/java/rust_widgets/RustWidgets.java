@@ -303,4 +303,25 @@ public final class RustWidgets {
      * {@code 2} background. The library stops its animation clock for the last two.
      */
     public static native int nativeOnLifecycleChanged(int state);
+
+    /**
+     * Registers the native window behind an Android {@code Surface} for a window id.
+     *
+     * <p>Call from {@code surfaceCreated} (and {@code onSurfaceChanged}, which may hand over a
+     * different {@code Surface} for the same window). Rust converts it with
+     * {@code ANativeWindow_fromSurface} and owns that reference until {@link #nativeClearSurface(long)}.
+     *
+     * @return {@code 1} when a native window was obtained and recorded, {@code 0} otherwise
+     */
+    public static native int nativeSetSurface(long windowId, android.view.Surface surface);
+
+    /**
+     * Forgets and releases the native window recorded for a window id.
+     *
+     * <p>Call from {@code surfaceDestroyed}: Android may replace or remove a native window, so a
+     * stale pointer must not be presented into.
+     *
+     * @return {@code 1} when a registration existed and was released, {@code 0} otherwise
+     */
+    public static native int nativeClearSurface(long windowId);
 }

@@ -215,6 +215,88 @@ impl WindowHandle {
         crate::set_widget_text(self.id, title);
     }
 
+    /// Chooses how this window's finished frame reaches the screen.
+    ///
+    /// # What the three intents mean
+    ///
+    /// * [`FramePresentation::Default`](crate::render::present::FramePresentation::Default) — what every window had before this call existed: the
+    ///   platform canvas paints the software frame itself. Setting it back is always possible.
+    /// * [`FramePresentation::Exact`](crate::render::present::FramePresentation::Exact) — the same frame, delivered through the presentation path and
+    ///   byte for byte identical. The delivery method changes; the picture does not.
+    /// * [`FramePresentation::Smooth`](crate::render::present::FramePresentation::Smooth) — the frame's command stream is drawn where that is
+    ///   faithful, which may smooth the edges of circles, rings, arcs and rounded outlines.
+    ///
+    /// # Returns
+    ///
+    /// `true` when this backend can present **this window** and the intent has been recorded.
+    /// `false` when it cannot — no native surface target, a window that does not exist, or a
+    /// build without the presentation path. A `false` answer leaves the window on
+    /// [`FramePresentation::Default`](crate::render::present::FramePresentation::Default); it never
+    /// silently switches the picture (BLUE29 B29.16).
+    ///
+    /// The capability question is asked at runtime, per window (principles #41/#53): the same
+    /// binary answers differently for a live window and a stale id, and nothing here branches on
+    /// the operating system.
+    ///
+    /// # What consumes the recorded intent
+    ///
+    /// The backend's own paint path, when it has one: on macOS both canvases
+    /// (`src/platform/macos/canvas.rs` and `macos_objc2/native.rs`) offer each finished frame to
+    /// [`crate::render::present::present_window_frame`] before blitting it, and blit only when that
+    /// path refuses the frame (occluded, timed out, no target). A backend whose canvas still blits
+    /// unconditionally answers `false` from `canvas_presents_frames`, so this method returns
+    /// `false` there rather than promising a change that would not happen.
+    ///
+    /// A host can also drive [`crate::render::present::FramePresenter`] directly when it wants to
+    /// control the frame it hands over.
+    pub fn set_frame_presentation(
+        &self,
+        intent: crate::render::present::FramePresentation,
+    ) -> bool {
+        use crate::render::present::{request, FramePresentation};
+        if intent.is_default() {
+            request(self.id, FramePresentation::Default);
+            crate::widget::runtime::request_repaint(self.id);
+            return true;
+        }
+        let platform = crate::platform::get_platform();
+        if !platform.canvas_presents_frames() {
+            log::debug!(
+                "[window] set_frame_presentation({}): refused for window {} — this backend's \
+                 canvas still paints every frame itself, so the window stays on the default \
+                 delivery path",
+                intent.label(),
+                self.id
+            );
+            return false;
+        }
+        if !platform.frame_presentation_supported(self.id) {
+            log::debug!(
+                "[window] set_frame_presentation({}): refused for window {} — this backend cannot \
+                 present it, so the window stays on the default delivery path",
+                intent.label(),
+                self.id
+            );
+            return false;
+        }
+        request(self.id, intent);
+        // The next paint reads the intent, so ask for one: without this the change would only
+        // take effect at the next unrelated invalidation.
+        crate::widget::runtime::request_repaint(self.id);
+        true
+    }
+
+    /// The intent this window will use for its next frame.
+    ///
+    /// Answers [`FramePresentation::Default`](crate::render::present::FramePresentation::Default)
+    /// for a window that never asked, and for one whose
+    /// request was refused — the two states are the same to a caller, which is the point: a
+    /// refused request must not look like an accepted one. The **consumer** of the value is
+    /// [`crate::render::present::FramePresenter`]; see [`Self::set_frame_presentation`].
+    pub fn frame_presentation(&self) -> crate::render::present::FramePresentation {
+        crate::render::present::requested(self.id)
+    }
+
     // ── Child-widget factory methods ──────────────────────
 
     /// Creates a push button as a child of this window.

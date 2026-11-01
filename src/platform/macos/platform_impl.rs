@@ -707,6 +707,10 @@ impl Platform for MacOSPlatform {
         // content-view pointer is stale once the window is closed, and a repaint could route there.
         #[cfg(widgets_unstripped)]
         super::canvas::forget_window_canvas(widget_id);
+        // A destroyed window must not keep its presentation target: the target borrows the view
+        // that is about to go away, so it is dropped here, before the native teardown below.
+        #[cfg(all(feature = "gpu-wgpu", feature = "raw-window-handle"))]
+        crate::render::present::forget_window(widget_id);
         // Native teardown for a window this backend really created: close it (so it
         // leaves the screen) and release the `alloc`-owned reference `create_window`
         // took. Without this, `destroy_widget` only deleted a `Copy` `usize` bookkeeping
@@ -984,7 +988,16 @@ impl Platform for MacOSPlatform {
         if !super::types::is_main_thread() {
             return None;
         }
-        let handle = self.get_handle(window)?;
+        // Two id spaces meet here, and the order matters. A **canvas / mounted surface** id is
+        // registered in this backend's own handle table, so it must be looked up as itself —
+        // translating it to its host window first would hand back the window's content view and
+        // present a single surface's frame over the whole window. A **window widget** id from
+        // `create_window` is not in that table; it is translated to the host window it belongs to,
+        // which is the same translation the canvas performs before painting.
+        let handle = self.get_handle(window).or_else(|| {
+            let host = crate::widget::runtime::host_window_for(window)?;
+            self.get_handle(host)
+        })?;
         if handle.ptr == 0 {
             return None;
         }
@@ -1015,6 +1028,23 @@ impl Platform for MacOSPlatform {
         Some(raw_window_handle::RawDisplayHandle::AppKit(
             raw_window_handle::AppKitDisplayHandle::new(),
         ))
+    }
+
+    /// AppKit can present this window's frames when it has a live `NSView` to name.
+    ///
+    /// Delegates to [`Platform::raw_window_handle`] rather than restating a condition, so the
+    /// capability cannot claim more than the handle can deliver (BLUE29 B29.07).
+    #[cfg(all(feature = "raw-window-handle", target_os = "macos"))]
+    fn frame_presentation_supported(&self, window: ObjectId) -> bool {
+        Platform::raw_window_handle(self, window).is_some()
+    }
+
+    /// This backend's canvas offers each finished frame to the presentation path before blitting.
+    ///
+    /// The offer is compiled in only with `gpu-wgpu` **and** `raw-window-handle`; without either
+    /// the canvas has no presenter to call and the honest answer is `false`.
+    fn canvas_presents_frames(&self) -> bool {
+        cfg!(all(feature = "gpu-wgpu", feature = "raw-window-handle"))
     }
     // `poll_menu_triggered` / `inject_menu_trigger` are **not** overridden: this backend owns no
     // native menu (the `NSMenu` bar was removed — see `status.md`), so nothing can ever queue an

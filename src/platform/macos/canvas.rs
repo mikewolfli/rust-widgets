@@ -1267,6 +1267,40 @@ extern "C" fn draw_rect(this: &Object, _cmd: Sel, rect: NSRect) {
                 );
                 return;
             };
+            // BLUE29 B29.13: when this window asked for the presentation path, offer the finished
+            // frame to it instead of blitting. `true` means the frame is already on the target, so
+            // blitting again would draw it twice through two paths.
+            #[cfg(all(feature = "gpu-wgpu", feature = "raw-window-handle"))]
+            {
+                let intent_key = crate::widget::runtime::widget_id_for_host_window(widget_id)
+                    .unwrap_or(widget_id);
+                if crate::render::present::window_intent(intent_key)
+                    != crate::render::present::FramePresentation::Default
+                {
+                    // The sublayer stays attached after a target is dropped, so it is shown again
+                    // here — a window that came back from `Default` must be able to present.
+                    // SAFETY: this is `drawRect:` (already inside the canvas' unsafe block), i.e.
+                    // the main thread, and `view` is live.
+                    super::canvas_present::set_presented_layer_visible(view, true);
+                }
+                if super::canvas_present::present_through_target(
+                    intent_key,
+                    widget_id,
+                    width,
+                    height,
+                    &frame,
+                    dirty_rows,
+                    is_window_canvas(view),
+                ) {
+                    return;
+                }
+                // This frame goes out as a blit, so the (possibly stale) presented sublayer must
+                // not cover it. `has_target` keeps the default path free of any AppKit call.
+                if crate::render::present::has_target(intent_key) {
+                    // SAFETY: as above — main thread, live view.
+                    super::canvas_present::set_presented_layer_visible(view, false);
+                }
+            }
             // `[NSGraphicsContext currentContext]` is a **class** method. Asking
             // the view for `currentContext` sends an unknown selector and AppKit
             // raises `NSInvalidArgumentException`, which aborts the process

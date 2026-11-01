@@ -7,6 +7,7 @@
 # Java bindings build output (`javac` writes .class here; it is not source).
 bindings/java/build/
 **/*.class
+Cargo.lock
 
 # Windows SDK / MSVC download caches (cargo-xwin). These are tens of MB of
 # downloaded .msi/.cab/.vsix blobs, not source; committing them bloats history.

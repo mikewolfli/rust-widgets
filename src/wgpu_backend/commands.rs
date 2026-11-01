@@ -85,6 +85,70 @@ pub enum WgpuDrawCommand {
         /// Optional clip that further restricts the rectangle.
         clip: Option<PixelRect>,
     },
+    /// Outline a rectangle with the reference renderer's centred line brush.
+    ///
+    /// [`WgpuDrawCommand::StrokeRect`] draws bands that lie inside the rectangle. The reference
+    /// rasteriser instead strokes the four edges with the same brush it uses for a line, and that
+    /// brush is centred on the edge: it extends `thickness / 2` pixels outside the rectangle and
+    /// the remaining pixels inside. The two outlines therefore differ by one pixel around every
+    /// edge, which is why this variant exists rather than reusing `StrokeRect`.
+    ///
+    /// The edges are the reference's own: the top and bottom rows are `y` and `y + height - 1`, the
+    /// left and right columns are `x` and `x + width - 1`. A zero thickness or an empty rectangle
+    /// draws nothing.
+    StrokeRectCentered {
+        /// Outer bounds of the outline, in physical pixels.
+        rect: PixelRect,
+        /// Colour of the four edges, drawn without blending.
+        color: Rgba8,
+        /// Brush width in pixels; `0` skips the command entirely.
+        thickness: u32,
+        /// Optional clip that further restricts the outline.
+        clip: Option<PixelRect>,
+    },
+    /// Draw a line with the reference renderer's centred brush.
+    ///
+    /// The segment is walked with the reference's Bresenham loop, and every stepped pixel stamps a
+    /// `width × width` square whose top-left corner is `(cx - width / 2, cy - width / 2)`. That is
+    /// the reference brush [`WgpuDrawCommand::DrawLine`] differs from: the older variant centres its
+    /// square on the pixel's upper-left and pads a one-pixel line to two pixels. This variant is
+    /// what makes a one-pixel line, a stroke and a rectangle outline byte-identical to the
+    /// reference rasteriser.
+    DrawLineCentered {
+        /// First endpoint in physical pixels.
+        from: (i32, i32),
+        /// Second endpoint in physical pixels.
+        to: (i32, i32),
+        /// Stroke colour, drawn without blending.
+        color: Rgba8,
+        /// Brush width in pixels; `0` skips the command.
+        width: u32,
+        /// Optional clip that further restricts the segment.
+        clip: Option<PixelRect>,
+    },
+    /// Draw a rounded-rectangle outline whose stroke lies **inside** its bounds.
+    ///
+    /// This is the reference's `DrawRoundedRectStroke`: the ring is the outer rounded rectangle
+    /// minus the same rectangle inset by `thickness`, so the stroke never extends past `rect`.
+    /// [`WgpuDrawCommand::StrokeRoundedRect`] is the opposite convention (the ring straddles the
+    /// boundary); using it for this command would shift every edge by half the stroke.
+    ///
+    /// The row spans come from the same derivation as [`WgpuDrawCommand::FillRoundedRect`], so the
+    /// two shapes agree about which pixels a radius selects. Edges are hard; the reference samples
+    /// a 2×2 coverage grid, which is the named difference for the `Smooth` intent.
+    StrokeRoundedRectInside {
+        /// Outer bounds of the outline, in physical pixels.
+        rect: PixelRect,
+        /// Outer corner radius in pixels, clamped to half the shorter side; the inner radius is
+        /// this value minus `thickness`, saturating at zero.
+        radius: u32,
+        /// Colour of the ring, drawn without blending.
+        color: Rgba8,
+        /// Stroke width in pixels; `0` skips the command.
+        thickness: u32,
+        /// Optional clip that further restricts the outline.
+        clip: Option<PixelRect>,
+    },
     /// Draw a single line of text as an 8x8 bitmap font.
     ///
     /// `rect` is a *text box*, not a baseline: glyphs are laid out on a fixed
@@ -110,6 +174,28 @@ pub enum WgpuDrawCommand {
         /// Colour of every set bitmap dot, drawn without blending.
         color: Rgba8,
         /// Optional clip that further restricts the text box.
+        clip: Option<PixelRect>,
+    },
+    /// Draw a pre-rasterised coverage mask, multiplied by `color`.
+    ///
+    /// This is the shaped-text form: `coverage` holds one display-encoded alpha byte per pixel of
+    /// `rect`, in the same layout [`WgpuDrawCommand::DrawText`]'s grid produces, so the fragment
+    /// shader and the blend state are shared. The difference is where the mask came from: a caller
+    /// that already knows the text's shaped layout (the widget tree's renderer does) uploads the
+    /// exact coverage it would have composited, instead of asking the backend to lay the string out
+    /// on its fixed character grid.
+    ///
+    /// `coverage.len()` must equal `rect.width * rect.height`; a shorter buffer is an error at the
+    /// rasterising entry point, exactly like a mismatched image payload. A zero-sized rectangle or
+    /// an empty mask draws nothing.
+    DrawTextCoverage {
+        /// Coverage box in physical pixels.
+        rect: PixelRect,
+        /// One alpha byte per pixel, row-major, shared so cloning a command does not copy it.
+        coverage: Arc<[u8]>,
+        /// Colour multiplied by the coverage; straight alpha, like the rest of the enum.
+        color: Rgba8,
+        /// Optional clip that further restricts the box.
         clip: Option<PixelRect>,
     },
     /// Draw an RGBA image, scaled to fill `rect`.
@@ -168,6 +254,23 @@ pub enum WgpuDrawCommand {
         /// Corner radius in pixels, clamped to half the shorter side; `0`
         /// skips the command, as does a zero-sized rectangle.
         radius: u32,
+        /// Fill colour, drawn without blending.
+        color: Rgba8,
+        /// Optional clip that further restricts the rectangle.
+        clip: Option<PixelRect>,
+    },
+    /// Fill a rectangle whose four corners have independent radii.
+    ///
+    /// [`WgpuDrawCommand::FillRoundedRect`] carries one radius, which cannot express a card with
+    /// only its top corners rounded. The corner ranges are resolved by the reference's CSS
+    /// proportional rule before use, so a radius that overruns an edge is scaled the same way the
+    /// CPU rasteriser scales it. Rows are hard-edged row spans; the reference samples a 2×2 grid,
+    /// which is the named `MappedWithDivergence` difference.
+    FillRoundedRectRadii {
+        /// Region to fill, in physical pixels.
+        rect: PixelRect,
+        /// Per-corner radii, ordered top-left, top-right, bottom-right, bottom-left.
+        radii: [u32; 4],
         /// Fill colour, drawn without blending.
         color: Rgba8,
         /// Optional clip that further restricts the rectangle.
@@ -262,6 +365,25 @@ pub enum WgpuDrawCommand {
         width: u32,
         /// Optional clip that further restricts the ring; it is intersected with
         /// the circle's bounding box first.
+        clip: Option<PixelRect>,
+    },
+    /// Outline a circle with the reference's inside stroke.
+    ///
+    /// The ring lies between `radius` and `radius - width`, i.e. it is entirely inside the
+    /// nominal radius. [`WgpuDrawCommand::DrawCircle`] is the other convention (the ring straddles
+    /// `radius`), so using it for this command would move the stroke outward by half its width.
+    /// The edge is feathered by the shape shader's one-pixel `smoothstep`, while the reference
+    /// samples a 2×2 coverage grid — the named difference for the `Smooth` intent.
+    DrawCircleInside {
+        /// Ring centre in physical pixels.
+        center: (i32, i32),
+        /// Outer radius in pixels; the inner edge is `radius - width`.
+        radius: u32,
+        /// Ring colour, drawn with source-over blending.
+        color: Rgba8,
+        /// Full stroke width in pixels; `0` skips the command.
+        width: u32,
+        /// Optional clip that further restricts the ring.
         clip: Option<PixelRect>,
     },
     /// Draw a circular arc, i.e. a partial circle.
@@ -428,6 +550,39 @@ pub enum WgpuDrawCommand {
         /// cloning a command does not copy the table (G-10).
         gradient_data: Arc<[u8]>,
         /// Optional clip that further restricts the fill.
+        clip: Option<PixelRect>,
+    },
+    /// Fill a rectangle with the **reference rasteriser's own ramp table** along an arbitrary
+    /// linear, radial or conic geometry.
+    ///
+    /// [`WgpuDrawCommand::DrawGradient`] and [`WgpuDrawCommand::FillLinearGradient`] are the older
+    /// axis-aligned forms: evenly spaced stops, no interpolation, one direction each. This variant
+    /// carries the table the reference actually samples — its 256-entry ramp, four bytes per entry
+    /// — so the GPU selects the same colour the CPU would for every pixel, and `kind` chooses which
+    /// geometry produces the ramp position.
+    ///
+    /// `ramp.len()` must be `256 * 4`; the rasterising entry point rejects anything else rather
+    /// than sampling a truncated table.
+    FillGradient {
+        /// Destination rectangle, in physical pixels; also the quad the draw covers.
+        rect: PixelRect,
+        /// Which geometry produces the ramp position: `0` linear, `1` radial, `2` conic.
+        kind: u8,
+        /// `linear`: the ramp's start point. `radial` and `conic`: the centre.
+        start: (f32, f32),
+        /// `linear`: the ramp's end point. `radial`: `(radius, 0)`. `conic`: `(start angle in
+        /// radians, 0)`.
+        end: (f32, f32),
+        /// The reference's 256-entry ramp, `RGBA8`, shared so cloning does not copy it.
+        ramp: Arc<[u8]>,
+        /// Write each ramp colour as-is instead of compositing it.
+        ///
+        /// The standalone conic command stores its ramp colour verbatim; a gradient **fill**
+        /// composites it through the stream's blend mode. The two reference arms really do differ
+        /// for a ramp whose alpha is below 255, so the carrier states which one it is instead of
+        /// picking one and silently changing the other's pixels.
+        verbatim: bool,
+        /// Optional clip that further restricts the rectangle.
         clip: Option<PixelRect>,
     },
     /// Draw a filled **radial** gradient inscribed in `rect`.

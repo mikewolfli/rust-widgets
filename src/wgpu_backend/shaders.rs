@@ -886,7 +886,20 @@ fn fs_main(@builtin(position) position: vec4f) -> @location(0) vec4f {
     if (params.layer_kind == 1u) {
         source = vec4f(layer.rgb / layer.a, layer.a);
     }
-    return vec4f(blend_rgb(params.mode, source.rgb, dest.rgb), source.a);
+    // The composite pass writes with `REPLACE`, so for **Normal** the source-over result has to be
+    // produced here, not by pipeline state: a translucent normal-mode rectangle is routed through
+    // this run because the rect pipeline itself writes `REPLACE`. A non-Normal mode keeps the
+    // wgpu CPU rasteriser's rule — replace with the blended colour and the source alpha — which is
+    // what the mode tests pin.
+    let blended = blend_rgb(params.mode, source.rgb, dest.rgb);
+    if (params.mode == 0u) {
+        let out_alpha = source.a + dest.a * (1.0 - source.a);
+        return vec4f(
+            blended * source.a + dest.rgb * (1.0 - source.a),
+            out_alpha,
+        );
+    }
+    return vec4f(blended, source.a);
 }"#;
 
 /// Shape vertex shader for the ring/wedge/outline family: one quad per draw, positioned from the
@@ -938,6 +951,7 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
 /// | 1 | filled arc (pie wedge) | `d ≤ r` within the angular window | `center_radius`, `window.xy` |
 /// | 2 | stroked arc | `\|d − r\| ≤ 1` within the window | `center_radius`, `window.xy` |
 /// | 3 | rounded-rectangle outline | `−t ≤ sdf ≤ 0` | `rect`, `window.w` = corner radius, `half_width` = t |
+/// | 4 | inside circle ring | `r − w ≤ d ≤ r` | `center_radius` = (cx, cy, r, 0), `window.w` = w |
 ///
 /// # Why the coverage carries the anti-aliasing
 ///
@@ -984,7 +998,12 @@ fn fs_main(@location(0) pixel: vec2f) -> @location(0) vec4f {
         edge = max(sdf, -half_width - sdf);
     } else {
         let d = distance(px, center);
-        if (mode == 0) {
+        if (mode == 4) {
+            // The reference circle stroke lies inside its radius: outer edge `r`, inner edge
+            // `r - w`. Mode 0 straddles the radius, which would move every ring by half its width.
+            let full = p.window.w;
+            edge = max(d - radius, (radius - full) - d);
+        } else if (mode == 0) {
             edge = abs(d - radius) - half_width;
         } else {
             let angle = atan2(px.y - center.y, px.x - center.x);
@@ -1075,6 +1094,141 @@ fn fs_main(@location(0) pixel: vec2f) -> @location(0) vec4f {
     let last = max(count - 1, 0);
     let index = clamp(i32(floor(f32(last) * t)), 0, last);
     return textureLoad(uStops, vec2i(index, 0), 0);
+}"#;
+
+/// General gradient vertex shader: one quad per gradient, positioned from the draw's uniform.
+///
+/// Identical geometry to [`RADIAL_VS`]; the params struct is its own so the two pipelines cannot
+/// silently reinterpret each other's fields.
+pub(crate) const GRADIENT_VS: &str = r#"
+struct GradientParams {
+    rect: vec4f,
+    start: vec4f,
+    end: vec4f,
+    info: vec4f,
+};
+
+@group(0) @binding(0) var<uniform> p: GradientParams;
+@group(1) @binding(0) var<uniform> uMVP: mat4x4f;
+
+struct VertexOutput {
+    @builtin(position) position: vec4f,
+    @location(0) pixel: vec2f,
+};
+
+@vertex
+fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
+    let d = p.rect;
+    var corners = array<vec2f, 6>(
+        vec2f(d.x, d.y),
+        vec2f(d.x + d.z, d.y),
+        vec2f(d.x + d.z, d.y + d.w),
+        vec2f(d.x, d.y),
+        vec2f(d.x + d.z, d.y + d.w),
+        vec2f(d.x, d.y + d.w),
+    );
+    let pixel = corners[vertex_index];
+    var output: VertexOutput;
+    output.position = uMVP * vec4f(pixel, 0.0, 1.0);
+    output.pixel = pixel;
+    return output;
+}"#;
+
+/// General gradient fragment shader: the reference's **own** 256-entry ramp, indexed by the
+/// position its software rasteriser computes.
+///
+/// # Layout
+///
+/// | group | binding | type | name | meaning |
+/// |---|---|---|---|---|
+/// | 0 | 0 | `uniform GradientParams` | `p` | `rect`, `start`, `end`, `info` (see below) |
+/// | 0 | 1 | `texture_2d<f32>` | `uRamp` | the 256 × 1 ramp, one texel per entry |
+/// | 1 | 0 | `uniform mat4x4f` | `uMVP` | pixel space to clip space |
+///
+/// `info.x` is the geometry (`0` linear, `1` radial, `2` conic).
+///
+/// # Why a ramp texture and not the stop table
+///
+/// `RenderCommand::DrawGradient` is rasterised by
+/// `SoftwareSurface::fill_rect_gradient`, which does **not** interpolate per pixel: it builds a
+/// 256-entry table with `Gradient::interpolate` and then indexes it with
+/// `(position.clamp(0, 1) * 255.0) as usize`. Uploading that same table and performing the same
+/// truncating index means the colour is identical by construction and only the f32 `position` can
+/// differ; a stop table would instead re-implement the interpolation here and drift from the
+/// reference at every stop boundary.
+///
+/// # The three geometries
+///
+/// Each is the reference expression, term for term, evaluated at integer pixel coordinates
+/// (`floor` of the fragment centre), because the reference's loops use integer `x`/`y`:
+///
+/// * linear — `((x0 - sp.x) * dx + (y - sp.y) * dy) / dot + (x - x0) * (dx / dot)`, with
+///   `x0 = max(rect.x, 0)`; the incremental `step` form is kept so the two multiplications round
+///   the same way `fill_rect_gradient`'s per-row walk does;
+/// * radial — `sqrt(dx² + dy²) / radius`;
+/// * conic — `atan2(dy, dx) + π`, then `+ start_angle`, one `% TAU` wrap, and `angle / TAU`.
+///
+/// Each is clamped to `0..=1` before the index, exactly as the reference clamps it.
+pub(crate) const GRADIENT_FRAG: &str = r#"
+struct GradientParams {
+    rect: vec4f,
+    start: vec4f,
+    end: vec4f,
+    info: vec4f,
+};
+
+const TAU: f32 = 6.283185307179586476925;
+const PI: f32 = 3.141592653589793238462;
+
+@group(0) @binding(0) var<uniform> p: GradientParams;
+@group(0) @binding(1) var uRamp: texture_2d<f32>;
+
+@fragment
+fn fs_main(@location(0) pixel: vec2f) -> @location(0) vec4f {
+    let x = floor(pixel.x);
+    let y = floor(pixel.y);
+    let kind = i32(p.info.x);
+    var position = 0.0;
+    if (kind == 1) {
+        // Radial: distance to the centre over the radius, both f32.
+        let dx = x - p.start.x;
+        let dy = y - p.start.y;
+        let distance = sqrt(dx * dx + dy * dy);
+        if (p.end.x > 0.0) {
+            position = clamp(distance / p.end.x, 0.0, 1.0);
+        }
+    } else if (kind == 2) {
+        // Conic: angle around the centre, wrapped once into `0..TAU`.
+        let dx = x - p.start.x;
+        let dy = y - p.start.y;
+        var angle: f32;
+        if (dx == 0.0 && dy == 0.0) {
+            // `atan2(0, 0)` is indeterminate in WGSL (the spec leaves it to the implementation),
+            // while the reference's `f32::atan2(+0, +0)` is `+0`. The centre pixel therefore reads
+            // `(PI + start_angle)` modulo a turn, spelled out here instead of asking the GPU.
+            angle = PI;
+        } else {
+            angle = atan2(dy, dx) + PI;
+        }
+        angle = (angle + p.end.x) % TAU;
+        if (angle < 0.0) {
+            angle = angle + TAU;
+        }
+        position = clamp(angle / TAU, 0.0, 1.0);
+    } else {
+        // Linear: the reference's per-row start plus a per-pixel step.
+        let dx = p.end.x - p.start.x;
+        let dy = p.end.y - p.start.y;
+        let dot = dx * dx + dy * dy;
+        if (dot != 0.0) {
+            let anchor = max(p.rect.x, 0.0);
+            let row_start = ((anchor - p.start.x) * dx + (y - p.start.y) * dy) / dot;
+            let step = dx / dot;
+            position = clamp(row_start + (x - anchor) * step, 0.0, 1.0);
+        }
+    }
+    let index = clamp(i32(position * 255.0), 0, 255);
+    return textureLoad(uRamp, vec2i(index, 0), 0);
 }"#;
 
 ///
@@ -1190,6 +1344,9 @@ pub enum ShaderModule {
     /// `RADIAL_FRAG`: distance-to-centre lookup into the stop table; needs the gradient's params
     /// uniform and the stop texture.
     RadialGradient,
+    /// `GRADIENT_FRAG`: the reference's own 256-entry ramp along an arbitrary linear, radial or
+    /// conic geometry; needs the draw's params uniform and the ramp texture.
+    FillGradient,
 }
 
 impl ShaderModule {
@@ -1215,6 +1372,7 @@ impl ShaderModule {
             ShaderModule::FillCircle => CIRCLE_FRAG,
             ShaderModule::Shape => SHAPE_FRAG,
             ShaderModule::RadialGradient => RADIAL_FRAG,
+            ShaderModule::FillGradient => GRADIENT_FRAG,
         }
     }
 
@@ -1235,6 +1393,7 @@ impl ShaderModule {
             ShaderModule::DrawText => Some("text_fs"),
             ShaderModule::Shape => Some("shape_fs"),
             ShaderModule::RadialGradient => Some("radial_fs"),
+            ShaderModule::FillGradient => Some("gradient_fs"),
             ShaderModule::FillRoundedRect => None,
         }
     }

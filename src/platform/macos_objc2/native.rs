@@ -1267,6 +1267,148 @@ define_class!(
     }
 );
 
+/// Shows or hides the Metal sublayer the presentation path added to `view`.
+///
+/// # Why this is needed
+///
+/// `wgpu` makes the view layer-backed and inserts a `CAMetalLayer` sublayer. `raw-window-metal`'s
+/// `Drop` only unregisters key-value observers — it does **not** detach the sublayer — so a window
+/// that returns to the default delivery path would keep showing the last presented frame on top of
+/// every frame the canvas blits afterwards. Hiding the sublayer is what makes `Default` mean what
+/// it says; showing it again lets a returned-to `Exact` window present into it.
+///
+/// The class is looked up at runtime rather than named through `objc2-quartz-core`, which this
+/// crate does not depend on: the only thing needed from it here is the class identity.
+#[cfg(all(feature = "gpu-wgpu", feature = "raw-window-handle"))]
+fn set_presented_layer_visible(view: &NSView, visible: bool) {
+    use objc2::runtime::AnyClass;
+
+    // SAFETY: `-[NSView layer]` is a plain accessor on a live view on the main thread.
+    let layer: Option<Retained<AnyObject>> = unsafe { msg_send![view, layer] };
+    let Some(layer) = layer else { return };
+    // SAFETY: `-[CALayer sublayers]` returns an array this call only reads.
+    let sublayers: Option<Retained<NSArray<AnyObject>>> = unsafe { msg_send![&*layer, sublayers] };
+    let Some(sublayers) = sublayers else { return };
+    let Some(metal_class) = AnyClass::get(c"CAMetalLayer") else { return };
+    for index in 0..sublayers.count() {
+        let sublayer = sublayers.objectAtIndex(index);
+        // SAFETY: `-[NSObject isKindOfClass:]` takes a class pointer and returns a BOOL.
+        let is_metal: bool = unsafe { msg_send![&*sublayer, isKindOfClass: metal_class] };
+        if !is_metal {
+            continue;
+        }
+        // SAFETY: `-[CALayer setHidden:]` takes a BOOL and returns nothing.
+        let _: () = unsafe { msg_send![&*sublayer, setHidden: visible] };
+    }
+}
+
+/// Offers `frame` to the presentation path when this window asked for one.
+///
+/// Returns `true` when the frame is on the target and the caller must **not** blit it. `false`
+/// means the window never asked, or asked and this frame was refused (occluded, timed out, no
+/// target), in which case the canvas paints the frame itself.
+///
+/// A frame the target is already showing is answered `true` without acquiring a surface: the frame
+/// cache hands back the same `Rc` when nothing was repainted, and a repaint request that changes no
+/// pixel must not become a GPU upload and a present (B29.12).
+///
+/// `Smooth` records the frame's commands and delivers those
+/// ([`crate::render::present::present_recorded_commands`]); a stream the pipelines cannot draw
+/// faithfully falls through to the byte-exact path with the reason logged once per window.
+///
+/// This is the objc2 canvas' copy of the cocoa helper: the two canvases are separate modules with
+/// separate `drawRect:` implementations, and what they share is the [`crate::render::present`]
+/// call, not the AppKit plumbing.
+#[cfg(all(feature = "gpu-wgpu", feature = "raw-window-handle"))]
+#[allow(clippy::too_many_arguments)]
+fn present_through_target(
+    intent_key: u64,
+    handle_key: u64,
+    width: u32,
+    height: u32,
+    frame: &crate::compat::Rc<Vec<u8>>,
+    dirty_rows: Option<(usize, usize)>,
+    is_window_canvas: bool,
+) -> bool {
+    use crate::render::present::{self, FramePresentation, WindowPresentOutcome};
+
+    let intent = present::window_intent(intent_key);
+    if intent == FramePresentation::Default {
+        return false;
+    }
+    let quality = match intent {
+        FramePresentation::Smooth => crate::wgpu_backend::RenderQuality::Antialiased,
+        _ => crate::wgpu_backend::RenderQuality::ByteExact,
+    };
+    // Nothing was repainted since the target last took this frame: no damage, no present.
+    if present::frame_is_shown(intent_key, frame, quality) {
+        return true;
+    }
+    let platform = crate::platform::get_platform();
+    let Some(handle) = platform.raw_window_handle(handle_key) else {
+        return false;
+    };
+    let display = platform.raw_display_handle();
+
+    // `Smooth`: the same tree, delivered as commands.
+    if intent == FramePresentation::Smooth {
+        let size = crate::core::Size::new(width, height);
+        let mut recorder = present::GpuPaintBackend::new(size, 1.0);
+        let painted = if is_window_canvas {
+            crate::widget::runtime::paint_tree_into(
+                intent_key,
+                size,
+                crate::core::Color::WHITE,
+                &mut recorder,
+            )
+        } else {
+            crate::widget::runtime::paint_widget_into(
+                intent_key,
+                size,
+                crate::core::Color::WHITE,
+                &mut recorder,
+            )
+        };
+        if painted
+            && present::present_recorded_commands(
+                intent_key,
+                handle,
+                display,
+                recorder.commands(),
+                (width, height),
+                1.0,
+            ) == WindowPresentOutcome::Presented
+        {
+            present::note_frame_shown(intent_key, frame, quality);
+            return true;
+        }
+        // Falls through to the reference rasteriser, exactly as the cocoa canvas does.
+    }
+
+    let band;
+    let damage = match dirty_rows {
+        Some((first_row, last_row)) if last_row > first_row => {
+            band = [(0i32, first_row as i32, width, (last_row - first_row) as u32)];
+            Some(&band[..])
+        }
+        _ => None,
+    };
+    let presented = present::present_window_frame(
+        intent_key,
+        handle,
+        display,
+        frame.as_slice(),
+        (width, height),
+        1.0,
+        quality,
+        damage,
+    ) == WindowPresentOutcome::Presented;
+    if presented {
+        present::note_frame_shown(intent_key, frame, quality);
+    }
+    presented
+}
+
 impl RustWidgetsObjc2CanvasView {
     /// Renders one frame for the carried widget id and draws it into the view's
     /// current CoreGraphics context.
@@ -1323,15 +1465,42 @@ impl RustWidgetsObjc2CanvasView {
                 return;
             };
 
+            // The cached frame is a full frame, so limiting conversion to the damaged rows is
+            // safe: rows outside the band are neither converted nor composited (the blit clips).
+            let dirty_rows = dirty_row_range(dirty_rect, width, height);
+            // BLUE29 B29.13: offer the frame to the presentation path before blitting. The
+            // sublayer stays attached after a target is dropped, so it is shown again here and
+            // hidden whenever this frame goes out as a blit.
+            #[cfg(all(feature = "gpu-wgpu", feature = "raw-window-handle"))]
+            {
+                let intent_key = crate::widget::runtime::widget_id_for_host_window(widget_id)
+                    .unwrap_or(widget_id);
+                if crate::render::present::window_intent(intent_key)
+                    != crate::render::present::FramePresentation::Default
+                {
+                    set_presented_layer_visible(self, true);
+                }
+                if present_through_target(
+                    intent_key,
+                    widget_id,
+                    width,
+                    height,
+                    &frame,
+                    dirty_rows,
+                    self.ivars().is_window.get(),
+                ) {
+                    return;
+                }
+                if crate::render::present::has_target(intent_key) {
+                    set_presented_layer_visible(self, false);
+                }
+            }
             let Some(context) = NSGraphicsContext::currentContext() else {
                 log::error!(
                     "[macos-objc2] canvas: drawRect: +[NSGraphicsContext currentContext] was nil"
                 );
                 return;
             };
-            // The cached frame is a full frame, so limiting conversion to the damaged rows is
-            // safe: rows outside the band are neither converted nor composited (the blit clips).
-            let dirty_rows = dirty_row_range(dirty_rect, width, height);
             let cg_context = context.CGContext();
             // The view's own address is the cache key: two canvases of the same size must not
             // share a bitmap, and a destroyed/recreated view gets a fresh entry.

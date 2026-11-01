@@ -22,6 +22,15 @@
 
 mod glyph_source;
 
+// A shaped run's glyph coverage, produced from the same shaping and glyph entry points the
+// reference rasteriser uses. Its consumer is the `Smooth` intent's text bridge, which exists only
+// with the GPU feature, so the module is gated with it rather than shipped as dead code in every
+// other profile.
+#[cfg(feature = "gpu-wgpu")]
+mod coverage;
+#[cfg(feature = "gpu-wgpu")]
+pub(crate) use coverage::shaped_text_coverage;
+
 // The opt-in vector faces (generated data) and the shaper that reads them. Both are gated by
 // the shaping feature, because a face with no shaper to read it has no consumer.
 #[cfg(any(feature = "text-shaping", feature = "fonts-emoji-color"))]

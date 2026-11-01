@@ -1503,6 +1503,23 @@ impl Platform for WindowsPlatform {
             raw_window_handle::WindowsDisplayHandle::new(),
         ))
     }
+
+    /// Win32 can present this window's frames when it has a live `HWND` to name.
+    ///
+    /// Delegates to [`Platform::raw_window_handle`] so the capability never claims more than the
+    /// handle can deliver (BLUE29 B29.07).
+    #[cfg(feature = "raw-window-handle")]
+    fn frame_presentation_supported(&self, window: ObjectId) -> bool {
+        #[cfg(target_os = "windows")]
+        {
+            Platform::raw_window_handle(self, window).is_some()
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = window;
+            false
+        }
+    }
     /// The host integrations this backend actually provides.
     ///
     /// # Why `native_menu` is `false`

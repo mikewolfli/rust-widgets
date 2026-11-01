@@ -293,11 +293,12 @@ impl Draw for DataGrid {
                 if cell_rect.x >= cells_right {
                     break;
                 }
-                let _ = self.paint_cell_at(
+                let _ = self.paint_cell_at_rect(
                     context,
                     cell.as_ref(),
                     row_origin + row_idx,
                     global_column,
+                    cell_rect,
                     cell_border,
                     ink,
                     selected_bg,
@@ -332,11 +333,12 @@ impl Draw for DataGrid {
                     // covered with the surface before this cell's own border and value go down.
                     context.fill_rect(cell_rect, surface);
                     let value = row.get(local).and_then(|cell| cell.as_ref());
-                    let _ = self.paint_cell_at(
+                    let _ = self.paint_cell_at_rect(
                         context,
                         value,
                         global_row,
                         column,
+                        cell_rect,
                         cell_border,
                         ink,
                         selected_bg,
@@ -570,16 +572,25 @@ impl DataGrid {
         )
     }
 
-    /// Paints `(row, column)`, merging it with the run it anchors (V-014).
+    /// Paints `(row, column)` with the cell's box already computed by the caller.
+    ///
+    /// The scrolling pass derives `cell_rect` anyway — it is what tells the row loop where to stop
+    /// — and asking for it again inside the paint repeated the whole projection arithmetic
+    /// (`cells_box`, `row_view_offset`, `column_view_x`, the width lookup) for every visible cell,
+    /// twice per frame. The precomputed box is used only on the no-span path: a cell that is the
+    /// origin of a merged run paints the run's **union** box instead, which is a different
+    /// rectangle and has to be derived from the span (V-014).
     ///
     /// Returns `true` when ink was laid down. A cell covered by another cell's span answers
     /// `false`: the origin paints the whole run, including this cell's area.
-    pub(crate) fn paint_cell_at(
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn paint_cell_at_rect(
         &self,
         context: &mut RenderContext,
         value: Option<&String>,
         row: usize,
         column: usize,
+        cell_rect: Rect,
         cell_border: Color,
         ink: Color,
         selected_bg: Color,
@@ -595,11 +606,10 @@ impl DataGrid {
             }
             Some(_) => false,
             None => {
-                let rect = self.cell_rect(row, column);
                 if self.selection_contains(row, column) {
-                    context.fill_rect(rect, selected_bg);
+                    context.fill_rect(cell_rect, selected_bg);
                 }
-                self.paint_cell_ink(context, rect, value, row, column, cell_border, ink);
+                self.paint_cell_ink(context, cell_rect, value, row, column, cell_border, ink);
                 true
             }
         }

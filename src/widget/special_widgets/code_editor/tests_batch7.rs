@@ -324,3 +324,33 @@ fn token_borrow_matches_the_owned_accessor() {
         assert_eq!(borrowed, owned.as_slice());
     }
 }
+
+/// The run buffer the paint loop reuses describes the same partition as the owned answer.
+///
+/// # What this pins
+///
+/// `row_runs` allocated a `Vec` per visible line per frame. The row loop now keeps one buffer and
+/// calls `row_runs_into`, which is only correct if it **clears** the caller's buffer first and then
+/// appends exactly what the owned form would have produced — including the `Plain` runs between and
+/// after the token spans, which are what make the partition total.
+#[test]
+fn the_reused_run_buffer_describes_the_same_partition() {
+    let mut editor = make();
+    editor.set_text("let total = 1 + 2; // sum\nfn main() {}");
+    editor.resolve_line_state(0);
+    // Painting is what fills the token cache; without it both forms take the owned fallback.
+    let _ = crate::widget::svg::render_to_svg(&mut editor);
+
+    for line in 0..2 {
+        let text = editor.line_text(line).expect("the line exists");
+        let owned = editor.row_runs(line, &text);
+        // Deliberately dirty: the `_into` form must clear rather than append to what it finds.
+        let mut buffer = vec![(0usize, 1usize, super::types::TokenKind::Plain); 3];
+        editor.row_runs_into(line, &text, &mut buffer);
+        assert_eq!(owned, buffer, "line {line}: the buffer form must match the owned partition");
+        assert!(
+            owned.iter().all(|(from, to, _)| from < to),
+            "line {line}: an empty run is not part of the partition"
+        );
+    }
+}

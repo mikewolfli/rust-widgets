@@ -9,10 +9,7 @@ use super::paint_blur::{blur_rect_on_surface, box_blur_region};
 use crate::compat::vec;
 use crate::compat::{Arc, Rc, RefCell, Vec};
 use crate::core::{Color, Font, HorizontalAlignment, ObjectId, Point, Rect, Size};
-use crate::render::pipeline::{
-    fill_conic_ramp, ramp_lut_for_stops, sat_add_i32, sat_mul_i32, sat_neg_i32,
-    u32_to_i32_saturating, ConicWrite,
-};
+use crate::render::pipeline::{fill_conic_ramp, ramp_lut_for_stops, ConicWrite};
 use crate::render::{
     blend_pixel_with_mode, BlendMode, MatteMode, RenderCommand, ShapedText, SoftwareRenderConfig,
     SoftwareSurface, TextMetrics,
@@ -863,17 +860,8 @@ pub(super) fn route_command_to_surface(surface: &mut SoftwareSurface, command: &
             surface.fill_path_non_zero(path, *color);
         }
         RenderCommand::BoxShadow { rect, color, offset_x, offset_y, blur_radius, spread } => {
-            // Render shadow rect with offset and optional spread. Every term is `i32` and the
-            // operands come from a public command, so the arithmetic is saturating: a wrapped
-            // `spread` used to flip a large shadow into a tiny one (or a negative width that
-            // `.max(0)` silently collapsed), which is a wrong picture rather than a rejected one.
-            let spread_rect = crate::core::Rect::new(
-                sat_add_i32(sat_add_i32(rect.x, *offset_x), sat_neg_i32(*spread)),
-                sat_add_i32(sat_add_i32(rect.y, *offset_y), sat_neg_i32(*spread)),
-                sat_mul_i32(*spread, 2).saturating_add(u32_to_i32_saturating(rect.width)).max(0)
-                    as u32,
-                sat_mul_i32(*spread, 2).saturating_add(u32_to_i32_saturating(rect.height)).max(0)
-                    as u32,
+            let spread_rect = crate::render::core::command::box_shadow_spread_rect(
+                *rect, *offset_x, *offset_y, *spread,
             );
             let shadow_color = *color;
             surface.fill_rect(spread_rect, shadow_color);
@@ -896,13 +884,8 @@ pub(super) fn route_command_to_surface(surface: &mut SoftwareSurface, command: &
             // the shadow's corners follow the caster's instead of staying square.
             // The radii are resolved per CSS `border-radius` first, matching the
             // filled rounded rect the caster itself paints through.
-            let spread_rect = crate::core::Rect::new(
-                sat_add_i32(sat_add_i32(rect.x, *offset_x), sat_neg_i32(*spread)),
-                sat_add_i32(sat_add_i32(rect.y, *offset_y), sat_neg_i32(*spread)),
-                sat_mul_i32(*spread, 2).saturating_add(u32_to_i32_saturating(rect.width)).max(0)
-                    as u32,
-                sat_mul_i32(*spread, 2).saturating_add(u32_to_i32_saturating(rect.height)).max(0)
-                    as u32,
+            let spread_rect = crate::render::core::command::box_shadow_spread_rect(
+                *rect, *offset_x, *offset_y, *spread,
             );
             let shadow_color = *color;
             surface.fill_rounded_rect_radii(

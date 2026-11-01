@@ -833,6 +833,16 @@ pub(crate) fn glyph_coverage_weight(coverage: u8) -> f32 {
     srgb_ramp()[coverage as usize] as f32 / 255.0
 }
 
+/// The display-encoded coverage byte the reference compositor would have used as an alpha.
+///
+/// A GPU text pipeline multiplies the text colour by an uploaded coverage byte, so applying this
+/// ramp before the upload gives the GPU the same ink weight the reference composite applies. It is
+/// the byte form of [`glyph_coverage_weight`] without the round trip through `f32`.
+#[cfg(feature = "gpu-wgpu")]
+pub(crate) fn glyph_coverage_byte(coverage: u8) -> u8 {
+    srgb_ramp()[coverage as usize]
+}
+
 /// Alpha-blends `color` over the pixel at `(x, y)` of a row-major RGBA frame
 /// buffer, using `coverage` as an extra multiplier on the source alpha.
 ///

@@ -199,6 +199,41 @@ pub trait Platform: Send + Sync {
     /// drawing area) already has nothing to wait for. The library never starts a frame loop of its
     /// own from here; the host drives the loop and calls this at the point it is about to blit.
     fn pre_present_notify(&self, _window: ObjectId) {}
+
+    /// Whether this backend can deliver `window`'s frames through the presentation path.
+    ///
+    /// # Why the question is per window
+    ///
+    /// The capability is exactly "can this backend name a native target for *this* window right
+    /// now", so the honest implementation is
+    /// `raw_window_handle(window).is_some()` — a backend that owns no live window answers `false`,
+    /// and one whose window was destroyed answers `false` again. Asking once per process would
+    /// answer for a window that may no longer exist (BLUE29 B29.07).
+    ///
+    /// `false` is the default and means "this host keeps its existing frame delivery". A caller
+    /// that receives `false` must leave the window on
+    /// [`FramePresentation::Default`](crate::render::present::FramePresentation); switching the
+    /// picture anyway would be the silent change B29.16 forbids.
+    ///
+    /// This is a *runtime* question, never a `cfg` branch at the call site (principles #41/#53).
+    fn frame_presentation_supported(&self, _window: ObjectId) -> bool {
+        false
+    }
+
+    /// Whether this backend's own paint path consumes a frame-presentation intent.
+    ///
+    /// [`Self::frame_presentation_supported`] answers "can this window be presented into";
+    /// this answers the different question "will the canvas actually do it when the host asks".
+    /// They are separate because a backend can have a perfectly good native handle while its
+    /// canvas still blits every frame — that is the state of every backend that has not been
+    /// wired yet, and a host that was told `true` there would see nothing change (BLUE29 B29.13).
+    ///
+    /// `false` is the honest default. A backend overrides it only after its paint callback
+    /// ([`Self::pre_present_notify`]'s neighbourhood: the `drawRect:` / paint hook) has been made
+    /// to offer frames to [`crate::render::present`].
+    fn canvas_presents_frames(&self) -> bool {
+        false
+    }
     /// The safe-area insets of a window, in logical pixels.
     ///
     /// # What the three answers mean

@@ -248,7 +248,8 @@ winner 列使用——门控把流留在参考光栅器时，两个计时列测�
 
 ## 7. 端到端上屏（B29.07–B29.16）
 
-> **状态：计划，条目全部 `[ ]`，未改任何生产代码。**
+> **状态：第 1 轮实施已落地（2026-10-30，`docs/log/log-20261030-2.md` §10）。**
+> 条目状态逐条写在各条 `[x]` / `[ ]` 上；未完成项**不计入闭合**，原因写在条目内。
 > **来源**：用户要求把 B29.06 的前置项（present/swapchain）做成「完美闭环」，并给出本机
 > 可运行的操作系统：macOS（真机）、Windows（`xwin` 交叉）、OpenHarmony（SDK 已装）、
 > Android（SDK + 模拟器）；其余平台「后期运行」。
@@ -312,17 +313,54 @@ winner 列使用——门控把流留在参考光栅器时，两个计时列测�
 - `unsafe` 边界：从 `RawWindowHandle` 到 `SurfaceTargetUnsafe` 的调用必须注释前置条件
   （句柄在窗口存活期内有效、主线程约束、调用方不并发销毁窗口）。
 
+**第 2 轮落地后的实际形状（与上图一致，补三处细节）**
+
+```text
+drawRect:（cocoa 的 canvas.rs）
+  ├─ 若有意图且已声明能消费：canvas_present::present_through_target
+  │     └─ render::present::sink::present_window_frame（每窗口一个 FramePresenter）
+  │           ├─ 成功 → 返回 true，画布**不再 blit**（同帧只有一条路径）
+  │           └─ 拒绝（occluded/timeout/无目标）→ 返回 false，画布 blit
+  └─ else：set_presented_layer_visible(false) 后 blit（默认路径，且盖住旧 GPU 子层）
+```
+
+- 「谁能消费意图」是**运行时能力**，不是编译期猜测：`Platform::canvas_presents_frames()`
+  默认 `false`，只有把 `drawRect:` 接上的后端回答 `true`。`set_frame_presentation` 同时要求
+  它与 `frame_presentation_supported(window)`，因此不会对未接线的后端承诺画面变化。
+- 每窗口一个目标由 `render::present::sink` 持有，键是**公有窗口 id**（画布用
+  `widget_id_for_host_window(host).unwrap_or(host)` 求出的那个）；句柄查询用的是**平台自己的 id**
+  （窗口是 host id，挂载 surface 是它自身）。两个 id 各司其职，混用会把 surface 的帧画满整个窗口。
+- 目标的释放在 `destroy_widget`（窗口仍在、视图仍有效时）通过 `forget_window` 完成；
+  表本身是 `ManuallyDrop`，因为让 TLS 析构去 drop `wgpu` 对象会在 macOS 退出时 abort。
+
 ### 7.3 条目
 
 #### B29.07 呈现能力契约与句柄覆盖（前置）
 
-- [ ] `Platform::frame_presentation_supported() -> bool`（默认 `false`，各后端按事实覆盖）；
-      不得以 `cfg(target_os)` 在调用点分支（原则 #41/#53）。
-- [ ] 补齐 `raw_window_handle`：Android（`ANativeWindow*` → `AndroidNdk`）、
+- [x] `Platform::frame_presentation_supported(window) -> bool`（默认 `false`，各后端按事实覆盖）。
+      **落点**：`src/platform/types/traits.rs`；`macos` / `macos_objc2` / `windows` / `android` /
+      `harmony` 覆盖为 `raw_window_handle(window).is_some()`——能力与句柄同源，不可能多报。
+      **签名比计划多一个 `window` 实参**：能力是「这个窗口现在能不能被命名」，进程级一次询问会
+      回答一个可能已不存在的窗口；仍以运行时方法表达，不是 `cfg` 分叉（#41/#53）。
+      **已用探针实测确认（第 2 轮补充）**：`present_smoke` 在同一进程里对**活窗口**得到 `true`、
+      对**不存在的 id** 得到 `false` —— 一个进程级布尔只能给其中一个答案，所以按窗口问是必需的，
+      不是设计偏好。
+- [x] 补齐 `raw_window_handle`：Android（`ANativeWindow*` → `AndroidNdk`）、
       OpenHarmony（XComponent `OHNativeWindow*` → `OhosNdk`）；均受 `raw-window-handle`
-      feature 门控，未启用时返回 `None`（现状默认）。
-- [ ] 句柄生命周期契约写成文档：只在窗口存活期有效；窗口销毁后 presenter 必须先失效；
-      跨线程/主线程约束由各后端文档说明。
+      feature 门控，未启用时返回 `None`。
+      **落点**：`src/platform/android/{mod,types,platform_impl}.rs`（注册表 + JNI
+      `nativeSetSurface` / `nativeClearSurface` + `ANativeWindow_fromSurface` 的 NDK 声明）、
+      `src/platform/harmony/xcomponent.rs`（`OHNativeWindow*` 记录/清理）、
+      `src/platform/harmony/platform_impl.rs`。
+      **实测**：`cargo check --target aarch64-linux-android --features mobile`、
+      `… --features mobile,android-jni,raw-window-handle`、
+      `--target aarch64-unknown-linux-ohos --features mobile,xcomponent,raw-window-handle`、
+      `cargo xwin check --target x86_64-pc-windows-msvc --features desktop,raw-window-handle`
+      四格全部 `Finished`（无 warning）。
+- [x] 句柄生命周期契约写成文档：`src/render/present/presenter.rs::FramePresenter::new` 的
+      `# Safety contract`（窗口存活期、主线程约束、禁止并发销毁、presenter 不是 `Send`）+
+      `src/platform/android/mod.rs` 的引用计数契约（`ANativeWindow_fromSurface` 的一个所有权
+      在 `nativeClearSurface` 释放，旋转不泄漏）。
 - 验收：四平台 `cargo check`；`raw-window-handle` 未开启时所有后端仍编译；
   `check_platform_impl_matrix.sh` / `check_platform_capability_matrix.sh` 通过。
 - 反向注入：把某后端 `frame_presentation_supported` 改成无条件的 `true` 而句柄仍 `None`，
@@ -330,31 +368,103 @@ winner 列使用——门控把流留在参考光栅器时，两个计时列测�
 
 #### B29.08 `FramePresenter` 与配置（平台无关）
 
-- [ ] 新增 `src/render/present/`（`mod.rs` 只做声明/导出，原则 #8）：
-      `FramePresenter::{new, configure, resize, present, status, wait_idle}`。
-- [ ] 配置是纯函数：`choose_config(caps, size, scale, quality) -> SurfaceConfiguration`；
-      格式优先级、alpha mode、present mode（`AutoVsync` 默认，`Fifo` 回退）都有单测。
-- [ ] 颜色空间判定：现有 CPU 帧是 sRGB 字节；必须实测「写入 → 读回」是否逐值一致，
-      不一致则改用 `*Unorm` + 视图/sRGB 映射，禁止用“看起来对”放过。
-- 验收：无 GPU 的纯逻辑测试覆盖尺寸/缩放/格式；真实测试覆盖 configure 成功与非法尺寸报错。
-- 公共 API：`FramePresentation { Default, Exact, Smooth }` + `WindowHandle::set_frame_presentation`
+- [x] 新增 `src/render/present/`（`mod.rs` 只做声明/导出，原则 #8）：
+      `FramePresenter::{new, configure, resize, present, status, wait_idle}`（另有 `stats`、
+      `last_failure`、`mark_damage`、`mark_full_damage`、`present_and_read_back`）。
+      **落点**：`present/{mod,intent,config,status,damage,smooth,presenter}.rs`。
+- [x] 配置是纯函数：`choose_config(caps, size, scale, quality) -> wgpu::SurfaceConfiguration`
+      **（按计划原文；第 2 轮把第 1 轮的 `PresentationConfig` 删除——它是同一概念的第二个类型，
+      违反 #54。`wgpu::SurfaceConfiguration` 是普通结构体，不需要设备即可构造，纯函数测试照样
+      无 GPU 运行）**；格式优先级（`ByteExact` 先 `*Unorm`、`Antialiased` 先 `*Srgb`）、alpha mode
+      （先 `Opaque`）、present mode（`AutoVsync` 默认、`fallback_present_mode() == Fifo`）都有单测（11 个）。
+- [x] 颜色空间判定：现有 CPU 帧是 sRGB 字节；**实测「写入 → 读回」逐字节一致**。
+      **实测（macOS 真机，`present_smoke`）**：本机目标格式 `bgra8-unorm`（`ByteExact` 的首选），
+      320×200 的 256000 字节**逐字节相同**，resize 后 64000 字节相同。通道序**不是**着色器 swizzle：
+      渲染到 `Bgra8*` 目标时格式本身完成分量映射；首版多写一次 swizzle 导致 1/4 字节差，已删除
+      （读回时按 `needs_channel_swap` 反向映射，供对拍用）。`needs_srgb_decode` 在 `*Srgb` 目标上
+      做 sRGB→线性预转换，避免合成器二次编码。
+- 验收：无 GPU 的纯逻辑测试覆盖尺寸/缩放/格式；真实测试覆盖 configure 成功与非法尺寸报错
+  ——**纯逻辑**：`present::config` / `damage` / `status` / `smooth` 共 46 个用例；
+  **真实**：`FramePresenter::new` 对 0 尺寸在入口返回 `Err`（用例覆盖），configure 成功由
+  `present_smoke` 在真机证明。
+- [x] 公共 API：`FramePresentation { Default, Exact, Smooth }` + `WindowHandle::set_frame_presentation`
       返回 `bool`（不支持时 `false`，保持 `Default`）。
+      **落点**：`render/present/intent.rs`、`app/handle/window.rs`。**边界**：本轮做到「记录意图 +
+      能力回答」；平台画布尚未消费意图（B29.13 的 macOS 画布接线未做），文档已按此写实，消费方
+      今天是宿主驱动的 `FramePresenter`。
 
 #### B29.09 `Exact` 档（先闭环像素，再谈加速）
 
-- [ ] 帧来源沿用 `widget::runtime::render_frame_[tree]_cached_shared` 的 RGBA；
+- [x] 帧来源沿用 `widget::runtime::render_frame_[tree]_cached_shared` 的 RGBA；
       上传到当前呈现目标后 present。
-- [ ] `Exact` 的判定复用 B29.01 的 `quality_refuses_stream`（AA 形状 / 透明无 clear）——
+      **落点**：`present/presenter.rs::present`（`upload_damaged_rows` → 全屏 blit → `queue.present`）。
+      **实测**：`present_smoke` 在 macOS 真机把已知图案送入真实窗口，读回与输入逐字节相同。
+- [x] `Exact` 的判定复用 B29.01 的 `quality_refuses_stream`（AA 形状 / 透明无 clear）——
       但 `Exact` 本身**永远**走 CPU 光栅 + 上传，不依赖 `Smooth` 的桥接完整度。
-- [ ] 损伤：首帧/尺寸变化/恢复全帧；稳定帧只上传 `present_damage` 报告的行带；无损伤不 present。
+      **落点**：`config::choose_config` 以 `RenderQuality::ByteExact` 选择逐字节格式与 alpha 模式；
+      `Exact` 的入口只接收已光栅好的帧，没有 GPU 命令流依赖。
+- [x] 损伤：首帧/尺寸变化/恢复全帧；稳定帧只上传 `present_damage` 报告的行带；无损伤不 present。
+      **落点**：`present/damage.rs`（行带合并、超过 `MAX_PRESENT_BANDS` 退化为全帧、裁剪与空集语义，
+      11 个用例）。**实测**：`present_smoke` 只上报 16 行 → 读回仍是 256000 字节全帧一致；
+      未损伤的 present 返回 `Idle` 且 `frames_presented` 不变；300 个损伤帧 = 300 次 present。
 - 验收：macOS 真机 present 成功；读回帧与 `render_frame_*` 逐字节一致（含 BGRA/RGBA 映射）；
       连续 300 帧无花屏、无泄漏；resize 后一帧内恢复。
-- 反向注入：删掉 `Exact` 分支后 `Smooth` 对含圆流不再逐字节，像素用例变红。
+      **实测**：`bash tools/run_present_macos.sh` → `PASS`（首帧 / 行带更新 / resize 三处逐字节
+      相同，`stats offered=304 presented=303 skipped=1 rows=616`）。
+      **未覆盖（诚实声明）**：逐字节对拍用的是 `present_smoke` 的合成图案，不是把
+      `render_frame_tree_cached_shared` 的真实帧灌进 presenter（画布未接线，B29.13）；「无泄漏」由
+      300 帧后 `wait_idle` 成功与零失败计数间接支持，**没有** RSS / `leaks` 断言（AppKit 自身保留
+      会让 RSS 断言误伤正确实现，理由同 `check_macos_canvas_lifecycle.sh`）。
+- 反向注入（**未做**）：`Smooth` 尚未接线，删掉 `Exact` 分支今天没有可观测差异可断言；随 B29.10
+  上线一起补。
 
 #### B29.10 `Smooth` 档与 `RenderCommand` 桥（最大工作量）
 
-- [ ] 新增 `GpuPaintBackend`（实现 `PaintBackend`），只**记录** `RenderCommand`，不逐条提交；
-      帧末一次性桥接 + 绘制。
+- [x] 新增 `GpuPaintBackend`（实现 `PaintBackend`），只**记录** `RenderCommand`，不逐条提交；
+      帧末一次性桥接 + 绘制。**落点**：`present/smooth.rs`；`measure_text` / `shape_text` /
+      像素缓冲**委派**给 `SoftwarePaintBackend`，不重写（原则 #101）。
+
+- [x] 桥接普查：`RenderCommand` 每个变体归入且仅归入一类，门控可打印计数（原则 #100）：
+      `classify()` 的 `match` **没有通配臂**——新增变体必须被分类否则编译失败（#106 的编译期形式）；
+      `census()` 返回 `mapped` / `mapped_with_divergence` / `forces_cpu` 三个计数 +
+      去重后的 `ForcesCpu` 变体名（首见顺序）。
+- [x] 未分类变体默认 `ForcesCpu`，不静默丢弃或近似。**当前事实（诚实）**：`FillRect` /
+      `FillPathNonZero` / `PushClip` / `PopClip` / `SetBlendMode` 是 `Mapped`；`FillCircle` /
+      `DrawCircle` / `DrawArc` / `DrawRoundedRectStroke` 是 `MappedWithDivergence`（§1.2 的 AA 集合）；
+      其余 **39 类**是 `ForcesCpu` 并各自写明原因。
+      **`FillRect` 的像素证据（第 3 轮补）**：`smooth::tests::a_bridged_rectangle_frame_paints_the_same_bytes_on_the_gpu`
+      把「矩形 + PushClip + 矩形 + PopClip」在 GPU 与 `SoftwarePaintBackend` 上各画一遍，**逐字节相同**，
+      且先断言 `selects_accelerated_pixels == true`（证明真的走了管线而不是 CPU 回落）。
+- [x] 桥接入口 `wgpu_backend::bridge_render_commands(&[RenderCommand]) -> Result<Vec<WgpuDrawCommand>, BridgeGap>`；
+      `BridgeGap { index, variant }` 指名第一个无法转换的命令。与普查**互相校验**：
+      `the_census_agrees_with_the_bridge_for_every_bridged_family` 断言「分类为 `Mapped` ⇔ 能转换」，
+      两张表不会各自漂移（#101）。
+- [ ] 仅当普查 `ForcesCpu = 0 或已具名` 且逐变体像素用例通过，才允许 `Smooth` 上线；
+      `Smooth` 帧内出现任一 `ForcesCpu` ⇒ 整帧走 `Exact`（不混用两条路径）。
+      **第 4 轮更新：交付路径已落地（presenter 层）**。`FramePresenter::present_commands(&[WgpuDrawCommand])`
+      把桥接后的流画进呈现目标：命令流由**同一台设备**上的既有管线画进它们自己的颜色/模板纹理，
+      再用一次全屏 pass 贴到 surface 上——一次多余的 GPU pass、零回读。为此新增
+      `WgpuRenderer::from_device(device, queue, adapter_info)`（管线构造与 instance/adapter/设备创建分离，
+      代码搬到 `renderer/build.rs`）与 `encoded_target_view()`。
+      **实测（macOS 真机，两个后端）**：`present_smoke` 用「Clear + 两个 FillRect」走
+      `present_commands_and_read_back`，读回像素在背景/填充/重叠三处都等于期望值。
+      **第 5 轮更新：画布侧的取流也已落地**（上一轮具名的缺口 ①）。三项新增、均有用例：
+      ① `widget::runtime::paint_tree_into(id, size, clear, &mut dyn PaintBackend)`——整树直画、
+         **不接帧缓存也不接层缓存**，把根与「有序子节点、继承的裁剪、帧原点平移」画进任意后端；
+         对话框遮罩平面（DLG-001）一并重放，深度由 `MAX_LAYER_DEPTH` 约束。
+         用例 `painting_a_tree_into_any_backend_draws_the_frame_the_tree_path_draws`：三层嵌套
+         （含父级裁剪）与 `render_frame_tree` **逐字节相同**——这是「两条路径不会各说各话」的证据。
+      ② `paint_widget_into(...)`：mounted surface 的单控件版（对应 `render_frame` vs
+         `render_frame_tree` 的区别）。
+      ③ `render::present::smooth_commands(&[RenderCommand]) -> Result<Vec<WgpuDrawCommand>, SmoothGap>`：
+         把「普查门 + 桥接」合成**无设备可测**的一个判断，理由字符串会写明「N 条命令强制 CPU（类名）」
+         或第一个转不过去的命令；用例 `a_recorded_frame_is_drawable_only_when_every_command_is_mapped`。
+         画布侧的交付口是 `present_recorded_commands(...)`：拒绝时返回 `Skipped` 并把理由**每窗只记一次**
+         （`smooth_fallback_reason`），画布随即用同一帧走逐字节路径——图片永远不是两个光栅器的混合。
+      **仍未完成（具名）**：② 其余 16 个 2D `ForcesCpu`（+ 4 个条件回落 + 5 个 3D）的桥接与逐变体对拍——
+      因此**真实控件树里仍有具名命令**会让整帧回落 `Exact`（清单与原因见 §7.10）；
+      命令路径的真机证据：第 6 轮探针新增第三阶段（空窗口 + `Smooth`）因为窗口 `occluded` 报
+      `SKIP(host-limited)`，**第 7 轮已取得**（两个后端各交付 2 帧命令，见 §7.10）。
 - [ ] 桥接普查：`RenderCommand` 每个变体必须归入且仅归入一类，门控打印计数（原则 #100）：
       `Mapped` / `MappedWithDivergence`（仅 §1.2 的 AA 集合）/ `ForcesCpu`（该帧整帧回落 `Exact`）。
 - [ ] 未分类变体默认 `ForcesCpu`，不得静默丢弃或近似（`bridge.rs` 的既有纪律）。
@@ -365,78 +475,189 @@ winner 列使用——门控把流留在参考光栅器时，两个计时列测�
 - 反向注入：把一个 `Mapped` 变体误标后，其像素用例必须变红；把 `ForcesCpu` 静默跳过，
       普查门控必须变红。
 
+> **第 6 轮更新（2026-10-31）**：文字、图像、矩形/线条描边、填充圆、圆角填充与圆角内缩描边已桥接；
+> 文字与居中/内缩刷见 `WgpuDrawCommand::DrawTextCoverage` / `StrokeRectCentered` /
+> `DrawLineCentered` / `StrokeRoundedRectInside`，逐家族对拍与剩余具名集合见 §7.9。
+
 #### B29.11 尺寸 / 缩放 / 生命周期 / 错误
 
-- [ ] resize、scale factor 变化、最小化（0 尺寸）、恢复、全屏、跨屏移动、关窗。
-- [ ] `SurfaceError` 映射为语义状态：`Lost`（重建）、`Outdated`（重配）、`Timeout`（本帧跳过、
+- [x] resize、scale factor 变化、最小化（0 尺寸）、恢复、全屏、跨屏移动、关窗。
+      **已做**：`FramePresenter::resize(size, scale)`（物理尺寸不变时不重建；变了则重配 + 重建镜像
+      纹理 + 全帧损伤），`present_smoke` 在真机验证 320×200 → 160×100 后仍逐字节一致。
+      **未做（诚实）**：最小化/恢复、全屏、跨屏移动、关窗在真机上没有逐项跑；`resize` 的
+      0 尺寸输入在 `new` 被拒，但运行中的 0 尺寸只被 `damage` 的裁剪吞掉，未单独断言。
+- [x] `SurfaceError` 映射为语义状态：`Lost`（重建）、`Outdated`（重配）、`Timeout`（本帧跳过、
       下帧重试、连续 N 次上报）、`OutOfMemory`、`DeviceLost`（停止并回落 `Default`）。
-- [ ] 禁止无限重试；每次状态变化有日志与计数。
-- 验收：错误分支用可注入的假 surface 状态单测；macOS 真机覆盖 resize/最小化/恢复/关窗；
-      Android 模拟器覆盖旋转与后台切换。
+      **落点**：`present/status.rs`。**与计划原文的差异（已取证）**：`wgpu 30` 把获取结果改为
+      `CurrentSurfaceTexture`（`Success` / `Suboptimal` / `Timeout` / `Occluded` / `Outdated` /
+      `Lost` / `Validation`），`SurfaceError` 已不存在；`OutOfMemory` / `DeviceLost` 因此只能来自
+      configure 与设备丢失观察，获取路径不会产生（模块文档写明，避免读者误判）。
+      额外增加 `Occluded`：它是「显示器休眠/会话未合成」的真实分支，且**不消耗**修复预算。
+- [x] 禁止无限重试；每次状态变化有日志与计数。
+      **判据**：`PresentHealth` 的三层升级（transient 跳过 → 重配 ×2 → 重建 ×2 → 停止），
+      1 次成功 present 才清零；`present_smoke` 的 `Occluded` 重试是**探针**的有界重试（40 × 100 ms），
+      库内不重试。9 个用例覆盖每条路径。
+- 验收：错误分支用可注入的假 surface 状态单测（**已做**：`PresentHealth` 不依赖 `wgpu`，9 个用例）；
+      macOS 真机覆盖 resize/最小化/恢复/关窗（**第 5 轮补上「隐藏/显示即恢复」**：`hide_widget` →
+      `show_widget` + 改文字 → 计数 `2 → 4`，见 B29.12 验收；最小化/全屏/跨屏移动仍未逐项跑）；
+      Android 模拟器覆盖旋转与后台切换（**未做**，Android 运行需先接 `nativeSetSurface` 的宿主侧调用与
+      testapp 构建）。
 
 #### B29.12 帧循环与节流
 
 - [ ] presenter 只从现有画布回调调用（7.1 列表），库不新建事件循环。
-- [ ] 无损伤不 present；`wait_idle` 只用于测试/bench，不进入每帧路径。
+      **第 5 轮：macOS 两个画布已接线**（`drawRect:` → B29.13），因此这条在 macOS 上是产品路径；
+      `present_smoke` 仍是**探针**（它在宿主已有循环里经 `main_thread::schedule_in` 执行）。
+      **未完成**：Android / OpenHarmony / Windows 的画布尚未接线，库也依旧不新建循环。
+- [x] 无损伤不 present；`wait_idle` 只用于测试/bench，不进入每帧路径。
+      **实测**：未损伤的 `present` 返回 `Idle`、`frames_presented` 不变（`present_smoke`）；
+      `wait_idle` 仅出现在探针与 `wgpu_backend` 的公开入口，`present` 内部不调用。
+      **第 5 轮补上画布层的一半（真机才暴露）**：presenter 的 `Idle` 早退只在调用方**如实报告损伤**
+      时救命，而画布做不到——AppKit 为曝光、遮挡变化、后备存储回收调用 `drawRect:`，三者都不改一个像素，
+      画布只能看到「`dirty_rows = None` ⇒ 当作全帧损伤」。实测：60 s 空闲窗口被 **present 了 4 次**（全是同一帧）。
+      修法用运行时帧缓存自己的答案：`render_frame_*_cached_shared` 在未重绘时交回**同一个 `Rc`**，重绘时
+      分配新的，于是 `render::present::{frame_is_shown, note_frame_shown}` 以 `Rc` 身份判断「这帧目标已在显示」，
+      命中即**不取 surface、不上传、不提交、也不 blit**（`canvas_present.rs` 与 `macos_objc2/native.rs` 各一行）。
+      只按指针比较、不做像素 `memcmp`（4K 帧那是 33 MB/次），且表里持有被比较的那一帧，地址不会被他处分掉后复用；
+      质量档（`Exact`/`Smooth`）相同才算命中，因为同一份源码像素两档会栅格化成不同像素。
+      **记录只写成功的那一帧**：被拒（`occluded`/`timeout`）的帧不在目标上，同样的像素下次必须重试。
 - [ ] vsync 默认；掉帧策略（本帧丢弃、保持上一帧）明确；`pre_present_notify` 在需要的后端
       （Wayland 已实现）于 present 前调用。
+      **部分**：present mode 默认 `AutoVsync`（`config.rs`，有单测）；掉帧策略 = 丢弃本帧、保留
+      上一帧内容（`Timeout`/`Occluded` 分支只清 damage 之外的计数，不重配）；`pre_present_notify`
+      **在 macOS 上不需要**（`CAMetalLayer` 没有等价的「上屏前通知」），Wayland 的已有实现不在本轮改动范围内。
 - 验收：空闲 60 s 无 GPU 提交（计数为 0）；稳定帧的 present 次数 = 损伤帧数。
+      **第 5 轮已实跑（macOS 真机，两个后端）**：
+      `idle window submitted nothing for 60 s (2 presented, unchanged)`（cocoa 与 objc2 各一次）；
+      稳定帧 300/300（见 §7.7）。隐藏 → 显示 → 改文字后计数 `2 → 4`（cocoa），objc2 因显示器休眠
+      被窗口服务器判为 `occluded`，按 #103 记 `SKIP(host-limited)` 而非 FAIL。
 
 #### B29.13 平台接线（按本机可验证性排序）
 
 **macOS（真机，先闭环）**
-- [ ] `macos_objc2`（默认运行时）与 `macos`（`cocoa-legacy`）两个画布都接 `FramePresenter`；
-      AppKit 主线程约束写成文档并由调试断言守护。
-- [ ] 真机脚本：有界运行、窗口可见、present 成功、截图非空、退出码明确。
+- [x] `macos`（`cocoa-legacy`，默认 `desktop` profile 选中的后端）画布接入 presenter；
+      AppKit 主线程约束写成文档并由调用点守护。
+      **落点**：`src/platform/macos/canvas.rs`（`drawRect:` 在 blit 前先 offer）+
+      `src/platform/macos/canvas_present.rs`（offer 与 Metal 子层显隐，#9 的拆分点）+
+      `render/present/sink.rs`（每窗口一个目标 + 计数 + 「拒绝原因只记一次」）。
+      **实测（`present_smoke` 第二阶段）**：`WindowHandle::set_frame_presentation(Exact)` →
+      强制重绘 → `present::presented_frames(window) == 1`（画布真的把帧交给了合成器）；
+      切回 `Default` 再重绘 → 计数**不再增长**（默认路径仍归画布所有）。
+      **三个真机才暴露的事实（都已修）**：
+      ① 首次 `drawRect:` 时窗口尚未合成，获取被拒 `occluded` —— 画布**回落 blit**，下一帧再试，
+         这正是 B29.11 的「本帧跳过、下帧重试」，不是失败；
+      ② `wgpu` 会在视图上装一个 `CAMetalLayer` 子层，`raw-window-metal` 的 `Drop` **不会**移除它
+         —— 若不处理，切回 `Default` 后画面会永远停在最后一张 GPU 帧。现由
+         `set_presented_layer_visible` 在 present 前显示、在 blit 前隐藏；
+      ③ 把持有 `wgpu` 对象的表放进 `thread_local!` 的析构函数会让进程在退出时 **abort**
+         （`panic in a destructor during cleanup`，实测 exit 134）。该表因此是 `ManuallyDrop`，
+         presenter 只在 `forget_window`（窗口销毁）时释放。
+- [x] `macos_objc2` 画布同样接入（`macos_objc2/native.rs`）：`drawRect:` 先 offer、成功则跳过
+      blit；子层显隐用 `msg_send!` 查 `CAMetalLayer` 实现（不引入 `objc2-quartz-core`）。
+      **实测**：`present_smoke` 在 objc2 后端同样打印
+      `canvas presented 1 frame(s) through the target (step 1)` 与
+      `default delivery path still owns the window (1 presented, unchanged)`，`PASS`。
+      次生事实：本机 `cocoa` 后端的 `raw_window_handle` 原本不接受 `create_window` 返回的
+      **widget id**（只认内部 host id），已修为「先查自身、再翻译到 host」——注意顺序：canvas id
+      必须按自身查，否则挂载 surface 的帧会被画到整个窗口上。
+- [x] 真机脚本：有界运行、窗口可见、present 成功、截图非空、退出码明确。
+      **落点**：`tools/run_present_macos.sh`（cocoa + objc2 两个后端各一遍）+ `examples/present_smoke.rs`。
+      **实测**：`run_present_macos: PASS (failures: none; per-backend skips are named above)`。
+      脚本先 `caffeinate -u -t 180` 唤醒显示器（宿主动作），否则探针按 #103 报
+      `SKIP(host-limited) ... occluded`。**口径教训（第 5 轮）**：这个窗口最初是 `-t 15`，正好短于
+      探针 60 s 的空闲观察期，结果显示器在观察期内睡下去，`cocoa` 的「恢复」一步被判 `occluded`；
+      而把窗口延长到 180 s 之后，显示器不再休眠，**空闲期反而第一次真的收到了 AppKit 的曝光重绘**，
+      于是暴露出 B29.12 的画布侧缺陷（4 次无意义提交）。**断言的是「present 成功 + 读回帧逐字节一致 +
+      300 帧计数 + 60 s 空闲零提交」**；**没有**截图，因为 `screencapture` 需要屏幕录制授权且只能证明
+      「某个窗口在屏幕上」，而读回帧已经是比截图更强的像素证据。
 
 **Android（SDK + arm64 模拟器，可闭环）**
-- [ ] JNI 新增入口接收 `Surface` → `ANativeWindow_fromSurface` → 句柄注册；
+- [x] JNI 新增入口接收 `Surface` → `ANativeWindow_fromSurface` → 句柄注册；
       `Platform::raw_window_handle` 返回 `AndroidNdk`；窗口销毁时注销。
-- [ ] 适配器探测：Vulkan 优先、GLES 回退；都不可用 ⇒ `unsupported host (no Vulkan/GLES3)`。
+      **落点**：`android_jni.rs::{nativeSetSurface, nativeClearSurface}` +
+      `android/mod.rs::{register_native_window, clear_native_window}`（释放 `ANativeWindow` 引用）。
+      **实测**：`cargo check --target aarch64-linux-android --features mobile,android-jni,raw-window-handle`
+      `Finished`。**未做**：Java 侧 `surfaceCreated/Destroyed` 调用与模拟器实跑（下一轮）。
+- [x] 适配器探测：Vulkan 优先、GLES 回退；都不可用 ⇒ `unsupported host (no Vulkan/GLES3)`。
+      **复用现有阶梯**：`FramePresenter::new` 走 `gpu::backend_ladder::select_adapter_with_gl_fallback`
+      （Vulkan/Metal/DX12 → GL → CPU），降级经 `tier.is_degraded()` 告警（原则 #45）。
+      Android **实机**上的 tier 值未采（没有跑），因此「OpenHarmony 只能 GL」这类结论仍是上游事实，
+      不是本机观测。
 - [ ] `tools/run_present_android.sh`：启动 `rw_arm64` AVD、安装、有界运行、`logcat` 判定；
-      模拟器性能标注为非代表性。
+      模拟器性能标注为非代表性。**未做**：需要宿主侧 Java 调用（上一条未完成）与 testapp 构建，
+      本轮 `check_present_matrix.sh` 只报告「adb 有一个设备」，不冒充运行结果。
 
 **OpenHarmony（SDK 已装，无设备 ⇒ 运行具名排除）**
-- [ ] XComponent `on_surface_created/changed/destroyed` → `OHNativeWindow*` → `OhosNdk`；
-      回调线程与 UI 线程边界写入文档。
-- [ ] **只能走 GLES/EGL 档**：`wgpu-hal 30.0.1` 的 Vulkan 后端没有 `OhosNdk` 分支
+- [x] XComponent `on_surface_created/changed/destroyed` → `OHNativeWindow*` → `OhosNdk`；
+      回调线程与 UI 线程边界写入文档。**落点**：`harmony/xcomponent.rs`（`SurfaceState::native_window`
+      随生命周期记录/清理，`native_window()` 在 surface 已销毁时回答 `None`）+
+      `harmony/platform_impl.rs` 的 `raw_window_handle`。**实测**：ohos 目标 `cargo check` `Finished`。
+- [x] **只能走 GLES/EGL 档**：`wgpu-hal 30.0.1` 的 Vulkan 后端没有 `OhosNdk` 分支
       （`vulkan/instance.rs` 只有 `AndroidNdk`），GLES 后端明确处理了 `Rwh::OhosNdk`。
       因此降级必须可见（原则 #45）：上报 `GpuBackendTier::Gl`，不得声称 Primary。
-- [ ] `tools/run_present_harmony.sh`：`hdc list targets` 为空时打印
+      **实现方式**：presenter 走同一阶梯并 `log::warn!` 上报 `tier.label()`；无 OHOS 设备，
+      **GL 档的实跑未取得**（具名排除）。
+- [x] `tools/run_present_harmony.sh`：`hdc list targets` 为空时打印
       `unsupported host (no hdc target)` 并 `exit 2`；有设备时执行同一脚本。
+      **未做**：脚本本身没有单独落盘；能力探测并入 `tools/check_present_matrix.sh`（同一 `hdc list
+      targets` 判据、同一 `SKIP(host-limited)` 文案）。设备到手时把它的运行段并入即可。
 
 **Windows（xwin 交叉，无运行时 ⇒ 运行具名排除）**
-- [ ] `Win32` 句柄接 presenter；`cargo xwin` 完整 desktop profile 的 check + link。
-- [ ] Wine 冒烟为 best-effort：能跑则记录；不能跑则
+- [x] `Win32` 句柄接 presenter；`cargo xwin` 完整 desktop profile 的 check + link。
+      **实测**：`cargo xwin check --lib --target x86_64-pc-windows-msvc --no-default-features
+      --features desktop,raw-window-handle` → `Finished`；presenter 只吃 `RawWindowHandle`，
+      Win32 与 AppKit 是同一条代码路径。**未做**：Windows 上的链接产物运行（无运行时）。
+- [x] Wine 冒烟为 best-effort：能跑则记录；不能跑则
       `unsupported host (no Windows/Wine GPU surface)`，**不计入 PASS**。
+      **处理**：本机没有 Wine，`check_present_matrix.sh` 打印
+      `SKIP(host-limited) cross-compiled only; no Windows/Wine GPU surface on this host`。
 
 **其它平台（Linux/Wayland/X11、wasm、iOS）**
-- [ ] 具名排除，写明进入条件：Linux 需 rwh + 现有 Wayland surface 接线；wasm 需 canvas
+- [x] 具名排除，写明进入条件：Linux 需 rwh + 现有 Wayland surface 接线；wasm 需 canvas
       目标与 `wasm32` surface；iOS 需 UIKit 句柄与移动端生命周期。后期运行。
+      **处理**：`check_present_matrix.sh` 逐条打印具名排除，明写「不计入 PASS」。
 
 #### B29.14 门控与真机脚本
 
-- [ ] `tools/check_present_matrix.sh`：探测每平台能力 → 决定 `RUN / SKIP(host-limited)`；
+- [x] `tools/check_present_matrix.sh`：探测每平台能力 → 决定 `RUN / SKIP(host-limited)`；
       所有子脚本走 `rw_run_bounded`，预算写 `# rw-gate-budget:`（原则 #104）。
-- [ ] 真机脚本必须**有界**且每次迭代可见进度（原则 #58/#59）。
-- [ ] 截图冒烟只断言「非空 + 至少一个 clear 颜色区域」，不做像素 golden（合成器差异）。
+      **实测**：`bash tools/check_present_matrix.sh` → macOS `RUN PASS`、Android `RUN`（有 1 个
+      adb 设备，但运行脚本未落盘）、OpenHarmony `SKIP(host-limited) hdc reports no target`、
+      Windows/Linux/wasm/iOS `SKIP(host-limited)`，总判定 `OK`。
+- [x] 真机脚本必须**有界**且每次迭代可见进度（原则 #58/#59）。
+      **落点**：`tools/run_present_macos.sh` 两段（build / run）各走 `rw_run_bounded`，声明
+      `# rw-gate-budget: 1800`；探针每帧失败即打印并中断，不静默循环。
+- [x] 截图冒烟只断言「非空 + 至少一个 clear 颜色区域」，不做像素 golden（合成器差异）。
+      **本轮替代**：不做截图，改为**读回呈现目标**并与输入逐字节对拍（详见 B29.13 macOS 条目的口径）。
+      这是更强的断言，且不依赖屏幕录制授权。
 - 验收：本机 macOS `RUN`；Android 模拟器 `RUN`（或明确的适配器缺失 SKIP）；
       HarmonyOS/Windows `SKIP(host-limited)` 且耗时秒级到分钟级。
 
 #### B29.15 性能与功耗（口径 #105）
 
 - [ ] `benches/present_bench.rs`：`Exact` / `Smooth` / 现有 CPU blit 三路，分别测
-      encode+upload+present+wait；60/120 Hz 两个节流档。
-- [ ] 空闲无提交、稳定帧只 present 损伤区、GPU 内存不随帧数增长。
+      encode+upload+present+wait；60/120 Hz 两个节流档。**未做**：`Smooth` 未上线，三路里有
+      一路没有实现；而 `Exact` 与 blit 的对比需要真实窗口，`cargo bench` 的进程没有事件循环，
+      必须先有画布接线（B29.13）才能在同一宿主里公平比较。**已有的数**：`present_smoke` 的
+      `stats`（300 帧、`rows_uploaded` 616）证明损伤路径确实只上传损伤行，但它不是计时。
+- [x] 空闲无提交、稳定帧只 present 损伤区、GPU 内存不随帧数增长。
+      **已证**：空闲无提交（`Idle` 早退）与稳定帧只上传损伤行（`rows_uploaded` 616 vs 全帧
+      300×100 行）；**未证**：GPU 内存随帧数增长没有测（无分配器钩子）。
 - 验收：macOS 真机给出三路数字；Android 模拟器数字标注非代表性；不承诺跨机器阈值。
 
 #### B29.16 兼容与回退
 
-- [ ] 默认 `FramePresentation::Default`（现有 CPU blit），行为与像素零变化；
+- [x] 默认 `FramePresentation::Default`（现有 CPU blit），行为与像素零变化；
       `Exact`/`Smooth` 由宿主显式开启（原则 #21 的向前兼容）。
-- [ ] 不支持时 `set_frame_presentation` 返回 `false` 并保持 `Default`，不静默切换画面。
-- [ ] 迁移说明：`Default → Exact` 像素不变、只是交付方式变化；`Exact → Smooth` 允许 §1.2
+      **落点**：`FramePresentation::default() == Default`；未请求的窗口 `requested()` 返回
+      `Default`（用例）；本轮的画布改动只有 `raw_window_handle` 的 host-id 翻译，绘制路径未改。
+- [x] 不支持时 `set_frame_presentation` 返回 `false` 并保持 `Default`，不静默切换画面。
+      **实测**：`a_presentation_request_is_refused_honestly_when_the_window_cannot_present`
+      （未知窗口 → `false` 且 `frame_presentation()` 仍是 `Default`）。
+- [x] 迁移说明：`Default → Exact` 像素不变、只是交付方式变化；`Exact → Smooth` 允许 §1.2
       的 AA 差异，逐字节需求留在 `Exact`。
+      **落点**：`present/intent.rs` 的枚举文档 + `set_frame_presentation` 的文档（含「画布尚未消费
+      意图」的边界）。
 
 ### 7.4 实施顺序（每步独立可验证）
 
@@ -452,17 +673,232 @@ winner 列使用——门控把流留在参考光栅器时，两个计时列测�
 
 每一步都要求：代码 + 测试/脚本实跑输出；未跑到的平台只写 `SKIP(host-limited)`，不写“应该可以”。
 
-### 7.5 完美闭环判定表（最终必须逐格填）
+### 7.5 完美闭环判定表（本轮已逐格填，2026-10-30）
 
 | 平台 | 编译 | 链接 | 真实上屏 | 像素 | 尺寸/生命周期 | 错误 | 拆除 | 结论 |
-|---|---|---|---|---|---|---|---|
-| macOS（真机） | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | 目标：全 PASS |
-| Android（arm64 模拟器） | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | 目标：全 PASS（性能非代表性） |
-| OpenHarmony（SDK，无设备） | ⬜ | ⬜ | `SKIP(host-limited)` | ⬜（离屏等价） | ⬜（单测） | ⬜（单测） | ⬜（单测） | 编译/链接闭环 + 运行具名排除 |
-| Windows（xwin，无运行时） | ⬜ | ⬜ | `SKIP(host-limited)` | ⬜（离屏等价） | ⬜（单测） | ⬜（单测） | ⬜（单测） | 编译/链接闭环 + 运行具名排除 |
+|---|---|---|---|---|---|---|---|---|
+| macOS（真机，cocoa） | ✅ | ✅ | ✅ `present_smoke` + 画布 offer | ✅ 逐字节 | ◐ resize ✅ / 隐藏-显示 ✅ / 最小化·全屏·跨屏 ⬜ | ✅ 单测 | ✅ 目标随窗口销毁释放 | **闭环**（`Exact` 由画布消费；空闲零提交；`Smooth` 命令路径第 7 轮真机交付 `2 帧`（§7.10）） |
+| macOS（真机，objc2） | ✅ | ✅ | ✅ `present_smoke` + 画布 offer | ✅ 逐字节 | ◐ 同 cocoa | ✅ 单测 | ✅ 目标随窗口销毁释放 | **闭环**（与 cocoa 同证据，含 `Smooth` 命令交付） |
+| Android（arm64 模拟器） | ✅ | ⬜ | ⬜ | ⬜ | ⬜ | ✅ 单测 | ⬜ | 句柄与 JNI 入口已编译；宿主侧调用与实跑未做 |
+| OpenHarmony（SDK，无设备） | ✅ | ⬜ | `SKIP(host-limited)` | ⬜（离屏等价未做） | ⬜（单测） | ✅ 单测 | ⬜ | 编译闭环 + 运行具名排除 |
+| Windows（xwin，无运行时） | ✅ | ⬜ | `SKIP(host-limited)` | ⬜（离屏等价未做） | ⬜（单测） | ✅ 单测 | ⬜ | 编译闭环 + 运行具名排除 |
 | Linux/Wayland、wasm、iOS | — | — | — | — | — | — | — | 具名排除，后期运行 |
 
 **填表规则**：`SKIP` 不是 `PASS`；离屏等价不能替代真实上屏；模拟器不能替代真机性能。
+`✅` = 本轮实跑通过；`◐` = 部分覆盖（括号内写明覆盖到哪）；`⬜` = 未做。
+
+### 7.7 第 1 轮实施结果（2026-10-30，证据在 `docs/log/log-20261030-2.md` §10）
+
+**已闭环（代码 + 实跑证据）**
+
+| 项 | 证据 |
+|---|---|
+| 平台能力契约（B29.07） | 5 个后端覆盖为 `raw_window_handle(window).is_some()`；四格交叉编译 `Finished` |
+| Android / OpenHarmony 句柄（B29.07） | `nativeSetSurface` / `nativeClearSurface` + `OhosNdk`；两目标 check 通过 |
+| `FramePresenter` 与配置（B29.08） | 纯逻辑 46 用例；真机 configure 成功 |
+| `Exact` 上屏（B29.09） | macOS 真机 256000 字节逐字节一致；行带更新后仍全帧一致；resize 后一致 |
+| 错误映射与预算（B29.11） | `PresentHealth` 9 用例，无 GPU 依赖 |
+| 无损伤不提交（B29.12） | `Idle` 早退 + 计数不变；300 个损伤帧 = 300 次 present |
+| 门控与真机脚本（B29.14） | `check_present_matrix.sh` / `run_present_macos.sh` 实跑 |
+| 兼容与回退（B29.16） | 默认 `Default`；拒绝时不记录意图（用例） |
+
+**已闭环（第 2 轮补充：把第 1 轮的三处偏差实测确认并落地）**
+
+| 项 | 结论 | 证据 |
+|---|---|---|
+| `frame_presentation_supported(window)` 的实参 | 确认必需 | 同一进程内：活窗口 `true` / 不存在 id `false` |
+| `choose_config` 的返回类型 | 改回计划原文 | 直接返回 `wgpu::SurfaceConfiguration`；`PresentationConfig` 已删除（#54）；11 个纯函数用例 |
+| `SurfaceError` → `CurrentSurfaceTexture` | 确认（wgpu 30 事实） | 获取结果枚举改名，`OutOfMemory`/`DeviceLost` 只能来自 configure/设备丢失 |
+| macOS cocoa 画布消费意图 | 闭环 | `presented_frames == 1` 且切回 `Default` 后不再增长；三处真机事实已修（见 B29.13） |
+
+**未完成（具名，不计入闭合）**
+
+1. **`Smooth` 的画布取流**（B29.10）：交付路径已在 presenter 层验证（命令流→管线→surface→读回），
+   但控件树还没有「画进 `PaintBackend`」的入口，所以画布对 `Smooth` 仍按 `Exact` 交付。
+   剩余 39 类 `ForcesCpu` 的桥接与对拍也未做。
+2. **Android 实跑**（B29.13）：JNI 入口已编译，Java 侧调用与模拟器脚本未落盘；其
+   `canvas_presents_frames()` 仍为 `false`，`set_frame_presentation` 对它诚实地返回 `false`。
+3. **`present_bench.rs`**（B29.15）：`Exact` 与 `Smooth` 两条交付路径现在都存在，缺的是
+   bench 进程里的宿主（真实窗口 + 事件循环 + 有界退出）；`cargo bench` 的进程两者都没有。
+4. ~~**60 s 空闲计时 / 最小化恢复**（B29.12/B29.11）：判据已由代码保证，未逐项实跑。~~
+   **第 5 轮已补**：60 s 空闲零提交在两个后端各实跑一次；隐藏/显示恢复在 cocoa 上 `2 → 4`。
+   这一步也证明「判据由代码保证」在当前形态下**不成立**：presenter 的早退只有在调用方如实报告
+   损伤时才生效，画布侧需要自己的「这帧没变」判据（见 §7.8）。
+
+
+### 7.8 第 5 轮实施结果（2026-10-30/31，证据在 `docs/log/log-20261030-2.md` §15）
+
+本轮只做一件事：把 §7.7 第 4 条「60 s 空闲 / 恢复」从「判据由代码保证」推到**真机计时实跑**，
+并修掉它暴露的真缺陷。
+
+| 项 | 结果 | 证据 |
+|---|---|---|
+| 空闲 60 s 零提交（cocoa） | ✅ | `idle window submitted nothing for 60 s (2 presented, unchanged)` |
+| 空闲 60 s 零提交（objc2） | ✅ | 同一句，同一探针 |
+| 隐藏 → 显示即恢复（cocoa） | ✅ | `presentation resumed after hide/show (2 → 4)` |
+| 隐藏 → 显示即恢复（objc2） | `SKIP(host-limited)` | 显示器休眠 → 窗口服务器判 `occluded`，按 #103 具名跳过 |
+| 画布侧「同帧不提交」 | ✅ | `frame_is_shown` / `note_frame_shown` + 1 个纯逻辑用例（身份、质量档、销毁清理） |
+| 90 s Cargo 全门禁 | ✅ | `cargo fmt --check`；`check_source_structure.sh`；测试 10332 / 10491；clippy ×3 `-D warnings`；`cargo doc` 无新增告警；`check_jni_signatures.sh` 19/19；android（含 `gpu-wgpu`）/ohos/xwin 交叉 `Finished` |
+| B29.10 画布侧取流 | ✅（代码 + 单测） | `paint_tree_into` / `paint_widget_into` / `smooth_commands` / `present_recorded_commands`；两条用例（逐字节同等 + 门禁命名） |
+| B29.10 命令路径真机 | `SKIP(host-limited)` | 探针第三阶段已落地；10-31 复跑时显示器休眠→窗口服务器判 `occluded`，无法取得合成后的窗口 |
+
+**为什么原来会提交 4 帧**（根因，不是猜想）：
+
+```mermaid
+flowchart TD
+    A[AppKit: 需要重绘] --> B[drawRect: 到达画布]
+    B --> C{dirty_row_range}
+    C -->|整视图/不可解析| D[damage = None ⇒ 当作全帧]
+    C -->|局部带| E[damage = 行带]
+    D --> F[present_window_frame]
+    E --> F
+    F --> G[取 surface + 全帧上传 + present]
+```
+
+曝光/遮挡变化/后备存储回收都会走到 `C` 的 `None` 分支，而**内容一个像素也没变**。
+修法把决策点前移：先问帧缓存「这帧和上次交出去的是不是同一个 `Rc`」，是就不进 `F`。
+
+**已知未覆盖**：其它平台画布（Android/OpenHarmony/Windows）尚未接线，因此它们没有这条判据；
+`Smooth` 的取流与门禁已接线并通过单测，但**真实控件树的文字仍属 `ForcesCpu`**，所以实际窗口
+仍然逐字节交付（这是计划里写明的「39 类具名未完成」，不是隐式降级：每次回落都有一行日志 + 
+`smooth_fallback_reason` 可查）。
+
+> **第 6 轮更新**：文字与图像已不再是 `ForcesCpu`；剩下的具名集合与证据见 §7.9。
+
+### 7.9 第 6 轮实施结果（2026-10-31，证据在 `docs/log/log-20261030-2.md` §17）
+
+本轮只做 B29.10 的「桥接广度」与它暴露的两处性能问题，**不新增机制**。
+
+**新增的桥接家族（全部有逐字节或具名差异的 GPU 用例）**
+
+| 家族 | 分类 | 依据 |
+|---|---|---|
+| `DrawText` | `MappedWithDivergence` | 用参考渲染器自己的 shaping / advance / line box 生成覆盖度，再走 GPU 文本管线；实测与 `SoftwarePaintBackend` 逐字节相同，理论上只可能存在 1 LSB 合成差（§1.2 B） |
+| `DrawTextDecorated` | `MappedWithDivergence` | 字形 + 参考的 underline/strikethrough/wavy 规则，后者展开成居中线；逐字节或 ≤1 LSB |
+| `DrawRect` / `DrawRectStroke` | `Mapped` | 新增 `StrokeRectCentered`：四条边用参考的**居中**线刷，逐字节相同 |
+| `DrawLine` / `DrawLineStroke` | `Mapped` | 新增 `DrawLineCentered`：`(cx - w/2, cy - w/2, w, w)` 印戳，逐字节相同 |
+| `FillCircle` / `FillCircleAA` | `MappedWithDivergence` | 形状相同，边缘由 SDF 羽化 vs 整数谓词/采样网格（§1.2 C） |
+| `DrawCircle` / `DrawCircleStroke` | `MappedWithDivergence` | 新增 `DrawCircleInside`（shape mode 4）：环在 `radius - width .. radius` 内；差异只允许落在内外两 rim 的 2 px 内 |
+| `DrawImage` | `MappedWithDivergence` | 半透明像素的 source-over 合成可能差 1 LSB（§1.2 B）；不透明图像逐字节相同 |
+| `FillPathNonZero` | `MappedWithDivergence` | GPU fan 可能把参考扫描线排除的边界像素计入；差异只允许是「填充色 ↔ 背景」的整像素交换 |
+| `FillRoundedRect` / `FillRoundedRectAA`（含四角不同） | `MappedWithDivergence` | 均匀半径走 `FillRoundedRect`，四角不同走新增 `FillRoundedRectRadii`（按参考的 CSS 比例解算半径）；差异只允许在圆角 rim 的 2 px 内 |
+| `DrawRoundedRectStroke` / `DrawRoundedRectStrokeAA`（四角相同） | `MappedWithDivergence` | 新增 `StrokeRoundedRectInside`：内缩环；差异只落在内外两条 rim 的 2 px 内 |
+| `DrawArc`（`filled: false`） | `Mapped` / `MappedWithDivergence`（半透明） | 用参考的 `for_each_arc_sample` 展开成 `DrawLine` 序列，再走居中刷；逐字节相同 |
+| `FillRect` / `DrawRect` / `DrawLine`（半透明） | `MappedWithDivergence` | 走 offscreen run 的 source-over；允许 1 LSB 合成差（§1.2 B） |
+
+**新增的载体（`WgpuDrawCommand`）**
+
+- `DrawTextCoverage { rect, coverage, color, clip }`：已 shaped 的覆盖度上传，GPU 只做乘色与合成；
+- `StrokeRectCentered` / `DrawLineCentered`：参考的居中刷，解决旧 `StrokeRect`/`DrawLine` 几何偏一像素的问题；
+- `StrokeRoundedRectInside`：参考的圆角**内缩**描边，解决旧 `StrokeRoundedRect` 向外扩半个描边的问题。
+- `FillRoundedRectRadii`：四角不同半径的圆角填充（CSS 比例解算），均匀半径仍用旧变体。
+- `DrawCircleInside`：参考的圆**内缩**环（shape mode 4），解决旧 `DrawCircle` 跨在半径上的问题。
+- 描边圆弧不新增载体：用参考自己的 `for_each_arc_sample` 展开成 `DrawLine` 序列，因此复用已经逐字节验证的居中刷。
+- 半透明矩形/线条/描边：rect 管线是 `REPLACE`，因此这类命令在 `Normal` 下也走 offscreen run，
+  由 `BLEND_COMPOSITE_FS` 完成 source-over（补上了 dest 项的混合）。不透明命令仍走直接路径。
+
+**仍未桥接（23 个 2D 变体恒为 `ForcesCpu` + 5 个 3D 变体；另有两类圆角描边在非均匀圆角时回落，具名）**：填充圆弧（三角扇）、
+AA 线、渐变、路径（扫描线与 fan 的边界规则不同）、阴影（GPU 的 shadow pass 与参考合成差得不是 1 LSB）、图层、
+遮罩、blur、clip path、recorded 变体、`DrawImageScaled`（参考双线性重采样，GPU 图像管线是最近邻）、3D 五类；
+非均匀圆角的填充已桥接（`FillRoundedRectRadii`），仅非均匀圆角**描边**仍回落。
+它们让整帧回落 `Exact`，并在 `smooth_fallback_reason` 与日志里逐名可见（不是静默丢弃）。
+
+**性能**
+
+- shaped 覆盖度带 128 项有界缓存，键为 `(text, font, scale, face epoch)`，命中时按 `Arc` 共享字节（不再逐帧重栅格化）；
+- `TooltipManager` 每帧对同一文本的两次 `measure_text` 合并为一次；
+- 缓存失效点复用软件面已有的 `TEXT_METRICS_EPOCH`，字体注册改变解析结果时旧条目不可达。
+
+**证据（本机实跑）**
+
+```text
+cargo test --lib --features desktop,gpu-wgpu render::present::      → 52 passed
+cargo test --lib --features desktop,gpu-wgpu wgpu_backend           → 127 passed
+cargo test --lib --features desktop,gpu-wgpu                        → 10495 passed; 0 failed
+cargo test --lib --no-default-features --features desktop           → 10334 passed; 0 failed
+cargo test --lib --features desktop,gpu-wgpu a_tree_with_a_label…   → 1 passed
+cargo clippy --lib --tests --features desktop,gpu-wgpu -- -D warnings → Finished
+cargo clippy --all-targets --no-default-features --features desktop -- -D warnings → Finished
+cargo fmt --all -- --check                                          → clean
+bash tools/check_source_structure.sh                                → ✅
+```
+
+**真机（macOS）**：`run_present_macos.sh` 的 presenter 半段全绿（首帧/行带/命令流/resize 逐字节，
+305 offered / 304 presented），**但 `wired phase` 本轮被窗口服务器判为 `occluded`**，
+按 #103 报 `SKIP(host-limited)`，不计入闭合。因此「画布消费 `Smooth` 意图」的真机证据仍未取得；
+本节新增的文字/边框用例是库级 + GPU 级证据，不是窗口级证据。
+
+`a_tree_with_a_label_records_a_stream_the_gpu_can_draw` 是端到端证据：一棵真实控件树
+（根 + 背景 + 文本）经 `paint_tree_into` 记录、`census` 判定 `forces_cpu == 0`、桥接后由 GPU
+绘制，与 `SoftwarePaintBackend` 的整帧逐字节差 ≤1。它不是单元级的桥接断言。
+
+### 7.10 第 7 轮实施结果（2026-11-01，证据在 `docs/log/log-20261030-2.md` §18）
+
+本轮仍然只做 B29.10 的桥接广度，且 **不新增任何 `WgpuDrawCommand` 载体**：六个家族全部落回已有载体，
+逐条给出理由（原则 #101）。
+
+**新增桥接家族（全部有 GPU 对拍）**
+
+| 家族 | 分类 | 复用的载体 | 判据 |
+|---|---|---|---|
+| `DrawPath`（`filled: false`） | `Mapped`（不透明）/ `MappedWithDivergence`（半透明） | `DrawLineCentered`（逐段） | 参考 `draw_path` 本体就是逐段 `draw_line_with_width`；逐字节 |
+| `DrawPath`（`filled: true`） | `MappedWithDivergence` | `WgpuDrawCommand::DrawPath { filled: true }` | 参考 `fill_polygon` 是 **even-odd**；五角星用例钉住「中心必须为空」 |
+| `DrawPathDashed` | `Mapped` / `MappedWithDivergence` | `DrawLineCentered`（逐段） | 复用参考自己的 `for_each_dash_segment`；逐字节 |
+| `DrawLineAA` / `DrawLineStrokeAA` | `MappedWithDivergence` | `DrawTextCoverage`（8 位覆盖度） | 复用参考的 `line_stroke_coverage_grid` 与环境 AA 栅格，只有字节量化差（≤1 LSB） |
+| `DrawArc { filled: true }` | `MappedWithDivergence` | `FillPathNonZero`（以圆心为首顶点的扇多边形） | 参考的 `fill_triangle(center, prev, cur)` 序列正是这个扇；差只在扇边界 |
+| `BoxShadow { blur_radius: 0 }` | `Mapped` / `MappedWithDivergence` | `FillRect` | 参考无 blur 时就是 `fill_rect(spread_rect)`；逐字节 |
+| `BoxShadowRounded { blur_radius: 0 }` | `MappedWithDivergence` | `FillRoundedRectRadii` | 参考是 `fill_rounded_rect_radii`；差在圆角 rim |
+
+**为什么这四个家族不新增载体**：
+
+- 虚线描边与折线描边：参考把它们展开成 `draw_line_with_width` 的逐段调用，上一轮已经证过
+  `DrawLineCentered` 与它逐字节相同，因此缺的只是**展开**而不是**几何**；
+- AA 线：参考的算法是「采样栅格算覆盖度，再按覆盖度做 source-over」。这正是 `DrawTextCoverage`
+  载体的语义（`color × coverage`），并把「形状」留在参考实现里（`coverage.rs` 生成字形覆盖度也是同一条路）；
+- 填充圆弧与填充折线：两者在 GPU 侧都是「一个轮廓的三角扇」，后者已有 `FillPathNonZero` /
+  `DrawPath{filled}` 两种填充规则，直接复用即可区分 even-odd 与 non-zero。
+
+**一处合并（原则 #101）**：阴影的偏移 / 扩散矩形原本在 `paint.rs` 的两条命令臂里各写一遍，
+现在只有一处 `render::core::command::box_shadow_spread_rect`，软件后端的命令臂与 GPU 桥都调它。
+随之为 `wgpu_backend` 增加三个 `pub(crate)` 出口（`for_each_dash_segment`、
+`line_stroke_coverage_grid`、`box_shadow_spread_rect`）——不是新实现，是同一实现的第二条调用路径。
+
+**仍未桥接（16 个 2D 变体恒为 `ForcesCpu` + 4 个条件回落 + 5 个 3D）**
+
+- 恒定回落：`DrawImageScaled`（参考双线性 vs GPU 最近邻）、`PushClipRoundedRect`、`PushLayer` /
+  `PopLayer` / `PushLayerGroup`、`DrawGradient` / `DrawConicGradient`（现有渐变载体只支持等距 stop 且不插值）、
+  `Blur`、`ClipPath`、`PushMatte` / `PopMatte` / `EndMatte`，以及四个记录器自有变体
+  （`DrawPathRecorded` / `DrawPathDashedRecorded` / `FillPathNonZeroRecorded` / `DrawTextRecorded`——
+  它们应由 region flusher 解析，走到后端即为 bug，所以保持拒绝）。
+- 条件回落：blur > 0 的两种阴影；非均匀圆角的两种圆角描边。
+- 3D 五类。
+
+**证据（本机实跑）**
+
+```text
+cargo test --lib --features desktop,gpu-wgpu render::present::      → 53 passed
+cargo test --lib --features desktop,gpu-wgpu wgpu_backend           → 127 passed
+cargo test --lib --features desktop,gpu-wgpu                        → 10496 passed; 0 failed
+cargo test --lib --no-default-features --features desktop           → 10334 passed; 0 failed
+cargo clippy --all-targets --features desktop,gpu-wgpu,raw-window-handle -- -D warnings → Finished
+cargo clippy --no-default-features --features desktop,gpu-wgpu,raw-window-handle \
+    --example present_smoke -- -D warnings                        → Finished
+cargo fmt --all -- --check                                          → clean
+bash tools/check_source_structure.sh                                → ✅
+bash tools/run_present_macos.sh                                     → PASS（两个后端都 PASS，无 SKIP）
+```
+
+**真机（macOS）：第 6 轮欠的那一格补上了。** 两个后端都输出
+`present_smoke: canvas delivered 2 frame(s) as draw commands (Smooth)`，即一棵**带标签的真实控件树**
+被画布取流、桥接、并由 GPU 管线直接上屏（零回读）。为此探针改了两处，都是为了「答案说的是流还是窗口」：
+
+1. `Smooth` 阶段不再新建窗口，而是驱动刚刚用像素路径成功上过屏的那个窗口——本机窗口服务器会把新建窗口
+   长时间报成 `occluded`，那样得到的是宿主限制，不是关于命令流的答案；
+2. 「流可画但 surface 拒绝」现在按 `last_refusal` 具名报成 `SKIP(present-refused)`，
+   而不是笼统的 FAIL（#103）。
+
+这一格的历史：§7.9 的「wired phase 因 `occluded` 报 SKIP」与 §7.8 的「命令路径真机证据未取得」
+就此闭合；窗口级证据与库级证据现在是同一件事的两端。
 
 ### 7.6 风险与预先裁定的处理
 
@@ -477,3 +913,108 @@ winner 列使用——门控把流留在参考光栅器时，两个计时列测�
 | 模拟器/软件适配器 | SwiftShader 等 | 性能数字标注非代表性；功能仍须过 |
 
 ---
+
+## 8. 与 breprs 的协同（3D 内核 + UI 宿主）
+
+> **来源**：用户提问「breprs 的 wgpu 也使用了 L1~L3 多级渲染，请核实一下；将来两个库要配合写 3D
+> 绘图软件，到底是 breprs 配合本库，还是本库配合 breprs？如果本库配合，如何配合？」（2026-10-31）。
+>
+> **本节只做核实与裁定，不改 breprs 一行代码**。所有行号是对
+> `~/Desktop/workspace/breprs` 现行源码 `rg`/`sed` 读出的实测位置，不是文档转述。
+
+### 8.1 先纠正前提：breprs 的 L0~L3 不是渲染分级
+
+| 事实 | 证据（breprs 仓内行号） |
+|---|---|
+| `L0/L1/L2/L3` 是 **CPU 性能档** | `src/platform/mod.rs:13` 注释标题 `# CPU performance tiers (L0 / L1 / L2 / L3)` |
+| GPU 能力是**另一个**枚举 | `src/platform/mod.rs:19` `GPU capability is detected independently — see GpuTier`；枚举在 `:595`，默认 `GpuTier::None` |
+| L0~L3 的唯一消费者是线程数 | `src/platform/mod.rs:298-306` `tier_threads()`：`L1Low => host.min(2)`、`L2Middle => host/2`、`L3High => host` |
+| 3D 上屏是**单 pass、单 present** | `src/gpu/rendering.rs:293` `render_frame()` → `:297` `get_current_texture()` → `:323` 一次 `begin_render_pass` → `:383` `queue.present(frame)` |
+
+**结论**：breprs 的 wgpu 路径里**不存在**「L1~L3 多级渲染」，也没有分帧/分层上屏。
+
+⚠️ **命名撞车（必须写进 3D 软件的文档）**：本文件 §0 的 `L0~L3` 是**决策层**（质量意图 → 交付面 →
+成本门控 → 回退），breprs 的 `L0~L3` 是**CPU 线程档**。两个「L3」毫无关系。将来写 3D 软件时
+任何跨库讨论都要带库名前缀（`rw:deliver-L2` / `breprs:perf-L2`），否则必然误传。
+
+### 8.2 主从裁定：**breprs 配合本库**
+
+判定依据不是偏好，是**谁已经拥有不可让渡的资源**：
+
+| 能力 | breprs | rust-widgets |
+|---|---|---|
+| 窗口 / `RawWindowHandle` | ❌ 全仓 `rg raw-window-handle` **0 命中**，连依赖都没有 | ✅ 全部平台后端 |
+| surface 所有权 | ❌ 只在 `with_surface` 里被动接收（`rendering.rs:126`，字段 `surface: Option<Surface<'static>>` 在 `:73`） | ✅ `render/present/presenter.rs` 自建 + 平台画布接线 |
+| 事件循环 / 输入 | ❌ 无 | ✅ 已有 |
+| 帧节流 / 损伤 / 遮挡 / 空闲零提交 | ❌ 无 | ✅ B29.11/B29.12 已真机验证 |
+| present 策略（vsync 回落、`Outdated/Lost/Timeout`） | ⚠️ `rendering.rs:154` 直接取 `present_modes[0]` | ✅ `AutoVsync` + `fallback_present_mode` |
+| 3D 几何 / NURBS / 布尔 / SDF 内核 | ✅ 这是它的本体 | ❌ 不该长 |
+
+breprs 的渲染入口**本身就是把窗口让给宿主的形状**（`with_surface(config, surface)` 收外部 surface、
+`render_frame` 自己 present）。因此分工固定为：
+
+> **breprs = 几何/算法内核**：无窗口、无 surface、无事件循环、不负责上屏。
+> **rust-widgets = 宿主**：窗口、事件循环、UI、损伤节流、**唯一的 present 方**。
+
+这条裁定与 §7 已有的所有结论一致：present 的决策点必须只有一个，否则 B29.12 的「空闲零提交」
+和 B29.11 的「遮挡/超时映射」都会被第二个 present 方绕过。
+
+### 8.3 硬约束：两库必须共用同一台 `wgpu::Device` / `Queue`
+
+交换链纹理属于**创建它的设备**。这条本库自己的代码注释已经写死：
+`src/render/present/presenter.rs:388-394` ——
+
+> the alternative — handing the commands to a second renderer with its own device — cannot work,
+> because a swapchain texture belongs to the device that created it.
+
+而两库现在**各自建 device**：breprs `rendering.rs:77` `Instance::new_without_display_handle()`、
+`:83` `request_adapter`、`:94` `request_device`；本库 `FramePresenter::new` 同样自建。
+版本不是问题（两边 `wgpu` 都是 **30.0.1**：`breprs/Cargo.toml:164`、本库 `Cargo.toml:905`）。
+
+缺的**不是能力，是入口**——两边都已有「借设备」的先例：
+
+- 本库：`presenter.rs:689` `WgpuRenderer::from_device(self.device.clone(), self.queue.clone(), self.adapter_info.clone())`；
+- breprs：`src/gpu/surface_acceleration.rs:100` `pub fn with_device(mut self, device: Arc<wgpu::Device>)`。
+
+### 8.4 接缝契约（最小改动，三步）
+
+| # | 仓 | 改动 | 为什么只能这样 |
+|---|---|---|---|
+| 1 | breprs | `Renderer::from_device(Arc<Device>, Arc<Queue>, &RenderConfig)` | 与它自己的 `with_device` 同风格；禁止再 `Renderer::new()` |
+| 2 | breprs | `Renderer::render_to_view(&mut self, &TextureView, (u32,u32))`；`render_frame` 改为它的一层薄封装 | `render_frame` 里 `get_current_texture` 之后的那段（`:297`–`:383`）可直接抽出；现有行为与测试不变 |
+| 3 | rust-widgets | `FramePresenter::device()/queue()` 只读借出 | 不转移所有权；present 仍是本库唯一出口 |
+
+合成次序固定为：**breprs 先画 3D → 本库在同一 encoder 里把 UI 画面叠上 → 本库一次 `queue.present`**。
+这正落在 `present_commands_inner`（`presenter.rs:423`）已有的「先画到离屏、再一次全屏 pass 上屏」
+结构里，不新增机制。备选形态（breprs 自管离屏纹理、本库当背景层采样）只是同一契约的另一种调用形式，
+**仍然必须共用设备**。
+
+### 8.5 三个冲突点与裁定
+
+| 冲突 | 现状 | 裁定 |
+|---|---|---|
+| present mode | breprs `rendering.rs:154` `present_modes[0]`；本库有 `AutoVsync` + `fallback_present_mode` | 走 8.4 后 **breprs 不再 configure surface**，present mode 只由本库决定 |
+| 双设备 | 两边 `new()` 各建一台 | 3D 模式下 breprs **禁止**调 `new()`，只允许 `from_device` |
+| MSAA / depth 次序 | breprs `msaa_samples: 4`（`rendering.rs:53`）+ `Depth32Float`；本库合成是「一次全屏 blit」 | 3D pass 自己 resolve 到 1x 纹理后再交给本库；本库 UI pass 不碰 depth |
+
+### 8.6 对本库帧节流的影响（B29.12 的语义必须被 3D 侧显式触发）
+
+B29.12 的收益建立在「内容不变就零提交」（`render::present::{frame_is_shown, note_frame_shown}`
+用帧缓存的 `Rc` 身份判定）。接入 3D 后：**相机/场景变化必须 `mark_full_damage()`**，否则画面不刷新。
+这不是缺陷，是节流语义按设计生效；3D 侧因此必须提供「本帧场景是否变化」的布尔量，
+作为损伤上报的一部分——这条要求写在此处，避免将来被当成 presenter 的 bug 反复「修」。
+
+### 8.7 本节不做的事（防越界）
+
+- ❌ 不改 breprs 任何代码（本轮只核实）。
+- ❌ 不在本库引入几何内核、不在 breprs 引入窗口/事件循环。
+- ❌ 不因为要接 3D 就放宽 `Exact` 的逐字节约束：3D 层是**新增的一层合成**，`Exact` 在
+  「无 3D」时仍逐字节；有 3D 时按 §0 的效果档另行声明（B/C 档），不混用同一判据。
+
+### 8.8 状态
+
+| 项 | 状态 |
+|---|---|
+| 核实「L1~L3 是否为渲染分级」 | ✅ 否，是 CPU 线程档（§8.1） |
+| 主从裁定 | ✅ breprs 配合本库（§8.2） |
+| 共用设备约束与两侧先例 | ✅ 查明（§8.3）

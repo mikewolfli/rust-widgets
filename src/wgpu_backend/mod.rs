@@ -89,6 +89,12 @@
 //!    **The radial gradient is done too** (`FillRadialGradient`): the stop table is uploaded as a
 //!    texture and the fragment computes `t = sqrt(dx² + dy²) · (1/radius)` in `f32` exactly as the
 //!    CPU does before the nearest-stop lookup, which measures byte-identical.
+//!    **Arbitrary gradients are done as well** (`FillGradient`, which `RenderCommand::DrawGradient`
+//!    and `RenderCommand::DrawConicGradient` bridge to): the reference's **own** 256-entry ramp is
+//!    uploaded as a 256 × 1 texture and the fragment evaluates the same linear / radial / conic
+//!    position expression the software rasteriser does, so the colours agree by construction and
+//!    only a position that lands on a bucket boundary can read the neighbouring entry (which the
+//!    bridge only accepts while that entry differs by at most one level).
 //!    **Filled paths are done** (`DrawPath { filled: true }`, `FillPathNonZero`): the CPU turns each
 //!    contour into a triangle fan, the stencil buffer counts the fan with the rule the command asks
 //!    for (invert for even-odd, increment/decrement for non-zero), a cover quad paints where the
@@ -142,8 +148,13 @@ mod raster;
 mod renderer;
 pub mod shaders;
 mod types;
-pub use bridge::bridge_non_zero_fill_commands;
+pub use bridge::{
+    bridge_non_zero_fill_commands, bridge_render_commands, ramp_is_smooth, BridgeGap,
+};
 pub use commands::WgpuDrawCommand;
+/// The device-wait budget shared by the readback path and the presenter (BLUE29 B29.03/B29.09).
+#[cfg(feature = "raw-window-handle")]
+pub(crate) use renderer::resources::GPU_READBACK_TIMEOUT;
 pub use renderer::{RenderQuality, WgpuRenderer};
 pub use types::{PixelRect, Rgba8};
 #[cfg(test)]

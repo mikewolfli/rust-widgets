@@ -14,7 +14,7 @@ use super::encode::{CIRCLE_QUAD_BYTES, INSTANCE_BYTES, MAX_INSTANCES_PER_DRAW};
 use super::frame::WgpuRenderer;
 use super::resources::DrawStep;
 use super::resources::ShadowLayer;
-use super::uploads::{ImageDraw, PathDraw, RadialDraw, ShapeDraw, TextDraw};
+use super::uploads::{GradientDraw, ImageDraw, PathDraw, RadialDraw, ShapeDraw, TextDraw};
 
 /// The handles one recorded stream needs, resolved once per call.
 ///
@@ -37,6 +37,7 @@ pub(super) struct StepRecorder<'a> {
     pub(super) text_draws: &'a [TextDraw],
     pub(super) shape_draws: &'a [ShapeDraw],
     pub(super) radial_draws: &'a [RadialDraw],
+    pub(super) gradient_draws: &'a [GradientDraw],
     pub(super) path_draws: &'a [PathDraw],
     pub(super) shadow_layers: &'a [ShadowLayer],
     /// The pipeline a text draw uses. The frame's own pass composites text source-over; a blend
@@ -142,6 +143,18 @@ impl<'a> StepRecorder<'a> {
                 DrawStep::Radial(index) => {
                     let draw = &self.radial_draws[*index];
                     rp.set_pipeline(&self.renderer.radial_pipeline);
+                    rp.set_bind_group(0, &draw.bind_group, &[]);
+                    rp.set_bind_group(1, self.transformed, &[]);
+                    rp.draw(0..6, 0..1);
+                }
+                DrawStep::Gradient(index) => {
+                    let draw = &self.gradient_draws[*index];
+                    let pipeline = if draw.verbatim {
+                        &self.renderer.gradient_verbatim_pipeline
+                    } else {
+                        &self.renderer.gradient_pipeline
+                    };
+                    rp.set_pipeline(pipeline);
                     rp.set_bind_group(0, &draw.bind_group, &[]);
                     rp.set_bind_group(1, self.transformed, &[]);
                     rp.draw(0..6, 0..1);

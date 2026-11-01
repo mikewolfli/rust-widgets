@@ -2277,6 +2277,92 @@ fn accept_host_resize(window_id: i64, width: i32, height: i32) -> bool {
     crate::queue_resize_trigger(window_id as u64, width as u32, height as u32)
 }
 
+/// Registers the native window behind an Android `Surface` for `window_id`.
+///
+/// The host calls this from `SurfaceHolder.Callback.surfaceCreated` (and from
+/// `onSurfaceChanged`, which may hand over a different `Surface` for the same window). It is the
+/// Android spelling of "here is the thing you may present into": nothing else in the library can
+/// obtain an `ANativeWindow*` from a Java object.
+///
+/// # Ownership
+///
+/// `ANativeWindow_fromSurface` returns one owned reference. That reference moves into the
+/// registry and is released by [`Java_rust_1widgets_RustWidgets_nativeClearSurface`]; a rotation
+/// therefore replaces the window instead of leaking the previous one.
+///
+/// # Returns
+///
+/// `1` when a native window was obtained and recorded, `0` when the id or the surface is unusable.
+/// `0` is also the answer on a host build, where there is no Android surface to convert — an
+/// honest "no", not a pretend success.
+#[cfg(feature = "android-jni")]
+#[no_mangle]
+pub extern "system" fn Java_rust_1widgets_RustWidgets_nativeSetSurface<'local>(
+    env: jni::JNIEnv<'local>,
+    _class: jni::objects::JClass<'local>,
+    window_id: jni::sys::jlong,
+    surface: jni::objects::JObject<'local>,
+) -> jni::sys::jint {
+    if accept_host_surface(window_id, env.get_raw(), surface.as_raw()) {
+        1
+    } else {
+        log::warn!(
+            "[android-jni] nativeSetSurface: refused window id {window_id} \
+             (non-positive id, null surface, or no native window behind it)"
+        );
+        0
+    }
+}
+
+/// Forgets the native window recorded for `window_id`.
+///
+/// The host calls this from `surfaceDestroyed`: Android documents that a native window may be
+/// replaced or removed, so continuing to present into the old pointer is a use-after-free. The
+/// call releases the reference the registration held and answers `1` when one was recorded.
+///
+/// On a host build nothing is ever registered, so the honest answer is `0`.
+#[cfg(feature = "android-jni")]
+#[no_mangle]
+pub extern "system" fn Java_rust_1widgets_RustWidgets_nativeClearSurface(
+    _env: jni::JNIEnv,
+    _class: jni::objects::JClass,
+    window_id: jni::sys::jlong,
+) -> jni::sys::jint {
+    if window_id <= 0 {
+        log::warn!("[android-jni] nativeClearSurface: non-positive window id {window_id}");
+        return 0;
+    }
+    if crate::platform::android::clear_native_window(window_id as u64) {
+        1
+    } else {
+        0
+    }
+}
+
+/// The decision behind [`Java_rust_1widgets_RustWidgets_nativeSetSurface`], kept out of the JNI
+/// entry so its refusal branches are reachable from a host-run test.
+#[cfg(feature = "android-jni")]
+fn accept_host_surface(
+    window_id: i64,
+    env: *mut jni::sys::JNIEnv,
+    surface: jni::sys::jobject,
+) -> bool {
+    if window_id <= 0 {
+        return false;
+    }
+    let pointer = crate::platform::android::native_window_from_surface(env, surface);
+    if pointer == 0 {
+        return false;
+    }
+    if crate::platform::android::register_native_window(window_id as u64, pointer) {
+        true
+    } else {
+        // The registry refused the pair, so the reference taken above would otherwise leak.
+        crate::platform::android::release_native_window(pointer);
+        false
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -51,6 +51,10 @@ impl CodeEditor {
         let current_match = self.find.matches.get(self.find.current).cloned();
         let (selection_start, selection_end) = self.cursor.bounds();
         let mut painted: Vec<usize> = Vec::new();
+        // One run buffer for the whole viewport. `row_runs` used to allocate a `Vec` per line per
+        // frame for a list that is usually two or three entries long and almost always the same
+        // shape; the row loop clears and refills this one instead (G-316).
+        let mut row_run_buffer: Vec<(usize, usize, TokenKind)> = Vec::new();
 
         let mut row = 0usize;
         // An empty document shows its placeholder instead of an empty box. The
@@ -111,7 +115,12 @@ impl CodeEditor {
                 measured
             };
             let layout = if wrapped { None } else { Some(line_layout.clone()) };
-            let runs = if layout.is_some() { self.row_runs(line, text) } else { Vec::new() };
+            if layout.is_some() {
+                self.row_runs_into(line, text, &mut row_run_buffer);
+            } else {
+                row_run_buffer.clear();
+            }
+            let runs = &row_run_buffer;
             // How far a continuation row is indented: the line's own leading
             // whitespace, clamped so it can never push the wrapped text off the row.
             // Computed once per line, not per segment.
@@ -206,7 +215,7 @@ impl CodeEditor {
                     line,
                     text,
                     &geom,
-                    &runs,
+                    runs,
                     segment_start,
                     segment_end,
                     &brackets,
@@ -303,8 +312,25 @@ impl CodeEditor {
     /// their own run lists, the measured x of a run and the x it is drawn at could
     /// differ — which is exactly the caret/ink mismatch this whole change is
     /// about.
-    pub(super) fn row_runs(&self, line: usize, text: &str) -> Vec<(usize, usize, TokenKind)> {
+    pub(crate) fn row_runs(&self, line: usize, text: &str) -> Vec<(usize, usize, TokenKind)> {
         let mut runs: Vec<(usize, usize, TokenKind)> = Vec::new();
+        self.row_runs_into(line, text, &mut runs);
+        runs
+    }
+
+    /// [`Self::row_runs`] filling a caller-owned buffer instead of allocating one.
+    ///
+    /// The paint pass asks for the runs of every visible line on **every** frame, and the answer is
+    /// usually the same two or three ranges as the frame before. An owned `Vec` per line therefore
+    /// bought nothing but an allocation and a free per visible line per frame; this form lets the
+    /// row loop keep one buffer and clear it (G-316).
+    pub(crate) fn row_runs_into(
+        &self,
+        line: usize,
+        text: &str,
+        runs: &mut Vec<(usize, usize, TokenKind)>,
+    ) {
+        runs.clear();
         let mut pen = 0usize;
         // Borrowed from the cache: `tokens_on_line` returns an owned `Vec`, and this
         // reads the list per painted row (and again when the row is measured). The
@@ -333,7 +359,6 @@ impl CodeEditor {
         if pen < text.len() {
             runs.push((pen, text.len(), TokenKind::Plain));
         }
-        runs
     }
 
     /// Measures one row and returns its character-boundary x positions.
