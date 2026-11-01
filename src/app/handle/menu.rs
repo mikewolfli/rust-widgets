@@ -230,6 +230,39 @@ impl MenuHandle {
         .unwrap_or(0)
     }
 
+    /// Creates a **nested** menu under this menu (feedback C-4).
+    ///
+    /// A menu's parent is structurally the menu it hangs from, exactly as
+    /// [`WindowHandle::new_menu`]'s parent is its bar. Both parents are menus to the backend: the
+    /// popup is mounted in the overlay layer (a child of the top-level window) so it can extend
+    /// past this menu's own rectangle, and the self-drawn menu model gains a branch row carrying
+    /// the submenu indicator. The child is returned so the host can add items to it with
+    /// [`WindowHandle::new_menu_item`].
+    ///
+    /// # Opening it
+    ///
+    /// The library does not guess where a submenu belongs while the pointer is still moving. When
+    /// the branch row is activated this menu emits `submenu_requested` with the row's label; the
+    /// host answers by calling [`MenuHandle::open_at`] on the returned handle, positioning it with
+    /// [`MenuHandle::row_rect`]. That is the same division the rest of the menu API uses: the
+    /// control owns its rows, the host owns when and where a popup is shown.
+    pub fn new_submenu(&self, text: &str, x: i32, y: i32, w: u32, h: u32) -> MenuHandle {
+        MenuHandle::from_raw(crate::create_menu(self.raw_id(), text, x, y, w, h))
+    }
+
+    /// The painted rectangle of row `index`, in window coordinates.
+    ///
+    /// This is what positions a nested menu ([`MenuHandle::new_submenu`]) under the branch row the
+    /// user activated. `None` for an out-of-range row or a menu that is not mounted.
+    pub fn row_rect(&self, index: usize) -> Option<Rect> {
+        crate::widget::runtime::with_widget(self.raw_id(), |widget| {
+            (widget as &dyn core::any::Any)
+                .downcast_ref::<crate::widget::menu_toolbar::menu::Menu>()
+                .and_then(|menu| menu.row_rect(index))
+        })
+        .flatten()
+    }
+
     /// Opens this menu with its top-left corner at `(x, y)` in client coordinates.
     ///
     /// The popup is clamped into `viewport` and made the window's last child, so it paints
@@ -246,4 +279,21 @@ impl MenuHandle {
 }
 impl_handle!(MenuItemHandle, "Type-safe handle for a native menu item.");
 impl_handle!(ToolBarHandle, "Type-safe handle for a native tool bar.");
+
+impl ToolBarHandle {
+    /// Replaces the label of item `index`, returning whether the change landed.
+    ///
+    /// The handle form of [`crate::widget::menu_toolbar::tool_bar::ToolBar::set_item_text`]: an i18n
+    /// reload can relabel a strip without
+    /// rebuilding it, keeping every action id, checked state and action link in place (feedback
+    /// C-5). `false` for an out-of-range index or an id that is not a live tool bar.
+    pub fn set_item_text(&self, index: usize, text: &str) -> bool {
+        crate::widget::runtime::with_widget_mut(self.raw_id(), |widget| {
+            (widget as &mut dyn core::any::Any)
+                .downcast_mut::<crate::widget::menu_toolbar::tool_bar::ToolBar>()
+                .is_some_and(|bar| bar.set_item_text(index, text))
+        })
+        .unwrap_or(false)
+    }
+}
 impl_handle!(StatusBarHandle, "Type-safe handle for a native status bar.");

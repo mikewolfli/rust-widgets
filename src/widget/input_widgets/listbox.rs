@@ -101,6 +101,14 @@ pub struct ListBox {
     /// The coordinator reports the same effect through `DragSource::on_drag_finished`; this
     /// signal is the observable form for a host that holds the control by id.
     pub drag_finished: Signal1<DropEffect>,
+    /// Emitted when the user requests a context menu on this list.
+    ///
+    /// The payload is the pointer position. A host answers with the same menu policy it uses for
+    /// the table family; a list row was previously the one common row control with no such signal,
+    /// so an Outline or Problems panel could not offer a right-click menu at all (feedback C-8).
+    /// The row under the pointer is selected **before** this emits, so the handler acts on the row
+    /// the user pointed at (feedback C-9).
+    pub context_menu_requested: Signal1<Point>,
     /// The row a drag taken from this list started on.
     ///
     /// Taken in `drag_payload` and consumed by `on_drag_finished`: a transfer to another list
@@ -365,6 +373,7 @@ impl ListBox {
             type_ahead_started: None,
             rename_requested: Signal1::new(),
             item_changed: Signal1::new(),
+            context_menu_requested: Signal1::new(),
             item_revision: 0,
             icon_advance_cache: RefCell::new(None),
             row_font_cache: RefCell::new(None),
@@ -1175,6 +1184,15 @@ impl ListBox {
         Some(row)
     }
 
+    /// The absolute index of the item drawn at `pos`, for a host that needs the row a pointer
+    /// event addressed.
+    ///
+    /// This is the public counterpart of the hit test the widget's own press handling uses, so a
+    /// context-menu handler and a left click resolve the same row. `None` outside the rows.
+    pub fn item_index_at(&self, pos: Point) -> Option<usize> {
+        self.item_index_at_y(pos)
+    }
+
     /// Returns the absolute index of the item drawn at widget-relative `y`.
     ///
     /// The inverse of [`Self::row_rect`], deliberately built on it: a point is a row's when it is
@@ -1323,6 +1341,22 @@ impl Widget for ListBox {
     fn base(&self) -> &BaseWidget {
         &self.base
     }
+
+    /// Selects the row under the pointer, then asks the host for a menu about it.
+    ///
+    /// A right-click used to reach no signal at all for this control; adding the signal without
+    /// this hook would make the menu act on the previous selection. Selection happens first for
+    /// the same reason a left click selects before announcing (feedback C-9). A point that is not
+    /// on a row answers `false`, so the host may fall back to its own menu policy.
+    fn context_menu_event(&mut self, pos: Point) -> bool {
+        let Some(index) = self.item_index_at_y(pos) else {
+            return false;
+        };
+        self.select(index);
+        self.context_menu_requested.emit(pos);
+        true
+    }
+
     fn set_state_theme_hook(&mut self) {
         crate::style::reapply_active_theme_state(self);
     }
@@ -1386,6 +1420,11 @@ impl Widget for ListBox {
                     CapabilityValue::UInt(*v as u64)
                 }))
             }
+            "context_menu_requested" => Some(EventSignalRef::mapped(
+                "context_menu_requested",
+                &self.context_menu_requested,
+                |v| crate::widget::capability::CapabilityValue::String(format!("{},{}", v.x, v.y)),
+            )),
             _ => None,
         }
     }
@@ -2915,5 +2954,25 @@ mod tests {
         let row = ListBoxItem::new().with_font(font.clone()).with_tooltip("hint");
         assert_eq!(row.font(), Some(&font));
         assert_eq!(row.tooltip(), Some("hint"));
+    }
+
+    /// A right-click selects the row under the pointer and publishes the request (C-8/C-9).
+    #[test]
+    fn a_menu_request_selects_the_row_and_publishes_the_point() {
+        let mut list = listbox_with(4);
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let sink = std::sync::Arc::clone(&seen);
+        list.context_menu_requested.connect_ref(move |pos: &Point| {
+            *sink.lock().expect("the test slot locks") = Some(*pos);
+        });
+
+        let row = list.row_rect(2).expect("row 2 is visible");
+        let point = Point::new(row.x + 2, row.y + 2);
+        assert_eq!(list.item_index_at(point), Some(2));
+        assert_eq!(list.selected_indices(), &[] as &[usize]);
+        assert!(Widget::context_menu_event(&mut list, point));
+        assert_eq!(list.selected_indices(), &[2], "the menu acts on the pointed-at row");
+        assert_eq!(*seen.lock().expect("the test slot locks"), Some(point));
+        assert!(!Widget::context_menu_event(&mut list, Point::new(-10, -10)));
     }
 }

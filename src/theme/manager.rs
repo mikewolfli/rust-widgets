@@ -410,15 +410,30 @@ impl ThemeManager {
     }
 
     /// Loads and registers a theme from a JSON file path.
+    ///
+    /// The theme name lives **in the file**, not in its filename, so a caller that needs to know
+    /// which theme it just registered calls [`Self::load_theme_named`] instead (feedback C-7).
     #[cfg(not(alloc_frugal))]
     pub fn load_theme(&mut self, path: &str) -> Result<(), Box<dyn std::error::Error>> {
+        self.load_theme_named(path).map(|_| ())
+    }
+
+    /// Loads and registers a theme, returning the **name recorded in the file**.
+    ///
+    /// [`Self::load_theme`] can only report success, which leaves a caller unable to select the
+    /// theme it just added without re-reading the file: the filename may be anything
+    /// (`my-palette.json`) while the theme inside it carries its own name. This method answers that
+    /// question directly and, like `load_theme`, does **not** activate the theme.
+    #[cfg(not(alloc_frugal))]
+    pub fn load_theme_named(&mut self, path: &str) -> Result<String, Box<dyn std::error::Error>> {
         let content = std::fs::read_to_string(path)?;
         let theme: Theme = serde_json::from_str(&content)?;
+        let name = theme.name.clone();
         // Route through `register_theme` so a loaded theme joins the deterministic
         // registration order; inserting directly here would leave it unselectable by
         // `set_appearance` (D09-THEME-01).
         self.register_theme(theme);
-        Ok(())
+        Ok(name)
     }
 
     /// Loads a theme from a JSON file and makes it the active theme.

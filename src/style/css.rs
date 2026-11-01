@@ -27,6 +27,12 @@ use crate::style::{
 };
 use crate::widget::WidgetKind;
 
+/// One rule's declaration byte spans, parallel to its declaration list.
+///
+/// Named so the parse walk's return type stays readable (and so the two entry points that ask for
+/// spans spell the same shape).
+type RuleDeclarationSpans = Vec<(usize, usize)>;
+
 /// A declaration value already converted from its source text.
 ///
 /// Stored only in a thread-local cache keyed by the declaration's exact text (G-21): applying the
@@ -406,6 +412,14 @@ pub struct ParsedCssRule {
     pub specificity: u32,
     /// The rule's declarations, in source order.
     pub declarations: Vec<CssDeclaration>,
+    /// The byte span of each declaration in the sheet source, parallel to `declarations`.
+    ///
+    /// A designer's inspector needs to jump from a computed value back to the declaration that
+    /// produced it. The span is the trimmed `property: value` text in the **sheet's own** byte
+    /// coordinates, so an editor buffer and a registered sheet answer with the same offsets
+    /// (feedback C-6). The parallel vector keeps [`CssDeclaration`] unchanged for every existing
+    /// construction site; both are built by the same walk, so their lengths cannot drift.
+    pub declaration_spans: Vec<(usize, usize)>,
 }
 
 /// Convert a widget kind name string (e.g. "Button", "Label") to a `WidgetKind` variant.
@@ -777,9 +791,35 @@ impl CssParser {
     /// parsed rules is what lets `style::css_trace` report a winning rule without a second parser
     /// (BLUE26 B26.10).
     pub fn parse_rules(css: &str) -> Result<Vec<CssRule>, String> {
+        Ok(Self::parse_rules_with(css, false)?.0)
+    }
+
+    /// Parse CSS text into raw rules **and** the byte span of every declaration.
+    ///
+    /// `collect_spans` decides whether the walk pays for the source-position map. Rule
+    /// registration and the apply path only need the rules, so they pass `false` and the walk
+    /// allocates exactly what it did before spans existed; the trace passes `true` because a
+    /// computed origin must be able to name the declaration's source range (feedback C-6).
+    fn parse_rules_with(
+        css: &str,
+        collect_spans: bool,
+    ) -> Result<(Vec<CssRule>, Vec<RuleDeclarationSpans>), String> {
         let mut rules = Vec::new();
+        let mut spans = Vec::new();
         let mut pos = 0;
         let chars: Vec<char> = css.chars().collect();
+        // `bytes[i]` is the byte offset of `chars[i]`, with one sentinel at the end. The parser
+        // walks characters (the original algorithm), while the spans are reported in bytes
+        // because that is what an editor buffer addresses. Built only for a trace: the map costs
+        // one `usize` per character and nothing on the apply path reads it.
+        let mut bytes: Vec<usize> = if collect_spans {
+            css.char_indices().map(|(offset, _)| offset).collect()
+        } else {
+            Vec::new()
+        };
+        if collect_spans {
+            bytes.push(css.len());
+        }
 
         while pos < chars.len() {
             // Skip whitespace and comments
@@ -825,13 +865,16 @@ impl CssParser {
                 );
             }
             let decl_text: String = chars[decl_start..pos].iter().collect();
+            let decl_base = if collect_spans { bytes[decl_start] } else { 0 };
             pos += 1; // skip '}'
 
-            let declarations = Self::parse_declarations(&decl_text);
+            let (declarations, declaration_spans) =
+                Self::parse_declarations_with(&decl_text, decl_base, collect_spans);
             rules.push(CssRule { selector_text, declarations });
+            spans.push(declaration_spans);
         }
 
-        Ok(rules)
+        Ok((rules, spans))
     }
 
     /// Parses CSS text into rules whose selectors are resolved once (G-164).
@@ -841,9 +884,11 @@ impl CssParser {
     /// carried as `None` rather than dropped here: the registration path filters it (an unmatched
     /// rule is the honest reading of an unknown kind) while the trace reports it.
     pub fn parse_prepared_rules(css: &str) -> Result<Vec<ParsedCssRule>, String> {
-        Ok(Self::parse_rules(css)?
+        let (rules, spans) = Self::parse_rules_with(css, true)?;
+        Ok(rules
             .into_iter()
-            .map(|rule| {
+            .zip(spans)
+            .map(|(rule, declaration_spans)| {
                 let selector = Self::parse_selector(&rule.selector_text);
                 let specificity = selector.as_ref().map_or(0, CssSelector::specificity);
                 ParsedCssRule {
@@ -851,6 +896,7 @@ impl CssParser {
                     selector,
                     specificity,
                     declarations: rule.declarations,
+                    declaration_spans,
                 }
             })
             .collect())
@@ -1018,23 +1064,75 @@ impl CssParser {
         PseudoState::from_state_suffix(name)
     }
 
-    /// Parse declaration block text into a list of declarations.
-    fn parse_declarations(text: &str) -> Vec<CssDeclaration> {
+    /// Parse declaration block text into declarations, optionally recording their source spans.
+    ///
+    /// `base` is the byte offset of `text` inside the sheet, so a caller that parsed a rule's block
+    /// gets sheet-relative spans instead of block-relative ones. The span covers the trimmed
+    /// `property: value` text; a declaration whose property or value is empty is skipped, exactly
+    /// as the apply skips it, so the span vector stays parallel to the declaration vector.
+    ///
+    /// The apply path registers rules through [`Self::parse_rules`], which has no use for a source
+    /// range; passing `collect_spans = false` keeps its per-declaration work at the historical one
+    /// string pair, while a trace pays one extra pair of offsets per declaration.
+    fn parse_declarations_with(
+        text: &str,
+        base: usize,
+        collect_spans: bool,
+    ) -> (Vec<CssDeclaration>, RuleDeclarationSpans) {
         let mut decls = Vec::new();
-        for line in text.split(';') {
-            let line = line.trim();
-            if line.is_empty() {
-                continue;
-            }
-            if let Some(idx) = line.find(':') {
-                let property = line[..idx].trim().to_string();
-                let value = line[idx + 1..].trim().to_string();
-                if !property.is_empty() && !value.is_empty() {
-                    decls.push(CssDeclaration { property, value });
-                }
+        let mut spans = Vec::new();
+        let mut segment_start = 0usize;
+        for (offset, ch) in text.char_indices() {
+            if ch == ';' {
+                Self::push_declaration_segment(
+                    &text[segment_start..offset],
+                    base + segment_start,
+                    collect_spans,
+                    &mut decls,
+                    &mut spans,
+                );
+                segment_start = offset + ch.len_utf8();
             }
         }
-        decls
+        Self::push_declaration_segment(
+            &text[segment_start..],
+            base + segment_start,
+            collect_spans,
+            &mut decls,
+            &mut spans,
+        );
+        (decls, spans)
+    }
+
+    /// Records one `;`-separated segment when it holds a usable declaration.
+    fn push_declaration_segment(
+        segment: &str,
+        segment_base: usize,
+        collect_spans: bool,
+        decls: &mut Vec<CssDeclaration>,
+        spans: &mut Vec<(usize, usize)>,
+    ) {
+        let trimmed = segment.trim();
+        if trimmed.is_empty() {
+            return;
+        }
+        if let Some(idx) = trimmed.find(':') {
+            let property = trimmed[..idx].trim().to_string();
+            let value = trimmed[idx + 1..].trim().to_string();
+            if !property.is_empty() && !value.is_empty() {
+                if collect_spans {
+                    // `trim_start` removes only leading whitespace, so its byte length is the
+                    // offset of the declaration's first character; the end is that offset plus
+                    // the trimmed length. Both land inside the sheet because `segment` was
+                    // sliced from it.
+                    let leading = segment.len() - segment.trim_start().len();
+                    let start = segment_base + leading;
+                    let end = start + trimmed.len();
+                    spans.push((start, end));
+                }
+                decls.push(CssDeclaration { property, value });
+            }
+        }
     }
 
     /// Apply parsed declarations from matched rules to a `WidgetStyle`.

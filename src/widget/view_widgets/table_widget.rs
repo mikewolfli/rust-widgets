@@ -546,6 +546,14 @@ impl TableWidget {
 
     /// The content row a point falls on, if it falls on a visible one.
     ///
+    /// The public form of the hit test the press handling uses, so a host can resolve the row a
+    /// context-menu request addressed (feedback C-9).
+    pub fn row_index_at(&self, point: crate::core::Point) -> Option<usize> {
+        self.row_at_point(point)
+    }
+
+    /// The content row a point falls on, if it falls on a visible one.
+    ///
     /// The inverse of [`Self::row_rect`] and built on it, so the row a click selects and the row a
     /// hover highlights cannot disagree about where a row begins.
     fn row_at_point(&self, point: crate::core::Point) -> Option<usize> {
@@ -864,6 +872,20 @@ impl Widget for TableWidget {
             crate::widget::metrics::dimensions::TABLE_WIDGET_DEFAULT_WIDTH,
             crate::widget::metrics::dimensions::TABLE_WIDGET_DEFAULT_HEIGHT,
         )
+    }
+
+    /// Selects the row under the pointer, then asks the host for a menu about it.
+    ///
+    /// The right press used to emit the request while leaving the selection where it was, so the
+    /// host's menu acted on the previous row (feedback C-9). Selection first makes both describe
+    /// the same row; a point outside the rows answers `false`.
+    fn context_menu_event(&mut self, pos: crate::core::Point) -> bool {
+        let Some(row) = self.row_at_point(pos) else {
+            return false;
+        };
+        self.select_row(row);
+        self.context_menu_requested.emit(pos);
+        true
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
@@ -1336,8 +1358,9 @@ impl crate::event::EventHandler for TableWidget {
                     }
                 }
             }
-            crate::event::Event::ContextMenu { pos } => {
-                self.context_menu_requested.emit(*pos);
+            crate::event::Event::ContextMenu { .. } => {
+                // Answered by `Widget::context_menu_event`, which selects the row under the pointer
+                // before emitting; an arm here would emit a second, unselected request first.
             }
             crate::event::Event::Wheel { delta, modifiers } => {
                 let scroll = WheelScroll::from_event(*delta, *modifiers, 1);
@@ -1516,6 +1539,28 @@ mod tests {
             self.data_accessed.store(true, std::sync::atomic::Ordering::SeqCst);
             Some(format!("r{}c{}", row, column))
         }
+    }
+
+    /// A menu request selects the row under the pointer before it is emitted (C-9).
+    #[test]
+    fn a_menu_request_selects_the_row_under_the_pointer() {
+        let mut table = TableWidget::new(Rect::new(0, 0, 400, 200));
+        table.set_model(Arc::new(TestTableModel::new(4, 3)));
+        let seen = Arc::new(std::sync::Mutex::new(None));
+        let sink = Arc::clone(&seen);
+        table.context_menu_requested.connect(move |pos| {
+            if let Ok(mut slot) = sink.lock() {
+                *slot = Some(*pos);
+            }
+        });
+
+        let row = table.row_rect(1).expect("row 1 is visible");
+        let point = crate::core::Point::new(row.x + 2, row.y + 2);
+        assert_eq!(table.row_index_at(point), Some(1));
+        assert_eq!(table.selected_row(), None);
+        assert!(Widget::context_menu_event(&mut table, point));
+        assert_eq!(table.selected_row(), Some(1));
+        assert_eq!(*seen.lock().expect("the test slot locks"), Some(point));
     }
 
     #[test]

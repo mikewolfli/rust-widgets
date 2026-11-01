@@ -1197,6 +1197,15 @@ impl ListView {
 
     /// The row index a point falls on, if it falls on a visible row.
     ///
+    /// The public form of the hit test the press handling uses. A context-menu handler calls it to
+    /// learn which row was right-clicked, and because both directions read the same geometry it
+    /// cannot disagree with a left click (feedback C-9).
+    pub fn row_index_at(&self, point: crate::core::Point) -> Option<usize> {
+        self.row_at_point(point)
+    }
+
+    /// The row index a point falls on, if it falls on a visible row.
+    ///
     /// The inverse of [`Self::row_rect`] and deliberately built on it: a point is a row's when it
     /// is inside that row's band, so the two directions cannot disagree about where row 0 begins.
     fn row_at_point(&self, point: crate::core::Point) -> Option<usize> {
@@ -1275,6 +1284,20 @@ impl Widget for ListView {
             crate::widget::metrics::dimensions::LIST_VIEW_DEFAULT_WIDTH,
             crate::widget::metrics::dimensions::LIST_VIEW_DEFAULT_HEIGHT,
         )
+    }
+
+    /// Selects the row under the pointer, then asks the host for a menu about it.
+    ///
+    /// The signal alone left the host acting on the previous selection, because a right press did
+    /// not move it (feedback C-9). Selecting first makes the request describe the row the user
+    /// pointed at. A point outside the rows answers `false` so the host keeps its fallback policy.
+    fn context_menu_event(&mut self, pos: crate::core::Point) -> bool {
+        let Some(row) = self.row_at_point(pos) else {
+            return false;
+        };
+        self.select_row(row);
+        self.context_menu_requested.emit(pos);
+        true
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
@@ -1733,8 +1756,10 @@ impl crate::event::EventHandler for ListView {
                     self.row_activated.emit(index);
                 }
             }
-            crate::event::Event::ContextMenu { pos } => {
-                self.context_menu_requested.emit(*pos);
+            crate::event::Event::ContextMenu { .. } => {
+                // A menu request is answered by `Widget::context_menu_event`, which selects the row
+                // under the pointer before emitting. Keeping the arm here as well would emit twice
+                // and let the first (unselected) one reach the host first (feedback C-9).
             }
             crate::event::Event::Wheel { delta, modifiers } => {
                 let scroll = crate::event::WheelScroll::from_event(*delta, *modifiers, 1);
@@ -2309,6 +2334,34 @@ mod tests {
             const NAMES: [&str; 5] = ["alpha", "beta", "bravo", "charlie", "delta"];
             NAMES.get(row).map(|name| (*name).to_string())
         }
+    }
+
+    /// A menu request selects the row under the pointer before it is emitted (C-9).
+    ///
+    /// Without the selection step the host's handler read the *previous* row, which is the defect
+    /// the request signal alone could not express.
+    #[test]
+    fn a_menu_request_selects_the_row_under_the_pointer() {
+        let mut view = ListView::new(Rect::new(0, 0, 200, 160));
+        view.set_model(Arc::new(NamedModel));
+        let seen = Arc::new(std::sync::Mutex::new(None));
+        let sink = Arc::clone(&seen);
+        view.context_menu_requested.connect(move |pos| {
+            if let Ok(mut slot) = sink.lock() {
+                *slot = Some(*pos);
+            }
+        });
+
+        let row = view.item_rect(1).expect("row 1 is visible");
+        let point = crate::core::Point::new(row.x + 2, row.y + 2);
+        assert_eq!(view.row_index_at(point), Some(1), "the getter agrees with the click path");
+        assert_eq!(view.selected_row(), None);
+        assert!(Widget::context_menu_event(&mut view, point));
+        assert_eq!(view.selected_row(), Some(1), "the menu acts on the pointed-at row");
+        assert_eq!(*seen.lock().expect("the test slot locks"), Some(point));
+
+        let outside = crate::core::Point::new(row.x + 2, row.y - 40);
+        assert!(!Widget::context_menu_event(&mut view, outside), "empty space is not a row");
     }
 
     struct TrailingDelegate;

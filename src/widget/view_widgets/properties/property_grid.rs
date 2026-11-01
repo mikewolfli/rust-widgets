@@ -110,6 +110,23 @@ pub struct PropertyItem {
     pub value: String,
     /// Whether the value can be edited by the user.
     pub editable: bool,
+    /// Whether the row stands for **differing values** across a multi-selection.
+    ///
+    /// A mixed row has no single value to show, so the value column displays
+    /// [`Self::placeholder`] (or `mixed`) in a muted ink until the user commits one value. Editing
+    /// starts from an empty buffer rather than the placeholder, and committing a value clears the
+    /// flag — the host's `cell_changed` handler then applies that value to every selected node.
+    ///
+    /// This is the per-cell state a multi-selection inspector needs (feedback C-3): a read-only
+    /// `selection` row describes the situation, but only the cell itself can say “these differ”
+    /// and accept the edit that resolves it.
+    pub mixed: bool,
+    /// The text a mixed or empty cell shows instead of a value.
+    ///
+    /// `None` renders the neutral word `mixed`. A host that wants a longer sentence (for example
+    /// `mixed — typing applies to every selected node`) supplies it here; the grid only paints it
+    /// and never parses it.
+    pub placeholder: Option<String>,
     /// The editor this row uses.
     pub kind: PropertyItemKind,
     /// Optional category the row belongs to (V-17).
@@ -126,9 +143,40 @@ impl PropertyItem {
             name: name.into(),
             value: value.into(),
             editable,
+            mixed: false,
+            placeholder: None,
             kind: PropertyItemKind::Text,
             category: None,
         }
+    }
+
+    /// Creates a row for a property whose selected objects hold different values.
+    ///
+    /// The row is editable because its whole purpose is to accept the value that resolves the
+    /// difference; the value stays empty, so a host that reads [`Self::value`] never mistakes the
+    /// placeholder for a real value.
+    pub fn mixed(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            value: String::new(),
+            editable: true,
+            mixed: true,
+            placeholder: None,
+            kind: PropertyItemKind::Text,
+            category: None,
+        }
+    }
+
+    /// Sets the text a mixed or empty cell shows. Builder form.
+    pub fn with_placeholder(mut self, placeholder: impl Into<String>) -> Self {
+        self.placeholder = Some(placeholder.into());
+        self
+    }
+
+    /// Marks the row mixed (or not) and returns it. Builder form.
+    pub fn with_mixed(mut self, mixed: bool) -> Self {
+        self.mixed = mixed;
+        self
     }
 
     /// Replaces the row's editor kind.
@@ -190,6 +238,14 @@ pub const PROPERTY_ITEM_SCHEMA: crate::widget::capability::RecordSchema =
                 "category",
                 crate::widget::capability::PropertyValueKind::String,
             ),
+            crate::widget::capability::RecordField::optional(
+                "mixed",
+                crate::widget::capability::PropertyValueKind::Bool,
+            ),
+            crate::widget::capability::RecordField::optional(
+                "placeholder",
+                crate::widget::capability::PropertyValueKind::String,
+            ),
         ],
         // A row has no separate identity field; its name is what a document spells it by, and two
         // rows may legitimately share a name across categories.
@@ -215,6 +271,12 @@ fn property_item_record(item: &PropertyItem) -> crate::widget::capability::Recor
     }
     if let Some(category) = &item.category {
         record = record.with("category", CapabilityValue::String(category.clone()));
+    }
+    if item.mixed {
+        record = record.with("mixed", CapabilityValue::Bool(true));
+    }
+    if let Some(placeholder) = &item.placeholder {
+        record = record.with("placeholder", CapabilityValue::String(placeholder.clone()));
     }
     record
 }
@@ -265,7 +327,17 @@ fn property_item_from_record(
         Some(CapabilityValue::String(category)) => Some(category.clone()),
         Some(_) => return Err(CapabilityAccessError::TypeMismatch),
     };
-    Ok(PropertyItem { name, value, editable, kind, category })
+    let mixed = match record.get("mixed") {
+        None | Some(CapabilityValue::Null) => false,
+        Some(CapabilityValue::Bool(mixed)) => *mixed,
+        Some(_) => return Err(CapabilityAccessError::TypeMismatch),
+    };
+    let placeholder = match record.get("placeholder") {
+        None | Some(CapabilityValue::Null) => None,
+        Some(CapabilityValue::String(placeholder)) => Some(placeholder.clone()),
+        Some(_) => return Err(CapabilityAccessError::TypeMismatch),
+    };
+    Ok(PropertyItem { name, value, editable, mixed, placeholder, kind, category })
 }
 
 /// One painted line of the property grid: a group header or a property row (V-17).
@@ -307,6 +379,9 @@ const FIRST_ROW_TOP: u32 = ROW_HEIGHT + 1;
 /// all measured from the same inset. They used to start at the control's literal `rect.y`,
 /// which pinned the header's glyph box to the frame's own stroke.
 const GRID_INSET: u32 = 2;
+
+/// The word a mixed row shows when its host supplied no placeholder.
+const MIXED_PLACEHOLDER: &str = "mixed";
 
 /// PropertyGrid widget — a two-column property editor table.
 pub struct PropertyGrid {
@@ -490,9 +565,13 @@ impl PropertyGrid {
 
     /// Sets the value of the property at the given index.
     /// Returns `true` if the index was valid and the value was updated.
+    ///
+    /// A host writing a value here is stating a single value for the row, so the mixed flag is
+    /// cleared: the row no longer stands for “these differ”.
     pub fn set_value(&mut self, index: usize, value: impl Into<String>) -> bool {
         if let Some(item) = self.properties.get_mut(index) {
             item.value = value.into();
+            item.mixed = false;
             self.base.changed.emit();
             self.base.request_redraw();
             true
@@ -626,6 +705,10 @@ impl PropertyGrid {
             self.base.request_redraw();
             return true;
         }
+        // A mixed row starts from an empty buffer: the placeholder is a description, not a value,
+        // and seeding the editor with it would make the first keystroke append to a sentence the
+        // user never typed. Every string-shaped editor below takes this one seed.
+        let seed = if item.mixed { String::new() } else { item.value.clone() };
         match item.kind {
             PropertyItemKind::Bool => {
                 let next = if item.value.eq_ignore_ascii_case("true") { "false" } else { "true" };
@@ -642,21 +725,21 @@ impl PropertyGrid {
             PropertyItemKind::Color => {
                 // The host owns the colour UI; the text editor stays available as the
                 // fallback for a host that has none.
-                self.color_picker_requested.emit((index, item.value.clone()));
-                self.editing = Some(GridEdit::new(index, item.value.clone()));
+                self.color_picker_requested.emit((index, seed.clone()));
+                self.editing = Some(GridEdit::new(index, seed));
                 self.selected_index = Some(index);
                 self.base.request_redraw();
                 true
             }
             PropertyItemKind::File => {
                 self.file_picker_requested.emit(index);
-                self.editing = Some(GridEdit::new(index, item.value.clone()));
+                self.editing = Some(GridEdit::new(index, seed));
                 self.selected_index = Some(index);
                 self.base.request_redraw();
                 true
             }
             _ => {
-                self.editing = Some(GridEdit::new(index, item.value.clone()));
+                self.editing = Some(GridEdit::new(index, seed));
                 self.selected_index = Some(index);
                 self.base.request_redraw();
                 true
@@ -700,9 +783,18 @@ impl PropertyGrid {
     }
 
     /// Writes a committed value into row `index` and reports it.
+    ///
+    /// An empty commit on a **mixed** row is not a value: the user has not said which of the
+    /// differing values to apply, so the row stays mixed and no `cell_changed` is emitted. Any
+    /// other commit resolves the difference and clears the flag.
     fn commit_edit_value(&mut self, index: usize, value: String) {
         if let Some(item) = self.properties.get_mut(index) {
+            if item.mixed && value.is_empty() {
+                self.base.request_redraw();
+                return;
+            }
             item.value = value.clone();
+            item.mixed = false;
         }
         self.cell_changed.emit((index, value));
         self.base.request_redraw();
@@ -1230,19 +1322,32 @@ impl Draw for PropertyGrid {
                         HorizontalAlignment::Left,
                     );
 
-                    // Value text
+                    // Value text. A mixed row shows its placeholder in a muted ink instead of a
+                    // value, so “these selected objects differ” is visible in the cell that the
+                    // edit will resolve (feedback C-3).
                     // An editable value is a link-like affordance, so it reads the theme's accent
                     // instead of a literal navy that disappears on a dark surface.
+                    let item = &self.properties[i];
+                    let editing_this_row = self.editing.as_ref().is_some_and(|edit| edit.row == i);
                     let value_color = if !is_enabled {
                         disabled_ink
-                    } else if self.properties[i].editable {
+                    } else if item.mixed && !editing_this_row {
+                        ink.blend(&surface, 0.45)
+                    } else if item.editable {
                         accent
                     } else {
                         ink
                     };
-                    let value_text = match self.editing.as_ref() {
-                        Some(edit) if edit.row == i => std::borrow::Cow::Owned(edit.with_caret()),
-                        _ => std::borrow::Cow::Borrowed(self.properties[i].value.as_str()),
+                    let value_text = if editing_this_row {
+                        std::borrow::Cow::Owned(
+                            self.editing.as_ref().expect("the row was checked above").with_caret(),
+                        )
+                    } else if item.mixed {
+                        std::borrow::Cow::Borrowed(
+                            item.placeholder.as_deref().unwrap_or(MIXED_PLACEHOLDER),
+                        )
+                    } else {
+                        std::borrow::Cow::Borrowed(item.value.as_str())
                     };
                     context.draw_text_fitted_cow(
                         Rect::new(
@@ -2011,6 +2116,48 @@ mod tests {
         // Re-growing the list must not resurrect the stale index.
         pg.add_property("new", "v", true);
         assert_eq!(pg.selected_index(), None);
+    }
+
+    /// A mixed row shows its placeholder, starts editing empty, and resolves on a real commit.
+    ///
+    /// The three states are the point of the row: it describes a difference, it never mistakes
+    /// the placeholder for a value, and committing a value is what clears the difference
+    /// (feedback C-3). An empty commit is not a value, so the row stays mixed.
+    #[test]
+    fn a_mixed_row_shows_a_placeholder_and_resolves_on_commit() {
+        let mut pg = PropertyGrid::new(Rect::new(0, 0, 300, 200));
+        pg.add_property_item(
+            PropertyItem::mixed("color").with_placeholder("mixed — applies to all selected"),
+        );
+        assert!(pg.properties()[0].mixed);
+        assert_eq!(pg.properties()[0].value, "", "the placeholder is not a value");
+        assert_eq!(
+            pg.properties()[0].placeholder.as_deref(),
+            Some("mixed — applies to all selected")
+        );
+
+        // Enter on an empty editor is not a value: the row stays mixed and nothing is reported.
+        let emitted = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = std::sync::Arc::clone(&emitted);
+        pg.cell_changed.connect(move |change| {
+            sink.lock().expect("the test slot locks").push((*change).clone());
+        });
+        assert!(pg.begin_grid_edit(0));
+        pg.handle_event(&Event::KeyPress { key: crate::event::key_codes::ENTER, modifiers: 0 });
+        assert!(pg.properties()[0].mixed, "an empty commit does not resolve the difference");
+        assert!(emitted.lock().expect("lock").is_empty());
+
+        // Typing a value then Enter is the resolution the host applies to every selection.
+        assert!(pg.begin_grid_edit(0));
+        pg.handle_event(&Event::TextInput { text: "red".to_string() });
+        pg.handle_event(&Event::KeyPress { key: crate::event::key_codes::ENTER, modifiers: 0 });
+        assert_eq!(pg.value(0), Some("red"));
+        assert!(!pg.properties()[0].mixed);
+        assert_eq!(
+            *emitted.lock().expect("lock"),
+            vec![(0usize, "red".to_string())],
+            "the host is told exactly once"
+        );
     }
 
     /// The wheel and the keys cannot park the view past the last row.

@@ -505,6 +505,7 @@ impl ViewEngine {
             }
             let removed = self.layout.clear_structure();
             report.widgets_removed += removed.len();
+            report.removed_ids = removed;
         }
         self.id_of_path.clear();
 
@@ -860,7 +861,7 @@ impl ViewEngine {
         // A row signal narrows the walk to one keyed container. `diff_scoped` refuses a signal
         // it cannot honour (a missing key, a differing path, a different control kind), and the
         // full diff is then the correct, safe answer rather than an empty report.
-        let report = match scope.and_then(|key| diff_scoped(&previous, &next, key, &lookup)) {
+        let mut report = match scope.and_then(|key| diff_scoped(&previous, &next, key, &lookup)) {
             Some(report) => report,
             None => diff(&previous, &next, &lookup),
         };
@@ -1007,6 +1008,12 @@ impl ViewEngine {
                 log::warn!("[view] update patch was not applied: {error}");
             }
         }
+        // The host's control table mirrors the engine's: it needs the ids the batch actually
+        // destroyed, not just the count. `apply` collected them while detaching, including every
+        // descendant of a removed or replaced subtree, so a host does not have to infer them from
+        // the view's path shape (feedback C-1). A pure `diff` report leaves `removed` empty: a
+        // patch list describes, while nothing is destroyed until `apply` runs.
+        report.removed = applied.removed_ids;
         if report.root_replaced {
             log::warn!(
                 "[view] the root's widget type changed; a patch batch cannot replace a root, \
@@ -2197,6 +2204,20 @@ mod tests {
         assert!(report.patches_of_kind("Remove").len() == 1, "got {:?}", report.patches);
         let root = engine.layout().root().expect("root");
         assert_eq!(engine.layout().children(root).len(), 2, "the layout must agree");
+    }
+
+    /// The update report names the controls it destroyed, so a host can unmount its own copies
+    /// (feedback C-1). The id is read from the layout before the update, because after it the
+    /// control is gone.
+    #[test]
+    fn an_update_reports_the_ids_it_destroyed() {
+        let mut engine = ViewEngine::new();
+        let ids = Ids::new(10);
+        engine.mount(&Rows(vec!["a", "b", "c"]), &ids.creator());
+        let removed_id = engine.id_at(&[1]).expect("row b");
+
+        let report = engine.update(&Rows(vec!["a", "c"]), &ids.creator());
+        assert_eq!(report.removed, vec![removed_id], "got {:?}", report.removed);
     }
 
     #[test]

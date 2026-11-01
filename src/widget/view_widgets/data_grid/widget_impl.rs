@@ -24,6 +24,24 @@ impl Widget for DataGrid {
         )
     }
 
+    /// Selects the cell under the pointer, then asks the host for a menu about it.
+    ///
+    /// The press path used to emit the request and return before any selection ran, and the
+    /// runtime's synthesized `ContextMenu` emitted it a second time — two requests per right-click,
+    /// both describing the *previous* cell (feedback C-9). This is the one place the request is
+    /// produced, and it mirrors a left press's selection steps (minus the click announcement).
+    fn context_menu_event(&mut self, pos: Point) -> bool {
+        let Some((row, column)) = self.cell_at(pos) else {
+            return false;
+        };
+        self.current_cell = Some((row, column));
+        self.apply_selection_click(row, column, 0);
+        self.current_changed.emit((row, column));
+        self.context_menu_requested.emit(pos);
+        self.base.request_redraw();
+        true
+    }
+
     /// Reports this widget as the object that paints it.
     ///
     /// `DataGrid` implements `Draw`, so `Some(self)` is total and cannot be wrong.

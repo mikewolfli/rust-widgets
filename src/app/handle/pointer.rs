@@ -5,7 +5,7 @@
 //! `impl_handle!` macro that generates the standard handle boilerplate.
 
 use super::*;
-use crate::core::{ObjectId, Orientation, Rect};
+use crate::core::{ObjectId, Orientation, Point, Rect};
 use crate::widget::numeric::{ordered_clamp_i32, ordered_clamp_u32};
 use alloc::rc::Rc;
 use core::cell::RefCell;
@@ -223,6 +223,106 @@ impl ListBoxHandle {
     /// or the id is not a list box.
     pub fn item_text(&self, index: usize) -> Option<String> {
         crate::list_box_item_text(self.raw_id(), index)
+    }
+
+    /// Subscribes to a context-menu request, with the pointer position.
+    ///
+    /// The control selects the row under the pointer before this fires, so the handler can act on
+    /// `row_at` without racing the selection. Nothing is delivered for a point that is not on a
+    /// row.
+    pub fn on_context_menu_requested<F>(&self, f: F)
+    where
+        F: FnMut(Point) + Send + 'static,
+    {
+        let id = self.raw_id();
+        let held: std::sync::Arc<std::sync::Mutex<F>> =
+            std::sync::Arc::new(std::sync::Mutex::new(f));
+        let connected = crate::widget::runtime::with_widget_mut(id, |widget| {
+            let held = std::sync::Arc::clone(&held);
+            (widget as &mut dyn core::any::Any)
+                .downcast_mut::<crate::widget::input_widgets::listbox::ListBox>()
+                .map(|list| {
+                    list.context_menu_requested.connect_ref(move |pos: &Point| {
+                        if let Ok(mut callback) = held.lock() {
+                            callback(*pos);
+                        } else {
+                            log::warn!(
+                                "the list-box context-menu callback for widget {id} could not be \
+                                 locked; skipping this request rather than panicking"
+                            );
+                        }
+                    })
+                })
+        })
+        .flatten();
+        match connected {
+            Some(handle) => record_signal_connection(id, SignalKind::Triggered, handle),
+            None => {
+                log::warn!(
+                    "on_context_menu_requested ignored for id={id}: it is not a live list box, so \
+                     the callback will never run."
+                );
+                record_unwired_binding(id);
+            }
+        }
+    }
+
+    /// The row the pointer is over, using the same hit test as a left click.
+    ///
+    /// `None` outside the rows or for an id that is not a mounted list box. This is what a
+    /// context-menu handler calls to learn which row the user right-clicked.
+    pub fn row_at(&self, point: Point) -> Option<usize> {
+        crate::widget::runtime::with_widget(self.raw_id(), |widget| {
+            (widget as &dyn core::any::Any)
+                .downcast_ref::<crate::widget::input_widgets::listbox::ListBox>()
+                .and_then(|list| list.item_index_at(point))
+        })
+        .flatten()
+    }
+}
+
+/// # Button specific operations
+impl ButtonHandle {
+    /// Subscribes to a context-menu request on this button, with the pointer position.
+    ///
+    /// A button with no attached menu used to have no way to tell its host that the user
+    /// right-clicked it, so an editor or tab-page button could not offer a menu (feedback C-8).
+    /// A button that owns a menu (`Button::set_menu`) opens that menu instead and does not emit.
+    pub fn on_context_menu_requested<F>(&self, f: F)
+    where
+        F: FnMut(Point) + Send + 'static,
+    {
+        let id = self.raw_id();
+        let held: std::sync::Arc<std::sync::Mutex<F>> =
+            std::sync::Arc::new(std::sync::Mutex::new(f));
+        let connected = crate::widget::runtime::with_widget_mut(id, |widget| {
+            let held = std::sync::Arc::clone(&held);
+            (widget as &mut dyn core::any::Any)
+                .downcast_mut::<crate::widget::base_widgets::button::Button>()
+                .map(|button| {
+                    button.context_menu_requested.connect_ref(move |pos: &Point| {
+                        if let Ok(mut callback) = held.lock() {
+                            callback(*pos);
+                        } else {
+                            log::warn!(
+                                "the button context-menu callback for widget {id} could not be \
+                                 locked; skipping this request rather than panicking"
+                            );
+                        }
+                    })
+                })
+        })
+        .flatten();
+        match connected {
+            Some(handle) => record_signal_connection(id, SignalKind::Triggered, handle),
+            None => {
+                log::warn!(
+                    "on_context_menu_requested ignored for id={id}: it is not a live button, so \
+                     the callback will never run."
+                );
+                record_unwired_binding(id);
+            }
+        }
     }
 }
 
@@ -821,6 +921,60 @@ impl TabWidgetHandle {
             crate::widget::runtime::request_repaint_subtree(self.raw_id());
         }
         selected
+    }
+
+    /// The tab index under `pos`, using the same geometry the strip paints.
+    ///
+    /// A context-menu handler calls this to bind its menu to the tab the user right-clicked
+    /// rather than the active one (feedback C-9). `None` over the content page, past the last tab,
+    /// or for an id that is not a mounted tab widget.
+    pub fn tab_index_at(&self, pos: Point) -> Option<usize> {
+        crate::widget::runtime::with_widget(self.raw_id(), |widget| {
+            crate::widget::capability::coercion::widget_as::<crate::widget::TabWidget>(widget)
+                .and_then(|tabs| tabs.tab_index_at(pos))
+        })
+        .flatten()
+    }
+
+    /// Subscribes to a context-menu request on the tab strip, with the pointer position.
+    ///
+    /// The tab under the pointer is selected before this fires, so [`Self::current_index`] and the
+    /// menu describe the same page (feedback C-9). Content-page requests are not delivered.
+    pub fn on_context_menu_requested<F>(&self, f: F)
+    where
+        F: FnMut(Point) + Send + 'static,
+    {
+        let id = self.raw_id();
+        let held: std::sync::Arc<std::sync::Mutex<F>> =
+            std::sync::Arc::new(std::sync::Mutex::new(f));
+        let connected = crate::widget::runtime::with_widget_mut(id, |widget| {
+            let held = std::sync::Arc::clone(&held);
+            (widget as &mut dyn core::any::Any).downcast_mut::<crate::widget::TabWidget>().map(
+                |tabs| {
+                    tabs.context_menu_requested.connect_ref(move |pos: &Point| {
+                        if let Ok(mut callback) = held.lock() {
+                            callback(*pos);
+                        } else {
+                            log::warn!(
+                                "the tab-strip context-menu callback for widget {id} could not be \
+                                 locked; skipping this request rather than panicking"
+                            );
+                        }
+                    })
+                },
+            )
+        })
+        .flatten();
+        match connected {
+            Some(handle) => record_signal_connection(id, SignalKind::Triggered, handle),
+            None => {
+                log::warn!(
+                    "on_context_menu_requested ignored for id={id}: it is not a live tab widget, \
+                     so the callback will never run."
+                );
+                record_unwired_binding(id);
+            }
+        }
     }
 
     /// Replaces the title of the tab at `index`.

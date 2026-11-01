@@ -204,6 +204,17 @@ pub struct DiffReport {
     /// Each one is state that was destroyed: focus inside it, scroll offset, text
     /// selection, animation progress.
     pub replaced_subtrees: usize,
+    /// The ids of every control this batch destroyed, subtree members included.
+    ///
+    /// [`Self::replaced_subtrees`] counts *how often* a teardown happened; this names *which
+    /// controls* it cost, which is what a host needs to unmount its own per-control state in step
+    /// with the engine's tree. It is filled by [`ViewEngine::update`](crate::view::ViewEngine::update)
+    /// and its variants from the apply pass, so it reflects what was actually detached — a patch
+    /// the apply refused contributes nothing. Parent first, as the layout detaches a subtree.
+    ///
+    /// A report produced by [`diff`] alone leaves this empty: a patch list *describes* removals, and
+    /// nothing is destroyed until [`crate::view::apply::apply`] carries it out.
+    pub removed: Vec<crate::core::ObjectId>,
     /// How many sibling keys were claimed by more than one child of the same parent.
     ///
     /// A duplicate key identifies none of its claimants, so the diff cannot match,

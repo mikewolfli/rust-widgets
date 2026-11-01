@@ -1359,6 +1359,23 @@ impl Widget for VirtualTable {
     fn size_hint(&self) -> crate::core::Size {
         crate::core::Size::new(400, 300)
     }
+
+    /// Selects the cell under the pointer, then asks the host for a menu about it.
+    ///
+    /// The old handler emitted the request on a secondary press **and** on the synthesized
+    /// context-menu event, so one right-click produced two requests, neither of which moved the
+    /// selection (feedback C-9). One hook, selection first, one request. A point outside a cell
+    /// answers `false`.
+    fn context_menu_event(&mut self, pos: Point) -> bool {
+        let Some((row, column)) = self.cell_at(pos) else {
+            return false;
+        };
+        if !self.select_cell(row, column) {
+            return false;
+        }
+        self.context_menu_requested.emit(pos);
+        true
+    }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
     /// Resolves a published event name to the control's own signal.
@@ -1616,8 +1633,10 @@ impl EventHandler for VirtualTable {
             // The context menu is a request signal, exactly like the rest of the table family
             // (V-013). Both the right-button press and the platform's own menu event are
             // reported, so a host does not have to guess which one its backend delivers.
-            Event::MousePress { pos, button: 3, .. } => self.context_menu_requested.emit(*pos),
-            Event::ContextMenu { pos } => self.context_menu_requested.emit(*pos),
+            // The context menu is a request signal. Selection happens in
+            // `Widget::context_menu_event`, which the runtime calls with the synthesized
+            // `Event::ContextMenu`; emitting here as well produced a duplicate request.
+            Event::ContextMenu { .. } => {}
             Event::MousePress { pos, button: 1, modifiers } => {
                 // A press in the column-title strip cycles that column's sort; only a body press
                 // selects a cell (V-013).
@@ -2024,6 +2043,30 @@ mod tests {
         fn data(&self, row: usize, column: usize) -> Option<String> {
             Some(format!("{}:{}", row, column))
         }
+    }
+
+    /// A menu request selects the cell under the pointer before it is emitted (C-9).
+    #[test]
+    fn a_menu_request_selects_the_cell_under_the_pointer() {
+        let mut table = VirtualTable::new(Rect::new(0, 0, 240, 120));
+        table.set_data_source(Arc::new(StaticSource));
+        let seen = Arc::new(std::sync::Mutex::new(None));
+        let sink = Arc::clone(&seen);
+        table.context_menu_requested.connect(move |pos| {
+            if let Ok(mut slot) = sink.lock() {
+                *slot = Some(*pos);
+            }
+        });
+
+        let rect = table.geometry();
+        // 2 px inset, then the header row, then 2 px into the first body row (the painted cell
+        // refuses its final 2 px gap, so the probe stays at the leading edge).
+        let point = Point::new(rect.x + 4, rect.y + 2 + table.header_offset() + 2);
+        assert_eq!(table.cell_at(point), Some((0, 0)));
+        assert_eq!(table.selected_cell(), None);
+        assert!(Widget::context_menu_event(&mut table, point));
+        assert_eq!(table.selected_cell(), Some((0, 0)));
+        assert_eq!(*seen.lock().expect("the test slot locks"), Some(point));
     }
 
     #[test]
@@ -2912,7 +2955,12 @@ mod tests {
         assert_eq!(table.sort_specs(), &[SortSpec { column: 0, descending: false }]);
     }
 
-    /// V-013: both the right-button press and the platform context-menu event are reported.
+    /// V-013: one request is one signal, and the pointed-at cell is selected first.
+    ///
+    /// The old test asserted **two** hits for one right-click — a secondary press and the
+    /// synthesized context-menu event each emitted — which is the duplication this change removes
+    /// (feedback C-9). The request now travels through `Widget::context_menu_event`, the hook the
+    /// runtime calls, and selection happens there before the signal fires.
     #[test]
     fn the_context_menu_request_is_reported() {
         use std::sync::atomic::AtomicUsize;
@@ -2925,10 +2973,11 @@ mod tests {
             sink.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         });
 
-        let pos = Point::new(10, 10);
-        table.handle_event(&Event::MousePress { pos, button: 3, modifiers: 0 });
-        table.handle_event(&Event::ContextMenu { pos });
-        assert_eq!(hits.load(std::sync::atomic::Ordering::Relaxed), 2);
+        let cell = table.cell_rect(table.geometry(), 0, 0);
+        let pos = Point::new(cell.x + 4, cell.y + 4);
+        assert!(Widget::context_menu_event(&mut table, pos));
+        assert_eq!(hits.load(std::sync::atomic::Ordering::Relaxed), 1, "one request, one signal");
+        assert_eq!(table.selected_cell(), Some((0, 0)), "the menu acts on the pointed-at cell");
     }
 
     /// V-013: the alternating wash changes the painted output and is off by default.

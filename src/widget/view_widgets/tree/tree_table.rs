@@ -1074,6 +1074,15 @@ impl TreeTable {
         (index < self.visible_rows.len()).then_some(index)
     }
 
+    /// The visible row a point falls on, if any.
+    ///
+    /// The public form of the hit test the press handling uses, so a context-menu handler resolves
+    /// the row the user pointed at instead of the previously selected one (feedback C-9). Only the
+    /// vertical band is consulted, exactly as a left press does.
+    pub fn row_index_at(&self, point: Point) -> Option<usize> {
+        self.row_at(point.y)
+    }
+
     /// The vertical room the column-title row takes.
     fn header_offset(&self) -> i32 {
         if self.show_header {
@@ -1394,6 +1403,20 @@ impl Widget for TreeTable {
             crate::widget::metrics::dimensions::TREE_TABLE_DEFAULT_WIDTH,
             crate::widget::metrics::dimensions::TREE_TABLE_DEFAULT_HEIGHT,
         )
+    }
+
+    /// Selects the row under the pointer, then asks the host for a menu about it.
+    ///
+    /// Both halves describe the same row: the signal alone left the host acting on the previous
+    /// selection because a right press did not move it (feedback C-9). A point outside the rows
+    /// answers `false`.
+    fn context_menu_event(&mut self, pos: Point) -> bool {
+        let Some(row) = self.row_at(pos.y) else {
+            return false;
+        };
+        let _ = self.select_row(row);
+        self.context_menu_requested.emit(pos);
+        true
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
@@ -1941,7 +1964,10 @@ impl crate::event::EventHandler for TreeTable {
                     let _ = self.select_row(row);
                 }
             }
-            Event::ContextMenu { pos } => self.context_menu_requested.emit(*pos),
+            Event::ContextMenu { .. } => {
+                // Answered by `Widget::context_menu_event`, which selects the row under the pointer
+                // before emitting; an arm here would emit a second, unselected request first.
+            }
             Event::MousePress { pos, button, .. } if *button == 2 => {
                 if self.middle_click_expands {
                     if let Some(row) = self.row_at(pos.y) {
@@ -2071,6 +2097,29 @@ mod tests {
             let id = path.iter().map(|part| part.to_string()).collect::<Vec<_>>().join("/");
             Some(format!("{}:{}", id, column))
         }
+    }
+
+    /// A menu request selects the row under the pointer before it is emitted (C-9).
+    #[test]
+    fn a_menu_request_selects_the_row_under_the_pointer() {
+        let mut tree = TreeTable::new(Rect::new(0, 0, 320, 160));
+        tree.set_model(std::sync::Arc::new(SampleTreeTableModel));
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let sink = std::sync::Arc::clone(&seen);
+        tree.context_menu_requested.connect(move |pos| {
+            if let Ok(mut slot) = sink.lock() {
+                *slot = Some(*pos);
+            }
+        });
+
+        let rect = tree.geometry();
+        let point =
+            Point::new(rect.x + 4, rect.y + tree.header_offset() + tree.row_height as i32 + 2);
+        assert_eq!(tree.row_index_at(point), Some(1));
+        assert_eq!(tree.selected_row(), None);
+        assert!(Widget::context_menu_event(&mut tree, point));
+        assert_eq!(tree.selected_row(), Some(1));
+        assert_eq!(*seen.lock().expect("the test slot locks"), Some(point));
     }
 
     #[test]
@@ -2569,8 +2618,13 @@ mod tests {
                 *slot = Some(*point);
             }
         });
-        tree.handle_event(&Event::ContextMenu { pos: crate::core::Point::new(40, 60) });
+        // The runtime answers a secondary press with a synthesized `ContextMenu`, then calls the
+        // hook; the hook selects the row under the pointer before emitting (feedback C-9).
+        let rect = tree.geometry();
+        let point = crate::core::Point::new(rect.x + 40, rect.y + tree.header_offset() + 2);
+        assert!(Widget::context_menu_event(&mut tree, point));
         assert!(context.lock().map(|slot| slot.is_some()).unwrap_or(false));
+        assert_eq!(tree.selected_row(), Some(0), "the menu acts on the pointed-at row");
     }
 
     /// A lazy model: child_count reports nothing until `fetch_more` loads the children. The

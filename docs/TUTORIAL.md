@@ -12,7 +12,7 @@
 
 ```toml
 [dependencies]
-rust_widgets = "3.2.0"
+rust_widgets = "3.2.1"
 ```
 
 ## Step 2: Create a Window

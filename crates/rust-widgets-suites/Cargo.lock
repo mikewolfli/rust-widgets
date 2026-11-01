@@ -2399,14 +2399,14 @@ version = "3.1.0"
 
 [[package]]
 name = "rust-widgets-suites"
-version = "3.2.0"
+version = "3.2.1"
 dependencies = [
  "rust_widgets",
 ]
 
 [[package]]
 name = "rust_widgets"
-version = "3.2.0"
+version = "3.2.1"
 dependencies = [
  "aes",
  "cbc",

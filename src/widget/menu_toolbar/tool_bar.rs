@@ -1418,6 +1418,32 @@ impl ToolBar {
         self.items.get(index).map(|item| item.is_checked())
     }
 
+    /// Replaces the label of the item at `index`, returning whether the index existed.
+    ///
+    /// This is the targeted form of “relabel one item”, which used to require `clear` followed by
+    /// re-inserting every item in order (feedback C-5). The action id, checked state, icon, link
+    /// and hover/overflow bookkeeping are untouched, so an i18n reload changes only the text. The
+    /// strip repaints because the label is part of what it paints.
+    pub fn set_item_text(&mut self, index: usize, text: impl Into<String>) -> bool {
+        let Some(item) = self.items.get_mut(index) else {
+            return false;
+        };
+        item.set_text(text);
+        self.base.request_redraw();
+        true
+    }
+
+    /// The item at `index`, mutably, for a caller that needs a field no setter covers.
+    ///
+    /// The reference is deliberately raw: the borrow is still alive when this method returns, so
+    /// the strip cannot request a repaint on the caller's behalf. A caller whose change is visible
+    /// calls [`Widget::base_mut`] then `request_redraw`, or prefers [`ToolBar::set_item_text`],
+    /// [`ToolBar::set_item_enabled`] or [`ToolBar::set_item_checked`] when one of them names the
+    /// field.
+    pub fn item_mut(&mut self, index: usize) -> Option<&mut ToolBarItem> {
+        self.items.get_mut(index)
+    }
+
     /// The docking areas this toolbar accepts.
     pub fn allowed_areas(&self) -> &[ToolBarArea] {
         &self.allowed_areas
@@ -3285,5 +3311,32 @@ mod tests {
 
         assert!(bar.remove_widget("hosted").is_some());
         assert!(bar.widget_band("hosted").is_none(), "a removed widget has no band");
+    }
+}
+#[cfg(test)]
+mod label_tests {
+    use super::*;
+
+    /// A single item can be relabelled without rebuilding the strip (feedback C-5).
+    ///
+    /// The host used to have to `clear` and re-insert every item in order to change one label on
+    /// an i18n reload. The setters leave the action id, enabled/checked state and link untouched.
+    #[test]
+    fn one_item_label_can_be_replaced_in_place() {
+        let mut bar = ToolBar::new(Rect::new(0, 0, 300, dimensions::TOOLBAR_HEIGHT));
+        bar.add_action("open", "Open");
+        bar.add_action("save", "Save");
+        bar.set_item_enabled(1, false);
+
+        assert!(bar.set_item_text(0, "Ouvrir"));
+        assert_eq!(bar.items()[0].text(), "Ouvrir");
+        assert_eq!(bar.items()[0].id(), "open", "the action id is what a click carries");
+        assert!(!bar.set_item_text(9, "missing"), "an out-of-range index is refused");
+        assert_eq!(bar.items()[1].id(), "save");
+        assert_eq!(bar.item_enabled(1), Some(false), "other item state is untouched");
+
+        bar.item_mut(1).expect("item 1 exists").set_text("Enregistrer");
+        assert_eq!(bar.items()[1].text(), "Enregistrer");
+        assert!(bar.item_mut(9).is_none());
     }
 }

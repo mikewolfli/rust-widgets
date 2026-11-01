@@ -39,6 +39,30 @@ fn static_grid(rows: usize, cols: usize) -> DataGrid {
     grid
 }
 
+/// A menu request selects the cell under the pointer before it is emitted (C-9).
+///
+/// The same press used to produce the request twice (secondary press and the synthesized
+/// context-menu event) while leaving the selection on the previously active cell.
+#[test]
+fn a_menu_request_selects_the_cell_under_the_pointer() {
+    let mut grid = static_grid(5, 4);
+    let seen = std::sync::Arc::new(Mutex::new(None));
+    let sink = std::sync::Arc::clone(&seen);
+    grid.context_menu_requested.connect(move |pos| {
+        if let Ok(mut slot) = sink.lock() {
+            *slot = Some(*pos);
+        }
+    });
+
+    let cell = grid.cell_rect(1, 2);
+    let point = Point::new(cell.x + 4, cell.y + 4);
+    assert_eq!(grid.cell_at(point), Some((1, 2)));
+    assert_eq!(grid.selection(), None);
+    assert!(Widget::context_menu_event(&mut grid, point));
+    assert_eq!(grid.selection(), Some((1, 2)), "the menu acts on the pointed-at cell");
+    assert_eq!(*seen.lock().expect("the test slot locks"), Some(point));
+}
+
 /// V-002: `begin_edit`'s editor is a mounted, painted control, not just a value carrier.
 ///
 /// `DataGridCellEditor` is built only by [`DataGrid::begin_edit`] and read back only by

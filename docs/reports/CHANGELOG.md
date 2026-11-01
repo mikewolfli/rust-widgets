@@ -5,6 +5,58 @@ The canonical project changelog is maintained at [docs/reports/CHANGELOG.md](doc
 This root-level file exists for tools and release automation that expect `CHANGELOG.md` at repository root.
 When the two disagree, this file is the one that ships; `tools/check_changelog_sync.sh` keeps them identical.
 
+## 3.2.1 (2026-11-01) — the consumer-seam round
+
+**Patch**: no existing signature changes. New capabilities are additive; the one behavioural change
+(right-click context menus) is stated under *Migration* below.
+
+### View layer
+
+- **`DiffReport::removed` names every control an update destroyed**, subtree members included;
+  `ApplyReport::removed_ids` carries the same list from `apply`/`mount`. A host can now unmount its
+  own per-control state without inferring ids from the view's path shape.
+- **`TreeIndex::key_of` is O(1)**: the snapshot derives an `id -> key` reverse map beside
+  `key_to_id`, so a diagnostic lookup no longer scans every keyed node.
+
+### Widgets
+
+- **`PropertyItem::mixed` / `with_placeholder`**: a row can express “the selected objects differ”.
+  The cell paints the placeholder in a muted ink, editing starts from an empty buffer, an empty
+  commit keeps the row mixed, and a real commit clears the flag and reports `cell_changed` once.
+- **`MenuHandle::new_submenu` + `MenuHandle::row_rect`**: a menu can create a nested menu under
+  itself. The self-drawn backend appends a branch row to the parent model; `submenu_requested`
+  tells the host which row was activated, and `row_rect` positions the child popup.
+- **`ToolBar::set_item_text` / `item_mut` and `ToolBarHandle::set_item_text`**: one item can be
+  relabelled without clearing and rebuilding the strip, preserving action ids and item state.
+- **`ListBox` and `Button` publish `context_menu_requested`**: both controls now expose the
+  `Signal1<Point>` (and handle-level subscriptions) the panel and editor surfaces needed.
+- **Right-click selects before it asks**: `ListView`, `TableWidget`, `TreeTable`, `VirtualTable`,
+  `TabWidget` and `DataGrid` select the row/tab/cell under the pointer before emitting the menu
+  request, and expose the matching hit test (`row_index_at`, `tab_index_at`, or the existing
+  public `cell_at`). `VirtualTable`/`DataGrid` no longer emit twice for one right-click.
+
+### Styling and theme
+
+- **`ComputedOrigin::span`** names the winning declaration's byte range in its sheet; both trace
+  entry points (`trace_cascade` and `trace_cascade_prepared`) answer the same span. Rule
+  registration does not pay for the source map.
+- **`ThemeManager::load_theme_named`** registers a theme and returns the name recorded **in the
+  file**, without activating it. `load_theme` keeps its existing signature and delegates.
+
+### Documentation and gates
+
+- **Capability matrix covers `Form` / `FormSet`** (239 rows = 230 `WidgetKind` variants + 9
+  documented WebEngine wrappers). The generator's “external kind” wording now says the constructor
+  lives in the optional package rather than claiming the kind is absent from the matrix, so
+  `blue9_r6` and `check_platform_capability_matrix.sh` agree with the generated document.
+
+### Migration
+
+- The five control families above produce their menu request from `Widget::context_menu_event`, the
+  hook the runtime calls for `Event::ContextMenu`. A host that dispatches the event directly through
+  `handle_event` should call the hook instead; otherwise pointer handling still works but no request
+  signal is emitted. This is what removes the previous duplicate emission.
+
 ## 3.2.0 (2026-11-01) — the presentation path and the `Smooth` GPU command stream
 
 **Minor**: new modules and opt-in entry points, plus two new `PlatformIntegration` questions that

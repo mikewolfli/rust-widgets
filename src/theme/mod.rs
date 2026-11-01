@@ -740,6 +740,13 @@ mod tests {
         assert_eq!(manager.current_theme_name(), before, "load_theme must not activate");
         assert!(manager.get_theme("round-trip-fixture").is_some(), "but it is registered");
 
+        // The named form reports the name the file declares, which may differ from its filename.
+        let mut named = ThemeManager::new();
+        let reported = named.load_theme_named(path_str).expect("load and name");
+        assert_eq!(reported, "round-trip-fixture");
+        assert_eq!(named.current_theme_name(), before, "the named form must not activate either");
+        assert!(named.get_theme(&reported).is_some(), "the reported name must be selectable");
+
         // Register and activate.
         let mut manager = ThemeManager::new();
         let activated = manager.load_and_activate_theme(path_str).expect("load and activate");

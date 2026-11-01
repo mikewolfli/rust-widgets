@@ -74,13 +74,26 @@ macro_rules! impl_menu_widgets {
                     height,
                 );
                 if is_bar && id != 0 {
-                    // The bar already shows this title, so the drop-down must not repeat it as
-                    // a heading. A context menu has no label above it and keeps the heading.
+                    // The bar already shows this title, so the drop-down must not repeat it as a
+                    // heading. A context menu has no label above it and keeps the heading.
                     let _ = crate::widget::runtime::with_widget_mut(id, |widget| {
                         (widget as &mut dyn std::any::Any)
                             .downcast_mut::<crate::widget::menu_toolbar::menu::Menu>()
                             .map(|menu| menu.set_show_heading(false))
                     });
+                }
+                // A menu handed to another **menu** is a nested branch, not a top-level title.
+                // The parent model paints its rows from `Menu::items`, so without this the child
+                // popup would exist but no row would name it (feedback C-4). The row carries only
+                // the indicator: the child is a mounted widget with its own items, not an owned
+                // `MenuEntry::submenu` tree, and the host opens it when `submenu_requested` fires.
+                if parent_kind == Some(crate::widget::WidgetKind::Menu) {
+                    let _ = crate::widget::runtime::with_widget_mut(parent, |widget| {
+                        (widget as &mut dyn std::any::Any)
+                            .downcast_mut::<crate::widget::menu_toolbar::menu::Menu>()
+                            .map(|menu| menu.add_submenu(text))
+                    });
+                    crate::widget::runtime::request_repaint(parent);
                 }
                 id
             }

@@ -252,6 +252,13 @@ pub struct Button {
     /// emits no press or release. A repeated press without an intervening
     /// release emits nothing.
     pub pressed_signal: GenericSignal,
+    /// Emitted when a context menu is requested on this button, with the pointer position.
+    ///
+    /// A button has no rows to select, so the payload is all a host needs to place its menu. It is
+    /// emitted only when the button has no attached menu of its own: a menu button opens that menu
+    /// instead (the historical behaviour). This is the button half of feedback C-8 — the editor and
+    /// tab-page surfaces are buttons, and neither could offer a right-click menu before.
+    pub context_menu_requested: crate::signal::Signal1<Point>,
     /// Emitted on the falling edge of the pressed flag (button up).
     ///
     /// Like [`Button::pressed_signal`], suppressed while disabled — so disabling
@@ -334,6 +341,7 @@ impl Button {
             pressed_signal: GenericSignal::new(),
             released_signal: GenericSignal::new(),
             state_changed: Signal1::new(),
+            context_menu_requested: crate::signal::Signal1::new(),
             canceled: GenericSignal::new(),
             #[cfg(full_widgets)]
             action_id: None,
@@ -1663,6 +1671,16 @@ impl Widget for Button {
                     crate::widget::capability::CapabilityValue::String(format!("{state:?}"))
                 }))
             }
+            "context_menu_requested" => Some(EventSignalRef::mapped(
+                "context_menu_requested",
+                &self.context_menu_requested,
+                |pos| {
+                    crate::widget::capability::CapabilityValue::String(format!(
+                        "{},{}",
+                        pos.x, pos.y
+                    ))
+                },
+            )),
             #[cfg(full_widgets)]
             "item_triggered" => {
                 Some(EventSignalRef::mapped("item_triggered", &self.item_triggered, |v| {
@@ -1722,17 +1740,19 @@ impl Widget for Button {
         self.menu_open
     }
 
-    /// Turns a context-menu request into the attached menu's anchor.
+    /// Turns a context-menu request into a menu, either its own or a request to the host.
     ///
-    /// The host decides *when* a context menu is requested; the button owns *what* it contains, so
-    /// a right-click on a button with a menu opens that menu at the pointer. A button without one
-    /// answers `false`, which tells the host it may show its own.
-    #[cfg(full_widgets)]
+    /// A button with an attached menu opens it at the pointer. A button without one emits
+    /// [`Self::context_menu_requested`] and answers `true`: the request is about this button, so a
+    /// host that subscribed acts on it, and one that did not asked for no menu. This is the same
+    /// division the list and table controls use.
     fn context_menu_event(&mut self, pos: Point) -> bool {
-        if self.menu_items.is_empty() {
-            return false;
+        #[cfg(full_widgets)]
+        if !self.menu_items.is_empty() {
+            self.open_menu_at(pos);
+            return true;
         }
-        self.open_menu_at(pos);
+        self.context_menu_requested.emit(pos);
         true
     }
 
@@ -4947,13 +4967,29 @@ mod tests {
 
         let mut button = Button::new("File".into(), Rect::new(0, 0, 100, 30));
         assert!(
-            !Widget::context_menu_event(&mut button, Point::new(5, 5)),
-            "a button without a menu has nothing to show"
+            Widget::context_menu_event(&mut button, Point::new(5, 5)),
+            "a button without an attached menu reports the request to the host"
         );
         button.set_menu(vec![MenuItem::new(1, "Open")]);
         assert!(Widget::context_menu_event(&mut button, Point::new(40, 50)));
         assert!(button.is_menu_open());
         assert!(button.menu_rect().contains_point(Point::new(41, 51)));
+    }
+
+    /// A button with no attached menu reports a right-click instead of silently dropping it.
+    #[test]
+    fn a_context_menu_request_reaches_the_published_signal() {
+        let mut button = Button::new("Tab".into(), Rect::new(0, 0, 100, 30));
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let slot = std::sync::Arc::clone(&seen);
+        button.context_menu_requested.connect(move |pos| {
+            if let Ok(mut slot) = slot.lock() {
+                *slot = Some(*pos);
+            }
+        });
+
+        assert!(Widget::context_menu_event(&mut button, Point::new(12, 18)));
+        assert_eq!(*seen.lock().expect("the test slot locks"), Some(Point::new(12, 18)));
     }
 
     // ── Drag and drop (R003) ───────────────────────────────────────────

@@ -266,6 +266,13 @@ pub struct ApplyReport {
     pub widgets_created: usize,
     /// Controls removed, counting each removed subtree's nodes.
     pub widgets_removed: usize,
+    /// The ids of every control the batch destroyed, subtree members included.
+    ///
+    /// `widgets_removed` answers *how many*; this answers *which*, which is what a host needs to
+    /// drop its own per-control state (a mounted control table, a subscription, a cached band) in
+    /// step with the engine's tree. `DiffReport::removed` carries the same list for the update
+    /// path. The order is parent first, as `BoundJsonLayout::detach` walks the subtree.
+    pub removed_ids: Vec<ObjectId>,
     /// Controls that were re-parented in place, keeping their id.
     pub widgets_moved: usize,
     /// Patches that could not be carried out, with reasons.
@@ -561,7 +568,9 @@ fn apply_one(
                 report.errors.push(ViewError::UnknownWidget { id: *id });
                 return;
             }
-            report.widgets_removed += remove_subtree(layout, *id);
+            let removed = remove_subtree(layout, *id);
+            report.widgets_removed += removed.len();
+            report.removed_ids.extend(removed);
         }
         Patch::Move { id, parent, index } => {
             if !is_mounted(layout, *id) {
@@ -584,7 +593,9 @@ fn apply_one(
                 report.errors.push(ViewError::UnknownParent { parent: *parent });
                 return;
             }
-            report.widgets_removed += remove_subtree(layout, *id);
+            let removed = remove_subtree(layout, *id);
+            report.widgets_removed += removed.len();
+            report.removed_ids.extend(removed);
             let created =
                 insert_subtree(layout, *parent, *index, node, create, reserved, report, services);
             report.widgets_created += created;
@@ -736,9 +747,12 @@ fn insert_subtree(
     count
 }
 
-/// Remove `id` and its subtree from the layout, returning how many nodes disappeared.
-fn remove_subtree(layout: &mut crate::json::BoundJsonLayout, id: ObjectId) -> usize {
-    layout.detach(id).len()
+/// Remove `id` and its subtree from the layout, returning the ids that disappeared.
+///
+/// The caller needs the ids, not only the count: a host's control table has to forget exactly the
+/// controls the layout forgot (see [`ApplyReport::removed_ids`]).
+fn remove_subtree(layout: &mut crate::json::BoundJsonLayout, id: ObjectId) -> Vec<ObjectId> {
+    layout.detach(id)
 }
 
 /// Move `id` to position `index` under `parent`, keeping its `ObjectId`.

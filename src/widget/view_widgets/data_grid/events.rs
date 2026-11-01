@@ -50,10 +50,6 @@ impl crate::event::EventHandler for DataGrid {
         }
 
         if let Event::MousePress { pos, button, modifiers } = event {
-            if *button == 3 {
-                self.context_menu_requested.emit(*pos);
-                return;
-            }
             if *button != 1 {
                 return;
             }
@@ -129,7 +125,10 @@ impl crate::event::EventHandler for DataGrid {
                     self.base.request_redraw();
                 }
             }
-            Event::ContextMenu { pos } => self.context_menu_requested.emit(*pos),
+            Event::ContextMenu { .. } => {
+                // Answered by `Widget::context_menu_event`, which selects the cell under the
+                // pointer before emitting; an arm here would emit a duplicate, stale request.
+            }
             Event::KeyPress { key, modifiers } if self.base.focus_reason().is_some() => {
                 let page = self.visible_row_capacity().max(1);
                 let last_row = self.row_count().saturating_sub(1);

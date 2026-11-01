@@ -123,6 +123,8 @@
 | **FontComboBox** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **FontDialog** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ✅ |
 | **FontPreview** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **Form** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **FormSet** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **Frame** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **FreeformShape** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **Gauge** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
@@ -276,11 +278,11 @@
 
 ---
 
-Total widgets: 237 (228 parent-registered kinds plus 9 documented WebEngine wrapper types)
+Total widgets: 239 (230 parent-registered kinds plus 9 documented WebEngine wrapper types)
 
-Registered by optional packages (outside this matrix): `WebFindBar`, `Form`, `FormSet`.
+Registered by optional packages (row describes the kind; the constructor lives in that package): `WebFindBar`, `Form`, `FormSet`.
 
-C-ABI typed constructors: 22 of 237 widget types. The remainder are reachable through `rw_create_widget_of_kind`, which takes a factory name at run time.
+C-ABI typed constructors: 22 of 239 widget types. The remainder are reachable through `rw_create_widget_of_kind`, which takes a factory name at run time.
 
 ---
 

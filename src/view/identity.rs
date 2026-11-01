@@ -86,6 +86,13 @@ pub struct TreeIndex<Id = ObjectId> {
     /// Keyed by the parent's id rather than the parent's path because a key is scoped to its
     /// siblings, and the parent's id survives an insertion above it while its path does not.
     key_to_id: HashMap<(Option<Id>, String), Id>,
+    /// The reverse of `key_to_id`, for the "what key does this control declare?" direction.
+    ///
+    /// [`Self::key_of`] used to answer by scanning `key_to_id`, which made a diagnostic query
+    /// O(keys) on a snapshot that already holds a node→path map. This is built once beside the
+    /// forward map, so both directions cost one hash lookup (feedback C-2). A duplicated key is
+    /// absent from both, because it identifies neither claimant.
+    id_to_key: HashMap<Id, String>,
     /// The reverse of `path_to_id`, for the "what is this control in the model?" direction.
     ///
     /// Shares the path allocation with `path_to_id` (see the field comment above).
@@ -172,7 +179,7 @@ impl<Id: IndexId> TreeIndex<Id> {
 
     /// The key of `id`, if it declared one and is part of this snapshot.
     pub fn key_of(&self, id: Id) -> Option<&str> {
-        self.key_to_id.iter().find(|(_, v)| **v == id).map(|((_, k), _)| k.as_str())
+        self.id_to_key.get(&id).map(String::as_str)
     }
 
     /// The parent of `id`, or `None` for the root or an unknown id.
@@ -240,9 +247,14 @@ impl<Id: IndexId> TreeIndex<Id> {
             }
         }
         duplicated_keys.sort();
+        // The reverse table is derived from the ambiguity-free forward map, so the two directions
+        // cannot disagree about which keys are mappable.
+        let id_to_key: HashMap<Id, String> =
+            key_to_id.iter().map(|((_, key), id)| (*id, key.clone())).collect();
         Self {
             path_to_id,
             key_to_id,
+            id_to_key,
             duplicated_keys,
             id_to_path,
             widget_of,
@@ -598,6 +610,31 @@ mod tests {
             index.keys(),
             vec![(Some(NodeId(1)), "sidebar", NodeId(2)), (Some(NodeId(2)), "title", NodeId(3)),]
         );
+    }
+
+    /// `key_of` answers from the reverse table, so both directions agree.
+    ///
+    /// The forward map is what `id_of_key` reads; the reverse map is what `key_of` reads. They are
+    /// derived together, so a key that resolves one way must resolve the other way to the same
+    /// pair, and an unkeyed or unknown id answers `None` rather than scanning the forward map.
+    #[test]
+    fn key_of_and_id_of_key_are_inverses() {
+        let index = TreeIndexBuilder::new()
+            .node(&[], NodeId(1), "window", None)
+            .node(&[0], NodeId(2), "panel", Some("sidebar"))
+            .node(&[0, 0], NodeId(3), "label", Some("title"))
+            .node(&[1], NodeId(4), "label", None)
+            .build();
+
+        assert_eq!(index.key_of(NodeId(2)), Some("sidebar"));
+        assert_eq!(index.key_of(NodeId(3)), Some("title"));
+        assert_eq!(index.key_of(NodeId(1)), None, "an unkeyed root has no key");
+        assert_eq!(index.key_of(NodeId(4)), None, "an unkeyed child has no key");
+        assert_eq!(index.key_of(NodeId(99)), None, "an id outside the snapshot has no key");
+        for (parent, key, id) in index.keys() {
+            assert_eq!(index.key_of(id), Some(key));
+            assert_eq!(index.id_of_key(parent, key), Some(id));
+        }
     }
 
     /// The builder must apply the engine's duplicate-key rule, not a looser one of its own.

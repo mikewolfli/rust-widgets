@@ -326,6 +326,15 @@ WIDGETS: Dict[str, Tuple[str, List[str]]] = {
     "MarkdownOutlinePanel": ("MarkdownOutlinePanel", CELLS),
     "FindBar": ("FindBar", CELLS),
     "WebFindBar": ("WebFindBar", CELLS),
+    # The form suite registers these two variants (the `form_widgets` group in
+    # `rust-widgets-suites`). They are self-drawn controls (`impl Draw`), so the row's
+    # capability is the same `CUSTOM` every other kind carries; only the constructor
+    # lives outside this package. Listing them is not optional: both
+    # `check_platform_capability_matrix.sh` and `blue9_r6` require a row for every
+    # `WidgetKind` variant, and a documented exclusion is what made those two checks
+    # disagree with this generator.
+    "Form": ("Form", CELLS),
+    "FormSet": ("FormSet", CELLS),
     "ShapeCanvas": ("ShapeCanvas", CELLS),
     "KanbanCardView": ("KanbanCardView", CELLS),
     "KanbanColumnHeader": ("KanbanColumnHeader", CELLS),
@@ -448,9 +457,10 @@ _KIND_CACHE: Dict[str, List[str]] = {}
 def _external_kind_variants() -> List[str]:
     """Return the kinds marked `// kind-role: external` in `src/widget/kind.rs`.
 
-    Those are controls an optional package registers (the web family, the form suite); they are
-    deliberately absent from this matrix, which lists what the parent factory itself answers, but
-    the totals line names them so the enum count and the matrix count cannot drift silently.
+    Those are controls an optional package registers (the web family, the form suite). The row is
+    still listed in this matrix — every `WidgetKind` needs one, and the platform strategy for a
+    self-drawn control is the same `CUSTOM` wherever its constructor lives — while this list keeps
+    the *registration* fact visible so a reader does not look for the constructor here.
     """
     if "external" in _KIND_CACHE:
         return _KIND_CACHE["external"]
@@ -724,7 +734,8 @@ def generate_matrix() -> str:
     if external_kinds:
         lines.append("")
         lines.append(
-            "Registered by optional packages (outside this matrix): "
+            "Registered by optional packages (row describes the kind; the constructor lives in "
+            "that package): "
             + ", ".join(f"`{name}`" for name in external_kinds)
             + "."
         )

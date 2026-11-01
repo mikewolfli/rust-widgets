@@ -195,3 +195,30 @@ fn a_click_on_a_drawn_row_beats_a_later_sibling_over_the_popup() {
         "the chosen entry's id must be what poll_menu_triggered reports"
     );
 }
+
+/// A menu can create a **nested** menu under itself, and the parent gains a branch row.
+///
+/// This is the creation half of feedback C-4: before it, `new_menu` existed only on the bar, so a
+/// GUI host had no way to build a submenu and flattened its model instead. The row is what makes
+/// the child reachable by the user; the host opens the child popup on `submenu_requested`.
+#[test]
+fn a_menu_can_create_a_nested_submenu_branch() {
+    rust_widgets::init();
+    let mut app = App::new();
+    app.init();
+    let win = app.new_window("nested menu", 0, 0, 640, 480);
+    let bar = win.new_menu_bar(0, 0, 640, 28);
+    let file = win.new_menu(&bar, "File", 0, 0, 200, 0);
+    assert_eq!(file.item_count(), 0);
+
+    let recent = file.new_submenu("Recent", 0, 0, 200, 0);
+    assert_ne!(recent.raw_id(), 0, "the child popup must be a mounted menu");
+    assert_eq!(file.item_count(), 1, "the parent must show a branch row for it");
+    let row = file.row_rect(0).expect("the branch row has a painted rectangle");
+    assert!(row.height > 0, "a branch row occupies the same band as any other row");
+
+    // Items added to the child belong to the child, not to the parent row.
+    win.new_menu_item(&recent, "a.txt", None);
+    assert_eq!(recent.item_count(), 1);
+    assert_eq!(file.item_count(), 1);
+}

@@ -94,6 +94,15 @@ pub struct ComputedOrigin {
     pub sheet: String,
     /// That sheet's priority.
     pub priority: u8,
+    /// The winning declaration's byte span in its sheet, when the trace could determine it.
+    ///
+    /// This is the piece a designer's inspector needs to jump from a computed value back to the
+    /// line that produced it (feedback C-6). The offsets address the sheet's own source text, which
+    /// is [`TracedSheet::css`] for an on-demand trace and the registered sheet's text for one built
+    /// from [`TracedRuleSheet`]s — the two consume the same parsed rules, so both carry the span.
+    /// `None` only when the caller supplied rules that were not produced by this crate's parser
+    /// (a hand-built [`ParsedCssRule`] has no source to point at).
+    pub span: Option<(usize, usize)>,
 }
 
 impl ComputedOrigin {
@@ -272,7 +281,7 @@ pub fn trace_cascade_prepared(
     });
 
     for (_, _, _, rule, sheet_name, priority) in matched {
-        for declaration in &rule.declarations {
+        for (declaration_index, declaration) in rule.declarations.iter().enumerate() {
             // A declaration only wins if the apply could act on it. The two ways it cannot are
             // reported rather than recorded: an unknown property is ignored by the apply
             // (CSS's own rule) and a refused value leaves the previous value in place, so
@@ -299,7 +308,14 @@ pub fn trace_cascade_prepared(
                 });
                 continue;
             }
-            record(&mut origins, declaration, &rule.selector_text, sheet_name, priority);
+            record(
+                &mut origins,
+                declaration,
+                &rule.selector_text,
+                sheet_name,
+                priority,
+                rule.declaration_spans.get(declaration_index).copied(),
+            );
         }
     }
 
@@ -340,6 +356,7 @@ fn record(
     selector_text: &str,
     sheet_name: &str,
     priority: u8,
+    span: Option<(usize, usize)>,
 ) {
     let origin = ComputedOrigin {
         property: declaration.property.clone(),
@@ -347,6 +364,7 @@ fn record(
         selector: String::from(selector_text),
         sheet: String::from(sheet_name),
         priority,
+        span,
     };
     if let Some(existing) = origins.iter_mut().find(|o| o.property == origin.property) {
         *existing = origin;
@@ -378,6 +396,40 @@ mod tests {
         assert_eq!(origin.selector, "Button");
         assert_eq!(origin.sheet, "base");
         assert_eq!(origin.priority, 0);
+    }
+
+    /// The winning origin names the byte range of the declaration that produced it.
+    ///
+    /// Both entry points must answer the same span: the on-demand trace parses the text, the
+    /// prepared trace reads a sheet the caller parsed earlier, and an inspector that switched
+    /// between them would otherwise jump to two different places for one computed value.
+    #[test]
+    fn a_winning_origin_names_the_declaration_span() {
+        let css = "Button {\n  color: #112233;\n  background-color: #445566;\n}";
+        let trace = trace_cascade(
+            "Button",
+            None,
+            None,
+            None,
+            &[TracedSheet { name: "base", css, priority: 0 }],
+        );
+        let origin = trace.origin_of("color").expect("the rule set the property");
+        let span = origin.span.expect("a parsed declaration has a source span");
+        assert_eq!(&css[span.0..span.1], "color: #112233");
+
+        let prepared = CssParser::parse_prepared_rules(css).expect("the sheet parses");
+        let prepared_trace = trace_cascade_prepared(
+            "Button",
+            None,
+            None,
+            None,
+            &[TracedRuleSheet { name: "base", priority: 0, rules: &prepared }],
+        );
+        assert_eq!(
+            prepared_trace.origin_of("color").and_then(|origin| origin.span),
+            Some(span),
+            "the two entry points must agree about where the declaration is"
+        );
     }
 
     /// A higher-priority sheet's declaration must win over a lower one.

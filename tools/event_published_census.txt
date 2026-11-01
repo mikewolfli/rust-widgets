@@ -30,7 +30,7 @@ bezier_curve_editor: curve_changed
 bottom_navigation_bar: current_changed
 bottom_sheet: dismissed
 breadcrumb: segment_activated, context_menu_requested, path_edited, overflow_clicked
-button: canceled, clicked, pressed, released, state_changed, item_triggered
+button: canceled, clicked, pressed, released, state_changed, item_triggered, context_menu_requested
 calendar: selection_changed, activated, current_page_changed
 calendar_mark_layer: mark_activated
 camera_preview: error_occurred, permission_denied, frame_available, format_negotiated, frame_presented, capture_requested
@@ -140,7 +140,7 @@ line:
 line_chart: point_clicked, point_hovered, point_unhovered, series_toggled
 line_edit: text_changed, editing_finished, return_pressed, context_menu_requested, cursor_position_changed, selection_changed, text_edited, undo_available, redo_available, copy_available, action_triggered
 line_number_gutter: line_clicked, current_line_changed
-list_box: item_selected, item_activated, selection_changed, drag_finished, rename_requested, item_changed
+list_box: item_selected, item_activated, selection_changed, drag_finished, rename_requested, item_changed, context_menu_requested
 list_state_host: refresh_requested, empty_action_activated
 list_view: selection_changed, focused_row_changed, context_menu_requested, row_activated, row_reordered
 lottie_widget: animation_finished, frame_changed

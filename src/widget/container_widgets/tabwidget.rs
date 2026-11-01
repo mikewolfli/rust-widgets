@@ -1717,6 +1717,15 @@ impl TabWidget {
     fn tab_at_position(&self, pos: Point) -> Option<usize> {
         self.tab_rects().iter().position(|tab_rect| tab_rect.contains(pos))
     }
+
+    /// The tab index at `pos`, for a host that needs the page a pointer request addressed.
+    ///
+    /// The public counterpart of the hit test the strip's own press handling uses, so a
+    /// context-menu handler and a left click resolve the same tab (feedback C-9). `None` over the
+    /// content page or past the last tab.
+    pub fn tab_index_at(&self, pos: Point) -> Option<usize> {
+        self.tab_at_position(pos)
+    }
 }
 /// Height of the tab strip, in logical pixels.
 ///
@@ -1956,10 +1965,14 @@ impl Widget for TabWidget {
     ///
     /// A request on the content page belongs to the page's own control (if any), not to the
     /// strip, so answering `false` there keeps the host from showing a tab menu over content.
+    /// The tab under the pointer is selected **before** the signal fires, matching a left press:
+    /// a menu about a page the user did not click used to close the previously active page
+    /// (feedback C-9).
     fn context_menu_event(&mut self, pos: Point) -> bool {
-        if self.tab_at_position(pos).is_none() {
+        let Some(index) = self.tab_at_position(pos) else {
             return false;
-        }
+        };
+        self.set_current_index(index);
         self.context_menu_requested.emit(pos);
         true
     }
@@ -2776,10 +2789,14 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     /// A request on the strip is a tab request; the same request on the page is not.
+    ///
+    /// The tab under the pointer is selected before the signal fires, so a menu about a page the
+    /// user right-clicked cannot act on the previously active page (feedback C-9).
     #[test]
     fn a_context_menu_request_needs_a_tab_under_the_point() {
         let mut tabs = TabWidget::new(Rect::new(0, 0, 300, 200));
         tabs.add_tab("One".to_string(), None);
+        tabs.add_tab("Two".to_string(), None);
         let seen = Arc::new(Mutex::new(Vec::new()));
         let sink = Arc::clone(&seen);
         tabs.context_menu_requested.connect_ref(move |pos: &Point| {
@@ -2787,10 +2804,16 @@ mod tests {
         });
 
         let on_tab = Point::new(5, 5);
+        let second = tabs.tab_rect(1).expect("the second tab is laid out");
+        let on_second = Point::new(second.x + 2, second.y + 2);
+        assert_eq!(tabs.tab_index_at(on_second), Some(1));
+        assert_eq!(tabs.selected_index(), Some(0));
+        assert!(tabs.context_menu_event(on_second));
+        assert_eq!(tabs.selected_index(), Some(1), "the menu describes the pointed-at page");
         assert!(tabs.context_menu_event(on_tab));
         // Below the strip is the content page: not a tab request.
         assert!(!tabs.context_menu_event(Point::new(150, 150)));
-        assert_eq!(*seen.lock().unwrap(), vec![on_tab]);
+        assert_eq!(*seen.lock().unwrap(), vec![on_second, on_tab]);
     }
 
     /// Helper to create unique test ObjectIds.

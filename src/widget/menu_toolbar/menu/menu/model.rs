@@ -1250,6 +1250,34 @@ impl Menu {
         self.touch_items();
         idx
     }
+
+    /// Appends a **branch** row whose submenu is a separately mounted menu widget.
+    ///
+    /// A branch is a row with the submenu indicator but no `MenuEntry::submenu` children: the
+    /// nested popup is created by [`WindowHandle::new_menu`](crate::app::WindowHandle::new_menu)'s
+    /// sibling [`MenuHandle::new_submenu`](crate::app::MenuHandle::new_submenu), which lands in the
+    /// overlay layer rather than inside this menu's rectangle. Activating the row therefore emits
+    /// [`Self::submenu_requested`] with its label and does not try to open an empty built-in panel;
+    /// the host opens the child popup at [`Self::row_rect`].
+    ///
+    /// Returns the row's index, like [`Self::add_action`].
+    pub fn add_submenu(&mut self, text: impl Into<String>) -> usize {
+        let idx = self.items.len();
+        let mut entry = MenuEntry::new(text);
+        entry.set_has_submenu(true);
+        self.items.push(entry);
+        self.touch_items();
+        idx
+    }
+
+    /// The painted rectangle of row `index` in this menu's own list, in window coordinates.
+    ///
+    /// A host that opens a nested menu widget needs the row it hangs from, and only the menu
+    /// knows where that row was painted — the row heights depend on the resolved font and the
+    /// item kinds. `None` for an out-of-range row or a menu that was never laid out.
+    pub fn row_rect(&self, index: usize) -> Option<Rect> {
+        self.row_rect_at(0, index)
+    }
     /// Appends an action labeled `text` with `shortcut` shown beside it, and
     /// returns its index.
     ///
