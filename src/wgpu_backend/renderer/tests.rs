@@ -70,6 +70,7 @@ fn shader_module_registry_matches_pipelines() {
         "radial_fs",
         "gradient_vs",
         "gradient_fs",
+        "image_scaled_fs",
         "path_fan_vs",
         "path_stencil_fs",
         "path_cover_vs",
@@ -1090,6 +1091,49 @@ fn a_translucent_blend_source_matches_the_software_rasteriser() {
     let gpu = renderer.render_draw_commands_rgba8(14, 14, &commands).expect("the GPU path renders");
     let cpu = rasterize_draw_commands_rgba8(14, 14, &commands).expect("rasterises");
     assert_eq!(gpu, cpu);
+}
+
+/// A translucent fill under `Normal` composites on the CPU parity path.
+///
+/// The rect pipeline writes with `REPLACE`, and the GPU keeps that honest by drawing a translucent
+/// rectangle into an offscreen run and compositing it instead. The parity rasteriser used to write
+/// the colour straight in — correct only for an opaque source — so a 19 %-opaque fill *erased* the
+/// pixels under it rather than darkening them. Pinned against the reference so neither renderer can
+/// drift back to the verbatim write.
+#[test]
+fn a_translucent_fill_composites_on_the_cpu_parity_path() {
+    use crate::core::{Color, Rect, Size};
+    use crate::render::{PaintBackend, RenderCommand, SoftwarePaintBackend};
+
+    let (width, height) = (16u32, 12u32);
+    let mut reference = SoftwarePaintBackend::new(Size::new(width, height), 1.0);
+    reference.begin_frame(Color::WHITE);
+    reference.execute_command(&RenderCommand::FillRect {
+        rect: Rect::new(2, 2, 10, 8),
+        color: Color::rgba(200, 40, 60, 255),
+    });
+    reference.execute_command(&RenderCommand::FillRect {
+        rect: Rect::new(5, 4, 9, 6),
+        color: Color::rgba(10, 20, 30, 48),
+    });
+    reference.end_frame();
+    let expected = reference.frame_rgba().to_vec();
+
+    let commands = [
+        WgpuDrawCommand::Clear { color: Rgba8 { r: 255, g: 255, b: 255, a: 255 } },
+        WgpuDrawCommand::FillRect {
+            rect: PixelRect { x: 2, y: 2, width: 10, height: 8 },
+            color: Rgba8 { r: 200, g: 40, b: 60, a: 255 },
+            clip: None,
+        },
+        WgpuDrawCommand::FillRect {
+            rect: PixelRect { x: 5, y: 4, width: 9, height: 6 },
+            color: Rgba8 { r: 10, g: 20, b: 30, a: 48 },
+            clip: None,
+        },
+    ];
+    let actual = rasterize_draw_commands_rgba8(width, height, &commands).expect("rasterises");
+    assert_eq!(actual, expected, "a translucent fill must composite, not replace");
 }
 
 /// An opaque image blended through the layer is byte-identical: the image pipeline stores

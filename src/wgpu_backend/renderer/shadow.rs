@@ -184,7 +184,7 @@ impl WgpuRenderer {
     }
 
     /// Records one directional pass of the shadow's separable box filter.
-    fn encode_blur_direction(
+    pub(super) fn encode_blur_direction(
         &self,
         encoder: &mut wgpu::CommandEncoder,
         label: &str,

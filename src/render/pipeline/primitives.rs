@@ -1887,7 +1887,7 @@ fn inverse_quad_homography(corners: &[Point; 4]) -> Option<[f32; 9]> {
 /// Channels are interpolated in **straight** alpha. For an opaque source this is identical to
 /// premultiplied interpolation; for a translucent one it can show a slight seam where alpha goes
 /// to zero, which is the honest trade for not carrying a premultiplied copy of every image.
-fn sample_bilinear(data: &[u8], width: u32, height: u32, u: f32, v: f32) -> [u8; 4] {
+pub(crate) fn sample_bilinear(data: &[u8], width: u32, height: u32, u: f32, v: f32) -> [u8; 4] {
     let fx = u * width as f32 - 0.5;
     let fy = v * height as f32 - 0.5;
     let x0 = fx.floor();

@@ -64,6 +64,9 @@ pub struct WgpuRenderer {
     /// source coordinate [`super::shaders::IMAGE_FRAG`] derives from the draw's own uniform.
     /// Compositing is straight-alpha source-over, matching the CPU rasteriser's blend rule.
     pub(crate) image_pipeline: wgpu::RenderPipeline,
+    /// The scaled-image pipeline: the same quad, bind group and blend state as the image pipeline,
+    /// shaded by four texels and the reference's bilinear weights instead of one.
+    pub(crate) image_scaled_pipeline: wgpu::RenderPipeline,
     /// Bind group layout of the image pipeline: the draw's params uniform and its source texture
     /// at group 0; the mvp matrix rides group 1, as in the SDF circle pipeline.
     pub(crate) image_bind_group_layout: wgpu::BindGroupLayout,

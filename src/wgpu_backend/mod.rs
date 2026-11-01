@@ -149,9 +149,15 @@ mod renderer;
 pub mod shaders;
 mod types;
 pub use bridge::{
-    bridge_non_zero_fill_commands, bridge_render_commands, ramp_is_smooth, BridgeGap,
+    bridge_non_zero_fill_commands, bridge_render_commands, ramp_is_smooth,
+    scaled_image_drift_is_bounded, BridgeGap,
 };
 pub use commands::WgpuDrawCommand;
+/// The CPU parity rasteriser for a command stream, exposed crate-wide so a bridged family's test can
+/// assert that the fallback path reproduces the reference byte for byte instead of merely trusting it.
+/// Only the tests need it, so it is compiled in only for them.
+#[cfg(test)]
+pub(crate) use raster::rasterize_draw_commands_rgba8;
 /// The device-wait budget shared by the readback path and the presenter (BLUE29 B29.03/B29.09).
 #[cfg(feature = "raw-window-handle")]
 pub(crate) use renderer::resources::GPU_READBACK_TIMEOUT;

@@ -60,9 +60,11 @@ L3 回退（已是现状）        不可覆盖的流 → CPU 光栅器
 | 透明目标且流内无 clear | GPU 存「预乘 × 覆盖度」，CPU 存直通 alpha → 差值可**远超 1 LSB** | 不在 A/B 内（`Antialiased` 也需显式知道） |
 | 圆/弧/圆角描边的 SDF 管线 | GPU **抗锯齿**，CPU 硬边 | C（视觉更好，但不可复现） |
 | 非 Normal 混合模式（`set_blend_modes_on_gpu`，默认关） | 每条命令一次图层 + 快照合成 | A（不透明）/ B（半透明） |
+| 帧区域读改写模糊（`Blur` / 阴影模糊，第 12 轮） | `Blur`、不透明方体阴影、半透明体阴影实测**逐字节**；**圆角体**的周长是 C（参考 2×2 采样 vs GPU 硬边行跨度），模糊再把该周长差摊到自身 reach 内 | A（方形体）/ B（半透明体）/ C（圆角体） |
 
 出处：`src/wgpu_backend/mod.rs` 模块文档（#A known divergence）、
-`src/wgpu_backend/renderer/frame.rs::set_blend_modes_on_gpu`、日志 §16.2。
+`src/wgpu_backend/renderer/frame.rs::set_blend_modes_on_gpu`、日志 §16.2；
+帧区域模糊一行出自日志 §23.4（逐家族实扫：0/0/0/0 字节，圆角体 1324 字节且逐像素落在周长 + reach 内）。
 
 **由此得到的关键事实**：「效果更好」（AA）与「同输入同像素」（可复现）互斥。当前实现把选择权
 交给了「哪条路径接了这条流」——同一个含圆的流，走 GPU 抗锯齿、走 CPU 硬边，这是隐式质量切换。
@@ -461,15 +463,27 @@ drawRect:（cocoa 的 canvas.rs）
          或第一个转不过去的命令；用例 `a_recorded_frame_is_drawable_only_when_every_command_is_mapped`。
          画布侧的交付口是 `present_recorded_commands(...)`：拒绝时返回 `Skipped` 并把理由**每窗只记一次**
          （`smooth_fallback_reason`），画布随即用同一帧走逐字节路径——图片永远不是两个光栅器的混合。
-      **仍未完成（具名）**：② 其余 16 个 2D `ForcesCpu`（+ 4 个条件回落 + 5 个 3D）的桥接与逐变体对拍——
-      因此**真实控件树里仍有具名命令**会让整帧回落 `Exact`（清单与原因见 §7.10）；
+      **仍未完成（具名）**：② 其余 2D `ForcesCpu`（+ 条件回落 + 5 个 3D）的桥接与逐变体对拍——
+      因此**真实控件树里仍有具名命令**会让整帧回落 `Exact`（清单与原因见 §7.11）。
+      **第 12 轮更新**：`Blur` 与两种模糊阴影（`BoxShadow{blur>0}` / `BoxShadowRounded{blur>0}`）
+      已离开 `ForcesCpu`（一套帧区域读改写模糊机制，§7.15）。仍恒为 `ForcesCpu` 的 2D 变体只剩
+      具名的七个：`DrawTextRecorded` / `DrawPathRecorded` / `DrawPathDashedRecorded` /
+      `FillPathNonZeroRecorded`（四个记录器自有变体，结构不可达）、`PushClipRoundedRect`、
+      `ClipPath`、matte 三件套（`PushMatte`/`PopMatte`/`EndMatte`）。
       命令路径的真机证据：第 6 轮探针新增第三阶段（空窗口 + `Smooth`）因为窗口 `occluded` 报
-      `SKIP(host-limited)`，**第 7 轮已取得**（两个后端各交付 2 帧命令，见 §7.10）。
-- [ ] 桥接普查：`RenderCommand` 每个变体必须归入且仅归入一类，门控打印计数（原则 #100）：
+      `SKIP(host-limited)`，**第 7 轮已取得**（两个后端各交付 2 帧命令，见 §7.10），第 8 轮的渐变
+      让同一棵树多了一类可上 GPU 的负载（§7.11），第 12 轮把模糊阴影接到真实控件树（§7.15）。
+- [x] 桥接普查：`RenderCommand` 每个变体必须归入且仅归入一类，门控打印计数（原则 #100）：
       `Mapped` / `MappedWithDivergence`（仅 §1.2 的 AA 集合）/ `ForcesCpu`（该帧整帧回落 `Exact`）。
-- [ ] 未分类变体默认 `ForcesCpu`，不得静默丢弃或近似（`bridge.rs` 的既有纪律）。
-- [ ] 仅当普查 `ForcesCpu = 0 或已具名` 且逐变体像素用例通过，才允许 `Smooth` 上线；
+      **（本节与上文第一条重复，上文已 `[x]`；第 11 轮补上运行时证据：探针现在打印真实树的普查，
+      见 §7.14。）**
+- [x] 未分类变体默认 `ForcesCpu`，不得静默丢弃或近似（`bridge.rs` 的既有纪律）。
+      `classify` 的 `match` 无通配臂，新增变体必须分类否则编译失败。
+- [x] 仅当普查 `ForcesCpu = 0 或已具名` 且逐变体像素用例通过，才允许 `Smooth` 上线；
       `Smooth` 帧内出现任一 `ForcesCpu` ⇒ 整帧走 `Exact`（不混用两条路径）。
+      **第 11 轮判定：门禁成立。** 每个 `ForcesCpu` 都带具名理由，每个已桥接变体都有对拍；
+      `Smooth` 仍按帧回落，且回落的类名写进 `smooth_fallback_reason`。
+      剩余未桥接项的服务面已量化（0–1 个真实调用点），因此"把每个变体都桥接"不再是上线前提。
 - 验收：`Mapped` 变体逐条 GPU vs CPU 比对；`MappedWithDivergence` 只允许 §1.2 集合；
       `ForcesCpu` 逐条列出原因。
 - 反向注入：把一个 `Mapped` 变体误标后，其像素用例必须变红；把 `ForcesCpu` 静默跳过，
@@ -863,7 +877,7 @@ bash tools/check_source_structure.sh                                → ✅
 随之为 `wgpu_backend` 增加三个 `pub(crate)` 出口（`for_each_dash_segment`、
 `line_stroke_coverage_grid`、`box_shadow_spread_rect`）——不是新实现，是同一实现的第二条调用路径。
 
-**仍未桥接（16 个 2D 变体恒为 `ForcesCpu` + 4 个条件回落 + 5 个 3D）**
+**仍未桥接（16 个 2D 变体恒为 `ForcesCpu` + 4 个条件回落 + 5 个 3D；第 8 轮已把其中的渐变接上，见 §7.11）**
 
 - 恒定回落：`DrawImageScaled`（参考双线性 vs GPU 最近邻）、`PushClipRoundedRect`、`PushLayer` /
   `PopLayer` / `PushLayerGroup`、`DrawGradient` / `DrawConicGradient`（现有渐变载体只支持等距 stop 且不插值）、
@@ -899,6 +913,314 @@ bash tools/run_present_macos.sh                                     → PASS（�
 
 这一格的历史：§7.9 的「wired phase 因 `occluded` 报 SKIP」与 §7.8 的「命令路径真机证据未取得」
 就此闭合；窗口级证据与库级证据现在是同一件事的两端。
+
+### 7.11 第 8 轮实施结果（2026-11-01，证据在 `docs/log/log-20261030-2.md` §19）
+
+本轮把 §1.1 里 GPU 最划算的那类负载——**渐变**——整条打通：`DrawGradient`（线性任意方向 /
+径向 / 锥形）与 `DrawConicGradient` 两个命令、三种几何，全部接上 GPU。
+
+**新增的唯一载体：`WgpuDrawCommand::FillGradient`**
+
+```text
+FillGradient { rect, kind, start, end, ramp, verbatim, clip }
+              kind: 0 线性 / 1 径向 / 2 锥形
+              ramp: 参考自己的 256 项表（RGBA8）
+              verbatim: 是否原样写入（锥形命令是，渐变填充不是）
+```
+
+为什么必须新增：现有的 `DrawGradient`/`FillLinearGradient` 只支持**轴对齐 + 等距 stop + 不插值**，
+`FillRadialGradient` 的几何由 `rect` 反推；任意方向的 ramp 无法用它们表达（#101 要求的是
+「一个概念一条实现」，不是「一条实现硬塞所有概念」）。
+
+**为什么能守住 `A/B` 档：上传的是参考自己的表**
+
+参考的 `fill_rect_gradient` 并不逐像素插值：它用 `Gradient::interpolate` 建一张 **256 项表**，
+再按 `(position.clamp(0,1) * 255.0) as usize` 取整索引。载体直接带这张表（由参考的
+`gradient_ramp_lut` / `ramp_lut_for_stops` 生成，内容缓存共享），所以**颜色逐字节相同**；
+唯一可能不同的是 `position` 这个 f32 表达式的最后几位，它只会让某个像素读到**相邻表项**。
+
+于是本轮新增一个门控谓词 `wgpu_backend::ramp_is_smooth`：表内相邻两项每个通道相差 ≤1 才允许桥接。
+这正好把「相邻项读错」限制在 ≤1 LSB 内；不满足的 ramp（陡变、硬断点）**具名回落**
+（`ForcesCpu`，理由写「每个表项变化超过一级」），不会悄悄超出自己声明的差异档位。
+普查与桥接读同一个谓词，两张表不会各自漂移。
+
+**三种几何的公式（与参考逐项相同）**
+
+| kind | 位置 | 备注 |
+|---|---|---|
+| 0 线性 | `((x0 - sp.x)·dx + (y - sp.y)·dy)/dot + (x - x0)·(dx/dot)` | 保留参考的「行起点 + 每像素步长」形式；`x0 = max(rect.x, 0)`，**裁剪不改变相位** |
+| 1 径向 | `sqrt(dx² + dy²) / radius` | `radius <= 0` ⇒ 0 |
+| 2 锥形 | `atan2(dy, dx) + π`，加起始角后 `% TAU`，负余数再绕一圈，除以 `TAU` | 中心像素单独处理，见下 |
+
+**测试抓到的一个真 bug**：WGSL 没有规定 `atan2(0, 0)` 的值，GPU 在锥形渐变的**圆心像素**
+上返回了一个与 `f32::atan2(+0, +0) = +0` 不同的角度，实测差 126 级。修法是在着色器里显式处理
+圆心（`angle = PI`），实测该像素转为逐字节相同。这类差异不可能靠「大概对」的断臂发现。
+
+**CPU 对等（回落时不换光栅器）**
+
+`raster::fills::draw_ramp_gradient_cpu_rgba8` 是同一张表 + 同一套位置公式的 CPU 版本，
+`verbatim` 选择原样写还是按混合模式合成；`a_fill_gradient_reproduces_the_software_surface_on_the_cpu_path`
+把「桥接后的命令走 CPU」与 `SoftwarePaintBackend` 的同一帧**逐字节**对比。
+
+**接口变化（一处）**：`bridge_render_commands(commands, text_scale, target)` 与
+`smooth_commands(commands, text_scale, target)` 各多一个帧尺寸参数——锥形命令不带矩形，
+参考画的是整个被裁剪的表面，桥接必须知道帧多大。
+
+**证据（本机实扫，逐家族）**
+
+| 家族 | 差异 |
+|---|---|
+| 线性（斜向） | 1 字节，worst 1（表项边界） |
+| 线性（单轴） | 0 字节 |
+| 径向 | 0 字节 |
+| 锥形（`DrawGradient`） | 0 字节 |
+| 锥形（`DrawConicGradient`，原样写入） | 0 字节 |
+| 陡变 ramp（硬断点 0.0→0.2） | 不桥接：`ForcesCpu` + 桥接返回 `Err` |
+| CPU 对等 | 逐字节相同 |
+
+**计数变化**：2D `ForcesCpu` 从 **16 恒为 + 4 条件** 变为 **14 恒为 + 6 条件**（渐变两命令
+变为「run 平滑则桥接、否则具名回落」）。
+
+### 7.12 第 9 轮实施结果（2026-11-01，证据在 `docs/log/log-20261030-2.md` §20）
+
+本轮闭合的是**纯图层**：`PushLayer` / `PushLayerGroup`（无可分离内容）/ `PopLayer`。
+
+**依据在参考自己的代码里**：`begin_layer` 把 bounds 先 `push_clip`，`pop_layer` 在
+`!layer.isolated` 时**只 `pop_clip` 就返回**。所以「无效果、不透明度 = 1、无缓存键」的图层
+**就是一对裁剪**——不需要任何新载体。
+
+| 项 | 落点 |
+|---|---|
+| 唯一判定 | `render::core::command::layer_is_plain(effect, opacity, cache_key)`；`begin_layer` 改为读它（`isolated = !layer_is_plain(..)`），桥接与普查也读同一个 |
+| 桥接 | plain 推送 → `PushClip{bounds}`；`PopLayer` → `PopClip`，并用层级计数拒绝**不平衡的 pop** |
+| 普查 | `census` 记图层栈：pop 只能关闭 plain 推送；关闭隔离图层（或无推送）⇒ `ForcesCpu` |
+| 证据 | `a_plain_layer_paints_the_same_bytes_as_a_clip_on_the_gpu`（逐字节）；`the_audit_tracks_the_layer_stack`（5 种栈形态） |
+
+**为什么 `PopLayer` 需要栈而不是单命令分类**：`classify` 是**无状态**的，而一个 pop 是否等同一
+个 clip pop，取决于它关闭的是哪个推送。让 `census` 记栈以后，普查与桥接的结论是同一个；
+单命令 `classify(PopLayer)` 只回答「关闭 plain 图层时的答案」，文档写明这一点。
+
+**为什么不平衡的 pop 必须拒绝**：参考的 `pop_layer` 在图层栈为空时**直接返回、不弹 clip**，
+而 `PopClip` 会弹掉外层裁剪。两者不等价，所以桥接拒绝（`BridgeGap`）而不是近似。
+
+**计数变化**：2D `ForcesCpu` 从 **14 恒为 + 6 条件** 变为 **11 恒为 + 6 条件**。
+
+#### 剩下的 11 个：逐项结构判定（不是“没做”，是“缺什么机制”）
+
+| 项 | 缺什么 | 能不能按 A/B/C 档闭合 |
+|---|---|---|
+| `Blur` | 参考是**三次 box 模糊近似高斯**（`box_blur_widths(sigma)`）的就地 RMW；GPU 只有阴影层上的单方向 box pass，且窗口规则不同。需要「捕获区域 → 六次 pass → REPLACE 写回」一整套前置 pass | 能（整数算术语义已有一条先例：`SHADOW_BLUR_FS`） |
+| `ClipPath` | 参考是「矩形裁剪 + 捕获背景 + pop 时按覆盖度还原」；GPU 需要把路径写入**模板缓冲**并持续测试，而当前每个管线的 depth-stencil 是 `passive` | 能（需新增裁剪栈状态） |
+| `PushClipRoundedRect` | 同上，圆角作为覆盖度写入掩码；需要同一条「模板裁剪」机制 | 能（与上一项同一机制） |
+| `PushMatte` / `PopMatte` / `EndMatte` | 参考是「捕获 matte 区域 → 用 alpha/luma 作遮罩 → 合成」；GPU 有 backdrop 拷贝与合成 pass，但缺一种合成种类（matte） | 能（需新增合成种类） |
+| `DrawImageScaled` | 参考是**平行四边形/投影四边形 + 双线性重采样**（`sample_bilinear`，权重按像素累积）。两边的 `u`/`v` 在末位不同时，某个采样点会落在**另一个 texel 对**上——那是**采样权重**级别的差，不是 ≤1 LSB | **不能**直接归 A/B；需 Plan 新增一档（见下） |
+| 4 个记录器自有变体 | `DrawPathRecorded` / `DrawPathDashedRecorded` / `FillPathNonZeroRecorded` / `DrawTextRecorded` 的载荷属于 recorder，由 `RegionBuckets::flush` 在到达后端**之前**解析；走到后端就是 bug | **不需要桥接**（拒绝是正确行为） |
+| 3D 五类 | `WgpuDrawCommand` 里**根本没有**任何 3D 载体（无 quad/mesh），`DrawMesh3D` 还需要顶点缓冲 + 相机矩阵 + 深度缓冲 | 能，但是一个独立批次（新载体 + 管线） |
+
+> **⚠️ 需要人工确认（Plan 缺口，不是实现缺口）**：`blue29.md` §1.2 的效果档位只有 A（逐字节）/
+> B（≤1 LSB）/ C（边缘 AA）。`DrawImageScaled` 的双线性差是「采样权重落到另一个 texel 对」，
+> 既不是 1 LSB 也不是边缘 AA。把它归哪一档是**Plan 层面的决定**，不应由实现方自拟。
+> 两个候选：(a) 新增一档「D 采样点边界：形状/覆盖一致，单像素可能取自相邻 texel 对」；
+> (b) 坚持只允许 A/B/C，则 `DrawImageScaled` 永久具名回落。
+
+### 7.13 第 10 轮实施结果（2026-11-01，证据在 `docs/log/log-20261030-2.md` §21）
+
+本轮按 **真实控件使用频次** 排序，一次闭合两项：`DrawImageScaled`（16 处调用）与「带缓存键的图层」（4 处）。
+过程中又抓到一个**既有真 bug**（帧背景未清）。
+
+#### ① `DrawImageScaled`：双线性重采样（B 档，**不新增档位**）
+
+**先纠正一个判断**：§7.12 里我曾写「相邻 texel 对 ⇒ 差可达几十级」——**错了**。双线性插值在 `(u,v)` 上
+**连续**：`fx` 跨整数边界时 texel 对与权重同时交换，插值结果不变。所以采样位置末位差异只能造成
+**舍入级**差异。数值实验（最坏情况源图 0/255 棋盘、49 万采样点）：
+
+| 采样位置扰动 | 最大字节差 |
+|---|---|
+| 1e-6 | 1 |
+| 1e-5 | 1 |
+| 1e-4 | 1 |
+| 1e-3 | 2 |
+
+参考的累积漂移上界：`u ∈ [0,1)`，`ulp(u) ≈ 6e-8`，每步误差 ≤ 3e-8，步数 ≤ 目标尺寸 ⇒
+`drift ≤ extent · 3e-8`。于是把「≤1 LSB」变成可判定：`scaled_image_drift_is_bounded(w, h)`
+（`extent · 3e-8 ≤ 1e-4`，约 3300 px），**普查与桥接读同一个谓词**。
+
+| 情形 | 分类 | 实测 |
+|---|---|---|
+| 恒等尺寸（参考短路到 `draw_image`） | `Mapped` | **逐字节** |
+| 放大 8×6 → 21×15 | `MappedWithDivergence` | 22 字节差，worst **1** |
+| 缩小 8×6 → 4×3 | 同上 | **0 字节** |
+| 非整数比 8×6 → 33×6 | 同上 | 14 字节差，worst **1** |
+| 4096 px 以上 | `ForcesCpu` | 桥接同样拒绝 |
+
+载体：`WgpuDrawCommand::DrawImageScaled`（复用 image 的 bind group layout，只多一条管线
+`image_scaled_pipeline` / `SCALED_IMAGE_FRAG`，四个 `textureLoad` + 参考同款权重）；
+CPU 对等复用参考的**同一个采样器** `render::sample_bilinear`（原来它是私有的，现在 `pub(crate)`），
+所以回落时也不换实现。
+
+#### ② 带缓存键的图层 = 裁剪（前提：背景不透明）
+
+`composite_foreground` 是 **先 `restore_region(backdrop)` 再合成**；在不透明背景上，捕获的每个像素
+alpha 都是 255，合成退化为 verbatim 写回 —— **恒等**。于是「无 effect + 不透明度 1」的
+`PushLayerGroup`（无论有无 `cache_key`）像素上等同裁剪，缓存只是 CPU 优化。
+
+- 新谓词 `layer_paints_like_a_clip(effect, opacity)`（`layer_is_plain` 改为它 + 无缓存键）；
+- 背景不透明是**前提**，因此 `bridge_render_commands` 多一个 `opaque_background`；
+  不透明时转成 `PushClip`/`PopClip`，否则**具名拒绝**；
+- 真实调用点 `push_layer_group(rect, None, 1.0, Some(key))` ×4（signature_pad / canvas×2 / map_view）
+  从此不再因这一条整帧回落；`hero_animation` 的 `opacity < 1` 仍留 CPU。
+
+#### ③ 顺手修的真 bug：帧背景没有清
+
+`GpuPaintBackend::begin_frame(clear)` 只**记住**背景色，而记录下来的命令流里**没有 clear**；
+`present_commands` 也不自动清。于是一个未画满的树在 `Smooth` 下会在空白处留着**上一帧**
+（探针那棵树恰好铺满，所以一直没暴露。现已由 `smooth_commands` 在流首插入
+`Clear { background }`，并在 sink 的单测里钉住「首命令是 Clear」。
+
+**真机（macOS）**：显示器休眠时两个后端报 `SKIP(host-limited)`；`caffeinate -u` 唤醒后重跑，
+cocoa 与 objc2 都拿到 `canvas delivered 2 frame(s) as draw commands (Smooth)` 并 PASS——
+这条证据覆盖本轮的 Clear 前缀改动（`sink.rs` 在流首插入 `Clear { background }`）。
+
+**计数（本轮重新核对，上一轮 11+6 的拆分把 `PushLayerGroup` 归错了桶）**：
+2D **10 个恒为 `ForcesCpu`**（含 4 个记录器自有变体）+ **8 个条件回落**（圆角描边×2、阴影×2、渐变×2、
+图层组、缩放图像）+ **5 个 3D**。
+
+### 7.14 第 11 轮：收尾（2026-11-01，证据在 `docs/log/log-20261030-2.md` §22）
+
+本轮做两件事：给真实树装上**运行时普查**，并把§7.13 里「下一个接谁」的问题用一个准确的机制判定结掉。
+
+#### 运行时普查（探针）
+
+`present_smoke` 的 `Smooth` 阶段现在先录一遍**同一棵真实树**并打印普查：
+
+```text
+present_smoke: tree census [mapped=1, mapped-with-divergence=1, forces-cpu=0] forces_cpu=0 (none)
+present_smoke: canvas delivered 2 frame(s) as draw commands (Smooth)
+```
+
+任何嬿主都可以对**自己的**树做同一件事（`GpuPaintBackend` + `census`/`census_report`），
+把「Smooth 回落了」变成「Smooth 因 X 回落」。
+
+#### 纠正：模糊阴影不是「对齐核」
+
+§7.13 我写过「阴影只需对齐 GPU 的 box 核」——**不准确**。读完 `blur_rect_on_surface` 与 `shadow.rs` 后，
+真正的差异有两条，第二条才是根本的：
+
+| 差异 | 参考 | GPU |
+|---|---|---|
+| 核 | **3 遍** box，宽度 `(wl, wl, wl+2)`（`box_blur_widths(radius/2)`），每遍 H+V | **1 遍**，`half = radius` |
+| **模糊的对象** | **整帧区域**（阴影已 source-over 在背景上）⇒ `blur(shadow over backdrop)` | 只模糊**阴影层** ⇒ `blur(shadow) over backdrop` |
+
+第二条不可通过对核校准解决：只有当背景完全均匀时两者才相等。所以阴影要逐字节，必须先有
+**「帧区域读改写模糊」这一家**：捕获区域 → 3×(H+V) box → REPLACE 写回——那正是 `Blur` 命令需要的
+同一台机制。因此「模糊阴影」与 `Blur` 应当**一批做**（一套机制，两个家族），而不是各自零碎接。
+
+#### 剩余项 → 触发条件（这就是计划对它们的结论）
+
+| 项 | 真实调用点 | 现在需要吗 | 什么情况下再做 |
+|---|---|---|---|
+| 模糊 `BoxShadow` / `BoxShadowRounded` | 按钮/单选/开关焦点环（`blur=6`）、popup/popover（`12`）、kanban 卡片（`6`）、`SurfaceStyle` 高度阴影 | **按帧数看是头号拦截者** | 一座嬿主开 `Smooth` 且帧里有交互/浮层 ⇒ 值得做（需上面的帧区域模糊机制） |
+| `Blur` 命令 | **0** | 否 | 有嬿主用毛玻璃背景时（与上一行同机制，一起做） |
+| matte 三件套 | 1（`lottie_widget`） | 否 | Lottie 控件的嬿主开 `Smooth` 时 |
+| `PushClipRoundedRect` / `ClipPath` | **0** | 否 | 某个自定义控件开始用圆角/路径裁剪时（需模板裁剪栈） |
+| 3D 五类 | 1（`widget/base.rs`） | 否 | 3D 宿主控件开 `Smooth` 时（需顶点/相机/深度载体） |
+| 4 个 `*Recorded` | 不可达 | **永不需要** | — |
+
+#### 计划层面的结论
+
+B29.10 的桥接面到此为止：**10 个 2D 恒为 `ForcesCpu`（含 4 个结构不可达）+ 8 个条件回落 + 5 个 3D**，
+每一项都有具名理由与（上面）触发条件；已桥接的每个家族都有 GPU 对拍。`Smooth` 的“普查门禁”因此
+成立（见 B29.10 条目更新）。剩下真正未闭合的只有嬿主受限的三项：B29.12（Android/OpenHarmony/
+Windows 画布）、B29.13（Android 实跑）、B29.15（真实帧计时）。
+
+> **本段计数已被 §7.15 取代**：`Blur` 与两种模糊阴影已桥接，2D 恒为 `ForcesCpu` 由 10 降为 **7**。
+> 表里“模糊 `BoxShadow` / `BoxShadowRounded`”与“`Blur` 命令”两行的**触发条件已触发**。
+
+### 7.15 第 12 轮：帧区域读改写模糊（2026-11-01，证据在 `docs/log/log-20261030-2.md` §23）
+
+§7.14 判定“模糊阴影与 `Blur` 应一批做”，本轮就是那一批：**一套机制，三个家族**。
+
+#### 唯一的新载体：`WgpuDrawCommand::BlurRegion`
+
+```text
+BlurRegion { rect, radius, clip }
+```
+
+它不是“再画一个图形”，而是**读改写帧目标**：区域由 `rect ∩ 运行裁剪 ∩ framebuffer` 再向外扩
+`frame_blur_reach(radius)`（与 `box_blur_region` 同一个 reach 公式）得到。正因为它要读自己将要写的
+像素，它在 `record_frame_passes` 里**切断 pass**：
+
+```text
+copy_to_texture(帧区域 → 层纹理)
+  → 每宽度两遍（H, V）× 3 个宽度，每遍自己一个 params uniform
+copy_texture_to_texture(层纹理 → 帧区域)
+```
+
+这是参考本身的语义：`box_blur_region` 读写的就是帧自己的字节（包括区域下面已经画好的东西）。
+所以阴影的软边是 `blur(shadow over backdrop)`，而不是 `blur(shadow) over backdrop`——§7.14 里那条
+“不可调核解决”的语义差异，本轮从机制上消掉了。
+
+#### GPU 复用参考自己的核：`SHADOW_BLUR_FS`
+
+没有新着色器。单遍整数 box（`round(texel*255)` → `i64` 累加 → 截断除法，窗口 clamp 到纹理）与
+参考的 `blur_row` 是同一条规则，缺的只是**遍数、宽度、读改写范围**：
+
+| | 参考 | 本轮 GPU |
+|---|---|---|
+| 遍数 | 3 个宽度 × (H,V) | 同（`frame_blur_pass_widths` 过滤掉宽 <2 的遍，与 `box_blur_region` 一致） |
+| 宽度 | `box_blur_widths(radius/2)` | 同（参考的公式，`pub(crate)` 共享） |
+| 模糊对象 | 帧区域 | 帧区域（copy out → 3×(H+V) → copy back） |
+
+#### 抓到的三个真 bug（都是“看起来对”的那种）
+
+1. **`SHADOW_BLUR_FS` 的参数是半宽，不是宽度。** 首版把 `widths[i/2]` 直接传进去，窗口翻倍，
+   `Blur` 用例差 **2263 字节 / worst 98**；改成 `widths[i/2] / 2` 后 **0 字节**。
+2. **`ensure_frame_blur_targets` 的复用键只比矩形、不比遍数。** 上一帧 radius 3（3 个宽度、6 遍）
+   留下的目标，被 radius 1（1 个宽度、2 遍）直接复用，于是 `widths[index/2]` 越界 panic。
+   修法：复用键加上 `passes.len() == frame_blur_pass_widths(radius).len() * 2`；编码循环改成
+   `passes.chunks(2).zip(&widths)`，让“每宽度两遍”在**结构上**不可能错位。
+3. **`render/backend/mod.rs` 的 `box_blur_*` 再导出缺 `#[cfg(feature = "gpu-wgpu")]`**：
+   `--no-default-features --features desktop` 下是 unused import，被 `-D warnings` 拦住。
+
+#### 效果：A/B 档（逐家族实扫）
+
+| 用例 | 档位 | 实测 |
+|---|---|---|
+| `Blur` over stripes（radius 4） | A | **0 字节**，worst 0 |
+| `Blur` radius 1（只剩一个宽度，验证遍数可变） | A | **0 字节**，worst 0 |
+| `BoxShadow` 不透明体（blur 4, spread 1） | A | **0 字节**，worst 0 |
+| `BoxShadow` 半透明体（alpha 48, blur 6） | B | **0 字节**，worst 0 |
+| `BoxShadowRounded`（alpha 120, radii 5, blur 3） | C | 1324 字节，worst 13，**逐像素落在圆角周长 + 模糊 reach 内** |
+
+圆角体为什么是 C 而不是 B：参考的 `fill_rounded_rect` 对圆角带做 2×2 采样，GPU 的
+`rounded_rect_row_spans_radii` 是硬边行跨度（`WgpuDrawCommand::FillRoundedRectRadii` 的具名差异），
+模糊再把该周长差摊到自己的 reach 上。所以用例断言的不是“整体 ≤1”，而是
+**“差 >1 的像素必须落在周长 `blur_reach(radius)+1.5` 像素内”**——与未模糊圆角阴影那条用例同一口径，
+而且对远离周长的像素仍然零容忍（框外的远处像素差了就会红）。
+
+#### 端到端：真实控件树的模糊阴影零回落且逐字节
+
+新增集成用例 `a_tree_with_a_blurred_shadow_records_a_stream_the_gpu_can_draw`：一个控件调
+`draw_box_shadow(face, 黑, 2, 3, blur 6, 0)`（这正是焦点环/popup/kanban 在用的那条 API）。
+
+```text
+census forces_cpu = 0（改动前：这一条就让整帧回落 Exact）
+blurred-shadow tree frame: 0 divergent bytes, worst 0
+```
+
+#### 计数变化
+
+| 项 | 本轮前 | 本轮后 |
+|---|---|---|
+| 2D 恒为 `ForcesCpu` | 10（含 4 个不可达） | **7**：4 个 `*Recorded` + `PushClipRoundedRect` + `ClipPath` + matte 三件套 |
+| 条件回落 | 8 | 8（未触碰） |
+| 3D | 5 | 5（未触碰） |
+
+**本轮未做（保持具名）**：图层效果 `LayerEffect::BackdropBlur{/Tint}`（`PushLayer` 带 effect）仍是
+`ForcesCpu`——它要“捕获背板 + 合成前景”，不是帧区域 RMW，调用点集中在 `SurfaceStyle` 材质窗户
+（`push_material_layer`）。`encode_blur.rs` 里已经有 `render_backdrop_blur_rgba8`（背板模糊 + tint，
+回读入口），缺的是命令流载体与“捕获背板 → 模糊 → 合成前景”的分段；按 §7.14 的口径这属于按需项
+（触发条件：材质窗户宿主开 `Smooth`），本轮不隐式扩大范围。
 
 ### 7.6 风险与预先裁定的处理
 

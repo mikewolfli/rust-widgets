@@ -146,7 +146,13 @@ pub use mesh3d::{Camera, Mesh3D, Mesh3DError, ProjectedTriangle, ProjectedVertex
 
 /// The effective (CSS-resolved) and uniform corner-radius helpers, shared with the WGPU fill
 // bridge so a per-corner fill uses the same radius arithmetic the reference does.
+#[cfg(feature = "gpu-wgpu")]
 pub(crate) use pipeline::rounded_rect_effective_radii;
+
+/// Whether a layer is plain — no effect, full opacity, no replay cache — which makes it exactly a
+/// clip push/pop pair. Shared with the WGPU bridge so both sides agree which layers are clips.
+#[cfg(feature = "gpu-wgpu")]
+pub(crate) use core::command::layer_paints_like_a_clip;
 
 /// The reference's own 256-entry ramp builder, shared with the WGPU bridge so a bridged gradient
 /// uploads the table the software rasteriser would have sampled.
@@ -169,6 +175,19 @@ pub(crate) use core::command::box_shadow_spread_rect;
 /// so a bridged AA line reproduces the reference's own coverage instead of re-deriving it.
 #[cfg(feature = "gpu-wgpu")]
 pub(crate) use pipeline::line_stroke_coverage_grid;
+
+/// The reference's own bilinear sampler, shared with the GPU command rasteriser so a scaled image's
+/// CPU parity path resamples exactly as `draw_image_quad` does.
+#[cfg(feature = "gpu-wgpu")]
+pub(crate) use pipeline::sample_bilinear;
+
+#[cfg(feature = "gpu-wgpu")]
+pub(crate) use backend::surface::BoxBlurScratch;
+/// The reference's box-blur kernel and its three widths, shared with the GPU command pipeline so a
+/// bridged region blur runs the reference's own passes instead of a lookalike, and with the command
+/// rasteriser's CPU parity path.
+#[cfg(feature = "gpu-wgpu")]
+pub(crate) use backend::{box_blur_region, box_blur_widths};
 
 /// Shared helper accessible to surface.rs and backend
 pub(crate) use pipeline::pixel_bytes_len;

@@ -18,6 +18,9 @@ use super::frame::WgpuRenderer;
 /// handle the pass needs.
 pub(super) struct ImageDraw {
     pub(super) bind_group: wgpu::BindGroup,
+    /// Whether the pass shades it with the reference's four-texel bilinear sample instead of one
+    /// texel fetch. The two pipelines share this bind group's layout.
+    pub(super) bilinear: bool,
 }
 
 /// One text box in the command-stream pass.
@@ -78,6 +81,31 @@ impl WgpuRenderer {
         source_width: u32,
         source_height: u32,
     ) -> ImageDraw {
+        self.upload_image_draw_with_sample(
+            rect,
+            pixels,
+            source_width,
+            source_height,
+            (0.0, 0.0),
+            false,
+        )
+    }
+
+    /// Uploads one image draw, stating how its fragments sample the source.
+    ///
+    /// `sample_step` is `(u_dx, v_dy)` — the reference's per-pixel step of the normalized sample
+    /// position — and is read only by the bilinear shader; `bilinear` selects that pipeline. Both
+    /// numbers travel in the params uniform's `source.zw`, which the nearest shader ignores, so the
+    /// two draws keep one bind group layout.
+    pub(super) fn upload_image_draw_with_sample(
+        &self,
+        rect: PixelRect,
+        pixels: &[u8],
+        source_width: u32,
+        source_height: u32,
+        sample_step: (f32, f32),
+        bilinear: bool,
+    ) -> ImageDraw {
         let size =
             wgpu::Extent3d { width: source_width, height: source_height, depth_or_array_layers: 1 };
         let texture = self.device.create_texture(&wgpu::TextureDescriptor {
@@ -122,8 +150,8 @@ impl WgpuRenderer {
                 rect.height as f32,
                 source_width as f32,
                 source_height as f32,
-                0.0,
-                0.0,
+                sample_step.0,
+                sample_step.1,
             ],
         );
         self.queue.write_buffer(&params, 0, &data);
@@ -145,7 +173,7 @@ impl WgpuRenderer {
                 },
             ],
         });
-        ImageDraw { bind_group }
+        ImageDraw { bind_group, bilinear }
     }
 
     /// Uploads one text box's glyph coverage and returns the bind group the pass draws it with.

@@ -11,6 +11,13 @@ pub(crate) mod paint_blur;
 pub(crate) mod scene;
 pub(crate) mod surface;
 
+// The box-blur kernel the software rasteriser blurs a region with, shared with the GPU command
+// pipeline so a bridged blur runs the reference's own three widths and edge rule instead of a
+// lookalike. Only the GPU command path (and its CPU parity rasteriser) consumes it, so the
+// re-export exists only when that path is compiled in.
+#[cfg(feature = "gpu-wgpu")]
+pub(crate) use paint_blur::{box_blur_region, box_blur_widths};
+
 // Public re-exports consumed by downstream — suppress intra-crate unused warning.
 #[allow(unused_imports)]
 pub use batch::{BatchCommand, BatchError, BatchId, BatchImage, BatchRenderer};

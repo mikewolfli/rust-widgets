@@ -101,7 +101,12 @@ impl<'a> StepRecorder<'a> {
                 }
                 DrawStep::Image(index) => {
                     let draw = &self.image_draws[*index];
-                    rp.set_pipeline(&self.renderer.image_pipeline);
+                    let pipeline = if draw.bilinear {
+                        &self.renderer.image_scaled_pipeline
+                    } else {
+                        &self.renderer.image_pipeline
+                    };
+                    rp.set_pipeline(pipeline);
                     rp.set_bind_group(0, &draw.bind_group, &[]);
                     rp.set_bind_group(1, self.transformed, &[]);
                     rp.draw(0..6, 0..1);
@@ -177,7 +182,9 @@ impl<'a> StepRecorder<'a> {
                     rp.draw(0..6, 0..1);
                 }
                 // Handled by the caller's plan walk, never inside a recorded segment.
-                DrawStep::Blend { .. } => {}
+                // Both are driver steps: the frame's pass is split around them, so a recorder that
+                // met one here would have nowhere to put it.
+                DrawStep::Blend { .. } | DrawStep::BlurRegion(_) => {}
             }
         }
     }
@@ -201,6 +208,7 @@ impl WgpuRenderer {
         target: &super::resources::TargetCache,
         stencil_view: &wgpu::TextureView,
         blend: Option<(&super::resources::BlendTargets, &[super::resources::BlendRun])>,
+        blurs: &[super::resources::FrameBlurTarget],
     ) {
         // The packer emits a marker only after it has recorded the run in `pack.blend_runs`, and
         // the encoder only skips `ensure_blend_targets` when that table is empty. This is the
@@ -213,6 +221,27 @@ impl WgpuRenderer {
         let mut cursor = 0usize;
         let mut started = false;
         for (index, step) in plan.iter().enumerate() {
+            // Two steps split the frame's pass, for the same reason: neither can be recorded inside
+            // the pass that is already open.
+            if let DrawStep::BlurRegion(blur) = *step {
+                if cursor < index {
+                    self.record_frame_segment(
+                        encoder,
+                        recorder,
+                        target,
+                        stencil_view,
+                        &plan[cursor..index],
+                        started,
+                    );
+                    started = true;
+                }
+                if let Some(spec) = blurs.get(blur) {
+                    self.record_frame_blur(encoder, target, spec);
+                    started = true;
+                }
+                cursor = index + 1;
+                continue;
+            }
             let DrawStep::Blend { run, steps } = *step else { continue };
             let run_start = index.saturating_sub(steps);
             if run_start > cursor {
@@ -278,6 +307,69 @@ impl WgpuRenderer {
                 multiview_mask: None,
             });
         }
+    }
+
+    /// Blurs a frame region in place: copy it out, run the kernel, copy it back.
+    ///
+    /// The copy is what makes an in-place blur possible at all — a pass cannot read the texture it
+    /// writes — and it is also the exact semantic the reference has: `box_blur_region` reads and
+    /// writes the frame's own bytes, including everything already painted under the region (a
+    /// shadow's soft edge is `blur(shadow over backdrop)`, not `blur(shadow)` composited).
+    fn record_frame_blur(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        target: &super::resources::TargetCache,
+        spec: &super::resources::FrameBlurTarget,
+    ) {
+        let size = wgpu::Extent3d {
+            width: spec.rect.width,
+            height: spec.rect.height,
+            depth_or_array_layers: 1,
+        };
+        encoder.copy_texture_to_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &target.texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d {
+                    x: spec.rect.x.max(0) as u32,
+                    y: spec.rect.y.max(0) as u32,
+                    z: 0,
+                },
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyTextureInfo {
+                texture: &spec.texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            size,
+        );
+        // Horizontal, vertical, horizontal, vertical, …: pass `i` reads the texture `i - 1` wrote.
+        for (index, (bind_group, _params)) in spec.passes.iter().enumerate() {
+            let view = if index % 2 == 0 { &spec.scratch_view } else { &spec.view };
+            self.encode_blur_direction(encoder, "gpu_frame_blur_pass", view, bind_group);
+        }
+        // An even number of passes ends in `spec.texture`, which is what goes back.
+        encoder.copy_texture_to_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &spec.texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyTextureInfo {
+                texture: &target.texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d {
+                    x: spec.rect.x.max(0) as u32,
+                    y: spec.rect.y.max(0) as u32,
+                    z: 0,
+                },
+                aspect: wgpu::TextureAspect::All,
+            },
+            size,
+        );
     }
 
     /// Records one straight run of plan steps into the frame's own pass.

@@ -585,6 +585,37 @@ fn start_smooth_phase(window: u64, label: u64) {
         return;
     }
     println!("present_smoke: smooth phase set intent=Smooth");
+    // Audit the **same** tree before asking the canvas for a frame. The census names every command
+    // class that would force the CPU, which is the difference between "Smooth fell back" and "Smooth
+    // fell back because of X" — and it is the number that decides whether bridging one more family
+    // is worth a batch (§7.13 of the plan).
+    {
+        use rust_widgets::render::present::{census, census_report, GpuPaintBackend};
+        let size = rust_widgets::core::Size::new(160, 120);
+        let mut recorder = GpuPaintBackend::new(size, 1.0);
+        if rust_widgets::widget::runtime::paint_tree_into(
+            window,
+            size,
+            rust_widgets::core::Color::WHITE,
+            &mut recorder,
+        ) {
+            let audit = census(recorder.commands());
+            let counts: Vec<String> =
+                census_report(&audit).iter().map(|(name, n)| format!("{name}={n}")).collect();
+            println!(
+                "present_smoke: tree census [{}] forces_cpu={} ({})",
+                counts.join(", "),
+                audit.forces_cpu,
+                if audit.forces_cpu_names.is_empty() {
+                    "none".to_string()
+                } else {
+                    audit.forces_cpu_names.join(", ")
+                }
+            );
+        } else {
+            println!("present_smoke: the tree could not be recorded for the census");
+        }
+    }
     // The **same** window the wired phase just presented from, for two reasons. It carries a real
     // control tree (a label), which is the stream worth asking about; and its surface is known to
     // composite on this host, so a refusal here means the *stream* was refused rather than the

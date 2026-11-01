@@ -136,6 +136,10 @@ impl WgpuRenderer {
             label: Some("gradient_fs"),
             source: wgpu::ShaderSource::Wgsl(super::shaders::GRADIENT_FRAG.into()),
         });
+        let image_scaled_fs_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("image_scaled_fs"),
+            source: wgpu::ShaderSource::Wgsl(super::shaders::SCALED_IMAGE_FRAG.into()),
+        });
         let path_fan_vs_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("path_fan_vs"),
             source: wgpu::ShaderSource::Wgsl(super::shaders::PATH_FAN_VS.into()),
@@ -726,6 +730,62 @@ impl WgpuRenderer {
             multiview_mask: None,
             cache: None,
         });
+
+        // ── Create the scaled-image pipeline ──
+        //
+        // The same bind group layout, vertex stage and blend state as the image pipeline; only the
+        // fragment stage differs (four texels instead of one). Sharing the layout is what keeps
+        // "one image draw" a single concept: `SCALED_IMAGE_FRAG` reads the same `ImageParams` and the
+        // same texture, and the pass picks the pipeline from the draw's own flag.
+        let image_scaled_pipeline =
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("image_scaled_pipeline"),
+                layout: Some(&image_pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &image_vs_module,
+                    entry_point: Some("vs_main"),
+                    buffers: &[],
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &image_scaled_fs_module,
+                    entry_point: Some("fs_main"),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: wgpu::TextureFormat::Rgba8Unorm,
+                        blend: Some(wgpu::BlendState {
+                            color: wgpu::BlendComponent {
+                                src_factor: wgpu::BlendFactor::SrcAlpha,
+                                dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                                operation: wgpu::BlendOperation::Add,
+                            },
+                            alpha: wgpu::BlendComponent {
+                                src_factor: wgpu::BlendFactor::One,
+                                dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                                operation: wgpu::BlendOperation::Add,
+                            },
+                        }),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                }),
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleList,
+                    strip_index_format: None,
+                    front_face: wgpu::FrontFace::Ccw,
+                    cull_mode: None,
+                    unclipped_depth: false,
+                    polygon_mode: wgpu::PolygonMode::Fill,
+                    conservative: false,
+                },
+                depth_stencil: Some(passive_stencil_state()),
+                multisample: wgpu::MultisampleState {
+                    count: 1,
+                    mask: !0,
+                    alpha_to_coverage_enabled: false,
+                },
+                multiview_mask: None,
+                cache: None,
+            });
 
         // ── Create the text pipeline ──
         //
@@ -1386,6 +1446,7 @@ impl WgpuRenderer {
         shader_cache.insert("radial_fs".to_string(), radial_fs_module);
         shader_cache.insert("gradient_vs".to_string(), gradient_vs_module);
         shader_cache.insert("gradient_fs".to_string(), gradient_fs_module);
+        shader_cache.insert("image_scaled_fs".to_string(), image_scaled_fs_module);
         shader_cache.insert("path_fan_vs".to_string(), path_fan_vs_module);
         shader_cache.insert("path_stencil_fs".to_string(), path_stencil_fs_module);
         shader_cache.insert("path_cover_vs".to_string(), path_cover_vs_module);
@@ -1411,6 +1472,7 @@ impl WgpuRenderer {
             circle_pipeline,
             circle_bind_group_layout,
             image_pipeline,
+            image_scaled_pipeline,
             image_bind_group_layout,
             text_pipeline,
             text_layer_pipeline,

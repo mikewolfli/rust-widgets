@@ -163,6 +163,38 @@ impl LayerEffect {
     }
 }
 
+/// Whether a layer is **plain**: no effect, full opacity and no replay cache.
+///
+/// A plain layer separates nothing — `begin_layer` still pushes its bounds as a clip, and its pop
+/// only pops that clip — so it is exactly a clip push/pop pair. Both the software backend's
+/// `begin_layer` and the GPU bridge read this predicate, so "plain" has one definition: an effect,
+/// a subtree opacity below one, or a cache key each give the layer a foreground of its own, and a
+/// pop of such a layer is a composite rather than a clip.
+///
+/// `opacity` is normalised the way `begin_layer` normalises it: a non-finite value is `1.0`.
+pub(crate) fn layer_is_plain(
+    effect: Option<LayerEffect>,
+    opacity: f32,
+    cache_key: Option<u64>,
+) -> bool {
+    layer_paints_like_a_clip(effect, opacity) && cache_key.is_none()
+}
+
+/// Whether a layer's **pop paints the same pixels as a clip pop**: no effect and full opacity.
+///
+/// A replay cache still captures a foreground, and `composite_foreground` restores the backdrop
+/// before compositing it back — over an **opaque** backdrop every captured pixel has alpha 255, so
+/// that composite is a verbatim write of the frame it captured: the identity. A cache layer's pixels
+/// therefore equal a plain layer's, and only its CPU cost differs (the cache exists to skip
+/// re-rasterising a subtree). The GPU bridge can ignore the cache and replay the commands; it still
+/// needs the opaque background, which is why the bridge takes `opaque_background`.
+///
+/// A non-finite `opacity` reads as `1.0`, the same normalisation `begin_layer` applies.
+pub(crate) fn layer_paints_like_a_clip(effect: Option<LayerEffect>, opacity: f32) -> bool {
+    let opacity = if opacity.is_finite() { opacity.clamp(0.0, 1.0) } else { 1.0 };
+    effect.is_none() && opacity >= 1.0
+}
+
 /// How a track matte's captured drawing is turned into a coverage mask.
 ///
 /// The four spellings are the Lottie `tt` values (1..=4). They are a rendering primitive rather

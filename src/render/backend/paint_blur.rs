@@ -79,7 +79,7 @@ pub(super) fn blur_rect_on_surface(surface: &mut SoftwareSurface, region: Rect, 
 /// edge pixel is blurred against its neighbours rather than against a shortened window (which would
 /// darken or lighten the border). The window itself clamps its indices for the outermost pixels, so
 /// the expansion only affects *which* pixels are written, never the arithmetic.
-pub(super) fn box_blur_region(
+pub(crate) fn box_blur_region(
     back: &mut [u8],
     w: usize,
     h: usize,
@@ -192,7 +192,7 @@ pub(super) fn box_blur_region(
 ///
 /// Returns `(0, 0, 0)` for a non-positive `sigma`, which the caller reads as "no blur": a zero
 /// width is a no-op pass rather than a division by zero.
-fn box_blur_widths(sigma: f32) -> (usize, usize, usize) {
+pub(crate) fn box_blur_widths(sigma: f32) -> (usize, usize, usize) {
     if sigma <= 0.0 {
         return (0, 0, 0);
     }

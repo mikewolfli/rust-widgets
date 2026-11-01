@@ -121,6 +121,27 @@ pub(crate) struct ShadowTargets {
     pub(crate) layers: Vec<ShadowLayer>,
 }
 
+/// One in-place frame blur: the two textures its six box passes ping-pong through, and the bind group
+/// each pass reads with.
+///
+/// Both textures need `COPY_SRC` and `COPY_DST` as well as the render and binding usages, because the
+/// region arrives by a texture-to-texture copy from the frame and leaves the same way — a pass cannot
+/// read the target it writes, so the region is copied out, blurred, and copied back.
+pub(crate) struct FrameBlurTarget {
+    pub(crate) rect: PixelRect,
+    pub(crate) texture: wgpu::Texture,
+    pub(crate) view: wgpu::TextureView,
+    pub(crate) scratch_view: wgpu::TextureView,
+    /// The six passes in order: horizontal then vertical for each of the three box widths. Entry `i`
+    /// reads the texture an even `i` writes to, which is what makes the ping-pong implicit.
+    pub(crate) passes: Vec<(wgpu::BindGroup, wgpu::Buffer)>,
+}
+
+/// The frame-blur targets of one call, one per [`DrawStep::BlurRegion`].
+pub(crate) struct FrameBlurTargets {
+    pub(crate) targets: Vec<FrameBlurTarget>,
+}
+
 /// One command drawn under a blend mode other than `Normal`.
 ///
 /// The command's own steps stay in the frame's plan, immediately after its
@@ -263,6 +284,11 @@ pub(crate) enum DrawStep {
     Shape(usize),
     /// One radial gradient: the `index`th entry of the frame's radial-gradient table.
     Radial(usize),
+    /// Blur the frame region described by the `index`th entry of the frame's blur table, in place.
+    ///
+    /// Like [`DrawStep::Blend`], this marker splits the frame's pass: it has to stop the pass, copy
+    /// the region out, run its own passes, and copy the result back before anything else is drawn.
+    BlurRegion(usize),
     /// One general gradient (linear in any direction, radial or conic): the `index`th entry of the
     /// frame's gradient table.
     Gradient(usize),
@@ -405,6 +431,8 @@ pub(crate) struct RenderCache {
     pub(crate) readback: Option<ReadbackCache>,
     /// Ping-pong targets and bind groups for the separable blur pass.
     pub(crate) blur: Option<BlurTargets>,
+    /// The frame regions this frame blurs in place, rebuilt when their extents change.
+    pub(crate) frame_blur: Option<FrameBlurTargets>,
     /// The offscreen layers of the frame's blurred shadows, rebuilt when their extents change.
     pub(crate) shadow: Option<ShadowTargets>,
     /// The offscreen pair the frame's blend runs share, rebuilt when the size or run count changes.
@@ -734,6 +762,45 @@ impl RenderCache {
         self.shadow = Some(ShadowTargets { layers: built });
     }
 
+    /// Ensures one blur target per requested region and kernel.
+    ///
+    /// Rebuilt when the count, any rectangle, or any pass count changes, for the same reason the
+    /// shadow layers are: a partially updated set would leave bind groups pointing at textures of
+    /// the wrong size, and a stale pass count would leave the encode loop indexing widths that the
+    /// current kernel no longer has. A radius below two produces fewer than three box widths, so the
+    /// pass count really does vary with the kernel — it is not a constant six. The per-pass radius
+    /// lives in each pass's own uniform, because all of them are encoded into one submission and a
+    /// shared buffer would show every pass the last value written.
+    pub(crate) fn ensure_frame_blur_targets(
+        &mut self,
+        device: &wgpu::Device,
+        blur_layout: &wgpu::BindGroupLayout,
+        specs: &[(PixelRect, u32)],
+    ) {
+        let reusable = self
+            .frame_blur
+            .as_ref()
+            .map(|targets| {
+                targets.targets.len() == specs.len()
+                    && targets.targets.iter().zip(specs).all(|(target, (rect, radius))| {
+                        target.rect == *rect
+                            && target.passes.len() == frame_blur_pass_widths(*radius).len() * 2
+                    })
+            })
+            .unwrap_or(false);
+        if reusable {
+            return;
+        }
+        let built = specs
+            .iter()
+            .enumerate()
+            .map(|(index, (rect, radius))| {
+                create_frame_blur_target(device, blur_layout, *rect, *radius, index)
+            })
+            .collect();
+        self.frame_blur = Some(FrameBlurTargets { targets: built });
+    }
+
     /// Ensures the blend pair and one composite bind group per run.
     ///
     /// The pair is rebuilt when the frame size or the run count changes, for the same reason the
@@ -982,6 +1049,96 @@ pub(crate) fn rgba_buffer_len(width: u32, height: u32) -> Result<usize, String> 
 /// `rect` is in frame pixels and its origin rides in the composite params, so the layer itself only
 /// ever knows its own local grid. That is what allows the same box-blur shader to clamp its window
 /// to the layer's edges: those edges are exactly the CPU rasteriser's layer edges.
+/// The box widths a frame-region blur actually runs, in pass order.
+///
+/// The reference skips a pass whose width is below two (`box_blur_region`'s `if width < 2`), which
+/// happens for a radius so small that `box_blur_widths` returns `(1, 1, 3)`. The expansion is
+/// computed from **all three** widths regardless, because `box_blur_region` sums their reaches.
+pub(crate) fn frame_blur_pass_widths(radius: u32) -> Vec<usize> {
+    let (b0, b1, b2) = crate::render::box_blur_widths(radius as f32 / 2.0);
+    [b0, b1, b2].into_iter().filter(|width| *width >= 2).collect()
+}
+
+/// How far a frame-region blur reaches beyond its region, in pixels.
+pub(crate) fn frame_blur_reach(radius: u32) -> u32 {
+    let (b0, b1, b2) = crate::render::box_blur_widths(radius as f32 / 2.0);
+    (b0.div_ceil(2) + b1.div_ceil(2) + b2.div_ceil(2)) as u32
+}
+
+/// Builds the two textures and six passes one in-place frame blur needs.
+///
+/// The passes read the texture the *previous* pass wrote, so entry `i` binds `view` for an even `i`
+/// and `scratch_view` for an odd one: horizontal, vertical, horizontal, vertical, horizontal,
+/// vertical. Each pass carries its own uniform because all six are encoded into one submission.
+fn create_frame_blur_target(
+    device: &wgpu::Device,
+    blur_layout: &wgpu::BindGroupLayout,
+    rect: PixelRect,
+    radius: u32,
+    index: usize,
+) -> FrameBlurTarget {
+    let make_texture = |label: String| {
+        device.create_texture(&wgpu::TextureDescriptor {
+            label: Some(label.as_str()),
+            size: wgpu::Extent3d {
+                width: rect.width,
+                height: rect.height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            // `COPY_SRC` + `COPY_DST` are what make this an in-place region blur: the region arrives
+            // by a texture copy from the frame and leaves the same way.
+            usage: wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::COPY_SRC
+                | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        })
+    };
+    let texture = make_texture(format!("wgpu_frame_blur_{index}"));
+    // The scratch texture is owned by its view, which is what the passes bind and render into, so it
+    // needs no field of its own.
+    let scratch_texture = make_texture(format!("wgpu_frame_blur_scratch_{index}"));
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    let scratch_view = scratch_texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+    let mut passes = Vec::with_capacity(6);
+    for _width in frame_blur_pass_widths(radius) {
+        for _direction in [[1.0f32, 0.0], [0.0, 1.0]] {
+            let params = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("wgpu_frame_blur_params"),
+                size: 32,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            let source = if passes.len() % 2 == 0 { &view } else { &scratch_view };
+            let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("wgpu_frame_blur_group"),
+                layout: blur_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(source),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                            buffer: &params,
+                            offset: 0,
+                            size: wgpu::BufferSize::new(32),
+                        }),
+                    },
+                ],
+            });
+            passes.push((bind_group, params));
+        }
+    }
+    FrameBlurTarget { rect, texture, view, scratch_view, passes }
+}
+
 fn create_shadow_layer(
     device: &wgpu::Device,
     blur_layout: &wgpu::BindGroupLayout,

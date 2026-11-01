@@ -5,10 +5,106 @@ The canonical project changelog is maintained at [docs/reports/CHANGELOG.md](doc
 This root-level file exists for tools and release automation that expect `CHANGELOG.md` at repository root.
 When the two disagree, this file is the one that ships; `tools/check_changelog_sync.sh` keeps them identical.
 
-## Unreleased
+## 3.2.0 (2026-11-01) — the presentation path and the `Smooth` GPU command stream
 
-**Additive only.** Closes the host-facing gaps reported in
-`docs/issues/feedback-20261030.md` (F-1…F-12). Evidence: `docs/log/log-20261030-1.md`.
+**Minor**: new modules and opt-in entry points, plus two new `PlatformIntegration` questions that
+default to `false`. Nothing changes a picture unless the host asks for it: with
+`FramePresentation::Default` — what every backend reports until a window is switched — frames reach
+their window exactly as before. Evidence: `docs/plans/blue29.md` §7 (B29.07–B29.15) and
+`docs/log/log-20261030-2.md` §10–§23.
+
+### Presentation path
+
+- **A window can be presented *into* instead of blitted.**
+  `WindowHandle::set_frame_presentation` records one of
+  `FramePresentation::{Default, Exact, Smooth}` per window and answers `bool`: the platform trait's
+  new `frame_presentation_supported` asks "can this window be presented into right now" (per
+  window, because a backend whose window was destroyed answers `false` again), and
+  `canvas_presents_frames` answers the different question "will this canvas actually do it". Both
+  default to `false`, so an unwired backend keeps its existing delivery, and a refused request
+  leaves the window on `Default` rather than promising a change that would not happen. A backend
+  the host never asked keeps its pre-existing frame delivery; nothing here branches on the
+  operating system at the call site.
+- **`FramePresenter` owns one target per window**: surface, device and a full-frame mirror, created
+  from a `RawWindowHandle` on the thread that owns the window. `present(frame)` uploads only the
+  damaged row bands (`PresentDamage`, at most `MAX_PRESENT_BANDS`; past that the gaps between bands
+  are cheaper to copy than the extra submits), blits the mirror and presents — and when nothing is
+  damaged it presents nothing. `present_commands` draws a command stream into the target with no
+  readback. `PresentStats { frames_offered, frames_presented, frames_skipped, rows_uploaded }`
+  answers "is this path doing anything" without touching the target.
+- **Target selection is a decision, not a guess.** `choose_config` picks the 8-bit format family by
+  quality (linear-space `*Srgb` first when a smoother edge is worth it, the exact family when byte
+  equality is), rounds the physical size instead of truncating it, prefers an opaque alpha mode,
+  and requests `COPY_SRC` only when the surface offers it; `is_supported_by` is what turns "none of
+  those formats" into "this host cannot present". `fallback_present_mode` degrades `AutoVsync` to
+  `Fifo`, and `needs_channel_swap` / `needs_srgb_decode` / `needs_premultiplication` name the three
+  transforms the uploader owes a frame, so a BGRA or sRGB target is handled once
+  instead of at each call site.
+- **Failure has a meaning and a budget.** `SurfaceFailure` (`Lost`, `Outdated`, `Timeout`,
+  `Occluded`, `OutOfMemory`, `DeviceLost`, `Validation`, `Other`) is classified from the acquire
+  error, a configure failure and the device-lost observer; `RecoveryAction` says
+  recreate/reconfigure/retry/stop, and `PresentHealth` counts against `PRESENT_TIMEOUT_BUDGET` (3)
+  and `PRESENT_RECOVERY_BUDGET` (2) so a persistently failing target stops being retried. An
+  occluded window is not a fault: it simply stops presenting until it is visible.
+- **A canvas has three answers.** `present_window_frame` returns
+  `WindowPresentOutcome::{Presented, Skipped, Unavailable}`. `Presented` means the frame is on the
+  target and the canvas must **not** also blit it (that would draw the frame twice through two
+  paths). `Skipped` (occluded, timed out, stopped) and `Unavailable` (no adapter, unsupported
+  format, zero-sized window) both mean "blit the software frame", and an unavailable window is
+  remembered so a host does not pay a failed adapter probe every frame. Both macOS canvases are
+  wired; Android, Windows and HarmonyOS answer `frame_presentation_supported` but not yet
+  `canvas_presents_frames`.
+- **`examples/present_smoke.rs`** drives a real window: an `Exact` phase whose readback is
+  byte-identical to the frame it sent (the 256000-byte first frame and band update, the 64000-byte
+  resize), an idle phase where 60 s of invalidation submits nothing, and a `Smooth` phase that
+  delivers the frame as draw commands. `tools/run_present_macos.sh` runs it against both macOS
+  backends; a host with no live display reports `SKIP(host-limited)` instead of failing.
+
+### The `Smooth` command stream
+
+- **A finished frame can be a command stream instead of pixels.** `GpuPaintBackend` is a
+  `PaintBackend` that records a `RenderCommand` stream, and `render::present::smooth` turns that
+  stream into `WgpuDrawCommand`s the GPU draws directly. `classify` / `census` / `census_report`
+  put **every** `RenderCommand` variant into exactly one class — `Mapped`,
+  `MappedWithDivergence` (only where the documented divergence classes name a difference) or
+  `ForcesCpu` with a written reason — and `classify`'s `match` has no wildcard arm, so a new
+  variant fails the build until it is classified. A frame containing one `ForcesCpu` command falls
+  back whole: the two rasterisers are never mixed, and the reason is recorded once per window
+  (`smooth_fallback_reason`).
+- **The audit and the bridge cannot disagree.** `bridge_render_commands` returns
+  `Result<Vec<WgpuDrawCommand>, BridgeGap>`, where `BridgeGap { index, variant }` names the first
+  command with no faithful form; a test walks the family list and asserts "classified
+  non-`ForcesCpu` ⇔ converts".
+- **What the stream covers**: rectangles, circles and rings, arcs (both the stamped strokes and the
+  filled fan), rounded outlines, straight and stroked lines, borrowed paths (even-odd and non-zero),
+  dashed polylines, sampled-grid AA lines, text and decorated text, images and bilinear scaled
+  images, gradients (linear, radial and conic, each carrying the reference's own 256-entry ramp),
+  box shadows including blurred ones, and the `Blur` command. Plain and cache-keyed layers whose
+  pixels equal their clip become clips; a layer that has to isolate a foreground still forces the
+  CPU.
+- **Layer effects, matte composition, rounded and path clips, the recorded path variants and the
+  five 3D commands stay on the CPU with a written reason** — those are 0–1 real call sites each.
+  The census names them, so "`Smooth` fell back" is "`Smooth` fell back because X".
+- **`RenderQuality::{ByteExact, Antialiased}`** is the stream-level quality tier. `ByteExact`
+  refuses exactly the streams that cannot promise equality (edge-feathered shapes, and a translucent
+  stream on a transparent target with no whole-frame clear); `Antialiased` — the default, because it
+  preserves the pre-existing picture — keeps the SDF shapes on the GPU.
+- **Frame-region blur is one primitive behind three commands.** `WgpuDrawCommand::BlurRegion` copies
+  the region out of the frame, runs the reference's own three box widths as alternating
+  horizontal/vertical passes with the reference's clamped integer window, and copies it back — so
+  `Blur`, `BoxShadow` and `BoxShadowRounded` all blur **the frame**, which is what the software
+  rasteriser does ("`blur(shadow over backdrop)`", not "`blur(shadow)` over the backdrop"). Measured
+  byte-identical for `Blur` and for opaque and translucent square shadow bodies, and confined to the
+  rim band (within the kernel's reach) for a rounded body, where the reference samples its corners on
+  a 2×2 grid and the GPU spans them hard-edged. Two real defects were found by that comparison and
+  fixed: the shader's window parameter is a **half** width (passing the full width doubled every
+  window), and the per-region target cache keyed on the rectangle only, so a smaller kernel reused a
+  larger pass count and indexed past its widths.
+- **Fixed: a translucent fill did not composite on the CPU parity rasteriser.** The command
+  stream's CPU fallback wrote a `FillRect` verbatim. The GPU rect pipeline may do that (it is
+  `REPLACE`), but the reference composites, so a 19 %-opaque fill *erased* the pixels under it
+  instead of darkening them. It now composites source-over under `Normal`; the documented rule for a
+  translucent source under a blend mode is unchanged.
 
 ### Host seams
 

@@ -163,6 +163,7 @@ pub(super) fn present_through_target(
                 recorder.commands(),
                 (width, height),
                 1.0,
+                recorder.clear_color(),
             ) == WindowPresentOutcome::Presented
         {
             present::note_frame_shown(intent_key, frame, quality);

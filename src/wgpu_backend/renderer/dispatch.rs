@@ -357,6 +357,7 @@ pub(super) fn draws_under_blend(command: &WgpuDrawCommand) -> bool {
             | WgpuDrawCommand::DrawLine { .. }
             | WgpuDrawCommand::DrawPath { filled: false, .. }
             | WgpuDrawCommand::DrawImage { .. }
+            | WgpuDrawCommand::DrawImageScaled { .. }
             | WgpuDrawCommand::DrawGradient { .. }
             | WgpuDrawCommand::FillLinearGradient { .. }
             | WgpuDrawCommand::FillRadialGradient { .. }
@@ -414,6 +415,10 @@ pub(super) fn rect_command_alpha(command: &WgpuDrawCommand) -> Option<u8> {
 /// Bounds the backdrop copy and the composite, so a blended command costs its own rectangle rather
 /// than a whole-frame copy. Only [`draws_under_blend`] commands reach here, and each of them has an
 /// exact bound: the fill's rectangle, the line's stamped extent, or the stroked path's box.
+///
+/// A frame read-modify-write like [`WgpuDrawCommand::BlurRegion`] is deliberately **absent**: the
+/// reference's blur writes the frame's own bytes and ignores the blend mode, exactly as a clear
+/// does, so it is never wrapped into a run and has no blend box to bound.
 pub(super) fn blend_bbox(
     command: &WgpuDrawCommand,
     framebuffer: PixelRect,
@@ -449,6 +454,7 @@ pub(super) fn blend_bbox(
         }
         WgpuDrawCommand::DrawPath { points, width, .. } => bbox_for_path(points, *width),
         WgpuDrawCommand::DrawImage { rect, .. }
+        | WgpuDrawCommand::DrawImageScaled { rect, .. }
         | WgpuDrawCommand::DrawGradient { rect, .. }
         | WgpuDrawCommand::FillLinearGradient { rect, .. }
         | WgpuDrawCommand::FillRadialGradient { rect, .. }
@@ -470,6 +476,7 @@ pub(super) fn blend_bbox(
         | WgpuDrawCommand::DrawCircleInside { clip, .. }
         | WgpuDrawCommand::DrawPath { clip, .. }
         | WgpuDrawCommand::DrawImage { clip, .. }
+        | WgpuDrawCommand::DrawImageScaled { clip, .. }
         | WgpuDrawCommand::DrawGradient { clip, .. }
         | WgpuDrawCommand::FillLinearGradient { clip, .. }
         | WgpuDrawCommand::FillRadialGradient { clip, .. }
@@ -568,6 +575,9 @@ fn claimable(command: &WgpuDrawCommand) -> bool {
         | WgpuDrawCommand::FillLinearGradient { rect, gradient_data, .. } => {
             rect.width > 0 && rect.height > 0 && gradient_data.len() / 4 >= 1
         }
+        WgpuDrawCommand::BlurRegion { rect, radius, .. } => {
+            *radius > 0 && rect.width > 0 && rect.height > 0
+        }
         WgpuDrawCommand::FillRadialGradient { rect, gradient_data, .. } => {
             rect.width > 0 && rect.height > 0 && gradient_data.len() / 4 >= 1
         }
@@ -586,6 +596,13 @@ fn claimable(command: &WgpuDrawCommand) -> bool {
         WgpuDrawCommand::DrawImage { rgba8, image_width, image_height, .. } => {
             *image_width > 0
                 && *image_height > 0
+                && image_payload_fits(*image_width, *image_height, rgba8)
+        }
+        WgpuDrawCommand::DrawImageScaled { rgba8, image_width, image_height, rect, .. } => {
+            *image_width > 0
+                && *image_height > 0
+                && rect.width > 0
+                && rect.height > 0
                 && image_payload_fits(*image_width, *image_height, rgba8)
         }
         WgpuDrawCommand::FillPathNonZero { points, contours, .. } => {

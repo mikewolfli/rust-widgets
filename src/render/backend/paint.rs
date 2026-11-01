@@ -1220,7 +1220,8 @@ fn begin_layer(
     };
     // A plain layer with no effect and full opacity draws straight into the surface, so its pop
     // has nothing to separate. Opacity or a cache key both need the foreground on its own.
-    let isolated = effect.is_some() || opacity < 1.0 || cache_key.is_some();
+    // The predicate is shared with the GPU bridge, which turns a plain layer into a clip.
+    let isolated = !crate::render::core::command::layer_is_plain(effect, opacity, cache_key);
     let cached_foreground = match cache_key {
         Some(key) => {
             let cursor = surface.buffer.layer_cache_cursor;

@@ -324,10 +324,18 @@ impl core::fmt::Display for SmoothGap {
 ///
 /// `target` is the frame's pixel size, which one family needs: a conic gradient command carries no
 /// rectangle, so its bridged quad is the target itself.
+///
+/// `background` is the colour the recorder's `begin_frame` filled the frame with. The stream it
+/// recorded has no clear of its own — the reference backend filled the buffer instead — so the
+/// bridged stream is prefixed with one. Without it the presented frame would keep whatever the target
+/// held wherever the tree did not paint. Its alpha is also the fact one family depends on: an
+/// isolating layer whose replay cache makes its pop a no-op is only provably a clip over an opaque
+/// background, so a translucent one keeps the frame on the reference rasteriser.
 pub fn smooth_commands(
     commands: &[crate::render::RenderCommand],
     text_scale: f32,
     target: (u32, u32),
+    background: crate::core::Color,
 ) -> Result<Vec<crate::wgpu_backend::WgpuDrawCommand>, SmoothGap> {
     let audit = super::census(commands);
     if !audit.can_draw_on_gpu() {
@@ -339,8 +347,27 @@ pub fn smooth_commands(
             ),
         });
     }
-    crate::wgpu_backend::bridge_render_commands(commands, text_scale, target)
-        .map_err(|gap| SmoothGap { reason: gap.to_string() })
+    let mut drawn = crate::wgpu_backend::bridge_render_commands(
+        commands,
+        text_scale,
+        target,
+        background.a == 255,
+    )
+    .map_err(|gap| SmoothGap { reason: gap.to_string() })?;
+    // The whole-frame background the recorder was given. A command stream starts from nothing,
+    // whereas the reference backend starts from this fill.
+    drawn.insert(
+        0,
+        crate::wgpu_backend::WgpuDrawCommand::Clear {
+            color: crate::wgpu_backend::Rgba8 {
+                r: background.r,
+                g: background.g,
+                b: background.b,
+                a: background.a,
+            },
+        },
+    );
+    Ok(drawn)
 }
 
 /// Presents a frame the canvas **recorded** instead of rasterised (the `Smooth` intent).
@@ -359,8 +386,9 @@ pub fn present_recorded_commands(
     commands: &[crate::render::RenderCommand],
     size: (u32, u32),
     scale: f32,
+    background: crate::core::Color,
 ) -> WindowPresentOutcome {
-    let drawn = match smooth_commands(commands, scale, size) {
+    let drawn = match smooth_commands(commands, scale, size, background) {
         Ok(drawn) => drawn,
         Err(gap) => {
             note_smooth_fallback(window, &gap.reason);
@@ -571,16 +599,32 @@ mod tests {
             RenderCommand::FillRect { rect: Rect::new(0, 0, 4, 4), color: Color::BLACK },
             RenderCommand::PopClip,
         ];
-        let commands = super::smooth_commands(&drawable, 1.0, (32, 24))
+        let commands = super::smooth_commands(&drawable, 1.0, (32, 24), crate::core::Color::WHITE)
             .expect("a rect-and-clip stream converts");
-        assert_eq!(commands.len(), 3, "every mapped command must survive the bridge");
+        // The frame's own background comes first: a recorded stream has no clear of its own, because
+        // the reference backend filled the buffer in `begin_frame`.
+        assert!(
+            matches!(
+                commands[0],
+                crate::wgpu_backend::WgpuDrawCommand::Clear {
+                    color: crate::wgpu_backend::Rgba8 { r: 255, g: 255, b: 255, a: 255 }
+                }
+            ),
+            "the bridged stream must open with the recorded background, got {:?}",
+            commands[0]
+        );
+        assert_eq!(
+            commands.len(),
+            4,
+            "every mapped command must survive the bridge, plus the clear"
+        );
 
         // A command with no faithful GPU form is enough: the whole frame goes back to the
         // reference rasteriser, and the reason names the class rather than saying "unsupported".
         let mut with_blur = drawable.to_vec();
         with_blur.push(RenderCommand::Blur { radius: 2 });
-        let gap =
-            super::smooth_commands(&with_blur, 1.0, (32, 24)).expect_err("blur forces the CPU");
+        let gap = super::smooth_commands(&with_blur, 1.0, (32, 24), crate::core::Color::WHITE)
+            .expect_err("blur forces the CPU");
         assert!(
             gap.reason.contains("1 command(s) force the CPU") && gap.reason.contains("Blur"),
             "the reason must count and name what stopped the frame: {}",

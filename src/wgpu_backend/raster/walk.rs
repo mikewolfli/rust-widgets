@@ -12,12 +12,12 @@ use super::super::types::PixelRect;
 use super::fills::{
     bbox_for_circle, bbox_for_path, blend_cpu_rgba8_with_mode, blend_mode_from_id,
     box_shadow_cpu_rgba8, clear_cpu_rgba8, clip_segment_to_rect, draw_arc_cpu_rgba8,
-    draw_circle_cpu_rgba8, draw_gradient_cpu_rgba8, draw_image_scaled_cpu_rgba8,
-    draw_line_cpu_rgba8, draw_path_cpu_rgba8, draw_path_non_zero_cpu_rgba8,
-    draw_radial_gradient_cpu_rgba8, draw_ramp_gradient_cpu_rgba8, fill_circle_cpu_rgba8,
-    fill_rect_cpu_rgba8_blended, fill_rounded_rect_cpu_rgba8, for_each_line_stamp, rect_for_line,
-    rounded_rect_row_spans_radii, rounded_ring_row_spans, stroke_rect_edges,
-    stroke_rounded_rect_cpu_rgba8, ArcParams, CpuPathDraw, GradientAxis,
+    draw_circle_cpu_rgba8, draw_gradient_cpu_rgba8, draw_image_bilinear_cpu_rgba8,
+    draw_image_scaled_cpu_rgba8, draw_line_cpu_rgba8, draw_path_cpu_rgba8,
+    draw_path_non_zero_cpu_rgba8, draw_radial_gradient_cpu_rgba8, draw_ramp_gradient_cpu_rgba8,
+    fill_circle_cpu_rgba8, fill_rect_cpu_rgba8_blended, fill_rounded_rect_cpu_rgba8,
+    for_each_line_stamp, rect_for_line, rounded_rect_row_spans_radii, rounded_ring_row_spans,
+    stroke_rect_edges, stroke_rounded_rect_cpu_rgba8, ArcParams, CpuPathDraw, GradientAxis,
 };
 use super::text::draw_text_cpu_rgba8;
 use crate::render::BlendMode;
@@ -234,6 +234,67 @@ pub fn rasterize_draw_commands_into_rgba8(
                         );
                     }
                 }
+            }
+            WgpuDrawCommand::BlurRegion { rect, radius, clip } => {
+                // The reference blurs `rect ∩ clip ∩ framebuffer` with its own kernel; the shared
+                // helper is that kernel, so the CPU parity path cannot drift from it.
+                let radius = (*radius).min(100);
+                if radius == 0 || rect.width == 0 || rect.height == 0 {
+                    continue;
+                }
+                let Some(region) = effective_clip(framebuffer, *rect, combine(clip, current_clip))
+                else {
+                    continue;
+                };
+                let mut scratch = crate::render::BoxBlurScratch {
+                    row: Vec::new(),
+                    col: Vec::new(),
+                    copy: Vec::new(),
+                };
+                crate::render::box_blur_region(
+                    &mut *pixels,
+                    width as usize,
+                    height as usize,
+                    (
+                        region.x as usize,
+                        region.y as usize,
+                        region.width as usize,
+                        region.height as usize,
+                    ),
+                    radius as usize,
+                    &mut scratch,
+                );
+            }
+            WgpuDrawCommand::DrawImageScaled {
+                rect,
+                rgba8,
+                image_width,
+                image_height,
+                clip,
+                ..
+            } => {
+                if rect.width == 0 || rect.height == 0 || *image_width == 0 || *image_height == 0 {
+                    continue;
+                }
+                let expected = (*image_width as usize) * (*image_height as usize) * 4;
+                if rgba8.len() != expected {
+                    return Err(format!(
+                        "invalid DrawImageScaled payload at index {index}: expected {expected} \
+                         bytes, got {}",
+                        rgba8.len()
+                    ));
+                }
+                let clip_rect = effective_clip(framebuffer, *rect, combine(clip, current_clip));
+                draw_image_bilinear_cpu_rgba8(
+                    &mut *pixels,
+                    width,
+                    *rect,
+                    rgba8,
+                    *image_width,
+                    *image_height,
+                    clip_rect,
+                    blend,
+                );
             }
             WgpuDrawCommand::DrawImage { rect, rgba8, image_width, image_height, clip } => {
                 if rect.width == 0 || rect.height == 0 || *image_width == 0 || *image_height == 0 {

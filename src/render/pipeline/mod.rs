@@ -69,4 +69,9 @@ pub(crate) use pixel_ops::glyph_rects;
 // principle #101).
 #[cfg(feature = "gpu-wgpu")]
 pub(crate) use pixel_ops::line_stroke_coverage_grid;
+
+// The one bilinear sampler a scaled image uses. Shared with the WGPU command rasteriser so its CPU
+// parity path resamples exactly as `draw_image_quad` does instead of carrying a second copy.
 pub(crate) use pixel_ops::{rounded_rect_effective_radii, uniform_radii};
+#[cfg(feature = "gpu-wgpu")]
+pub(crate) use primitives::sample_bilinear;

@@ -126,6 +126,62 @@ pub enum WgpuDrawCommand {
         /// Optional clip that further restricts the segment.
         clip: Option<PixelRect>,
     },
+    /// Draw an RGBA image scaled into `rect` with the reference renderer's **bilinear** rule.
+    ///
+    /// [`WgpuDrawCommand::DrawImage`] maps each destination pixel to exactly one source texel; that is
+    /// the reference's `draw_image` rule, but a *scaled* draw goes through
+    /// `blit_scaled_software` → `draw_image_quad`, which samples **four** texels and interpolates.
+    /// Using `DrawImage` for a scaled draw picks the neighbouring texel instead of blending them, so
+    /// this variant exists.
+    ///
+    /// Each fragment computes the reference's own normalized sample position and the same
+    /// `sample_bilinear` weights; because the parallelogram's `u`/`v` are affine in the pixel
+    /// coordinate, the walk they come from is reproduced by two coefficients (`u_dx`, `v_dy`) rather
+    /// than by accumulating per pixel. A pixel whose normalized position lands on another side of a
+    /// texel boundary from the reference's accumulated one reads the same *interpolated* colour, so
+    /// the only difference left is the interpolation's rounding — one level per channel.
+    DrawImageScaled {
+        /// Destination rectangle in physical pixels.
+        rect: PixelRect,
+        /// Source pixels, `RGBA8`, row-major, top row first; must be exactly
+        /// `image_width * image_height * 4` bytes.
+        rgba8: Arc<[u8]>,
+        /// Source grid width in pixels.
+        image_width: u32,
+        /// Source grid height in pixels.
+        image_height: u32,
+        /// `u` per destination pixel: `vy / (ux·vy − uy·vx)` of the reference's parallelogram.
+        u_dx: f32,
+        /// `v` per destination pixel: `ux / (ux·vy − uy·vx)`.
+        v_dy: f32,
+        /// Optional clip that further restricts the destination.
+        clip: Option<PixelRect>,
+    },
+    /// Blur a rectangle of the frame **in place** with the reference renderer's three-box kernel.
+    ///
+    /// This is the primitive `RenderCommand::Blur` and both blurred shadow forms need: the reference
+    /// blurs the **frame** region (with whatever was already painted there, shadows included), so the
+    /// result is `blur(content over backdrop)`, not `blur(content)` composited over a sharp backdrop.
+    /// No layer pipeline can express that, which is why this is a read-modify-write of the target.
+    ///
+    /// The region is `rect` intersected with the running clip and the framebuffer, expanded by the
+    /// kernel's reach and clamped to the framebuffer — exactly the bounds `blur_rect_on_surface` →
+    /// `box_blur_region` computes. The expansion is part of the semantics: the reference writes the
+    /// blurred ring *outside* `rect` too, which is what makes a shadow's soft edge reach past its
+    /// body.
+    ///
+    /// Three box widths from the reference's own `box_blur_widths(radius / 2)`, each run
+    /// horizontally then vertically, with its integer mean taken over the clamped window. Widths
+    /// below two are no-ops in the reference and are skipped here as well.
+    BlurRegion {
+        /// Region to blur, in physical pixels.
+        rect: PixelRect,
+        /// Blur radius in pixels, in the command's own units (`0` draws nothing). The kernel derives
+        /// `sigma = radius / 2` from it, as the reference does.
+        radius: u32,
+        /// Optional clip that further restricts the region.
+        clip: Option<PixelRect>,
+    },
     /// Draw a rounded-rectangle outline whose stroke lies **inside** its bounds.
     ///
     /// This is the reference's `DrawRoundedRectStroke`: the ring is the outer rounded rectangle

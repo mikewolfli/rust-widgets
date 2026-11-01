@@ -1100,6 +1100,8 @@ impl WgpuRenderer {
         let mut gradient_draws: Vec<GradientDraw> = Vec::new();
         let mut path_draws: Vec<PathDraw> = Vec::new();
         let mut shadow_draws: Vec<ShadowDraw> = Vec::new();
+        // One entry per `DrawStep::BlurRegion`, filled while the plan is packed.
+        let mut frame_blur_specs: Vec<(PixelRect, u32)> = Vec::new();
         let (
             instance_len,
             circle_vertex_len,
@@ -1201,6 +1203,49 @@ impl WgpuRenderer {
                         shadow_draws.push(draw);
                         pack.plan.push(DrawStep::Scissor(paint_region));
                         pack.plan.push(DrawStep::Shadow(shadow_draws.len() - 1));
+                    }
+                    WgpuDrawCommand::BlurRegion { rect, radius, clip } => {
+                        let radius = (*radius).min(100);
+                        if radius == 0 {
+                            continue;
+                        }
+                        // The region the reference blurs: `rect` intersected with the running clip
+                        // and the framebuffer. `box_blur_region` then expands it by the kernel's
+                        // reach and clamps to the surface, which is what makes a shadow's soft edge
+                        // reach past its body — so the expansion is part of the geometry here too.
+                        let Some(region) =
+                            effective_clip(framebuffer, *rect, combine(clip, current_clip))
+                        else {
+                            continue;
+                        };
+                        if super::resources::frame_blur_pass_widths(radius).is_empty() {
+                            continue;
+                        }
+                        let reach = super::resources::frame_blur_reach(radius) as i64;
+                        let left = (region.x as i64 - reach).max(0);
+                        let top = (region.y as i64 - reach).max(0);
+                        let right = (region.right() as i64 + reach).min(width as i64);
+                        let bottom = (region.bottom() as i64 + reach).min(height as i64);
+                        if right <= left || bottom <= top {
+                            continue;
+                        }
+                        let layer = PixelRect {
+                            x: left as i32,
+                            y: top as i32,
+                            width: (right - left) as u32,
+                            height: (bottom - top) as u32,
+                        };
+                        // Flush the rectangle run: the blur reads pixels this frame has already
+                        // painted, so it has to be its own pass.
+                        if run_start < pack.instances.len() / INSTANCE_BYTES {
+                            pack.plan.push(DrawStep::Rects(
+                                run_start,
+                                pack.instances.len() / INSTANCE_BYTES,
+                            ));
+                            run_start = pack.instances.len() / INSTANCE_BYTES;
+                        }
+                        frame_blur_specs.push((layer, radius));
+                        pack.plan.push(DrawStep::BlurRegion(frame_blur_specs.len() - 1));
                     }
                     WgpuDrawCommand::FillRect { .. }
                     | WgpuDrawCommand::StrokeRect { .. }
@@ -1415,6 +1460,49 @@ impl WgpuRenderer {
                         shape_draws.push(draw);
                         pack.plan.push(DrawStep::Scissor(scissor));
                         pack.plan.push(DrawStep::Shape(shape_draws.len() - 1));
+                    }
+                    WgpuDrawCommand::DrawImageScaled {
+                        rect,
+                        rgba8,
+                        image_width,
+                        image_height,
+                        u_dx,
+                        v_dy,
+                        clip,
+                    } => {
+                        let expected = (*image_width as usize) * (*image_height as usize) * 4;
+                        if rgba8.len() != expected {
+                            return Err(format!(
+                                "DrawImageScaled carries {} byte(s) for a {}x{} source, expected \
+                                 {expected}",
+                                rgba8.len(),
+                                image_width,
+                                image_height
+                            ));
+                        }
+                        let Some(scissor) =
+                            effective_clip(framebuffer, *rect, combine(clip, current_clip))
+                        else {
+                            continue;
+                        };
+                        if run_start < pack.instances.len() / INSTANCE_BYTES {
+                            pack.plan.push(DrawStep::Rects(
+                                run_start,
+                                pack.instances.len() / INSTANCE_BYTES,
+                            ));
+                            run_start = pack.instances.len() / INSTANCE_BYTES;
+                        }
+                        let draw = self.upload_image_draw_with_sample(
+                            *rect,
+                            rgba8,
+                            *image_width,
+                            *image_height,
+                            (*u_dx, *v_dy),
+                            true,
+                        );
+                        image_draws.push(draw);
+                        pack.plan.push(DrawStep::Scissor(scissor));
+                        pack.plan.push(DrawStep::Image(image_draws.len() - 1));
                     }
                     WgpuDrawCommand::DrawImage { rect, rgba8, image_width, image_height, clip } => {
                         // The CPU rasteriser writes only the intersection of the destination, the
@@ -1748,6 +1836,34 @@ impl WgpuRenderer {
             &self.transformed_bind_group_layout,
             &shadow_specs,
         );
+        let frame_blur_count = frame_blur_specs.len();
+        if frame_blur_count > 0 {
+            cache.ensure_frame_blur_targets(
+                &self.device,
+                &self.blur_bind_group_layout,
+                &frame_blur_specs,
+            );
+            if let Some(targets) = cache.frame_blur.as_ref() {
+                for (target, (_, radius)) in targets.targets.iter().zip(&frame_blur_specs) {
+                    let widths = super::resources::frame_blur_pass_widths(*radius);
+                    // One chunk of two passes per box width: horizontal then vertical. Zipping the
+                    // chunks with the widths is what keeps the pass count and the width list from
+                    // drifting apart — a radius below two yields fewer than three widths, and the
+                    // target is rebuilt for exactly that many passes.
+                    for (chunk, width) in target.passes.chunks(2).zip(&widths) {
+                        for (index, (_, params)) in chunk.iter().enumerate() {
+                            // The shader's parameter is the window's **half** width, the same unit
+                            // `blur_row` divides its box width by; passing the width would double
+                            // the window and blur the region twice as far.
+                            let half = (*width / 2) as u32;
+                            let direction = if index % 2 == 0 { [1.0f32, 0.0] } else { [0.0, 1.0] };
+                            let bytes = super::resources::shadow_blur_params(direction, half);
+                            self.queue.write_buffer(params, 0, &bytes);
+                        }
+                    }
+                }
+            }
+        }
         // Only a frame that actually blends pays for the offscreen pair.
         let blend_run_count = cache.pack.blend_runs.len();
         if blend_run_count > 0 {
@@ -1768,6 +1884,7 @@ impl WgpuRenderer {
             circle_uniforms,
             shadow,
             blend,
+            frame_blur,
             pack,
             ..
         } = &mut *cache;
@@ -1849,6 +1966,8 @@ impl WgpuRenderer {
         } else {
             blend.as_ref().map(|targets| (targets, &pack.blend_runs[..]))
         };
+        let frame_blurs: &[super::resources::FrameBlurTarget] =
+            frame_blur.as_ref().map_or(&[], |targets| &targets.targets);
         self.record_frame_passes(
             &mut encoder,
             &recorder,
@@ -1856,6 +1975,7 @@ impl WgpuRenderer {
             target,
             &stencil.view,
             blend_pair,
+            frame_blurs,
         );
 
         self.queue.submit(Some(encoder.finish()));

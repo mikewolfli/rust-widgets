@@ -70,6 +70,7 @@ pub fn bridge_render_commands(
     commands: &[RenderCommand],
     text_scale: f32,
     target: (u32, u32),
+    opaque_background: bool,
 ) -> Result<Vec<WgpuDrawCommand>, BridgeGap> {
     // Four families are compound: a stroked arc is a sequence of centred lines, a filled arc is
     // the triangle fan the reference fills, a dashed polyline is the same dash kernel's segment
@@ -78,6 +79,8 @@ pub fn bridge_render_commands(
     // expanded index back to the caller's command, so a `BridgeGap` still names the command the
     // caller passed.
     let expanded;
+    // Plain layers still open. A pop is only faithful while it closes one of its own.
+    let mut layers = 0usize;
     let (commands, origins): (&[RenderCommand], Option<&[usize]>) =
         if commands.iter().any(is_compound_command) {
             expanded = expand_compound_commands(commands, text_scale);
@@ -85,277 +88,412 @@ pub fn bridge_render_commands(
         } else {
             (commands, None)
         };
-    commands
-        .iter()
-        .enumerate()
-        .map(|(expanded_index, command)| {
-            let index = origins.map_or(expanded_index, |map| map[expanded_index]);
-            match command {
-                RenderCommand::FillRect { rect, color } => Ok(WgpuDrawCommand::FillRect {
+    // One command per arm, except the three families whose faithful form is a body **plus** a blur:
+    // those push two entries, which is why this is a loop rather than a `map`.
+    let mut one = |command: &RenderCommand, index: usize| -> Result<WgpuDrawCommand, BridgeGap> {
+        match command {
+            RenderCommand::FillRect { rect, color } => Ok(WgpuDrawCommand::FillRect {
+                rect: pixel_rect(rect),
+                color: rgba8(color),
+                clip: None,
+            }),
+            RenderCommand::DrawRect { rect, color } => Ok(WgpuDrawCommand::StrokeRectCentered {
+                rect: pixel_rect(rect),
+                color: rgba8(color),
+                thickness: 1,
+                clip: None,
+            }),
+            RenderCommand::DrawRectStroke { rect, color, width } => {
+                Ok(WgpuDrawCommand::StrokeRectCentered {
                     rect: pixel_rect(rect),
                     color: rgba8(color),
+                    thickness: *width,
                     clip: None,
-                }),
-                RenderCommand::DrawRect { rect, color } => {
-                    Ok(WgpuDrawCommand::StrokeRectCentered {
+                })
+            }
+            RenderCommand::DrawLine { from, to, color } => Ok(WgpuDrawCommand::DrawLineCentered {
+                from: (from.x, from.y),
+                to: (to.x, to.y),
+                color: rgba8(color),
+                width: 1,
+                clip: None,
+            }),
+            RenderCommand::DrawLineStroke { from, to, color, width } => {
+                Ok(WgpuDrawCommand::DrawLineCentered {
+                    from: (from.x, from.y),
+                    to: (to.x, to.y),
+                    color: rgba8(color),
+                    width: *width,
+                    clip: None,
+                })
+            }
+            RenderCommand::DrawRoundedRectStroke { rect, radii, color, width }
+            | RenderCommand::DrawRoundedRectStrokeAA { rect, radii, color, width } => {
+                if radii.iter().all(|value| *value == radii[0]) {
+                    Ok(WgpuDrawCommand::StrokeRoundedRectInside {
                         rect: pixel_rect(rect),
-                        color: rgba8(color),
-                        thickness: 1,
-                        clip: None,
-                    })
-                }
-                RenderCommand::DrawRectStroke { rect, color, width } => {
-                    Ok(WgpuDrawCommand::StrokeRectCentered {
-                        rect: pixel_rect(rect),
+                        radius: radii[0],
                         color: rgba8(color),
                         thickness: *width,
                         clip: None,
                     })
+                } else {
+                    // The backend's inside-stroke ring carries one radius. A per-corner ring has no
+                    // form here yet, so it stays on the reference rasteriser rather than losing
+                    // the corner-specific shape.
+                    Err(BridgeGap { index, variant: command_variant_name(command) })
                 }
-                RenderCommand::DrawLine { from, to, color } => {
-                    Ok(WgpuDrawCommand::DrawLineCentered {
-                        from: (from.x, from.y),
-                        to: (to.x, to.y),
-                        color: rgba8(color),
-                        width: 1,
-                        clip: None,
-                    })
-                }
-                RenderCommand::DrawLineStroke { from, to, color, width } => {
-                    Ok(WgpuDrawCommand::DrawLineCentered {
-                        from: (from.x, from.y),
-                        to: (to.x, to.y),
-                        color: rgba8(color),
-                        width: *width,
-                        clip: None,
-                    })
-                }
-                RenderCommand::DrawRoundedRectStroke { rect, radii, color, width }
-                | RenderCommand::DrawRoundedRectStrokeAA { rect, radii, color, width } => {
-                    if radii.iter().all(|value| *value == radii[0]) {
-                        Ok(WgpuDrawCommand::StrokeRoundedRectInside {
-                            rect: pixel_rect(rect),
-                            radius: radii[0],
-                            color: rgba8(color),
-                            thickness: *width,
-                            clip: None,
-                        })
-                    } else {
-                        // The backend's inside-stroke ring carries one radius. A per-corner ring has no
-                        // form here yet, so it stays on the reference rasteriser rather than losing
-                        // the corner-specific shape.
-                        Err(BridgeGap { index, variant: command_variant_name(command) })
-                    }
-                }
-                RenderCommand::DrawCircle { center, radius, color } => {
-                    Ok(WgpuDrawCommand::DrawCircleInside {
-                        center: (center.x, center.y),
-                        radius: *radius,
-                        color: rgba8(color),
-                        width: 1,
-                        clip: None,
-                    })
-                }
-                RenderCommand::DrawCircleStroke { center, radius, color, width } => {
-                    Ok(WgpuDrawCommand::DrawCircleInside {
-                        center: (center.x, center.y),
-                        radius: *radius,
-                        color: rgba8(color),
-                        width: *width,
-                        clip: None,
-                    })
-                }
-                RenderCommand::FillCircle { center, radius, color }
-                | RenderCommand::FillCircleAA { center, radius, color } => {
-                    Ok(WgpuDrawCommand::FillCircle {
-                        center: (center.x, center.y),
-                        radius: *radius,
+            }
+            RenderCommand::DrawCircle { center, radius, color } => {
+                Ok(WgpuDrawCommand::DrawCircleInside {
+                    center: (center.x, center.y),
+                    radius: *radius,
+                    color: rgba8(color),
+                    width: 1,
+                    clip: None,
+                })
+            }
+            RenderCommand::DrawCircleStroke { center, radius, color, width } => {
+                Ok(WgpuDrawCommand::DrawCircleInside {
+                    center: (center.x, center.y),
+                    radius: *radius,
+                    color: rgba8(color),
+                    width: *width,
+                    clip: None,
+                })
+            }
+            RenderCommand::FillCircle { center, radius, color }
+            | RenderCommand::FillCircleAA { center, radius, color } => {
+                Ok(WgpuDrawCommand::FillCircle {
+                    center: (center.x, center.y),
+                    radius: *radius,
+                    color: rgba8(color),
+                    clip: None,
+                })
+            }
+            RenderCommand::FillRoundedRect { rect, radii, color }
+            | RenderCommand::FillRoundedRectAA { rect, radii, color } => {
+                // A uniform radius keeps the original single-radius path; a per-corner fill
+                // uses the row-span variant, whose radii come from the same CSS resolution the
+                // reference applies.
+                if radii.iter().all(|value| *value == radii[0]) {
+                    Ok(WgpuDrawCommand::FillRoundedRect {
+                        rect: pixel_rect(rect),
+                        radius: radii[0],
                         color: rgba8(color),
                         clip: None,
                     })
-                }
-                RenderCommand::FillRoundedRect { rect, radii, color }
-                | RenderCommand::FillRoundedRectAA { rect, radii, color } => {
-                    // A uniform radius keeps the original single-radius path; a per-corner fill
-                    // uses the row-span variant, whose radii come from the same CSS resolution the
-                    // reference applies.
-                    if radii.iter().all(|value| *value == radii[0]) {
-                        Ok(WgpuDrawCommand::FillRoundedRect {
-                            rect: pixel_rect(rect),
-                            radius: radii[0],
-                            color: rgba8(color),
-                            clip: None,
-                        })
-                    } else {
-                        Ok(WgpuDrawCommand::FillRoundedRectRadii {
-                            rect: pixel_rect(rect),
-                            radii: *radii,
-                            color: rgba8(color),
-                            clip: None,
-                        })
-                    }
-                }
-                RenderCommand::DrawText { origin, text, font, color, alignment } => {
-                    match crate::render::text::shaped_text_coverage(
-                        *origin, text, font, *alignment, text_scale,
-                    ) {
-                        Some(run) => Ok(WgpuDrawCommand::DrawTextCoverage {
-                            rect: PixelRect {
-                                x: run.x,
-                                y: run.y,
-                                width: run.width,
-                                height: run.height,
-                            },
-                            coverage: run.bytes,
-                            color: rgba8(color),
-                            clip: None,
-                        }),
-                        // A colour glyph has no single-channel form; the caller keeps the frame on the
-                        // reference rasteriser rather than losing the glyph's own colours.
-                        None => Err(BridgeGap { index, variant: command_variant_name(command) }),
-                    }
-                }
-                RenderCommand::DrawImage { x, y, width, height, data } => {
-                    Ok(WgpuDrawCommand::DrawImage {
-                        rect: PixelRect { x: *x, y: *y, width: *width, height: *height },
-                        rgba8: crate::compat::Arc::clone(data),
-                        image_width: *width,
-                        image_height: *height,
-                        clip: None,
-                    })
-                }
-                RenderCommand::DrawPath { points, closed, color, filled, width } => {
-                    if *filled {
-                        // A filled path is one implicitly closed even-odd contour, which is
-                        // precisely what the backend's filled-path form draws.
-                        Ok(WgpuDrawCommand::DrawPath {
-                            points: points
-                                .iter()
-                                .map(|point| (point.x, point.y))
-                                .collect::<Vec<_>>()
-                                .into(),
-                            closed: *closed,
-                            color: rgba8(color),
-                            filled: true,
-                            width: *width,
-                            clip: None,
-                        })
-                    } else {
-                        // The stroked form arrives as its segment list (see
-                        // `expand_compound_commands`), so it cannot reach this arm.
-                        Err(BridgeGap { index, variant: command_variant_name(command) })
-                    }
-                }
-                RenderCommand::FillPathNonZero { path, color } => {
-                    Ok(WgpuDrawCommand::FillPathNonZero {
-                        points: path
-                            .points()
-                            .iter()
-                            .map(|point| (point.x, point.y))
-                            .collect::<Vec<_>>()
-                            .into(),
-                        contours: path.contours().into(),
-                        color: rgba8(color),
-                        clip: None,
-                    })
-                }
-                RenderCommand::DrawLineAA { from, to, color } => {
-                    line_coverage_command(*from, *to, *color, 1)
-                        .ok_or(BridgeGap { index, variant: command_variant_name(command) })
-                }
-                RenderCommand::DrawLineStrokeAA { from, to, color, width } => {
-                    line_coverage_command(*from, *to, *color, *width)
-                        .ok_or(BridgeGap { index, variant: command_variant_name(command) })
-                }
-                RenderCommand::BoxShadow {
-                    rect,
-                    color,
-                    offset_x,
-                    offset_y,
-                    blur_radius,
-                    spread,
-                } if *blur_radius == 0 => {
-                    // With no blur the reference's arm is exactly `fill_rect` over the offset,
-                    // spread-adjusted rectangle — there is no shadow pipeline involved, so the
-                    // bridged form is that same fill.
-                    let shadow =
-                        crate::render::box_shadow_spread_rect(*rect, *offset_x, *offset_y, *spread);
-                    Ok(WgpuDrawCommand::FillRect {
-                        rect: pixel_rect(&shadow),
-                        color: rgba8(color),
-                        clip: None,
-                    })
-                }
-                RenderCommand::BoxShadowRounded {
-                    rect,
-                    radii,
-                    color,
-                    offset_x,
-                    offset_y,
-                    blur_radius,
-                    spread,
-                } if *blur_radius == 0 => {
-                    // The rounded twin paints `fill_rounded_rect_radii` over the same rectangle; the
-                    // per-corner variant resolves the radii with the reference's CSS rule.
-                    let shadow =
-                        crate::render::box_shadow_spread_rect(*rect, *offset_x, *offset_y, *spread);
+                } else {
                     Ok(WgpuDrawCommand::FillRoundedRectRadii {
-                        rect: pixel_rect(&shadow),
+                        rect: pixel_rect(rect),
                         radii: *radii,
                         color: rgba8(color),
                         clip: None,
                     })
                 }
-                RenderCommand::DrawGradient { rect, gradient } => {
-                    let ramp = crate::render::gradient_ramp_lut(gradient);
-                    if !ramp_is_smooth(&ramp) {
-                        // One table entry moves more than one level, so a pixel that reads the
-                        // neighbouring entry would exceed the class this bridge declares.
-                        return Err(BridgeGap { index, variant: command_variant_name(command) });
-                    }
-                    let Some((kind, start, end)) = gradient_geometry(gradient) else {
-                        return Err(BridgeGap { index, variant: command_variant_name(command) });
-                    };
-                    Ok(WgpuDrawCommand::FillGradient {
-                        rect: pixel_rect(rect),
-                        kind,
-                        start,
-                        end,
-                        ramp: ramp_bytes_of(&ramp),
-                        // The fill arm composites its ramp through the stream's blend mode.
-                        verbatim: false,
-                        clip: None,
-                    })
-                }
-                RenderCommand::DrawConicGradient { center, start_angle, stops } => {
-                    let ramp = crate::render::ramp_lut_for_stops(stops);
-                    if !ramp_is_smooth(&ramp) {
-                        return Err(BridgeGap { index, variant: command_variant_name(command) });
-                    }
-                    Ok(WgpuDrawCommand::FillGradient {
-                        // The command carries no rectangle: the reference paints the whole clipped
-                        // surface, so the bridged quad is the target and the clip does the rest.
-                        rect: PixelRect { x: 0, y: 0, width: target.0, height: target.1 },
-                        kind: 2,
-                        start: (center.x as f32, center.y as f32),
-                        end: (*start_angle, 0.0),
-                        ramp: ramp_bytes_of(&ramp),
-                        // The standalone conic command stores its ramp colour verbatim.
-                        verbatim: true,
-                        clip: None,
-                    })
-                }
-                RenderCommand::PushClip { x, y, width, height } => Ok(WgpuDrawCommand::PushClip {
-                    rect: PixelRect { x: *x, y: *y, width: *width, height: *height },
-                }),
-                RenderCommand::PopClip => Ok(WgpuDrawCommand::PopClip),
-                RenderCommand::SetBlendMode { mode } => {
-                    Ok(WgpuDrawCommand::SetBlendMode { mode: *mode as u8 })
-                }
-                other => Err(BridgeGap { index, variant: command_variant_name(other) }),
             }
-        })
-        .collect()
+            RenderCommand::DrawText { origin, text, font, color, alignment } => {
+                match crate::render::text::shaped_text_coverage(
+                    *origin, text, font, *alignment, text_scale,
+                ) {
+                    Some(run) => Ok(WgpuDrawCommand::DrawTextCoverage {
+                        rect: PixelRect {
+                            x: run.x,
+                            y: run.y,
+                            width: run.width,
+                            height: run.height,
+                        },
+                        coverage: run.bytes,
+                        color: rgba8(color),
+                        clip: None,
+                    }),
+                    // A colour glyph has no single-channel form; the caller keeps the frame on the
+                    // reference rasteriser rather than losing the glyph's own colours.
+                    None => Err(BridgeGap { index, variant: command_variant_name(command) }),
+                }
+            }
+            RenderCommand::DrawImage { x, y, width, height, data } => {
+                Ok(WgpuDrawCommand::DrawImage {
+                    rect: PixelRect { x: *x, y: *y, width: *width, height: *height },
+                    rgba8: crate::compat::Arc::clone(data),
+                    image_width: *width,
+                    image_height: *height,
+                    clip: None,
+                })
+            }
+            RenderCommand::DrawPath { points, closed, color, filled, width } => {
+                if *filled {
+                    // A filled path is one implicitly closed even-odd contour, which is
+                    // precisely what the backend's filled-path form draws.
+                    Ok(WgpuDrawCommand::DrawPath {
+                        points: points
+                            .iter()
+                            .map(|point| (point.x, point.y))
+                            .collect::<Vec<_>>()
+                            .into(),
+                        closed: *closed,
+                        color: rgba8(color),
+                        filled: true,
+                        width: *width,
+                        clip: None,
+                    })
+                } else {
+                    // The stroked form arrives as its segment list (see
+                    // `expand_compound_commands`), so it cannot reach this arm.
+                    Err(BridgeGap { index, variant: command_variant_name(command) })
+                }
+            }
+            RenderCommand::FillPathNonZero { path, color } => {
+                Ok(WgpuDrawCommand::FillPathNonZero {
+                    points: path
+                        .points()
+                        .iter()
+                        .map(|point| (point.x, point.y))
+                        .collect::<Vec<_>>()
+                        .into(),
+                    contours: path.contours().into(),
+                    color: rgba8(color),
+                    clip: None,
+                })
+            }
+            RenderCommand::DrawLineAA { from, to, color } => {
+                line_coverage_command(*from, *to, *color, 1)
+                    .ok_or(BridgeGap { index, variant: command_variant_name(command) })
+            }
+            RenderCommand::DrawLineStrokeAA { from, to, color, width } => {
+                line_coverage_command(*from, *to, *color, *width)
+                    .ok_or(BridgeGap { index, variant: command_variant_name(command) })
+            }
+            RenderCommand::BoxShadow { rect, color, offset_x, offset_y, blur_radius, spread }
+                if *blur_radius == 0 =>
+            {
+                // With no blur the reference's arm is exactly `fill_rect` over the offset,
+                // spread-adjusted rectangle — there is no shadow pipeline involved, so the
+                // bridged form is that same fill.
+                let shadow =
+                    crate::render::box_shadow_spread_rect(*rect, *offset_x, *offset_y, *spread);
+                Ok(WgpuDrawCommand::FillRect {
+                    rect: pixel_rect(&shadow),
+                    color: rgba8(color),
+                    clip: None,
+                })
+            }
+            RenderCommand::BoxShadowRounded {
+                rect,
+                radii,
+                color,
+                offset_x,
+                offset_y,
+                blur_radius,
+                spread,
+            } if *blur_radius == 0 => {
+                // The rounded twin paints `fill_rounded_rect_radii` over the same rectangle; the
+                // per-corner variant resolves the radii with the reference's CSS rule.
+                let shadow =
+                    crate::render::box_shadow_spread_rect(*rect, *offset_x, *offset_y, *spread);
+                Ok(WgpuDrawCommand::FillRoundedRectRadii {
+                    rect: pixel_rect(&shadow),
+                    radii: *radii,
+                    color: rgba8(color),
+                    clip: None,
+                })
+            }
+            RenderCommand::DrawGradient { rect, gradient } => {
+                let ramp = crate::render::gradient_ramp_lut(gradient);
+                if !ramp_is_smooth(&ramp) {
+                    // One table entry moves more than one level, so a pixel that reads the
+                    // neighbouring entry would exceed the class this bridge declares.
+                    return Err(BridgeGap { index, variant: command_variant_name(command) });
+                }
+                let Some((kind, start, end)) = gradient_geometry(gradient) else {
+                    return Err(BridgeGap { index, variant: command_variant_name(command) });
+                };
+                Ok(WgpuDrawCommand::FillGradient {
+                    rect: pixel_rect(rect),
+                    kind,
+                    start,
+                    end,
+                    ramp: ramp_bytes_of(&ramp),
+                    // The fill arm composites its ramp through the stream's blend mode.
+                    verbatim: false,
+                    clip: None,
+                })
+            }
+            RenderCommand::DrawConicGradient { center, start_angle, stops } => {
+                let ramp = crate::render::ramp_lut_for_stops(stops);
+                if !ramp_is_smooth(&ramp) {
+                    return Err(BridgeGap { index, variant: command_variant_name(command) });
+                }
+                Ok(WgpuDrawCommand::FillGradient {
+                    // The command carries no rectangle: the reference paints the whole clipped
+                    // surface, so the bridged quad is the target and the clip does the rest.
+                    rect: PixelRect { x: 0, y: 0, width: target.0, height: target.1 },
+                    kind: 2,
+                    start: (center.x as f32, center.y as f32),
+                    end: (*start_angle, 0.0),
+                    ramp: ramp_bytes_of(&ramp),
+                    // The standalone conic command stores its ramp colour verbatim.
+                    verbatim: true,
+                    clip: None,
+                })
+            }
+            RenderCommand::DrawImageScaled {
+                x,
+                y,
+                width,
+                height,
+                source_width,
+                source_height,
+                data,
+            } => {
+                // `blit_scaled_software` short-circuits an unscaled draw to `draw_image`, which is
+                // the nearest-neighbour form this bridge already reproduces byte-for-byte.
+                if *width == *source_width && *height == *source_height {
+                    return Ok(WgpuDrawCommand::DrawImage {
+                        rect: PixelRect { x: *x, y: *y, width: *width, height: *height },
+                        rgba8: crate::compat::Arc::clone(data),
+                        image_width: *width,
+                        image_height: *height,
+                        clip: None,
+                    });
+                }
+                if !scaled_image_drift_is_bounded(*width, *height) {
+                    // See `scaled_image_drift_is_bounded`: past this extent the reference's
+                    // accumulation of `u` can move a sample by more than one level, which the
+                    // class this bridge declares does not allow.
+                    return Err(BridgeGap { index, variant: command_variant_name(command) });
+                }
+                // The reference's parallelogram coefficients for a rectangle: `(ux, uy, vx, vy)
+                // = (w, 0, 0, h)`, so `inv_det = 1 / (w * h)`, `u_dx = h * inv_det` and
+                // `v_dy = w * inv_det`. Computed here exactly as `draw_image_quad` computes
+                // them, because the shader compares against that walk.
+                let w = *width as f32;
+                let h = *height as f32;
+                let inv_det = 1.0 / (w * h);
+                Ok(WgpuDrawCommand::DrawImageScaled {
+                    rect: PixelRect { x: *x, y: *y, width: *width, height: *height },
+                    rgba8: crate::compat::Arc::clone(data),
+                    image_width: *source_width,
+                    image_height: *source_height,
+                    u_dx: h * inv_det,
+                    v_dy: w * inv_det,
+                    clip: None,
+                })
+            }
+            RenderCommand::PushClip { x, y, width, height } => Ok(WgpuDrawCommand::PushClip {
+                rect: PixelRect { x: *x, y: *y, width: *width, height: *height },
+            }),
+            RenderCommand::PopClip => Ok(WgpuDrawCommand::PopClip),
+            // A **plain** layer separates nothing: the reference pushes its bounds as a clip and
+            // its pop only pops that clip, so the bridged form is the clip pair. `layers` counts
+            // the plain pushes still open, so a pop that closes an effect layer (or nothing) is
+            // rejected instead of silently popping someone else's clip.
+            RenderCommand::PushLayer { bounds, effect } if effect.is_none() => {
+                layers += 1;
+                Ok(WgpuDrawCommand::PushClip {
+                    rect: PixelRect {
+                        x: bounds.x,
+                        y: bounds.y,
+                        width: bounds.width,
+                        height: bounds.height,
+                    },
+                })
+            }
+            // A layer with no effect and full opacity paints exactly what a clip paints, with or
+            // without a replay cache: the cache only saves the reference rasteriser work, and
+            // `composite_foreground` is the identity over an **opaque** backdrop (every captured
+            // pixel then has alpha 255, so the composite writes the frame back verbatim). On a
+            // translucent frame that stops being true, so the bridge declines instead.
+            RenderCommand::PushLayerGroup { bounds, effect, opacity, .. }
+                if crate::render::layer_paints_like_a_clip(*effect, *opacity) =>
+            {
+                if !opaque_background {
+                    return Err(BridgeGap { index, variant: command_variant_name(command) });
+                }
+                layers += 1;
+                Ok(WgpuDrawCommand::PushClip {
+                    rect: PixelRect {
+                        x: bounds.x,
+                        y: bounds.y,
+                        width: bounds.width,
+                        height: bounds.height,
+                    },
+                })
+            }
+            RenderCommand::PopLayer => {
+                if layers == 0 {
+                    return Err(BridgeGap { index, variant: command_variant_name(command) });
+                }
+                layers -= 1;
+                Ok(WgpuDrawCommand::PopClip)
+            }
+            RenderCommand::SetBlendMode { mode } => {
+                Ok(WgpuDrawCommand::SetBlendMode { mode: *mode as u8 })
+            }
+            other => Err(BridgeGap { index, variant: command_variant_name(other) }),
+        }
+    };
+    let mut out = Vec::with_capacity(commands.len());
+    for (expanded_index, command) in commands.iter().enumerate() {
+        let index = origins.map_or(expanded_index, |map| map[expanded_index]);
+        match command {
+            // A blur is the frame region itself: the reference blurs whatever is already painted
+            // there, so the bridged form is the region's own read-modify-write.
+            RenderCommand::Blur { radius } => {
+                let radius = (*radius).min(100);
+                if radius > 0 {
+                    out.push(WgpuDrawCommand::BlurRegion {
+                        rect: PixelRect { x: 0, y: 0, width: target.0, height: target.1 },
+                        radius,
+                        clip: None,
+                    });
+                }
+            }
+            // A blurred shadow is the reference's own two steps: fill the offset body, then blur that
+            // rectangle in the frame. The blur must see the body, so the pair is emitted in order.
+            RenderCommand::BoxShadow { rect, color, offset_x, offset_y, blur_radius, spread }
+                if *blur_radius > 0 =>
+            {
+                let shadow =
+                    crate::render::box_shadow_spread_rect(*rect, *offset_x, *offset_y, *spread);
+                out.push(WgpuDrawCommand::FillRect {
+                    rect: pixel_rect(&shadow),
+                    color: rgba8(color),
+                    clip: None,
+                });
+                out.push(WgpuDrawCommand::BlurRegion {
+                    rect: pixel_rect(&shadow),
+                    radius: (*blur_radius).min(100),
+                    clip: None,
+                });
+            }
+            RenderCommand::BoxShadowRounded {
+                rect,
+                radii,
+                color,
+                offset_x,
+                offset_y,
+                blur_radius,
+                spread,
+            } if *blur_radius > 0 => {
+                let shadow =
+                    crate::render::box_shadow_spread_rect(*rect, *offset_x, *offset_y, *spread);
+                out.push(WgpuDrawCommand::FillRoundedRectRadii {
+                    rect: pixel_rect(&shadow),
+                    radii: *radii,
+                    color: rgba8(color),
+                    clip: None,
+                });
+                out.push(WgpuDrawCommand::BlurRegion {
+                    rect: pixel_rect(&shadow),
+                    radius: (*blur_radius).min(100),
+                    clip: None,
+                });
+            }
+            other => out.push(one(other, index)?),
+        }
+    }
+    Ok(out)
 }
 
 /// Whether `command`'s faithful GPU form is more than one command.
@@ -371,6 +509,9 @@ fn is_compound_command(command: &RenderCommand) -> bool {
             | RenderCommand::DrawTextDecorated { .. }
             | RenderCommand::DrawPathDashed { .. }
             | RenderCommand::DrawPath { filled: false, .. }
+            // Not 1:N, but it *can* be 1:0: a scaled draw the reference skips must not reach the
+            // table as a command the dispatcher cannot claim.
+            | RenderCommand::DrawImageScaled { .. }
     )
 }
 
@@ -433,6 +574,23 @@ fn expand_compound_commands(
                     }
                 }
             }
+            // A scaled draw the reference skips draws nothing: an empty extent, an empty source, or
+            // a payload shorter than the source grid. Dropping it here keeps the stream exactly as
+            // drawable as it was, instead of replacing it with a zero-sized command the dispatcher
+            // would refuse and turning one missing pixel into a whole CPU frame.
+            RenderCommand::DrawImageScaled {
+                width,
+                height,
+                source_width,
+                source_height,
+                data,
+                ..
+            } if *width == 0
+                || *height == 0
+                || *source_width == 0
+                || *source_height == 0
+                || data.len() < (*source_width as usize) * (*source_height as usize) * 4 => {}
+            RenderCommand::DrawImageScaled { .. } => expanded.push(command.clone()),
             RenderCommand::DrawPathDashed { points, closed, color, width, dash } => {
                 // One dash kernel, shared with the reference's immediate path: the polyline is
                 // broken into the same segments, and each becomes the `DrawLineStroke` the centred
@@ -764,6 +922,22 @@ fn ramp_bytes_of(lut: &[crate::core::Color; 256]) -> crate::compat::Arc<[u8]> {
         bytes.extend_from_slice(&[color.r, color.g, color.b, color.a]);
     }
     crate::compat::Arc::from(bytes)
+}
+
+/// The largest destination extent whose bilinear sample position is provably within one level of the
+/// reference's.
+///
+/// A scaled draw's normalized sample position is accumulated per pixel by the reference
+/// (`u += u_dx`) and evaluated directly by the shader. `u` stays inside `0..1`, so one addition
+/// rounds by at most `3e-8`, and the walk is at most `extent` steps long — a worst-case drift of
+/// `extent * 3e-8`. Bilinear sampling is **continuous** in `(u, v)`: crossing a texel boundary swaps
+/// the texel pair and the weight together, so that drift changes the interpolated colour by
+/// `255 * drift` levels. Holding `drift <= 1e-4` keeps the result inside one level, which is the
+/// class this bridge declares; past this extent the command stays on the reference rasteriser.
+pub fn scaled_image_drift_is_bounded(width: u32, height: u32) -> bool {
+    const MAX_DRIFT: f32 = 1.0e-4;
+    const DRIFT_PER_PIXEL: f32 = 3.0e-8;
+    (width.max(height) as f32) * DRIFT_PER_PIXEL <= MAX_DRIFT
 }
 
 /// The variant name of `command`, for a [`BridgeGap`].

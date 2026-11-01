@@ -529,6 +529,75 @@ fn fs_main(@location(0) pixel: vec2f) -> @location(0) vec4f {
     return textureLoad(uSource, vec2i(i32(src.x), i32(src.y)), 0);
 }"#;
 
+/// Scaled-image fragment shader: the reference's bilevel sample, from four texels.
+///
+/// # Bind group layout
+///
+/// The **same** group 0 as [`IMAGE_FRAG`] — a 32-byte `ImageParams` uniform and the source texture —
+/// so the two draws share one bind group layout and differ only in the pipeline they bind. Here
+/// `source` carries four numbers: `xy` = the source grid, `z` = `u_dx`, `w` = `v_dy`.
+///
+/// # What it reproduces
+///
+/// `SoftwareSurface::draw_image_quad`'s parallelogram walk: for a destination pixel at `(x, y)` the
+/// normalized sample is
+///
+/// ```text
+/// u = (x + 0.5 - origin.x) · u_dx + (y + 0.5 - origin.y) · u_dy
+/// v = (x + 0.5 - origin.x) · v_dx + (y + 0.5 - origin.y) · v_dy
+/// ```
+///
+/// and only samples strictly inside the unit square are drawn. A scaled draw's quad is axis-aligned,
+/// so `u_dy` and `v_dx` are exactly zero and are not carried. `sample_bilinear`'s weights follow the
+/// reference expression: `fx = u·width − 0.5`, `x0 = floor(fx)`, `tx = fx − x0`, clamped texel
+/// indices, and the two-step lerp (`top`/`bottom`, then `ty`).
+///
+/// # Why a bilinear difference cannot be large
+///
+/// The interpolated colour is a **continuous** function of `(u, v)`: crossing a texel boundary swaps
+/// the texel pair and the weight together, so a last-bit difference in the sample position changes
+/// the result by far less than one level. That is why this family is bridged under the plan's "≤1 LSB"
+/// class instead of needing a new one.
+pub(crate) const SCALED_IMAGE_FRAG: &str = r#"
+struct ImageParams {
+    dest: vec4f,
+    source: vec4f,
+};
+
+@group(0) @binding(0) var<uniform> uParams: ImageParams;
+@group(0) @binding(1) var uSource: texture_2d<f32>;
+
+@fragment
+fn fs_main(@location(0) pixel: vec2f) -> @location(0) vec4f {
+    let d = uParams.dest;
+    let s = uParams.source;
+    let centre = floor(pixel) + vec2f(0.5);
+    let u = (centre.x - d.x) * s.z;
+    let v = (centre.y - d.y) * s.w;
+    // The reference draws only samples strictly inside the unit square.
+    if (u < 0.0 || u >= 1.0 || v < 0.0 || v >= 1.0) {
+        return vec4f(0.0);
+    }
+    let fx = u * s.x - 0.5;
+    let fy = v * s.y - 0.5;
+    let x0 = floor(fx);
+    let y0 = floor(fy);
+    let tx = fx - x0;
+    let ty = fy - y0;
+    let last = vec2i(max(i32(s.x) - 1, 0), max(i32(s.y) - 1, 0));
+    let x0i = clamp(i32(x0), 0, last.x);
+    let x1i = clamp(i32(x0 + 1.0), 0, last.x);
+    let y0i = clamp(i32(y0), 0, last.y);
+    let y1i = clamp(i32(y0 + 1.0), 0, last.y);
+    let top_left = textureLoad(uSource, vec2i(x0i, y0i), 0);
+    let top_right = textureLoad(uSource, vec2i(x1i, y0i), 0);
+    let bottom_left = textureLoad(uSource, vec2i(x0i, y1i), 0);
+    let bottom_right = textureLoad(uSource, vec2i(x1i, y1i), 0);
+    let top = top_left + (top_right - top_left) * tx;
+    let bottom = bottom_left + (bottom_right - bottom_left) * tx;
+    return top + (bottom - top) * ty;
+}"#;
+
 /// Text vertex shader: one axis-aligned quad per text box, positioned from the box's uniform —
 /// there is no vertex buffer.
 ///
@@ -1347,6 +1416,9 @@ pub enum ShaderModule {
     /// `GRADIENT_FRAG`: the reference's own 256-entry ramp along an arbitrary linear, radial or
     /// conic geometry; needs the draw's params uniform and the ramp texture.
     FillGradient,
+    /// `SCALED_IMAGE_FRAG`: the reference's four-texel bilinear sample for a scaled image; needs the
+    /// draw's params uniform and the source texture (the same bind group layout as `DrawImage`).
+    DrawImageScaled,
 }
 
 impl ShaderModule {
@@ -1373,6 +1445,7 @@ impl ShaderModule {
             ShaderModule::Shape => SHAPE_FRAG,
             ShaderModule::RadialGradient => RADIAL_FRAG,
             ShaderModule::FillGradient => GRADIENT_FRAG,
+            ShaderModule::DrawImageScaled => SCALED_IMAGE_FRAG,
         }
     }
 
@@ -1394,6 +1467,7 @@ impl ShaderModule {
             ShaderModule::Shape => Some("shape_fs"),
             ShaderModule::RadialGradient => Some("radial_fs"),
             ShaderModule::FillGradient => Some("gradient_fs"),
+            ShaderModule::DrawImageScaled => Some("image_scaled_fs"),
             ShaderModule::FillRoundedRect => None,
         }
     }

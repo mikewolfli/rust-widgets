@@ -5341,7 +5341,7 @@ fn a_tree_with_a_label_records_a_stream_the_gpu_can_draw() {
         }
     };
     let mut commands =
-        crate::wgpu_backend::bridge_render_commands(recorder.commands(), 1.0, (48, 32))
+        crate::wgpu_backend::bridge_render_commands(recorder.commands(), 1.0, (48, 32), true)
             .expect("the recorded frame is bridged");
     commands.insert(
         0,
@@ -5359,6 +5359,109 @@ fn a_tree_with_a_label_records_a_stream_the_gpu_can_draw() {
         worst <= 1,
         "the tree frame may differ only by the text composite's one-LSB rounding; worst {worst}"
     );
+
+    unregister(root);
+}
+
+///
+/// # What this pins: a shadow's blur is not a CPU-only feature
+///
+/// The family tests prove the bridge and the kernel in isolation. This is the claim that matters
+/// for the widget library: a tree whose widget casts a **blurred** shadow records a stream with no
+/// `ForcesCpu` command at all, and the GPU paints it byte for byte. Before the region-blur
+/// primitive existed this widget forced the whole frame onto the CPU, so the assertion on
+/// `forces_cpu` is the one that fails if the blur ever regresses to a named fallback.
+///
+/// The body is opaque and square on purpose: the reference's own `fill_rect` and its own three box
+/// widths are then the whole pipeline, so §1.2 **A** applies and "byte for byte" is the honest
+/// bar. A rounded or translucent body is **B/C** and is covered by the kernel test instead.
+#[cfg(feature = "gpu-wgpu")]
+#[test]
+fn a_tree_with_a_blurred_shadow_records_a_stream_the_gpu_can_draw() {
+    use crate::core::{Color, Rect};
+    use crate::render::present::GpuPaintBackend;
+    use crate::render::{RenderContext, SoftwarePaintBackend};
+    use crate::wgpu_backend::{WgpuDrawCommand, WgpuRenderer};
+    use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+
+    struct Caster {
+        base: BaseWidget,
+    }
+    impl Widget for Caster {
+        fn base(&self) -> &BaseWidget {
+            &self.base
+        }
+        fn base_mut(&mut self) -> &mut BaseWidget {
+            &mut self.base
+        }
+        fn as_draw_mut(&mut self) -> Option<&mut dyn Draw> {
+            Some(self)
+        }
+    }
+    impl crate::event::EventHandler for Caster {
+        fn handle_event(&mut self, _event: &crate::event::Event) {}
+    }
+    impl Draw for Caster {
+        fn draw(&mut self, context: &mut RenderContext) {
+            let face = Rect::new(6, 4, 22, 12);
+            context.draw_box_shadow(face, Color::rgba(0, 0, 0, 255), 2, 3, 6, 0);
+            context.fill_rect(face, Color::rgba(220, 225, 235, 255));
+        }
+    }
+
+    let size = Size::new(48, 32);
+    let root = register(Box::new(Caster {
+        base: BaseWidget::new(WidgetKind::Panel, Rect::new(0, 0, 48, 32), "caster"),
+    }))
+    .expect("mount the shadow caster");
+
+    let mut software = SoftwarePaintBackend::new(size, 1.0);
+    assert!(paint_tree_into(root, size, Color::WHITE, &mut software));
+    let expected = software.take_frame_rgba();
+
+    let mut recorder = GpuPaintBackend::new(size, 1.0);
+    assert!(paint_tree_into(root, size, Color::WHITE, &mut recorder));
+    let audit = recorder.census();
+    assert_eq!(
+        audit.forces_cpu, 0,
+        "a blurred shadow has a GPU form now, so nothing may fall back: {:?}",
+        audit.forces_cpu_names
+    );
+
+    let mut commands =
+        crate::wgpu_backend::bridge_render_commands(recorder.commands(), 1.0, (48, 32), true)
+            .expect("the recorded frame is bridged");
+    assert!(
+        commands.iter().any(|command| matches!(command, WgpuDrawCommand::BlurRegion { .. })),
+        "the shadow's blur must reach the GPU as a region blur, got {commands:?}"
+    );
+    commands.insert(
+        0,
+        WgpuDrawCommand::Clear {
+            color: crate::wgpu_backend::Rgba8 { r: 255, g: 255, b: 255, a: 255 },
+        },
+    );
+
+    let renderer = match WgpuRenderer::new() {
+        Ok(mut renderer) => {
+            renderer.set_cost_gate_enabled(false);
+            renderer
+        }
+        Err(error) => {
+            eprintln!("skipping GPU comparison: no wgpu adapter available ({error})");
+            unregister(root);
+            return;
+        }
+    };
+    assert!(renderer.selects_accelerated_pixels(size.width, size.height, &commands));
+    let actual = renderer
+        .render_draw_commands_rgba8(size.width, size.height, &commands)
+        .expect("a GPU frame");
+    let worst =
+        expected.iter().zip(&actual).map(|(left, right)| left.abs_diff(*right)).max().unwrap_or(0);
+    let differing = expected.iter().zip(&actual).filter(|(left, right)| left != right).count();
+    eprintln!("blurred-shadow tree frame: {differing} divergent bytes, worst {worst}");
+    assert!(worst <= 1, "an opaque blurred shadow is §1.2 A on the GPU; worst {worst}");
 
     unregister(root);
 }

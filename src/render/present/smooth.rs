@@ -249,19 +249,67 @@ pub fn classify(command: &RenderCommand) -> (CommandClass, &'static str) {
         RenderCommand::DrawTextRecorded { .. } => {
             (CommandClass::ForcesCpu, "recorded text is not bridged yet")
         }
-        RenderCommand::DrawImageScaled { .. } => (
-            CommandClass::ForcesCpu,
-            "the reference resamples bilinearly; the GPU image path is nearest-neighbour",
-        ),
+        RenderCommand::DrawImageScaled { width, source_width, height, source_height, .. } => {
+            if *width == *source_width && *height == *source_height {
+                (
+                    CommandClass::Mapped,
+                    "an unscaled draw is the reference's own `draw_image` blit, which is byte-exact",
+                )
+            } else if crate::wgpu_backend::scaled_image_drift_is_bounded(*width, *height) {
+                (
+                    CommandClass::MappedWithDivergence,
+                    "the GPU samples the reference's four texels with its own weights; bilinear sampling \
+                     is continuous, so the accumulated sample drift changes the result by at most one \
+                     level (§1.2 B)",
+                )
+            } else {
+                (
+                    CommandClass::ForcesCpu,
+                    "past ~3300 px the reference's accumulated sample position can move the interpolation \
+                     by more than one level, which this bridge does not declare",
+                )
+            }
+        }
         RenderCommand::PushClipRoundedRect { .. } => {
             (CommandClass::ForcesCpu, "rounded clips are not bridged yet")
         }
-        RenderCommand::PushLayer { .. } | RenderCommand::PopLayer => {
-            (CommandClass::ForcesCpu, "layers are not bridged yet")
+        RenderCommand::PushLayer { effect, .. } => {
+            if effect.is_none() {
+                (
+                    CommandClass::Mapped,
+                    "a plain layer is exactly the clip its bounds push; its pop pops that clip",
+                )
+            } else {
+                (
+                    CommandClass::ForcesCpu,
+                    "a layer effect captures the backdrop and composites a foreground, which the \
+                     command stream has no form for",
+                )
+            }
         }
-        RenderCommand::PushLayerGroup { .. } => {
-            (CommandClass::ForcesCpu, "layer groups are not bridged yet")
+        // `PopLayer` is answered by the census, which tracks the layer stack: a pop can only be a
+        // clip when it closes a plain push. Asked alone, it names the plain case, which is what the
+        // audit counts for a well-formed stream.
+        RenderCommand::PushLayerGroup { effect, opacity, .. } => {
+            if crate::render::layer_paints_like_a_clip(*effect, *opacity) {
+                (
+                    CommandClass::Mapped,
+                    "a layer group with no effect and full opacity paints what a clip paints; a replay \
+                     cache only changes what the reference rasteriser caches, and the bridge replays \
+                     the commands it covers (an opaque background is required for that, which the \
+                     bridge checks)",
+                )
+            } else {
+                (
+                    CommandClass::ForcesCpu,
+                    "a layer group separates a foreground to composite it, which the command stream has no form for",
+                )
+            }
         }
+        RenderCommand::PopLayer => (
+            CommandClass::Mapped,
+            "a pop of a plain layer is a clip pop; the audit rejects a pop of an isolating layer",
+        ),
         RenderCommand::DrawGradient { gradient, .. } => {
             gradient_class(crate::wgpu_backend::ramp_is_smooth(&crate::render::gradient_ramp_lut(gradient)))
         }
@@ -287,18 +335,24 @@ pub fn classify(command: &RenderCommand) -> (CommandClass, &'static str) {
             }
         }
         RenderCommand::BoxShadow { .. } => (
-            CommandClass::ForcesCpu,
-            "a blurred shadow's box kernel has no GPU form here",
+            CommandClass::MappedWithDivergence,
+            "the body is the reference's own offset rectangle and the blur is its own kernel; a \
+             translucent body composites through an offscreen run, which may round one LSB (§1.2 B)",
         ),
         RenderCommand::BoxShadowRounded { blur_radius: 0, .. } => (
             CommandClass::MappedWithDivergence,
             "an unblurred rounded shadow is the same rounded fill; the corner rim samples differ (§1.2 class C)",
         ),
         RenderCommand::BoxShadowRounded { .. } => (
-            CommandClass::ForcesCpu,
-            "a blurred rounded shadow's box kernel has no GPU form here",
+            CommandClass::MappedWithDivergence,
+            "the body is the reference's own rounded fill and the blur is its own kernel; the corner \
+             rim samples differ and a translucent body may round one LSB (§1.2 B/C)",
         ),
-        RenderCommand::Blur { .. } => (CommandClass::ForcesCpu, "blur is not bridged yet"),
+        RenderCommand::Blur { .. } => (
+            CommandClass::MappedWithDivergence,
+            "the bridged form blurs the frame region with the reference's own three box widths; \
+             the region is copied out and back, so only the pipeline's colour round trip can differ",
+        ),
         RenderCommand::ClipPath { .. } => {
             (CommandClass::ForcesCpu, "path clips are not bridged yet")
         }
@@ -367,8 +421,37 @@ impl FrameCensus {
 /// Counts the classes of every command in a frame.
 pub fn census(commands: &[RenderCommand]) -> FrameCensus {
     let mut result = FrameCensus::default();
+    // The layer stack: a plain layer is a clip, so its pop is only faithful while it closes one of
+    // its own. `classify` cannot answer that for a single command, so the audit tracks the pushes
+    // and answers for the pops — a pop that closes an isolating layer, or nothing at all, forces
+    // the frame to the CPU exactly as the bridge does.
+    let mut layers: Vec<bool> = Vec::new();
     for command in commands {
-        let (class, _) = classify(command);
+        let (class, _) = match command {
+            RenderCommand::PushLayer { effect, .. } => {
+                layers.push(effect.is_none());
+                classify(command)
+            }
+            RenderCommand::PushLayerGroup { effect, opacity, .. } => {
+                layers.push(crate::render::layer_paints_like_a_clip(*effect, *opacity));
+                classify(command)
+            }
+            RenderCommand::PopLayer => match layers.pop() {
+                Some(true) => (
+                    CommandClass::Mapped,
+                    "the pop closes a plain layer, which is a clip",
+                ),
+                Some(false) => (
+                    CommandClass::ForcesCpu,
+                    "the pop would composite an isolating layer, which the command stream has no form for",
+                ),
+                None => (
+                    CommandClass::ForcesCpu,
+                    "a layer pop with no matching push closes nothing, but the reference would pop a clip",
+                ),
+            },
+            other => classify(other),
+        };
         match class {
             CommandClass::Mapped => result.mapped += 1,
             CommandClass::MappedWithDivergence => result.mapped_with_divergence += 1,
@@ -601,23 +684,27 @@ mod tests {
 
     #[test]
     fn an_unbridged_command_forces_the_whole_frame_to_cpu() {
-        let blur = RenderCommand::Blur { radius: 2 };
-        let commands = [path_command(), blur];
+        let clip_path = RenderCommand::ClipPath {
+            points: vec![Point::new(0, 0), Point::new(8, 0), Point::new(8, 8)].into(),
+        };
+        let commands = [path_command(), clip_path];
         let audit = census(&commands);
         assert_eq!(audit.mapped_with_divergence, 1);
         assert_eq!(audit.forces_cpu, 1);
         assert!(!audit.can_draw_on_gpu(), "one unbridged command is enough");
-        assert_eq!(audit.forces_cpu_names, vec!["Blur"]);
+        assert_eq!(audit.forces_cpu_names, vec!["ClipPath"]);
         assert_eq!(audit.total(), 2);
     }
 
     #[test]
     fn the_forces_cpu_names_are_distinct_and_in_first_seen_order() {
-        let blur = |radius| RenderCommand::Blur { radius };
-        let commands = [blur(1), blur(2), path_command()];
+        let clip_path = |width| RenderCommand::ClipPath {
+            points: vec![Point::new(0, 0), Point::new(width, 0), Point::new(width, 8)].into(),
+        };
+        let commands = [clip_path(4), clip_path(6), path_command()];
         let audit = census(&commands);
         assert_eq!(audit.forces_cpu, 2);
-        assert_eq!(audit.forces_cpu_names, vec!["Blur"]);
+        assert_eq!(audit.forces_cpu_names, vec!["ClipPath"]);
         assert_eq!(audit.mapped_with_divergence, 1);
         assert_eq!(census(&[]).total(), 0);
     }
@@ -777,6 +864,19 @@ mod tests {
                 color: Color::BLACK,
                 width: 2,
             },
+            RenderCommand::PushLayer { bounds: Rect::new(0, 0, 8, 8), effect: None },
+            RenderCommand::PushLayerGroup {
+                bounds: Rect::new(0, 0, 8, 8),
+                effect: None,
+                opacity: 1.0,
+                cache_key: None,
+            },
+            RenderCommand::PushLayerGroup {
+                bounds: Rect::new(0, 0, 8, 8),
+                effect: None,
+                opacity: 1.0,
+                cache_key: Some(1),
+            },
             RenderCommand::DrawGradient {
                 rect: Rect::new(0, 0, 8, 8),
                 gradient: crate::style::Gradient::linear(Point::new(0, 0), Point::new(7, 7))
@@ -814,11 +914,30 @@ mod tests {
                 blur_radius: 3,
                 spread: 0,
             },
+            RenderCommand::BoxShadowRounded {
+                rect: Rect::new(2, 2, 8, 6),
+                radii: [2; 4],
+                color: Color::BLACK,
+                offset_x: 1,
+                offset_y: 2,
+                blur_radius: 3,
+                spread: 0,
+            },
+            RenderCommand::Blur { radius: 3 },
             RenderCommand::DrawImage {
                 x: 0,
                 y: 0,
                 width: 2,
                 height: 2,
+                data: vec![0u8; 2 * 2 * 4].into(),
+            },
+            RenderCommand::DrawImageScaled {
+                x: 0,
+                y: 0,
+                width: 4,
+                height: 4,
+                source_width: 2,
+                source_height: 2,
                 data: vec![0u8; 2 * 2 * 4].into(),
             },
             RenderCommand::DrawText {
@@ -843,6 +962,7 @@ mod tests {
                 core::slice::from_ref(&command),
                 1.0,
                 (48, 32),
+                true,
             )
             .is_ok();
             assert_eq!(
@@ -861,7 +981,7 @@ mod tests {
             RenderCommand::PopClip,
             RenderCommand::SetBlendMode { mode: crate::render::BlendMode::Normal },
         ];
-        let bridged = crate::wgpu_backend::bridge_render_commands(&commands, 1.0, (48, 32))
+        let bridged = crate::wgpu_backend::bridge_render_commands(&commands, 1.0, (48, 32), true)
             .expect("every command has a GPU form");
         assert_eq!(bridged.len(), commands.len());
 
@@ -874,7 +994,7 @@ mod tests {
             alignment: crate::core::HorizontalAlignment::Left,
         });
         let with_text_bridged =
-            crate::wgpu_backend::bridge_render_commands(&with_text, 1.0, (48, 32))
+            crate::wgpu_backend::bridge_render_commands(&with_text, 1.0, (48, 32), true)
                 .expect("text now has a shaped-coverage form");
         assert_eq!(with_text_bridged.len(), with_text.len());
         assert!(
@@ -887,11 +1007,22 @@ mod tests {
 
         let mut with_blur = commands.to_vec();
         with_blur.push(RenderCommand::Blur { radius: 2 });
-        let gap = crate::wgpu_backend::bridge_render_commands(&with_blur, 1.0, (48, 32))
-            .expect_err("blur has no GPU form yet");
+        let blurred = crate::wgpu_backend::bridge_render_commands(&with_blur, 1.0, (48, 32), true)
+            .expect("a blur region now has a GPU form");
+        assert!(
+            matches!(blurred[4], crate::wgpu_backend::WgpuDrawCommand::BlurRegion { .. }),
+            "a blur becomes an in-place region blur, not a rectangle approximation"
+        );
+
+        let mut with_clip_path = commands.to_vec();
+        with_clip_path.push(RenderCommand::ClipPath {
+            points: vec![Point::new(0, 0), Point::new(8, 0), Point::new(8, 8)].into(),
+        });
+        let gap = crate::wgpu_backend::bridge_render_commands(&with_clip_path, 1.0, (48, 32), true)
+            .expect_err("a clip path has no GPU form yet");
         assert_eq!(gap.index, 4, "the gap names the first command that cannot be converted");
-        assert_eq!(gap.variant, "Blur");
-        assert!(gap.to_string().contains("Blur"), "the message names the variant");
+        assert_eq!(gap.variant, "ClipPath");
+        assert!(gap.to_string().contains("ClipPath"), "the message names the variant");
     }
 
     /// The GPU and the reference rasteriser must paint the same bytes for the bridged subset.
@@ -940,7 +1071,8 @@ mod tests {
             }
         };
         let mut bridged =
-            crate::wgpu_backend::bridge_render_commands(&commands, 1.0, (48, 32)).expect("bridged");
+            crate::wgpu_backend::bridge_render_commands(&commands, 1.0, (48, 32), true)
+                .expect("bridged");
         // The reference backend's `begin_frame(WHITE)` is the background; a GPU command stream has
         // no such call, so the same background is an explicit `Clear` at the front of the stream.
         bridged.insert(
@@ -1030,8 +1162,11 @@ mod tests {
             reference.end_frame();
             let expected = reference.frame_rgba().to_vec();
 
-            let mut bridged = crate::wgpu_backend::bridge_render_commands(&commands, 1.0, (48, 32))
-                .unwrap_or_else(|gap| panic!("{name}: the bridge rejected a Mapped family: {gap}"));
+            let mut bridged =
+                crate::wgpu_backend::bridge_render_commands(&commands, 1.0, (48, 32), true)
+                    .unwrap_or_else(|gap| {
+                        panic!("{name}: the bridge rejected a Mapped family: {gap}")
+                    });
             bridged.insert(
                 0,
                 crate::wgpu_backend::WgpuDrawCommand::Clear {
@@ -1083,8 +1218,9 @@ mod tests {
             }
             reference.end_frame();
             let expected = reference.frame_rgba().to_vec();
-            let mut bridged = crate::wgpu_backend::bridge_render_commands(commands, 1.0, (48, 32))
-                .expect("a divergence family still has a GPU form");
+            let mut bridged =
+                crate::wgpu_backend::bridge_render_commands(commands, 1.0, (48, 32), true)
+                    .expect("a divergence family still has a GPU form");
             bridged.insert(
                 0,
                 crate::wgpu_backend::WgpuDrawCommand::Clear {
@@ -1142,6 +1278,7 @@ mod tests {
             core::slice::from_ref(&text),
             1.0,
             (48, 32),
+            true,
         )
         .expect("text has a coverage form");
         assert!(matches!(
@@ -1180,6 +1317,7 @@ mod tests {
             core::slice::from_ref(&decorated),
             1.0,
             (48, 32),
+            true,
         )
         .expect("decorated text has a coverage + rule form");
         assert!(
@@ -1444,8 +1582,9 @@ mod tests {
             }
             reference.end_frame();
             let expected = reference.frame_rgba().to_vec();
-            let mut bridged = crate::wgpu_backend::bridge_render_commands(commands, 1.0, (48, 32))
-                .expect("these families all have a GPU form");
+            let mut bridged =
+                crate::wgpu_backend::bridge_render_commands(commands, 1.0, (48, 32), true)
+                    .expect("these families all have a GPU form");
             bridged.insert(
                 0,
                 WgpuDrawCommand::Clear {
@@ -1566,8 +1705,8 @@ mod tests {
             assert_eq!(actual, expected, "{name}: an unblurred shadow must match the reference");
         }
 
-        // A blurred shadow still has no faithful GPU form: its box kernel is not the shadow
-        // pipeline's. It must say so instead of being approximated.
+        // A blurred shadow is a body fill plus an in-place region blur of the reference's own
+        // kernel. It must reach the GPU as exactly that pair — not as its unblurred rectangle.
         let blurred = RenderCommand::BoxShadow {
             rect: Rect::new(6, 6, 20, 14),
             color,
@@ -1576,15 +1715,18 @@ mod tests {
             blur_radius: 4,
             spread: 0,
         };
-        assert_eq!(classify(&blurred).0, CommandClass::ForcesCpu);
+        assert_eq!(classify(&blurred).0, CommandClass::MappedWithDivergence);
+        let bridged = crate::wgpu_backend::bridge_render_commands(
+            core::slice::from_ref(&blurred),
+            1.0,
+            (48, 32),
+            true,
+        )
+        .expect("a blurred shadow now has a GPU form");
         assert!(
-            crate::wgpu_backend::bridge_render_commands(
-                core::slice::from_ref(&blurred),
-                1.0,
-                (48, 32)
-            )
-            .is_err(),
-            "a blurred shadow must not be approximated by its unblurred rectangle"
+            matches!(bridged[0], WgpuDrawCommand::FillRect { .. })
+                && matches!(bridged[1], WgpuDrawCommand::BlurRegion { .. }),
+            "a blurred shadow must bridge to its body fill plus a region blur, got {bridged:?}"
         );
 
         // ── An unblurred rounded shadow: the same rounded fill, rim difference only ──
@@ -1757,6 +1899,489 @@ mod tests {
         eprintln!("filled arc: {} fan vertices, {differing} divergent bytes", polygon.len());
     }
 
+    /// Blurred shadows and the standalone blur: the reference blurs the **frame region**, so the
+    /// bridged form is a body fill plus an in-place region blur, and the kernel is the reference's
+    /// own three box widths.
+    ///
+    /// The standalone blur and the square shadow bodies are pinned to §1.2 **B** (≤1 LSB: the body
+    /// of a translucent shadow composites through an offscreen run). A rounded body is **C**: the
+    /// reference samples its corner bands on a 2×2 grid while the GPU spans them hard-edged, so the
+    /// rim itself differs — and the blur then spreads that rim difference over its own reach. The
+    /// allowance is therefore a *distance* from the rim, exactly as the unblurred rounded shadow
+    /// test states it, not a blanket magnitude.
+    #[test]
+    fn a_blurred_region_matches_the_reference_kernel() {
+        use crate::core::Size as CoreSize;
+        use crate::render::SoftwarePaintBackend;
+        use crate::wgpu_backend::{WgpuDrawCommand, WgpuRenderer};
+
+        /// A case's body: when it is a rounded fill, the rim the reference samples and the GPU
+        /// spans, so a difference above one level may only land inside the blur's reach of it.
+        struct Rim {
+            rect: Rect,
+            radius: f32,
+            blur_radius: u32,
+        }
+
+        let size = CoreSize::new(48, 36);
+        let (width, height) = (size.width, size.height);
+        let renderer = match WgpuRenderer::new() {
+            Ok(mut renderer) => {
+                renderer.set_cost_gate_enabled(false);
+                renderer
+            }
+            Err(error) => {
+                eprintln!("skipping GPU comparison: no wgpu adapter available ({error})");
+                return;
+            }
+        };
+        let stripes = RenderCommand::FillRect {
+            rect: Rect::new(2, 3, 20, 9),
+            color: Color::rgba(230, 40, 60, 255),
+        };
+        let rounded_shadow = RenderCommand::BoxShadowRounded {
+            rect: Rect::new(10, 8, 22, 14),
+            radii: [5; 4],
+            color: Color::rgba(10, 20, 40, 120),
+            offset_x: 0,
+            offset_y: 3,
+            blur_radius: 3,
+            spread: 0,
+        };
+        let cases: Vec<(&str, Vec<RenderCommand>, Option<Rim>)> = vec![
+            ("Blur over stripes", vec![stripes.clone(), RenderCommand::Blur { radius: 4 }], None),
+            (
+                "Blur, radius 1 (one box width only)",
+                vec![stripes.clone(), RenderCommand::Blur { radius: 1 }],
+                None,
+            ),
+            (
+                "BoxShadow, opaque body",
+                vec![RenderCommand::BoxShadow {
+                    rect: Rect::new(8, 6, 22, 14),
+                    color: Color::rgba(0, 0, 0, 255),
+                    offset_x: 1,
+                    offset_y: 2,
+                    blur_radius: 4,
+                    spread: 1,
+                }],
+                None,
+            ),
+            (
+                "BoxShadow, translucent body",
+                vec![RenderCommand::BoxShadow {
+                    rect: Rect::new(8, 6, 22, 14),
+                    color: Color::rgba(0, 0, 0, 48),
+                    offset_x: 0,
+                    offset_y: 4,
+                    blur_radius: 6,
+                    spread: 0,
+                }],
+                None,
+            ),
+            (
+                "BoxShadowRounded",
+                vec![rounded_shadow.clone()],
+                Some(Rim {
+                    rect: crate::render::box_shadow_spread_rect(Rect::new(10, 8, 22, 14), 0, 3, 0),
+                    radius: 5.0,
+                    blur_radius: 3,
+                }),
+            ),
+        ];
+
+        for (name, commands, rim) in cases {
+            assert_eq!(
+                classify(&commands[commands.len() - 1]).0,
+                CommandClass::MappedWithDivergence,
+                "{name}"
+            );
+            let mut reference = SoftwarePaintBackend::new(size, 1.0);
+            reference.begin_frame(Color::WHITE);
+            for command in &commands {
+                reference.execute_command(command);
+            }
+            reference.end_frame();
+            let expected = reference.frame_rgba().to_vec();
+
+            let mut bridged =
+                crate::wgpu_backend::bridge_render_commands(&commands, 1.0, (width, height), true)
+                    .unwrap_or_else(|gap| panic!("{name}: the bridge rejected a blur: {gap}"));
+            assert!(
+                bridged.iter().any(|command| matches!(command, WgpuDrawCommand::BlurRegion { .. })),
+                "{name}: the blur must reach the frame as an in-place region blur"
+            );
+            bridged.insert(
+                0,
+                WgpuDrawCommand::Clear {
+                    color: crate::wgpu_backend::Rgba8 { r: 255, g: 255, b: 255, a: 255 },
+                },
+            );
+            assert!(renderer.selects_accelerated_pixels(width, height, &bridged));
+            let actual = renderer.render_draw_commands_rgba8(width, height, &bridged).unwrap();
+            // The same bridged stream through the **CPU parity** rasteriser: it shares the
+            // reference's own `box_blur_region`, so the blur itself cannot drift — that is what
+            // makes the fallback path a reproduction rather than a second implementation.
+            let parity =
+                crate::wgpu_backend::rasterize_draw_commands_rgba8(width, height, &bridged)
+                    .expect("the CPU parity path accepts the bridged stream");
+
+            // One comparison for both renderers, because the rule is about the *picture*, not about
+            // which device drew it: a difference above one level may only land inside the blur's
+            // reach of a rounded body's rim (the doc comment above says why).
+            let compare = |label: &str, bytes: &[u8]| {
+                let mut differing = 0usize;
+                let mut worst = 0u8;
+                for (index, (left, right)) in expected.iter().zip(bytes).enumerate() {
+                    if left == right {
+                        continue;
+                    }
+                    differing += 1;
+                    let difference = left.abs_diff(*right);
+                    worst = worst.max(difference);
+                    if difference <= 1 {
+                        continue;
+                    }
+                    let Some(rim) = &rim else {
+                        panic!("{name} ({label}): may differ by one level; got {difference}");
+                    };
+                    let pixel = index / 4;
+                    let x = (pixel as u32 % width) as f32 + 0.5;
+                    let y = (pixel as u32 / width) as f32 + 0.5;
+                    let distance = rounded_rect_signed_distance(x, y, rim.rect, rim.radius).abs();
+                    // The blur expands its region by the kernel's total reach, so a rim difference
+                    // legitimately lands anywhere inside that band; `1.5` is the reference's 2×2
+                    // sample slack around the rim.
+                    let allowed = blur_reach(rim.blur_radius) + 1.5;
+                    assert!(
+                        distance <= allowed,
+                        "{name} ({label}): a difference of {difference} at ({x}, {y}) is \
+                         {distance} px from the rim, beyond the blur's {allowed} px reach"
+                    );
+                }
+                eprintln!("{name} ({label}): {differing} divergent bytes, worst {worst}");
+                worst
+            };
+            let worst = compare("gpu", &actual);
+            report_difference(width, &expected, &actual);
+            assert!(
+                worst <= 1 || rim.is_some(),
+                "{name}: the region blur may differ by one level; got {worst}"
+            );
+            compare("cpu parity", &parity);
+        }
+    }
+
+    /// How far a blur of `radius` reaches beyond its region: the sum of the three box kernels'
+    /// half-widths, rounded up — exactly the expansion `box_blur_region` applies.
+    fn blur_reach(radius: u32) -> f32 {
+        let (b0, b1, b2) = crate::render::box_blur_widths(radius as f32 / 2.0);
+        (b0.div_ceil(2) + b1.div_ceil(2) + b2.div_ceil(2)) as f32
+    }
+
+    /// A plain layer is exactly a clip, on the GPU too.
+    ///
+    /// The reference never materialises a foreground for a layer with no effect, full opacity and no
+    /// cache key: `begin_layer` pushes the bounds as a clip and its pop only pops it. The bridge says
+    /// the same thing by converting the pair to `PushClip`/`PopClip`, and this test is the pixel
+    /// evidence that nothing else changed.
+    #[test]
+    fn a_plain_layer_paints_the_same_bytes_as_a_clip_on_the_gpu() {
+        use crate::core::Size as CoreSize;
+        use crate::render::SoftwarePaintBackend;
+        use crate::wgpu_backend::{WgpuDrawCommand, WgpuRenderer};
+
+        let size = CoreSize::new(40, 28);
+        let (width, height) = (size.width, size.height);
+        let bounds = Rect::new(6, 4, 20, 16);
+        let commands = [
+            RenderCommand::PushLayer { bounds, effect: None },
+            RenderCommand::FillRect {
+                rect: Rect::new(0, 0, 40, 28),
+                color: Color::rgba(40, 120, 200, 255),
+            },
+            RenderCommand::PopLayer,
+            RenderCommand::FillRect {
+                rect: Rect::new(24, 12, 12, 12),
+                color: Color::rgba(200, 60, 40, 255),
+            },
+        ];
+        assert_eq!(census(&commands).forces_cpu, 0, "a plain layer is bridged");
+
+        let mut reference = SoftwarePaintBackend::new(size, 1.0);
+        reference.begin_frame(Color::WHITE);
+        for command in &commands {
+            reference.execute_command(command);
+        }
+        reference.end_frame();
+        let expected = reference.frame_rgba().to_vec();
+
+        let mut bridged =
+            crate::wgpu_backend::bridge_render_commands(&commands, 1.0, (width, height), true)
+                .expect("a plain layer converts");
+        assert!(
+            matches!(bridged[0], WgpuDrawCommand::PushClip { .. })
+                && matches!(bridged[2], WgpuDrawCommand::PopClip),
+            "a plain layer must bridge to the clip pair"
+        );
+        let renderer = match WgpuRenderer::new() {
+            Ok(mut renderer) => {
+                renderer.set_cost_gate_enabled(false);
+                renderer
+            }
+            Err(error) => {
+                eprintln!("skipping GPU comparison: no wgpu adapter available ({error})");
+                return;
+            }
+        };
+        bridged.insert(
+            0,
+            WgpuDrawCommand::Clear {
+                color: crate::wgpu_backend::Rgba8 { r: 255, g: 255, b: 255, a: 255 },
+            },
+        );
+        assert!(renderer.selects_accelerated_pixels(width, height, &bridged));
+        let actual = renderer.render_draw_commands_rgba8(width, height, &bridged).unwrap();
+        report_difference(width, &expected, &actual);
+        assert_eq!(actual, expected, "a plain layer must paint exactly what the clip paints");
+    }
+
+    /// A scaled image: the reference's four-texel bilinear sample, and its unscaled shortcut.
+    ///
+    /// `blit_scaled_software` short-circuits an unscaled draw to `draw_image`, so that case must be
+    /// **byte-identical** (the bridge maps it to `DrawImage`). A genuinely scaled draw goes through
+    /// `draw_image_quad`'s bilinear sample: because interpolation is continuous in `(u, v)`, the only
+    /// difference the GPU can have is the interpolation's rounding — one level per channel.
+    #[test]
+    fn a_scaled_image_matches_the_reference_bilinear_sample() {
+        use crate::core::Size as CoreSize;
+        use crate::render::SoftwarePaintBackend;
+        use crate::wgpu_backend::{WgpuDrawCommand, WgpuRenderer};
+
+        let size = CoreSize::new(36, 28);
+        let (width, height) = (size.width, size.height);
+        let (source_width, source_height) = (8u32, 6u32);
+        // Neighbouring texels at opposite ends of the range: the worst case for a resampler.
+        let source: crate::compat::Arc<[u8]> = (0..source_width * source_height)
+            .flat_map(|index| {
+                let x = index % source_width;
+                let y = index / source_width;
+                let value = ((x * 37 + y * 53) % 256) as u8;
+                [value, 255 - value, ((x + y) % 2 * 255) as u8, 255]
+            })
+            .collect::<Vec<_>>()
+            .into();
+
+        let renderer = match WgpuRenderer::new() {
+            Ok(mut renderer) => {
+                renderer.set_cost_gate_enabled(false);
+                renderer
+            }
+            Err(error) => {
+                eprintln!("skipping GPU comparison: no wgpu adapter available ({error})");
+                return;
+            }
+        };
+        let cases = [
+            ("identity", 8u32, 6u32, true),
+            ("upscaled", 21, 15, false),
+            ("downscaled", 4, 3, false),
+            ("wide, non-integer ratio", 33, 6, false),
+        ];
+        for (name, dest_width, dest_height, exact) in cases {
+            let command = RenderCommand::DrawImageScaled {
+                x: 2,
+                y: 2,
+                width: dest_width,
+                height: dest_height,
+                source_width,
+                source_height,
+                data: crate::compat::Arc::clone(&source),
+            };
+            let expected_class =
+                if exact { CommandClass::Mapped } else { CommandClass::MappedWithDivergence };
+            assert_eq!(classify(&command).0, expected_class, "{name}");
+
+            let commands = [command];
+            let mut reference = SoftwarePaintBackend::new(size, 1.0);
+            reference.begin_frame(Color::WHITE);
+            for command in &commands {
+                reference.execute_command(command);
+            }
+            reference.end_frame();
+            let expected = reference.frame_rgba().to_vec();
+
+            let mut bridged =
+                crate::wgpu_backend::bridge_render_commands(&commands, 1.0, (width, height), true)
+                    .unwrap_or_else(|gap| {
+                        panic!("{name}: the bridge rejected a scaled image: {gap}")
+                    });
+            assert!(
+                matches!(
+                    bridged[0],
+                    WgpuDrawCommand::DrawImage { .. } | WgpuDrawCommand::DrawImageScaled { .. }
+                ),
+                "{name}: the draw must reach the image pipelines"
+            );
+            bridged.insert(
+                0,
+                WgpuDrawCommand::Clear {
+                    color: crate::wgpu_backend::Rgba8 { r: 255, g: 255, b: 255, a: 255 },
+                },
+            );
+            assert!(renderer.selects_accelerated_pixels(width, height, &bridged));
+            let actual = renderer.render_draw_commands_rgba8(width, height, &bridged).unwrap();
+            if exact {
+                report_difference(width, &expected, &actual);
+                assert_eq!(actual, expected, "{name}: an unscaled draw must be byte-identical");
+                continue;
+            }
+            let mut differing = 0usize;
+            let mut worst = 0u8;
+            for (left, right) in expected.iter().zip(&actual) {
+                if left != right {
+                    differing += 1;
+                    worst = worst.max(left.abs_diff(*right));
+                }
+            }
+            eprintln!("{name}: {differing} divergent bytes, worst {worst}");
+            assert!(worst <= 1, "{name}: bilinear rounding may differ by one level; got {worst}");
+        }
+
+        // Past the drift bound the sample position is no longer provably inside one level, so the
+        // family must say so instead of claiming it.
+        let huge = RenderCommand::DrawImageScaled {
+            x: 0,
+            y: 0,
+            width: 4096,
+            height: 3,
+            source_width,
+            source_height,
+            data: crate::compat::Arc::clone(&source),
+        };
+        assert_eq!(classify(&huge).0, CommandClass::ForcesCpu);
+        assert!(
+            crate::wgpu_backend::bridge_render_commands(&[huge], 1.0, (width, height), true)
+                .is_err(),
+            "the bridge must reject what the census refuses"
+        );
+    }
+
+    /// A layer with a replay cache but no effect and full opacity paints what a clip paints, as long
+    /// as the frame's background is opaque — and the whole-frame clear is what makes that true.
+    #[test]
+    fn a_cached_layer_is_a_clip_over_an_opaque_background() {
+        use crate::core::Size as CoreSize;
+        use crate::render::SoftwarePaintBackend;
+        use crate::wgpu_backend::{WgpuDrawCommand, WgpuRenderer};
+
+        let size = CoreSize::new(40, 28);
+        let (width, height) = (size.width, size.height);
+        let bounds = Rect::new(6, 4, 20, 16);
+        let commands = [
+            RenderCommand::PushLayerGroup {
+                bounds,
+                effect: None,
+                opacity: 1.0,
+                cache_key: Some(7),
+            },
+            RenderCommand::FillRect {
+                rect: Rect::new(0, 0, 40, 28),
+                color: Color::rgba(40, 120, 200, 200),
+            },
+            RenderCommand::PopLayer,
+        ];
+        assert_eq!(census(&commands).forces_cpu, 0, "a cached layer is bridged");
+
+        let mut reference = SoftwarePaintBackend::new(size, 1.0);
+        reference.begin_frame(Color::WHITE);
+        for command in &commands {
+            reference.execute_command(command);
+        }
+        reference.end_frame();
+        let expected = reference.frame_rgba().to_vec();
+
+        let mut bridged =
+            crate::wgpu_backend::bridge_render_commands(&commands, 1.0, (width, height), true)
+                .expect("a cached layer converts over an opaque background");
+        assert!(
+            matches!(bridged[0], WgpuDrawCommand::PushClip { .. })
+                && matches!(bridged[2], WgpuDrawCommand::PopClip),
+            "a cached layer must bridge to the clip pair"
+        );
+        let renderer = match WgpuRenderer::new() {
+            Ok(mut renderer) => {
+                renderer.set_cost_gate_enabled(false);
+                renderer
+            }
+            Err(error) => {
+                eprintln!("skipping GPU comparison: no wgpu adapter available ({error})");
+                return;
+            }
+        };
+        // The frame's own background: the same whole-frame clear the presenter now prepends.
+        bridged.insert(
+            0,
+            WgpuDrawCommand::Clear {
+                color: crate::wgpu_backend::Rgba8 { r: 255, g: 255, b: 255, a: 255 },
+            },
+        );
+        assert!(renderer.selects_accelerated_pixels(width, height, &bridged));
+        let actual = renderer.render_draw_commands_rgba8(width, height, &bridged).unwrap();
+        report_difference(width, &expected, &actual);
+        assert_eq!(actual, expected, "a cached layer must paint what the clip paints");
+
+        // The same stream over a translucent frame is *not* the identity, so it must be declined.
+        assert!(
+            crate::wgpu_backend::bridge_render_commands(&commands, 1.0, (width, height), false)
+                .is_err(),
+            "a cached layer over a translucent background is not provably a clip"
+        );
+    }
+
+    /// The audit tracks the layer stack, because a pop is only a clip when it closes a plain push.
+    #[test]
+    fn the_audit_tracks_the_layer_stack() {
+        let bounds = Rect::new(0, 0, 8, 8);
+        let plain = [RenderCommand::PushLayer { bounds, effect: None }, RenderCommand::PopLayer];
+        let audit = census(&plain);
+        assert_eq!(audit.forces_cpu, 0, "a plain layer pair is a clip pair");
+        assert_eq!(audit.mapped, 2);
+
+        let group = [
+            RenderCommand::PushLayerGroup { bounds, effect: None, opacity: 1.0, cache_key: None },
+            RenderCommand::PopLayer,
+        ];
+        assert_eq!(census(&group).forces_cpu, 0, "a group with nothing to isolate is plain");
+
+        let effect = [
+            RenderCommand::PushLayer {
+                bounds,
+                effect: Some(crate::render::LayerEffect::BackdropBlur { radius: 4 }),
+            },
+            RenderCommand::PopLayer,
+        ];
+        let audit = census(&effect);
+        assert_eq!(audit.forces_cpu, 2, "both the push and its pop have no command form");
+        assert_eq!(audit.forces_cpu_names, vec!["PushLayer", "PopLayer"]);
+
+        let translucent =
+            [RenderCommand::PushLayerGroup { bounds, effect: None, opacity: 0.5, cache_key: None }];
+        let audit = census(&translucent);
+        assert_eq!(audit.forces_cpu, 1, "a subtree opacity needs a foreground");
+        assert_eq!(audit.forces_cpu_names, vec!["PushLayerGroup"]);
+
+        // A pop with no push closes nothing, while the reference would pop a clip.
+        let stray = [RenderCommand::PopLayer];
+        let audit = census(&stray);
+        assert_eq!(audit.forces_cpu, 1);
+        assert_eq!(audit.forces_cpu_names, vec!["PopLayer"]);
+        assert!(
+            crate::wgpu_backend::bridge_render_commands(&stray, 1.0, (8, 8), true).is_err(),
+            "an unbalanced pop must be rejected by the bridge too"
+        );
+    }
+
     /// The gradient families: the reference's own ramp table on the GPU, in all three geometries and
     /// through both commands that carry one.
     ///
@@ -1856,7 +2481,7 @@ mod tests {
             let expected = reference.frame_rgba().to_vec();
 
             let mut bridged =
-                crate::wgpu_backend::bridge_render_commands(&commands, 1.0, (width, height))
+                crate::wgpu_backend::bridge_render_commands(&commands, 1.0, (width, height), true)
                     .unwrap_or_else(|gap| panic!("{name}: the bridge rejected a gradient: {gap}"));
             assert!(
                 matches!(
@@ -1928,7 +2553,8 @@ mod tests {
             crate::wgpu_backend::bridge_render_commands(
                 core::slice::from_ref(&steep),
                 1.0,
-                (width, height)
+                (width, height),
+                true
             )
             .is_err(),
             "the bridge must reject a ramp the census refuses"

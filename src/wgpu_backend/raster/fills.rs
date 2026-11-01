@@ -112,6 +112,66 @@ pub(crate) fn draw_image_scaled_cpu_rgba8(
         }
     }
 }
+/// Rasterises one `DrawImageScaled`: the reference's parallelogram walk with its bilinear sample.
+///
+/// This mirrors `SoftwareSurface::draw_image_quad`'s parallelogram branch for a rectangle: the same
+/// pre-multiplied inverse determinant, the same per-pixel `u`/`v` step, the same
+/// `(0.0..1.0).contains(..)` gate, and the **same sampler** (`render::sample_bilinear`, shared with
+/// the reference rather than copied). The write is a plain source-over because that is the rule
+/// `blend_source_pixel` applies to a quad — the command's own blend mode never reached this path in
+/// the reference, and inventing one here would change what a bridged frame paints.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn draw_image_bilinear_cpu_rgba8(
+    pixels: &mut [u8],
+    fb_width: u32,
+    rect: PixelRect,
+    source_rgba8: &[u8],
+    source_width: u32,
+    source_height: u32,
+    clip_rect: Option<PixelRect>,
+    _blend: BlendMode,
+) {
+    let Some(clip_rect) = clip_rect else {
+        return;
+    };
+    if rect.width == 0 || rect.height == 0 || source_width == 0 || source_height == 0 {
+        return;
+    }
+    let width = rect.width as f32;
+    let height = rect.height as f32;
+    let inv_det = 1.0 / (width * height);
+    let u_dx = height * inv_det;
+    let v_dy = width * inv_det;
+    let x_start = clip_rect.x.max(rect.x);
+    let y_start = clip_rect.y.max(rect.y);
+    let x_end = clip_rect.right().min(rect.right());
+    let y_end = clip_rect.bottom().min(rect.bottom());
+    if x_end <= x_start || y_end <= y_start {
+        return;
+    }
+    for y in y_start..y_end {
+        let dy = (y - rect.y) as f32 + 0.5;
+        let mut u = ((x_start - rect.x) as f32 + 0.5) * u_dx;
+        let v = dy * v_dy;
+        for x in x_start..x_end {
+            if (0.0..1.0).contains(&u) && (0.0..1.0).contains(&v) {
+                let [r, g, b, a] =
+                    crate::render::sample_bilinear(source_rgba8, source_width, source_height, u, v);
+                blend_cpu_rgba8_with_mode(
+                    pixels,
+                    fb_width,
+                    x as u32,
+                    y as u32,
+                    Rgba8 { r, g, b, a },
+                    1.0,
+                    BlendMode::Normal,
+                );
+            }
+            u += u_dx;
+        }
+    }
+}
+
 /// Bounding box of a line segment, inclusive of both endpoints and the stroke: the pixel-centre
 /// rule makes the extent `max - min + 1`, widened by half the line width per side and at least
 /// 1px per axis (N-S-65).
@@ -1494,6 +1554,12 @@ fn set_saturation(rgb: (f32, f32, f32), target: f32) -> (f32, f32, f32) {
 ///
 /// The blended counterpart of [`fill_rect_cpu_rgba8`], used where the current blend
 /// mode must be honoured.
+///
+/// A **translucent fill under `Normal`** covers what is under it rather than replacing it: the
+/// reference's `fill_rect` composites, and the GPU reaches the same picture by drawing the command
+/// into an offscreen run. Writing it verbatim is what `fill_rect_cpu_rgba8` does, and it is only
+/// correct for an opaque source. Under a non-`Normal` mode the blended colour takes the source's
+/// alpha instead, which is the rule [`blend_channels`] documents and the GPU composite reproduces.
 pub(crate) fn fill_rect_cpu_rgba8_blended(
     pixels: &mut [u8],
     width: u32,
@@ -1501,7 +1567,7 @@ pub(crate) fn fill_rect_cpu_rgba8_blended(
     color: Rgba8,
     mode: BlendMode,
 ) {
-    if mode == BlendMode::Normal {
+    if mode == BlendMode::Normal && color.a == 255 {
         fill_rect_cpu_rgba8(pixels, width, rect, color);
         return;
     }
@@ -1515,12 +1581,18 @@ pub(crate) fn fill_rect_cpu_rgba8_blended(
     let Some(draw) = rect.intersect(PixelRect { x: 0, y: 0, width, height }) else { return };
     let row_bytes = width as usize * 4;
     let span = draw.width as usize * 4;
+    let src_a = color.a as f32 / 255.0;
+    let normal = mode == BlendMode::Normal;
     for y in draw.y..draw.bottom() {
         let offset = y as usize * row_bytes + draw.x as usize * 4;
         for pixel in pixels[offset..offset + span].as_chunks_mut::<4>().0 {
             let dest = Rgba8 { r: pixel[0], g: pixel[1], b: pixel[2], a: pixel[3] };
-            let blended = blend_channels(color, dest, mode);
-            *pixel = [blended.r, blended.g, blended.b, blended.a];
+            let out = if normal {
+                composite_over(dest, color, src_a)
+            } else {
+                blend_channels(color, dest, mode)
+            };
+            *pixel = [out.r, out.g, out.b, out.a];
         }
     }
 }
@@ -1765,6 +1837,24 @@ pub(crate) fn set_pixel_cpu_rgba8(pixels: &mut [u8], width: u32, x: u32, y: u32,
     pixels[offset + 3] = color.a;
 }
 
+/// Straight-alpha source-over of `color` onto `dst` at weight `src_a`.
+///
+/// This is the one place the crate composites a straight-alpha colour by coverage: the glyph
+/// path and the translucent-fill path both call it, so an edge pixel and a rectangle's interior
+/// cannot round differently (principle #101).
+fn composite_over(dst: Rgba8, color: Rgba8, src_a: f32) -> Rgba8 {
+    if src_a >= 1.0 {
+        return Rgba8 { r: color.r, g: color.g, b: color.b, a: 255 };
+    }
+    let mix = |src: u8, dst: u8| (src as f32 * src_a + dst as f32 * (1.0 - src_a)).round() as u8;
+    Rgba8 {
+        r: mix(color.r, dst.r),
+        g: mix(color.g, dst.g),
+        b: mix(color.b, dst.b),
+        a: (dst.a as f32 + 255.0 * src_a * (1.0 - dst.a as f32 / 255.0)).round() as u8,
+    }
+}
+
 pub(crate) fn blend_cpu_rgba8(
     pixels: &mut [u8],
     width: u32,
@@ -1804,26 +1894,18 @@ pub(crate) fn blend_cpu_rgba8_with_mode(
         return;
     }
     let src_a = (color.a as f32 / 255.0) * coverage.clamp(0.0, 1.0);
-    if src_a >= 1.0 {
-        pixels[offset] = color.r;
-        pixels[offset + 1] = color.g;
-        pixels[offset + 2] = color.b;
-        pixels[offset + 3] = 255;
-        return;
-    }
-    let dst = [pixels[offset], pixels[offset + 1], pixels[offset + 2], pixels[offset + 3]];
+    let dst = Rgba8 {
+        r: pixels[offset],
+        g: pixels[offset + 1],
+        b: pixels[offset + 2],
+        a: pixels[offset + 3],
+    };
     // Apply the blend mode against the destination first, then composite the
     // result by coverage. `Normal` leaves the source unchanged.
-    let color = if mode == BlendMode::Normal {
-        color
-    } else {
-        let dest = Rgba8 { r: dst[0], g: dst[1], b: dst[2], a: dst[3] };
-        blend_channels(color, dest, mode)
-    };
-    let mix = |src: u8, dst: u8| (src as f32 * src_a + dst as f32 * (1.0 - src_a)).round() as u8;
-    pixels[offset] = mix(color.r, dst[0]);
-    pixels[offset + 1] = mix(color.g, dst[1]);
-    pixels[offset + 2] = mix(color.b, dst[2]);
-    pixels[offset + 3] =
-        (dst[3] as f32 + 255.0 * src_a * (1.0 - dst[3] as f32 / 255.0)).round() as u8;
+    let color = if mode == BlendMode::Normal { color } else { blend_channels(color, dst, mode) };
+    let out = composite_over(dst, color, src_a);
+    pixels[offset] = out.r;
+    pixels[offset + 1] = out.g;
+    pixels[offset + 2] = out.b;
+    pixels[offset + 3] = out.a;
 }
