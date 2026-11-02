@@ -255,6 +255,11 @@ pub struct EventBinding {
 /// including the case where another observer attached directly to the signal. Use that when the
 /// question is about a running control; use this function when the question is about the
 /// declaration a designer reads before anything is mounted.
+///
+/// A live **count** per control and event is
+/// [`crate::signal::subscription_counts(widget_id)`] (or
+/// [`crate::signal::subscriber_count(widget_id, name)`]). Those read the control's own
+/// `EventSignalRef::slot_count`, which is the runtime fact this static table cannot carry.
 pub fn bindings_of(
     capability: &crate::widget::capability::WidgetCapability,
 ) -> crate::compat::Vec<EventBinding> {

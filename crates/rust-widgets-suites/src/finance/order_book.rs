@@ -25,14 +25,14 @@
 use alloc::vec::Vec;
 use core::fmt::Write as _;
 
+use crate::finance::layout::PlotArea;
+use crate::finance::types::{BookLevel, OrderBook};
+use crate::finance::volume_chart::draw_empty_pane;
 use rust_widgets::core::{Color, HorizontalAlignment, Point, Rect};
 use rust_widgets::render::RenderContext;
 use rust_widgets::widget::capability::properties_trait::{base_property_get, base_property_set};
 use rust_widgets::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use rust_widgets::widget::capability::WidgetProperties;
-use crate::finance::layout::PlotArea;
-use crate::finance::types::{BookLevel, OrderBook};
-use crate::finance::volume_chart::draw_empty_pane;
 use rust_widgets::widget::metrics::role_font;
 use rust_widgets::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use rust_widgets::{impl_widget_property_hooks, property_names_of};
@@ -431,7 +431,9 @@ impl OrderBookWidget {
     ///
     /// The row's centre, computed from the same `side_order`/depth window the painter walks, so
     /// the bubble lands on the row the host is reading (gap 10).
-    pub fn hover_anchor(&self) -> Option<(Point, Vec<rust_widgets::widget::companions::TooltipLine>)> {
+    pub fn hover_anchor(
+        &self,
+    ) -> Option<(Point, Vec<rust_widgets::widget::companions::TooltipLine>)> {
         let (side, index) = self.hovered?;
         let geometry = self.base.geometry();
         if geometry.width == 0 || geometry.height == 0 {
@@ -718,6 +720,9 @@ impl Widget for OrderBookWidget {
     fn base(&self) -> &BaseWidget {
         &self.base
     }
+    fn capability_name(&self) -> Option<&'static str> {
+        Some("order_book")
+    }
     fn set_state_theme_hook(&mut self) {
         rust_widgets::style::reapply_active_theme_state(self);
     }
@@ -894,9 +899,7 @@ impl Draw for OrderBookWidget {
                 &area,
                 crate::finance::layout::PanelColors {
                     grid: rule_color,
-                    ..crate::finance::layout::PanelColors::from_parts(
-                        panel, ink,
-                    )
+                    ..crate::finance::layout::PanelColors::from_parts(panel, ink)
                 },
                 &role_font(style, 12.0),
             );
@@ -1181,10 +1184,10 @@ impl WidgetProperties for OrderBookWidget {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rust_widgets::event::{Event, EventHandler};
     use crate::finance::types::fixtures;
     use alloc::sync::Arc;
     use core::sync::atomic::{AtomicUsize, Ordering};
+    use rust_widgets::event::{Event, EventHandler};
 
     /// The ladder carries the book it was given.
     #[test]
@@ -1263,7 +1266,10 @@ mod tests {
         let mut ladder = OrderBookWidget::new(Rect::new(0, 0, 320, 240));
         let (bid, ask) = ladder.colors();
         assert_ne!(bid, ask);
-        ladder.set_colors(rust_widgets::core::Color::rgb(1, 2, 3), rust_widgets::core::Color::rgb(4, 5, 6));
+        ladder.set_colors(
+            rust_widgets::core::Color::rgb(1, 2, 3),
+            rust_widgets::core::Color::rgb(4, 5, 6),
+        );
         assert_eq!(
             ladder.colors(),
             (rust_widgets::core::Color::rgb(1, 2, 3), rust_widgets::core::Color::rgb(4, 5, 6))
@@ -1274,8 +1280,10 @@ mod tests {
     #[test]
     fn an_empty_book_draws_without_panicking() {
         let mut ladder = OrderBookWidget::new(Rect::new(0, 0, 320, 240));
-        let mut backend =
-            rust_widgets::render::SoftwarePaintBackend::new(rust_widgets::core::Size::new(320, 240), 1.0);
+        let mut backend = rust_widgets::render::SoftwarePaintBackend::new(
+            rust_widgets::core::Size::new(320, 240),
+            1.0,
+        );
         let mut context = RenderContext::new(&mut backend);
         ladder.draw(&mut context);
     }
@@ -1334,8 +1342,10 @@ mod tests {
         ladder.set_book(fixtures::sample_book(5));
         ladder.set_depth(0);
         assert!(ladder.levels(BookSide::Bid).is_empty());
-        let mut backend =
-            rust_widgets::render::SoftwarePaintBackend::new(rust_widgets::core::Size::new(320, 240), 1.0);
+        let mut backend = rust_widgets::render::SoftwarePaintBackend::new(
+            rust_widgets::core::Size::new(320, 240),
+            1.0,
+        );
         let mut context = RenderContext::new(&mut backend);
         ladder.draw(&mut context);
     }
@@ -1350,8 +1360,10 @@ mod tests {
             crate::finance::types::BookLevel::new(99.0, f64::INFINITY),
         ]);
         ladder.set_book(book);
-        let mut backend =
-            rust_widgets::render::SoftwarePaintBackend::new(rust_widgets::core::Size::new(320, 240), 1.0);
+        let mut backend = rust_widgets::render::SoftwarePaintBackend::new(
+            rust_widgets::core::Size::new(320, 240),
+            1.0,
+        );
         let mut context = RenderContext::new(&mut backend);
         ladder.draw(&mut context);
     }

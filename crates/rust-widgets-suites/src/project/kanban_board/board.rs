@@ -82,6 +82,9 @@ impl Widget for KanbanBoard {
     fn base(&self) -> &BaseWidget {
         &self.base
     }
+    fn capability_name(&self) -> Option<&'static str> {
+        Some("kanban_board")
+    }
     fn set_state_theme_hook(&mut self) {
         rust_widgets::style::reapply_active_theme_state(self);
     }

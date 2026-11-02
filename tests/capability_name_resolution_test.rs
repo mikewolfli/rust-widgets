@@ -138,12 +138,14 @@ fn every_resolved_capability_matches_the_contract_the_control_publishes() {
         };
 
         // Forward: every name the control publishes is declared by the resolved
-        // capability, or is one of the four properties every control shares
-        // (`enabled` / `visible` / `tooltip` / `geometry`) that the base contract
-        // answers without a per-control schema entry.
+        // capability, or is a shared base property (`enabled` / `visible` / `tooltip` /
+        // `geometry` / `a11y_role`) that the base contract answers without a per-control
+        // schema entry. Read the shared list from its one definition rather than repeating it.
         for &name in published {
             let declared = resolved.properties.iter().any(|schema| schema.name == name);
-            let is_base = matches!(name, "enabled" | "visible" | "tooltip" | "geometry");
+            let is_base = rust_widgets::widget::capability::properties_trait::BASE_PROPERTY_SCHEMAS
+                .iter()
+                .any(|schema| schema.name == name);
             if !declared && !is_base {
                 missing.push((resolved.canonical_name, name));
             }

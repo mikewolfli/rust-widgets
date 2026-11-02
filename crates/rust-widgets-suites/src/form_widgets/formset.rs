@@ -747,6 +747,9 @@ impl Widget for FormSet {
     fn base(&self) -> &BaseWidget {
         &self.base
     }
+    fn capability_name(&self) -> Option<&'static str> {
+        Some("form_set")
+    }
 
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base

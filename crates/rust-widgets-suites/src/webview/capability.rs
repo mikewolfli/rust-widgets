@@ -13,18 +13,17 @@
 
 use rust_widgets::core::Rect;
 use rust_widgets::widget::capability::types::{
-    CapabilityValue, EventPayloadShape as S, EventSchema, PropertySchema,
-    PropertyValueKind, PropertyValueKind as K, RegistrationError, WidgetCapability,
-    WidgetCtor,
+    CapabilityValue, EventPayloadShape as S, EventSchema, PropertySchema, PropertyValueKind,
+    PropertyValueKind as K, RegistrationError, WidgetCapability, WidgetCtor,
 };
 use rust_widgets::widget::capability::WidgetFactory;
 use rust_widgets::widget::{Widget, WidgetKind};
 
-use crate::find_bar::WebFindBar;
-use crate::web_engine::WebEngineView;
-use crate::web_history_panel::WebHistoryPanel;
+use crate::webview::find_bar::WebFindBar;
+use crate::webview::web_engine::WebEngineView;
+use crate::webview::web_history_panel::WebHistoryPanel;
 
-        pub(super) const WEB_VIEW_PROPERTIES: &[PropertySchema] = &[
+pub(super) const WEB_VIEW_PROPERTIES: &[PropertySchema] = &[
     PropertySchema::new("url", PropertyValueKind::String, true, true),
     PropertySchema::new("loading", PropertyValueKind::Bool, true, false),
     PropertySchema::new("title", PropertyValueKind::String, true, true),
@@ -39,7 +38,7 @@ use crate::web_history_panel::WebHistoryPanel;
     PropertySchema::new("cookie_persistence_enabled", PropertyValueKind::Bool, true, true),
 ];
 
-        pub(super) const WEB_FIND_BAR_PROPERTIES: &[PropertySchema] = &[
+pub(super) const WEB_FIND_BAR_PROPERTIES: &[PropertySchema] = &[
     PropertySchema::new("query", PropertyValueKind::String, true, true),
     PropertySchema::new("case_sensitive", PropertyValueKind::Bool, true, true),
     PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
@@ -50,7 +49,7 @@ use crate::web_history_panel::WebHistoryPanel;
     PropertySchema::new("geometry", PropertyValueKind::String, false, false),
 ];
 
-        pub(super) const WEB_HISTORY_PANEL_PROPERTIES: &[PropertySchema] = &[
+pub(super) const WEB_HISTORY_PANEL_PROPERTIES: &[PropertySchema] = &[
     PropertySchema::new("max_entries", PropertyValueKind::UInt, true, true),
     PropertySchema::new("show_timestamps", PropertyValueKind::Bool, true, true),
     PropertySchema::new("group_by_day", PropertyValueKind::Bool, true, true),
@@ -107,9 +106,8 @@ const WEB_FIND_BAR_EVENTS: &[EventSchema] = &[
 ];
 
 /// The history panel's published events.
-const WEB_HISTORY_PANEL_EVENTS: &[EventSchema] = &[
-    EventSchema { name: "on_entry_activated", payload: Some(K::String), shape: Some(S::Scalar) },
-];
+const WEB_HISTORY_PANEL_EVENTS: &[EventSchema] =
+    &[EventSchema { name: "on_entry_activated", payload: Some(K::String), shape: Some(S::Scalar) }];
 
 /// Sets a control's label through the property API, the way the parent crate's factory
 /// constructors do.
@@ -172,6 +170,18 @@ pub fn web_history_panel_capability() -> WidgetCapability {
         events: WEB_HISTORY_PANEL_EVENTS,
         commands: &[],
     }
+}
+
+/// Every published event name, paired with the control that publishes it.
+///
+/// Kept in the same shape the other suite groups expose, so the crate-wide wiring test can walk
+/// all groups with one loop instead of one hand-written list per group.
+pub fn published_event_names() -> Vec<(&'static str, Vec<&'static str>)> {
+    vec![
+        ("web_engine_view", WEB_ENGINE_VIEW_EVENTS.iter().map(|event| event.name).collect()),
+        ("web_find_bar", WEB_FIND_BAR_EVENTS.iter().map(|event| event.name).collect()),
+        ("web_history_panel", WEB_HISTORY_PANEL_EVENTS.iter().map(|event| event.name).collect()),
+    ]
 }
 
 /// Registers the web controls in `factory`.

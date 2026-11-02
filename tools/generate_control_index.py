@@ -5,9 +5,8 @@
 
 # Why a generator rather than a hand-written page
 
-The 188 controls and their two snapshots each are produced by
-`examples/export_control_svgs.rs`, and the set of controls is derived from the widget
-registry. A hand-maintained index would drift the moment a control was added or renamed,
+Every control and its two snapshots are produced by `examples/export_control_svgs.rs`, and
+the set of controls is derived from the widget registry. A hand-maintained index would drift the moment a control was added or renamed,
 and the drift is silent: the page would simply stop mentioning a control. Generating it
 makes the index a *view* of the registry rather than a second copy of it (rule #101).
 
@@ -459,8 +458,9 @@ def main() -> int:
     out.append("")
     out.append(
         f"本页共 **{len(names)}** 张控件快照名（每个两种外观，共 **{len(names) * 2}** 张 SVG）。\n"
-        "这些名字来自控件注册表（`factory.widget_names()`），其中包含少量**别名**\n"
-        f"（如 `wizard_dialog` 同时以 `wizard` 注册），因此快照名数多于 `WidgetKind` 的枚举数（**{widget_kind_count()}**）。"
+        "这些名字来自控件注册表（`factory.widget_names()`），每行是一个**规范名**（不含别名）。\n"
+        f"快照名数多于 `WidgetKind` 的枚举数（**{widget_kind_count()}**），是因为多个控件可以共用一个 kind"
+        "（例如九种图表都报告 `WidgetKind::Chart`），而不是因为别名。"
     )
     if extras:
         out.append("")

@@ -21,14 +21,14 @@
 
 use alloc::vec::Vec;
 
+use crate::finance::layout::{panel_colors, PanelColors, PlotArea};
+use crate::finance::types::{BookLevel, OrderBook};
+use crate::finance::volume_chart::draw_empty_pane;
 use rust_widgets::core::{Color, HorizontalAlignment, Point, Rect};
 use rust_widgets::render::RenderContext;
 use rust_widgets::widget::capability::properties_trait::{base_property_get, base_property_set};
 use rust_widgets::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use rust_widgets::widget::capability::WidgetProperties;
-use crate::finance::layout::{panel_colors, PanelColors, PlotArea};
-use crate::finance::types::{BookLevel, OrderBook};
-use crate::finance::volume_chart::draw_empty_pane;
 use rust_widgets::widget::metrics::role_font;
 use rust_widgets::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use rust_widgets::{impl_widget_property_hooks, property_names_of};
@@ -160,7 +160,9 @@ impl DepthChart {
     ///
     /// The anchor is the curve point under the pointer, computed by the same mapping the painter
     /// and hit test use (gap 10).
-    pub fn hover_anchor(&self) -> Option<(Point, Vec<rust_widgets::widget::companions::TooltipLine>)> {
+    pub fn hover_anchor(
+        &self,
+    ) -> Option<(Point, Vec<rust_widgets::widget::companions::TooltipLine>)> {
         let level = self.hovered_level?;
         let area = self.plot_area();
         if area.rect.width == 0 || area.rect.height == 0 {
@@ -481,6 +483,9 @@ impl DepthChart {
 impl Widget for DepthChart {
     fn base(&self) -> &BaseWidget {
         &self.base
+    }
+    fn capability_name(&self) -> Option<&'static str> {
+        Some("depth_chart")
     }
     fn set_state_theme_hook(&mut self) {
         rust_widgets::style::reapply_active_theme_state(self);
@@ -848,7 +853,10 @@ mod tests {
         let mut chart = DepthChart::new(Rect::new(0, 0, 480, 240));
         let (bid, ask) = chart.colors();
         assert_ne!(bid, ask, "the two sides must be distinguishable by default");
-        chart.set_colors(rust_widgets::core::Color::rgb(1, 2, 3), rust_widgets::core::Color::rgb(4, 5, 6));
+        chart.set_colors(
+            rust_widgets::core::Color::rgb(1, 2, 3),
+            rust_widgets::core::Color::rgb(4, 5, 6),
+        );
         assert_eq!(
             chart.colors(),
             (rust_widgets::core::Color::rgb(1, 2, 3), rust_widgets::core::Color::rgb(4, 5, 6))
@@ -859,8 +867,10 @@ mod tests {
     #[test]
     fn an_empty_book_draws_without_panicking() {
         let mut chart = DepthChart::new(Rect::new(0, 0, 320, 200));
-        let mut backend =
-            rust_widgets::render::SoftwarePaintBackend::new(rust_widgets::core::Size::new(320, 200), 1.0);
+        let mut backend = rust_widgets::render::SoftwarePaintBackend::new(
+            rust_widgets::core::Size::new(320, 200),
+            1.0,
+        );
         let mut context = RenderContext::new(&mut backend);
         chart.draw(&mut context);
     }
@@ -873,12 +883,12 @@ mod tests {
     fn a_one_sided_book_draws_without_panicking() {
         let mut chart = DepthChart::new(Rect::new(0, 0, 320, 200));
         let mut book = crate::finance::types::OrderBook::new();
-        book.set_bids(alloc::vec![crate::finance::types::BookLevel::new(
-            99.0, 10.0,
-        )]);
+        book.set_bids(alloc::vec![crate::finance::types::BookLevel::new(99.0, 10.0,)]);
         chart.set_book(book);
-        let mut backend =
-            rust_widgets::render::SoftwarePaintBackend::new(rust_widgets::core::Size::new(320, 200), 1.0);
+        let mut backend = rust_widgets::render::SoftwarePaintBackend::new(
+            rust_widgets::core::Size::new(320, 200),
+            1.0,
+        );
         let mut context = RenderContext::new(&mut backend);
         chart.draw(&mut context);
     }
@@ -892,13 +902,12 @@ mod tests {
             crate::finance::types::BookLevel::new(f64::NAN, f64::NAN),
             crate::finance::types::BookLevel::new(99.0, -5.0),
         ]);
-        book.set_asks(alloc::vec![crate::finance::types::BookLevel::new(
-            f64::INFINITY,
-            1.0,
-        )]);
+        book.set_asks(alloc::vec![crate::finance::types::BookLevel::new(f64::INFINITY, 1.0,)]);
         chart.set_book(book);
-        let mut backend =
-            rust_widgets::render::SoftwarePaintBackend::new(rust_widgets::core::Size::new(320, 200), 1.0);
+        let mut backend = rust_widgets::render::SoftwarePaintBackend::new(
+            rust_widgets::core::Size::new(320, 200),
+            1.0,
+        );
         let mut context = RenderContext::new(&mut backend);
         chart.draw(&mut context);
     }
@@ -908,15 +917,13 @@ mod tests {
     fn a_flat_price_scale_draws_without_panicking() {
         let mut chart = DepthChart::new(Rect::new(0, 0, 320, 200));
         let mut book = crate::finance::types::OrderBook::new();
-        book.set_bids(alloc::vec![crate::finance::types::BookLevel::new(
-            100.0, 10.0,
-        )]);
-        book.set_asks(alloc::vec![crate::finance::types::BookLevel::new(
-            100.0, 10.0,
-        )]);
+        book.set_bids(alloc::vec![crate::finance::types::BookLevel::new(100.0, 10.0,)]);
+        book.set_asks(alloc::vec![crate::finance::types::BookLevel::new(100.0, 10.0,)]);
         chart.set_book(book);
-        let mut backend =
-            rust_widgets::render::SoftwarePaintBackend::new(rust_widgets::core::Size::new(320, 200), 1.0);
+        let mut backend = rust_widgets::render::SoftwarePaintBackend::new(
+            rust_widgets::core::Size::new(320, 200),
+            1.0,
+        );
         let mut context = RenderContext::new(&mut backend);
         chart.draw(&mut context);
     }
@@ -938,9 +945,7 @@ mod tests {
             crate::finance::types::BookLevel::new(100.0, 0.0),
             crate::finance::types::BookLevel::new(99.0, 100.0),
         ]);
-        book.set_asks(alloc::vec![crate::finance::types::BookLevel::new(
-            101.0, 100.0,
-        )]);
+        book.set_asks(alloc::vec![crate::finance::types::BookLevel::new(101.0, 100.0,)]);
         let mut chart = DepthChart::new(geometry);
         chart.set_book(book);
 
@@ -960,13 +965,8 @@ mod tests {
     fn a_non_finite_price_does_not_erase_the_curve() {
         let geometry = Rect::new(0, 0, 400, 200);
         let mut book = crate::finance::types::OrderBook::new();
-        book.set_bids(alloc::vec![crate::finance::types::BookLevel::new(
-            f64::NAN,
-            1000.0,
-        )]);
-        book.set_asks(alloc::vec![crate::finance::types::BookLevel::new(
-            101.0, 100.0,
-        )]);
+        book.set_bids(alloc::vec![crate::finance::types::BookLevel::new(f64::NAN, 1000.0,)]);
+        book.set_asks(alloc::vec![crate::finance::types::BookLevel::new(101.0, 100.0,)]);
         let mut chart = DepthChart::new(geometry);
         chart.set_book(book);
 

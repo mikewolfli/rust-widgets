@@ -182,7 +182,7 @@ pub enum WidgetKind {
     /// `event::dnd`.
     #[cfg(widgets_unstripped)]
     // kind-role: external: registered by the `rust-widgets-suites` package (or, for
-    // `WebEngineView`, by `rust-widgets-webview`), so this package's factory does not carry a
+    // `WebEngineView`, by the `rust-widgets-suites` webview group), so this package's factory does not carry a
     // constructor for it.
     KanbanBoard,
     /// Button that latches between checked and unchecked states when clicked.
@@ -297,7 +297,7 @@ pub enum WidgetKind {
     /// registered name `web_view`.
     #[cfg(widgets_unstripped)]
     // kind-role: external: registered by the `rust-widgets-suites` package (or, for
-    // `WebEngineView`, by `rust-widgets-webview`), so this package's factory does not carry a
+    // `WebEngineView`, by the `rust-widgets-suites` webview group), so this package's factory does not carry a
     // constructor for it.
     WebEngineView,
     /// Action widget for menu and toolbar actions.
@@ -527,37 +527,37 @@ pub enum WidgetKind {
     /// CandlestickChart — a K-line chart of OHLC bars with indicator overlays.
     #[cfg(widgets_unstripped)]
     // kind-role: external: registered by the `rust-widgets-suites` package (or, for
-    // `WebEngineView`, by `rust-widgets-webview`), so this package's factory does not carry a
+    // `WebEngineView`, by the `rust-widgets-suites` webview group), so this package's factory does not carry a
     // constructor for it.
     CandlestickChart,
     /// VolumeChart — a volume histogram, aligned to a CandlestickChart's bars.
     #[cfg(widgets_unstripped)]
     // kind-role: external: registered by the `rust-widgets-suites` package (or, for
-    // `WebEngineView`, by `rust-widgets-webview`), so this package's factory does not carry a
+    // `WebEngineView`, by the `rust-widgets-suites` webview group), so this package's factory does not carry a
     // constructor for it.
     VolumeChart,
     /// DepthChart — a cumulative bid/ask depth curve.
     #[cfg(widgets_unstripped)]
     // kind-role: external: registered by the `rust-widgets-suites` package (or, for
-    // `WebEngineView`, by `rust-widgets-webview`), so this package's factory does not carry a
+    // `WebEngineView`, by the `rust-widgets-suites` webview group), so this package's factory does not carry a
     // constructor for it.
     DepthChart,
     /// OrderBook — a live bid/ask ladder with sizes at each level.
     #[cfg(widgets_unstripped)]
     // kind-role: external: registered by the `rust-widgets-suites` package (or, for
-    // `WebEngineView`, by `rust-widgets-webview`), so this package's factory does not carry a
+    // `WebEngineView`, by the `rust-widgets-suites` webview group), so this package's factory does not carry a
     // constructor for it.
     OrderBook,
     /// QuoteBoard — a table of instruments with price, change and volume.
     #[cfg(widgets_unstripped)]
     // kind-role: external: registered by the `rust-widgets-suites` package (or, for
-    // `WebEngineView`, by `rust-widgets-webview`), so this package's factory does not carry a
+    // `WebEngineView`, by the `rust-widgets-suites` webview group), so this package's factory does not carry a
     // constructor for it.
     QuoteBoard,
     /// IndicatorChart — a technical-indicator pane (MACD, RSI, KDJ).
     #[cfg(widgets_unstripped)]
     // kind-role: external: registered by the `rust-widgets-suites` package (or, for
-    // `WebEngineView`, by `rust-widgets-webview`), so this package's factory does not carry a
+    // `WebEngineView`, by the `rust-widgets-suites` webview group), so this package's factory does not carry a
     // constructor for it.
     IndicatorChart,
     /// FindReplaceDialog — a find/replace dialog with text input, toggles, and action buttons.
@@ -590,19 +590,19 @@ pub enum WidgetKind {
     /// LottieWidget — Lottie JSON animation player.
     #[cfg(widgets_unstripped)]
     // kind-role: external: registered by the `rust-widgets-suites` package (or, for
-    // `WebEngineView`, by `rust-widgets-webview`), so this package's factory does not carry a
+    // `WebEngineView`, by the `rust-widgets-suites` webview group), so this package's factory does not carry a
     // constructor for it.
     LottieWidget,
     /// RiveWidget — Rive animation runtime widget.
     #[cfg(widgets_unstripped)]
     // kind-role: external: registered by the `rust-widgets-suites` package (or, for
-    // `WebEngineView`, by `rust-widgets-webview`), so this package's factory does not carry a
+    // `WebEngineView`, by the `rust-widgets-suites` webview group), so this package's factory does not carry a
     // constructor for it.
     RiveWidget,
     /// VideoPlayer — video player widget with playback controls.
     #[cfg(widgets_unstripped)]
     // kind-role: external: registered by the `rust-widgets-suites` package (or, for
-    // `WebEngineView`, by `rust-widgets-webview`), so this package's factory does not carry a
+    // `WebEngineView`, by the `rust-widgets-suites` webview group), so this package's factory does not carry a
     // constructor for it.
     VideoPlayer,
     /// ImageGallery — image gallery/browser with thumbnails.
@@ -611,13 +611,13 @@ pub enum WidgetKind {
     /// AudioVisualizer — real-time audio waveform/spectrum visualization.
     #[cfg(widgets_unstripped)]
     // kind-role: external: registered by the `rust-widgets-suites` package (or, for
-    // `WebEngineView`, by `rust-widgets-webview`), so this package's factory does not carry a
+    // `WebEngineView`, by the `rust-widgets-suites` webview group), so this package's factory does not carry a
     // constructor for it.
     AudioVisualizer,
     /// CameraPreview — camera viewfinder preview area with controls.
     #[cfg(widgets_unstripped)]
     // kind-role: external: registered by the `rust-widgets-suites` package (or, for
-    // `WebEngineView`, by `rust-widgets-webview`), so this package's factory does not carry a
+    // `WebEngineView`, by the `rust-widgets-suites` webview group), so this package's factory does not carry a
     // constructor for it.
     CameraPreview,
     /// BarcodeScanner — barcode/QR code scanner viewfinder with detection.
@@ -787,37 +787,37 @@ pub enum WidgetKind {
     ToastHost,
     /// TileLoader — tile addressing, caching and load results for a map view.
     // kind-role: external: registered by the `rust-widgets-suites` package (or, for
-    // `WebEngineView`, by `rust-widgets-webview`), so this package's factory does not carry a
+    // `WebEngineView`, by the `rust-widgets-suites` webview group), so this package's factory does not carry a
     // constructor for it.
     TileLoader,
     /// ZoomControl — the three-button zoom strip beside a map.
     // kind-role: external: registered by the `rust-widgets-suites` package (or, for
-    // `WebEngineView`, by `rust-widgets-webview`), so this package's factory does not carry a
+    // `WebEngineView`, by the `rust-widgets-suites` webview group), so this package's factory does not carry a
     // constructor for it.
     ZoomControl,
     /// ScaleBar — the metric/imperial distance legend for a map.
     // kind-role: external: registered by the `rust-widgets-suites` package (or, for
-    // `WebEngineView`, by `rust-widgets-webview`), so this package's factory does not carry a
+    // `WebEngineView`, by the `rust-widgets-suites` webview group), so this package's factory does not carry a
     // constructor for it.
     ScaleBar,
     /// Compass — a clickable bearing dial that requests north-up.
     // kind-role: external: registered by the `rust-widgets-suites` package (or, for
-    // `WebEngineView`, by `rust-widgets-webview`), so this package's factory does not carry a
+    // `WebEngineView`, by the `rust-widgets-suites` webview group), so this package's factory does not carry a
     // constructor for it.
     Compass,
     /// TimelineAxis — a date/value axis with pixel conversion and scale changes.
     // kind-role: external: registered by the `rust-widgets-suites` package (or, for
-    // `WebEngineView`, by `rust-widgets-webview`), so this package's factory does not carry a
+    // `WebEngineView`, by the `rust-widgets-suites` webview group), so this package's factory does not carry a
     // constructor for it.
     TimelineAxis,
     /// DependencyEditor — editable predecessor/successor edges for a Gantt chart.
     // kind-role: external: registered by the `rust-widgets-suites` package (or, for
-    // `WebEngineView`, by `rust-widgets-webview`), so this package's factory does not carry a
+    // `WebEngineView`, by the `rust-widgets-suites` webview group), so this package's factory does not carry a
     // constructor for it.
     DependencyEditor,
     /// DiffFileList — the multi-file selector beside a diff viewer.
     // kind-role: external: registered by the `rust-widgets-suites` package (or, for
-    // `WebEngineView`, by `rust-widgets-webview`), so this package's factory does not carry a
+    // `WebEngineView`, by the `rust-widgets-suites` webview group), so this package's factory does not carry a
     // constructor for it.
     DiffFileList,
     /// MarkdownOutlinePanel — a heading outline that navigates a markdown editor.
@@ -825,19 +825,19 @@ pub enum WidgetKind {
     /// FindBar — query, match and replacement controls for an editor.
     FindBar,
     /// WebFindBar — the web family's own find bar (searches a page, not an editor buffer).
-    // kind-role: external: registered by the `rust-widgets-webview` package (plan A), so this
+    // kind-role: external: registered by the `rust-widgets-suites` (webview group) package (plan A), so this
     // package's factory does not carry a constructor for it.
     WebFindBar,
     /// ShapeCanvas — a scene that hosts, selects and orders shapes.
     ShapeCanvas,
     /// KanbanCardView — a real card control for a kanban column.
     // kind-role: external: registered by the `rust-widgets-suites` package (or, for
-    // `WebEngineView`, by `rust-widgets-webview`), so this package's factory does not carry a
+    // `WebEngineView`, by the `rust-widgets-suites` webview group), so this package's factory does not carry a
     // constructor for it.
     KanbanCardView,
     /// KanbanColumnHeader — a real column header with rename, count and WIP limit.
     // kind-role: external: registered by the `rust-widgets-suites` package (or, for
-    // `WebEngineView`, by `rust-widgets-webview`), so this package's factory does not carry a
+    // `WebEngineView`, by the `rust-widgets-suites` webview group), so this package's factory does not carry a
     // constructor for it.
     KanbanColumnHeader,
     /// RangePresetBar — quick date-range chips beside a range picker.

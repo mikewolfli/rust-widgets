@@ -781,7 +781,7 @@ use super::PropertyValueKind as K;
 
 /// The published events of one control, with their payload types.
 ///
-/// # Why a macro and not 187 hand-written slices
+/// # Why a macro and not hand-written slices
 ///
 /// The names and the payloads are one table because they are one fact: a name without its type is
 /// exactly what a designer cannot use. A capability therefore looks its events up instead of

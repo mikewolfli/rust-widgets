@@ -11,9 +11,8 @@
 use rust_widgets::core::Rect;
 use rust_widgets::widget::capability::apply_control_label;
 use rust_widgets::widget::capability::types::{
-    CapabilityValue, EventPayloadShape as S, EventSchema, PropertySchema,
-    PropertyValueKind, PropertyValueKind as K,
-    RegistrationError, WidgetCapability, WidgetCtor,
+    CapabilityValue, EventPayloadShape as S, EventSchema, PropertySchema, PropertyValueKind,
+    PropertyValueKind as K, RegistrationError, WidgetCapability, WidgetCtor,
 };
 use rust_widgets::widget::capability::WidgetFactory;
 use rust_widgets::widget::{Widget, WidgetKind};
@@ -26,10 +25,10 @@ pub const GANTT_WIDGET_PROPERTIES: &[PropertySchema] = &[
     // tokens because a record field cannot hold the nested edge structure; `set_tasks` is
     // the payload-free spelling of the write (B26.03).
     PropertySchema::records(
-"tasks",
-true,
-true,
-&crate::project::gantt::gantt_widget::GANTT_TASK_SCHEMA,
+        "tasks",
+        true,
+        true,
+        &crate::project::gantt::gantt_widget::GANTT_TASK_SCHEMA,
     ),
     PropertySchema::new("task_count", PropertyValueKind::UInt, true, false),
     // The selection is reported only. The control's selection entry point is the Rust-side
@@ -53,30 +52,30 @@ true,
 /// Gantt task column (COMP-A4). The derived counts are read-only; the row metrics and the
 /// header switch are the column's own settings.
 pub const GANTT_TASK_GRID_PROPERTIES: &[PropertySchema] = &[
-            PropertySchema::new("row_height", PropertyValueKind::UInt, true, true),
-            PropertySchema::new("indent_step", PropertyValueKind::UInt, true, true),
-            PropertySchema::new("header_visible", PropertyValueKind::Bool, true, true),
-            PropertySchema::new("columns", PropertyValueKind::UInt, true, false),
-            PropertySchema::new("tasks", PropertyValueKind::UInt, true, false),
-            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
-            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
-            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
-            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+    PropertySchema::new("row_height", PropertyValueKind::UInt, true, true),
+    PropertySchema::new("indent_step", PropertyValueKind::UInt, true, true),
+    PropertySchema::new("header_visible", PropertyValueKind::Bool, true, true),
+    PropertySchema::new("columns", PropertyValueKind::UInt, true, false),
+    PropertySchema::new("tasks", PropertyValueKind::UInt, true, false),
+    PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+    PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+    PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+    PropertySchema::new("geometry", PropertyValueKind::String, false, false),
 ];
 
 /// Date/value axis for a Gantt chart (`COMP-14`).
 pub const TIMELINE_AXIS_PROPERTIES: &[PropertySchema] = &[
-            PropertySchema::new("tick_density", PropertyValueKind::UInt, true, true),
-            PropertySchema::enumerated("date_format", true, true, &["numeric", "iso"]),
-            PropertySchema::new("zoom_level", PropertyValueKind::Float, true, true),
-            // The range pair is read as `[start, end]`; the two scalar names below write it.
-            PropertySchema::new("range", PropertyValueKind::NumberList, true, false),
-            PropertySchema::new("range_start", PropertyValueKind::Int, true, true),
-            PropertySchema::new("range_end", PropertyValueKind::Int, true, true),
-            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
-            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
-            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
-            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+    PropertySchema::new("tick_density", PropertyValueKind::UInt, true, true),
+    PropertySchema::enumerated("date_format", true, true, &["numeric", "iso"]),
+    PropertySchema::new("zoom_level", PropertyValueKind::Float, true, true),
+    // The range pair is read as `[start, end]`; the two scalar names below write it.
+    PropertySchema::new("range", PropertyValueKind::NumberList, true, false),
+    PropertySchema::new("range_start", PropertyValueKind::Int, true, true),
+    PropertySchema::new("range_end", PropertyValueKind::Int, true, true),
+    PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+    PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+    PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+    PropertySchema::new("geometry", PropertyValueKind::String, false, false),
 ];
 
 /// Editable dependency edges for a Gantt chart (`COMP-14`).
@@ -86,10 +85,10 @@ pub const DEPENDENCY_EDITOR_PROPERTIES: &[PropertySchema] = &[
     PropertySchema::new("dependencies", PropertyValueKind::UInt, true, false),
     // The edge list itself, round-tripped through the `Records` contract (SP-123).
     PropertySchema::records(
-"dependency_edges",
-true,
-true,
-&crate::project::gantt::gantt_widget::companions::DEPENDENCY_SCHEMA,
+        "dependency_edges",
+        true,
+        true,
+        &crate::project::gantt::gantt_widget::companions::DEPENDENCY_SCHEMA,
     ),
     PropertySchema::new("editable", PropertyValueKind::Bool, true, true),
     PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
@@ -105,17 +104,12 @@ pub const KANBAN_BOARD_PROPERTIES: &[PropertySchema] = &[
     // (B26.03); `add_column` / `add_card` / `move_card` stay Rust-side methods whose
     // payloads the records now transport, so they are not published.
     PropertySchema::records(
-"columns",
-true,
-true,
-&crate::project::kanban_board::KANBAN_COLUMN_SCHEMA,
+        "columns",
+        true,
+        true,
+        &crate::project::kanban_board::KANBAN_COLUMN_SCHEMA,
     ),
-    PropertySchema::records(
-"cards",
-true,
-true,
-&crate::project::kanban_board::KANBAN_CARD_SCHEMA,
-    ),
+    PropertySchema::records("cards", true, true, &crate::project::kanban_board::KANBAN_CARD_SCHEMA),
     PropertySchema::new("column_count", PropertyValueKind::UInt, true, false),
     PropertySchema::new("card_count", PropertyValueKind::UInt, true, false),
     PropertySchema::new("dragging_card_id", PropertyValueKind::String, true, false),
@@ -185,9 +179,8 @@ const GANTT_TASK_GRID_EVENTS: &[EventSchema] = &[
 ];
 
 /// `timeline_axis`'s published events.
-const TIMELINE_AXIS_EVENTS: &[EventSchema] = &[
-    EventSchema { name: "scale_changed", payload: Some(K::Int), shape: Some(S::Tuple2) },
-];
+const TIMELINE_AXIS_EVENTS: &[EventSchema] =
+    &[EventSchema { name: "scale_changed", payload: Some(K::Int), shape: Some(S::Tuple2) }];
 
 /// `dependency_editor`'s published events.
 const DEPENDENCY_EDITOR_EVENTS: &[EventSchema] = &[
@@ -215,24 +208,28 @@ const KANBAN_CARD_VIEW_EVENTS: &[EventSchema] = &[
 /// `kanban_column_header`'s published events.
 const KANBAN_COLUMN_HEADER_EVENTS: &[EventSchema] = &[
     EventSchema::unit("add_card_requested"),
-    EventSchema { name: "column_collapsed_changed", payload: Some(K::Bool), shape: Some(S::Scalar) },
+    EventSchema {
+        name: "column_collapsed_changed",
+        payload: Some(K::Bool),
+        shape: Some(S::Scalar),
+    },
     EventSchema { name: "column_renamed", payload: Some(K::String), shape: Some(S::Scalar) },
 ];
 
 pub fn gantt_widget_capability() -> WidgetCapability {
     WidgetCapability {
-kind: WidgetKind::Chart,
-canonical_name: "gantt_widget",
-aliases: &["gantt"],
-properties: GANTT_WIDGET_PROPERTIES,
-events: GANTT_WIDGET_EVENTS,
-// `set_viewport` stays unpublished — the viewport is the writable
-// `viewport_start`/`viewport_end` pair (principle #18). `set_tasks` names its payload
-// through the `tasks` records property (B26.03), whose `dependencies` field carries each
-// relationship kind as an `<id>:<fts|sts|ftf>` token, so a schedule write cannot lose a
-// link. `select_task` names a task while `selected_id` is read-only, so it stays
-// unpublished.
-commands: &["zoom", "set_tasks"],
+        kind: WidgetKind::Chart,
+        canonical_name: "gantt_widget",
+        aliases: &["gantt"],
+        properties: GANTT_WIDGET_PROPERTIES,
+        events: GANTT_WIDGET_EVENTS,
+        // `set_viewport` stays unpublished — the viewport is the writable
+        // `viewport_start`/`viewport_end` pair (principle #18). `set_tasks` names its payload
+        // through the `tasks` records property (B26.03), whose `dependencies` field carries each
+        // relationship kind as an `<id>:<fts|sts|ftf>` token, so a schedule write cannot lose a
+        // link. `select_task` names a task while `selected_id` is read-only, so it stays
+        // unpublished.
+        commands: &["zoom", "set_tasks"],
     }
 }
 
@@ -242,36 +239,36 @@ commands: &["zoom", "set_tasks"],
 /// the gantt chart draws beside its bars.
 pub fn gantt_task_grid_capability() -> WidgetCapability {
     WidgetCapability {
-kind: WidgetKind::Chart,
-canonical_name: "gantt_task_grid",
-aliases: &[],
-properties: GANTT_TASK_GRID_PROPERTIES,
-events: GANTT_TASK_GRID_EVENTS,
-commands: &[],
+        kind: WidgetKind::Chart,
+        canonical_name: "gantt_task_grid",
+        aliases: &[],
+        properties: GANTT_TASK_GRID_PROPERTIES,
+        events: GANTT_TASK_GRID_EVENTS,
+        commands: &[],
     }
 }
 
 /// `timeline_axis` — the Gantt date/value axis (`COMP-14`).
 pub fn timeline_axis_capability() -> WidgetCapability {
     WidgetCapability {
-kind: WidgetKind::TimelineAxis,
-canonical_name: "timeline_axis",
-aliases: &["gantt_timeline_axis"],
-properties: TIMELINE_AXIS_PROPERTIES,
-events: TIMELINE_AXIS_EVENTS,
-commands: &[],
+        kind: WidgetKind::TimelineAxis,
+        canonical_name: "timeline_axis",
+        aliases: &["gantt_timeline_axis"],
+        properties: TIMELINE_AXIS_PROPERTIES,
+        events: TIMELINE_AXIS_EVENTS,
+        commands: &[],
     }
 }
 
 /// `dependency_editor` — the Gantt dependency edge editor (`COMP-14`).
 pub fn dependency_editor_capability() -> WidgetCapability {
     WidgetCapability {
-kind: WidgetKind::DependencyEditor,
-canonical_name: "dependency_editor",
-aliases: &["gantt_dependency_editor"],
-properties: DEPENDENCY_EDITOR_PROPERTIES,
-events: DEPENDENCY_EDITOR_EVENTS,
-commands: &[],
+        kind: WidgetKind::DependencyEditor,
+        canonical_name: "dependency_editor",
+        aliases: &["gantt_dependency_editor"],
+        properties: DEPENDENCY_EDITOR_PROPERTIES,
+        events: DEPENDENCY_EDITOR_EVENTS,
+        commands: &[],
     }
 }
 
@@ -281,38 +278,38 @@ commands: &[],
 /// acceptance path a dragged card resolves through.
 pub fn kanban_board_capability() -> WidgetCapability {
     WidgetCapability {
-kind: WidgetKind::KanbanBoard,
-canonical_name: "kanban_board",
-aliases: &["kanban", "board"],
-properties: KANBAN_BOARD_PROPERTIES,
-events: KANBAN_BOARD_EVENTS,
-// `cancel_drag` is payload-free; `set_columns` / `set_cards` name their payload through
-// the `columns` / `cards` records properties (B26.03).
-commands: &["cancel_drag", "set_columns", "set_cards"],
+        kind: WidgetKind::KanbanBoard,
+        canonical_name: "kanban_board",
+        aliases: &["kanban", "board"],
+        properties: KANBAN_BOARD_PROPERTIES,
+        events: KANBAN_BOARD_EVENTS,
+        // `cancel_drag` is payload-free; `set_columns` / `set_cards` name their payload through
+        // the `columns` / `cards` records properties (B26.03).
+        commands: &["cancel_drag", "set_columns", "set_cards"],
     }
 }
 
 /// `kanban_card_view` — a real card inside a kanban column (`COMP-18`).
 pub fn kanban_card_view_capability() -> WidgetCapability {
     WidgetCapability {
-kind: WidgetKind::KanbanCardView,
-canonical_name: "kanban_card_view",
-aliases: &["kanban_card_control"],
-properties: KANBAN_CARD_VIEW_PROPERTIES,
-events: KANBAN_CARD_VIEW_EVENTS,
-commands: &[],
+        kind: WidgetKind::KanbanCardView,
+        canonical_name: "kanban_card_view",
+        aliases: &["kanban_card_control"],
+        properties: KANBAN_CARD_VIEW_PROPERTIES,
+        events: KANBAN_CARD_VIEW_EVENTS,
+        commands: &[],
     }
 }
 
 /// `kanban_column_header` — a real column header for a kanban board (`COMP-18`).
 pub fn kanban_column_header_capability() -> WidgetCapability {
     WidgetCapability {
-kind: WidgetKind::KanbanColumnHeader,
-canonical_name: "kanban_column_header",
-aliases: &["kanban_column_bar"],
-properties: KANBAN_COLUMN_HEADER_PROPERTIES,
-events: KANBAN_COLUMN_HEADER_EVENTS,
-commands: &[],
+        kind: WidgetKind::KanbanColumnHeader,
+        canonical_name: "kanban_column_header",
+        aliases: &["kanban_column_bar"],
+        properties: KANBAN_COLUMN_HEADER_PROPERTIES,
+        events: KANBAN_COLUMN_HEADER_EVENTS,
+        commands: &[],
     }
 }
 
@@ -324,7 +321,10 @@ pub fn create_gantt_widget(geometry: Rect, text: &str) -> Box<dyn Widget> {
 
 /// Creates a gantt task column with no tasks (COMP-A4). `text` is applied as the control's label.
 pub fn create_gantt_task_grid(geometry: Rect, text: &str) -> Box<dyn Widget> {
-    apply_control_label(Box::new(crate::project::gantt::gantt_widget::GanttTaskGrid::new(geometry)), text)
+    apply_control_label(
+        Box::new(crate::project::gantt::gantt_widget::GanttTaskGrid::new(geometry)),
+        text,
+    )
 }
 
 /// Creates a timeline axis over `0 ..= 100` (`COMP-14`).
@@ -355,7 +355,6 @@ pub fn create_kanban_column_header(geometry: Rect, text: &str) -> Box<dyn Widget
     Box::new(crate::project::kanban_board::KanbanColumnHeader::new(geometry, text))
 }
 
-
 /// A registered control: its capability row, its constructor, and its defaults provider.
 type ProjectRow = (WidgetCapability, WidgetCtor, fn(&str) -> Option<CapabilityValue>);
 
@@ -366,41 +365,27 @@ type ProjectRow = (WidgetCapability, WidgetCtor, fn(&str) -> Option<CapabilityVa
 /// reported rather than silently shadowed.
 pub fn install(factory: &mut WidgetFactory) -> Result<(), RegistrationError> {
     let rows: [ProjectRow; 7] = [
-        (
-            gantt_widget_capability(),
-            create_gantt_widget,
-            |p| default_property_value("gantt_widget", p),
-        ),
-        (
-            gantt_task_grid_capability(),
-            create_gantt_task_grid,
-            |p| default_property_value("gantt_task_grid", p),
-        ),
-        (
-            timeline_axis_capability(),
-            create_timeline_axis,
-            |p| default_property_value("timeline_axis", p),
-        ),
-        (
-            dependency_editor_capability(),
-            create_dependency_editor,
-            |p| default_property_value("dependency_editor", p),
-        ),
-        (
-            kanban_board_capability(),
-            create_kanban_board,
-            |p| default_property_value("kanban_board", p),
-        ),
-        (
-            kanban_card_view_capability(),
-            create_kanban_card_view,
-            |p| default_property_value("kanban_card_view", p),
-        ),
-        (
-            kanban_column_header_capability(),
-            create_kanban_column_header,
-            |p| default_property_value("kanban_column_header", p),
-        ),
+        (gantt_widget_capability(), create_gantt_widget, |p| {
+            default_property_value("gantt_widget", p)
+        }),
+        (gantt_task_grid_capability(), create_gantt_task_grid, |p| {
+            default_property_value("gantt_task_grid", p)
+        }),
+        (timeline_axis_capability(), create_timeline_axis, |p| {
+            default_property_value("timeline_axis", p)
+        }),
+        (dependency_editor_capability(), create_dependency_editor, |p| {
+            default_property_value("dependency_editor", p)
+        }),
+        (kanban_board_capability(), create_kanban_board, |p| {
+            default_property_value("kanban_board", p)
+        }),
+        (kanban_card_view_capability(), create_kanban_card_view, |p| {
+            default_property_value("kanban_card_view", p)
+        }),
+        (kanban_column_header_capability(), create_kanban_column_header, |p| {
+            default_property_value("kanban_column_header", p)
+        }),
     ];
     for (capability, ctor, defaults) in rows {
         let name = capability.canonical_name;
@@ -419,11 +404,11 @@ pub fn default_property_value(kind: &str, name: &str) -> Option<CapabilityValue>
         "gantt_widget" => match name {
             // A fresh schedule has no tasks; the empty list of the declared schema is what a
             // dropped binding resets to (`Null` would be a value the schema refuses).
-            "tasks" => Some(CapabilityValue::Records(
-                rust_widgets::widget::capability::RecordList::new(
+            "tasks" => {
+                Some(CapabilityValue::Records(rust_widgets::widget::capability::RecordList::new(
                     &crate::project::gantt::gantt_widget::GANTT_TASK_SCHEMA,
-                ),
-            )),
+                )))
+            }
             "task_count" => Some(CapabilityValue::UInt(0)),
             "selected_id" => Some(CapabilityValue::Null),
             "viewport_start" => Some(CapabilityValue::Int(0)),
@@ -452,25 +437,25 @@ pub fn default_property_value(kind: &str, name: &str) -> Option<CapabilityValue>
         "dependency_editor" => match name {
             "dependencies" => Some(CapabilityValue::UInt(0)),
             // An editor starts with no edges: the empty list of the declared schema.
-            "dependency_edges" => Some(CapabilityValue::Records(
-                rust_widgets::widget::capability::RecordList::new(
+            "dependency_edges" => {
+                Some(CapabilityValue::Records(rust_widgets::widget::capability::RecordList::new(
                     &crate::project::gantt::gantt_widget::companions::DEPENDENCY_SCHEMA,
-                ),
-            )),
+                )))
+            }
             "editable" => Some(CapabilityValue::Bool(true)),
             _ => None,
         },
         "kanban_board" => match name {
-            "columns" => Some(CapabilityValue::Records(
-                rust_widgets::widget::capability::RecordList::new(
+            "columns" => {
+                Some(CapabilityValue::Records(rust_widgets::widget::capability::RecordList::new(
                     &crate::project::kanban_board::KANBAN_COLUMN_SCHEMA,
-                ),
-            )),
-            "cards" => Some(CapabilityValue::Records(
-                rust_widgets::widget::capability::RecordList::new(
+                )))
+            }
+            "cards" => {
+                Some(CapabilityValue::Records(rust_widgets::widget::capability::RecordList::new(
                     &crate::project::kanban_board::KANBAN_CARD_SCHEMA,
-                ),
-            )),
+                )))
+            }
             "column_count" | "card_count" | "horizontal_scroll_offset" | "lane_count" => {
                 Some(CapabilityValue::UInt(0))
             }
@@ -502,26 +487,14 @@ pub fn default_property_value(kind: &str, name: &str) -> Option<CapabilityValue>
 /// Every property name the project suite publishes, for a quick completeness check.
 pub fn published_property_names() -> Vec<(&'static str, Vec<&'static str>)> {
     vec![
-        (
-            "gantt_widget",
-            GANTT_WIDGET_PROPERTIES.iter().map(|schema| schema.name).collect(),
-        ),
-        (
-            "gantt_task_grid",
-            GANTT_TASK_GRID_PROPERTIES.iter().map(|schema| schema.name).collect(),
-        ),
-        (
-            "timeline_axis",
-            TIMELINE_AXIS_PROPERTIES.iter().map(|schema| schema.name).collect(),
-        ),
+        ("gantt_widget", GANTT_WIDGET_PROPERTIES.iter().map(|schema| schema.name).collect()),
+        ("gantt_task_grid", GANTT_TASK_GRID_PROPERTIES.iter().map(|schema| schema.name).collect()),
+        ("timeline_axis", TIMELINE_AXIS_PROPERTIES.iter().map(|schema| schema.name).collect()),
         (
             "dependency_editor",
             DEPENDENCY_EDITOR_PROPERTIES.iter().map(|schema| schema.name).collect(),
         ),
-        (
-            "kanban_board",
-            KANBAN_BOARD_PROPERTIES.iter().map(|schema| schema.name).collect(),
-        ),
+        ("kanban_board", KANBAN_BOARD_PROPERTIES.iter().map(|schema| schema.name).collect()),
         (
             "kanban_card_view",
             KANBAN_CARD_VIEW_PROPERTIES.iter().map(|schema| schema.name).collect(),
@@ -536,26 +509,11 @@ pub fn published_property_names() -> Vec<(&'static str, Vec<&'static str>)> {
 /// Every event name the project suite publishes, for a quick completeness check.
 pub fn published_event_names() -> Vec<(&'static str, Vec<&'static str>)> {
     vec![
-        (
-            "gantt_widget",
-            GANTT_WIDGET_EVENTS.iter().map(|schema| schema.name).collect(),
-        ),
-        (
-            "gantt_task_grid",
-            GANTT_TASK_GRID_EVENTS.iter().map(|schema| schema.name).collect(),
-        ),
-        (
-            "timeline_axis",
-            TIMELINE_AXIS_EVENTS.iter().map(|schema| schema.name).collect(),
-        ),
-        (
-            "kanban_board",
-            KANBAN_BOARD_EVENTS.iter().map(|schema| schema.name).collect(),
-        ),
-        (
-            "kanban_card_view",
-            KANBAN_CARD_VIEW_EVENTS.iter().map(|schema| schema.name).collect(),
-        ),
+        ("gantt_widget", GANTT_WIDGET_EVENTS.iter().map(|schema| schema.name).collect()),
+        ("gantt_task_grid", GANTT_TASK_GRID_EVENTS.iter().map(|schema| schema.name).collect()),
+        ("timeline_axis", TIMELINE_AXIS_EVENTS.iter().map(|schema| schema.name).collect()),
+        ("kanban_board", KANBAN_BOARD_EVENTS.iter().map(|schema| schema.name).collect()),
+        ("kanban_card_view", KANBAN_CARD_VIEW_EVENTS.iter().map(|schema| schema.name).collect()),
         (
             "kanban_column_header",
             KANBAN_COLUMN_HEADER_EVENTS.iter().map(|schema| schema.name).collect(),

@@ -25,17 +25,17 @@
 
 use alloc::vec::Vec;
 
-use rust_widgets::core::{Color, HorizontalAlignment, Point, Rect};
-use rust_widgets::render::RenderContext;
-use rust_widgets::widget::capability::properties_trait::{base_property_get, base_property_set};
-use rust_widgets::widget::capability::types::{CapabilityAccessError, CapabilityValue};
-use rust_widgets::widget::capability::WidgetProperties;
 use crate::finance::indicators;
 use crate::finance::layout::{
     panel_colors, IndexAxis, PanelColors, PlotArea, PriceAxis, PANEL_MIN_CONTRAST,
 };
 use crate::finance::types::Bar;
 use crate::finance::types::PriceSeries;
+use rust_widgets::core::{Color, HorizontalAlignment, Point, Rect};
+use rust_widgets::render::RenderContext;
+use rust_widgets::widget::capability::properties_trait::{base_property_get, base_property_set};
+use rust_widgets::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use rust_widgets::widget::capability::WidgetProperties;
 use rust_widgets::widget::metrics::role_font;
 use rust_widgets::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use rust_widgets::{impl_widget_property_hooks, property_names_of};
@@ -707,7 +707,9 @@ impl IndicatorChart {
     /// The anchor is the primary series' point at the hovered index; when that series has no
     /// finite value there, the pane's vertical middle is used so the bubble still points at the
     /// bar the host is reading (gap 10).
-    pub fn hover_anchor(&self) -> Option<(Point, Vec<rust_widgets::widget::companions::TooltipLine>)> {
+    pub fn hover_anchor(
+        &self,
+    ) -> Option<(Point, Vec<rust_widgets::widget::companions::TooltipLine>)> {
         let index = self.hovered_index?;
         let (start, end) = self.view_bounds();
         if index < start || index >= end {
@@ -747,6 +749,9 @@ impl IndicatorChart {
 impl Widget for IndicatorChart {
     fn base(&self) -> &BaseWidget {
         &self.base
+    }
+    fn capability_name(&self) -> Option<&'static str> {
+        Some("indicator_chart")
     }
     fn set_state_theme_hook(&mut self) {
         rust_widgets::style::reapply_active_theme_state(self);
@@ -1236,8 +1241,10 @@ mod tests {
     #[test]
     fn an_empty_series_draws_without_panicking() {
         let mut chart = IndicatorChart::new(Rect::new(0, 0, 320, 160));
-        let mut backend =
-            rust_widgets::render::SoftwarePaintBackend::new(rust_widgets::core::Size::new(320, 160), 1.0);
+        let mut backend = rust_widgets::render::SoftwarePaintBackend::new(
+            rust_widgets::core::Size::new(320, 160),
+            1.0,
+        );
         let mut context = RenderContext::new(&mut backend);
         chart.draw(&mut context);
     }
@@ -1256,8 +1263,10 @@ mod tests {
             let mut chart = IndicatorChart::new(Rect::new(0, 0, 400, 160));
             chart.set_series(fixtures::sample_series(80));
             chart.set_mode(mode);
-            let mut backend =
-                rust_widgets::render::SoftwarePaintBackend::new(rust_widgets::core::Size::new(400, 160), 1.0);
+            let mut backend = rust_widgets::render::SoftwarePaintBackend::new(
+                rust_widgets::core::Size::new(400, 160),
+                1.0,
+            );
             let mut context = RenderContext::new(&mut backend);
             chart.draw(&mut context);
         }
@@ -1277,10 +1286,7 @@ mod tests {
                     f64::NAN,
                 ));
             } else {
-                series.push(crate::finance::types::Bar::flat(
-                    100.0 + index as f64,
-                    0.0,
-                ));
+                series.push(crate::finance::types::Bar::flat(100.0 + index as f64, 0.0));
             }
         }
         for mode in [
@@ -1294,8 +1300,10 @@ mod tests {
             let mut chart = IndicatorChart::new(Rect::new(0, 0, 400, 160));
             chart.set_series(series.clone());
             chart.set_mode(mode);
-            let mut backend =
-                rust_widgets::render::SoftwarePaintBackend::new(rust_widgets::core::Size::new(400, 160), 1.0);
+            let mut backend = rust_widgets::render::SoftwarePaintBackend::new(
+                rust_widgets::core::Size::new(400, 160),
+                1.0,
+            );
             let mut context = RenderContext::new(&mut backend);
             chart.draw(&mut context);
         }
@@ -1315,8 +1323,10 @@ mod tests {
         chart.set_series(fixtures::sample_series(60));
         chart.set_mode(IndicatorMode::Rsi);
         let expected = chart.compute();
-        let mut backend =
-            rust_widgets::render::SoftwarePaintBackend::new(rust_widgets::core::Size::new(400, 160), 1.0);
+        let mut backend = rust_widgets::render::SoftwarePaintBackend::new(
+            rust_widgets::core::Size::new(400, 160),
+            1.0,
+        );
         let mut context = RenderContext::new(&mut backend);
         chart.draw(&mut context);
 

@@ -200,6 +200,9 @@ impl Widget for KanbanColumnHeader {
     fn base(&self) -> &BaseWidget {
         &self.base
     }
+    fn capability_name(&self) -> Option<&'static str> {
+        Some("kanban_column_header")
+    }
     fn set_state_theme_hook(&mut self) {
         rust_widgets::style::reapply_active_theme_state(self);
     }
@@ -378,8 +381,9 @@ impl Draw for KanbanColumnHeader {
             .as_ref()
             .map(|colors| colors.primary)
             .unwrap_or(Color::PRIMARY);
-        let warning = rust_widgets::style::semantic_color(rust_widgets::style::SemanticColor::Warning)
-            .unwrap_or(Color::PRIMARY);
+        let warning =
+            rust_widgets::style::semantic_color(rust_widgets::style::SemanticColor::Warning)
+                .unwrap_or(Color::PRIMARY);
         let font = role_font(style, 12.0);
 
         context.face_with_gradient_corners(

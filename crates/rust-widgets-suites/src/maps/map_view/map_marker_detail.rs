@@ -15,6 +15,7 @@
 
 use rust_widgets::core::{Color, HorizontalAlignment, Point, Rect};
 use rust_widgets::event::{Event, EventHandler};
+use rust_widgets::impl_draw_bridge;
 use rust_widgets::render::RenderContext;
 use rust_widgets::signal::Signal1;
 use rust_widgets::widget::capability::properties_trait::{base_property_get, base_property_set};
@@ -23,7 +24,6 @@ use rust_widgets::widget::capability::WidgetProperties;
 use rust_widgets::widget::metrics::effective_font;
 use rust_widgets::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use rust_widgets::{impl_widget_property_hooks, property_names_of};
-use rust_widgets::impl_draw_bridge;
 
 /// One line of a marker's detail window.
 ///
@@ -303,6 +303,9 @@ impl MapMarkerDetail {
 impl Widget for MapMarkerDetail {
     fn base(&self) -> &BaseWidget {
         &self.base
+    }
+    fn capability_name(&self) -> Option<&'static str> {
+        Some("map_marker_detail")
     }
     fn set_state_theme_hook(&mut self) {
         rust_widgets::style::reapply_active_theme_state(self);

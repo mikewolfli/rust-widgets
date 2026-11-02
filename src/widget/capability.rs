@@ -1988,8 +1988,20 @@ impl WidgetFactory {
             return self.capabilities.get(indices[0]);
         }
 
-        // Resolve by concrete type first. This is the only reliable tie-break: the
-        // kind alone cannot distinguish two types that report the same one.
+        // The control's own answer wins over any table in this crate. An external package's
+        // concrete type cannot be named by the parent's tie-break, so a control that shares its
+        // kind (the suite's media companions are the canonical case) states the capability row
+        // it was registered under instead of the lookup guessing.
+        if let Some(name) = widget.capability_name() {
+            let name = canonical_of(name).unwrap_or(name);
+            let index = with_normalized_key(name, |key| self.key_to_index.get(key).copied());
+            if let Some(index) = index {
+                return self.capabilities.get(index);
+            }
+        }
+
+        // Resolve by concrete type next. This is the reliable tie-break when the control does not
+        // answer for itself: the kind alone cannot distinguish two types that report the same one.
         //
         // Iteration order matters when two capabilities in this group are **the same
         // control under two names** (`table_widget` / `table`, `group_box` / `panel`,

@@ -167,8 +167,12 @@ fn every_published_command_is_dispatched_by_its_control() {
         "a control lost its `command` implementation: {handled}/{total} handled, refused: \
          {refused:?}"
     );
+    // The first suite migration moved 34 controls out of this crate, together with the
+    // commands their capability rows published. Those names are now audited by the suites
+    // crate's own tests: 460 - 15 = 445. The floor stays here so this crate cannot silently
+    // lose a command while the migrated rows are out of its registry.
     assert!(
-        total >= 460,
+        total >= 445,
         "fewer commands are published than the registry declares: {total} — a capability \
          stopped advertising a list it still implements"
     );

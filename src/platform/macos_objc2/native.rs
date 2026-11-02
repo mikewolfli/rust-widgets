@@ -1292,15 +1292,15 @@ define_class!(
         /// made once, in `platform::window_control`, so the macOS, Windows and GTK backends all
         /// consult the same close handler and `WindowCloseRequest` route.
         #[unsafe(method(windowShouldClose:))]
-        fn window_should_close(&self, _window: &NSWindow) -> bool {
+        fn window_should_close(&self, _window: &NSWindow) -> objc2::runtime::Bool {
             #[cfg(widgets_unstripped)]
             if let Some(widget_id) = self.widget_target() {
                 if !crate::platform::window_control::request_window_close(widget_id) {
-                    return false;
+                    return false.into();
                 }
                 let _ = crate::close_widget(widget_id);
             }
-            true
+            true.into()
         }
 
         /// The window became key: the whole top-level window gained keyboard focus.

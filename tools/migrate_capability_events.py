@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Rewrite every capability's `events:` list into a generated-schema lookup.
 
-# Why this is a script and not 187 hand edits
+# Why this is a script and not hand edits
 
 BLUE19 step 1 changes `WidgetCapability.events` from `&'static [&'static str]` to
-`&'static [EventSchema]`. The 187 capability constructors in
-`src/widget/capability/properties/` each spell their names inline:
+`&'static [EventSchema]`. Every capability constructor in
+`src/widget/capability/properties/` spells its names inline:
 
     events: &["clicked", "pressed", "released", "state_changed"],
 

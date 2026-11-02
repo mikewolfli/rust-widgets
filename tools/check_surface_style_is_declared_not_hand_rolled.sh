@@ -77,13 +77,16 @@ ALLOWLIST="tools/surface_style_allowlist.txt"
 # reverse injection recorded in `tools/gates_reverse_injection.md`.
 PATTERN='blend\(&Color::WHITE|blend\(&Color::rgb\(255, 255, 255\)|blend\(&Color::BLACK'
 
-echo "[1/3] measuring hand-derived bevels under src/widget/"
+echo "[1/3] measuring hand-derived bevels under the control trees"
 if ! [ -d src/widget ]; then
     echo "  FAIL  src/widget does not exist; the gate is measuring the wrong tree"
     exit 1
 fi
 
-HITS="$(grep -rlE "$PATTERN" src/widget/ --include='*.rs' | sort || true)"
+# The migrated groups live in the suites package now. Scanning only `src/widget` would
+# silently drop their bevels from the rule while their allowlist rows still looked covered.
+HITS="$( { grep -rlE "$PATTERN" src/widget/ --include='*.rs' || true; \
+           grep -rlE "$PATTERN" crates/rust-widgets-suites/src/ --include='*.rs' || true; } | sort -u)"
 COUNT="$(printf '%s\n' "$HITS" | grep -c . || true)"
 
 # A pattern that matches nothing at all would make every assertion below vacuously

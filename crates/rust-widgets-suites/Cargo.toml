@@ -4,17 +4,17 @@ version = "3.3.0"
 edition = "2021"
 rust-version = "1.88"
 license = "MIT"
-description = "Optional widget suites for rust_widgets — the form group (validated forms and form sets) with complete property, method, event, layout, wiring and capability surfaces"
+description = "Optional widget suites for rust_widgets — forms, web controls, finance, maps, project, devtools and media groups with complete property, method, event, layout, wiring and capability surfaces"
 authors = ["Mike Li <mikewolfli@163.com>"]
 homepage = "https://github.com/mikewolfli/rust-widgets"
 repository = "https://github.com/mikewolfli/rust-widgets"
 readme = "README.md"
-keywords = ["gui", "widget", "form", "validation", "layout"]
+keywords = ["gui", "widget", "form", "web", "layout"]
 categories = ["gui"]
 
-# A nested package inside the main crate's tree, like `rust-widgets-webview`: the parent's
-# `include` excludes `crates/**/*`, so this package is not part of the parent's tarball, and a
-# host opts in explicitly with the path dependency below.
+# A nested package inside the main crate's tree: the parent's `include` excludes `crates/**/*`,
+# so this package is not part of the parent's tarball, and a host opts in explicitly with the
+# path dependency below.
 include = ["/src/**/*", "/README.md"]
 
 # The migrated sources keep the parent crate's custom `cfg` names (device profiles and the
@@ -35,6 +35,8 @@ unexpected_cfgs = { level = "warn", check-cfg = [
 default = ["form"]
 # The form group: validated forms and form sets.
 form = []
+# The web group: the browser model (history, privacy, plugins, JS engine) and its controls.
+webview = []
 # The finance group: candles, volume, depth, order book, quote board and indicators.
 finance = []
 # The project group: Gantt, timeline, dependencies and kanban.
@@ -48,14 +50,23 @@ media-playback = []
 touch = []
 # The devtools group: terminal view, diff viewer and diff file list.
 devtools = []
+# The real JavaScript interpreter. Off by default so a host that only models a page does not pay
+# for `boa_engine`; it implies the web group it extends.
+js-engine = ["webview", "dep:boa_engine"]
+# Real HTTP fetching for the web model. Off by default; implies the web group it extends.
+web-http = ["webview", "dep:ureq"]
 
 [dependencies]
 # The dependency runs one way only: the parent cannot depend on this crate (Cargo rejects a
 # package cycle). The suite extends the parent's widget layer, so it takes the parent's default
-# (device) profile — the same shape `rust-widgets-webview` uses.
+# (device) profile.
 rust_widgets = { version = "3.3.0", path = "../.." }
 # The migrated controls warn through `log` exactly as they did in the parent; the host decides
 # which logger, if any, is installed.
 log = "0.4"
 # The Lottie player parses its animation document directly.
 serde_json = "1.0"
+# The optional real JavaScript interpreter behind `js-engine`.
+boa_engine = { version = "0.19", optional = true }
+# The optional real HTTP client behind `web-http`.
+ureq = { version = "3.0", optional = true, features = [] }

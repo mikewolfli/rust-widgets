@@ -465,7 +465,7 @@ DELEGATES: dict[str, str] = {
 
 # Converted controls that live outside the root crate, keyed by control.
 #
-# `WEB-001` moved the web widgets into `crates/rust-widgets-webview`, which owns its capability
+# `WEB-001` moved the web widgets into `crates/rust-widgets-suites/src/webview`, which owns its capability
 # table. The census is generated from the root crate's `properties.rs`, so these controls are
 # absent from it, and reading them out of the census would be reading the wrong crate's answer.
 # The row therefore names the source file, the struct, and the capability constant that publishes
@@ -476,28 +476,28 @@ DELEGATES: dict[str, str] = {
 # publish 24 event names between them and would simply stop being audited.
 EXTERNAL: dict[str, tuple[str, str, str]] = {
     "web_engine_view": (
-        "crates/rust-widgets-webview/src/web_engine.rs",
+        "crates/rust-widgets-suites/src/webview/web_engine.rs",
         "WebEngineView",
         "WEB_ENGINE_VIEW_EVENTS",
     ),
     "web_find_bar": (
-        "crates/rust-widgets-webview/src/find_bar.rs",
+        "crates/rust-widgets-suites/src/webview/find_bar.rs",
         "WebFindBar",
         "WEB_FIND_BAR_EVENTS",
     ),
     "page_find_bar": (
-        "crates/rust-widgets-webview/src/find_bar.rs",
+        "crates/rust-widgets-suites/src/webview/find_bar.rs",
         "WebFindBar",
         "WEB_FIND_BAR_EVENTS",
     ),
     "web_history_panel": (
-        "crates/rust-widgets-webview/src/web_history_panel.rs",
+        "crates/rust-widgets-suites/src/webview/web_history_panel.rs",
         "WebHistoryPanel",
         "WEB_HISTORY_PANEL_EVENTS",
     ),
 }
 
-EXTERNAL_CAPABILITY_SOURCE = REPO / "crates/rust-widgets-webview/src/capability.rs"
+EXTERNAL_CAPABILITY_SOURCE = REPO / "crates/rust-widgets-suites/src/webview/capability.rs"
 
 NOT_YET_CONVERTED_REASON = (
     "`event_signal_dyn` is unimplemented, so `forward_all` wires none of its names. "

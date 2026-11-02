@@ -67,3 +67,9 @@ call	contours=3	ink=116	runs=1	sha256=12b7d7555718cd7baba484d3efc053a7202361d9ca
 send	contours=2	ink=114	runs=2	sha256=c05fe025edddc05263df271a5a5615cea682da2e9d5b60847a2d187c3f8da441
 notifications_off	contours=3	ink=169	runs=2	sha256=5aec22dd83ade346d1605424ce760042ca2af0f90b17094bd935c2671a8e4c8a
 fullscreen	contours=4	ink=84	runs=0	sha256=f899594d257a94acbfb6e72959af2eb3add1897e6105394001a80ae7511f2941
+debug_bug	contours=4	ink=156	runs=2	sha256=dd20b0bec619bc3fcb6138a39f338552836bc69d328ce8a3fc5ebebbfef4b20e
+design_component	contours=8	ink=233	runs=1	sha256=6a374d75d4a104c8bd1bcfb7cdb53a2550542a3d46222e4a44de2546acb67a22
+design_event	contours=2	ink=106	runs=2	sha256=69679723e0e7c39afd4f04167596879032baa54aa80c792f6a6268978252fdf6
+test_flask	contours=2	ink=144	runs=2	sha256=4063233543422bc8540e9e8ed5273ac5e3ad4d5780da3e73f429b5f0c370e8b0
+tools_terminal	contours=4	ink=224	runs=3	sha256=2014dcba477273643e4a5a913aa5fb83426eb06dd5f8cdba1ba093870972fa8c
+tools_translate	contours=3	ink=160	runs=2	sha256=96d3f1a63de4add46b76fc4bb52d955c0654ffe9d3392feb213fd0f922727e27

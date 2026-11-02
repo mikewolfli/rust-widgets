@@ -15,8 +15,9 @@ services at all.
 
 ## Highlights
 
-- **230 widget kinds** — inputs, tables, trees, docks, dialogs, media, charts, editors and more,
-  with one implementation shared by every platform.
+- **230 widget kinds / 240 core controls** — inputs, tables, trees, docks, dialogs, media, charts,
+  editors and more, with one implementation shared by every platform. The optional suites add
+  **39 more controls in 7 groups**, installed into the same `WidgetFactory`.
 - **Cascading menus and real session state** — dropdowns, menu buttons and menus open up to four
   nested submenu levels, and controls opt in to `SaveState` so a host can restore their user state
   with explicit, restart-stable keys.
@@ -106,10 +107,25 @@ Behaviour is explicit rather than incidental: `clicked` requires the release to 
 control, `pressed` is continuous while a drag stays on it, and a focus ring is drawn only when the
 user is actually on the keyboard.
 
-Optional packages sit beside the library rather than inside it: `rust-widgets-webview` carries the
-web family, and [`rust-widgets-suites`](crates/rust-widgets-suites) carries control groups — today
-the form group (`Form` and `FormSet`, with their property, event, layout, validation and
-accessibility surfaces). Each installs into the same `WidgetFactory` and owns its names.
+Optional packages sit beside the library rather than inside it, and they are **groups**, not forks:
+[`rust-widgets-suites`](crates/rust-widgets-suites) carries the control groups that are not
+universal (forms, web, finance, maps, project, devtools and media playback). Each group installs
+into the same `WidgetFactory` and owns its names, schemas and constructors.
+
+## What lives under `crates/`
+
+Three packages sit beside the library. None of them is compiled into the core `rust_widgets`
+package; a host opts in explicitly.
+
+| Crate | What it is | How a host uses it |
+|---|---|---|
+| `rust-widgets-font` | The OFL font payloads behind the `fonts-*` features, split out so the core package stays under crates.io's 10 MiB ceiling. | Implicitly, by enabling a `fonts-*` feature. Do not depend on it directly. |
+| `rust-widgets-suites` | Seven optional control groups — `form`, `webview`, `finance`, `maps`, `project`, `devtools`, `media-playback` — **39 controls** with the same property, event, layout, wiring and accessibility surfaces as a core control. The web family that used to be the separate `rust-widgets-webview` crate is now the `webview` group. | `rust_widgets_suites::install(&mut factory)`, or one group's `install_*_group`. |
+| `mobile-services` | Mobile application-shell services for Android, iOS and HarmonyOS: keep-awake, haptics, permissions, notifications, share, deep links, safe-area insets and orientation lock. Not GUI core. | `rust_widgets_mobile_services::*` on a mobile target; a desktop build never links it. |
+
+The suites crate is not a workspace member: it depends on `rust_widgets`, never the reverse, and
+the parent package's `include` list excludes `crates/**`, so `cargo package` at the root neither
+ships nor compiles it.
 
 ## Text, fonts and icons
 
@@ -140,7 +156,7 @@ accessibility surfaces). Each installs into the same `WidgetFactory` and owns it
   committed; tab widths are measured, tabs carry a close affordance and a hover wash; a press on a
   line number selects that line; `Ctrl`+click adds a caret; soft-wrapped continuation rows keep the
   line's indentation; and `relative_line_numbers` switches the gutter to caret-relative numbering.
-- `Icon` ships **69** `IconName` tokens. The three capable profiles draw the real **Material
+- `Icon` ships **75** `IconName` tokens. The three capable profiles draw the real **Material
   Symbols** outlines by default; `mini` / `embedded` draw geometry derived from the same outlines,
   so the two paths cannot disagree. Hosts can add icons with `register_icon` or
   `register_icon_on_grid`.

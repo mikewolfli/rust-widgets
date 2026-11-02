@@ -3,9 +3,13 @@
 
 //! MapView widget.
 
+use alloc::rc::Rc;
+use core::cell::{Ref, RefCell};
+use core::fmt::Write as _;
 use rust_widgets::compat::HashMap;
 use rust_widgets::core::{Color, HorizontalAlignment, Point, Rect};
 use rust_widgets::event::{Event, EventHandler};
+use rust_widgets::impl_draw_bridge;
 use rust_widgets::render::RenderContext;
 use rust_widgets::signal::Signal1;
 use rust_widgets::style::{MotionSlot, PropertyDriver};
@@ -16,10 +20,6 @@ use rust_widgets::widget::capability::WidgetProperties;
 use rust_widgets::widget::metrics::effective_font;
 use rust_widgets::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use rust_widgets::{impl_widget_property_hooks, property_names_of};
-use alloc::rc::Rc;
-use core::cell::{Ref, RefCell};
-use core::fmt::Write as _;
-use rust_widgets::impl_draw_bridge;
 
 /// A map marker's pin size: a 6x6 square centred on the marker's screen position.
 ///
@@ -211,7 +211,9 @@ fn map_marker_record(
         Some(rust_widgets::widget::IconSource::Builtin(name)) => {
             record = record.with(
                 "icon_source",
-                CapabilityValue::IconSpec(rust_widgets::widget::icon_source::IconSpec::Builtin(name)),
+                CapabilityValue::IconSpec(rust_widgets::widget::icon_source::IconSpec::Builtin(
+                    name,
+                )),
             );
         }
         // A borrowed static geometry has no document form, so the read refuses rather than
@@ -252,13 +254,15 @@ fn map_marker_from_record(
     }
     match record.get("icon_source") {
         None | Some(CapabilityValue::Null) => {}
-        Some(CapabilityValue::IconSpec(rust_widgets::widget::icon_source::IconSpec::Builtin(name))) => {
+        Some(CapabilityValue::IconSpec(rust_widgets::widget::icon_source::IconSpec::Builtin(
+            name,
+        ))) => {
             style.icon = Some(rust_widgets::widget::IconSource::Builtin(*name));
         }
         // A resource descriptor needs the host's resolver, which a property write does not have.
-        Some(CapabilityValue::IconSpec(rust_widgets::widget::icon_source::IconSpec::Resource {
-            ..
-        })) => return Err(CapabilityAccessError::ResourceResolutionRequired),
+        Some(CapabilityValue::IconSpec(
+            rust_widgets::widget::icon_source::IconSpec::Resource { .. },
+        )) => return Err(CapabilityAccessError::ResourceResolutionRequired),
         Some(_) => return Err(CapabilityAccessError::TypeMismatch),
     }
     Ok(MapMarker {
@@ -1163,7 +1167,8 @@ impl MapView {
         };
         if let Some(icon) = marker.style.icon {
             let slot = Rect::new(sx as i32 - half, sy as i32 - half, size, size);
-            if let Err(error) = rust_widgets::widget::paint_icon(context, icon.into(), slot, color) {
+            if let Err(error) = rust_widgets::widget::paint_icon(context, icon.into(), slot, color)
+            {
                 log::warn!("map marker '{}' icon failed: {error:?}", marker.id);
             }
         } else {
@@ -1198,6 +1203,9 @@ impl MapView {
 impl Widget for MapView {
     fn base(&self) -> &BaseWidget {
         &self.base
+    }
+    fn capability_name(&self) -> Option<&'static str> {
+        Some("map_view")
     }
     fn set_state_theme_hook(&mut self) {
         rust_widgets::style::reapply_active_theme_state(self);
@@ -1294,15 +1302,15 @@ impl WidgetProperties for MapView {
             // The whole marker list as records (BLUE26 B26.09): `set_markers` takes a list the bare
             // command channel cannot carry, so the list is the property and `set_markers` is its
             // published command form.
-            "markers" => {
-                Ok(CapabilityValue::Records(rust_widgets::widget::capability::RecordList::from_items(
+            "markers" => Ok(CapabilityValue::Records(
+                rust_widgets::widget::capability::RecordList::from_items(
                     &MAP_MARKER_SCHEMA,
                     self.markers()
                         .iter()
                         .map(map_marker_record)
                         .collect::<Result<Vec<_>, CapabilityAccessError>>()?,
-                )))
-            }
+                ),
+            )),
             "center_x" => Ok(CapabilityValue::Float(self.center().0 as f64)),
             "center_y" => Ok(CapabilityValue::Float(self.center().1 as f64)),
             "zoom" => Ok(CapabilityValue::Float(self.zoom() as f64)),

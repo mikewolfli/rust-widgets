@@ -12,8 +12,8 @@
 # # Why it runs the test binary rather than a script
 #
 # The round trip has two halves, and only one of them is text: `DesignerManifest::from_json` is the
-# independent parser, and the export walks the live capability table (186 published names across
-# 187 controls) with each property's default value read from the property API. A script can compare
+# independent parser, and the export walks the live capability table with each property's default
+# value read from the property API. A script can compare
 # strings it is given; it cannot drive the factory. So the assertions live in
 # `tests/designer_manifest_roundtrip_test.rs` and this gate runs them.
 #

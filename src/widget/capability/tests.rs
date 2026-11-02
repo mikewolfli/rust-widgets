@@ -187,11 +187,18 @@ fn default_factory_registers_core_capabilities() {
     assert!(factory.capability("ribbon").is_some());
     assert!(factory.capability("colorpicker").is_some());
     assert!(factory.capability("code_editor").is_some());
-    assert!(factory.capability("gantt").is_some());
-    assert!(factory.capability("terminalview").is_some());
     assert!(factory.capability("snackbar").is_some());
-    assert!(factory.capability("mapview").is_some());
-    assert!(factory.capability("mediaplayer").is_some());
+    // The first suite batch lives in `rust-widgets-suites`, not the parent registry. These
+    // names must be absent here so a host cannot silently build a control whose capability row
+    // (schemas, events, constructor) belongs to another package.
+    for migrated in
+        ["gantt", "terminalview", "mapview", "mediaplayer", "diff_viewer", "kanban_board"]
+    {
+        assert!(
+            factory.capability(migrated).is_none(),
+            "`{migrated}` moved to the suites package and must not be in the parent table"
+        );
+    }
     assert!(factory.capability("breadcrumb").is_some());
     assert!(factory.capability("splitbutton").is_some());
     assert!(factory.capability("segmentedcontrol").is_some());
@@ -235,7 +242,7 @@ fn default_factory_registers_core_capabilities() {
     assert!(factory.capability("mdiarea").is_some());
     assert!(factory.capability("textedit").is_some());
     // The web controls (`webview`/`webengineview`/`webfindbar`/`pagefindbar`) are **not** root
-    // capabilities: they live in `rust-widgets-webview`, whose `install` registers them. Asserting
+    // capabilities: they live in `rust-widgets-suites` (webview group), whose `install` registers them. Asserting
     // the absence keeps the move visible here instead of leaving a silent gap where the old
     // registration used to be.
     assert!(factory.capability("webview").is_none());
@@ -305,24 +312,9 @@ fn factory_creates_registered_widgets_by_alias() {
         .expect("code editor must be created via alias");
     assert_eq!(code_editor.kind(), WidgetKind::RichEdit);
 
-    let gantt = factory.create("gantt", rect, "").expect("gantt must be created via alias");
-    assert_eq!(gantt.kind(), WidgetKind::Chart);
-
-    let terminal = factory
-        .create("terminalview", rect, "echo hi")
-        .expect("terminal view must be created via alias");
-    assert_eq!(terminal.kind(), WidgetKind::TextEdit);
-
     let snackbar =
         factory.create("snackbar", rect, "Saved").expect("snackbar must be created via alias");
     assert_eq!(snackbar.kind(), WidgetKind::StatusBar);
-
-    let map = factory.create("mapview", rect, "").expect("map view must be created via alias");
-    assert_eq!(map.kind(), WidgetKind::Canvas);
-
-    let media =
-        factory.create("mediaplayer", rect, "").expect("media player must be created via alias");
-    assert_eq!(media.kind(), WidgetKind::WebEngineView);
 
     let breadcrumb =
         factory.create("breadcrumb", rect, "").expect("breadcrumb must be created via alias");
@@ -1136,7 +1128,6 @@ fn unregistered_controls_are_constructible_by_canonical_name_and_alias() {
         ("timeline_view", "timeline_view", WidgetKind::Chart),
         ("command_palette", "command_box", WidgetKind::ListView),
         ("notification_center", "notifications", WidgetKind::ListView),
-        ("diff_viewer", "diff", WidgetKind::Table),
         ("markdown_editor", "md_editor", WidgetKind::RichEdit),
         ("toast_stack", "toasts", WidgetKind::PopupWindow),
         ("grid_table", "gridtable", WidgetKind::GridTable),
@@ -1151,9 +1142,6 @@ fn unregistered_controls_are_constructible_by_canonical_name_and_alias() {
         // `chart_type` token, because its data model (series over *dimensions*)
         // is not the same shape as `ChartWidget`'s (a value over its index).
         ("radar_chart", "radar", WidgetKind::RadarChart),
-        // `KanbanBoard` (BLUE17 Phase D-1) is two-level (columns of cards) with
-        // cross-container moves, which no existing control's model carries.
-        ("kanban_board", "kanban", WidgetKind::KanbanBoard),
         // `Cascader` (BLUE17 Phase D-5) selects a *path* of varying depth, where
         // `dropdown` selects one index into a flat list.
         ("cascader", "cascade", WidgetKind::Cascader),
@@ -1186,10 +1174,10 @@ fn unregistered_controls_are_constructible_by_canonical_name_and_alias() {
 ///
 /// # Why the read is asserted, not just the registration
 ///
-/// Three of these controls share a `WidgetKind` with an existing one
-/// (`command_palette`/`notification_center` with `list_view`, `diff_viewer` with
-/// `table_widget`, `markdown_editor` with `rich_edit`, `timeline_widget` with
-/// `chart`, `toast_stack` with `popup_window`). Registering without a type-based
+/// Several of these controls share a `WidgetKind` with an existing one
+/// (`command_palette`/`notification_center` with `list_view`, `markdown_editor`
+/// with `rich_edit`, `timeline_widget` with `chart`, `toast_stack` with
+/// `popup_window`). Registering without a type-based
 /// tie-break makes the lookup fall through to an empty schema, so the control
 /// answers `UnknownWidget` for a property it really has — the exact failure this
 /// test exists to catch.
@@ -1202,7 +1190,6 @@ fn unregistered_controls_publish_their_own_properties() {
         ("timeline_widget", "item_count"),
         ("command_palette", "filtered_count"),
         ("notification_center", "unread_count"),
-        ("diff_viewer", "change_count"),
         ("markdown_editor", "word_count"),
         ("toast_stack", "toast_count"),
         ("grid_table", "row_count"),
@@ -1259,22 +1246,6 @@ fn unregistered_controls_round_trip_writable_properties() {
     assert_eq!(
         factory.read_property(palette.as_ref(), "query"),
         Ok(CapabilityValue::String("open".to_string()))
-    );
-
-    let mut diff = factory.create("diff_viewer", rect, "").expect("diff");
-    factory
-        .write_property(diff.as_mut(), "left_text", CapabilityValue::String("a".to_string()))
-        .expect("diff left_text should be writable");
-    factory
-        .write_property(diff.as_mut(), "right_text", CapabilityValue::String("b".to_string()))
-        .expect("diff right_text should be writable");
-    assert_eq!(
-        factory.read_property(diff.as_ref(), "left_text"),
-        Ok(CapabilityValue::String("a".to_string()))
-    );
-    assert_eq!(
-        factory.read_property(diff.as_ref(), "right_text"),
-        Ok(CapabilityValue::String("b".to_string()))
     );
 
     let mut markdown = factory.create("markdown_editor", rect, "").expect("markdown editor");
@@ -1358,7 +1329,6 @@ fn derived_names_reject_writes_on_newly_registered_controls() {
         ("timeline_widget", "item_count", CapabilityValue::UInt(1)),
         ("command_palette", "filtered_count", CapabilityValue::UInt(1)),
         ("notification_center", "unread_count", CapabilityValue::UInt(1)),
-        ("diff_viewer", "change_count", CapabilityValue::UInt(1)),
         ("markdown_editor", "word_count", CapabilityValue::UInt(1)),
         ("toast_stack", "toast_count", CapabilityValue::UInt(1)),
         ("grid_table", "row_count", CapabilityValue::UInt(1)),

@@ -1127,6 +1127,9 @@ impl Widget for TerminalView {
     fn base(&self) -> &BaseWidget {
         &self.base
     }
+    fn capability_name(&self) -> Option<&'static str> {
+        Some("terminal_view")
+    }
     fn set_state_theme_hook(&mut self) {
         rust_widgets::style::reapply_active_theme_state(self);
     }
@@ -1397,7 +1400,8 @@ impl EventHandler for TerminalView {
                             if self.output_selection.is_some() {
                                 self.copy_output();
                             } else if let Some(selected) = self.selected_input() {
-                                let _ = rust_widgets::clipboard::ClipboardManager::set_text(selected);
+                                let _ =
+                                    rust_widgets::clipboard::ClipboardManager::set_text(selected);
                             } else {
                                 self.interrupt_requested.emit(self.input_line.clone());
                             }
@@ -1509,7 +1513,8 @@ impl EventHandler for TerminalView {
                 if pos.y >= row_top {
                     let font = effective_font(self.base.style());
                     let prefix_width =
-                        rust_widgets::widget::metrics::estimate_text_width(&self.prompt, font, 1.0) as i32;
+                        rust_widgets::widget::metrics::estimate_text_width(&self.prompt, font, 1.0)
+                            as i32;
                     let click_x = pos.x - rect.x - 8 - prefix_width;
                     let mut offset = 0i32;
                     self.input_cursor = 0;
@@ -1640,8 +1645,9 @@ impl Draw for TerminalView {
         // The step is large enough to read as a distinct surface (a terminal is *not* the
         // window) and is applied to the window colour rather than to a value that may
         // already be a step. A caller's own colour still wins (rule #21).
-        let window_fill =
-            rust_widgets::style::palette_shared().map(|colors| colors.background).unwrap_or(Color::WHITE);
+        let window_fill = rust_widgets::style::palette_shared()
+            .map(|colors| colors.background)
+            .unwrap_or(Color::WHITE);
         let field_from_theme = theme
             .as_ref()
             .and_then(|t| t.background_color)
@@ -1671,9 +1677,10 @@ impl Draw for TerminalView {
         // away from the terminal body until it clears the legibility floor: at full
         // saturation the green was 1.13:1 on a mid-grey body, which is a colour that exists
         // in the file and not on the screen.
-        let prompt_color = rust_widgets::style::semantic_color(rust_widgets::style::SemanticColor::Success)
-            .map(|token| nudge_apart(token, background))
-            .unwrap_or_else(|| background.blend(&text_color, 0.6));
+        let prompt_color =
+            rust_widgets::style::semantic_color(rust_widgets::style::SemanticColor::Success)
+                .map(|token| nudge_apart(token, background))
+                .unwrap_or_else(|| background.blend(&text_color, 0.6));
 
         context.face_with_gradient_corners(
             rect,
@@ -2683,7 +2690,8 @@ fn strip_ansi(line: &str) -> String {
 /// heap allocation per character per pointer move.
 fn glyph_width(ch: char, font: &Font) -> i32 {
     let mut buffer = [0u8; 4];
-    rust_widgets::widget::metrics::estimate_text_width(ch.encode_utf8(&mut buffer), font, 1.0) as i32
+    rust_widgets::widget::metrics::estimate_text_width(ch.encode_utf8(&mut buffer), font, 1.0)
+        as i32
 }
 
 /// Parses a published `caret_style` token.

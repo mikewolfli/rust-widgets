@@ -13,19 +13,19 @@
 //! Registration: canonical name `media_transport_bar`, kind [`WidgetKind::VideoPlayer`],
 //! registered by `capability::registration` with its own property table (RW-81).
 
+use crate::media_playback::video_player::{MediaStatus, TransportRequest, VideoPlayer};
 use rust_widgets::compat::{Arc, Mutex, String};
 use rust_widgets::core::{Color, HorizontalAlignment, Point, Rect, Size};
 use rust_widgets::event::{Event, EventHandler};
+use rust_widgets::impl_draw_bridge;
 use rust_widgets::render::RenderContext;
-use rust_widgets::signal::{ConnectionScope, GenericSignal, Signal1};
+use rust_widgets::signal::{ConnectionScope, EventSignalRef, GenericSignal, Signal1};
 use rust_widgets::widget::capability::properties_trait::{base_property_get, base_property_set};
 use rust_widgets::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use rust_widgets::widget::capability::WidgetProperties;
-use crate::media_playback::video_player::{MediaStatus, TransportRequest, VideoPlayer};
 use rust_widgets::widget::metrics::role_font;
 use rust_widgets::widget::{draw_icon_at, BaseWidget, Draw, IconName, Widget, WidgetKind};
 use rust_widgets::{impl_widget_property_hooks, property_names_of};
-use rust_widgets::impl_draw_bridge;
 
 /// The kind of media control the bar is attached to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -157,7 +157,10 @@ impl MediaTransportBar {
     }
 
     /// Binds a video player, adopting its current playback state.
-    pub fn bind_video_player(&mut self, player: &mut crate::media_playback::video_player::VideoPlayer) {
+    pub fn bind_video_player(
+        &mut self,
+        player: &mut crate::media_playback::video_player::VideoPlayer,
+    ) {
         // An explicit snapshot supersedes a live binding; otherwise the followed mirror would
         // keep winning every read below.
         self.binding = None;
@@ -358,7 +361,10 @@ impl MediaTransportBar {
     }
 
     /// Binds an animated image, adopting its current playback state.
-    pub fn bind_animated_image(&mut self, image: &mut rust_widgets::widget::media_widgets::AnimatedImage) {
+    pub fn bind_animated_image(
+        &mut self,
+        image: &mut rust_widgets::widget::media_widgets::AnimatedImage,
+    ) {
         self.binding = None;
         self.target_kind = MediaTargetKind::AnimatedImage;
         self.playing = image.is_playing();
@@ -559,6 +565,9 @@ impl Widget for MediaTransportBar {
     fn base(&self) -> &BaseWidget {
         &self.base
     }
+    fn capability_name(&self) -> Option<&'static str> {
+        Some("media_transport_bar")
+    }
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
     }
@@ -570,14 +579,46 @@ impl Widget for MediaTransportBar {
     }
     /// Reports a frame when a followed player has changed the shown state.
     fn tick(&mut self, _delta_ms: u32) -> bool {
-        let dirty =
-            self.binding.as_ref().is_some_and(|binding| rust_widgets::compat::lock(&binding.mirror).dirty);
+        let dirty = self
+            .binding
+            .as_ref()
+            .is_some_and(|binding| rust_widgets::compat::lock(&binding.mirror).dirty);
         if !dirty {
             return false;
         }
         self.write_mirror(|state| state.dirty = false);
         self.base.request_redraw();
         true
+    }
+    fn event_signal_dyn(&self, name: &str) -> Option<EventSignalRef> {
+        match name {
+            "fullscreen_requested" => {
+                Some(EventSignalRef::unit("fullscreen_requested", &self.fullscreen_requested))
+            }
+            "next_track_requested" => {
+                Some(EventSignalRef::unit("next_track_requested", &self.next_track_requested))
+            }
+            "previous_track_requested" => Some(EventSignalRef::unit(
+                "previous_track_requested",
+                &self.previous_track_requested,
+            )),
+            "play_toggled" => {
+                Some(EventSignalRef::mapped("play_toggled", &self.play_toggled, |value| {
+                    CapabilityValue::Bool(*value)
+                }))
+            }
+            "seek_requested" => {
+                Some(EventSignalRef::mapped("seek_requested", &self.seek_requested, |value| {
+                    CapabilityValue::Float(*value as f64)
+                }))
+            }
+            "volume_changed" => {
+                Some(EventSignalRef::mapped("volume_changed", &self.volume_changed, |value| {
+                    CapabilityValue::Float(*value as f64)
+                }))
+            }
+            _ => None,
+        }
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();

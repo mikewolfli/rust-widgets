@@ -1503,6 +1503,9 @@ impl Widget for GanttWidget {
     fn base(&self) -> &BaseWidget {
         &self.base
     }
+    fn capability_name(&self) -> Option<&'static str> {
+        Some("gantt_widget")
+    }
     fn set_state_theme_hook(&mut self) {
         rust_widgets::style::reapply_active_theme_state(self);
     }
@@ -1517,7 +1520,10 @@ impl Widget for GanttWidget {
     }
 
     fn size_hint(&self) -> rust_widgets::core::Size {
-        rust_widgets::core::Size::new(dimensions::GANTT_DEFAULT_WIDTH, dimensions::GANTT_DEFAULT_HEIGHT)
+        rust_widgets::core::Size::new(
+            dimensions::GANTT_DEFAULT_WIDTH,
+            dimensions::GANTT_DEFAULT_HEIGHT,
+        )
     }
 
     impl_widget_property_hooks!();
@@ -1625,12 +1631,12 @@ impl WidgetProperties for GanttWidget {
             // The whole schedule as records (B26.09): `set_tasks` takes a list the bare command
             // channel cannot carry, so the list is the property and `set_tasks` is its published
             // command form.
-            "tasks" => {
-                Ok(CapabilityValue::Records(rust_widgets::widget::capability::RecordList::from_items(
+            "tasks" => Ok(CapabilityValue::Records(
+                rust_widgets::widget::capability::RecordList::from_items(
                     &GANTT_TASK_SCHEMA,
                     self.tasks().iter().map(gantt_task_record).collect(),
-                )))
-            }
+                ),
+            )),
             "task_count" => Ok(CapabilityValue::UInt(self.tasks().len() as u64)),
             "selected_id" => match self.selected_id() {
                 Some(id) => Ok(CapabilityValue::String(id.to_string())),
@@ -1693,13 +1699,15 @@ impl WidgetProperties for GanttWidget {
                 Ok(())
             }
             "show_critical_path" => {
-                self.set_show_critical_path(rust_widgets::widget::capability::coercion::expect_bool(
-                    value,
-                )?);
+                self.set_show_critical_path(
+                    rust_widgets::widget::capability::coercion::expect_bool(value)?,
+                );
                 Ok(())
             }
             "show_today" => {
-                self.set_show_today(rust_widgets::widget::capability::coercion::expect_bool(value)?);
+                self.set_show_today(rust_widgets::widget::capability::coercion::expect_bool(
+                    value,
+                )?);
                 Ok(())
             }
             // Derived counts and the selection identity are computed from the task
@@ -1965,16 +1973,18 @@ impl Draw for GanttWidget {
         // to answer, so it takes the theme's error role -- the one colour in the palette that is
         // universally read as "pay attention to this instant". It read the `badge` style's text
         // colour instead, and `badge` is not a role, so the mark was painted in ordinary ink.
-        let today_color = rust_widgets::style::semantic_color(rust_widgets::style::SemanticColor::Error)
-            .unwrap_or_else(|| background.blend(&text_color, 0.85));
+        let today_color =
+            rust_widgets::style::semantic_color(rust_widgets::style::SemanticColor::Error)
+                .unwrap_or_else(|| background.blend(&text_color, 0.85));
         // Dependencies are structure, not data: a line that connected bars in the accent colour would
         // compete with the bars themselves.
         let link_color = background.blend(&text_color, 0.45);
         // The critical path is a *state* of the schedule ("this chain decides the finish date"), so
         // it takes a semantic role rather than a fourth literal.
-        let critical_color = rust_widgets::style::semantic_color(rust_widgets::style::SemanticColor::Warning)
-            .map(|token| token.blend(&background, 0.25))
-            .unwrap_or_else(|| bar_color.blend(&progress_color, 0.5));
+        let critical_color =
+            rust_widgets::style::semantic_color(rust_widgets::style::SemanticColor::Warning)
+                .map(|token| token.blend(&background, 0.25))
+                .unwrap_or_else(|| bar_color.blend(&progress_color, 0.5));
         let critical_flags: Option<Vec<bool>> = if self.show_critical_path {
             // Built only when the highlight is on: a schedule that never shows a critical
             // path used to allocate a flag per task on every paint.
@@ -2556,7 +2566,8 @@ mod tests {
         // shape's placement and not about two independently-scraped coordinates: a bar and a diamond
         // for the same instant must share a centre.
         let (diamond_left, _, diamond_right, _) =
-            rust_widgets::widget::svg::first_shape_bounds(&diamond_svg).expect("the diamond's bounds");
+            rust_widgets::widget::svg::first_shape_bounds(&diamond_svg)
+                .expect("the diamond's bounds");
         let diamond_centre = (diamond_left + diamond_right) / 2;
         let (bar_left, bar_right) = bar_horizontal_span(&bar_svg);
         // The diamond is centred on the instant, and the bar *starts* at it: `project_x` maps the
@@ -3179,7 +3190,8 @@ mod tests {
                 "dependencies",
                 CapabilityValue::Tuple(vec![CapabilityValue::String("a:weird".into())]),
             );
-        let list = rust_widgets::widget::capability::RecordList::from_items(&GANTT_TASK_SCHEMA, vec![row]);
+        let list =
+            rust_widgets::widget::capability::RecordList::from_items(&GANTT_TASK_SCHEMA, vec![row]);
         gantt.set("tasks", CapabilityValue::Records(list)).expect("writable");
         assert_eq!(
             gantt.tasks()[0].dependencies,

@@ -232,26 +232,46 @@ impl EventSignalBinder {
         // to walk. `0` is the honest answer: the method reports how many events it wired.
         #[cfg(full_widgets)]
         {
-            let factory = crate::widget::capability::WidgetFactory::shared();
-            let Some(capability) = factory.capability_for_kind_instance(widget) else {
-                return 0;
-            };
-            let mut wired = 0usize;
-            for schema in capability.events {
-                // A control that publishes a name it cannot resolve would otherwise be wired
-                // silently short. Treating it as zero keeps the return value honest, and
-                // `tools/check_event_signal_dyn.sh` fails the build-time counterpart of this case.
-                if self.wire_one(widget, schema.name) {
-                    wired += 1;
-                }
-            }
-            wired
+            self.forward_all_with(crate::widget::capability::WidgetFactory::shared(), widget)
         }
         #[cfg(not(full_widgets))]
         {
             let _ = widget;
             0
         }
+    }
+
+    /// [`Self::forward_all`] against a specific factory.
+    ///
+    /// # Why this exists
+    ///
+    /// The shared factory is built once and then frozen. A host that installs a suite into its
+    /// **own** factory (`WidgetFactory::new_with_extensions`) never puts those names into the
+    /// shared one, so `forward_all` cannot see their capability rows and reports `0` wired. This
+    /// variant answers from the factory the caller actually used. The shared-factory form now
+    /// delegates here, so the two cannot disagree about how a name is resolved.
+    #[cfg(full_widgets)]
+    pub fn forward_all_with<W>(
+        &mut self,
+        factory: &crate::widget::capability::WidgetFactory,
+        widget: &W,
+    ) -> usize
+    where
+        W: crate::widget::Widget,
+    {
+        let Some(capability) = factory.capability_for_kind_instance(widget) else {
+            return 0;
+        };
+        let mut wired = 0usize;
+        for schema in capability.events {
+            // A control that publishes a name it cannot resolve would otherwise be wired
+            // silently short. Treating it as zero keeps the return value honest, and
+            // `tools/check_event_signal_dyn.sh` fails the build-time counterpart of this case.
+            if self.wire_one(widget, schema.name) {
+                wired += 1;
+            }
+        }
+        wired
     }
 
     /// How many of `widget`'s published events have **no** live subscription from this binder.
@@ -288,6 +308,22 @@ impl EventSignalBinder {
         self.unwired_event_names_for(widget).map(|names| names.len())
     }
 
+    /// [`Self::unwired_events_for`] against a specific factory.
+    ///
+    /// See [`Self::forward_all_with`]: a suite installed into a host-owned factory is invisible to
+    /// the shared table, so the count convenience needs the same factory-aware form.
+    #[cfg(full_widgets)]
+    pub fn unwired_events_for_with<W>(
+        &self,
+        factory: &crate::widget::capability::WidgetFactory,
+        widget: &W,
+    ) -> Option<usize>
+    where
+        W: crate::widget::Widget,
+    {
+        self.unwired_event_names_for_with(factory, widget).map(|names| names.len())
+    }
+
     /// The stripped-profile form, which has no capability table to have wired against.
     #[cfg(not(full_widgets))]
     pub fn unwired_events_for<W>(&self, _widget: &W) -> Option<usize>
@@ -312,12 +348,30 @@ impl EventSignalBinder {
     where
         W: crate::widget::Widget,
     {
+        self.unwired_event_names_for_with(
+            crate::widget::capability::WidgetFactory::shared(),
+            widget,
+        )
+    }
+
+    /// [`Self::unwired_event_names_for`] against a specific factory.
+    ///
+    /// The names form of [`Self::forward_all_with`]: a factory that owns the suite's capability
+    /// rows is the one that can answer which of them this binder left unwired.
+    #[cfg(full_widgets)]
+    pub fn unwired_event_names_for_with<W>(
+        &self,
+        factory: &crate::widget::capability::WidgetFactory,
+        widget: &W,
+    ) -> Option<alloc::vec::Vec<&'static str>>
+    where
+        W: crate::widget::Widget,
+    {
         // "Never wired" and "not a control with events" both mean there is no answer. A **detached**
         // binder has nowhere to wire, so it has nothing live to report either.
         if !self.wired_once || self.hub.is_none() {
             return None;
         }
-        let factory = crate::widget::capability::WidgetFactory::shared();
         let capability = factory.capability_for_kind_instance(widget)?;
         Some(
             capability
@@ -822,6 +876,72 @@ fn reference_is_wired(widget: &dyn crate::widget::Widget, event_name: &str) -> b
         .is_some_and(|reference| reference.slot_count() > 0)
 }
 
+/// Live subscriber count for one published event of the control at `widget_id`.
+///
+/// # Why this exists (RW-45)
+///
+/// [`is_wired`] answers "is anything listening?". A designer's Inspector also needs the number —
+/// "this control has N signal wires" — and that fact already lives on the control's own signal
+/// (`EventSignalRef::slot_count`). A separate registry would be a second copy that can disagree;
+/// this function reads the source.
+///
+/// `None` means the id is not mounted, the name is not published, or the capability table is
+/// compiled out. `Some(0)` means the event is published and currently has no subscriber.
+pub fn subscriber_count(widget_id: crate::core::ObjectId, event_name: &str) -> Option<usize> {
+    #[cfg(full_widgets)]
+    {
+        crate::widget::runtime::read_widget(widget_id, |widget| {
+            widget
+                .event_signal_dyn(event_name)
+                .filter(|reference| reference.name() == event_name)
+                .map(|reference| reference.slot_count())
+        })
+        .flatten()
+    }
+    #[cfg(not(full_widgets))]
+    {
+        let _ = (widget_id, event_name);
+        None
+    }
+}
+
+/// Every published event of the control at `widget_id`, paired with its live subscriber count.
+///
+/// This is the whole-control form of [`subscriber_count`]: one capability walk, one answer per
+/// event, with zero for names nothing has subscribed to. `None` has the same meaning as
+/// [`subscriber_count`] returning `None`.
+#[cfg(full_widgets)]
+pub fn subscription_counts(
+    widget_id: crate::core::ObjectId,
+) -> Option<alloc::vec::Vec<(&'static str, usize)>> {
+    crate::widget::runtime::read_widget(widget_id, |widget| {
+        let factory = crate::widget::capability::WidgetFactory::shared();
+        let capability = factory.capability_for_kind_instance(widget)?;
+        Some(
+            capability
+                .events
+                .iter()
+                .map(|schema| {
+                    let count = widget
+                        .event_signal_dyn(schema.name)
+                        .filter(|reference| reference.name() == schema.name)
+                        .map_or(0, |reference| reference.slot_count());
+                    (schema.name, count)
+                })
+                .collect(),
+        )
+    })
+    .flatten()
+}
+
+/// The stripped-profile form, which has no capability table to enumerate.
+#[cfg(not(full_widgets))]
+pub fn subscription_counts(
+    _widget_id: crate::core::ObjectId,
+) -> Option<alloc::vec::Vec<(&'static str, usize)>> {
+    None
+}
+
 /// How to remove a forwarded slot, captured beside the handle it removes.
 ///
 /// Two variants because `GenericSignal` is a concrete type while `Signal1<T>` is generic:
@@ -931,6 +1051,40 @@ mod tests {
 
         reference.disconnect(handle);
         assert!(!is_wired(id, "clicked"), "a removed subscriber unwires the event again");
+        crate::widget::runtime::unregister(id);
+    }
+
+    /// RW-45: the subscriber count is a live per-control/per-event fact.
+    #[test]
+    fn the_subscriber_count_answers_per_control_and_event() {
+        use crate::signal::{subscriber_count, subscription_counts};
+
+        let id = crate::widget::runtime::register(alloc::boxed::Box::new(
+            crate::widget::base_widgets::button::Button::new(
+                "counted".to_string(),
+                Rect::new(0, 0, 80, 24),
+            ),
+        ))
+        .expect("a button mounts");
+
+        let reference =
+            crate::widget::runtime::read_widget(id, |widget| widget.event_signal_dyn("clicked"))
+                .flatten()
+                .expect("a button publishes `clicked`");
+        let first = reference.subscribe(alloc::boxed::Box::new(|_| {}));
+        let second = reference.subscribe(alloc::boxed::Box::new(|_| {}));
+
+        assert_eq!(subscriber_count(id, "clicked"), Some(2));
+        let counts = subscription_counts(id).expect("a mounted button has a published set");
+        assert_eq!(
+            counts.iter().find(|(name, _)| *name == "clicked").map(|(_, count)| *count),
+            Some(2)
+        );
+        assert_eq!(subscriber_count(id, "not_a_published_event"), None);
+
+        reference.disconnect(first);
+        reference.disconnect(second);
+        assert_eq!(subscriber_count(id, "clicked"), Some(0), "published but unwired is zero");
         crate::widget::runtime::unregister(id);
     }
 

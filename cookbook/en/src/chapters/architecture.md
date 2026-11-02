@@ -900,7 +900,7 @@ between.
 
 ## The Icon Data Path (`icons`, on by default)
 
-`Icon` names 69 icons through `IconName`. The `icons` feature — **on by default** — draws each one
+`Icon` names 75 icons through `IconName`. The `icons` feature — **on by default** — draws each one
 from the **real outline**, read from path data vendored at a pinned upstream revision. Without the
 feature `Icon` falls back to generated geometry, derived by flattening *the same* outlines — so the
 two paths cannot describe different shapes for one icon.
@@ -914,7 +914,7 @@ The path from a name to pixels has four stages, each with one implementation:
 
 ```mermaid
 graph LR
-    ENUM["IconName<br/>(69 variants)"]
+    ENUM["IconName<br/>(75 variants)"]
     DATA["IconData<br/>name, grid, paths"]
     PARSE["render::path::parser<br/>SVG d -> Segment"]
     FLAT["render::path::flatten<br/>Segment -> polyline"]
@@ -940,7 +940,7 @@ Three properties are load-bearing, and each is enforced mechanically rather than
    string at draw time, falling through to a placeholder — is gone.
 2. **Two names never draw one picture.** `Close` and `Cross` shared a method once, so two distinct
    names produced identical output. The generator refuses to emit byte-identical outlines, and a
-   census test renders every token and requires every one of the 69 pictures to differ.
+   census test renders every token and requires every one of the 75 pictures to differ.
 3. **One fill rule, and only one curve-flattening tolerance.** The part the two share is the *fill*:
    `RenderContext::fill_path_non_zero` accumulates winding the way the glyph rasteriser does, which is
    what keeps a counter — the hole in `info`, the ring in `settings` — empty instead of being painted

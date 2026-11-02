@@ -14,15 +14,15 @@ use core::fmt::Write as _;
 use rust_widgets::compat::String;
 use rust_widgets::core::{Color, HorizontalAlignment, Point, Rect, Size};
 use rust_widgets::event::{Event, EventHandler};
+use rust_widgets::impl_draw_bridge;
 use rust_widgets::render::RenderContext;
-use rust_widgets::signal::Signal1;
+use rust_widgets::signal::{EventSignalRef, Signal1};
 use rust_widgets::widget::capability::properties_trait::{base_property_get, base_property_set};
 use rust_widgets::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use rust_widgets::widget::capability::WidgetProperties;
 use rust_widgets::widget::metrics::role_font;
 use rust_widgets::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use rust_widgets::{impl_widget_property_hooks, property_names_of};
-use rust_widgets::impl_draw_bridge;
 
 /// How the handle is drawn.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -179,11 +179,30 @@ impl Widget for MediaScrubber {
     fn base(&self) -> &BaseWidget {
         &self.base
     }
+    fn capability_name(&self) -> Option<&'static str> {
+        Some("media_scrubber")
+    }
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
     }
     fn set_state_theme_hook(&mut self) {
         rust_widgets::style::reapply_active_theme_state(self);
+    }
+    fn event_signal_dyn(&self, name: &str) -> Option<EventSignalRef> {
+        match name {
+            "committed" => Some(EventSignalRef::mapped("committed", &self.committed, |value| {
+                CapabilityValue::Float(*value)
+            })),
+            "scrubbing" => {
+                Some(EventSignalRef::mapped("scrubbing", &self.scrubbing, |(active, progress)| {
+                    CapabilityValue::Tuple(rust_widgets::compat::Vec::from([
+                        CapabilityValue::Bool(*active),
+                        CapabilityValue::Float(*progress),
+                    ]))
+                }))
+            }
+            _ => None,
+        }
     }
     impl_widget_property_hooks!();
     fn size_hint(&self) -> Size {

@@ -22,9 +22,11 @@
 //! [`TerminalFindBar::regex_supported`] reports `false` so a host can disable the toggle rather
 //! than assume it works.
 
+use crate::devtools::terminal::terminal_view::TerminalView;
 use rust_widgets::core::{Color, HorizontalAlignment, Rect, Size};
 use rust_widgets::event::key_codes::{BACKSPACE, ESCAPE};
 use rust_widgets::event::{Event, EventHandler};
+use rust_widgets::impl_draw_bridge;
 use rust_widgets::impl_widget_property_hooks;
 use rust_widgets::property_names_of;
 use rust_widgets::render::RenderContext;
@@ -34,9 +36,7 @@ use rust_widgets::widget::capability::properties_trait::{base_property_get, base
 use rust_widgets::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use rust_widgets::widget::capability::WidgetProperties;
 use rust_widgets::widget::metrics::effective_font;
-use crate::devtools::terminal::terminal_view::TerminalView;
 use rust_widgets::widget::{BaseWidget, Draw, Widget, WidgetKind};
-use rust_widgets::impl_draw_bridge;
 
 /// Inset around the strip's content.
 const BAR_INSET: i32 = 4;
@@ -443,6 +443,9 @@ impl TerminalFindBar {
 impl Widget for TerminalFindBar {
     fn base(&self) -> &BaseWidget {
         &self.base
+    }
+    fn capability_name(&self) -> Option<&'static str> {
+        Some("terminal_find_bar")
     }
 
     fn base_mut(&mut self) -> &mut BaseWidget {

@@ -891,17 +891,36 @@ pub fn text_line(
 /// accepted clusters' text; no candidate is ever re-measured. The result is the same clusters,
 /// measured with the same advances, so the fitted string — including ellipsis, CJK and the
 /// exact width boundary — is unchanged; only the cost is.
+/// Test-only convenience: the fitted text without its measured width.
+#[cfg(test)]
 fn fit_text_to_width<'a>(
     text: &'a str,
     max_width: f32,
     font: &Font,
     backend: &dyn PaintBackend,
 ) -> Cow<'a, str> {
+    fit_text_to_width_measured(text, max_width, font, backend).0
+}
+
+/// [`fit_text_to_width`] that also returns the fitted text's advance when it is already known.
+///
+/// Every control that draws a label asks for the fitted text and then measures it again to
+/// centre it. In the common case — the label already fits — that second measurement repeats the
+/// exactly same backend call the fit check just made. This variant hands the measured advance
+/// back, so the caller does not pay for it twice. `None` means the truncation path built the
+/// string itself and the caller still has to measure it.
+fn fit_text_to_width_measured<'a>(
+    text: &'a str,
+    max_width: f32,
+    font: &Font,
+    backend: &dyn PaintBackend,
+) -> (Cow<'a, str>, Option<f32>) {
     if text.is_empty() || max_width <= 0.0 {
-        return Cow::Borrowed("");
+        return (Cow::Borrowed(""), Some(0.0));
     }
-    if backend.measure_text(text, font).width as f32 <= max_width {
-        return Cow::Borrowed(text);
+    let measured = backend.measure_text(text, font).width as f32;
+    if measured <= max_width {
+        return (Cow::Borrowed(text), Some(measured));
     }
     // A single ellipsis stands in when the budget cannot hold any glyph at all: an empty
     // label would read as "this control has no text", which is a different statement.
@@ -911,7 +930,7 @@ fn fit_text_to_width<'a>(
     const ELLIPSIS_TEXT: &str = "\u{2026}";
     let ellipsis_width = backend.measure_text(ELLIPSIS_TEXT, font).width as f32;
     if ellipsis_width > max_width {
-        return Cow::Owned(ELLIPSIS.to_string());
+        return (Cow::Owned(ELLIPSIS.to_string()), Some(ellipsis_width));
     }
     let budget = max_width - ellipsis_width;
 
@@ -947,7 +966,10 @@ fn fit_text_to_width<'a>(
         matches && rest.is_empty()
     };
     if !shaped_matches_text {
-        return Cow::Owned(fit_text_to_width_by_prefix(text, budget, font, backend, ELLIPSIS));
+        return (
+            Cow::Owned(fit_text_to_width_by_prefix(text, budget, font, backend, ELLIPSIS)),
+            None,
+        );
     }
 
     // Tracking adds one inter-cluster gap per adjacent pair, so a run of `n` clusters carries
@@ -1029,7 +1051,10 @@ fn fit_text_to_width<'a>(
         // guaranteed-exact walk takes over.
         None if length > clusters.len() => clusters.len(),
         None => {
-            return Cow::Owned(fit_text_to_width_by_prefix(text, budget, font, backend, ELLIPSIS))
+            return (
+                Cow::Owned(fit_text_to_width_by_prefix(text, budget, font, backend, ELLIPSIS)),
+                None,
+            )
         }
     };
 
@@ -1041,7 +1066,7 @@ fn fit_text_to_width<'a>(
     kept.push_str(&text[..accepted_bytes]);
 
     kept.push(ELLIPSIS);
-    Cow::Owned(kept)
+    (Cow::Owned(kept), None)
 }
 
 /// The pre-D09-RENDER-03 prefix walk, kept for the bidi order the linear pass cannot use.
@@ -2487,8 +2512,11 @@ impl<'a> RenderContext<'a> {
         // each end. The old form subtracted a single inset and then placed the result in the
         // full box, which is what shifted every centred label left; see `fitted_origin`.
         let available = (bounds.width as i32 - 2 * inset).max(0) as f32;
-        let fitted = fit_text_to_width(text, available, font, self.backend);
-        let advance = self.measure_text(&fitted, font).width as i32;
+        let (fitted, measured) = fit_text_to_width_measured(text, available, font, self.backend);
+        let advance = match measured {
+            Some(width) => width as i32,
+            None => self.measure_text(&fitted, font).width as i32,
+        };
         let origin = fitted_origin(bounds, advance, alignment);
         self.draw_text(origin, &fitted, font, color, HorizontalAlignment::Left);
         fitted
@@ -4130,6 +4158,10 @@ mod tests {
         fn shapes(&self) -> usize {
             self.shapes.get()
         }
+
+        fn measures(&self) -> usize {
+            self.measures.get()
+        }
     }
 
     impl PaintBackend for CountingBackend<'_> {
@@ -4186,6 +4218,28 @@ mod tests {
             "fitting must shape the source at most once, but shaped {} times",
             counter.shapes()
         );
+    }
+
+    /// A label that already fits must measure once and hand that width back, so the draw path
+    /// does not repeat the same backend measurement to centre it.
+    #[test]
+    fn a_fitting_label_reports_its_measured_width_without_a_second_measurement() {
+        let backend = counting_backend();
+        let counter = CountingBackend {
+            inner: &backend,
+            shapes: core::cell::Cell::new(0),
+            measures: core::cell::Cell::new(0),
+        };
+        let font = Font::default();
+        let text = "OK";
+        let expected = backend.measure_text(text, &font).width as f32;
+
+        let (fitted, width) = fit_text_to_width_measured(text, 1000.0, &font, &counter);
+
+        assert_eq!(fitted, text);
+        assert_eq!(width, Some(expected), "the fit check's own measurement is the advance");
+        assert_eq!(counter.measures(), 1, "the width must not be measured twice");
+        assert_eq!(counter.shapes(), 0, "a label that fits needs no shaping");
     }
 
     /// The number of shaping calls must not grow as the kept prefix grows: doubling the budget

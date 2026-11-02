@@ -673,7 +673,6 @@ fn c_abi_create_widget_of_kind_reaches_registered_controls() {
             ("tree_view", ""),
             ("timeline_widget", ""),
             ("command_palette", ""),
-            ("diff_viewer", ""),
             ("markdown_editor", ""),
             ("toast_stack", ""),
             ("grid_table", ""),

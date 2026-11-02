@@ -13,12 +13,12 @@ use super::*;
 impl WidgetProperties for KanbanBoard {
     fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
         match name {
-            "columns" => {
-                Ok(CapabilityValue::Records(rust_widgets::widget::capability::RecordList::from_items(
+            "columns" => Ok(CapabilityValue::Records(
+                rust_widgets::widget::capability::RecordList::from_items(
                     &KANBAN_COLUMN_SCHEMA,
                     self.columns().iter().map(kanban_column_record).collect(),
-                )))
-            }
+                ),
+            )),
             "cards" => {
                 let mut items = Vec::new();
                 for (column, entry) in self.columns().iter().enumerate() {
@@ -30,10 +30,12 @@ impl WidgetProperties for KanbanBoard {
                         ));
                     }
                 }
-                Ok(CapabilityValue::Records(rust_widgets::widget::capability::RecordList::from_items(
-                    &KANBAN_CARD_SCHEMA,
-                    items,
-                )))
+                Ok(CapabilityValue::Records(
+                    rust_widgets::widget::capability::RecordList::from_items(
+                        &KANBAN_CARD_SCHEMA,
+                        items,
+                    ),
+                ))
             }
             "column_count" => Ok(CapabilityValue::UInt(self.column_count() as u64)),
             "card_count" => Ok(CapabilityValue::UInt(self.cards().len() as u64)),

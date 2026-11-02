@@ -220,7 +220,7 @@ fi
 sed -n '1,12p' "$SEMANTIC_LOG"
 
 # The count comes from the census itself so the line cannot claim a number the run did
-# not measure. 188 is the registered-control count (187 before `heatmap`); printing a
+# not measure. The registry count is derived from the source on every run; printing a
 # literal here is how a gate starts lying about what it covered.
 CONTROL_COUNT="$("$PYTHON" -c '
 import re, pathlib

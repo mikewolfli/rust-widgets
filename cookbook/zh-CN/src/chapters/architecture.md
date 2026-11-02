@@ -873,7 +873,7 @@ pub trait ControlBackend {
 
 ## 图标数据路径（`icons`，默认开启）
 
-`Icon` 通过 `IconName` 命名 69 个图标。`icons` 特性 —— **默认开启** —— 每个都按**真实轮廓**绘制，
+`Icon` 通过 `IconName` 命名 75 个图标。`icons` 特性 —— **默认开启** —— 每个都按**真实轮廓**绘制，
 轮廓来自固定在某个上游修订的路径数据。不开该特性时 `Icon` 回退到**生成的几何**，它由**同一批**轮廓
 展平而来 —— 所以两条路径不可能对同一个图标给出不同形状。
 
@@ -885,7 +885,7 @@ token 集在 `tools/icon_tokens.txt` 中**只声明一次**，`tools/gen_icon_na
 
 ```mermaid
 graph LR
-    ENUM["IconName<br/>（69 个变体）"]
+    ENUM["IconName<br/>（75 个变体）"]
     DATA["IconData<br/>name, grid, paths"]
     PARSE["render::path::parser<br/>SVG d -> Segment"]
     FLAT["render::path::flatten<br/>Segment -> 折线"]
@@ -909,7 +909,7 @@ graph LR
 1. **声明了名字就一定有几何。** `IconName::data()` 返回 `IconData` 而非 `Option`，所以「新增变体
    但没补条目」是**编译错误**。旧写法（draw 时按字符串匹配、匹配不上就画占位符）已删除。
 2. **两个名字绝不会画同一张图。** `Close` 与 `Cross` 曾共用同一个方法，于是两个不同的名字产出完全
-   相同的图形。生成器**拒绝**产出逐字节相同的轮廓，且普查测试渲染每个 token 并要求全部 69 张图两两不同。
+   相同的图形。生成器**拒绝**产出逐字节相同的轮廓，且普查测试渲染每个 token 并要求全部 75 张图两两不同。
 3. **只有一条填充规则，并且只有一种展平容差。** 两者真正共享的是**填充**：
    `RenderContext::fill_path_non_zero` 按与字形光栅器相同的方式累积绕数，这才让反白孔（`info` 的孔、
    `settings` 的环）保持为空，而不是被后画的轮廓盖住。展平**并不**共享，本文档此前声称共享是错的：

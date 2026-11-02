@@ -17,18 +17,18 @@
 //! update, and a disabled caption band still displays the cue it was given. The signal reports
 //! what the bar shows, not an action.
 
+use crate::media_playback::video_player::{SubtitleCue, VideoPlayer};
 use rust_widgets::compat::{Arc, Mutex, Vec};
 use rust_widgets::core::{Color, HorizontalAlignment, Rect, Size};
 use rust_widgets::event::{Event, EventHandler};
+use rust_widgets::impl_draw_bridge;
 use rust_widgets::render::RenderContext;
-use rust_widgets::signal::{ConnectionScope, GenericSignal};
+use rust_widgets::signal::{ConnectionScope, EventSignalRef, GenericSignal};
 use rust_widgets::widget::capability::properties_trait::{base_property_get, base_property_set};
 use rust_widgets::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use rust_widgets::widget::capability::WidgetProperties;
-use crate::media_playback::video_player::{SubtitleCue, VideoPlayer};
 use rust_widgets::widget::metrics::role_font;
 use rust_widgets::widget::{BaseWidget, Draw, Widget, WidgetKind};
-use rust_widgets::impl_draw_bridge;
 
 /// Where the caption band sits in its host's surface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -220,6 +220,9 @@ impl Widget for SubtitleBar {
     fn base(&self) -> &BaseWidget {
         &self.base
     }
+    fn capability_name(&self) -> Option<&'static str> {
+        Some("subtitle_bar")
+    }
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
     }
@@ -228,6 +231,12 @@ impl Widget for SubtitleBar {
     }
     fn size_hint(&self) -> Size {
         Size::new(320, 48)
+    }
+    fn event_signal_dyn(&self, name: &str) -> Option<EventSignalRef> {
+        match name {
+            "text_changed" => Some(EventSignalRef::unit("text_changed", &self.text_changed)),
+            _ => None,
+        }
     }
     impl_draw_bridge!();
     rust_widgets::impl_widget_property_hooks!();
@@ -262,7 +271,9 @@ impl WidgetProperties for SubtitleBar {
                 Ok(())
             }
             "max_lines" => {
-                self.set_max_lines(rust_widgets::widget::capability::coercion::expect_usize(value)?);
+                self.set_max_lines(rust_widgets::widget::capability::coercion::expect_usize(
+                    value,
+                )?);
                 Ok(())
             }
             "font_scale" => {
@@ -270,7 +281,8 @@ impl WidgetProperties for SubtitleBar {
                 Ok(())
             }
             "background_opacity" => {
-                let opacity = rust_widgets::widget::capability::coercion::expect_u8_saturating(value)?;
+                let opacity =
+                    rust_widgets::widget::capability::coercion::expect_u8_saturating(value)?;
                 self.set_background_opacity(opacity);
                 Ok(())
             }
@@ -311,7 +323,8 @@ impl Draw for SubtitleBar {
         let rect = self.geometry();
         // Hold the bound caption's guard only for this paint; the signal writes it from the
         // player's clock, so the band stays in step without the host copying text (MW-016).
-        let bound = self.binding.as_ref().map(|binding| rust_widgets::compat::lock(&binding.caption));
+        let bound =
+            self.binding.as_ref().map(|binding| rust_widgets::compat::lock(&binding.caption));
         let text: &str = bound.as_deref().map(String::as_str).unwrap_or(&self.text);
         if rect.width == 0 || rect.height == 0 || text.trim().is_empty() {
             return;
@@ -390,13 +403,11 @@ mod tests {
     fn following_a_player_keeps_the_caption_in_step_with_the_clock() {
         let mut player = VideoPlayer::new(Rect::new(0, 0, 320, 240));
         player.set_duration(10.0);
-        player.set_subtitle_tracks(vec![
-            crate::media_playback::video_player::SubtitleTrack::new(
-                "s1",
-                "English",
-                vec![SubtitleCue::new(0.0, 2.0, "hello"), SubtitleCue::new(2.0, 4.0, "world")],
-            ),
-        ]);
+        player.set_subtitle_tracks(vec![crate::media_playback::video_player::SubtitleTrack::new(
+            "s1",
+            "English",
+            vec![SubtitleCue::new(0.0, 2.0, "hello"), SubtitleCue::new(2.0, 4.0, "world")],
+        )]);
         player.set_subtitle_track(0).expect("the track exists");
 
         let mut bar = SubtitleBar::new(Rect::new(0, 0, 320, 48));

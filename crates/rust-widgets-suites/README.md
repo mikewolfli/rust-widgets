@@ -3,7 +3,24 @@
 Optional widget **suites** for [`rust_widgets`](../..): groups of controls that solve one job
 together, kept out of the core crate's package so a host installs only what it uses.
 
-The first group is `form_widgets`:
+Seven groups are available, each behind a Cargo feature. A group owns its names, schemas and
+constructors, so adding one never edits another.
+
+| Feature | Group | Controls | Canonical names |
+|---|---|---|---|
+| `form` (default) | `form_widgets` | 2 | `form`, `form_set` |
+| `webview` | `webview` | 3 | `web_engine_view`, `web_find_bar`, `web_history_panel` |
+| `finance` | `finance` | 6 | `candlestick_chart`, `volume_chart`, `depth_chart`, `indicator_chart`, `order_book`, `quote_board` |
+| `maps` | `maps` | 7 | `map_view`, `map_overview`, `map_attribution`, `tile_loader`, `zoom_control`, `scale_bar`, `compass` |
+| `project` | `project` | 7 | `gantt_widget`, `gantt_task_grid`, `timeline_axis`, `dependency_editor`, `kanban_board`, `kanban_card_view`, `kanban_column_header` |
+| `devtools` | `devtools` | 4 | `terminal_view`, `terminal_find_bar`, `diff_viewer`, `diff_file_list` |
+| `media-playback` | `media_playback` | 10 | `video_player`, `lottie_widget`, `rive_widget`, `audio_visualizer`, `camera_preview`, `chapter_list_panel`, `media_player`, `media_transport_bar`, `media_scrubber`, `subtitle_bar` |
+
+That is **39 controls in 7 groups**. The web family that used to be the separate
+`rust-widgets-webview` crate is the `webview` group; its optional `js-engine` and `web-http`
+features moved here with it.
+
+The `form_widgets` group in detail:
 
 | Control | Canonical name | What it does |
 |---|---|---|
@@ -17,11 +34,24 @@ use rust_widgets::core::Rect;
 use rust_widgets::widget::capability::WidgetFactory;
 
 let mut factory = WidgetFactory::new_with_defaults();
-rust_widgets_suites::install(&mut factory)?;          // every group
+rust_widgets_suites::install(&mut factory)?;          // every enabled group
 // or: rust_widgets_suites::install_form_group(&mut factory)?;
+// or: rust_widgets_suites::install_webview_group(&mut factory)?;
 
 let mut form = factory.create("form", Rect::new(0, 0, 360, 320), "Account").unwrap();
 let mut set = factory.create("form_set", Rect::new(0, 0, 480, 360), "").unwrap();
+```
+
+Enable the web group (and its optional real engine or HTTP client) in a host's `Cargo.toml`:
+
+```toml
+rust-widgets-suites = { version = "3.3.0", path = "../rust-widgets/crates/rust-widgets-suites", features = ["webview"] }
+# or, for the real implementations:
+# features = ["js-engine", "web-http"]
+```
+
+```rust
+let mut web = factory.create("web_engine_view", Rect::new(0, 0, 800, 600), "Browser").unwrap();
 ```
 
 `install` refuses a duplicate name (`RegistrationError::NameTaken`) instead of shadowing a control
@@ -119,8 +149,9 @@ keeps `Form`, the child control and the host from disagreeing about the same fac
 
 1. add `src/<group>/` with `mod.rs` (declarations + re-exports only), `capability.rs` (schemas,
    constructors, `install`) and one file per control;
-2. add one line to `install` in `src/lib.rs` that calls the group's installer;
-3. add the group's name to this table.
+2. add one feature to `[features]` and one line to `install` in `src/lib.rs` that calls the group's
+   installer;
+3. add the group's name and control count to this table.
 
 A group owns its names, schemas and constructors, so adding one never edits another.
 

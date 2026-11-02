@@ -321,11 +321,16 @@ pub use api::{
     IconPaintError, IconPaintOutcome, IconRef, IconResourceResolver, IconSource,
     IconSourceMetadata, IconSpec, Keyboard, Label, Line, LineEdit, LineOrientation, ListBox, Meter,
     MiniCanvas, MiniChart, MobileBackend, OpenError, Panel, PlatformCapabilities, ProgressBar,
-    PropertySchema, PropertyValueKind, RadioButton, Roller, RuntimeGuiMode, SaveState, SavedState,
-    ScrollArea, ScrollBar, SelectionMode, SimpleRegistry, Slider, SpinBox, Spinner, StickyRegion,
-    Switch, TextArea, Widget, WidgetCapability, WidgetKind, WidgetProperties, WidgetTriggerEvent,
-    WidgetTriggerKind, Window, WindowStateFlag, BASE_PROPERTY_NAMES,
+    PropertySchema, PropertyValueKind, RadioButton, RuntimeGuiMode, SaveState, SavedState,
+    ScrollBar, SelectionMode, SimpleRegistry, Slider, SpinBox, Spinner, StickyRegion, Switch,
+    Widget, WidgetCapability, WidgetKind, WidgetProperties, WidgetTriggerEvent, WidgetTriggerKind,
+    Window, WindowStateFlag,
 };
+
+// These four are part of the full widget registry only; `mini` and `embedded` compile the
+// capability table (and those controls) out, so the crate root must not name them there.
+#[cfg(full_widgets)]
+pub use api::{Roller, ScrollArea, TextArea, BASE_PROPERTY_NAMES};
 
 #[cfg(alloc_frugal)]
 pub use api::{

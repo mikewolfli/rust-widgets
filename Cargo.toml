@@ -66,6 +66,7 @@ include = [
     "examples/probe_draw_only.rs",
     "examples/platform_diagnostics.rs",
     "examples/verify_batch3.rs",
+    "examples/present_smoke.rs",
     "examples/embedded_host.rs",
     "examples/macos_canvas_lifecycle_probe.rs",
     # The entries below are **anchored** with a leading `/`. That is not cosmetic.

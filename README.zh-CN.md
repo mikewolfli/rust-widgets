@@ -13,7 +13,7 @@
 
 ## 特点
 
-- **230 种控件**——输入、表格、树、停靠面板、对话框、媒体、图表、编辑器等，所有平台共用同一套实现。
+- **230 种控件 / 240 个核心控件名**——输入、表格、树、停靠面板、对话框、媒体、图表、编辑器等，所有平台共用同一套实现。可选 suites 另外提供 **7 组、39 个控件**，安装到同一个 `WidgetFactory`。
 - **输出可复现**——每个控件、每种外观都有提交到仓库的 SVG 与像素快照，视觉变化因此是可审阅的 diff，
   而不是聊天窗口里的一张截图。
 - **能力诚实**——宿主提供不了的服务返回 `false` / `None`；不会先假装成功再报告“已完成”。
@@ -93,9 +93,23 @@ fn main() {
 行为是明确的，而不是碰巧如此：`clicked` 要求释放落在控件内部；按住后连续拖动时 `pressed` 保持；
 焦点环只在用户确实使用键盘时绘制。
 
-可选包放在库旁边、而不是塞进库内：`rust-widgets-webview` 承载 Web 控件族，
-[`rust-widgets-suites`](crates/rust-widgets-suites) 承载控件组——目前是表单组（`Form` 与 `FormSet`，
-含属性、事件、布局、校验与无障碍面）。每个包都安装到同一个 `WidgetFactory`，并拥有自己的名字。
+可选包放在库旁边、而不是塞进库内，并且它们是**分组**而不是分叉：
+[`rust-widgets-suites`](crates/rust-widgets-suites) 承载不适合放进核心的控件组（表单、Web、金融、
+地图、项目、开发工具、媒体播放）。每个组都安装到同一个 `WidgetFactory`，并拥有自己的名字、schema
+与构造器。
+
+## `crates/` 下的三个包
+
+库旁边有三个包。它们都不会被编译进核心 `rust_widgets` 包；宿主按需显式接入。
+
+| 包 | 是什么 | 宿主如何使用 |
+|---|---|---|
+| `rust-widgets-font` | `fonts-*` 特性背后的 OFL 字体数据，单独拆出以让核心包低于 crates.io 的 10 MiB 上限。 | 间接使用：开启某个 `fonts-*` 特性即可；不要直接依赖它。 |
+| `rust-widgets-suites` | 七个可选控件组——`form`、`webview`、`finance`、`maps`、`project`、`devtools`、`media-playback`——共 **39 个控件**，具备与核心控件相同的属性、事件、布局、接线与无障碍面。原先独立的 `rust-widgets-webview` 包现在是 `webview` 组。 | `rust_widgets_suites::install(&mut factory)`，或单个组的 `install_*_group`。 |
+| `mobile-services` | 面向 Android、iOS、HarmonyOS 的移动应用外壳服务：常亮、触感反馈、权限、通知、分享、深链、安全区与方向锁定。不属于 GUI 核心。 | 在移动目标上使用 `rust_widgets_mobile_services::*`；桌面构建不会链接它。 |
+
+suites 包不是 workspace 成员：它依赖 `rust_widgets`，反过来不成立；父包的 `include` 列表排除了
+`crates/**`，所以根目录的 `cargo package` 既不会打包也不会编译它。
 
 ## 文本、字体与图标
 
@@ -120,7 +134,7 @@ fn main() {
   输入法的预编辑串在提交前绘制在光标处；标签页宽度按字体度量，带关闭按钮与悬停底色；
   点击行号选中整行；`Ctrl`+点击增加光标；软换行的续行沿用该行的缩进；
   `relative_line_numbers` 把行号槽切换为相对光标的编号。
-- `Icon` 提供 **69** 个 `IconName` 令牌。三个完整配置默认绘制真实的 **Material Symbols** 轮廓；
+- `Icon` 提供 **75** 个 `IconName` 令牌。三个完整配置默认绘制真实的 **Material Symbols** 轮廓；
   `mini` / `embedded` 绘制由同一份轮廓生成的几何图形，因此两条路径不会给出不同形状。宿主可以用
   `register_icon` 或 `register_icon_on_grid` 添加自己的图标。
 

@@ -50,6 +50,46 @@ const ENGLISH_MONTHS: [&str; 12] = [
 /// the seven possible headers were wrong.
 const ENGLISH_WEEKDAYS: [&str; 7] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
+/// The i18n keys for the twelve month names, January first (RW-98).
+const MONTH_KEYS: [&str; 12] = [
+    "calendar.month.1",
+    "calendar.month.2",
+    "calendar.month.3",
+    "calendar.month.4",
+    "calendar.month.5",
+    "calendar.month.6",
+    "calendar.month.7",
+    "calendar.month.8",
+    "calendar.month.9",
+    "calendar.month.10",
+    "calendar.month.11",
+    "calendar.month.12",
+];
+
+/// The i18n keys for the seven weekday names, Monday first (RW-98).
+const WEEKDAY_KEYS: [&str; 7] = [
+    "calendar.weekday.1",
+    "calendar.weekday.2",
+    "calendar.weekday.3",
+    "calendar.weekday.4",
+    "calendar.weekday.5",
+    "calendar.weekday.6",
+    "calendar.weekday.7",
+];
+
+/// A translated name, or the English name when the catalogue has no entry.
+///
+/// `translate` returns the key itself for a missing message, so comparing the result is how a
+/// caller distinguishes "translated" from "absent" without a second lookup API.
+fn translated_or(key: &str, fallback: &str) -> String {
+    let value = crate::i18n::translate(key);
+    if value == key {
+        fallback.to_string()
+    } else {
+        value
+    }
+}
+
 /// The default `date_format` pattern, rendered through the calendar's names layer.
 const DEFAULT_DATE_FORMAT: &str = "%B %Y";
 
@@ -413,7 +453,7 @@ impl Calendar {
     /// Creates a calendar widget.
     pub fn new(geometry: Rect) -> Self {
         let today = clock_today();
-        Self {
+        let mut calendar = Self {
             base: BaseWidget::new(WidgetKind::Calendar, geometry, "Calendar"),
             selected_date: today,
             selected_dates: vec![today],
@@ -451,8 +491,35 @@ impl Calendar {
             year_menu_cache: crate::compat::RefCell::new(YearMenuCache::default()),
             day_line_cache: crate::compat::RefCell::new(DayLineCache::default()),
             mark_layer: None,
-        }
+        };
+        calendar.apply_i18n_names();
+        calendar
     }
+
+    /// Replaces the month and weekday names from the active i18n catalogue (RW-98).
+    ///
+    /// A missing message falls back to the English name the control was built with, so a host
+    /// that has not loaded a catalogue (or one with a partial catalogue) sees English rather
+    /// than a raw key. Returns whether anything changed, and repaints when it did.
+    ///
+    /// The `first_day_of_week` order is unchanged: the arrays remain indexed by month number and
+    /// by `Weekday::num_days_from_monday`, so a localisation cannot shift a column.
+    pub fn apply_i18n_names(&mut self) -> bool {
+        let months: [String; 12] =
+            core::array::from_fn(|index| translated_or(MONTH_KEYS[index], ENGLISH_MONTHS[index]));
+        let weekdays: [String; 7] = core::array::from_fn(|index| {
+            translated_or(WEEKDAY_KEYS[index], ENGLISH_WEEKDAYS[index])
+        });
+        let changed = self.month_names != months || self.weekday_names != weekdays;
+        if changed {
+            self.month_names = months;
+            self.weekday_names = weekdays;
+            self.title_cache.get_mut().month = 0;
+            self.base.request_redraw();
+        }
+        changed
+    }
+
     /// Returns the date this calendar paints as "today".
     pub fn today(&self) -> chrono::NaiveDate {
         self.today
@@ -3499,6 +3566,25 @@ mod tests {
         assert_eq!(cal.weekday_name_order()[6], chrono::Weekday::Sat);
         // The names follow the weekday, not the column: Sunday is still Sunday.
         assert_eq!(cal.weekday_name(cal.weekday_name_order()[0]), "Sun");
+    }
+
+    /// RW-98: the month/weekday names are i18n-backed, with an English fallback.
+    #[test]
+    fn month_and_weekday_names_come_from_the_catalogue() {
+        let _lock = crate::i18n::global_i18n_test_lock();
+        let _ = crate::i18n::set_language("en");
+
+        // The embedded catalogue must actually declare every key; a missing key would come back
+        // as the key itself and the helper would fall back to English.
+        assert_eq!(crate::i18n::translate(MONTH_KEYS[0]), "January");
+        assert_eq!(crate::i18n::translate(MONTH_KEYS[11]), "December");
+        assert_eq!(crate::i18n::translate(WEEKDAY_KEYS[0]), "Mon");
+        assert_eq!(crate::i18n::translate(WEEKDAY_KEYS[6]), "Sun");
+
+        let mut cal = Calendar::new(Rect::new(0, 0, 300, 250));
+        assert_eq!(cal.month_name(1), "January");
+        assert_eq!(cal.weekday_name(chrono::Weekday::Sun), "Sun");
+        assert!(!cal.apply_i18n_names(), "the embedded English names are already applied");
     }
 
     /// The names layer is one source for the header, the title and the month menu.

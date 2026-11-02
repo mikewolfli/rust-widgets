@@ -3,7 +3,7 @@
 
 //! WebViewEnhanced widget — a web view wrapper.
 //!
-//! This type shares ~95% of its implementation with [`WebEngineViewEnhanced`](crate::web_engine_enhanced::WebEngineViewEnhanced).
+//! This type shares ~95% of its implementation with [`WebEngineViewEnhanced`](crate::webview::web_engine_enhanced::WebEngineViewEnhanced).
 //! Both delegate to a common [`WebViewCore`] to avoid code duplication.
 //!
 //! **Unique to this type:**
@@ -41,7 +41,7 @@ impl WebViewEnhanced {
     /// Creates a web view in `geometry` showing `about:blank`, with no title and
     /// nothing loading.
     ///
-    /// Unlike [`WebEngineViewEnhanced::new`](crate::web_engine_enhanced::WebEngineViewEnhanced::new),
+    /// Unlike [`WebEngineViewEnhanced::new`](crate::webview::web_engine_enhanced::WebEngineViewEnhanced::new),
     /// this type never acquires a native engine: every operation runs on the
     /// simulated loader, which emits 0% → 50% → 100% progress and stores the URL
     /// without performing any network I/O.
@@ -82,7 +82,7 @@ impl WebViewEnhanced {
 
     /// The core's load-progress signal, in percent.
     ///
-    /// See [`WebEngineViewEnhanced::loading_progress_signal`](crate::web_engine_enhanced::WebEngineViewEnhanced::loading_progress_signal)
+    /// See [`WebEngineViewEnhanced::loading_progress_signal`](crate::webview::web_engine_enhanced::WebEngineViewEnhanced::loading_progress_signal)
     /// for why the core's signals need an accessor on the wrapper.
     pub fn loading_progress_signal(&self) -> &Signal1<u8> {
         &self.core.loading_progress
@@ -395,8 +395,9 @@ impl Draw for WebViewEnhanced {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(not(feature = "web-http"))]
+    use crate::webview::privacy::BrowsingData;
     use rust_widgets::core::Rect;
-    use crate::privacy::BrowsingData;
 
     #[test]
     fn test_web_view_new() {
@@ -409,6 +410,7 @@ mod tests {
         assert!(!view.can_go_forward());
     }
 
+    #[cfg(not(feature = "web-http"))]
     #[test]
     fn test_web_view_set_url() {
         let mut view = WebViewEnhanced::new(Rect::new(0, 0, 800, 600));
@@ -540,6 +542,7 @@ mod tests {
         assert!(view.plugins().list().is_empty());
     }
 
+    #[cfg(not(feature = "web-http"))]
     #[test]
     fn test_web_view_clear_browsing_data() {
         let mut view = WebViewEnhanced::new(Rect::new(0, 0, 800, 600));
@@ -553,6 +556,7 @@ mod tests {
         assert!(view.browser_history().is_empty());
     }
 
+    #[cfg(not(feature = "web-http"))]
     #[test]
     fn test_web_view_history_access() {
         let mut view = WebViewEnhanced::new(Rect::new(0, 0, 800, 600));

@@ -20,6 +20,9 @@
 
 use alloc::vec::Vec;
 
+use crate::finance::layout::{panel_colors, PanelColors, PlotArea, PANEL_MIN_CONTRAST};
+use crate::finance::types::Bar;
+use crate::finance::types::PriceSeries;
 use rust_widgets::core::{Color, Point, Rect};
 use rust_widgets::event::EventHandler;
 use rust_widgets::render::RenderContext;
@@ -27,11 +30,6 @@ use rust_widgets::signal::Signal1;
 use rust_widgets::widget::capability::properties_trait::{base_property_get, base_property_set};
 use rust_widgets::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use rust_widgets::widget::capability::WidgetProperties;
-use crate::finance::layout::{
-    panel_colors, PanelColors, PlotArea, PANEL_MIN_CONTRAST,
-};
-use crate::finance::types::Bar;
-use crate::finance::types::PriceSeries;
 use rust_widgets::widget::metrics::role_font;
 use rust_widgets::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use rust_widgets::{impl_widget_property_hooks, property_names_of};
@@ -254,7 +252,9 @@ impl VolumeChart {
     ///
     /// The anchor is the top centre of the bar the pointer is over, so a companion bubble
     /// appears beside the datum rather than at a fixed corner (gap 10).
-    pub fn hover_anchor(&self) -> Option<(Point, Vec<rust_widgets::widget::companions::TooltipLine>)> {
+    pub fn hover_anchor(
+        &self,
+    ) -> Option<(Point, Vec<rust_widgets::widget::companions::TooltipLine>)> {
         let index = self.hovered_index?;
         let (start, end) = self.view_bounds();
         if index < start || index >= end {
@@ -322,6 +322,9 @@ impl VolumeChart {
 impl Widget for VolumeChart {
     fn base(&self) -> &BaseWidget {
         &self.base
+    }
+    fn capability_name(&self) -> Option<&'static str> {
+        Some("volume_chart")
     }
     fn set_state_theme_hook(&mut self) {
         rust_widgets::style::reapply_active_theme_state(self);
@@ -741,11 +744,11 @@ impl WidgetProperties for VolumeChart {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rust_widgets::event::EventHandler;
     use crate::finance::types::fixtures;
     use crate::finance::types::{Bar, PriceSeries};
     use alloc::sync::Arc;
     use core::sync::atomic::{AtomicUsize, Ordering};
+    use rust_widgets::event::EventHandler;
 
     /// The pane carries the series it was given.
     #[test]
@@ -833,8 +836,10 @@ mod tests {
     #[test]
     fn an_empty_series_draws_without_panicking() {
         let mut chart = VolumeChart::new(Rect::new(0, 0, 320, 160));
-        let mut backend =
-            rust_widgets::render::SoftwarePaintBackend::new(rust_widgets::core::Size::new(320, 160), 1.0);
+        let mut backend = rust_widgets::render::SoftwarePaintBackend::new(
+            rust_widgets::core::Size::new(320, 160),
+            1.0,
+        );
         let mut context = RenderContext::new(&mut backend);
         chart.draw(&mut context);
     }
@@ -851,8 +856,10 @@ mod tests {
         }
         let mut chart = VolumeChart::new(Rect::new(0, 0, 320, 160));
         chart.set_series(series);
-        let mut backend =
-            rust_widgets::render::SoftwarePaintBackend::new(rust_widgets::core::Size::new(320, 160), 1.0);
+        let mut backend = rust_widgets::render::SoftwarePaintBackend::new(
+            rust_widgets::core::Size::new(320, 160),
+            1.0,
+        );
         let mut context = RenderContext::new(&mut backend);
         chart.draw(&mut context);
     }
@@ -866,8 +873,10 @@ mod tests {
         series.push(Bar::new(10.0, 11.0, 9.0, 10.0, -5.0));
         let mut chart = VolumeChart::new(Rect::new(0, 0, 320, 160));
         chart.set_series(series);
-        let mut backend =
-            rust_widgets::render::SoftwarePaintBackend::new(rust_widgets::core::Size::new(320, 160), 1.0);
+        let mut backend = rust_widgets::render::SoftwarePaintBackend::new(
+            rust_widgets::core::Size::new(320, 160),
+            1.0,
+        );
         let mut context = RenderContext::new(&mut backend);
         chart.draw(&mut context);
     }
@@ -879,8 +888,10 @@ mod tests {
             let mut chart = VolumeChart::new(Rect::new(0, 0, 320, 160));
             chart.set_series(fixtures::sample_series(40));
             chart.set_color_mode(mode);
-            let mut backend =
-                rust_widgets::render::SoftwarePaintBackend::new(rust_widgets::core::Size::new(320, 160), 1.0);
+            let mut backend = rust_widgets::render::SoftwarePaintBackend::new(
+                rust_widgets::core::Size::new(320, 160),
+                1.0,
+            );
             let mut context = RenderContext::new(&mut backend);
             chart.draw(&mut context);
         }

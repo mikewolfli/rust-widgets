@@ -14,6 +14,7 @@
 use rust_widgets::compat::{lock, Arc, HashMap, Mutex};
 use rust_widgets::core::{Color, HorizontalAlignment, Point, Rect};
 use rust_widgets::event::{Event, EventHandler};
+use rust_widgets::impl_draw_bridge;
 use rust_widgets::render::RenderContext;
 use rust_widgets::signal::{ConnectionScope, GenericSignal, Signal1};
 use rust_widgets::widget::capability::coercion::{
@@ -26,14 +27,16 @@ use rust_widgets::widget::companions::ZoomPanController;
 use rust_widgets::widget::metrics::effective_font;
 use rust_widgets::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use rust_widgets::{impl_widget_property_hooks, property_names_of};
-use rust_widgets::impl_draw_bridge;
 
 // `MapView` owns no tile source on purpose: fetching a tile is a host concern and
 // this layer performs no I/O. These four controls carry the state a map needs
 // around it and report intent through signals.
 
 /// Resolves the surface, border and ink a companion control paints with.
-fn companion_palette(style: &rust_widgets::style::WidgetStyle, role: &str) -> (Color, Color, Color) {
+fn companion_palette(
+    style: &rust_widgets::style::WidgetStyle,
+    role: &str,
+) -> (Color, Color, Color) {
     let theme = rust_widgets::style::resolved_theme_style_shared(role);
     let ink = style
         .text_color
@@ -423,6 +426,9 @@ impl TileLoader {
 impl Widget for TileLoader {
     fn base(&self) -> &BaseWidget {
         &self.base
+    }
+    fn capability_name(&self) -> Option<&'static str> {
+        Some("tile_loader")
     }
 
     fn base_mut(&mut self) -> &mut BaseWidget {
@@ -836,6 +842,9 @@ impl Widget for ZoomControl {
     fn base(&self) -> &BaseWidget {
         &self.base
     }
+    fn capability_name(&self) -> Option<&'static str> {
+        Some("zoom_control")
+    }
 
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
@@ -1241,6 +1250,9 @@ impl Widget for ScaleBar {
     fn base(&self) -> &BaseWidget {
         &self.base
     }
+    fn capability_name(&self) -> Option<&'static str> {
+        Some("scale_bar")
+    }
 
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
@@ -1422,6 +1434,9 @@ impl Compass {
 impl Widget for Compass {
     fn base(&self) -> &BaseWidget {
         &self.base
+    }
+    fn capability_name(&self) -> Option<&'static str> {
+        Some("compass")
     }
 
     fn base_mut(&mut self) -> &mut BaseWidget {

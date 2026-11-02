@@ -15,20 +15,20 @@
 //! Registration surface (out of scope for this file): canonical name `chapter_list_panel`, kind
 //! [`WidgetKind::VideoPlayer`].
 
+use crate::media_playback::video_player::{VideoChapter, VideoPlayer};
 use rust_widgets::compat::{lock, Arc, Mutex, Vec};
 use rust_widgets::core::{Color, HorizontalAlignment, Point, Rect, Size};
 use rust_widgets::event::{Event, EventHandler};
+use rust_widgets::impl_draw_bridge;
 use rust_widgets::render::RenderContext;
 use rust_widgets::signal::{ConnectionScope, GenericSignal, Signal1};
 use rust_widgets::widget::capability::coercion::{expect_bool, expect_u32};
 use rust_widgets::widget::capability::properties_trait::{base_property_get, base_property_set};
 use rust_widgets::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use rust_widgets::widget::capability::WidgetProperties;
-use crate::media_playback::video_player::{VideoChapter, VideoPlayer};
 use rust_widgets::widget::metrics::effective_font;
 use rust_widgets::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use rust_widgets::{impl_widget_property_hooks, property_names_of};
-use rust_widgets::impl_draw_bridge;
 
 /// Width reserved for a chapter thumbnail when thumbnails are shown.
 const CHAPTER_THUMBNAIL_WIDTH: u32 = 48;
@@ -424,6 +424,9 @@ impl ChapterListPanel {
 impl Widget for ChapterListPanel {
     fn base(&self) -> &BaseWidget {
         &self.base
+    }
+    fn capability_name(&self) -> Option<&'static str> {
+        Some("chapter_list_panel")
     }
 
     fn base_mut(&mut self) -> &mut BaseWidget {

@@ -782,8 +782,8 @@ pub(crate) use delegate_widget;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::webview::privacy::{BrowsingData, Cookie};
     use rust_widgets::core::Rect;
-    use crate::privacy::{BrowsingData, Cookie};
 
     #[test]
     fn test_web_view_core_new() {
@@ -801,6 +801,8 @@ mod tests {
         assert!(core.security().block_popups);
     }
 
+    /// The simulated loader finishes synchronously, which is only true without `web-http`.
+    #[cfg(not(feature = "web-http"))]
     #[test]
     fn test_web_view_core_set_url() {
         let mut core = WebViewCore::new(
@@ -814,6 +816,21 @@ mod tests {
         // set_url simulates loading and completing
         assert!(!core.is_loading());
         assert_eq!(core.load_progress(), 100);
+    }
+
+    /// With `web-http`, an HTTP navigation is in flight until `poll_load` delivers it.
+    #[cfg(feature = "web-http")]
+    #[test]
+    fn http_navigation_starts_in_flight_without_blocking() {
+        let mut core = WebViewCore::new(
+            WidgetKind::WebEngineView,
+            Rect::new(0, 0, 800, 600),
+            "test_webview",
+            "about:blank",
+        );
+        core.set_url("https://example.invalid".to_string());
+        assert_eq!(core.url(), "https://example.invalid");
+        assert!(core.is_loading(), "the fetch runs on a helper thread, not inline");
     }
 
     #[test]
@@ -1063,6 +1080,7 @@ mod tests {
         assert!(core.cookies.is_empty());
     }
 
+    #[cfg(not(feature = "web-http"))]
     #[test]
     fn test_web_view_core_clear_browsing_data_history_only() {
         let mut core = WebViewCore::new(

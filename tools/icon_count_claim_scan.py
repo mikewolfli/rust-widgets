@@ -42,13 +42,13 @@ DOCS = [
 def build_patterns() -> list[re.Pattern]:
     """Every spelling the tree uses for "the number of `IconName` tokens"."""
     return [
-        # 69 `IconName` tokens  /  **69** `IconName` tokens
+        # 75 `IconName` tokens  /  **69** `IconName` tokens
         re.compile(r"(\d{2,3})\D{0,4}`?IconName`?\s+tokens?\b"),
-        # 69 个 `IconName` token  /  69 個 `IconName` token
+        # 75 个 `IconName` token  /  75 個 `IconName` token
         re.compile(r"(\d{2,3})\D{0,4}(?:个|個)\s*`?IconName`?\s*token"),
-        # `Icon` names 69 icons through `IconName`.
+        # `Icon` names 75 icons through `IconName`.
         re.compile(r"(\d{2,3})\s+icons?\b(?=[^.]*IconName)"),
-        # ENUM["IconName<br/>(69 variants)"]
+        # ENUM["IconName<br/>(75 variants)"]
         re.compile(r"IconName\D{0,30}\((\d{2,3})\s+variants?\)"),
     ]
 

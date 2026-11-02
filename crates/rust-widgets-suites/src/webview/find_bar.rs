@@ -15,10 +15,11 @@
 //! Registration surface: canonical name `web_find_bar` (alias `page_find_bar`), kind
 //! [`WidgetKind::WebFindBar`], registered in the factory like any other companion.
 
+use crate::webview::web_engine::{WebEngineView, WebFindRequest};
 use rust_widgets::compat::Arc;
-use rust_widgets::impl_draw_bridge;
 use rust_widgets::core::{Color, HorizontalAlignment, Rect, Size};
 use rust_widgets::event::{Event, EventHandler};
+use rust_widgets::impl_draw_bridge;
 use rust_widgets::render::RenderContext;
 use rust_widgets::signal::{ConnectionScope, GenericSignal, Signal1};
 use rust_widgets::widget::capability::coercion::{expect_bool, expect_string, expect_usize};
@@ -26,7 +27,6 @@ use rust_widgets::widget::capability::properties_trait::{base_property_get, base
 use rust_widgets::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use rust_widgets::widget::capability::WidgetProperties;
 use rust_widgets::widget::metrics::role_font;
-use crate::web_engine::{WebEngineView, WebFindRequest};
 use rust_widgets::widget::{BaseWidget, Draw, IconName, Widget, WidgetKind};
 use rust_widgets::{impl_widget_property_hooks, property_names_of};
 
@@ -247,6 +247,9 @@ impl WebFindBar {
 impl Widget for WebFindBar {
     fn base(&self) -> &BaseWidget {
         &self.base
+    }
+    fn capability_name(&self) -> Option<&'static str> {
+        Some("web_find_bar")
     }
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base

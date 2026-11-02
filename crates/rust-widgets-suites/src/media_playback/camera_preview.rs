@@ -700,6 +700,9 @@ impl Widget for CameraPreview {
     fn base(&self) -> &BaseWidget {
         &self.base
     }
+    fn capability_name(&self) -> Option<&'static str> {
+        Some("camera_preview")
+    }
     fn set_state_theme_hook(&mut self) {
         rust_widgets::style::reapply_active_theme_state(self);
     }
@@ -728,6 +731,9 @@ impl Widget for CameraPreview {
     fn event_signal_dyn(&self, name: &str) -> Option<rust_widgets::signal::EventSignalRef> {
         use rust_widgets::signal::EventSignalRef;
         match name {
+            "capture_requested" => {
+                Some(EventSignalRef::unit("capture_requested", &self.capture_requested))
+            }
             "error_occurred" => {
                 Some(EventSignalRef::mapped("error_occurred", &self.error_occurred, |v| {
                     CapabilityValue::String(v.clone())

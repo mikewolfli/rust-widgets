@@ -2726,6 +2726,8 @@ mod tests {
     /// This replaces the earlier expectation that such a payload was refused. Refusing it was
     /// right while every drop was a reorder; with cross-control transfers the payload's label *is*
     /// the row, and the source — told `Move` — removes its own copy.
+    // `TextArea` is part of the full widget layer; a stripped profile compiles it out.
+    #[cfg(full_widgets)]
     #[cfg(not(alloc_frugal))]
     #[test]
     fn text_dragged_from_another_control_is_inserted_as_a_row() {

@@ -34,6 +34,9 @@
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
+use crate::finance::indicators;
+use crate::finance::layout::{panel_colors, PanelColors, PlotArea, PANEL_MIN_CONTRAST};
+use crate::finance::types::{Bar, PriceLevelKind, PriceLine, PriceSeries};
 use rust_widgets::core::{Color, HorizontalAlignment, Point, Rect};
 use rust_widgets::event::EventHandler;
 use rust_widgets::render::RenderContext;
@@ -41,11 +44,6 @@ use rust_widgets::signal::Signal1;
 use rust_widgets::widget::capability::properties_trait::{base_property_get, base_property_set};
 use rust_widgets::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use rust_widgets::widget::capability::WidgetProperties;
-use crate::finance::indicators;
-use crate::finance::layout::{
-    panel_colors, PanelColors, PlotArea, PANEL_MIN_CONTRAST,
-};
-use crate::finance::types::{Bar, PriceLevelKind, PriceLine, PriceSeries};
 use rust_widgets::widget::metrics::role_font;
 use rust_widgets::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use rust_widgets::{impl_widget_property_hooks, property_names_of};
@@ -680,7 +678,9 @@ impl CandlestickChart {
     /// The same `(Point, lines)` shape
     /// [`LineChart::hover_anchor`](rust_widgets::widget::chart_widgets::line_chart::LineChart::hover_anchor)
     /// publishes, so one `ChartTooltip` can serve every chart in the family (gap 10).
-    pub fn hover_anchor(&self) -> Option<(Point, Vec<rust_widgets::widget::companions::TooltipLine>)> {
+    pub fn hover_anchor(
+        &self,
+    ) -> Option<(Point, Vec<rust_widgets::widget::companions::TooltipLine>)> {
         let index = self.hovered_index?;
         let bar = self.series.bars().get(index)?;
         let (start, end) = self.view_bounds();
@@ -1399,6 +1399,9 @@ impl Widget for CandlestickChart {
     fn base(&self) -> &BaseWidget {
         &self.base
     }
+    fn capability_name(&self) -> Option<&'static str> {
+        Some("candlestick_chart")
+    }
     fn set_state_theme_hook(&mut self) {
         rust_widgets::style::reapply_active_theme_state(self);
     }
@@ -1803,8 +1806,10 @@ mod tests {
     fn an_empty_series_draws_without_panicking() {
         let mut chart = CandlestickChart::new(Rect::new(0, 0, 320, 200));
         chart.add_overlay(Overlay::moving_average(20));
-        let mut backend =
-            rust_widgets::render::SoftwarePaintBackend::new(rust_widgets::core::Size::new(320, 200), 1.0);
+        let mut backend = rust_widgets::render::SoftwarePaintBackend::new(
+            rust_widgets::core::Size::new(320, 200),
+            1.0,
+        );
         let mut context = RenderContext::new(&mut backend);
         chart.draw(&mut context);
     }
@@ -1822,8 +1827,10 @@ mod tests {
         let mut chart = CandlestickChart::new(Rect::new(0, 0, 320, 200));
         chart.set_series(series);
         chart.add_overlay(Overlay::bollinger_bands(20, 2.0));
-        let mut backend =
-            rust_widgets::render::SoftwarePaintBackend::new(rust_widgets::core::Size::new(320, 200), 1.0);
+        let mut backend = rust_widgets::render::SoftwarePaintBackend::new(
+            rust_widgets::core::Size::new(320, 200),
+            1.0,
+        );
         let mut context = RenderContext::new(&mut backend);
         chart.draw(&mut context);
     }
@@ -1840,8 +1847,10 @@ mod tests {
         }
         let mut chart = CandlestickChart::new(Rect::new(0, 0, 320, 200));
         chart.set_series(series);
-        let mut backend =
-            rust_widgets::render::SoftwarePaintBackend::new(rust_widgets::core::Size::new(320, 200), 1.0);
+        let mut backend = rust_widgets::render::SoftwarePaintBackend::new(
+            rust_widgets::core::Size::new(320, 200),
+            1.0,
+        );
         let mut context = RenderContext::new(&mut backend);
         chart.draw(&mut context);
     }
@@ -1859,8 +1868,10 @@ mod tests {
             let mut chart = CandlestickChart::new(Rect::new(0, 0, 480, 320));
             chart.set_series(fixtures::sample_series(60));
             chart.add_overlay(overlay);
-            let mut backend =
-                rust_widgets::render::SoftwarePaintBackend::new(rust_widgets::core::Size::new(480, 320), 1.0);
+            let mut backend = rust_widgets::render::SoftwarePaintBackend::new(
+                rust_widgets::core::Size::new(480, 320),
+                1.0,
+            );
             let mut context = RenderContext::new(&mut backend);
             chart.draw(&mut context);
         }
@@ -1894,7 +1905,11 @@ mod tests {
         chart.set_view_range(Some((4, 7)));
         assert_eq!(*seen.lock().unwrap(), vec![(4, 7)]);
         let area = chart.plot_area();
-        chart.handle_event(&rust_widgets::event::Event::mouse_press(area.rect.x + 1, area.rect.y + 5, 1));
+        chart.handle_event(&rust_widgets::event::Event::mouse_press(
+            area.rect.x + 1,
+            area.rect.y + 5,
+            1,
+        ));
         assert_eq!(*clicked.lock().unwrap(), vec![4], "the left edge is the first visible bar");
         assert!(chart.show_overlay_legend(), "the legend is on by default when overlays exist");
     }

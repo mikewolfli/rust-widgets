@@ -165,6 +165,18 @@ pub enum IconName {
     NotificationsOff,
     /// A four-corner expand mark, for fullscreen.
     Fullscreen,
+    /// A bug silhouette, for debug tooling and breakpoints.
+    DebugBug,
+    /// A component tile, for the component palette.
+    DesignComponent,
+    /// A lightning bolt, for event wires and triggers.
+    DesignEvent,
+    /// A laboratory flask, for tests.
+    TestFlask,
+    /// A terminal prompt, for developer tools.
+    ToolsTerminal,
+    /// A translate glyph, for localization tools.
+    ToolsTranslate,
 }
 
 impl IconName {
@@ -244,6 +256,12 @@ impl IconName {
             Self::Send => "send",
             Self::NotificationsOff => "notifications_off",
             Self::Fullscreen => "fullscreen",
+            Self::DebugBug => "debug_bug",
+            Self::DesignComponent => "design_component",
+            Self::DesignEvent => "design_event",
+            Self::TestFlask => "test_flask",
+            Self::ToolsTerminal => "tools_terminal",
+            Self::ToolsTranslate => "tools_translate",
         }
     }
 
@@ -324,6 +342,12 @@ impl IconName {
             "send" => Some(Self::Send),
             "notifications_off" => Some(Self::NotificationsOff),
             "fullscreen" => Some(Self::Fullscreen),
+            "debug_bug" => Some(Self::DebugBug),
+            "design_component" => Some(Self::DesignComponent),
+            "design_event" => Some(Self::DesignEvent),
+            "test_flask" => Some(Self::TestFlask),
+            "tools_terminal" => Some(Self::ToolsTerminal),
+            "tools_translate" => Some(Self::ToolsTranslate),
             _ => None,
         }
     }
@@ -332,8 +356,8 @@ impl IconName {
     ///
     /// The table's own view of [`IconName::ALL`], so a test can compare the two lists rather
     /// than compare each against a third copy.
-    pub fn all_tokens() -> [&'static str; 69] {
-        let mut tokens = [""; 69];
+    pub fn all_tokens() -> [&'static str; 75] {
+        let mut tokens = [""; 75];
         let mut index = 0;
         let mut variant_index = 0;
         while variant_index < Self::ALL.len() {
@@ -348,7 +372,7 @@ impl IconName {
     ///
     /// Indexed directly by the enum's discriminant — `data()` and `data_opt()` rely on that
     /// order matching the generated tables, which the integrity tests assert by name.
-    pub const ALL: [IconName; 69] = [
+    pub const ALL: [IconName; 75] = [
         Self::Check,
         Self::Cross,
         Self::ArrowLeft,
@@ -418,6 +442,12 @@ impl IconName {
         Self::Send,
         Self::NotificationsOff,
         Self::Fullscreen,
+        Self::DebugBug,
+        Self::DesignComponent,
+        Self::DesignEvent,
+        Self::TestFlask,
+        Self::ToolsTerminal,
+        Self::ToolsTranslate,
     ];
 
     /// This icon's bundled outline data, indexed by declaration order.

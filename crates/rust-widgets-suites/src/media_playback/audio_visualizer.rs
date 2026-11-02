@@ -979,6 +979,9 @@ impl Widget for AudioVisualizer {
     fn base(&self) -> &BaseWidget {
         &self.base
     }
+    fn capability_name(&self) -> Option<&'static str> {
+        Some("audio_visualizer")
+    }
     fn set_state_theme_hook(&mut self) {
         rust_widgets::style::reapply_active_theme_state(self);
     }
@@ -1121,7 +1124,8 @@ impl WidgetProperties for AudioVisualizer {
                 Ok(())
             }
             "sample_data" => {
-                let samples = rust_widgets::widget::capability::coercion::expect_number_list(value)?;
+                let samples =
+                    rust_widgets::widget::capability::coercion::expect_number_list(value)?;
                 self.set_samples(samples.into_iter().map(|sample| sample as f32).collect());
                 Ok(())
             }
@@ -1416,7 +1420,8 @@ mod tests {
         );
 
         // An explicit choice still wins over the theme, which is what keeps the setter meaningful.
-        rust_widgets::theme::global_theme_manager().set_appearance(rust_widgets::theme::AppearanceMode::Light);
+        rust_widgets::theme::global_theme_manager()
+            .set_appearance(rust_widgets::theme::AppearanceMode::Light);
         let mut av = AudioVisualizer::new(Rect::new(0, 0, 300, 150));
         let chosen = Color::rgb(1, 2, 3);
         av.set_background_color(chosen);

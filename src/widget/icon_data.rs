@@ -23,13 +23,13 @@
 // without the `icons` feature can still name the type (its table is what is gated).
 use super::display_widgets::icon::IconData;
 
-/// Every icon's data, indexed by `IconName`'s declaration order. 69 entries.
+/// Every icon's data, indexed by `IconName`'s declaration order. 75 entries.
 ///
 /// `IconName::data` indexes this with the variant's discriminant, and
 /// `tests/icon_data_integrity_test.rs` asserts the names line up, so the order is checked
 /// in every build rather than only asserted in a debug one.
 #[rustfmt::skip]
-pub(crate) static ICON_DATA: [IconData; 69] = [
+pub(crate) static ICON_DATA: [IconData; 75] = [
     IconData {
         name: "check",
         grid: 960,
@@ -374,5 +374,35 @@ pub(crate) static ICON_DATA: [IconData; 69] = [
         name: "fullscreen",
         grid: 960,
         paths: &["M120-120v-200h80v120h120v80H120Zm520 0v-80h120v-120h80v200H640ZM120-640v-200h200v80H200v120h-80Zm640 0v-120H640v-80h200v200h-80Z"],
+    },
+    IconData {
+        name: "debug_bug",
+        grid: 960,
+        paths: &["M480-200q66 0 113-47t47-113v-160q0-66-47-113t-113-47q-66 0-113 47t-47 113v160q0 66 47 113t113 47Zm-80-120h160v-80H400v80Zm0-160h160v-80H400v80Zm80 40Zm0 320q-65 0-120.5-32T272-240H160v-80h84q-3-20-3.5-40t-.5-40h-80v-80h80q0-20 .5-40t3.5-40h-84v-80h112q14-23 31.5-43t40.5-35l-64-66 56-56 86 86q28-9 57-9t57 9l88-86 56 56-66 66q23 15 41.5 34.5T688-640h112v80h-84q3 20 3.5 40t.5 40h80v80h-80q0 20-.5 40t-3.5 40h84v80H688q-32 56-87.5 88T480-120Z"],
+    },
+    IconData {
+        name: "design_component",
+        grid: 960,
+        paths: &["M666-440 440-666l226-226 226 226-226 226Zm-546-80v-320h320v320H120Zm400 400v-320h320v320H520Zm-400 0v-320h320v320H120Zm80-480h160v-160H200v160Zm467 48 113-113-113-113-113 113 113 113Zm-67 352h160v-160H600v160Zm-400 0h160v-160H200v160Zm160-400Zm194-65ZM360-360Zm240 0Z"],
+    },
+    IconData {
+        name: "design_event",
+        grid: 960,
+        paths: &["m422-232 207-248H469l29-227-185 267h139l-30 208ZM320-80l40-280H160l360-520h80l-40 320h240L400-80h-80Zm151-390Z"],
+    },
+    IconData {
+        name: "test_flask",
+        grid: 960,
+        paths: &["M200-120q-51 0-72.5-45.5T138-250l222-270v-240h-40q-17 0-28.5-11.5T280-800q0-17 11.5-28.5T320-840h320q17 0 28.5 11.5T680-800q0 17-11.5 28.5T640-760h-40v240l222 270q32 39 10.5 84.5T760-120H200Zm0-80h560L520-492v-268h-80v268L200-200Zm280-280Z"],
+    },
+    IconData {
+        name: "tools_terminal",
+        grid: 960,
+        paths: &["M160-160q-33 0-56.5-23.5T80-240v-480q0-33 23.5-56.5T160-800h640q33 0 56.5 23.5T880-720v480q0 33-23.5 56.5T800-160H160Zm0-80h640v-400H160v400Zm140-40-56-56 103-104-104-104 57-56 160 160-160 160Zm180 0v-80h240v80H480Z"],
+    },
+    IconData {
+        name: "tools_translate",
+        grid: 960,
+        paths: &["m476-80 182-480h84L924-80h-84l-43-122H603L560-80h-84ZM160-200l-56-56 202-202q-35-35-63.5-80T190-640h84q20 39 40 68t48 58q33-33 68.5-92.5T484-720H40v-80h280v-80h80v80h280v80H564q-21 72-63 148t-83 116l96 98-30 82-122-125-202 201Zm468-72h144l-72-204-72 204Z"],
     },
 ];

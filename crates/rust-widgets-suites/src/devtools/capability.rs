@@ -11,8 +11,8 @@
 use rust_widgets::core::Rect;
 use rust_widgets::widget::capability::apply_control_label;
 use rust_widgets::widget::capability::types::{
-    CapabilityValue, EventPayloadShape as S, EventSchema, PropertySchema,
-    PropertyValueKind, PropertyValueKind as K, RegistrationError, WidgetCapability, WidgetCtor,
+    CapabilityValue, EventPayloadShape as S, EventSchema, PropertySchema, PropertyValueKind,
+    PropertyValueKind as K, RegistrationError, WidgetCapability, WidgetCtor,
 };
 use rust_widgets::widget::capability::WidgetFactory;
 use rust_widgets::widget::{Widget, WidgetKind};
@@ -38,7 +38,6 @@ pub const TERMINAL_VIEW_PROPERTIES: &[PropertySchema] = &[
     PropertySchema::new("ansi_palette", PropertyValueKind::NumberList, true, true),
 ];
 
-
 pub const DIFF_VIEWER_PROPERTIES: &[PropertySchema] = &[
     PropertySchema::new("left_text", PropertyValueKind::String, true, true),
     PropertySchema::new("right_text", PropertyValueKind::String, true, true),
@@ -63,7 +62,6 @@ pub const DIFF_VIEWER_PROPERTIES: &[PropertySchema] = &[
     PropertySchema::new("word_granularity", PropertyValueKind::Bool, true, true),
 ];
 
-
 /// Multi-file selector beside a diff viewer (`COMP-15`).
 pub const DIFF_FILE_LIST_PROPERTIES: &[PropertySchema] = &[
     PropertySchema::new("files", PropertyValueKind::StringList, true, true),
@@ -81,7 +79,6 @@ pub const DIFF_FILE_LIST_PROPERTIES: &[PropertySchema] = &[
     PropertySchema::new("geometry", PropertyValueKind::String, false, false),
 ];
 
-
 /// Terminal scrollback find bar (COMP-A2). The match count is produced by a scan of the
 /// attached terminal, so it is read-only; `visible` is the bar's own open/close flag.
 pub const TERMINAL_FIND_BAR_PROPERTIES: &[PropertySchema] = &[
@@ -95,7 +92,6 @@ pub const TERMINAL_FIND_BAR_PROPERTIES: &[PropertySchema] = &[
     PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
     PropertySchema::new("geometry", PropertyValueKind::String, false, false),
 ];
-
 
 /// `terminal_view`'s published events.
 const TERMINAL_VIEW_EVENTS: &[EventSchema] = &[
@@ -112,7 +108,11 @@ const DIFF_VIEWER_EVENTS: &[EventSchema] = &[
     EventSchema { name: "compared", payload: Some(K::UInt), shape: Some(S::Scalar) },
     EventSchema { name: "fold_changed", payload: Some(K::Bool), shape: Some(S::Scalar) },
     EventSchema { name: "hunk_expanded", payload: Some(K::UInt), shape: Some(S::Scalar) },
-    EventSchema { name: "selection_changed", payload: Some(K::UInt), shape: Some(S::OptionalScalar) },
+    EventSchema {
+        name: "selection_changed",
+        payload: Some(K::UInt),
+        shape: Some(S::OptionalScalar),
+    },
     EventSchema { name: "view_mode_changed", payload: Some(K::String), shape: Some(S::Scalar) },
 ];
 
@@ -123,9 +123,8 @@ const DIFF_FILE_LIST_EVENTS: &[EventSchema] = &[
 ];
 
 /// `terminal_find_bar`'s published events.
-const TERMINAL_FIND_BAR_EVENTS: &[EventSchema] = &[
-    EventSchema { name: "on_matches_changed", payload: Some(K::UInt), shape: Some(S::Tuple2) },
-];
+const TERMINAL_FIND_BAR_EVENTS: &[EventSchema] =
+    &[EventSchema { name: "on_matches_changed", payload: Some(K::UInt), shape: Some(S::Tuple2) }];
 
 pub fn terminal_view_capability() -> WidgetCapability {
     WidgetCapability {
@@ -142,7 +141,6 @@ pub fn terminal_view_capability() -> WidgetCapability {
     }
 }
 
-
 pub fn diff_viewer_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::Table,
@@ -158,7 +156,6 @@ pub fn diff_viewer_capability() -> WidgetCapability {
     }
 }
 
-
 /// `diff_file_list` — the multi-file selector beside a diff (`COMP-15`).
 pub fn diff_file_list_capability() -> WidgetCapability {
     WidgetCapability {
@@ -170,7 +167,6 @@ pub fn diff_file_list_capability() -> WidgetCapability {
         commands: &[],
     }
 }
-
 
 /// Terminal scrollback find bar (COMP-A2).
 ///
@@ -187,7 +183,6 @@ pub fn terminal_find_bar_capability() -> WidgetCapability {
     }
 }
 
-
 /// Creates a terminal view with no output. `text` becomes the initial contents of
 /// the input line, not the transcript.
 pub fn create_terminal_view(geometry: Rect, text: &str) -> Box<dyn Widget> {
@@ -198,29 +193,22 @@ pub fn create_terminal_view(geometry: Rect, text: &str) -> Box<dyn Widget> {
     Box::new(terminal)
 }
 
-
 /// Creates a diff viewer with both snapshots empty. `text` is applied as the
 /// control's label.
 pub fn create_diff_viewer(geometry: Rect, text: &str) -> Box<dyn Widget> {
     apply_control_label(Box::new(DiffViewer::new(geometry)), text)
 }
 
-
 /// Creates an empty diff file list (`COMP-15`).
 pub fn create_diff_file_list(geometry: Rect, _text: &str) -> Box<dyn Widget> {
     apply_control_label(Box::new(DiffFileList::new(geometry)), _text)
 }
 
-
 /// Creates a closed terminal find bar with no query (COMP-A2). `text` is applied as the control's
 /// label, not as the query.
 pub fn create_terminal_find_bar(geometry: Rect, text: &str) -> Box<dyn Widget> {
-    apply_control_label(
-        Box::new(TerminalFindBar::new(geometry)),
-        text,
-    )
+    apply_control_label(Box::new(TerminalFindBar::new(geometry)), text)
 }
-
 
 /// A registered control: its capability row, its constructor, and its defaults provider.
 type DevtoolsRow = (WidgetCapability, WidgetCtor, fn(&str) -> Option<CapabilityValue>);
@@ -232,26 +220,18 @@ type DevtoolsRow = (WidgetCapability, WidgetCtor, fn(&str) -> Option<CapabilityV
 /// reported rather than silently shadowed.
 pub fn install(factory: &mut WidgetFactory) -> Result<(), RegistrationError> {
     let rows: [DevtoolsRow; 4] = [
-        (
-            terminal_view_capability(),
-            create_terminal_view,
-            |p| default_property_value("terminal_view", p),
-        ),
-        (
-            terminal_find_bar_capability(),
-            create_terminal_find_bar,
-            |p| default_property_value("terminal_find_bar", p),
-        ),
-        (
-            diff_viewer_capability(),
-            create_diff_viewer,
-            |p| default_property_value("diff_viewer", p),
-        ),
-        (
-            diff_file_list_capability(),
-            create_diff_file_list,
-            |p| default_property_value("diff_file_list", p),
-        ),
+        (terminal_view_capability(), create_terminal_view, |p| {
+            default_property_value("terminal_view", p)
+        }),
+        (terminal_find_bar_capability(), create_terminal_find_bar, |p| {
+            default_property_value("terminal_find_bar", p)
+        }),
+        (diff_viewer_capability(), create_diff_viewer, |p| {
+            default_property_value("diff_viewer", p)
+        }),
+        (diff_file_list_capability(), create_diff_file_list, |p| {
+            default_property_value("diff_file_list", p)
+        }),
     ];
     for (capability, ctor, defaults) in rows {
         let name = capability.canonical_name;
@@ -285,12 +265,12 @@ pub fn default_property_value(kind: &str, name: &str) -> Option<CapabilityValue>
         ("diff_viewer", "fold_threshold") => Some(CapabilityValue::UInt(8)),
         ("diff_viewer", "fold_context_lines") => Some(CapabilityValue::UInt(0)),
         ("diff_viewer", "fold_unchanged") => Some(CapabilityValue::Bool(false)),
-        ("diff_file_list", "files") => Some(CapabilityValue::Tuple(rust_widgets::compat::Vec::new())),
+        ("diff_file_list", "files") => {
+            Some(CapabilityValue::Tuple(rust_widgets::compat::Vec::new()))
+        }
         ("diff_file_list", "file_count") => Some(CapabilityValue::UInt(0)),
         ("diff_file_list", "selected_path") => Some(CapabilityValue::Null),
-        ("diff_file_list", "selection_mode") => {
-            Some(CapabilityValue::String("single".to_string()))
-        }
+        ("diff_file_list", "selection_mode") => Some(CapabilityValue::String("single".to_string())),
         _ => None,
     }
 }
@@ -298,43 +278,22 @@ pub fn default_property_value(kind: &str, name: &str) -> Option<CapabilityValue>
 /// Every property name the devtools suite publishes, for a quick completeness check.
 pub fn published_property_names() -> Vec<(&'static str, Vec<&'static str>)> {
     vec![
-        (
-            "terminal_view",
-            TERMINAL_VIEW_PROPERTIES.iter().map(|schema| schema.name).collect(),
-        ),
+        ("terminal_view", TERMINAL_VIEW_PROPERTIES.iter().map(|schema| schema.name).collect()),
         (
             "terminal_find_bar",
             TERMINAL_FIND_BAR_PROPERTIES.iter().map(|schema| schema.name).collect(),
         ),
-        (
-            "diff_viewer",
-            DIFF_VIEWER_PROPERTIES.iter().map(|schema| schema.name).collect(),
-        ),
-        (
-            "diff_file_list",
-            DIFF_FILE_LIST_PROPERTIES.iter().map(|schema| schema.name).collect(),
-        ),
+        ("diff_viewer", DIFF_VIEWER_PROPERTIES.iter().map(|schema| schema.name).collect()),
+        ("diff_file_list", DIFF_FILE_LIST_PROPERTIES.iter().map(|schema| schema.name).collect()),
     ]
 }
 
 /// Every event name the devtools suite publishes, for a quick completeness check.
 pub fn published_event_names() -> Vec<(&'static str, Vec<&'static str>)> {
     vec![
-        (
-            "terminal_view",
-            TERMINAL_VIEW_EVENTS.iter().map(|schema| schema.name).collect(),
-        ),
-        (
-            "terminal_find_bar",
-            TERMINAL_FIND_BAR_EVENTS.iter().map(|schema| schema.name).collect(),
-        ),
-        (
-            "diff_viewer",
-            DIFF_VIEWER_EVENTS.iter().map(|schema| schema.name).collect(),
-        ),
-        (
-            "diff_file_list",
-            DIFF_FILE_LIST_EVENTS.iter().map(|schema| schema.name).collect(),
-        ),
+        ("terminal_view", TERMINAL_VIEW_EVENTS.iter().map(|schema| schema.name).collect()),
+        ("terminal_find_bar", TERMINAL_FIND_BAR_EVENTS.iter().map(|schema| schema.name).collect()),
+        ("diff_viewer", DIFF_VIEWER_EVENTS.iter().map(|schema| schema.name).collect()),
+        ("diff_file_list", DIFF_FILE_LIST_EVENTS.iter().map(|schema| schema.name).collect()),
     ]
 }

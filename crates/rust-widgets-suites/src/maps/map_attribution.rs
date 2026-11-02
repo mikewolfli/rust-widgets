@@ -16,8 +16,10 @@
 //! [`TileLoader`](crate::maps::map_view::TileLoader) template once and derives
 //! a source entry from it; everything else is set by the host.
 
+use crate::maps::map_view::MapView;
 use rust_widgets::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use rust_widgets::event::{Event, EventHandler};
+use rust_widgets::impl_draw_bridge;
 use rust_widgets::impl_widget_property_hooks;
 use rust_widgets::property_names_of;
 use rust_widgets::render::RenderContext;
@@ -27,9 +29,7 @@ use rust_widgets::widget::capability::properties_trait::{base_property_get, base
 use rust_widgets::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use rust_widgets::widget::capability::WidgetProperties;
 use rust_widgets::widget::metrics::{effective_font, estimate_text_width};
-use crate::maps::map_view::MapView;
 use rust_widgets::widget::{BaseWidget, Draw, Widget, WidgetKind};
-use rust_widgets::impl_draw_bridge;
 
 /// Which corner of its rectangle an anchored overlay sits in.
 ///
@@ -422,6 +422,9 @@ fn attribution_entry_from_template(template: &str) -> Option<AttributionEntry> {
 impl Widget for MapAttributionOverlay {
     fn base(&self) -> &BaseWidget {
         &self.base
+    }
+    fn capability_name(&self) -> Option<&'static str> {
+        Some("map_attribution")
     }
 
     fn base_mut(&mut self) -> &mut BaseWidget {

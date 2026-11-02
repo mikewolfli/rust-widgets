@@ -40,7 +40,9 @@ import pathlib
 import re
 import sys
 
-WIDGET_DIR = pathlib.Path("src/widget")
+# The migrated groups live in the suites package; the rule is about controls, not the crate
+# boundary, so both trees are scanned.
+WIDGET_DIRS = (pathlib.Path("src/widget"), pathlib.Path("crates/rust-widgets-suites/src"))
 
 # Handler files that legitimately need no `enabled` check, with the reason.
 NON_INTERACTIVE: dict[str, str] = {
@@ -77,7 +79,7 @@ NON_INTERACTIVE: dict[str, str] = {
         "only forwards to the base",
     "src/widget/display_widgets/clock.rs":
         "pure readout: draws a time, handles no input",
-    "src/widget/special_widgets/media_player/subtitle_bar.rs":
+    "crates/rust-widgets-suites/src/media_playback/media_player/subtitle_bar.rs":
         "passive overlay: displays subtitles over the video, handles no input",
     "src/widget/chart_widgets/chart/chart.rs":
         "passive overlay: the crosshair is drawn by the chart at the hover position",
@@ -87,7 +89,7 @@ NON_INTERACTIVE: dict[str, str] = {
     "src/widget/chart_widgets/chart/chart_reference_line.rs":
         "passive overlay: its handler only tracks which threshold the pointer is near, for the "
         "hover readout; the lines themselves are host-set chrome",
-    "src/widget/special_widgets/map_view/map_view_companions.rs":
+    "crates/rust-widgets-suites/src/maps/map_view/map_view_companions.rs":
         "passive overlay: a tile loader and a scale bar draw map chrome, handles no input",
     "src/widget/container_widgets/layout_family.rs":
         "container: only forwards, the children it holds are what interact",
@@ -143,15 +145,16 @@ def handler_body(text: str) -> str | None:
 
 
 def main() -> int:
-    if not WIDGET_DIR.is_dir():
-        print("❌ src/widget not found (run from the repo root)")
+    missing = [root for root in WIDGET_DIRS if not root.is_dir()]
+    if missing:
+        print(f"❌ {missing[0]} not found (run from the repo root)")
         return 1
 
     unguarded: list[tuple[str, str]] = []
     guarded = 0
     allowed = 0
 
-    for path in sorted(WIDGET_DIR.rglob("*.rs")):
+    for path in sorted(p for root in WIDGET_DIRS for p in root.rglob("*.rs")):
         # Skip test modules: a test file's handler is not production behaviour.
         text = path.read_text()
         for marker in ("\n#[cfg(test)]\nmod tests {", "\nmod tests {"):

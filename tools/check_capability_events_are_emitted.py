@@ -3,8 +3,7 @@
 
 # Why this gate exists
 
-`src/widget/capability/properties/` publishes, for each of the 187 capabilities, a list of
-event *names*:
+`src/widget/capability/properties/` publishes, for each capability, a list of event *names*:
 
     events: &["clicked", "pressed", "released", "state_changed"],
 

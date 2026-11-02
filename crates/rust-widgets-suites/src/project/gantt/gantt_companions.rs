@@ -29,7 +29,10 @@ use rust_widgets::impl_draw_bridge;
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Resolves the surface, border and ink a gantt companion paints with.
-fn chart_chrome_palette(style: &rust_widgets::style::WidgetStyle, role: &str) -> (Color, Color, Color) {
+fn chart_chrome_palette(
+    style: &rust_widgets::style::WidgetStyle,
+    role: &str,
+) -> (Color, Color, Color) {
     let theme = rust_widgets::style::resolved_theme_style_shared(role);
     let ink = style
         .text_color
@@ -290,6 +293,9 @@ fn iso_date_from_days(days: i64) -> String {
 impl Widget for TimelineAxis {
     fn base(&self) -> &BaseWidget {
         &self.base
+    }
+    fn capability_name(&self) -> Option<&'static str> {
+        Some("timeline_axis")
     }
 
     fn base_mut(&mut self) -> &mut BaseWidget {
@@ -733,6 +739,9 @@ impl Widget for DependencyEditor {
     fn base(&self) -> &BaseWidget {
         &self.base
     }
+    fn capability_name(&self) -> Option<&'static str> {
+        Some("dependency_editor")
+    }
 
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
@@ -784,12 +793,12 @@ impl WidgetProperties for DependencyEditor {
             "dependencies" => Ok(CapabilityValue::UInt(self.dependencies.len() as u64)),
             // The whole edge list as records (SP-123). `dependencies` stays the count it has always
             // been; this is the read/write face that can say *which* edges exist.
-            "dependency_edges" => {
-                Ok(CapabilityValue::Records(rust_widgets::widget::capability::RecordList::from_items(
+            "dependency_edges" => Ok(CapabilityValue::Records(
+                rust_widgets::widget::capability::RecordList::from_items(
                     &DEPENDENCY_SCHEMA,
                     self.dependencies.iter().map(dependency_record).collect(),
-                )))
-            }
+                ),
+            )),
             "editable" => Ok(CapabilityValue::Bool(self.editable)),
             _ => base_property_get(self, name),
         }
@@ -1356,6 +1365,9 @@ impl GanttTaskGrid {
 impl Widget for GanttTaskGrid {
     fn base(&self) -> &BaseWidget {
         &self.base
+    }
+    fn capability_name(&self) -> Option<&'static str> {
+        Some("gantt_task_grid")
     }
 
     fn base_mut(&mut self) -> &mut BaseWidget {

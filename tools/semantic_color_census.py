@@ -47,11 +47,9 @@ CONSUMER_CALL = "semantic_color"
 
 
 def control_sources() -> list[Path]:
-    """Every Rust file under `src/widget/`, the control layer."""
-    widget_dir = SRC / "widget"
-    if not widget_dir.is_dir():
-        return []
-    return sorted(widget_dir.rglob("*.rs"))
+    """Every Rust file in the control layer, including the migrated suite groups."""
+    roots = (SRC / "widget", ROOT / "crates/rust-widgets-suites/src")
+    return sorted(path for root in roots if root.is_dir() for path in root.rglob("*.rs"))
 
 
 def token_referencing_files(token: str) -> list[Path]:

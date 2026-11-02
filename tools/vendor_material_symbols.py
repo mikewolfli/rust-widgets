@@ -159,6 +159,13 @@ ICONS: dict[str, str] = {
     # bundled face covers, so it fell back to an 8x8 bitmap block. Every symbol a control
     # draws as an "icon" belongs here, where it is a real outline rather than a font gamble.
     "fullscreen": "fullscreen",
+    # ── Designer vocabulary (RW-36) ──
+    "debug_bug": "bug_report",
+    "design_component": "widgets",
+    "design_event": "bolt",
+    "test_flask": "science",
+    "tools_terminal": "terminal",
+    "tools_translate": "translate",
 }
 
 # `cross` and `close` are two *distinct* declared icons, so they must not share one upstream

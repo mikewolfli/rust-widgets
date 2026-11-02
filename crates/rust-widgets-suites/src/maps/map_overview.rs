@@ -17,9 +17,12 @@
 //! reported as a missing primitive rather than guessed at: a ratio derived from the zoom level
 //! would be a number this control invented, not one the map reported.
 
+use crate::maps::map_attribution::{map_overlay_palette, Corner};
+use crate::maps::map_view::MapView;
 use rust_widgets::compat::{lock, Arc, Mutex};
 use rust_widgets::core::{Color, Point, Rect, Size};
 use rust_widgets::event::{Event, EventHandler};
+use rust_widgets::impl_draw_bridge;
 use rust_widgets::impl_widget_property_hooks;
 use rust_widgets::property_names_of;
 use rust_widgets::render::RenderContext;
@@ -28,10 +31,7 @@ use rust_widgets::widget::capability::coercion::expect_bool;
 use rust_widgets::widget::capability::properties_trait::{base_property_get, base_property_set};
 use rust_widgets::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use rust_widgets::widget::capability::WidgetProperties;
-use crate::maps::map_attribution::{map_overlay_palette, Corner};
-use crate::maps::map_view::MapView;
 use rust_widgets::widget::{BaseWidget, Draw, Widget, WidgetKind};
-use rust_widgets::impl_draw_bridge;
 
 /// The world span the overview shows before [`MapOverviewPanel::set_extent`] is called.
 ///
@@ -368,6 +368,9 @@ impl Widget for MapOverviewPanel {
     fn base(&self) -> &BaseWidget {
         &self.base
     }
+    fn capability_name(&self) -> Option<&'static str> {
+        Some("map_overview")
+    }
 
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
@@ -496,7 +499,13 @@ impl Draw for MapOverviewPanel {
         if self.collapsed {
             if let Some(tab) = self.collapsed_tab_rect() {
                 context.fill_rounded_rect(tab, 3, surface);
-                rust_widgets::widget::draw::stroke_surface_border(context, tab, [3, 3, 3, 3], accent, 1);
+                rust_widgets::widget::draw::stroke_surface_border(
+                    context,
+                    tab,
+                    [3, 3, 3, 3],
+                    accent,
+                    1,
+                );
                 // A chevron made of two bars, so the tab reads as "expand" without a glyph face.
                 let bar = Rect::new(tab.x + tab.width as i32 / 2 - 4, tab.y + 5, 9, 1);
                 context.fill_rect(bar, accent);

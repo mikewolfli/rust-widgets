@@ -5,9 +5,11 @@
 
 use core::fmt::Write as _;
 
+use alloc::sync::Arc;
 use rust_widgets::core::Point;
 use rust_widgets::core::{Color, HorizontalAlignment, MediaClock, Rect};
 use rust_widgets::event::{Event, EventHandler};
+use rust_widgets::impl_draw_bridge;
 use rust_widgets::render::RenderContext;
 use rust_widgets::signal::{GenericSignal, Signal1};
 use rust_widgets::widget::capability::coercion::{
@@ -19,8 +21,6 @@ use rust_widgets::widget::capability::WidgetProperties;
 use rust_widgets::widget::metrics::{dimensions, effective_font};
 use rust_widgets::widget::{BaseWidget, Draw, IconName, Widget, WidgetKind};
 use rust_widgets::{impl_widget_property_hooks, property_names_of};
-use alloc::sync::Arc;
-use rust_widgets::impl_draw_bridge;
 
 /// The inset a media player's own chrome keeps from its surface edges: 10.
 ///
@@ -862,6 +862,9 @@ impl Widget for MediaPlayer {
     fn base(&self) -> &BaseWidget {
         &self.base
     }
+    fn capability_name(&self) -> Option<&'static str> {
+        Some("media_player")
+    }
     fn set_state_theme_hook(&mut self) {
         rust_widgets::style::reapply_active_theme_state(self);
     }
@@ -1549,8 +1552,10 @@ mod tests {
             rust_widgets::theme::global_theme_manager().set_appearance(appearance);
             let mut player = MediaPlayer::new(Rect::new(0, 0, 320, 200));
             rust_widgets::theme::apply_theme_to_widget(&mut player);
-            let svg =
-                rust_widgets::widget::svg::render_widget_to_svg(&mut player, Rect::new(0, 0, 320, 200));
+            let svg = rust_widgets::widget::svg::render_widget_to_svg(
+                &mut player,
+                Rect::new(0, 0, 320, 200),
+            );
             // The panel is the **first coloured** `<rect>`: the renderer emits its own backdrop first
             // (the same colour in both appearances), then the control paints its surface over it.
             // Taking the *last* match was tried and rejected by measurement — it lands on the

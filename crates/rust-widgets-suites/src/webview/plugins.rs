@@ -1,8 +1,8 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
 // SPDX-License-Identifier: MIT
 
-use std::collections::HashMap;
 use core::any::Any;
+use std::collections::HashMap;
 /// Numeric handle identifying a plugin inside a [`PluginManager`].
 ///
 /// Ids are assigned by [`PluginManager::register`], start at 1 and increase by one

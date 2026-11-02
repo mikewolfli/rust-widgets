@@ -172,9 +172,14 @@ impl EventHandler for KanbanBoard {
                             }));
                         }
                     }
-                    Some(rust_widgets::shortcut::Key::PageUp) => self.scroll_column(current.column, -1),
-                    Some(rust_widgets::shortcut::Key::PageDown) => self.scroll_column(current.column, 1),
-                    Some(rust_widgets::shortcut::Key::Enter) | Some(rust_widgets::shortcut::Key::Space) => {
+                    Some(rust_widgets::shortcut::Key::PageUp) => {
+                        self.scroll_column(current.column, -1)
+                    }
+                    Some(rust_widgets::shortcut::Key::PageDown) => {
+                        self.scroll_column(current.column, 1)
+                    }
+                    Some(rust_widgets::shortcut::Key::Enter)
+                    | Some(rust_widgets::shortcut::Key::Space) => {
                         if let Some(card) = self
                             .columns
                             .get(current.column)

@@ -179,6 +179,16 @@ pub trait Widget: EventHandler + Any {
     fn kind(&self) -> WidgetKind {
         self.base().kind()
     }
+    /// The capability row this concrete control is registered under, when its kind is shared.
+    ///
+    /// A kind can back several distinct controls — `WidgetKind::VideoPlayer` backs the player and
+    /// its chapter panel — and the factory's concrete-type tie-break lives in this crate, so it
+    /// cannot name a type from an external package. A control in another package that shares its
+    /// kind returns its canonical capability name here; `None` means the kind index is already
+    /// unambiguous (or the factory's own tie-break answers).
+    fn capability_name(&self) -> Option<&'static str> {
+        None
+    }
     /// Returns the widget's rectangle, in parent-relative logical coordinates.
     ///
     /// The origin is inclusive and the far edge exclusive, matching

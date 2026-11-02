@@ -423,7 +423,7 @@ fn creation_cases(backend: &CustomPaintControlBackend, parent: ObjectId) -> Vec<
 /// The `create_*` methods that must answer `0` in this crate, and why.
 ///
 /// The web controls (`web_engine_view`, `web_find_bar`, `web_history_panel`) moved to the
-/// optional `rust-widgets-webview` crate, which contributes them through
+/// optional `rust-widgets-suites` webview group, which contributes them through
 /// `install(&mut WidgetFactory)`. The custom backend mounts **by name** out of
 /// `WidgetFactory::shared`, so a root-only build has no such name and the documented answer is
 /// `0` — which is exactly what `ControlBackend::create_web_engine_page`'s doc promises for "a
@@ -522,7 +522,7 @@ fn the_web_methods_answer_zero_because_the_control_is_in_another_crate() {
     }
     assert!(
         unexpected.is_empty(),
-        "a web method built something without `rust-widgets-webview` installed — the control is \
+        "a web method built something without `rust-widgets-suites` (webview group) installed — the control is \
          not in this crate, so building a stand-in is the substitution this file exists to \
          catch:\n  {}",
         unexpected.join("\n  ")
@@ -548,9 +548,8 @@ fn creation_table_covers_the_whole_create_surface() {
     let total = names.len();
     names.dedup();
     assert_eq!(names.len(), total, "the table must not list a method twice");
-    assert_eq!(
-        total, 182,
-        "the create_* surface changed: add the new methods to the table and to \
-         tools/check_control_create_names.py's expectation"
-    );
+    // 182 before the first suite migration. The 12 controls that moved to
+    // `rust-widgets-suites` took their `create_*` methods with them; the suites crate now owns
+    // that half of the surface, so the parent table is 170.
+    assert_eq!(total, 170, "the create_* surface changed: add the new methods to the table");
 }

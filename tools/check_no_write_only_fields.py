@@ -63,13 +63,17 @@ ALLOW_LIST: set[tuple[str, str]] = {
         "row_hovered",
     ): "public field of the state a host's ItemDelegate receives; read outside this crate",
     (
-        "src/widget/media_widgets/camera_preview.rs",
+        "crates/rust-widgets-suites/src/media_playback/camera_preview.rs",
         "resolutions",
     ): "public field of a camera-device descriptor; a host fills and reads it, the control does not",
     (
-        "src/widget/media_widgets/video_player.rs",
+        "crates/rust-widgets-suites/src/media_playback/video_player.rs",
         "artwork",
     ): "public field of media metadata; read by the host, never by the control",
+    (
+        "crates/rust-widgets-suites/src/webview/privacy.rs",
+        "max_age",
+    ): "public cookie attribute carried for the caller; this jar deliberately enforces `expires` only",
 }
 
 FIELD_DECL = re.compile(
@@ -160,7 +164,9 @@ def main() -> int:
     root = pathlib.Path(__file__).resolve().parent.parent
     # The fields this gate owns. A declaration here is what makes a field *subject* to the rule.
     owned: dict[pathlib.Path, str] = {}
-    for sub in ("src/widget", "src/style", "src/layout"):
+    # The migrated groups live in the suites package now. Their fields are still control
+    # fields, so leaving the package out would silently exempt the whole first batch.
+    for sub in ("src/widget", "src/style", "src/layout", "crates/rust-widgets-suites/src"):
         for path in (root / sub).rglob("*.rs"):
             owned[path] = path.read_text(encoding="utf-8")
 
@@ -173,7 +179,9 @@ def main() -> int:
     # rule being enforced is "written but never read", and "never" has to include the code that
     # does not declare the field too.
     all_sources: list[str] = [
-        path.read_text(encoding="utf-8") for path in (root / "src").rglob("*.rs")
+        path.read_text(encoding="utf-8")
+        for sub in ("src", "crates/rust-widgets-suites/src")
+        for path in (root / sub).rglob("*.rs")
     ]
 
     access: dict[str, list[int]] = defaultdict(lambda: [0, 0])

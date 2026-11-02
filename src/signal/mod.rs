@@ -60,7 +60,8 @@ pub use core_signal::{ConnectionHandle, ConnectionScope, Priority, Signal, Signa
 #[cfg(not(alloc_frugal))]
 pub use debounce::{DebounceDispatcher, Debounced};
 pub use event_bridge::{
-    is_wired, payload_kind, payload_kinds, unwired_events, EventPayloadKind, EventSignalBinder,
+    is_wired, payload_kind, payload_kinds, subscriber_count, subscription_counts, unwired_events,
+    EventPayloadKind, EventSignalBinder,
 };
 pub use event_signal_ref::EventSignalRef;
 pub use generic_signal::{GenericSignal, Signal1};

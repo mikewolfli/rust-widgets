@@ -828,7 +828,7 @@ pub enum CapabilityAccessError {
 }
 ```
 
-Optional packages register their own kinds into the same factory: `rust-widgets-webview` carries
+Optional packages register their own kinds into the same factory: `rust-widgets-suites` (webview group) carries
 the web controls and `rust-widgets-suites` carries control groups (today the form group — `Form`
 and `FormSet`). Their `install` calls `try_register` (which refuses a name the factory already
 answers) and `register_property_defaults` (which is where `default_property_value` finds their

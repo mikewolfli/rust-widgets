@@ -11,8 +11,8 @@
 use rust_widgets::core::Rect;
 use rust_widgets::widget::capability::apply_control_label;
 use rust_widgets::widget::capability::types::{
-    CapabilityValue, EventPayloadShape as S, EventSchema, PropertySchema,
-    PropertyValueKind, PropertyValueKind as K, RegistrationError, WidgetCapability, WidgetCtor,
+    CapabilityValue, EventPayloadShape as S, EventSchema, PropertySchema, PropertyValueKind,
+    PropertyValueKind as K, RegistrationError, WidgetCapability, WidgetCtor,
 };
 use rust_widgets::widget::capability::WidgetFactory;
 use rust_widgets::widget::{Widget, WidgetKind};
@@ -21,9 +21,9 @@ use crate::media_playback::audio_visualizer::AudioVisualizer;
 use crate::media_playback::camera_preview::CameraPreview;
 use crate::media_playback::chapter_list_panel::ChapterListPanel;
 use crate::media_playback::lottie_widget::LottieWidget;
+use crate::media_playback::media_player::media_player::MediaPlayer;
 use crate::media_playback::media_player::media_scrubber::MediaScrubber;
 use crate::media_playback::media_player::media_transport::MediaTransportBar;
-use crate::media_playback::media_player::media_player::MediaPlayer;
 use crate::media_playback::media_player::subtitle_bar::SubtitleBar;
 use crate::media_playback::rive_widget::RiveWidget;
 use crate::media_playback::video_player::VideoPlayer;
@@ -50,7 +50,6 @@ pub const VIDEO_PLAYER_PROPERTIES: &[PropertySchema] = &[
     PropertySchema::new("pipeline", PropertyValueKind::String, true, false),
 ];
 
-
 pub const LOTTIE_WIDGET_PROPERTIES: &[PropertySchema] = &[
     PropertySchema::new("playing", PropertyValueKind::Bool, true, true),
     // RW-83: the frame scrubber the designed preview needs.
@@ -65,7 +64,6 @@ pub const LOTTIE_WIDGET_PROPERTIES: &[PropertySchema] = &[
     PropertySchema::new("speed", PropertyValueKind::Float, true, true),
 ];
 
-
 pub const RIVE_WIDGET_PROPERTIES: &[PropertySchema] = &[
     PropertySchema::new("is_playing", PropertyValueKind::Bool, true, true),
     PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
@@ -76,7 +74,6 @@ pub const RIVE_WIDGET_PROPERTIES: &[PropertySchema] = &[
     PropertySchema::new("loops_completed", PropertyValueKind::Int, true, false),
     PropertySchema::new("state", PropertyValueKind::String, true, false),
 ];
-
 
 pub const AUDIO_VISUALIZER_PROPERTIES: &[PropertySchema] = &[
     // RW-86: design-time sample data, fed through the control's own sample API.
@@ -90,7 +87,6 @@ pub const AUDIO_VISUALIZER_PROPERTIES: &[PropertySchema] = &[
     PropertySchema::enumerated("mode", true, true, &["waveform", "spectrum"]),
     PropertySchema::new("level_report_interval", PropertyValueKind::UInt, true, true),
 ];
-
 
 pub const CAMERA_PREVIEW_PROPERTIES: &[PropertySchema] = &[
     PropertySchema::new("is_active", PropertyValueKind::Bool, true, true),
@@ -117,23 +113,21 @@ pub const CHAPTER_LIST_PANEL_PROPERTIES: &[PropertySchema] = &[
     PropertySchema::new("geometry", PropertyValueKind::String, false, false),
 ];
 
-
 pub const MEDIA_PLAYER_PROPERTIES: &[PropertySchema] = &[
-            PropertySchema::new("source", PropertyValueKind::String, true, true),
-            PropertySchema::new("playing", PropertyValueKind::Bool, true, true),
-            PropertySchema::new("duration_ms", PropertyValueKind::UInt, true, false),
-            PropertySchema::new("position_ms", PropertyValueKind::UInt, true, true),
-            PropertySchema::new("volume", PropertyValueKind::UInt, true, true),
-            PropertySchema::new("muted", PropertyValueKind::Bool, true, true),
-            PropertySchema::new("fullscreen", PropertyValueKind::Bool, true, true),
-            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
-            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
-            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
-            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
-            PropertySchema::new("playlist_index", PropertyValueKind::UInt, true, true),
-            PropertySchema::new("track_count", PropertyValueKind::UInt, true, false),
+    PropertySchema::new("source", PropertyValueKind::String, true, true),
+    PropertySchema::new("playing", PropertyValueKind::Bool, true, true),
+    PropertySchema::new("duration_ms", PropertyValueKind::UInt, true, false),
+    PropertySchema::new("position_ms", PropertyValueKind::UInt, true, true),
+    PropertySchema::new("volume", PropertyValueKind::UInt, true, true),
+    PropertySchema::new("muted", PropertyValueKind::Bool, true, true),
+    PropertySchema::new("fullscreen", PropertyValueKind::Bool, true, true),
+    PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+    PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+    PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+    PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+    PropertySchema::new("playlist_index", PropertyValueKind::UInt, true, true),
+    PropertySchema::new("track_count", PropertyValueKind::UInt, true, false),
 ];
-
 
 /// Media transport chrome (RW-81). Registered under `VideoPlayer` — the control it drives —
 /// with its own canonical name so a manifest can tell the two apart.
@@ -151,7 +145,6 @@ pub const MEDIA_TRANSPORT_BAR_PROPERTIES: &[PropertySchema] = &[
     PropertySchema::new("geometry", PropertyValueKind::String, false, false),
 ];
 
-
 /// Draggable media progress track (RW-81). Registered under `Slider` with its own
 /// canonical name.
 pub const MEDIA_SCRUBBER_PROPERTIES: &[PropertySchema] = &[
@@ -164,7 +157,6 @@ pub const MEDIA_SCRUBBER_PROPERTIES: &[PropertySchema] = &[
     PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
     PropertySchema::new("geometry", PropertyValueKind::String, false, false),
 ];
-
 
 /// Multi-line caption band (RW-81). Registered under `Label` with its own canonical name.
 pub const SUBTITLE_BAR_PROPERTIES: &[PropertySchema] = &[
@@ -179,11 +171,14 @@ pub const SUBTITLE_BAR_PROPERTIES: &[PropertySchema] = &[
     PropertySchema::new("geometry", PropertyValueKind::String, false, false),
 ];
 
-
 /// `video_player`'s published events.
 const VIDEO_PLAYER_EVENTS: &[EventSchema] = &[
     EventSchema { name: "audio_track_selected", payload: Some(K::UInt), shape: Some(S::Scalar) },
-    EventSchema { name: "buffering_progress_changed", payload: Some(K::Float), shape: Some(S::Scalar) },
+    EventSchema {
+        name: "buffering_progress_changed",
+        payload: Some(K::Float),
+        shape: Some(S::Scalar),
+    },
     EventSchema { name: "duration_changed", payload: Some(K::Float), shape: Some(S::Scalar) },
     EventSchema { name: "error_occurred", payload: Some(K::String), shape: Some(S::Scalar) },
     EventSchema { name: "frame_available", payload: Some(K::UInt), shape: Some(S::Scalar) },
@@ -233,9 +228,8 @@ const CAMERA_PREVIEW_EVENTS: &[EventSchema] = &[
 ];
 
 /// `chapter_list_panel`'s published events.
-const CHAPTER_LIST_PANEL_EVENTS: &[EventSchema] = &[
-    EventSchema { name: "on_chapter_selected", payload: Some(K::UInt), shape: Some(S::Scalar) },
-];
+const CHAPTER_LIST_PANEL_EVENTS: &[EventSchema] =
+    &[EventSchema { name: "on_chapter_selected", payload: Some(K::UInt), shape: Some(S::Scalar) }];
 
 /// `media_player`'s published events.
 const MEDIA_PLAYER_EVENTS: &[EventSchema] = &[
@@ -262,105 +256,99 @@ const MEDIA_TRANSPORT_BAR_EVENTS: &[EventSchema] = &[
 /// `media_scrubber`'s published events.
 const MEDIA_SCRUBBER_EVENTS: &[EventSchema] = &[
     EventSchema { name: "committed", payload: Some(K::Float), shape: Some(S::Scalar) },
-    EventSchema { name: "scrubbing", payload: Some(K::String), shape: Some(S::Mixed) },
+    // `(is_active, progress)`: mixed parts, so the declaration names the first part's kind and
+    // reports the mixed shape rather than pretending the pair is one float.
+    EventSchema { name: "scrubbing", payload: Some(K::Bool), shape: Some(S::Mixed) },
 ];
 
 /// `subtitle_bar`'s published events.
-const SUBTITLE_BAR_EVENTS: &[EventSchema] = &[
-    EventSchema::unit("text_changed"),
-];
+const SUBTITLE_BAR_EVENTS: &[EventSchema] = &[EventSchema::unit("text_changed")];
 
 pub fn video_player_capability() -> WidgetCapability {
     WidgetCapability {
-kind: WidgetKind::VideoPlayer,
-canonical_name: "video_player",
-aliases: &["video"],
-properties: VIDEO_PLAYER_PROPERTIES,
-// The player publishes the four signals it actually emits; `finished` matched none of
-// them.
-events: VIDEO_PLAYER_EVENTS,
-commands: &["set_is_playing", "set_volume"],
+        kind: WidgetKind::VideoPlayer,
+        canonical_name: "video_player",
+        aliases: &["video"],
+        properties: VIDEO_PLAYER_PROPERTIES,
+        // The player publishes the four signals it actually emits; `finished` matched none of
+        // them.
+        events: VIDEO_PLAYER_EVENTS,
+        commands: &["set_is_playing", "set_volume"],
     }
 }
-
 
 pub fn lottie_widget_capability() -> WidgetCapability {
     WidgetCapability {
-kind: WidgetKind::LottieWidget,
-canonical_name: "lottie_widget",
-aliases: &["lottie"],
-properties: LOTTIE_WIDGET_PROPERTIES,
-// `animation_finished` is the emitted signal; the published name was `finished`.
-events: LOTTIE_WIDGET_EVENTS,
-commands: &["set_playing"],
+        kind: WidgetKind::LottieWidget,
+        canonical_name: "lottie_widget",
+        aliases: &["lottie"],
+        properties: LOTTIE_WIDGET_PROPERTIES,
+        // `animation_finished` is the emitted signal; the published name was `finished`.
+        events: LOTTIE_WIDGET_EVENTS,
+        commands: &["set_playing"],
     }
 }
-
 
 pub fn rive_widget_capability() -> WidgetCapability {
     WidgetCapability {
-kind: WidgetKind::RiveWidget,
-canonical_name: "rive_widget",
-aliases: &["rive"],
-properties: RIVE_WIDGET_PROPERTIES,
-// `animation_finished` is the emitted signal; the published name was `finished`.
-events: RIVE_WIDGET_EVENTS,
-commands: &["set_is_playing"],
+        kind: WidgetKind::RiveWidget,
+        canonical_name: "rive_widget",
+        aliases: &["rive"],
+        properties: RIVE_WIDGET_PROPERTIES,
+        // `animation_finished` is the emitted signal; the published name was `finished`.
+        events: RIVE_WIDGET_EVENTS,
+        commands: &["set_is_playing"],
     }
 }
-
 
 pub fn audio_visualizer_capability() -> WidgetCapability {
     WidgetCapability {
-kind: WidgetKind::AudioVisualizer,
-canonical_name: "audio_visualizer",
-aliases: &["audio_viz"],
-properties: AUDIO_VISUALIZER_PROPERTIES,
-events: AUDIO_VISUALIZER_EVENTS,
-commands: &["set_bar_count"],
+        kind: WidgetKind::AudioVisualizer,
+        canonical_name: "audio_visualizer",
+        aliases: &["audio_viz"],
+        properties: AUDIO_VISUALIZER_PROPERTIES,
+        events: AUDIO_VISUALIZER_EVENTS,
+        commands: &["set_bar_count"],
     }
 }
-
 
 pub fn camera_preview_capability() -> WidgetCapability {
     WidgetCapability {
-kind: WidgetKind::CameraPreview,
-canonical_name: "camera_preview",
-aliases: &["camera"],
-properties: CAMERA_PREVIEW_PROPERTIES,
-events: CAMERA_PREVIEW_EVENTS,
-commands: &["set_is_active"],
+        kind: WidgetKind::CameraPreview,
+        canonical_name: "camera_preview",
+        aliases: &["camera"],
+        properties: CAMERA_PREVIEW_PROPERTIES,
+        events: CAMERA_PREVIEW_EVENTS,
+        commands: &["set_is_active"],
     }
 }
-
 
 /// Media chapter list (COMP-A6).
 ///
 /// It shares `WidgetKind::VideoPlayer` with the player whose chapters it lists.
 pub fn chapter_list_panel_capability() -> WidgetCapability {
     WidgetCapability {
-kind: WidgetKind::VideoPlayer,
-canonical_name: "chapter_list_panel",
-aliases: &[],
-properties: CHAPTER_LIST_PANEL_PROPERTIES,
-events: CHAPTER_LIST_PANEL_EVENTS,
-commands: &[],
+        kind: WidgetKind::VideoPlayer,
+        canonical_name: "chapter_list_panel",
+        aliases: &[],
+        properties: CHAPTER_LIST_PANEL_PROPERTIES,
+        events: CHAPTER_LIST_PANEL_EVENTS,
+        commands: &[],
     }
 }
 
 pub fn media_player_capability() -> WidgetCapability {
     WidgetCapability {
-kind: WidgetKind::WebEngineView,
-canonical_name: "media_player",
-aliases: &[],
-properties: MEDIA_PLAYER_PROPERTIES,
-events: MEDIA_PLAYER_EVENTS,
-// Audit 20261026: `seek_to` stays unpublished — the position is the writable
-// `position_ms` property, so a seek is that property's write (principle #18).
-commands: &["set_source", "clear_source", "play", "pause", "set_volume"],
+        kind: WidgetKind::WebEngineView,
+        canonical_name: "media_player",
+        aliases: &[],
+        properties: MEDIA_PLAYER_PROPERTIES,
+        events: MEDIA_PLAYER_EVENTS,
+        // Audit 20261026: `seek_to` stays unpublished — the position is the writable
+        // `position_ms` property, so a seek is that property's write (principle #18).
+        commands: &["set_source", "clear_source", "play", "pause", "set_volume"],
     }
 }
-
 
 /// Media transport chrome (RW-81).
 ///
@@ -371,41 +359,38 @@ commands: &["set_source", "clear_source", "play", "pause", "set_volume"],
 /// generated wire.
 pub fn media_transport_bar_capability() -> WidgetCapability {
     WidgetCapability {
-kind: WidgetKind::VideoPlayer,
-canonical_name: "media_transport_bar",
-aliases: &[],
-properties: MEDIA_TRANSPORT_BAR_PROPERTIES,
-events: MEDIA_TRANSPORT_BAR_EVENTS,
-commands: &[],
+        kind: WidgetKind::VideoPlayer,
+        canonical_name: "media_transport_bar",
+        aliases: &[],
+        properties: MEDIA_TRANSPORT_BAR_PROPERTIES,
+        events: MEDIA_TRANSPORT_BAR_EVENTS,
+        commands: &[],
     }
 }
-
 
 /// Draggable media progress track (RW-81). Borrowed kind `Slider`, own canonical name.
 pub fn media_scrubber_capability() -> WidgetCapability {
     WidgetCapability {
-kind: WidgetKind::Slider,
-canonical_name: "media_scrubber",
-aliases: &[],
-properties: MEDIA_SCRUBBER_PROPERTIES,
-events: MEDIA_SCRUBBER_EVENTS,
-commands: &["set_value"],
+        kind: WidgetKind::Slider,
+        canonical_name: "media_scrubber",
+        aliases: &[],
+        properties: MEDIA_SCRUBBER_PROPERTIES,
+        events: MEDIA_SCRUBBER_EVENTS,
+        commands: &["set_value"],
     }
 }
-
 
 /// Multi-line caption band (RW-81). Borrowed kind `Label`, own canonical name.
 pub fn subtitle_bar_capability() -> WidgetCapability {
     WidgetCapability {
-kind: WidgetKind::Label,
-canonical_name: "subtitle_bar",
-aliases: &[],
-properties: SUBTITLE_BAR_PROPERTIES,
-events: SUBTITLE_BAR_EVENTS,
-commands: &["set_text"],
+        kind: WidgetKind::Label,
+        canonical_name: "subtitle_bar",
+        aliases: &[],
+        properties: SUBTITLE_BAR_PROPERTIES,
+        events: SUBTITLE_BAR_EVENTS,
+        commands: &["set_text"],
     }
 }
-
 
 /// Creates a video player with no media loaded and playback stopped. `text` is
 /// applied as the control's label.
@@ -413,13 +398,11 @@ pub fn create_video_player(geometry: Rect, text: &str) -> Box<dyn Widget> {
     apply_control_label(Box::new(VideoPlayer::new(geometry)), text)
 }
 
-
 /// Creates a view for a Lottie animation with no animation loaded. `text` is
 /// applied as the control's label.
 pub fn create_lottie_widget(geometry: Rect, text: &str) -> Box<dyn Widget> {
     apply_control_label(Box::new(LottieWidget::new(geometry)), text)
 }
-
 
 /// Creates a view for a Rive animation with no animation loaded. `text` is
 /// applied as the control's label.
@@ -427,13 +410,11 @@ pub fn create_rive_widget(geometry: Rect, text: &str) -> Box<dyn Widget> {
     apply_control_label(Box::new(RiveWidget::new(geometry)), text)
 }
 
-
 /// Creates an audio visualiser with no audio source attached. `text` is applied
 /// as the control's label.
 pub fn create_audio_visualizer(geometry: Rect, text: &str) -> Box<dyn Widget> {
     apply_control_label(Box::new(AudioVisualizer::new(geometry)), text)
 }
-
 
 /// Creates a live camera preview with no camera opened. `text` is applied as the
 /// control's label.
@@ -441,13 +422,11 @@ pub fn create_camera_preview(geometry: Rect, text: &str) -> Box<dyn Widget> {
     apply_control_label(Box::new(CameraPreview::new(geometry)), text)
 }
 
-
 /// Creates a media chapter list with no chapters (COMP-A6). `text` is applied as the control's
 /// label.
 pub fn create_chapter_list_panel(geometry: Rect, text: &str) -> Box<dyn Widget> {
     apply_control_label(Box::new(ChapterListPanel::new(geometry)), text)
 }
-
 
 /// Creates a media player with no source loaded. `text` is applied as the
 /// control's label.
@@ -455,24 +434,20 @@ pub fn create_media_player(geometry: Rect, text: &str) -> Box<dyn Widget> {
     apply_control_label(Box::new(MediaPlayer::new(geometry)), text)
 }
 
-
 /// Creates a media transport bar (RW-81).
 pub fn create_media_transport_bar(geometry: Rect, _text: &str) -> Box<dyn Widget> {
     Box::new(MediaTransportBar::new(geometry))
 }
-
 
 /// Creates a media scrubber at `value = 0.0` (RW-81).
 pub fn create_media_scrubber(geometry: Rect, _text: &str) -> Box<dyn Widget> {
     Box::new(MediaScrubber::new(geometry))
 }
 
-
 /// Creates an empty subtitle band (RW-81).
 pub fn create_subtitle_bar(geometry: Rect, _text: &str) -> Box<dyn Widget> {
     Box::new(SubtitleBar::new(geometry))
 }
-
 
 /// A registered control: its capability row, its constructor, and its defaults provider.
 type MediaRow = (WidgetCapability, WidgetCtor, fn(&str) -> Option<CapabilityValue>);
@@ -484,56 +459,36 @@ type MediaRow = (WidgetCapability, WidgetCtor, fn(&str) -> Option<CapabilityValu
 /// reported rather than silently shadowed.
 pub fn install(factory: &mut WidgetFactory) -> Result<(), RegistrationError> {
     let rows: [MediaRow; 10] = [
-        (
-            video_player_capability(),
-            create_video_player,
-            |p| default_property_value("video_player", p),
-        ),
-        (
-            lottie_widget_capability(),
-            create_lottie_widget,
-            |p| default_property_value("lottie_widget", p),
-        ),
-        (
-            rive_widget_capability(),
-            create_rive_widget,
-            |p| default_property_value("rive_widget", p),
-        ),
-        (
-            audio_visualizer_capability(),
-            create_audio_visualizer,
-            |p| default_property_value("audio_visualizer", p),
-        ),
-        (
-            camera_preview_capability(),
-            create_camera_preview,
-            |p| default_property_value("camera_preview", p),
-        ),
-        (
-            chapter_list_panel_capability(),
-            create_chapter_list_panel,
-            |p| default_property_value("chapter_list_panel", p),
-        ),
-        (
-            media_player_capability(),
-            create_media_player,
-            |p| default_property_value("media_player", p),
-        ),
-        (
-            media_transport_bar_capability(),
-            create_media_transport_bar,
-            |p| default_property_value("media_transport_bar", p),
-        ),
-        (
-            media_scrubber_capability(),
-            create_media_scrubber,
-            |p| default_property_value("media_scrubber", p),
-        ),
-        (
-            subtitle_bar_capability(),
-            create_subtitle_bar,
-            |p| default_property_value("subtitle_bar", p),
-        ),
+        (video_player_capability(), create_video_player, |p| {
+            default_property_value("video_player", p)
+        }),
+        (lottie_widget_capability(), create_lottie_widget, |p| {
+            default_property_value("lottie_widget", p)
+        }),
+        (rive_widget_capability(), create_rive_widget, |p| {
+            default_property_value("rive_widget", p)
+        }),
+        (audio_visualizer_capability(), create_audio_visualizer, |p| {
+            default_property_value("audio_visualizer", p)
+        }),
+        (camera_preview_capability(), create_camera_preview, |p| {
+            default_property_value("camera_preview", p)
+        }),
+        (chapter_list_panel_capability(), create_chapter_list_panel, |p| {
+            default_property_value("chapter_list_panel", p)
+        }),
+        (media_player_capability(), create_media_player, |p| {
+            default_property_value("media_player", p)
+        }),
+        (media_transport_bar_capability(), create_media_transport_bar, |p| {
+            default_property_value("media_transport_bar", p)
+        }),
+        (media_scrubber_capability(), create_media_scrubber, |p| {
+            default_property_value("media_scrubber", p)
+        }),
+        (subtitle_bar_capability(), create_subtitle_bar, |p| {
+            default_property_value("subtitle_bar", p)
+        }),
     ];
     for (capability, ctor, defaults) in rows {
         let name = capability.canonical_name;
@@ -571,7 +526,9 @@ pub fn default_property_value(kind: &str, name: &str) -> Option<CapabilityValue>
         ("media_transport_bar", "position_ms" | "duration_ms") => Some(CapabilityValue::UInt(0)),
         ("media_transport_bar", "volume") => Some(CapabilityValue::Float(0.8)),
         ("media_transport_bar", "auto_hide_ms") => Some(CapabilityValue::UInt(3000)),
-        ("media_transport_bar", "show_volume" | "show_timecode") => Some(CapabilityValue::Bool(true)),
+        ("media_transport_bar", "show_volume" | "show_timecode") => {
+            Some(CapabilityValue::Bool(true))
+        }
         ("media_scrubber", "value" | "buffered") => Some(CapabilityValue::Float(0.0)),
         ("media_scrubber", "chapter_count") => Some(CapabilityValue::UInt(0)),
         ("media_scrubber", "thumb_style") => Some(CapabilityValue::String("dot".to_string())),
@@ -591,91 +548,46 @@ pub fn default_property_value(kind: &str, name: &str) -> Option<CapabilityValue>
 /// Every property name the media-playback suite publishes, for a quick completeness check.
 pub fn published_property_names() -> Vec<(&'static str, Vec<&'static str>)> {
     vec![
-        (
-            "video_player",
-            VIDEO_PLAYER_PROPERTIES.iter().map(|schema| schema.name).collect(),
-        ),
-        (
-            "lottie_widget",
-            LOTTIE_WIDGET_PROPERTIES.iter().map(|schema| schema.name).collect(),
-        ),
-        (
-            "rive_widget",
-            RIVE_WIDGET_PROPERTIES.iter().map(|schema| schema.name).collect(),
-        ),
+        ("video_player", VIDEO_PLAYER_PROPERTIES.iter().map(|schema| schema.name).collect()),
+        ("lottie_widget", LOTTIE_WIDGET_PROPERTIES.iter().map(|schema| schema.name).collect()),
+        ("rive_widget", RIVE_WIDGET_PROPERTIES.iter().map(|schema| schema.name).collect()),
         (
             "audio_visualizer",
             AUDIO_VISUALIZER_PROPERTIES.iter().map(|schema| schema.name).collect(),
         ),
-        (
-            "camera_preview",
-            CAMERA_PREVIEW_PROPERTIES.iter().map(|schema| schema.name).collect(),
-        ),
+        ("camera_preview", CAMERA_PREVIEW_PROPERTIES.iter().map(|schema| schema.name).collect()),
         (
             "chapter_list_panel",
             CHAPTER_LIST_PANEL_PROPERTIES.iter().map(|schema| schema.name).collect(),
         ),
-        (
-            "media_player",
-            MEDIA_PLAYER_PROPERTIES.iter().map(|schema| schema.name).collect(),
-        ),
+        ("media_player", MEDIA_PLAYER_PROPERTIES.iter().map(|schema| schema.name).collect()),
         (
             "media_transport_bar",
             MEDIA_TRANSPORT_BAR_PROPERTIES.iter().map(|schema| schema.name).collect(),
         ),
-        (
-            "media_scrubber",
-            MEDIA_SCRUBBER_PROPERTIES.iter().map(|schema| schema.name).collect(),
-        ),
-        (
-            "subtitle_bar",
-            SUBTITLE_BAR_PROPERTIES.iter().map(|schema| schema.name).collect(),
-        ),
+        ("media_scrubber", MEDIA_SCRUBBER_PROPERTIES.iter().map(|schema| schema.name).collect()),
+        ("subtitle_bar", SUBTITLE_BAR_PROPERTIES.iter().map(|schema| schema.name).collect()),
     ]
 }
 
 /// Every event name the media-playback suite publishes, for a quick completeness check.
 pub fn published_event_names() -> Vec<(&'static str, Vec<&'static str>)> {
     vec![
-        (
-            "video_player",
-            VIDEO_PLAYER_EVENTS.iter().map(|schema| schema.name).collect(),
-        ),
-        (
-            "lottie_widget",
-            LOTTIE_WIDGET_EVENTS.iter().map(|schema| schema.name).collect(),
-        ),
-        (
-            "rive_widget",
-            RIVE_WIDGET_EVENTS.iter().map(|schema| schema.name).collect(),
-        ),
-        (
-            "audio_visualizer",
-            AUDIO_VISUALIZER_EVENTS.iter().map(|schema| schema.name).collect(),
-        ),
-        (
-            "camera_preview",
-            CAMERA_PREVIEW_EVENTS.iter().map(|schema| schema.name).collect(),
-        ),
+        ("video_player", VIDEO_PLAYER_EVENTS.iter().map(|schema| schema.name).collect()),
+        ("lottie_widget", LOTTIE_WIDGET_EVENTS.iter().map(|schema| schema.name).collect()),
+        ("rive_widget", RIVE_WIDGET_EVENTS.iter().map(|schema| schema.name).collect()),
+        ("audio_visualizer", AUDIO_VISUALIZER_EVENTS.iter().map(|schema| schema.name).collect()),
+        ("camera_preview", CAMERA_PREVIEW_EVENTS.iter().map(|schema| schema.name).collect()),
         (
             "chapter_list_panel",
             CHAPTER_LIST_PANEL_EVENTS.iter().map(|schema| schema.name).collect(),
         ),
-        (
-            "media_player",
-            MEDIA_PLAYER_EVENTS.iter().map(|schema| schema.name).collect(),
-        ),
+        ("media_player", MEDIA_PLAYER_EVENTS.iter().map(|schema| schema.name).collect()),
         (
             "media_transport_bar",
             MEDIA_TRANSPORT_BAR_EVENTS.iter().map(|schema| schema.name).collect(),
         ),
-        (
-            "media_scrubber",
-            MEDIA_SCRUBBER_EVENTS.iter().map(|schema| schema.name).collect(),
-        ),
-        (
-            "subtitle_bar",
-            SUBTITLE_BAR_EVENTS.iter().map(|schema| schema.name).collect(),
-        ),
+        ("media_scrubber", MEDIA_SCRUBBER_EVENTS.iter().map(|schema| schema.name).collect()),
+        ("subtitle_bar", SUBTITLE_BAR_EVENTS.iter().map(|schema| schema.name).collect()),
     ]
 }

@@ -14,12 +14,12 @@ use super::order_book::{BookSide, OrderBookWidget};
 use super::quote_board::{QuoteBoard, QuoteSort};
 use super::types::{fixtures, Bar, BookLevel, OrderBook, PriceSeries, Quote};
 use super::volume_chart::VolumeChart;
-use rust_widgets::core::{Point, Rect};
-use rust_widgets::event::{Event, EventHandler};
-use rust_widgets::widget::view_widgets::filter_expr::{FilterCondition, FilterOperator};
 use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
+use rust_widgets::core::{Point, Rect};
+use rust_widgets::event::{Event, EventHandler};
+use rust_widgets::widget::view_widgets::filter_expr::{FilterCondition, FilterOperator};
 
 fn rect() -> Rect {
     Rect::new(0, 0, 400, 300)

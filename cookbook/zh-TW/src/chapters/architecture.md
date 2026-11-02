@@ -874,7 +874,7 @@ pub trait ControlBackend {
 
 ## 圖示資料路徑（`icons`，預設開啟）
 
-`Icon` 透過 `IconName` 命名 69 個圖示。`icons` 特性 —— **預設開啟** —— 每個都按**真實輪廓**繪製，
+`Icon` 透過 `IconName` 命名 75 個圖示。`icons` 特性 —— **預設開啟** —— 每個都按**真實輪廓**繪製，
 輪廓來自固定在某個上游修訂的路徑資料。不開啟該特性時 `Icon` 回退到**生成的幾何**，它由**同一批**輪廓
 展平而來 —— 所以兩條路徑不可能對同一個圖示給出不同形狀。
 
@@ -886,7 +886,7 @@ token 集在 `tools/icon_tokens.txt` 中**只宣告一次**，`tools/gen_icon_na
 
 ```mermaid
 graph LR
-    ENUM["IconName<br/>（69 個變體）"]
+    ENUM["IconName<br/>（75 個變體）"]
     DATA["IconData<br/>name, grid, paths"]
     PARSE["render::path::parser<br/>SVG d -> Segment"]
     FLAT["render::path::flatten<br/>Segment -> 折線"]
@@ -910,7 +910,7 @@ graph LR
 1. **宣告了名字就一定有幾何。** `IconName::data()` 回傳 `IconData` 而非 `Option`，所以「新增變體
    但沒補條目」是**編譯錯誤**。舊寫法（draw 時按字串比對、比對不到就畫佔位符）已移除。
 2. **兩個名字絕不會畫同一張圖。** `Close` 與 `Cross` 曾共用同一個方法，於是兩個不同的名字產出一模
-   一样的圖形。生成器**拒絕**產出逐位元組相同的輪廓，且普查測試渲染每個 token 並要求全部 69 張圖兩兩不同。
+   一样的圖形。生成器**拒絕**產出逐位元組相同的輪廓，且普查測試渲染每個 token 並要求全部 75 張圖兩兩不同。
 3. **只有一條填色規則，並且只有一種展平容差。** 兩者真正共用的是**填色**：
    `RenderContext::fill_path_non_zero` 以與字形光柵器相同的方式累積繞數，這才讓反白孔（`info` 的孔、
    `settings` 的環）保持為空，而不是被後畫的輪廓蓋住。展平**並未**共用，本文檔先前聲稱共用是錯的：

@@ -20,16 +20,18 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use core::fmt::Write as _;
 
+use crate::finance::layout::PlotArea;
+use crate::finance::types::Quote;
+use crate::finance::volume_chart::draw_empty_pane;
 use rust_widgets::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use rust_widgets::render::RenderContext;
 use rust_widgets::signal::Signal1;
 use rust_widgets::widget::capability::properties_trait::{base_property_get, base_property_set};
 use rust_widgets::widget::capability::records::{RecordField, RecordSchema};
-use rust_widgets::widget::capability::types::{CapabilityAccessError, CapabilityValue, PropertyValueKind};
+use rust_widgets::widget::capability::types::{
+    CapabilityAccessError, CapabilityValue, PropertyValueKind,
+};
 use rust_widgets::widget::capability::WidgetProperties;
-use crate::finance::layout::PlotArea;
-use crate::finance::types::Quote;
-use crate::finance::volume_chart::draw_empty_pane;
 use rust_widgets::widget::metrics::role_font;
 use rust_widgets::widget::view_widgets::filter_expr::{FilterCondition, FilterOperator};
 use rust_widgets::widget::{BaseWidget, Draw, Widget, WidgetKind};
@@ -844,7 +846,9 @@ impl QuoteBoard {
     /// The width comes from the metric table rather than a literal: it is a fit decision, and a
     /// named threshold is the reviewed spelling (`check_breakpoints_are_not_in_draw.sh`).
     fn cell_inset(&self) -> i32 {
-        if self.base.geometry().width < rust_widgets::widget::metrics::QUOTE_BOARD_COMPACT_CELL_WIDTH {
+        if self.base.geometry().width
+            < rust_widgets::widget::metrics::QUOTE_BOARD_COMPACT_CELL_WIDTH
+        {
             4
         } else {
             8
@@ -1018,6 +1022,9 @@ impl Widget for QuoteBoard {
     }
     fn base(&self) -> &BaseWidget {
         &self.base
+    }
+    fn capability_name(&self) -> Option<&'static str> {
+        Some("quote_board")
     }
     fn set_state_theme_hook(&mut self) {
         rust_widgets::style::reapply_active_theme_state(self);
@@ -1234,9 +1241,7 @@ impl Draw for QuoteBoard {
                     &PlotArea::of(body),
                     crate::finance::layout::PanelColors {
                         grid: panel.blend(&secondary, 0.45),
-                        ..crate::finance::layout::PanelColors::from_parts(
-                            panel, ink,
-                        )
+                        ..crate::finance::layout::PanelColors::from_parts(panel, ink)
                     },
                     &role_font(style, 12.0),
                 );
@@ -1458,12 +1463,12 @@ impl WidgetProperties for QuoteBoard {
             "scroll_offset" => Ok(CapabilityValue::UInt(self.scroll_offset() as u64)),
             // RW-79: the quote rows as typed records. The schema's field order is the order a
             // designer offers them, and the symbol is the identity a row keeps across a reorder.
-            "quotes" => {
-                Ok(CapabilityValue::Records(rust_widgets::widget::capability::RecordList::from_items(
+            "quotes" => Ok(CapabilityValue::Records(
+                rust_widgets::widget::capability::RecordList::from_items(
                     &QUOTE_RECORD_SCHEMA,
                     self.quotes().iter().map(quote_record).collect(),
-                )))
-            }
+                ),
+            )),
             _ => base_property_get(self, name),
         }
     }
@@ -1527,9 +1532,9 @@ impl WidgetProperties for QuoteBoard {
                     };
                     let number = |field: &str| -> Result<f64, CapabilityAccessError> {
                         match record.get(field) {
-                            Some(value) => {
-                                rust_widgets::widget::capability::coercion::expect_f64(value.clone())
-                            }
+                            Some(value) => rust_widgets::widget::capability::coercion::expect_f64(
+                                value.clone(),
+                            ),
                             None => Err(CapabilityAccessError::TypeMismatch),
                         }
                     };
@@ -1582,8 +1587,8 @@ impl WidgetProperties for QuoteBoard {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rust_widgets::event::{Event, EventHandler};
     use crate::finance::types::{fixtures, Quote};
+    use rust_widgets::event::{Event, EventHandler};
 
     /// RW-79: the quote rows round-trip as typed records.
     #[test]
@@ -1849,8 +1854,10 @@ mod tests {
     #[test]
     fn an_empty_board_draws_without_panicking() {
         let mut board = QuoteBoard::new(Rect::new(0, 0, 480, 240));
-        let mut backend =
-            rust_widgets::render::SoftwarePaintBackend::new(rust_widgets::core::Size::new(480, 240), 1.0);
+        let mut backend = rust_widgets::render::SoftwarePaintBackend::new(
+            rust_widgets::core::Size::new(480, 240),
+            1.0,
+        );
         let mut context = RenderContext::new(&mut backend);
         board.draw(&mut context);
     }
@@ -1918,8 +1925,10 @@ mod tests {
             QuoteColumn::Low,
             QuoteColumn::Volume,
         ]);
-        let mut backend =
-            rust_widgets::render::SoftwarePaintBackend::new(rust_widgets::core::Size::new(640, 240), 1.0);
+        let mut backend = rust_widgets::render::SoftwarePaintBackend::new(
+            rust_widgets::core::Size::new(640, 240),
+            1.0,
+        );
         let mut context = RenderContext::new(&mut backend);
         board.draw(&mut context);
     }
@@ -2126,8 +2135,10 @@ mod tests {
         quote.low = f64::NEG_INFINITY;
         quote.volume = f64::NAN;
         board.set_quotes(alloc::vec![quote]);
-        let mut backend =
-            rust_widgets::render::SoftwarePaintBackend::new(rust_widgets::core::Size::new(480, 240), 1.0);
+        let mut backend = rust_widgets::render::SoftwarePaintBackend::new(
+            rust_widgets::core::Size::new(480, 240),
+            1.0,
+        );
         let mut context = RenderContext::new(&mut backend);
         board.draw(&mut context);
     }
@@ -2138,7 +2149,10 @@ mod tests {
         let mut board = QuoteBoard::new(Rect::new(0, 0, 480, 240));
         let (up, down) = board.colors();
         assert_ne!(up, down);
-        board.set_colors(rust_widgets::core::Color::rgb(1, 2, 3), rust_widgets::core::Color::rgb(4, 5, 6));
+        board.set_colors(
+            rust_widgets::core::Color::rgb(1, 2, 3),
+            rust_widgets::core::Color::rgb(4, 5, 6),
+        );
         assert_eq!(
             board.colors(),
             (rust_widgets::core::Color::rgb(1, 2, 3), rust_widgets::core::Color::rgb(4, 5, 6))

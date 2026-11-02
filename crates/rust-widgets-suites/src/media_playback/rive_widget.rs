@@ -1927,6 +1927,9 @@ impl Widget for RiveWidget {
     fn base(&self) -> &BaseWidget {
         &self.base
     }
+    fn capability_name(&self) -> Option<&'static str> {
+        Some("rive_widget")
+    }
     fn set_state_theme_hook(&mut self) {
         rust_widgets::style::reapply_active_theme_state(self);
     }
@@ -2059,7 +2062,9 @@ impl Draw for RiveWidget {
         // sits on; it cannot recede toward its own contrast colour the way ink does, because that
         // would make it stand out *more* against the page -- the opposite of disabled.
         let window_fill = {
-            rust_widgets::style::palette_shared().map(|colors| colors.background).unwrap_or(Color::WHITE)
+            rust_widgets::style::palette_shared()
+                .map(|colors| colors.background)
+                .unwrap_or(Color::WHITE)
         };
         let border_color =
             style.border_color.or(themed_border).unwrap_or(Color::rgba(140, 80, 180, 150));
@@ -2488,8 +2493,10 @@ mod tests {
 
     #[test]
     fn rive_widget_draw_does_not_panic_with_shapes() {
-        let mut backend =
-            rust_widgets::render::SoftwarePaintBackend::new(rust_widgets::core::Size::new(100, 100), 1.0);
+        let mut backend = rust_widgets::render::SoftwarePaintBackend::new(
+            rust_widgets::core::Size::new(100, 100),
+            1.0,
+        );
         let mut ctx = rust_widgets::render::RenderContext::new(&mut backend);
 
         let mut rive = RiveWidget::new(Rect::new(0, 0, 100, 100));
@@ -2503,8 +2510,10 @@ mod tests {
 
     #[test]
     fn rive_widget_draw_empty_no_crash() {
-        let mut backend =
-            rust_widgets::render::SoftwarePaintBackend::new(rust_widgets::core::Size::new(100, 100), 1.0);
+        let mut backend = rust_widgets::render::SoftwarePaintBackend::new(
+            rust_widgets::core::Size::new(100, 100),
+            1.0,
+        );
         let mut ctx = rust_widgets::render::RenderContext::new(&mut backend);
 
         let mut rive = RiveWidget::new(Rect::new(0, 0, 100, 100));
@@ -2515,8 +2524,10 @@ mod tests {
 
     #[test]
     fn rive_widget_draw_with_json_shapes_no_crash() {
-        let mut backend =
-            rust_widgets::render::SoftwarePaintBackend::new(rust_widgets::core::Size::new(100, 100), 1.0);
+        let mut backend = rust_widgets::render::SoftwarePaintBackend::new(
+            rust_widgets::core::Size::new(100, 100),
+            1.0,
+        );
         let mut ctx = rust_widgets::render::RenderContext::new(&mut backend);
 
         let mut rive = RiveWidget::new(Rect::new(0, 0, 100, 100));

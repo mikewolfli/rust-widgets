@@ -1258,6 +1258,19 @@ pub fn default_widget_property_default_value(
         // kind, so this arm answers for both controls.
         WidgetKind::Canvas => match property_name {
             "command_count" => CapabilityValue::UInt(0),
+            "layer_count" => CapabilityValue::UInt(0),
+            // Mirrors `Canvas::new`: anti-aliased, no grid, 20 px steps, 0.1..=16 zoom.
+            "anti_alias" => CapabilityValue::Bool(true),
+            "show_grid" => CapabilityValue::Bool(false),
+            "grid_step" => CapabilityValue::UInt(20),
+            "snap_to_grid" => CapabilityValue::Bool(false),
+            // The control stores these as `f32`, so the declared default is the same value
+            // rounded through `f32`: a write of the default must read back byte-for-byte.
+            "zoom_range" => CapabilityValue::Tuple(crate::compat::Vec::from([
+                CapabilityValue::Float(0.1f32 as f64),
+                CapabilityValue::Float(16.0),
+            ])),
+            "zoom_step" => CapabilityValue::Float(1.1f32 as f64),
             _ => return None,
         },
         WidgetKind::Carousel => match property_name {

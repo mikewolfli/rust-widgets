@@ -56,7 +56,7 @@ MOD_RS_PENDING: dict[str, str] = {
     "src/data_binding/mod.rs": "the `PropertySink` trait and its adapters → `data_binding/sink.rs`",
     "src/menu_config/mod.rs": "the JSON converters → `menu_config/json.rs`",
     "src/widget/base_widgets/mod.rs": "`AutoRepeat` and its helpers → `base_widgets/auto_repeat.rs`",
-    "src/widget/chart_widgets/finance/mod.rs": "`sync_view_range` → `finance/view_range.rs`",
+
     # Recorded 2026-10-28 (round 11): the two `mod.rs` files that still define items.
     "src/designer/mod.rs": "`DocumentEditCommand` / `DesignerHistory` → `designer/history.rs` (mod.rs keeps the declarations and re-exports)",
     "src/json/mod.rs": "`MAX_DEPTH` → `json/limits.rs`",
@@ -97,11 +97,10 @@ TOO_LONG_PENDING = {
     "src/widget/dialog/file_dialog.rs": "navigation vs listing/model vs paint → `file_dialog/{model,list,paint}.rs`",
     "src/widget/input_widgets/combobox.rs": "model vs editor vs popup paint → `combobox/{model,editor,popup}.rs`",
     "src/widget/input_widgets/spinbox.rs": "model vs buttons vs paint → `spinbox/{model,paint}.rs`",
-    "src/widget/media_widgets/lottie_widget.rs": "composition model vs player vs paint → `lottie/{model,paint}.rs`",
-    "src/widget/media_widgets/rive_widget.rs": "composition bounds vs playback vs paint → `rive/{model,paint}.rs`",
+
     "src/widget/menu_toolbar/tool_bar.rs": "item model vs band layout vs paint → `tool_bar/{model,layout,paint}.rs`",
     "src/widget/chart_widgets/chart/chart.rs": "series model vs axes/plot paint vs legend → `chart/chart/{model,paint}.rs`",
-    "src/widget/special_widgets/diff_viewer.rs": "diff model vs row projection vs paint → `diff_viewer/{model,rows,paint}.rs`",
+
 
 
     "src/platform/macos/canvas.rs": "legacy Cocoa canvas: window lifecycle delegate trampolines → `macos/canvas/lifecycle.rs`",

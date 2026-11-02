@@ -52,10 +52,15 @@ NON_RUST_FENCES = {
 
 
 def rust_sources():
-    """Every `.rs` file's text, concatenated once so lookups are cheap."""
+    """Every `.rs` file's text, concatenated once so lookups are cheap.
+
+    The migrated suite groups are part of the public API surface now, so a cookbook claim
+    about one of their types must resolve against their sources too.
+    """
     blobs = []
-    for path in (REPO_ROOT / "src").rglob("*.rs"):
-        blobs.append(path.read_text(encoding="utf-8", errors="replace"))
+    for root in (REPO_ROOT / "src", REPO_ROOT / "crates/rust-widgets-suites/src"):
+        for path in root.rglob("*.rs"):
+            blobs.append(path.read_text(encoding="utf-8", errors="replace"))
     return "\n".join(blobs)
 
 
@@ -155,11 +160,12 @@ def main():
         enum_bodies.setdefault(match.group("name"), corpus[start : i + 1])
 
     module_dirs = set()
-    for path in (REPO_ROOT / "src").rglob("*"):
-        if path.is_dir():
-            module_dirs.add(path.name)
-        elif path.suffix == ".rs":
-            module_dirs.add(path.stem)
+    for root in (REPO_ROOT / "src", REPO_ROOT / "crates/rust-widgets-suites/src"):
+        for path in root.rglob("*"):
+            if path.is_dir():
+                module_dirs.add(path.name)
+            elif path.suffix == ".rs":
+                module_dirs.add(path.stem)
 
     for book in COOKBOOKS:
         base = REPO_ROOT / book / "src"

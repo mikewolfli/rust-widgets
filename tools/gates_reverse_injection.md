@@ -492,3 +492,12 @@ than inventing an injection that was never run.
 > deliberately does **not** assert resident memory: with this crate's bookkeeping entirely disabled a
 > bare AppKit `alloc`/`addSubview:`/`removeFromSuperview`/`release` cycle still grows peak RSS by
 > ~4 KB/cycle on macOS 15, so an RSS assertion would fail a correct build (see the gate header).
+
+## Round 13 (2026-11-02) — present matrix failure propagation
+
+| gate | injected | reported |
+|---|---|---|
+| `check_present_matrix.sh` | temporarily replaced `tools/run_present_macos.sh` with a stub that exits 1 (the probe-failure path a missing/broken surface takes) | `--- [1/4] macOS (real window) ---` / `macOS  RUN  FAIL (exit 1)` / `check_present_matrix: FAIL (1 platform(s))` (exit 1) |
+
+> The helper was restored and the gate re-run green immediately after the capture. The injection
+> proves the FAIL arm is reachable; SKIP(host-limited) remains a separate, named outcome.

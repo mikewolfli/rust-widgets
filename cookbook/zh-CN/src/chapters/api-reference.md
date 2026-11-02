@@ -810,7 +810,7 @@ pub enum CapabilityAccessError {
 }
 ```
 
-可选包把各自的 kind 注册进同一个工厂：`rust-widgets-webview` 承载 Web 控件，`rust-widgets-suites`
+可选包把各自的 kind 注册进同一个工厂：`rust-widgets-suites` (webview group) 承载 Web 控件，`rust-widgets-suites`
 承载控件组（目前是表单组 `Form` / `FormSet`）。它们的 `install` 调用 `try_register`（工厂已占用的
 名字会被拒绝）与 `register_property_defaults`（`default_property_value` 从这里读取它们声明的默认值）。
 

@@ -783,6 +783,25 @@
     },
     "action.close": {
       "message": "關閉"
-    }
+    },
+    "calendar.month.1": { "message": "一月" },
+    "calendar.month.2": { "message": "二月" },
+    "calendar.month.3": { "message": "三月" },
+    "calendar.month.4": { "message": "四月" },
+    "calendar.month.5": { "message": "五月" },
+    "calendar.month.6": { "message": "六月" },
+    "calendar.month.7": { "message": "七月" },
+    "calendar.month.8": { "message": "八月" },
+    "calendar.month.9": { "message": "九月" },
+    "calendar.month.10": { "message": "十月" },
+    "calendar.month.11": { "message": "十一月" },
+    "calendar.month.12": { "message": "十二月" },
+    "calendar.weekday.1": { "message": "週一" },
+    "calendar.weekday.2": { "message": "週二" },
+    "calendar.weekday.3": { "message": "週三" },
+    "calendar.weekday.4": { "message": "週四" },
+    "calendar.weekday.5": { "message": "週五" },
+    "calendar.weekday.6": { "message": "週六" },
+    "calendar.weekday.7": { "message": "週日" }
   }
 }

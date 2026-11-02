@@ -19,7 +19,7 @@
 //!
 //! [`set_entries`]: WebHistoryPanel::set_entries
 
-use crate::web_engine::{HistoryEntry, WebEngineView};
+use crate::webview::web_engine::{HistoryEntry, WebEngineView};
 use rust_widgets::compat::{format, String, ToString, Vec};
 use rust_widgets::core::{Color, HorizontalAlignment, Point, Rect, Size};
 use rust_widgets::event::{Event, EventHandler};
@@ -370,6 +370,9 @@ impl WebHistoryPanel {
 impl Widget for WebHistoryPanel {
     fn base(&self) -> &BaseWidget {
         &self.base
+    }
+    fn capability_name(&self) -> Option<&'static str> {
+        Some("web_history_panel")
     }
 
     fn base_mut(&mut self) -> &mut BaseWidget {

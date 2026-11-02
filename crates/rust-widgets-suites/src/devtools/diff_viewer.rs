@@ -13,6 +13,7 @@ const ROW_BOTTOM_INSET: i32 = 14;
 use rust_widgets::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use rust_widgets::event::wheel::WheelScroll;
 use rust_widgets::event::{Event, EventHandler};
+use rust_widgets::impl_draw_bridge;
 use rust_widgets::render::RenderContext;
 use rust_widgets::signal::Signal1;
 use rust_widgets::widget::capability::coercion::{expect_bool, expect_string, expect_usize};
@@ -28,7 +29,6 @@ use rust_widgets::{impl_widget_property_hooks, property_names_of};
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fmt::Write as _;
-use rust_widgets::impl_draw_bridge;
 
 /// Diff line state.
 ///
@@ -1336,6 +1336,9 @@ impl Widget for DiffViewer {
     fn base(&self) -> &BaseWidget {
         &self.base
     }
+    fn capability_name(&self) -> Option<&'static str> {
+        Some("diff_viewer")
+    }
     fn set_state_theme_hook(&mut self) {
         rust_widgets::style::reapply_active_theme_state(self);
     }
@@ -1633,19 +1636,24 @@ impl Draw for DiffViewer {
         // token is exactly the row-divider role the theme declares for it — the same one
         // `table_widget`, `virtual_table`, `data_table` and `tree_table` now read. A local blend
         // of the surface is a colour no theme can tune independently; the role is.
-        let row_rule =
-            rust_widgets::style::palette_shared().map(|colors| colors.outline_variant).unwrap_or(divider);
-        let selection = rust_widgets::style::semantic_color(rust_widgets::style::SemanticColor::Info)
-            .unwrap_or_else(|| background.blend(&text_color, 0.5));
+        let row_rule = rust_widgets::style::palette_shared()
+            .map(|colors| colors.outline_variant)
+            .unwrap_or(divider);
+        let selection =
+            rust_widgets::style::semantic_color(rust_widgets::style::SemanticColor::Info)
+                .unwrap_or_else(|| background.blend(&text_color, 0.5));
         // Added / Removed / Changed are *states*, so they read the theme's semantic
         // tokens and are tinted over the resolved surface to stay legible in both
         // appearances.
-        let added = rust_widgets::style::semantic_color(rust_widgets::style::SemanticColor::Success)
-            .map(|token| token.blend(&background, 0.85));
-        let removed = rust_widgets::style::semantic_color(rust_widgets::style::SemanticColor::Error)
-            .map(|token| token.blend(&background, 0.85));
-        let changed = rust_widgets::style::semantic_color(rust_widgets::style::SemanticColor::Warning)
-            .map(|token| token.blend(&background, 0.85));
+        let added =
+            rust_widgets::style::semantic_color(rust_widgets::style::SemanticColor::Success)
+                .map(|token| token.blend(&background, 0.85));
+        let removed =
+            rust_widgets::style::semantic_color(rust_widgets::style::SemanticColor::Error)
+                .map(|token| token.blend(&background, 0.85));
+        let changed =
+            rust_widgets::style::semantic_color(rust_widgets::style::SemanticColor::Warning)
+                .map(|token| token.blend(&background, 0.85));
 
         context.face_with_gradient_corners(
             rect,
@@ -2344,6 +2352,9 @@ impl Widget for DiffFileList {
     fn base(&self) -> &BaseWidget {
         &self.base
     }
+    fn capability_name(&self) -> Option<&'static str> {
+        Some("diff_file_list")
+    }
     fn set_state_theme_hook(&mut self) {
         rust_widgets::style::reapply_active_theme_state(self);
     }
@@ -2388,9 +2399,13 @@ impl WidgetProperties for DiffFileList {
             }),
             "selection_mode" => Ok(CapabilityValue::String(
                 match self.selection_mode {
-                    rust_widgets::widget::view_widgets::list_view::SelectionMode::Single => "single",
+                    rust_widgets::widget::view_widgets::list_view::SelectionMode::Single => {
+                        "single"
+                    }
                     rust_widgets::widget::view_widgets::list_view::SelectionMode::Multi => "multi",
-                    rust_widgets::widget::view_widgets::list_view::SelectionMode::Extended => "extended",
+                    rust_widgets::widget::view_widgets::list_view::SelectionMode::Extended => {
+                        "extended"
+                    }
                     rust_widgets::widget::view_widgets::list_view::SelectionMode::None => "none",
                 }
                 .to_string(),
@@ -2416,9 +2431,13 @@ impl WidgetProperties for DiffFileList {
             "selection_mode" => {
                 let token = expect_string(value)?;
                 let mode = match token.as_str() {
-                    "single" => rust_widgets::widget::view_widgets::list_view::SelectionMode::Single,
+                    "single" => {
+                        rust_widgets::widget::view_widgets::list_view::SelectionMode::Single
+                    }
                     "multi" => rust_widgets::widget::view_widgets::list_view::SelectionMode::Multi,
-                    "extended" => rust_widgets::widget::view_widgets::list_view::SelectionMode::Extended,
+                    "extended" => {
+                        rust_widgets::widget::view_widgets::list_view::SelectionMode::Extended
+                    }
                     "none" => rust_widgets::widget::view_widgets::list_view::SelectionMode::None,
                     _ => return Err(CapabilityAccessError::TypeMismatch),
                 };
@@ -2506,9 +2525,10 @@ impl Draw for DiffFileList {
             .text_color
             .or_else(|| theme.as_ref().and_then(|t| t.text_color))
             .unwrap_or(Color::BLACK);
-        let selection = rust_widgets::style::semantic_color(rust_widgets::style::SemanticColor::Info)
-            .map(|token| token.blend(&background, 0.75))
-            .unwrap_or_else(|| background.blend(&text_color, 0.25));
+        let selection =
+            rust_widgets::style::semantic_color(rust_widgets::style::SemanticColor::Info)
+                .map(|token| token.blend(&background, 0.75))
+                .unwrap_or_else(|| background.blend(&text_color, 0.25));
         let font = effective_font(style);
 
         // A translucent accent wash so a selected row keeps its text readable.
@@ -2999,7 +3019,9 @@ mod tests {
     #[test]
     fn file_list_multi_selection_keeps_every_clicked_row() {
         let mut list = file_list();
-        list.set_selection_mode(rust_widgets::widget::view_widgets::list_view::SelectionMode::Multi);
+        list.set_selection_mode(
+            rust_widgets::widget::view_widgets::list_view::SelectionMode::Multi,
+        );
         list.select_index(0);
         list.select_index(2);
         assert_eq!(list.selected_paths(), vec!["src/a.rs", "src/c.rs"]);

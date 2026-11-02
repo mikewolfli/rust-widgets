@@ -137,7 +137,8 @@ impl BoardChrome {
     /// has resolved to the board's own colour, which is the same guard `drop_zone` and `otp_input`
     /// use: a lane indistinguishable from the board is not a lane.
     fn column(&self) -> Color {
-        let role = rust_widgets::style::layer_color(rust_widgets::style::LayerColor::SurfaceContainer);
+        let role =
+            rust_widgets::style::layer_color(rust_widgets::style::LayerColor::SurfaceContainer);
         match role {
             Some(role) if role != self.background => role,
             _ => self.background.blend(&self.text_color, 0.18),

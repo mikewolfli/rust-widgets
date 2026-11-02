@@ -188,6 +188,9 @@ impl Widget for KanbanCardView {
     fn base(&self) -> &BaseWidget {
         &self.base
     }
+    fn capability_name(&self) -> Option<&'static str> {
+        Some("kanban_card_view")
+    }
     fn set_state_theme_hook(&mut self) {
         rust_widgets::style::reapply_active_theme_state(self);
     }
@@ -408,8 +411,10 @@ impl Draw for KanbanCardView {
         if !self.tags.is_empty() {
             let mut x = rect.x + CARD_INSET;
             for tag in &self.tags {
-                let label =
-                    rust_widgets::widget::text_utils::elide_end(tag, (rect.width as usize / 7).max(2));
+                let label = rust_widgets::widget::text_utils::elide_end(
+                    tag,
+                    (rect.width as usize / 7).max(2),
+                );
                 let width = context.measure_text(&label, &small).width + 10;
                 if x + width as i32 > rect.x + rect.width as i32 - CARD_INSET {
                     break;

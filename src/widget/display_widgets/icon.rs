@@ -49,15 +49,16 @@ pub use icon_names::IconName;
 /// is built to prevent, and the generator refuses two tokens that resolve to one picture. The
 /// designer vocabulary contains names this crate has no distinct outline for. For the entries
 /// below, one of the shipped glyphs *is* the same idea, so accepting the designer spelling and
-/// drawing that glyph is honest; for the rest (listed in the module report) there is no truthful
-/// stand-in and no alias is invented.
+/// drawing that glyph is honest. The six names whose real outline was added in RW-36
+/// (`debug-bug`, `design-component`, `design-event`, `test-flask`, `tools-terminal`,
+/// `tools-translate`) resolve to their own variant instead of a stand-in.
 ///
 /// Aliases are **input-only**: [`IconName::from_name_or_alias`] accepts them, while
 /// [`IconName::from_name`], [`IconName::as_str`], [`IconName::all_tokens`] and [`IconName::ALL`]
 /// continue to describe the glyph-bearing variants exactly. That keeps the generated tables
 /// one-to-one with the enum while letting a host's designer JSON resolve, and it keeps
 /// `tools/gen_icon_names.py --check` byte-identical.
-pub const DESIGNER_ALIASES: [(&str, IconName); 13] = [
+pub const DESIGNER_ALIASES: [(&str, IconName); 19] = [
     // A library of assets is a folder of files.
     ("assets-library", IconName::Folder),
     // A pipeline is a connected graph; `share` is this crate's node-and-branches glyph.
@@ -84,6 +85,13 @@ pub const DESIGNER_ALIASES: [(&str, IconName); 13] = [
     ("tools-ai", IconName::Star),
     // Version-control branches are a connected graph.
     ("vcs-branch", IconName::Share),
+    // RW-36: the six designer names now have their own real outlines.
+    ("debug-bug", IconName::DebugBug),
+    ("design-component", IconName::DesignComponent),
+    ("design-event", IconName::DesignEvent),
+    ("test-flask", IconName::TestFlask),
+    ("tools-terminal", IconName::ToolsTerminal),
+    ("tools-translate", IconName::ToolsTranslate),
 ];
 
 /// Resolves a designer semantic name to the truthful glyph that stands in for it.
@@ -2107,10 +2115,12 @@ mod tests {
             assert_eq!(IconName::canonical_token_for_alias(alias), Some(target.as_str()));
             assert!(is_designer_alias(alias));
         }
-        // A designer name with no truthful glyph must stay unresolved rather than draw a
-        // misleading picture; the question-mark placeholder is the honest answer.
-        assert_eq!(IconName::from_name_or_alias("debug-bug"), None);
-        assert_eq!(IconName::from_name_or_alias("tools-terminal"), None);
+        // RW-36: the six names that used to have no truthful stand-in now have their own real
+        // outlines, so the designer spelling resolves to that variant rather than the
+        // question-mark placeholder.
+        assert_eq!(IconName::from_name_or_alias("debug-bug"), Some(IconName::DebugBug));
+        assert_eq!(IconName::from_name_or_alias("tools-terminal"), Some(IconName::ToolsTerminal));
+        assert_eq!(IconName::from_name_or_alias("test-flask"), Some(IconName::TestFlask));
     }
 
     /// The RTL mirror is intent, and the direction is read at draw time.

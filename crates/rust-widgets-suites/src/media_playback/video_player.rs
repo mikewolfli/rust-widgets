@@ -12,6 +12,7 @@
 use core::cell::Cell;
 use core::fmt::Write as _;
 
+use crate::media_playback::media_player::subtitle_bar::SubtitleBar;
 use rust_widgets::compat::{Arc, Mutex, Vec};
 use rust_widgets::core::{Color, HorizontalAlignment, Point, Rect};
 use rust_widgets::event::{Event, EventHandler};
@@ -24,7 +25,6 @@ use rust_widgets::widget::capability::properties_trait::{base_property_get, base
 use rust_widgets::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use rust_widgets::widget::capability::WidgetProperties;
 use rust_widgets::widget::companions::PlaylistPanel;
-use crate::media_playback::media_player::subtitle_bar::SubtitleBar;
 use rust_widgets::widget::metrics::{dimensions, effective_font, ControlMetrics};
 use rust_widgets::widget::{BaseWidget, Draw, IconName, Widget, WidgetKind};
 
@@ -971,7 +971,9 @@ impl VideoPlayer {
     }
 
     /// The attached scrubber, if any.
-    pub fn scrubber(&self) -> Option<&crate::media_playback::media_player::media_scrubber::MediaScrubber> {
+    pub fn scrubber(
+        &self,
+    ) -> Option<&crate::media_playback::media_player::media_scrubber::MediaScrubber> {
         self.scrubber.as_ref()
     }
 
@@ -1609,6 +1611,9 @@ impl Widget for VideoPlayer {
     fn base(&self) -> &BaseWidget {
         &self.base
     }
+    fn capability_name(&self) -> Option<&'static str> {
+        Some("video_player")
+    }
     fn set_state_theme_hook(&mut self) {
         rust_widgets::style::reapply_active_theme_state(self);
     }
@@ -2043,7 +2048,13 @@ impl Draw for VideoPlayer {
         let btn_icon = if self.is_playing { IconName::Pause } else { IconName::Play };
         let btn_side = 16u32;
         let btn_box = Rect::new(rect.x + 8, control_bar_y, btn_side, control_bar_height);
-        rust_widgets::widget::draw_icon_centered(context, btn_box, btn_side, Color::WHITE, btn_icon);
+        rust_widgets::widget::draw_icon_centered(
+            context,
+            btn_box,
+            btn_side,
+            Color::WHITE,
+            btn_icon,
+        );
 
         // Seek bar: the shared thickness, centred on the transport bar's own middle line.
         //
@@ -2132,7 +2143,13 @@ impl Draw for VideoPlayer {
         // transport bar wants). Muted is the crossed speaker; otherwise the plain speaker.
         let vol_icon =
             if self.muted || self.volume < 0.01 { IconName::VolumeOff } else { IconName::VolumeUp };
-        rust_widgets::widget::draw_icon_centered(context, vol_box, vol_side, Color::WHITE, vol_icon);
+        rust_widgets::widget::draw_icon_centered(
+            context,
+            vol_box,
+            vol_side,
+            Color::WHITE,
+            vol_icon,
+        );
 
         // Playback rate indicator, in the slot reserved left of the fullscreen button.
         if let Some(metrics) = rate_metrics.as_ref() {

@@ -696,8 +696,8 @@ macro_rules! default_advanced_widgets {
         /// # Where the control lives now
         ///
         /// The web controls (`web_engine_view`, `web_find_bar`, `web_history_panel`) ship in the
-        /// optional `rust-widgets-webview` crate, which contributes them through
-        /// `rust_widgets_webview::install(&mut WidgetFactory)`. This crate no longer carries the
+        /// optional `rust-widgets-suites` webview group, which contributes them through
+        /// `rust_widgets_suites::install_webview_group(&mut WidgetFactory)`. This crate no longer carries the
         /// control, so a backend that mounts **by name** from
         /// [`WidgetFactory::shared`](crate::widget::capability::WidgetFactory::shared) answers `0`
         /// here — the same "no web support" answer
@@ -793,7 +793,7 @@ macro_rules! default_advanced_widgets {
         }
         /// Create web engine view control.
         ///
-        /// `0` when the host has not installed `rust-widgets-webview`; see
+        /// `0` when the host has not installed `rust-widgets-suites` (webview group); see
         /// [`ControlBackend::create_web_view`].
         fn create_web_engine_view(
             &self,

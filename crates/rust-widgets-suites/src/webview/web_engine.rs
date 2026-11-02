@@ -9,7 +9,7 @@
 //!
 //! JavaScript evaluation is real: with the `js-engine` feature the widget
 //! evaluates scripts in a genuine embedded engine (boa_engine via
-//! `crate::SimpleJsEngine`) and returns the actual result or error.
+//! `crate::webview::SimpleJsEngine`) and returns the actual result or error.
 //! Without that feature, evaluation reports `Err` instead of faking success.
 //!
 //! # Cookie expiry units
@@ -18,7 +18,7 @@
 //! between them implicitly:
 //!
 //! * [`Cookie`] (this module) stores [`Cookie::expires_ms`] as Unix **milliseconds**.
-//! * `crate::privacy::Cookie` stores `expires` as Unix **seconds**.
+//! * `crate::webview::privacy::Cookie` stores `expires` as Unix **seconds**.
 //!
 //! A host moving data from the privacy jar to this store must multiply seconds by 1000
 //! (and divide back when moving the other way); [`Cookie::is_expired`] reads only the
@@ -150,7 +150,7 @@ impl Cookie {
     /// Reports whether the cookie is past its expiry instant.
     ///
     /// [`Self::expires_ms`] is compared against the wall clock in the same unit — Unix
-    /// milliseconds — so a caller that read a `crate::privacy::Cookie` expiry (**seconds**)
+    /// milliseconds — so a caller that read a `crate::webview::privacy::Cookie` expiry (**seconds**)
     /// must convert before storing it here. A session cookie (`None`) never expires, and a
     /// clock that reads before the epoch falls back to `0` rather than panicking.
     pub fn is_expired(&self) -> bool {
@@ -494,7 +494,7 @@ pub struct WebEngineView {
     next_page_id: ObjectId,
     /// Embedded real JavaScript engine (boa_engine) for script evaluation.
     #[cfg(feature = "js-engine")]
-    js_engine: Option<crate::BoaJsEngine>,
+    js_engine: Option<crate::webview::BoaJsEngine>,
 }
 // Newtype structs for render pipeline symbol imports, wrapping WebEngineView.
 /// placeholder facade: forwards WebEngineView only, no independent semantics.
@@ -1451,7 +1451,7 @@ impl WebEngineView {
 
         #[cfg(feature = "js-engine")]
         {
-            let engine = self.js_engine.get_or_insert_with(crate::BoaJsEngine::new);
+            let engine = self.js_engine.get_or_insert_with(crate::webview::BoaJsEngine::new);
             engine.evaluate_to_string(script)
         }
         #[cfg(not(feature = "js-engine"))]
@@ -2100,6 +2100,9 @@ impl WebEngineView {
 impl Widget for WebEngineView {
     fn base(&self) -> &BaseWidget {
         &self.base
+    }
+    fn capability_name(&self) -> Option<&'static str> {
+        Some("web_engine_view")
     }
     fn set_state_theme_hook(&mut self) {
         rust_widgets::style::reapply_active_theme_state(self);

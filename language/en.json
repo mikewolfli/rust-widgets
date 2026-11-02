@@ -783,6 +783,25 @@
     },
     "action.close": {
       "message": "Close"
-    }
+    },
+    "calendar.month.1": { "message": "January" },
+    "calendar.month.2": { "message": "February" },
+    "calendar.month.3": { "message": "March" },
+    "calendar.month.4": { "message": "April" },
+    "calendar.month.5": { "message": "May" },
+    "calendar.month.6": { "message": "June" },
+    "calendar.month.7": { "message": "July" },
+    "calendar.month.8": { "message": "August" },
+    "calendar.month.9": { "message": "September" },
+    "calendar.month.10": { "message": "October" },
+    "calendar.month.11": { "message": "November" },
+    "calendar.month.12": { "message": "December" },
+    "calendar.weekday.1": { "message": "Mon" },
+    "calendar.weekday.2": { "message": "Tue" },
+    "calendar.weekday.3": { "message": "Wed" },
+    "calendar.weekday.4": { "message": "Thu" },
+    "calendar.weekday.5": { "message": "Fri" },
+    "calendar.weekday.6": { "message": "Sat" },
+    "calendar.weekday.7": { "message": "Sun" }
   }
 }

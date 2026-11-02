@@ -6,13 +6,13 @@
 //! # What this package is
 //!
 //! The parent crate is deliberately one layer: the widget primitives, the layout engines, the
-//! runtime and the platform backends. Controls that are useful but not universal live in their own
-//! package, the way `rust-widgets-webview` carries the web family. This package is the same shape
-//! for **suites** — groups of controls that solve one job together.
+//! runtime and the platform backends. Controls that are useful but not universal live here in
+//! **suites** — groups of controls that solve one job together.
 //!
 //! The first group is [`form_widgets`]: [`Form`](form_widgets::Form) collects labelled fields and
 //! validates them, and [`FormSet`](form_widgets::FormSet) pages several forms with one active page
-//! and aggregate validity.
+//! and aggregate validity. The [`webview`] group carries the browser model and its controls; the
+//! other groups are enabled through their Cargo features.
 //!
 //! # Installing
 //!
@@ -65,6 +65,9 @@ extern crate alloc;
 
 pub mod form_widgets;
 
+#[cfg(feature = "webview")]
+pub mod webview;
+
 #[cfg(feature = "finance")]
 pub mod finance;
 
@@ -80,6 +83,9 @@ pub mod devtools;
 #[cfg(feature = "media-playback")]
 pub mod media_playback;
 
+#[cfg(test)]
+mod wiring_tests;
+
 use rust_widgets::widget::capability::types::RegistrationError;
 use rust_widgets::widget::capability::WidgetFactory;
 
@@ -87,6 +93,13 @@ pub use form_widgets::{
     create_form, create_form_set, default_property_value, form_capability, form_set_capability,
     published_event_names, published_property_names, Form, FormField, FormFieldLayout,
     FormLabelPosition, FormPage, FormSet, FormSetHeaderStyle,
+};
+
+#[cfg(feature = "webview")]
+pub use webview::{
+    create_web_find_bar, create_web_history_panel, create_web_view, web_find_bar_capability,
+    web_history_panel_capability, web_view_capability, WebEngineView, WebFindBar, WebHistoryPanel,
+    WebView,
 };
 
 #[cfg(feature = "finance")]
@@ -103,6 +116,14 @@ pub use finance::{
 /// The per-group entry point, so a host that wants one group can install exactly that one.
 pub fn install_form_group(factory: &mut WidgetFactory) -> Result<(), RegistrationError> {
     form_widgets::install(factory)
+}
+
+/// Installs the web group into `factory`.
+///
+/// The per-group entry point, so a host that wants one group can install exactly that one.
+#[cfg(feature = "webview")]
+pub fn install_webview_group(factory: &mut WidgetFactory) -> Result<(), RegistrationError> {
+    webview::install(factory)
 }
 
 /// Installs the finance group into `factory`.
@@ -151,6 +172,8 @@ pub fn install_media_playback_group(factory: &mut WidgetFactory) -> Result<(), R
 /// than a silent last-writer-wins. A group compiled out by its feature contributes no names.
 pub fn install(factory: &mut WidgetFactory) -> Result<(), RegistrationError> {
     install_form_group(factory)?;
+    #[cfg(feature = "webview")]
+    install_webview_group(factory)?;
     #[cfg(feature = "finance")]
     install_finance_group(factory)?;
     #[cfg(feature = "maps")]

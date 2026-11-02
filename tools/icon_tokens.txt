@@ -126,3 +126,11 @@ notifications_off | NotificationsOff | A bell with a cross, for muted notificati
 
 # ── View ──
 fullscreen | Fullscreen | A four-corner expand mark, for fullscreen.
+
+# ── Designer vocabulary (RW-36) ──
+debug_bug | DebugBug | A bug silhouette, for debug tooling and breakpoints.
+design_component | DesignComponent | A component tile, for the component palette.
+design_event | DesignEvent | A lightning bolt, for event wires and triggers.
+test_flask | TestFlask | A laboratory flask, for tests.
+tools_terminal | ToolsTerminal | A terminal prompt, for developer tools.
+tools_translate | ToolsTranslate | A translate glyph, for localization tools.

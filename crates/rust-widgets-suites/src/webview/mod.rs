@@ -20,7 +20,7 @@
 //! installs them explicitly:
 //!
 //! ```ignore
-//! rust_widgets_webview::install(&mut factory)?;
+//! rust_widgets_suites::install_webview_group(&mut factory)?;
 //! ```
 //!
 //! # What is here
@@ -53,7 +53,8 @@ pub mod web_view;
 pub mod web_view_enhanced;
 
 pub use capability::{
-    install, web_find_bar_capability, web_history_panel_capability, web_view_capability,
+    create_web_find_bar, create_web_history_panel, create_web_view, install, published_event_names,
+    web_find_bar_capability, web_history_panel_capability, web_view_capability,
 };
 pub use find_bar::WebFindBar;
 pub use history::*;
@@ -154,7 +155,7 @@ mod reexport_tests {
         let mut jar = CookieJar::new();
         // Qualified because the widget module publishes its own `Cookie` (a history/HTTP cookie
         // record); the jar takes the privacy one.
-        jar.add(crate::privacy::Cookie::new(
+        jar.add(crate::webview::privacy::Cookie::new(
             "s".to_string(),
             "v".to_string(),
             "example.com".to_string(),

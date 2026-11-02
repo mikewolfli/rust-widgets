@@ -3,7 +3,7 @@
 
 //! WebEngineViewEnhanced widget — a web engine view wrapper.
 //!
-//! This type shares ~95% of its implementation with [`WebViewEnhanced`](crate::web_view_enhanced::WebViewEnhanced).
+//! This type shares ~95% of its implementation with [`WebViewEnhanced`](crate::webview::web_view_enhanced::WebViewEnhanced).
 //! Both delegate to a common [`WebViewCore`] to avoid code duplication.
 //!
 //! **Unique to this type:**
@@ -370,8 +370,9 @@ impl EventHandler for WebEngineViewEnhanced {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(not(feature = "web-http"))]
+    use crate::webview::privacy::BrowsingData;
     use rust_widgets::core::Rect;
-    use crate::privacy::BrowsingData;
 
     #[test]
     fn test_web_engine_view_new() {
@@ -384,6 +385,7 @@ mod tests {
         assert!(!engine.can_go_forward());
     }
 
+    #[cfg(not(feature = "web-http"))]
     #[test]
     fn test_web_engine_view_load_url() {
         let mut engine = WebEngineViewEnhanced::new(Rect::new(0, 0, 1024, 768));
@@ -393,6 +395,7 @@ mod tests {
         assert_eq!(engine.load_progress(), 100);
     }
 
+    #[cfg(not(feature = "web-http"))]
     #[test]
     fn test_web_engine_view_set_url() {
         let mut engine = WebEngineViewEnhanced::new(Rect::new(0, 0, 800, 600));
@@ -497,6 +500,7 @@ mod tests {
         assert!(engine.settings().private_browsing);
     }
 
+    #[cfg(not(feature = "web-http"))]
     #[test]
     fn test_web_engine_view_clear_browsing_data() {
         let mut engine = WebEngineViewEnhanced::new(Rect::new(0, 0, 800, 600));
@@ -593,6 +597,7 @@ mod tests {
 
     /// The simulated path must still be fully functional after the engine removal: a
     /// navigation updates the URL, the title and the history exactly as before.
+    #[cfg(not(feature = "web-http"))]
     #[test]
     fn test_simulated_navigation_survives_the_engine_removal() {
         let mut engine = WebEngineViewEnhanced::new(Rect::new(0, 0, 800, 600));
@@ -615,6 +620,7 @@ mod tests {
     /// Asserting the guard is the point: a `stop` on an idle view must be a no-op rather
     /// than clearing the progress of a load that already finished — otherwise a stray
     /// cancel would make a completed navigation look like it never happened.
+    #[cfg(not(feature = "web-http"))]
     #[test]
     fn test_stop_only_cancels_an_in_flight_load() {
         let mut engine = WebEngineViewEnhanced::new(Rect::new(0, 0, 800, 600));

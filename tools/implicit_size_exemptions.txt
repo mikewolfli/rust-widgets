@@ -115,11 +115,11 @@ src/widget/input_widgets/shortcut_editor.rs ShortcutEditor backlog
 src/widget/input_widgets/tag_input.rs TagInput backlog
 src/widget/input_widgets/textarea/events.rs TextArea backlog
 src/widget/media_widgets/animated_image.rs AnimatedImage backlog
-src/widget/media_widgets/camera_preview.rs CameraPreview backlog
+crates/rust-widgets-suites/src/media_playback/camera_preview.rs CameraPreview backlog
 src/widget/media_widgets/hero_animation.rs HeroAnimation backlog
-src/widget/media_widgets/lottie_widget.rs LottieWidget backlog
-src/widget/media_widgets/rive_widget.rs RiveWidget backlog
-src/widget/media_widgets/video_player.rs VideoPlayer backlog
+crates/rust-widgets-suites/src/media_playback/lottie_widget.rs LottieWidget backlog
+crates/rust-widgets-suites/src/media_playback/rive_widget.rs RiveWidget backlog
+crates/rust-widgets-suites/src/media_playback/video_player.rs VideoPlayer backlog
 src/widget/menu_toolbar/action.rs Action backlog
 src/widget/menu_toolbar/menu/dropdown_menu.rs DropdownMenu backlog
 src/widget/menu_toolbar/menu/menu/events.rs Menu fixed-chrome
@@ -138,18 +138,18 @@ src/widget/nav_widgets/tab_view.rs TabView fixed-chrome
 src/widget/overlay_widgets/banner.rs Banner backlog
 src/widget/overlay_widgets/fab.rs FAB backlog
 src/widget/special_widgets/breadcrumb.rs Breadcrumb backlog
-src/widget/special_widgets/canvas.rs Canvas backlog
+
 src/widget/special_widgets/chip.rs Chip backlog
 src/widget/special_widgets/code_editor/editor.rs CodeEditor backlog
 src/widget/special_widgets/color_picker.rs ColorPicker backlog
 src/widget/special_widgets/command_palette.rs CommandPalette backlog
-src/widget/special_widgets/diff_viewer.rs DiffViewer backlog
+crates/rust-widgets-suites/src/devtools/diff_viewer.rs DiffViewer backlog
 src/widget/special_widgets/freeform_shape/shape.rs FreeformShapeWidget backlog
 src/widget/chart_widgets/heatmap.rs Heatmap backlog
-src/widget/chart_widgets/kanban_board/board.rs KanbanBoard backlog
-src/widget/special_widgets/map_view/map_view.rs MapView backlog
+crates/rust-widgets-suites/src/project/kanban_board/board.rs KanbanBoard backlog
+crates/rust-widgets-suites/src/maps/map_view/map_view.rs MapView backlog
 src/widget/special_widgets/markdown_editor/events.rs MarkdownEditor backlog
-src/widget/special_widgets/media_player/media_player.rs MediaPlayer backlog
+crates/rust-widgets-suites/src/media_playback/media_player/media_player.rs MediaPlayer backlog
 src/widget/special_widgets/notification_center.rs NotificationCenter backlog
 src/widget/special_widgets/signature_pad.rs SignaturePad backlog
 src/widget/special_widgets/snackbar.rs Snackbar backlog
@@ -160,8 +160,8 @@ src/widget/view_widgets/grid_table.rs GridTableWidget backlog
 src/widget/view_widgets/properties/properties_panel.rs PropertiesPanel backlog
 src/widget/view_widgets/properties/property_grid.rs PropertyGrid backlog
 src/widget/view_widgets/query_builder.rs QueryBuilder backlog
-src/widget/view_widgets/virtual_table.rs VirtualTable backlog
-crates/rust-widgets-webview/src/web_engine.rs WebEngineView backlog
+
+crates/rust-widgets-suites/src/webview/web_engine.rs WebEngineView backlog
 src/widget/window.rs Window backlog
 
 # ── N10 additions: fixed-chrome, with the reason each is permanent ─────────────
@@ -216,7 +216,7 @@ src/widget/macos/window_chrome.rs MacWindowChrome fixed-chrome
 # `ItemDelegate::size_hint` is a per-cell hint that defaults to `None`; it is not a
 # control's own size hint. The scan matches the method name, so the trait is recorded
 # here rather than contorting the trait to satisfy a lexical rule.
-src/widget/view_widgets/table_widget.rs <free> not-a-control-hint
+
 
 # ── 2.9.2 companion wave (2026-10-26) — recorded as debt ───────────────────────────────────────
 # The hints below belong to the companions and sub-controls added by the 2.9.2 widget sweep.
@@ -252,25 +252,25 @@ src/widget/input_widgets/text_entry/suggestion_popup.rs SuggestionPopup backlog
 src/widget/input_widgets/text_entry/validation_bubble.rs ValidationBubble backlog
 src/widget/macos/popup_item_list.rs PopupItemList backlog
 src/widget/macos/value_spinbox.rs ValueSpinBox backlog
-src/widget/special_widgets/media_player/media_scrubber.rs MediaScrubber backlog
-src/widget/special_widgets/media_player/media_transport.rs MediaTransportBar backlog
-src/widget/special_widgets/media_player/subtitle_bar.rs SubtitleBar backlog
+crates/rust-widgets-suites/src/media_playback/media_player/media_scrubber.rs MediaScrubber backlog
+crates/rust-widgets-suites/src/media_playback/media_player/media_transport.rs MediaTransportBar backlog
+crates/rust-widgets-suites/src/media_playback/media_player/subtitle_bar.rs SubtitleBar backlog
 src/widget/misc_widgets/date_range_picker.rs RangePresetBar backlog
 src/widget/misc_widgets/drum_column.rs DrumColumn backlog
 src/widget/misc_widgets/preset_chip_bar.rs PresetChipBar backlog
 src/widget/chart_widgets/chart/chart.rs ChartCrosshair backlog
 src/widget/special_widgets/chip_input.rs ChipInput backlog
-src/widget/special_widgets/diff_viewer.rs DiffFileList backlog
+crates/rust-widgets-suites/src/devtools/diff_viewer.rs DiffFileList backlog
 src/widget/special_widgets/freeform_shape/shape.rs ShapeCanvas backlog
-src/widget/chart_widgets/gantt/gantt_companions.rs TimelineAxis backlog
-src/widget/chart_widgets/gantt/gantt_companions.rs DependencyEditor backlog
-src/widget/chart_widgets/kanban_board/card.rs KanbanCardView backlog
-src/widget/chart_widgets/kanban_board/column_header.rs KanbanColumnHeader backlog
-src/widget/special_widgets/map_view/map_marker_detail.rs MapMarkerDetail backlog
-src/widget/special_widgets/map_view/map_view_companions.rs TileLoader backlog
-src/widget/special_widgets/map_view/map_view_companions.rs ZoomControl backlog
-src/widget/special_widgets/map_view/map_view_companions.rs ScaleBar backlog
-src/widget/special_widgets/map_view/map_view_companions.rs Compass backlog
+crates/rust-widgets-suites/src/project/gantt/gantt_companions.rs TimelineAxis backlog
+crates/rust-widgets-suites/src/project/gantt/gantt_companions.rs DependencyEditor backlog
+crates/rust-widgets-suites/src/project/kanban_board/card.rs KanbanCardView backlog
+crates/rust-widgets-suites/src/project/kanban_board/column_header.rs KanbanColumnHeader backlog
+crates/rust-widgets-suites/src/maps/map_view/map_marker_detail.rs MapMarkerDetail backlog
+crates/rust-widgets-suites/src/maps/map_view/map_view_companions.rs TileLoader backlog
+crates/rust-widgets-suites/src/maps/map_view/map_view_companions.rs ZoomControl backlog
+crates/rust-widgets-suites/src/maps/map_view/map_view_companions.rs ScaleBar backlog
+crates/rust-widgets-suites/src/maps/map_view/map_view_companions.rs Compass backlog
 src/widget/special_widgets/markdown_editor/find.rs FindBar backlog
 src/widget/special_widgets/markdown_editor/outline.rs MarkdownOutlinePanel backlog
 src/widget/special_widgets/markdown_toolbar.rs MarkdownToolbar backlog
@@ -278,4 +278,20 @@ src/widget/view_widgets/data_grid/column_chooser.rs ColumnChooser backlog
 src/widget/view_widgets/data_grid/header.rs GridViewHeader backlog
 src/widget/view_widgets/data_grid/grid_find_bar.rs GridFindBar backlog
 src/widget/view_widgets/thumbnail_cache.rs ThumbnailCache backlog
-crates/rust-widgets-webview/src/find_bar.rs WebFindBar backlog
+crates/rust-widgets-suites/src/webview/find_bar.rs WebFindBar backlog
+crates/rust-widgets-suites/src/devtools/terminal/terminal_view.rs TerminalView backlog
+crates/rust-widgets-suites/src/devtools/terminal/terminal_find_bar.rs TerminalFindBar backlog
+crates/rust-widgets-suites/src/form_widgets/form.rs Form backlog
+crates/rust-widgets-suites/src/form_widgets/formset.rs FormSet backlog
+crates/rust-widgets-suites/src/maps/map_attribution.rs MapAttributionOverlay backlog
+crates/rust-widgets-suites/src/maps/map_overview.rs MapOverviewPanel backlog
+crates/rust-widgets-suites/src/media_playback/audio_visualizer.rs AudioVisualizer backlog
+crates/rust-widgets-suites/src/media_playback/chapter_list_panel.rs ChapterListPanel backlog
+crates/rust-widgets-suites/src/project/gantt/gantt_widget.rs GanttWidget backlog
+crates/rust-widgets-suites/src/project/gantt/gantt_companions.rs GanttTaskGrid backlog
+# Reports the DockArea's current rectangle and the delegate protocol's "no opinion" answer.
+src/widget/container_widgets/dock_area_layout.rs DockAreaLayout permanent
+src/widget/view_widgets/table_widget/widget.rs <free> permanent
+# A drawing surface has no content to measure; the host places it.
+src/widget/special_widgets/canvas/widget.rs Canvas permanent
+src/widget/view_widgets/virtual_table/widget.rs VirtualTable permanent
