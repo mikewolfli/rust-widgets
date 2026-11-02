@@ -564,6 +564,13 @@ impl WidgetProperties for PresetChipBar {
     fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
         match name {
             "selected_preset" => {
+                // The published default is `Null` (no chip selected yet), and a writable property
+                // must accept the value it reports. `Null` clears the selection; an id selects.
+                if matches!(value, CapabilityValue::Null) {
+                    self.selected_preset_id = None;
+                    self.base.request_redraw();
+                    return Ok(());
+                }
                 let id = crate::widget::capability::coercion::expect_u32(value)? as u64;
                 if self.set_selected(id) {
                     Ok(())

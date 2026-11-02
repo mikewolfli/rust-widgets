@@ -295,5 +295,132 @@ impl ToolBarHandle {
         })
         .unwrap_or(false)
     }
+
+    /// The number of action items, or `0` when the id is not a live tool bar (RW-63).
+    pub fn item_count(&self) -> usize {
+        crate::widget::runtime::with_widget(self.raw_id(), |widget| {
+            (widget as &dyn core::any::Any)
+                .downcast_ref::<crate::widget::menu_toolbar::tool_bar::ToolBar>()
+                .map(|bar| bar.items().len())
+                .unwrap_or(0)
+        })
+        .unwrap_or(0)
+    }
+
+    /// Appends an action item and returns its index (RW-63).
+    ///
+    /// `None` when the id is not a live tool bar. The typed entry already repaints.
+    pub fn add_action(&self, id: &str, text: &str) -> Option<usize> {
+        crate::widget::runtime::with_widget_mut(self.raw_id(), |widget| {
+            (widget as &mut dyn core::any::Any)
+                .downcast_mut::<crate::widget::menu_toolbar::tool_bar::ToolBar>()
+                .map(|bar| bar.add_action(id, text))
+        })
+        .flatten()
+    }
+
+    /// Removes the item at `index`, returning whether it existed (RW-63).
+    pub fn remove_item(&self, index: usize) -> bool {
+        crate::widget::runtime::with_widget_mut(self.raw_id(), |widget| {
+            (widget as &mut dyn core::any::Any)
+                .downcast_mut::<crate::widget::menu_toolbar::tool_bar::ToolBar>()
+                .is_some_and(|bar| bar.remove_item(index).is_some())
+        })
+        .unwrap_or(false)
+    }
+
+    /// Removes every action item, returning whether the id is a live tool bar (RW-63).
+    pub fn clear(&self) -> bool {
+        crate::widget::runtime::with_widget_mut(self.raw_id(), |widget| {
+            (widget as &mut dyn core::any::Any)
+                .downcast_mut::<crate::widget::menu_toolbar::tool_bar::ToolBar>()
+                .is_some_and(|bar| {
+                    bar.clear();
+                    true
+                })
+        })
+        .unwrap_or(false)
+    }
+
+    /// Enables or disables item `index`, returning whether the id is a live tool bar (RW-63).
+    pub fn set_item_enabled(&self, index: usize, enabled: bool) -> bool {
+        let in_range = self.item_count() > index;
+        if in_range {
+            crate::widget::runtime::with_widget_mut(self.raw_id(), |widget| {
+                (widget as &mut dyn core::any::Any)
+                    .downcast_mut::<crate::widget::menu_toolbar::tool_bar::ToolBar>()
+                    .map(|bar| bar.set_item_enabled(index, enabled))
+            });
+        }
+        in_range
+    }
+
+    /// Whether item `index` is enabled, or `None` for an unknown index (RW-63).
+    pub fn item_enabled(&self, index: usize) -> Option<bool> {
+        crate::widget::runtime::with_widget(self.raw_id(), |widget| {
+            (widget as &dyn core::any::Any)
+                .downcast_ref::<crate::widget::menu_toolbar::tool_bar::ToolBar>()
+                .and_then(|bar| bar.item_enabled(index))
+        })
+        .flatten()
+    }
+
+    /// Sets item `index`'s checked state, returning whether the id is a live tool bar (RW-63).
+    pub fn set_item_checked(&self, index: usize, checked: bool) -> bool {
+        let in_range = self.item_count() > index;
+        if in_range {
+            crate::widget::runtime::with_widget_mut(self.raw_id(), |widget| {
+                (widget as &mut dyn core::any::Any)
+                    .downcast_mut::<crate::widget::menu_toolbar::tool_bar::ToolBar>()
+                    .map(|bar| bar.set_item_checked(index, checked))
+            });
+        }
+        in_range
+    }
+
+    /// Whether item `index` is checked, or `None` for an unknown index (RW-63).
+    pub fn item_checked(&self, index: usize) -> Option<bool> {
+        crate::widget::runtime::with_widget(self.raw_id(), |widget| {
+            (widget as &dyn core::any::Any)
+                .downcast_ref::<crate::widget::menu_toolbar::tool_bar::ToolBar>()
+                .and_then(|bar| bar.item_checked(index))
+        })
+        .flatten()
+    }
+
+    /// Sets item `index`'s hover hint, returning whether the write landed (RW-63).
+    pub fn set_item_tooltip(&self, index: usize, text: &str) -> bool {
+        crate::widget::runtime::with_widget_mut(self.raw_id(), |widget| {
+            (widget as &mut dyn core::any::Any)
+                .downcast_mut::<crate::widget::menu_toolbar::tool_bar::ToolBar>()
+                .and_then(|bar| bar.item_mut(index))
+                .map(|item| item.set_tooltip(text))
+                .is_some()
+        })
+        .unwrap_or(false)
+    }
+
+    /// Sets the strip's orientation, returning whether the id is a live tool bar (RW-63).
+    pub fn set_orientation(
+        &self,
+        orientation: crate::widget::menu_toolbar::tool_bar::ToolBarOrientation,
+    ) -> bool {
+        crate::widget::runtime::with_widget_mut(self.raw_id(), |widget| {
+            (widget as &mut dyn core::any::Any)
+                .downcast_mut::<crate::widget::menu_toolbar::tool_bar::ToolBar>()
+                .map(|bar| bar.set_orientation(orientation))
+        })
+        .is_some()
+    }
+
+    /// Sets the strip's icon size, returning whether the id is a live tool bar (RW-63).
+    pub fn set_icon_size(&self, size: f32) -> bool {
+        crate::widget::runtime::with_widget_mut(self.raw_id(), |widget| {
+            (widget as &mut dyn core::any::Any)
+                .downcast_mut::<crate::widget::menu_toolbar::tool_bar::ToolBar>()
+                .map(|bar| bar.set_icon_size(size))
+        })
+        .is_some()
+    }
 }
 impl_handle!(StatusBarHandle, "Type-safe handle for a native status bar.");

@@ -880,3 +880,88 @@ const TEST_NAMES: &[&str] = &[
     "the_window_geometry_mirror_reaches_the_layout_path",
     "every_mirror_backed_getter_defers_to_the_platform_first",
 ];
+
+/// RW-63: the new handle families are id-backed views of the same object.
+#[test]
+fn the_new_handles_are_id_backed_views() {
+    assert_eq!(CodeEditorHandle::from_raw(7).raw_id(), 7);
+    assert_eq!(CanvasHandle::from_raw(8).raw_id(), 8);
+    assert_eq!(PropertyGridHandle::from_raw(9).raw_id(), 9);
+    assert_eq!(CommandPaletteHandle::from_raw(10).raw_id(), 10);
+}
+
+/// RW-63: a handle can read the geometry the widget layer holds.
+#[test]
+fn a_handle_reads_the_widget_geometry_and_focus() {
+    let id = crate::widget::runtime::register(Box::new(crate::widget::Button::new(
+        "probe".to_string(),
+        crate::core::Rect::new(3, 4, 80, 24),
+    )))
+    .expect("a button mounts");
+    let handle = ButtonHandle::from_raw(id);
+    assert_eq!(handle.geometry(), Some(crate::core::Rect::new(3, 4, 80, 24)));
+    assert!(!handle.is_focused(), "a fresh control does not own focus");
+    assert_eq!(ButtonHandle::from_raw(id + 10_000).geometry(), None);
+    crate::widget::runtime::unregister(id);
+}
+
+/// RW-4: the tab handle forwards the typed tab APIs.
+#[cfg(widgets_unstripped)]
+#[test]
+fn the_tab_handle_forwards_the_typed_tab_apis() {
+    let id = crate::widget::runtime::register(Box::new(crate::widget::TabWidget::new(
+        crate::core::Rect::new(0, 0, 300, 200),
+    )))
+    .expect("a tab widget mounts");
+    let handle = TabWidgetHandle::from_raw(id);
+
+    assert!(handle.insert_tab(0, "A", None));
+    assert!(handle.insert_tab(1, "B", None));
+    assert_eq!(handle.tab_count(), 2);
+    assert!(handle.set_tab_tooltip(0, "First"));
+    assert!(handle.set_tab_enabled(0, true));
+    assert!(handle.set_tab_visible(1, false));
+    assert!(handle.move_tab(0, 1));
+    assert!(handle.set_item_icon_source(0, None));
+
+    let saved = handle.save_state().expect("a mounted tab widget serialises");
+    assert!(handle.restore_state(&saved));
+    assert!(!handle.restore_state(b"bad"), "a malformed blob is refused");
+
+    // An out-of-range index is reported rather than silently dropped.
+    assert!(!handle.set_tab_visible(99, true));
+    assert!(!handle.set_tab_enabled(99, true));
+    assert!(handle.insert_tab(99, "C", None), "an insert past the end appends");
+    assert_eq!(handle.tab_count(), 3);
+
+    remove_callbacks(id);
+    crate::widget::runtime::unregister(id);
+}
+
+/// RW-63: the tool bar handle reaches the item APIs the host previously had to downcast for.
+#[cfg(full_widgets)]
+#[test]
+fn the_tool_bar_handle_reaches_the_item_apis() {
+    let id = crate::widget::runtime::register(Box::new(
+        crate::widget::menu_toolbar::tool_bar::ToolBar::new(crate::core::Rect::new(0, 0, 300, 36)),
+    ))
+    .expect("a tool bar mounts");
+    let handle = ToolBarHandle::from_raw(id);
+
+    assert_eq!(handle.item_count(), 0);
+    assert_eq!(handle.add_action("open", "Open"), Some(0));
+    assert_eq!(handle.item_count(), 1);
+    assert!(handle.set_item_enabled(0, false));
+    assert_eq!(handle.item_enabled(0), Some(false));
+    assert!(handle.set_item_tooltip(0, "Open a file"));
+    assert!(
+        handle.set_orientation(crate::widget::menu_toolbar::tool_bar::ToolBarOrientation::Vertical)
+    );
+    assert!(handle.set_icon_size(20.0));
+    assert!(handle.remove_item(0));
+    assert!(!handle.remove_item(0));
+    assert!(handle.clear());
+
+    remove_callbacks(id);
+    crate::widget::runtime::unregister(id);
+}

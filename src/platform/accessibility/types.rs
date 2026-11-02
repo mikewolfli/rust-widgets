@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
 // SPDX-License-Identifier: MIT
 
-use crate::compat::{HashMap, String, Vec};
+use crate::compat::{lock, HashMap, Mutex, OnceLock, String, Vec};
 use crate::core::ObjectId;
 use crate::widget::capability::types::CapabilityValue;
 use crate::widget::WidgetKind;
@@ -70,6 +70,185 @@ pub enum A11yRole {
     ToolTip,
     /// Tree control.
     Tree,
+}
+
+impl A11yRole {
+    /// The canonical, lower-case underscore-separated token for this role.
+    ///
+    /// These tokens are the spelling accepted by [`A11yRole::from_name`] and by the
+    /// designer's `a11y_role` property. They are deliberately separate from the Rust
+    /// variant names: a host reads and writes them over the property contract, where a
+    /// `"radio_button"` spelling is the convention the rest of the crate uses.
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Unknown => "unknown",
+            Self::Button => "button",
+            Self::Label => "label",
+            Self::TextField => "text_field",
+            Self::CheckBox => "check_box",
+            Self::RadioButton => "radio_button",
+            Self::Slider => "slider",
+            Self::ProgressBar => "progress_bar",
+            Self::List => "list",
+            Self::Table => "table",
+            Self::Image => "image",
+            Self::Link => "link",
+            Self::Heading => "heading",
+            Self::Paragraph => "paragraph",
+            Self::Group => "group",
+            Self::Window => "window",
+            Self::Dialog => "dialog",
+            Self::Menu => "menu",
+            Self::MenuItem => "menu_item",
+            Self::Tab => "tab",
+            Self::Switch => "switch",
+            Self::Alert => "alert",
+            Self::ComboBox => "combo_box",
+            Self::SpinButton => "spin_button",
+            Self::StatusBar => "status_bar",
+            Self::ToolTip => "tool_tip",
+            Self::Tree => "tree",
+        }
+    }
+
+    /// Parses a token produced by [`A11yRole::name`], or `None` when it is not one.
+    ///
+    /// Matching is exact and case-sensitive, mirroring [`crate::widget::IconName::from_name`]:
+    /// `"Button"` and `"text field"` are rejected rather than guessed at. A caller that wants a
+    /// tolerant parse should normalise its input first and keep the decision at that boundary
+    /// rather than asking this function to accept several spellings.
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "unknown" => Some(Self::Unknown),
+            "button" => Some(Self::Button),
+            "label" => Some(Self::Label),
+            "text_field" => Some(Self::TextField),
+            "check_box" => Some(Self::CheckBox),
+            "radio_button" => Some(Self::RadioButton),
+            "slider" => Some(Self::Slider),
+            "progress_bar" => Some(Self::ProgressBar),
+            "list" => Some(Self::List),
+            "table" => Some(Self::Table),
+            "image" => Some(Self::Image),
+            "link" => Some(Self::Link),
+            "heading" => Some(Self::Heading),
+            "paragraph" => Some(Self::Paragraph),
+            "group" => Some(Self::Group),
+            "window" => Some(Self::Window),
+            "dialog" => Some(Self::Dialog),
+            "menu" => Some(Self::Menu),
+            "menu_item" => Some(Self::MenuItem),
+            "tab" => Some(Self::Tab),
+            "switch" => Some(Self::Switch),
+            "alert" => Some(Self::Alert),
+            "combo_box" => Some(Self::ComboBox),
+            "spin_button" => Some(Self::SpinButton),
+            "status_bar" => Some(Self::StatusBar),
+            "tool_tip" => Some(Self::ToolTip),
+            "tree" => Some(Self::Tree),
+            _ => None,
+        }
+    }
+
+    /// Every role, in declaration order.
+    ///
+    /// The designer's role picker and any host-side match that used to be maintained by hand
+    /// iterate this array instead. Like [`crate::widget::IconName::ALL`], it is the single list
+    /// the round-trip test walks, so a role added to the enum cannot be forgotten here without
+    /// failing that test.
+    pub const ALL: [A11yRole; 27] = [
+        Self::Unknown,
+        Self::Button,
+        Self::Label,
+        Self::TextField,
+        Self::CheckBox,
+        Self::RadioButton,
+        Self::Slider,
+        Self::ProgressBar,
+        Self::List,
+        Self::Table,
+        Self::Image,
+        Self::Link,
+        Self::Heading,
+        Self::Paragraph,
+        Self::Group,
+        Self::Window,
+        Self::Dialog,
+        Self::Menu,
+        Self::MenuItem,
+        Self::Tab,
+        Self::Switch,
+        Self::Alert,
+        Self::ComboBox,
+        Self::SpinButton,
+        Self::StatusBar,
+        Self::ToolTip,
+        Self::Tree,
+    ];
+
+    /// The canonical token of every role, in declaration order.
+    pub fn all_names() -> [&'static str; 27] {
+        let mut names = [""; 27];
+        let mut index = 0;
+        while index < Self::ALL.len() {
+            names[index] = Self::ALL[index].name();
+            index += 1;
+        }
+        names
+    }
+}
+
+// ─── Per-widget role overrides ──────────────────────────────────────────
+
+/// A process-wide map of widget id to an explicit accessibility role.
+///
+/// # Why a registry rather than a field on every control
+///
+/// The role is derived from [`WidgetKind`] in [`A11yState::from_widget`]. A designer-authored
+/// control may need a role its kind cannot express — a `Button` whose author declared it a
+/// `Switch`, for example — but the widget trait's object-safe surface is not the place to grow a
+/// setter per a11y field, and editing every control to carry one unused slot would be the
+/// parallel-storage shape this codebase avoids. The registry keys by the widget's stable
+/// [`ObjectId`], which is already the identity the a11y tree uses, so the override reaches the
+/// same node the tree registers.
+///
+/// The entry is deliberately *not* removed when a widget is dropped: nothing here observes widget
+/// lifetimes. Callers that destroy controls must call [`clear_widget_a11y_role`] (or use
+/// [`clear_all_widget_a11y_roles`] when tearing down a document); an id is never reused by the
+/// runtime, so a stale entry can only be a leak, never a wrong answer for a different widget.
+fn role_overrides() -> &'static Mutex<HashMap<ObjectId, A11yRole>> {
+    static OVERRIDES: OnceLock<Mutex<HashMap<ObjectId, A11yRole>>> = OnceLock::new();
+    OVERRIDES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Sets an explicit accessibility role for `id`, returning the value it replaced.
+///
+/// The override wins over the role derived from [`WidgetKind`]. This is the runtime half of the
+/// designer's `a11y_role` property: the capability layer exposes the property name and the
+/// coordinator writes it through, while this function is what [`A11yState::from_widget`] reads.
+pub fn set_widget_a11y_role(id: ObjectId, role: A11yRole) -> Option<A11yRole> {
+    lock(role_overrides()).insert(id, role)
+}
+
+/// The explicit role set for `id`, if any.
+pub fn widget_a11y_role(id: ObjectId) -> Option<A11yRole> {
+    lock(role_overrides()).get(&id).copied()
+}
+
+/// Removes the explicit role for `id`, returning the value that was stored.
+pub fn clear_widget_a11y_role(id: ObjectId) -> Option<A11yRole> {
+    lock(role_overrides()).remove(&id)
+}
+
+/// Removes every explicit role. Intended for a document/application teardown.
+pub fn clear_all_widget_a11y_roles() {
+    lock(role_overrides()).clear();
+}
+
+/// The role an accessibility node should report for `id`: the explicit override when one exists,
+/// otherwise the role derived from `kind`.
+pub fn resolved_a11y_role(id: ObjectId, kind: WidgetKind) -> A11yRole {
+    widget_a11y_role(id).unwrap_or_else(|| A11yRole::from(kind))
 }
 
 // ─── Accessibility state ────────────────────────────────────────────────
@@ -160,7 +339,7 @@ impl A11yState {
     pub fn from_widget<W: crate::widget::Widget + ?Sized>(widget: &W) -> Self {
         let kind = widget.kind();
         let mut state = Self {
-            role: A11yRole::from(kind),
+            role: resolved_a11y_role(widget.id(), kind),
             label: widget.accessible_name(),
             description: widget.accessible_description(),
             enabled: widget.is_enabled(),
@@ -707,7 +886,10 @@ impl From<WidgetKind> for A11yRole {
             WidgetKind::ComboBox
             | WidgetKind::FontComboBox
             | WidgetKind::EditableComboBox
-            | WidgetKind::MultiSelectComboBox => A11yRole::ComboBox,
+            | WidgetKind::MultiSelectComboBox
+            // RW-65: the stripped table mapped `Dropdown` to a text field; a drop-down selector
+            // is a combo box in both tables now.
+            | WidgetKind::Dropdown => A11yRole::ComboBox,
             WidgetKind::Dialog
             | WidgetKind::FileDialog
             | WidgetKind::ColorDialog
@@ -735,8 +917,15 @@ impl From<WidgetKind> for A11yRole {
             | WidgetKind::SearchBar
             | WidgetKind::MaskedEdit
             | WidgetKind::AutoCompleteEdit
-            | WidgetKind::FloatingLabel => A11yRole::TextField,
-            WidgetKind::ListBox | WidgetKind::ListView => A11yRole::List,
+            | WidgetKind::FloatingLabel
+            // RW-65: `TextArea` was mapped only in the stripped table, so the two tables
+            // contradicted each other. A multi-line field has no dedicated A11y role; the
+            // editable-text role is the honest one.
+            | WidgetKind::TextArea => A11yRole::TextField,
+            WidgetKind::ListBox | WidgetKind::ListView | WidgetKind::ImageGallery => A11yRole::List,
+            // A scroll bar is a bounded continuous control; the slider role is the closest
+            // semantic fit available in this enumeration.
+            WidgetKind::ScrollBar => A11yRole::Slider,
             WidgetKind::MenuBar | WidgetKind::Menu => A11yRole::Menu,
             WidgetKind::MenuItem => A11yRole::MenuItem,
             WidgetKind::ProgressBar
@@ -751,8 +940,29 @@ impl From<WidgetKind> for A11yRole {
                 A11yRole::SpinButton
             }
             WidgetKind::TabWidget | WidgetKind::TabBar | WidgetKind::TabView => A11yRole::Tab,
-            WidgetKind::Table | WidgetKind::DataView => A11yRole::Table,
+            WidgetKind::Table
+            | WidgetKind::DataView
+            | WidgetKind::PropertyGrid
+            | WidgetKind::GridTable
+            | WidgetKind::TreeTable
+            | WidgetKind::KanbanBoard => A11yRole::Table,
             WidgetKind::TreeView => A11yRole::Tree,
+            // RW-65: surfaces and media views. A drawing surface and a rendered picture are
+            // graphics to an assistive technology; a video/animation surface has no playback role
+            // in this enum, so `Image` is the honest description of what it exposes.
+            WidgetKind::Canvas
+            | WidgetKind::MiniCanvas
+            | WidgetKind::Chart
+            | WidgetKind::Heatmap
+            | WidgetKind::RadarChart
+            | WidgetKind::CameraPreview
+            | WidgetKind::AudioVisualizer
+            | WidgetKind::AnimatedImage
+            | WidgetKind::LottieWidget
+            | WidgetKind::RiveWidget
+            | WidgetKind::VideoPlayer
+            | WidgetKind::HeroAnimation
+            | WidgetKind::ImageView => A11yRole::Image,
             WidgetKind::Window => A11yRole::Window,
             WidgetKind::Switch | WidgetKind::CupertinoSwitch => A11yRole::Switch,
             WidgetKind::Avatar | WidgetKind::Icon | WidgetKind::QRCode | WidgetKind::ColorWell => {
@@ -781,8 +991,13 @@ impl From<WidgetKind> for A11yRole {
             | WidgetKind::DropdownMenu
             | WidgetKind::SegmentedButton
             | WidgetKind::DockPanel
+            | WidgetKind::DockWidget
             | WidgetKind::MdiArea
             | WidgetKind::ScrollArea
+            | WidgetKind::StackedWidget
+            | WidgetKind::Grid
+            | WidgetKind::Toolbox
+            | WidgetKind::CollapsiblePane
             | WidgetKind::Frame => A11yRole::Group,
             WidgetKind::DatePicker
             | WidgetKind::TimePicker
@@ -815,20 +1030,23 @@ impl From<WidgetKind> for A11yRole {
             WidgetKind::Button | WidgetKind::Switch => A11yRole::Button,
             WidgetKind::CheckBox => A11yRole::CheckBox,
             WidgetKind::Label => A11yRole::Label,
-            WidgetKind::LineEdit | WidgetKind::TextArea | WidgetKind::Dropdown => {
-                A11yRole::TextField
-            }
+            WidgetKind::LineEdit | WidgetKind::TextArea => A11yRole::TextField,
             WidgetKind::ListBox => A11yRole::List,
             WidgetKind::ProgressBar => A11yRole::ProgressBar,
             WidgetKind::RadioButton => A11yRole::RadioButton,
             WidgetKind::Slider | WidgetKind::Meter | WidgetKind::Arc => A11yRole::Slider,
             WidgetKind::SpinBox => A11yRole::SpinButton,
-            WidgetKind::ComboBox => A11yRole::ComboBox,
+            WidgetKind::ComboBox | WidgetKind::Dropdown => A11yRole::ComboBox,
             WidgetKind::Panel
             | WidgetKind::Frame
             | WidgetKind::GroupBox
             | WidgetKind::ScrollArea
             | WidgetKind::Keyboard => A11yRole::Group,
+            // Suite controls: a form groups its fields, and a form set pages them like tabs. The
+            // stripped profile still sees these kinds because the suite crate registers them, so
+            // leaving them Unknown would be a profile-dependent lie rather than a narrower subset.
+            WidgetKind::Form => A11yRole::Group,
+            WidgetKind::FormSet => A11yRole::Tab,
             WidgetKind::Window => A11yRole::Window,
             _ => A11yRole::Unknown,
         }
@@ -977,6 +1195,28 @@ impl A11yProvider for DefaultA11yProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// RW-65: the common containers and surfaces no longer fall through to `Unknown`.
+    #[test]
+    #[cfg(all(not(alloc_frugal), not(embedded_surface)))]
+    fn common_widget_kinds_have_a_role() {
+        for (kind, role) in [
+            (WidgetKind::Panel, A11yRole::Group),
+            (WidgetKind::GroupBox, A11yRole::Group),
+            (WidgetKind::ScrollArea, A11yRole::Group),
+            (WidgetKind::StackedWidget, A11yRole::Group),
+            (WidgetKind::Grid, A11yRole::Group),
+            (WidgetKind::Canvas, A11yRole::Image),
+            (WidgetKind::PropertyGrid, A11yRole::Table),
+            (WidgetKind::Heatmap, A11yRole::Image),
+            (WidgetKind::RadarChart, A11yRole::Image),
+            (WidgetKind::TextArea, A11yRole::TextField),
+            (WidgetKind::Dropdown, A11yRole::ComboBox),
+            (WidgetKind::ScrollBar, A11yRole::Slider),
+        ] {
+            assert_eq!(A11yRole::from(kind), role, "{kind:?} must not fall through to Unknown");
+        }
+    }
 
     #[test]
     fn test_register_and_get_node() {
@@ -1274,5 +1514,51 @@ mod tests {
         assert_eq!(A11yState::from_widget(&box_).checked, Some(true));
         box_.set_checked(false);
         assert_eq!(A11yState::from_widget(&box_).checked, Some(false));
+    }
+
+    /// Every role round-trips through `name` -> `from_name`, and the tokens are unique.
+    ///
+    /// Walking `ALL` rather than a hand-written list is what keeps the test honest when a role is
+    /// added: the new variant is covered by construction, and a missing `name` arm is a compile
+    /// error rather than a runtime surprise.
+    #[test]
+    fn every_a11y_role_round_trips_through_its_token() {
+        assert!(A11yRole::ALL.len() > 1, "an empty ALL would make this pass vacuously");
+        let mut tokens = std::collections::HashSet::new();
+        for role in A11yRole::ALL {
+            let token = role.name();
+            assert!(tokens.insert(token), "two roles share the token {token:?}");
+            assert_eq!(A11yRole::from_name(token), Some(role), "{token} did not round-trip");
+        }
+        assert_eq!(A11yRole::all_names().len(), A11yRole::ALL.len());
+        assert_eq!(A11yRole::all_names()[0], "unknown");
+        assert_eq!(A11yRole::from_name("Button"), None, "matching is case-sensitive");
+    }
+
+    /// An explicit role wins over the kind-derived role, and clearing it restores the derivation.
+    ///
+    /// The override is the runtime half of the `a11y_role` property: a host can declare that a
+    /// control of one kind should be announced as another role without the control type knowing.
+    #[test]
+    fn a_widget_role_override_wins_and_can_be_cleared() {
+        use crate::widget::base_widgets::button::Button;
+        use crate::widget::Widget;
+
+        let button = Button::new(String::from("OK"), crate::core::Rect::new(0, 0, 80, 32));
+        let id = button.id();
+        assert_eq!(A11yState::from_widget(&button).role, A11yRole::Button);
+
+        assert_eq!(set_widget_a11y_role(id, A11yRole::Switch), None);
+        assert_eq!(widget_a11y_role(id), Some(A11yRole::Switch));
+        assert_eq!(
+            A11yState::from_widget(&button).role,
+            A11yRole::Switch,
+            "the override must reach the state the tree registers"
+        );
+        assert_eq!(resolved_a11y_role(id, button.kind()), A11yRole::Switch);
+
+        assert_eq!(clear_widget_a11y_role(id), Some(A11yRole::Switch));
+        assert_eq!(A11yState::from_widget(&button).role, A11yRole::Button);
+        assert_eq!(clear_widget_a11y_role(id), None);
     }
 }

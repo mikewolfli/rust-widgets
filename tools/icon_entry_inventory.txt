@@ -14,6 +14,7 @@ draw primitive | validate_icon | src/widget/display_widgets/icon.rs | - | -
 inline entry point | draw_icon_at | src/widget/display_widgets/icon.rs | - | -
 inline entry point | draw_icon_centered | src/widget/display_widgets/icon.rs | - | -
 inline entry point | draw_icon_named | src/widget/display_widgets/icon.rs | - | -
+item setter | set_item_icon_source | src/app/handle/tabwidget.rs | - | index
 item setter | set_item_icon_source | src/widget/advanced_widgets/pie_menu.rs | - | u64 id (collection-assigned, host-pinnable)
 item setter | set_item_icon_source | src/widget/container_widgets/mdiarea.rs | - | ObjectId (runtime handle)
 item setter | set_item_icon_source | src/widget/container_widgets/tabwidget.rs | - | index
@@ -39,6 +40,8 @@ published property | icon_source | src/widget/capability/properties_menu.in.rs |
 published property | icon_source | src/widget/capability/properties_other.in.rs | - | fab
 published property | icon_source | src/widget/capability/properties_other.in.rs | - | icon
 published property | icon_text | src/widget/capability/properties_menu.in.rs | - | action
+published property | icon_tint | src/widget/capability/properties_base.in.rs | - | button
+published property | icon_tint | src/widget/capability/properties_menu.in.rs | - | tool_button
 published property | icon_visible_in_list_mode | src/widget/capability/properties_view.in.rs | - | list_view
 typed content api | icon_source | src/widget/advanced_widgets/pie_menu.rs | - | -
 typed content api | icon_source | src/widget/advanced_widgets/ribbon_bar.rs | - | -

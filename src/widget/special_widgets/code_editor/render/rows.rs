@@ -177,6 +177,19 @@ impl CodeEditor {
                         chrome.active_line,
                     );
                 }
+                // A changed line gets a faint band behind its glyphs. The tint comes
+                // from the active theme's string colour, which is the conventional
+                // green for an added/changed line, at an alpha low enough that the
+                // text stays the strongest mark on the row.
+                if segment == 0
+                    && self.config.show_inline_diff
+                    && self.line_differs_from_baseline(line)
+                {
+                    context.fill_rect(
+                        Rect::new(rect.x, y, rect.width, row_height.ceil() as u32),
+                        palette.color_for(TokenKind::String).with_alpha(24),
+                    );
+                }
 
                 self.draw_line_backdrops(
                     context,
@@ -262,6 +275,21 @@ impl CodeEditor {
                         }
                     }
                 }
+                // Host annotations are chrome: they follow the text position they
+                // name and never enter the document or its coordinate map.
+                self.draw_row_inlays(
+                    context,
+                    left,
+                    right,
+                    y,
+                    row_height,
+                    line,
+                    text,
+                    segment_start,
+                    segment_end,
+                    &geom,
+                    chrome,
+                );
                 painted.push(line);
             }
             // Store the measured row for the caret, the selection and the click
@@ -302,6 +330,87 @@ impl CodeEditor {
     /// and `scroll_column` speak), so it is converted to pixels once here.
     pub(super) fn screen_x(&self, left: i32, x: f32) -> i32 {
         left + (x - self.scroll_column as f32 * self.cell_width()).round() as i32
+    }
+
+    /// Draws the inlay hints and code lenses belonging to one line.
+    ///
+    /// The parameters are the row's five geometry facts plus the segment window, the line's
+    /// text and chrome. They are passed individually because the caller already holds them and
+    /// has already borrowed `self` immutably; bundling them into a temporary struct would add
+    /// an allocation-free copy of the same fields without reducing coupling.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_row_inlays(
+        &self,
+        context: &mut RenderContext,
+        left: i32,
+        right: i32,
+        y: i32,
+        row_height: f32,
+        line: usize,
+        text: &str,
+        segment_start: usize,
+        segment_end: usize,
+        geom: &RowGeometry,
+        chrome: &EditorChrome,
+    ) {
+        let font = self.chrome_font();
+        let line_chars = text.chars().count();
+        let mut band = Rect::new(left, y, 1, row_height.ceil().max(1.0) as u32);
+        if self.config.show_inlay_hints {
+            for hint in self.inlay_hints.iter().filter(|hint| hint.line == line) {
+                // A hint belongs to the segment containing its column, so a
+                // soft-wrapped line draws it once, in the right row.
+                if hint.column < segment_start || hint.column > segment_end {
+                    continue;
+                }
+                let column = hint.column.min(line_chars);
+                let x = self.screen_x(left, geom.x_of(column)) + 4;
+                if x + 2 >= right || hint.label.is_empty() {
+                    continue;
+                }
+                band.x = x;
+                band.width = (right - x).max(1) as u32;
+                let baseline = context.text_line(band, font).y;
+                context.draw_text(
+                    Point::new(x, baseline),
+                    &hint.label,
+                    font,
+                    chrome.dim_ink,
+                    HorizontalAlignment::Left,
+                );
+            }
+        }
+        // Lenses describe the whole line, so they are drawn once, on its first
+        // visual row, after the line's last glyph.
+        if segment_start == 0 && self.code_lenses.iter().any(|lens| lens.line == line) {
+            let mut label = String::new();
+            for lens in self.code_lenses.iter().filter(|lens| lens.line == line) {
+                if lens.label.is_empty() {
+                    continue;
+                }
+                if !label.is_empty() {
+                    label.push_str("   ");
+                }
+                label.push_str(&lens.label);
+            }
+            if label.is_empty() {
+                return;
+            }
+            let x = self.screen_x(left, geom.x_of(line_chars)) + 12;
+            let width = context.measure_text(&label, font).width as i32;
+            if x + width <= right {
+                band.x = x;
+                band.width = width.max(1) as u32;
+                let baseline = context.text_line(band, font).y;
+                context.draw_text(
+                    Point::new(x, baseline),
+                    &label,
+                    font,
+                    chrome.dim_ink,
+                    HorizontalAlignment::Left,
+                );
+            }
+        }
     }
 
     /// The byte ranges the row is drawn in, each with the token kind that colours

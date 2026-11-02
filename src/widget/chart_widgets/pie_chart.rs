@@ -109,6 +109,11 @@ pub struct PieChart {
     angles_dirty: bool,
     /// Whether value changes ease into place. On by default.
     animate: bool,
+    /// How much of the ring the slices reveal, in `0.0..=1.0`.
+    ///
+    /// A designer timeline scrubs this through [`Self::set_reveal_progress`]. It rests at
+    /// `1.0`, so a chart that never touches it paints the full ring exactly as before.
+    reveal: PropertyDriver,
     /// Progress of the running value transition, in `0.0..=1.0`.
     transition: PropertyDriver,
     /// The start values of the running transition, one per slice.
@@ -137,6 +142,11 @@ pub struct PieChart {
     pub slice_unhovered: Signal1<usize>,
     /// Emitted with the slice index of a clicked slice.
     pub slice_clicked: Signal1<usize>,
+    /// Emitted after every mutation that bumps [`Self::data_revision`].
+    ///
+    /// The crate has no zero-argument signal type; a payload-free notification is
+    /// `Signal1<()>`, matching the `Signal0` spelling in the issue.
+    pub data_changed: Signal1<()>,
 }
 
 impl PieChart {
@@ -163,6 +173,7 @@ impl PieChart {
             cached_total: 0.0,
             angles_dirty: true,
             animate: true,
+            reveal: PropertyDriver::at(1.0, MotionSlot::Normal),
             transition: PropertyDriver::at(1.0, MotionSlot::Normal),
             from_values: Vec::new(),
             legend_scroll: 0,
@@ -178,6 +189,7 @@ impl PieChart {
             slice_hovered: Signal1::new(),
             slice_unhovered: Signal1::new(),
             slice_clicked: Signal1::new(),
+            data_changed: Signal1::new(),
         }
     }
 
@@ -191,6 +203,7 @@ impl PieChart {
         self.slices = entries;
         self.angles_dirty = true;
         self.values_revision = self.values_revision.wrapping_add(1);
+        self.data_changed.emit(());
         self.sync_explode_progress();
         self.install_transition(from);
         self.revalidate_hover();
@@ -203,6 +216,7 @@ impl PieChart {
         self.slices.push(slice);
         self.angles_dirty = true;
         self.values_revision = self.values_revision.wrapping_add(1);
+        self.data_changed.emit(());
         self.sync_explode_progress();
         self.clear_transition();
         self.sync_legend();
@@ -216,6 +230,7 @@ impl PieChart {
             self.slices.remove(index);
             self.angles_dirty = true;
             self.values_revision = self.values_revision.wrapping_add(1);
+            self.data_changed.emit(());
             self.sync_explode_progress();
             self.clear_transition();
             self.revalidate_hover();
@@ -233,6 +248,7 @@ impl PieChart {
         self.angle_cache.clear();
         self.angles_dirty = true;
         self.values_revision = self.values_revision.wrapping_add(1);
+        self.data_changed.emit(());
         self.explode_progress.clear();
         self.clear_transition();
         self.legend_scroll = 0;
@@ -307,6 +323,35 @@ impl PieChart {
         self.animate
     }
 
+    /// The revision of the current slice data.
+    ///
+    /// Bumped by every mutator that changes the slices or their visibility. A host can key a
+    /// cached snapshot on it instead of comparing whole lists.
+    pub fn data_revision(&self) -> u64 {
+        self.values_revision
+    }
+
+    /// How much of the ring is revealed, in `0.0..=1.0`.
+    ///
+    /// `1.0` is the full pie. This is the read counterpart of
+    /// [`Self::set_reveal_progress`].
+    pub fn reveal_progress(&self) -> f32 {
+        self.reveal.value()
+    }
+
+    /// Sets how much of the ring is revealed, clamped to `0.0..=1.0`.
+    ///
+    /// The angle table is scaled by this fraction, so a designer timeline can scrub the
+    /// entrance reveal instead of waiting for [`Widget::tick`]. A non-finite value is ignored.
+    pub fn set_reveal_progress(&mut self, progress: f32) {
+        if !progress.is_finite() {
+            return;
+        }
+        self.reveal.jump_to(progress.clamp(0.0, 1.0));
+        self.angles_dirty = true;
+        self.base.request_redraw();
+    }
+
     /// Whether slice `index` is drawn and contributes to the total.
     pub fn is_series_visible(&self, index: usize) -> bool {
         self.slices.get(index).is_some_and(|slice| slice.visible)
@@ -325,6 +370,7 @@ impl PieChart {
         slice.visible = visible;
         self.angles_dirty = true;
         self.values_revision = self.values_revision.wrapping_add(1);
+        self.data_changed.emit(());
         self.revalidate_hover();
         self.sync_legend();
         // A disabled chart still applies the toggle and repaints; it must not announce a series
@@ -714,14 +760,15 @@ impl PieChart {
             return;
         }
         self.angle_cache.reserve(self.slices.len());
+        let reveal = self.reveal.value().clamp(0.0, 1.0);
         let mut start = -std::f32::consts::FRAC_PI_2;
         for (index, slice) in self.slices.iter().enumerate() {
             let value = self.displayed_value(index);
-            if !slice.visible || value <= 0.0 || !value.is_finite() {
+            if !slice.visible || value <= 0.0 || !value.is_finite() || reveal <= 0.0 {
                 self.angle_cache.push(None);
                 continue;
             }
-            let sweep = (value / total * 2.0 * std::f32::consts::PI as f64) as f32;
+            let sweep = (value / total * 2.0 * std::f32::consts::PI as f64) as f32 * reveal;
             self.angle_cache.push(Some((start, sweep)));
             start += sweep;
         }
@@ -1148,6 +1195,17 @@ impl WidgetProperties for PieChart {
     fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
         match name {
             "donut" => Ok(CapabilityValue::Bool(self.is_donut())),
+            // RW-67: the slice values and their labels as two parallel lists. Colours and the
+            // per-slice exploded/visible flags are not carried; a write preserves them by position.
+            "values" => Ok(CapabilityValue::Tuple(
+                self.slices().iter().map(|slice| CapabilityValue::Float(slice.value)).collect(),
+            )),
+            "labels" => Ok(CapabilityValue::Tuple(
+                self.slices()
+                    .iter()
+                    .map(|slice| CapabilityValue::String(slice.label.clone()))
+                    .collect(),
+            )),
             _ => base_property_get(self, name),
         }
     }
@@ -1158,12 +1216,50 @@ impl WidgetProperties for PieChart {
                 self.set_donut_mode(expect_bool(value)?);
                 Ok(())
             }
+            "values" => {
+                let values = crate::widget::capability::coercion::expect_number_list(value)?;
+                let existing = self.slices().to_vec();
+                let entries = values
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, value)| {
+                        // Keep the presentation a caller already set; only the datum is replaced.
+                        // A new position starts from the chart's neutral colour so the slice is
+                        // visible rather than transparent.
+                        let mut slice = existing
+                            .get(index)
+                            .cloned()
+                            .unwrap_or_else(|| PieSlice::new(String::new(), value, Color::GRAY));
+                        slice.value = value;
+                        slice
+                    })
+                    .collect();
+                self.set_slices(entries);
+                Ok(())
+            }
+            "labels" => {
+                let labels = crate::widget::capability::coercion::expect_string_list(value)?;
+                let existing = self.slices().to_vec();
+                let entries = existing
+                    .iter()
+                    .enumerate()
+                    .map(|(index, slice)| {
+                        let mut slice = slice.clone();
+                        // A shorter list empties the trailing labels rather than shifting the
+                        // supplied ones onto the wrong slices.
+                        slice.label = labels.get(index).cloned().unwrap_or_default();
+                        slice
+                    })
+                    .collect();
+                self.set_slices(entries);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["donut", BASE_PROPERTY_NAMES]
+        property_names_of!["values", "labels", "donut", BASE_PROPERTY_NAMES]
     }
 }
 
@@ -1594,6 +1690,38 @@ mod tests {
     use super::*;
     use crate::widget::svg::render_to_svg;
 
+    /// RW-67: the value and label lists round-trip, preserving per-slice presentation.
+    #[test]
+    fn values_and_labels_round_trip() {
+        use crate::widget::capability::WidgetProperties;
+        let mut chart = PieChart::new(Rect::new(0, 0, 200, 200));
+        chart.set_slices(vec![
+            PieSlice::new("a", 1.0, Color::rgb(1, 2, 3)).with_exploded(true),
+            PieSlice::new("b", 2.0, Color::rgb(4, 5, 6)),
+        ]);
+        chart
+            .set(
+                "values",
+                CapabilityValue::Tuple(vec![
+                    CapabilityValue::Float(7.0),
+                    CapabilityValue::Float(8.0),
+                ]),
+            )
+            .expect("values are writable");
+        assert_eq!(chart.slices()[0].value, 7.0);
+        assert!(chart.slices()[0].exploded, "presentation survives a value write");
+        assert_eq!(chart.slices()[0].color, Color::rgb(1, 2, 3));
+        chart
+            .set("labels", CapabilityValue::Tuple(vec![CapabilityValue::String("x".into())]))
+            .expect("labels are writable");
+        assert_eq!(chart.slices()[0].label, "x");
+        assert_eq!(chart.slices()[1].label, "", "a short list clears the trailing labels");
+        assert_eq!(
+            chart.get("values").expect("readable"),
+            CapabilityValue::Tuple(vec![CapabilityValue::Float(7.0), CapabilityValue::Float(8.0),])
+        );
+    }
+
     /// Every name the capability publishes must resolve, and a name it does not
     /// publish must stay unresolved — a dead arm reads as support it does not have.
     #[test]
@@ -1951,5 +2079,54 @@ mod tests {
         pc.handle_event(&Event::mouse_press(10, 10, 1));
         assert!(!pc.is_series_visible(0));
         assert!(!pc.legend().expect("attached").entries()[0].visible);
+    }
+
+    /// The data revision and its signal move together for every slice mutation.
+    #[test]
+    fn slice_mutations_bump_the_revision_and_emit_data_changed() {
+        use std::sync::{Arc, Mutex};
+
+        let mut pc = PieChart::new(Rect::new(0, 0, 240, 240));
+        let hits = Arc::new(Mutex::new(0usize));
+        let sink = Arc::clone(&hits);
+        pc.data_changed.connect(move |_| {
+            if let Ok(mut guard) = sink.lock() {
+                *guard += 1;
+            }
+        });
+
+        let start = pc.data_revision();
+        pc.add_slice(PieSlice::new("Alpha", 1.0, Color::PRIMARY));
+        assert_eq!(pc.data_revision(), start + 1);
+        assert_eq!(*hits.lock().unwrap(), 1);
+
+        assert!(pc.remove_slice(0));
+        assert_eq!(pc.data_revision(), start + 2);
+        assert_eq!(*hits.lock().unwrap(), 2);
+    }
+
+    /// The ring reveal is a real angle scale, not a stored value the paint ignores.
+    #[test]
+    fn the_reveal_progress_scales_the_drawn_arcs() {
+        let mut pc = PieChart::new(Rect::new(0, 0, 240, 240));
+        pc.set_slices(vec![
+            PieSlice::new("Alpha", 1.0, Color::PRIMARY),
+            PieSlice::new("Beta", 1.0, Color::rgb(0, 180, 90)),
+        ]);
+        pc.ensure_angle_cache();
+        let full: f32 =
+            pc.angle_cache.iter().filter_map(|entry| *entry).map(|(_, sweep)| sweep).sum();
+        assert!((full - std::f32::consts::TAU).abs() < 1e-4, "the default is the full ring");
+
+        pc.set_reveal_progress(0.5);
+        assert!((pc.reveal_progress() - 0.5).abs() < f32::EPSILON);
+        pc.ensure_angle_cache();
+        let half: f32 =
+            pc.angle_cache.iter().filter_map(|entry| *entry).map(|(_, sweep)| sweep).sum();
+        assert!((half - std::f32::consts::PI).abs() < 1e-4, "half the circle is revealed");
+
+        pc.set_reveal_progress(0.0);
+        pc.ensure_angle_cache();
+        assert!(pc.angle_cache.iter().all(Option::is_none), "nothing is drawn at zero");
     }
 }

@@ -728,50 +728,25 @@ impl CodeEditor {
         self.commit_edit(before, after, head);
     }
 
-    /// Inserts `snippet`, resolving `$0`…`$9` placeholders.
+    /// Inserts `snippet`, resolving `$0`…`$9` and `${N:placeholder}` markers.
     ///
     /// The markers are removed and the caret lands on `$0` (or on the first marker
-    /// when there is no `$0`). It is the minimal snippet contract: enough for an
-    /// editor to expand a template without a second document model.
+    /// when there is no `$0`). Placeholder text is inserted verbatim. This is the
+    /// minimal one-shot form; [`Self::insert_snippet_session`] additionally keeps
+    /// the stops so the caller can tab between them.
     pub fn insert_snippet(&mut self, snippet: &str) {
         if !self.is_editable() || snippet.is_empty() {
             return;
         }
+        let expanded = self.expand_tabs(snippet);
+        let parsed = super::snippet::parse_snippet(&expanded);
         let start = self.cursor.bounds().0;
-        let mut resolved = String::with_capacity(snippet.len());
-        let mut caret_offset: Option<usize> = None;
-        let mut first_offset: Option<usize> = None;
-        let mut chars = snippet.chars().peekable();
-        while let Some(ch) = chars.next() {
-            if ch == '$' {
-                if let Some(digit) = chars.peek().copied().filter(|ch| ch.is_ascii_digit()) {
-                    chars.next();
-                    let offset = resolved.chars().count();
-                    if first_offset.is_none() {
-                        first_offset = Some(offset);
-                    }
-                    if digit == '0' {
-                        caret_offset = Some(offset);
-                    }
-                    continue;
-                }
-            }
-            resolved.push(ch);
-        }
-        let marker = caret_offset.or(first_offset).unwrap_or(resolved.chars().count());
-        self.insert(&resolved);
-        let newlines = resolved
-            [..resolved.char_indices().nth(marker).map(|(byte, _)| byte).unwrap_or(resolved.len())]
-            .matches('\n')
-            .count();
-        let column_in_line =
-            resolved.char_indices().nth(marker).map(|(byte, _)| byte).unwrap_or(resolved.len());
-        let line_start = resolved[..column_in_line].rfind('\n').map(|index| index + 1).unwrap_or(0);
-        let column = resolved[line_start..column_in_line].chars().count();
-        let head = TextPosition::new(
-            start.line + newlines,
-            if newlines == 0 { start.column + column } else { column },
-        );
+        self.insert(&parsed.text);
+        let marker = parsed
+            .final_caret
+            .or_else(|| parsed.stops.iter().map(|stop| stop.start).min())
+            .unwrap_or_else(|| parsed.text.chars().count());
+        let head = super::snippet::advance_position(start, &parsed.text, marker);
         self.move_caret_to(head, false);
     }
 
@@ -838,7 +813,12 @@ impl CodeEditor {
     }
 
     /// Wraps the selection in `open`/`close`, keeping the inner text selected.
-    pub(super) fn wrap_selection(&mut self, open: char, close: char) {
+    ///
+    /// A public seam for a host that provides its own surround-with command (a
+    /// snippet library, a markup helper): the editor already owns the splice,
+    /// the selection restoration and the one undo entry, so the host does not
+    /// need a second implementation of any of them.
+    pub fn wrap_selection(&mut self, open: char, close: char) {
         let (start, end) = self.cursor.bounds();
         let selected = self.model.borrow().extract(start, end);
         let newlines = selected.matches('\n').count();
@@ -1277,6 +1257,8 @@ impl CodeEditor {
         // document and return early — leaving the derived state stale. Rebuild the
         // line index from the buffer instead of routing through `set_text`.
         self.active_typing = None;
+        // An undo restores text the session's stops were not computed against.
+        self.snippet_session = None;
         let restored = self.model.borrow().text.borrow().clone();
         self.restoring_history = true;
         self.model.borrow_mut().set_text(restored.clone());

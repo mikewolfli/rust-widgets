@@ -1051,6 +1051,43 @@ impl WidgetProperties for Heatmap {
                 Some((_, high)) => CapabilityValue::Float(high),
                 None => CapabilityValue::Null,
             }),
+            // RW-70: the matrix row by row, and the two axis labels. An empty cell has no number
+            // to report, so it reads as `0.0`; writing `0.0` stores a real zero. That is the
+            // documented fidelity limit of a flat numeric carrier.
+            "values" => Ok({
+                // RW-70: a matrix whose every cell is empty has no numbers to report. Reading it as
+                // an empty list (rather than a list of zeros) is what makes the schema default —
+                // "no data" — round-trip; a written zero is a real value and keeps the list shaped.
+                let any_value = (0..self.row_count()).any(|row| {
+                    (0..self.column_count())
+                        .any(|column| self.cell(row, column).and_then(|cell| cell.value).is_some())
+                });
+                let values: crate::compat::Vec<CapabilityValue> = if any_value {
+                    (0..self.row_count())
+                        .flat_map(|row| (0..self.column_count()).map(move |column| (row, column)))
+                        .map(|(row, column)| {
+                            CapabilityValue::Float(
+                                self.cell(row, column).and_then(|cell| cell.value).unwrap_or(0.0),
+                            )
+                        })
+                        .collect()
+                } else {
+                    crate::compat::Vec::new()
+                };
+                CapabilityValue::Tuple(values)
+            }),
+            "row_labels" => Ok(CapabilityValue::Tuple(
+                self.row_labels()
+                    .iter()
+                    .map(|label| CapabilityValue::String(label.clone()))
+                    .collect(),
+            )),
+            "column_labels" => Ok(CapabilityValue::Tuple(
+                self.column_labels()
+                    .iter()
+                    .map(|label| CapabilityValue::String(label.clone()))
+                    .collect(),
+            )),
             "show_labels" => Ok(CapabilityValue::Bool(self.show_labels())),
             "show_legend" => Ok(CapabilityValue::Bool(self.show_legend())),
             // The resolved counts, so a caller reads how much of the matrix is actually on screen.
@@ -1075,6 +1112,57 @@ impl WidgetProperties for Heatmap {
                     CapabilityValue::Null => self.set_scale_maximum(None),
                     other => self.set_scale_maximum(Some(expect_float(other)?)),
                 }
+                Ok(())
+            }
+            "values" => {
+                let values = crate::widget::capability::coercion::expect_number_list(value)?;
+                let rows = self.row_count();
+                let columns = self.column_count();
+                if values.is_empty() {
+                    // An empty list is the fresh state's default and a legal clear; it empties every
+                    // cell while keeping the matrix shape (so labels and geometry are untouched).
+                    for row in &mut self.values {
+                        for cell in row {
+                            *cell = HeatmapCell::empty();
+                        }
+                    }
+                    self.hovered_cell = None;
+                    self.data_range_cache.set(None);
+                    self.base.request_redraw();
+                    return Ok(());
+                }
+                if rows == 0 || columns == 0 || values.len() != rows * columns {
+                    // The carrier has no shape of its own; accepting a wrong length would have to
+                    // guess at the row width. Shape it by writing the label lists first.
+                    return Err(CapabilityAccessError::OutOfRange);
+                }
+                let mut cursor = 0usize;
+                for row in 0..rows {
+                    for column in 0..columns {
+                        self.set_cell(row, column, values[cursor]);
+                        cursor += 1;
+                    }
+                }
+                Ok(())
+            }
+            "row_labels" | "column_labels" => {
+                let labels = crate::widget::capability::coercion::expect_string_list(value)?;
+                // Rebuild through `set_data`, which is the one API that keeps the labels and the
+                // matrix the same shape. Cells outside the new labels are dropped; new positions
+                // start empty.
+                let (the_rows, the_columns) = if name == "row_labels" {
+                    (labels, self.column_labels().to_vec())
+                } else {
+                    (self.row_labels().to_vec(), labels)
+                };
+                let values = (0..the_rows.len())
+                    .map(|row| {
+                        (0..the_columns.len())
+                            .map(|column| self.cell(row, column).unwrap_or_else(HeatmapCell::empty))
+                            .collect()
+                    })
+                    .collect();
+                self.set_data(the_rows, the_columns, values);
                 Ok(())
             }
             "show_labels" => {
@@ -1118,6 +1206,9 @@ impl WidgetProperties for Heatmap {
     fn property_names(&self) -> &'static [&'static str] {
         // Mirrors `HEATMAP_PROPERTIES`.
         property_names_of![
+            "values",
+            "row_labels",
+            "column_labels",
             "row_count",
             "column_count",
             "scale_minimum",
@@ -1765,6 +1856,32 @@ mod tests {
     use super::*;
     use crate::core::Point;
     use crate::render::{PaintBackend, SoftwarePaintBackend};
+
+    /// RW-70: the row-major matrix and the two label lists round-trip.
+    #[test]
+    fn matrix_and_label_carriers_round_trip() {
+        use crate::widget::capability::WidgetProperties;
+        let mut heatmap = sample();
+        let CapabilityValue::Tuple(values) = heatmap.get("values").expect("readable") else {
+            panic!("values must be a tuple");
+        };
+        assert_eq!(values.len(), 12, "3 rows x 4 columns");
+        assert_eq!(values[0], CapabilityValue::Float(1.0));
+
+        heatmap
+            .set("values", CapabilityValue::Tuple(vec![CapabilityValue::Float(9.0); 12]))
+            .expect("values are writable when the shape matches");
+        assert_eq!(heatmap.cell(0, 0).and_then(|cell| cell.value), Some(9.0));
+        // A length that does not match the current grid is refused, not guessed at.
+        assert!(heatmap
+            .set("values", CapabilityValue::Tuple(vec![CapabilityValue::Float(1.0)]))
+            .is_err());
+
+        heatmap
+            .set("row_labels", CapabilityValue::Tuple(vec![CapabilityValue::String("only".into())]))
+            .expect("row labels are writable");
+        assert_eq!(heatmap.row_labels(), &["only".to_string()]);
+    }
 
     /// A 3x4 grid with one value per coordinate, and a known range `1.0..=12.0`.
     fn sample() -> Heatmap {

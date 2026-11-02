@@ -32,15 +32,19 @@ mod tests;
 mod types;
 mod watcher;
 pub use global::{
-    check_and_reload_all, get_manager, init, init_with_options, translate, translate_into,
-    translate_into_with_args, translate_into_with_context, translate_with_args,
-    translate_with_context,
+    check_and_reload_all, get_manager, init, init_with_options, on_language_changed,
+    register_retranslator, retranslate, set_language, translate, translate_into,
+    translate_into_with_args, translate_into_with_context, translate_into_with_typed_args,
+    translate_with_args, translate_with_context, translate_with_typed_args, RetranslatorHandle,
 };
 #[cfg(test)]
 pub(crate) use global::{global_i18n_test_lock, init_call_count, GLOBAL_I18N};
-pub use manager::{interpolate_into, I18nManager};
+pub use manager::{
+    format_integer, format_number, interpolate_into, interpolate_typed_into, number_format_for,
+    I18nManager, NumberFormat, PlaceholderArgument,
+};
 pub use options::{system_language, InitOptions, InitReport};
-pub use types::{KeyAudit, ReloadEvent, Translation, TranslationFile};
+pub use types::{KeyAudit, LanguageChanged, ReloadEvent, Translation, TranslationFile};
 pub use watcher::{
     disable_global_hot_reload, enable_global_hot_reload, pump_hot_reload, HOT_RELOAD_ENV_VAR,
 };

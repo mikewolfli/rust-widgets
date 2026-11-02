@@ -210,97 +210,6 @@ pub(crate) fn toast_host_capability() -> WidgetCapability {
 }
 
 #[cfg(not(alloc_frugal))]
-/// `tile_loader` — tile addresses and their cache (`COMP-13`).
-pub(crate) fn tile_loader_capability() -> WidgetCapability {
-    WidgetCapability {
-        kind: WidgetKind::TileLoader,
-        canonical_name: "tile_loader",
-        aliases: &["map_tile_loader"],
-        properties: TILE_LOADER_PROPERTIES,
-        events: events_of!("tile_loader"),
-        commands: &["clear_cache"],
-    }
-}
-
-#[cfg(not(alloc_frugal))]
-/// `zoom_control` — the map's three-button zoom strip (`COMP-13`).
-pub(crate) fn zoom_control_capability() -> WidgetCapability {
-    WidgetCapability {
-        kind: WidgetKind::ZoomControl,
-        canonical_name: "zoom_control",
-        aliases: &["map_zoom_control"],
-        properties: ZOOM_CONTROL_PROPERTIES,
-        events: events_of!("zoom_control"),
-        commands: &[],
-    }
-}
-
-#[cfg(not(alloc_frugal))]
-/// `scale_bar` — the map's distance legend (`COMP-13`).
-pub(crate) fn scale_bar_capability() -> WidgetCapability {
-    WidgetCapability {
-        kind: WidgetKind::ScaleBar,
-        canonical_name: "scale_bar",
-        aliases: &["map_scale_bar"],
-        properties: SCALE_BAR_PROPERTIES,
-        events: &[],
-        commands: &[],
-    }
-}
-
-#[cfg(not(alloc_frugal))]
-/// `compass` — the map's north-up dial (`COMP-13`).
-pub(crate) fn compass_capability() -> WidgetCapability {
-    WidgetCapability {
-        kind: WidgetKind::Compass,
-        canonical_name: "compass",
-        aliases: &["map_compass"],
-        properties: COMPASS_PROPERTIES,
-        events: events_of!("compass"),
-        commands: &[],
-    }
-}
-
-#[cfg(not(alloc_frugal))]
-/// `timeline_axis` — the Gantt date/value axis (`COMP-14`).
-pub(crate) fn timeline_axis_capability() -> WidgetCapability {
-    WidgetCapability {
-        kind: WidgetKind::TimelineAxis,
-        canonical_name: "timeline_axis",
-        aliases: &["gantt_timeline_axis"],
-        properties: TIMELINE_AXIS_PROPERTIES,
-        events: events_of!("timeline_axis"),
-        commands: &[],
-    }
-}
-
-#[cfg(not(alloc_frugal))]
-/// `dependency_editor` — the Gantt dependency edge editor (`COMP-14`).
-pub(crate) fn dependency_editor_capability() -> WidgetCapability {
-    WidgetCapability {
-        kind: WidgetKind::DependencyEditor,
-        canonical_name: "dependency_editor",
-        aliases: &["gantt_dependency_editor"],
-        properties: DEPENDENCY_EDITOR_PROPERTIES,
-        events: events_of!("dependency_editor"),
-        commands: &[],
-    }
-}
-
-#[cfg(not(alloc_frugal))]
-/// `diff_file_list` — the multi-file selector beside a diff (`COMP-15`).
-pub(crate) fn diff_file_list_capability() -> WidgetCapability {
-    WidgetCapability {
-        kind: WidgetKind::DiffFileList,
-        canonical_name: "diff_file_list",
-        aliases: &["diff_files"],
-        properties: DIFF_FILE_LIST_PROPERTIES,
-        events: events_of!("diff_file_list"),
-        commands: &[],
-    }
-}
-
-#[cfg(not(alloc_frugal))]
 /// `markdown_outline_panel` — the markdown editor's heading outline (`COMP-16`).
 pub(crate) fn markdown_outline_panel_capability() -> WidgetCapability {
     WidgetCapability {
@@ -426,32 +335,6 @@ pub(crate) fn shape_canvas_capability() -> WidgetCapability {
         aliases: &["shape_board"],
         properties: SHAPE_CANVAS_PROPERTIES,
         events: events_of!("shape_canvas"),
-        commands: &[],
-    }
-}
-
-#[cfg(not(alloc_frugal))]
-/// `kanban_card_view` — a real card inside a kanban column (`COMP-18`).
-pub(crate) fn kanban_card_view_capability() -> WidgetCapability {
-    WidgetCapability {
-        kind: WidgetKind::KanbanCardView,
-        canonical_name: "kanban_card_view",
-        aliases: &["kanban_card_control"],
-        properties: KANBAN_CARD_VIEW_PROPERTIES,
-        events: events_of!("kanban_card_view"),
-        commands: &[],
-    }
-}
-
-#[cfg(not(alloc_frugal))]
-/// `kanban_column_header` — a real column header for a kanban board (`COMP-18`).
-pub(crate) fn kanban_column_header_capability() -> WidgetCapability {
-    WidgetCapability {
-        kind: WidgetKind::KanbanColumnHeader,
-        canonical_name: "kanban_column_header",
-        aliases: &["kanban_column_bar"],
-        properties: KANBAN_COLUMN_HEADER_PROPERTIES,
-        events: events_of!("kanban_column_header"),
         commands: &[],
     }
 }

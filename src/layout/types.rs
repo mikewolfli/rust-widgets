@@ -6,6 +6,7 @@
 use crate::compat::{vec, Any, Vec};
 use crate::core::{ObjectId, Point, Rect, Size};
 use crate::layout::hints::ChildInfo;
+use crate::layout::report::ArrangeReport;
 
 /// The placements a layout pass produced: every child's box, in pass order.
 ///
@@ -252,6 +253,51 @@ pub trait Layout {
         out: &mut dyn FnMut(ObjectId, Rect),
     );
 
+    /// [`arrange`](Self::arrange) that also reports what the pass had to clamp (RW-48).
+    ///
+    /// # Why this is an added entry rather than a changed signature
+    ///
+    /// `arrange` is implemented by fifteen layouts and called from a dozen places; returning
+    /// [`ArrangeReport`] from it would be a source-breaking change for every implementor outside
+    /// this crate, including the C ABI's wrappers. A default body costs no implementor a line:
+    /// it runs the solver exactly as `arrange` does, records each emitted rectangle with
+    /// [`LayoutInspector::record_geometry`] (a no-op unless the inspector is enabled), and
+    /// compares the results against the children's hints.
+    ///
+    /// A solver that clamps *inside* its own arithmetic still gets a correct report, because the
+    /// comparison is made against what it emitted — this method does not re-derive placement.
+    fn arrange_reported(
+        &self,
+        rect: Rect,
+        children: &[ChildInfo],
+        out: &mut dyn FnMut(ObjectId, Rect),
+    ) -> ArrangeReport {
+        let mut placements: Vec<(ObjectId, Rect)> = Vec::new();
+        self.arrange(rect, children, &mut |id, child_rect| {
+            crate::layout::inspector::LayoutInspector::record_geometry(id, child_rect);
+            placements.push((id, child_rect));
+            out(id, child_rect);
+        });
+        ArrangeReport::from_placements(rect, children, &placements)
+    }
+
+    /// [`arrange_with_context`](Self::arrange_with_context) with the same telemetry (RW-48).
+    fn arrange_with_context_reported(
+        &self,
+        rect: Rect,
+        children: &[ChildInfo],
+        context: &LayoutContext,
+        out: &mut dyn FnMut(ObjectId, Rect),
+    ) -> ArrangeReport {
+        let mut placements: Vec<(ObjectId, Rect)> = Vec::new();
+        self.arrange_with_context(rect, children, context, &mut |id, child_rect| {
+            crate::layout::inspector::LayoutInspector::record_geometry(id, child_rect);
+            placements.push((id, child_rect));
+            out(id, child_rect);
+        });
+        ArrangeReport::from_placements(rect, children, &placements)
+    }
+
     /// Recompute child geometries from explicit position/size primitives.
     fn update_from_position_size(
         &self,
@@ -425,4 +471,48 @@ macro_rules! impl_layout_forward {
             self.$field.arrange_with_context(rect, children, context, out);
         }
     };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::compat::vec;
+    use crate::layout::hints::Hints;
+    use crate::layout::report::ClampKind;
+    use crate::layout::StackLayout;
+
+    /// RW-48: the reported entry runs the same solver, emits the same rectangles, and names the
+    /// hint the solver violated.
+    #[test]
+    fn arrange_reported_keeps_the_emission_and_reports_the_clamp() {
+        let mut layout = StackLayout::new();
+        layout.add_widget(1, 1);
+        let children = [ChildInfo::new(1, Hints::fixed(80, 40))];
+        let parent = Rect::new(0, 0, 20, 10);
+
+        let mut emitted = Vec::new();
+        let report =
+            layout.arrange_reported(parent, &children, &mut |id, rect| emitted.push((id, rect)));
+
+        // The emission is exactly what `arrange` produces, so a caller can switch entries
+        // without changing the program's geometry.
+        assert_eq!(emitted, vec![(1, Rect::new(0, 0, 20, 10))]);
+        assert!(!report.is_clean(), "{report:?}");
+        assert!(report
+            .clamped
+            .iter()
+            .any(|record| matches!(record.kind, ClampKind::BelowMinimumWidth { bound: 80 })));
+        assert_eq!(report.placements, 1);
+    }
+
+    /// A solver that honours every hint reports a clean run.
+    #[test]
+    fn arrange_reported_is_clean_when_the_hints_are_honoured() {
+        let mut layout = StackLayout::new();
+        layout.add_widget(1, 1);
+        let children = [ChildInfo::new(1, Hints::at_least(0, 0))];
+        let report =
+            layout.arrange_reported(Rect::new(0, 0, 20, 10), &children, &mut |_id, _rect| {});
+        assert!(report.is_clean(), "{report:?}");
+    }
 }

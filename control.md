@@ -2,7 +2,7 @@
 
 # 控件图像总览 / Control gallery
 
-本页共 **268** 张控件快照名（每个两种外观，共 **536** 张 SVG）。
+本页共 **240** 张控件快照名（每个两种外观，共 **480** 张 SVG）。
 这些名字来自控件注册表（`factory.widget_names()`），其中包含少量**别名**
 （如 `wizard_dialog` 同时以 `wizard` 注册），因此快照名数多于 `WidgetKind` 的枚举数（**230**）。
 
@@ -48,16 +48,16 @@
 | Dialogs (`dialog`) | 17 | [跳转](#dialogs) |
 | Overlays (`overlay_widgets`) | 5 | [跳转](#overlays) |
 | Views (`view_widgets`) | 15 | [跳转](#views) |
-| Charts (`chart_widgets`) | 22 | [跳转](#charts) |
-| Specialised controls (`special_widgets`) | 33 | [跳转](#specialised-controls) |
+| Charts (`chart_widgets`) | 10 | [跳转](#charts) |
+| Specialised controls (`special_widgets`) | 21 | [跳转](#specialised-controls) |
 | Advanced controls (`advanced_widgets`) | 10 | [跳转](#advanced-controls) |
-| Media and web (`media_widgets`) | 8 | [跳转](#media-and-web) |
-| Miscellaneous (`misc_widgets`) | 10 | [跳转](#miscellaneous) |
+| Media and web (`media_widgets`) | 2 | [跳转](#media-and-web) |
+| Miscellaneous (`misc_widgets`) | 12 | [跳转](#miscellaneous) |
 | Cupertino (iOS-style) (`cupertino`) | 8 | [跳转](#cupertino-ios-style) |
 | companions (`companions`) | 26 | [跳转](#companions) |
 | macos (`macos`) | 5 | [跳转](#macos) |
 | Core controls (`root`) | 2 | [跳转](#core-controls) |
-| **合计** | **268** | |
+| **合计** | **240** | |
 
 ## Base controls
 
@@ -268,36 +268,24 @@
 
 ## Charts
 
-`chart_widgets` — 22 个控件。
+`chart_widgets` — 10 个控件。
 
 | 控件 | 深色 | 浅色 |
 |---|---|---|
 | `bar_chart` | ![bar_chart (dark)](snapshots/svg/bar_chart.svg) | ![bar_chart (light)](snapshots/svg/bar_chart.light.svg) |
-| `candlestick_chart` | ![candlestick_chart (dark)](snapshots/svg/candlestick_chart.svg) | ![candlestick_chart (light)](snapshots/svg/candlestick_chart.light.svg) |
 | `chart` | ![chart (dark)](snapshots/svg/chart.svg) | ![chart (light)](snapshots/svg/chart.light.svg) |
+| `chart_crosshair` | ![chart_crosshair (dark)](snapshots/svg/chart_crosshair.svg) | ![chart_crosshair (light)](snapshots/svg/chart_crosshair.light.svg) |
 | `chart_reference_line` | ![chart_reference_line (dark)](snapshots/svg/chart_reference_line.svg) | ![chart_reference_line (light)](snapshots/svg/chart_reference_line.light.svg) |
-| `dependency_editor` | ![dependency_editor (dark)](snapshots/svg/dependency_editor.svg) | ![dependency_editor (light)](snapshots/svg/dependency_editor.light.svg) |
-| `depth_chart` | ![depth_chart (dark)](snapshots/svg/depth_chart.svg) | ![depth_chart (light)](snapshots/svg/depth_chart.light.svg) |
-| `gantt_task_grid` | ![gantt_task_grid (dark)](snapshots/svg/gantt_task_grid.svg) | ![gantt_task_grid (light)](snapshots/svg/gantt_task_grid.light.svg) |
-| `gantt_widget` | ![gantt_widget (dark)](snapshots/svg/gantt_widget.svg) | ![gantt_widget (light)](snapshots/svg/gantt_widget.light.svg) |
 | `gauge` | ![gauge (dark)](snapshots/svg/gauge.svg) | ![gauge (light)](snapshots/svg/gauge.light.svg) |
 | `heatmap` | ![heatmap (dark)](snapshots/svg/heatmap.svg) | ![heatmap (light)](snapshots/svg/heatmap.light.svg) |
-| `indicator_chart` | ![indicator_chart (dark)](snapshots/svg/indicator_chart.svg) | ![indicator_chart (light)](snapshots/svg/indicator_chart.light.svg) |
-| `kanban_board` | ![kanban_board (dark)](snapshots/svg/kanban_board.svg) | ![kanban_board (light)](snapshots/svg/kanban_board.light.svg) |
-| `kanban_card_view` | ![kanban_card_view (dark)](snapshots/svg/kanban_card_view.svg) | ![kanban_card_view (light)](snapshots/svg/kanban_card_view.light.svg) |
-| `kanban_column_header` | ![kanban_column_header (dark)](snapshots/svg/kanban_column_header.svg) | ![kanban_column_header (light)](snapshots/svg/kanban_column_header.light.svg) |
 | `line_chart` | ![line_chart (dark)](snapshots/svg/line_chart.svg) | ![line_chart (light)](snapshots/svg/line_chart.light.svg) |
-| `order_book` | ![order_book (dark)](snapshots/svg/order_book.svg) | ![order_book (light)](snapshots/svg/order_book.light.svg) |
 | `pie_chart` | ![pie_chart (dark)](snapshots/svg/pie_chart.svg) | ![pie_chart (light)](snapshots/svg/pie_chart.light.svg) |
-| `quote_board` | ![quote_board (dark)](snapshots/svg/quote_board.svg) | ![quote_board (light)](snapshots/svg/quote_board.light.svg) |
 | `radar_chart` | ![radar_chart (dark)](snapshots/svg/radar_chart.svg) | ![radar_chart (light)](snapshots/svg/radar_chart.light.svg) |
 | `sparkline` | ![sparkline (dark)](snapshots/svg/sparkline.svg) | ![sparkline (light)](snapshots/svg/sparkline.light.svg) |
-| `timeline_axis` | ![timeline_axis (dark)](snapshots/svg/timeline_axis.svg) | ![timeline_axis (light)](snapshots/svg/timeline_axis.light.svg) |
-| `volume_chart` | ![volume_chart (dark)](snapshots/svg/volume_chart.svg) | ![volume_chart (light)](snapshots/svg/volume_chart.light.svg) |
 
 ## Specialised controls
 
-`special_widgets` — 33 个控件。
+`special_widgets` — 21 个控件。
 
 | 控件 | 深色 | 浅色 |
 |---|---|---|
@@ -307,33 +295,21 @@
 | `code_editor` | ![code_editor (dark)](snapshots/svg/code_editor.svg) | ![code_editor (light)](snapshots/svg/code_editor.light.svg) |
 | `color_picker` | ![color_picker (dark)](snapshots/svg/color_picker.svg) | ![color_picker (light)](snapshots/svg/color_picker.light.svg) |
 | `command_palette` | ![command_palette (dark)](snapshots/svg/command_palette.svg) | ![command_palette (light)](snapshots/svg/command_palette.light.svg) |
-| `compass` | ![compass (dark)](snapshots/svg/compass.svg) | ![compass (light)](snapshots/svg/compass.light.svg) |
-| `diff_file_list` | ![diff_file_list (dark)](snapshots/svg/diff_file_list.svg) | ![diff_file_list (light)](snapshots/svg/diff_file_list.light.svg) |
-| `diff_viewer` | ![diff_viewer (dark)](snapshots/svg/diff_viewer.svg) | ![diff_viewer (light)](snapshots/svg/diff_viewer.light.svg) |
 | `find_bar` | ![find_bar (dark)](snapshots/svg/find_bar.svg) | ![find_bar (light)](snapshots/svg/find_bar.light.svg) |
 | `freeform_shape` | ![freeform_shape (dark)](snapshots/svg/freeform_shape.svg) | ![freeform_shape (light)](snapshots/svg/freeform_shape.light.svg) |
 | `grid` | ![grid (dark)](snapshots/svg/grid.svg) | ![grid (light)](snapshots/svg/grid.light.svg) |
-| `map_attribution` | ![map_attribution (dark)](snapshots/svg/map_attribution.svg) | ![map_attribution (light)](snapshots/svg/map_attribution.light.svg) |
-| `map_overview` | ![map_overview (dark)](snapshots/svg/map_overview.svg) | ![map_overview (light)](snapshots/svg/map_overview.light.svg) |
-| `map_view` | ![map_view (dark)](snapshots/svg/map_view.svg) | ![map_view (light)](snapshots/svg/map_view.light.svg) |
 | `markdown_editor` | ![markdown_editor (dark)](snapshots/svg/markdown_editor.svg) | ![markdown_editor (light)](snapshots/svg/markdown_editor.light.svg) |
 | `markdown_outline_panel` | ![markdown_outline_panel (dark)](snapshots/svg/markdown_outline_panel.svg) | ![markdown_outline_panel (light)](snapshots/svg/markdown_outline_panel.light.svg) |
 | `markdown_toolbar` | ![markdown_toolbar (dark)](snapshots/svg/markdown_toolbar.svg) | ![markdown_toolbar (light)](snapshots/svg/markdown_toolbar.light.svg) |
-| `media_player` | ![media_player (dark)](snapshots/svg/media_player.svg) | ![media_player (light)](snapshots/svg/media_player.light.svg) |
 | `notification_center` | ![notification_center (dark)](snapshots/svg/notification_center.svg) | ![notification_center (light)](snapshots/svg/notification_center.light.svg) |
-| `scale_bar` | ![scale_bar (dark)](snapshots/svg/scale_bar.svg) | ![scale_bar (light)](snapshots/svg/scale_bar.light.svg) |
 | `segmented_control` | ![segmented_control (dark)](snapshots/svg/segmented_control.svg) | ![segmented_control (light)](snapshots/svg/segmented_control.light.svg) |
 | `shape_canvas` | ![shape_canvas (dark)](snapshots/svg/shape_canvas.svg) | ![shape_canvas (light)](snapshots/svg/shape_canvas.light.svg) |
 | `signature_pad` | ![signature_pad (dark)](snapshots/svg/signature_pad.svg) | ![signature_pad (light)](snapshots/svg/signature_pad.light.svg) |
 | `snackbar` | ![snackbar (dark)](snapshots/svg/snackbar.svg) | ![snackbar (light)](snapshots/svg/snackbar.light.svg) |
 | `split_button` | ![split_button (dark)](snapshots/svg/split_button.svg) | ![split_button (light)](snapshots/svg/split_button.light.svg) |
-| `terminal_find_bar` | ![terminal_find_bar (dark)](snapshots/svg/terminal_find_bar.svg) | ![terminal_find_bar (light)](snapshots/svg/terminal_find_bar.light.svg) |
-| `terminal_view` | ![terminal_view (dark)](snapshots/svg/terminal_view.svg) | ![terminal_view (light)](snapshots/svg/terminal_view.light.svg) |
-| `tile_loader` | ![tile_loader (dark)](snapshots/svg/tile_loader.svg) | ![tile_loader (light)](snapshots/svg/tile_loader.light.svg) |
 | `timeline_widget` | ![timeline_widget (dark)](snapshots/svg/timeline_widget.svg) | ![timeline_widget (light)](snapshots/svg/timeline_widget.light.svg) |
 | `toast` | ![toast (dark)](snapshots/svg/toast.svg) | ![toast (light)](snapshots/svg/toast.light.svg) |
 | `toast_stack` | ![toast_stack (dark)](snapshots/svg/toast_stack.svg) | ![toast_stack (light)](snapshots/svg/toast_stack.light.svg) |
-| `zoom_control` | ![zoom_control (dark)](snapshots/svg/zoom_control.svg) | ![zoom_control (light)](snapshots/svg/zoom_control.light.svg) |
 
 ## Advanced controls
 
@@ -354,22 +330,16 @@
 
 ## Media and web
 
-`media_widgets` — 8 个控件。
+`media_widgets` — 2 个控件。
 
 | 控件 | 深色 | 浅色 |
 |---|---|---|
 | `animated_image` | ![animated_image (dark)](snapshots/svg/animated_image.svg) | ![animated_image (light)](snapshots/svg/animated_image.light.svg) |
-| `audio_visualizer` | ![audio_visualizer (dark)](snapshots/svg/audio_visualizer.svg) | ![audio_visualizer (light)](snapshots/svg/audio_visualizer.light.svg) |
-| `camera_preview` | ![camera_preview (dark)](snapshots/svg/camera_preview.svg) | ![camera_preview (light)](snapshots/svg/camera_preview.light.svg) |
-| `chapter_list_panel` | ![chapter_list_panel (dark)](snapshots/svg/chapter_list_panel.svg) | ![chapter_list_panel (light)](snapshots/svg/chapter_list_panel.light.svg) |
 | `hero_animation` | ![hero_animation (dark)](snapshots/svg/hero_animation.svg) | ![hero_animation (light)](snapshots/svg/hero_animation.light.svg) |
-| `lottie_widget` | ![lottie_widget (dark)](snapshots/svg/lottie_widget.svg) | ![lottie_widget (light)](snapshots/svg/lottie_widget.light.svg) |
-| `rive_widget` | ![rive_widget (dark)](snapshots/svg/rive_widget.svg) | ![rive_widget (light)](snapshots/svg/rive_widget.light.svg) |
-| `video_player` | ![video_player (dark)](snapshots/svg/video_player.svg) | ![video_player (light)](snapshots/svg/video_player.light.svg) |
 
 ## Miscellaneous
 
-`misc_widgets` — 10 个控件。
+`misc_widgets` — 12 个控件。
 
 | 控件 | 深色 | 浅色 |
 |---|---|---|
@@ -378,8 +348,10 @@
 | `bezier_curve_editor` | ![bezier_curve_editor (dark)](snapshots/svg/bezier_curve_editor.svg) | ![bezier_curve_editor (light)](snapshots/svg/bezier_curve_editor.light.svg) |
 | `date_range_picker` | ![date_range_picker (dark)](snapshots/svg/date_range_picker.svg) | ![date_range_picker (light)](snapshots/svg/date_range_picker.light.svg) |
 | `drop_zone` | ![drop_zone (dark)](snapshots/svg/drop_zone.svg) | ![drop_zone (light)](snapshots/svg/drop_zone.light.svg) |
+| `drum_column` | ![drum_column (dark)](snapshots/svg/drum_column.svg) | ![drum_column (light)](snapshots/svg/drum_column.light.svg) |
 | `group_avatar` | ![group_avatar (dark)](snapshots/svg/group_avatar.svg) | ![group_avatar (light)](snapshots/svg/group_avatar.light.svg) |
 | `mobile_date_picker` | ![mobile_date_picker (dark)](snapshots/svg/mobile_date_picker.svg) | ![mobile_date_picker (light)](snapshots/svg/mobile_date_picker.light.svg) |
+| `preset_chip_bar` | ![preset_chip_bar (dark)](snapshots/svg/preset_chip_bar.svg) | ![preset_chip_bar (light)](snapshots/svg/preset_chip_bar.light.svg) |
 | `qr_code` | ![qr_code (dark)](snapshots/svg/qr_code.svg) | ![qr_code (light)](snapshots/svg/qr_code.light.svg) |
 | `range_preset_bar` | ![range_preset_bar (dark)](snapshots/svg/range_preset_bar.svg) | ![range_preset_bar (light)](snapshots/svg/range_preset_bar.light.svg) |
 | `segmented_button` | ![segmented_button (dark)](snapshots/svg/segmented_button.svg) | ![segmented_button (light)](snapshots/svg/segmented_button.light.svg) |
@@ -453,7 +425,7 @@
 | `tool_box` | ![tool_box (dark)](snapshots/svg/tool_box.svg) | ![tool_box (light)](snapshots/svg/tool_box.light.svg) |
 | `window` | ![window (dark)](snapshots/svg/window.svg) | ![window (light)](snapshots/svg/window.light.svg) |
 
-## Companion pairings (21)
+## Companion pairings (19)
 
 每张 `pair_<name>.svg`（深色）与 `pair_<name>.light.svg`（浅色）都是**一个主控件**与**它的伴随控件**画在同一张 240 x 120 画布上的合影。`<name>` 是主控件的注册名，因此从控件本身就能找到它的配对图。
 
@@ -469,8 +441,6 @@
 | `pair_data_grid` | `data_grid` | `GridFindBar` | ![data_grid (dark)](snapshots/svg/pair_data_grid.svg) | ![data_grid (light)](snapshots/svg/pair_data_grid.light.svg) |
 | `pair_menu_button` | `menu_button` | `MenuPanel` | ![menu_button (dark)](snapshots/svg/pair_menu_button.svg) | ![menu_button (light)](snapshots/svg/pair_menu_button.light.svg) |
 | `pair_canvas` | `canvas` | `LayerPanel` | ![canvas (dark)](snapshots/svg/pair_canvas.svg) | ![canvas (light)](snapshots/svg/pair_canvas.light.svg) |
-| `pair_media_player` | `media_player` | `MediaTransportBar` | ![media_player (dark)](snapshots/svg/pair_media_player.svg) | ![media_player (light)](snapshots/svg/pair_media_player.light.svg) |
-| `pair_video_player` | `video_player` | `SubtitleBar` | ![video_player (dark)](snapshots/svg/pair_video_player.svg) | ![video_player (light)](snapshots/svg/pair_video_player.light.svg) |
 | `pair_list_box` | `list_box` | `Scrollbar` | ![list_box (dark)](snapshots/svg/pair_list_box.svg) | ![list_box (light)](snapshots/svg/pair_list_box.light.svg) |
 | `pair_number_picker` | `number_picker` | `StepButtons` | ![number_picker (dark)](snapshots/svg/pair_number_picker.svg) | ![number_picker (light)](snapshots/svg/pair_number_picker.light.svg) |
 | `pair_date_range_picker` | `date_range_picker` | `PresetChipBar` | ![date_range_picker (dark)](snapshots/svg/pair_date_range_picker.svg) | ![date_range_picker (light)](snapshots/svg/pair_date_range_picker.light.svg) |

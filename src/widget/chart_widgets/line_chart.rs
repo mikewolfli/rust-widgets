@@ -282,6 +282,11 @@ pub struct LineChart {
     pub point_clicked: Signal1<(usize, usize)>,
     /// Emitted with `(series, visible)` after a legend click or [`Self::set_series_visible`].
     pub series_toggled: Signal1<(usize, bool)>,
+    /// Emitted after every mutation that bumps [`Self::data_revision`].
+    ///
+    /// The crate has no zero-argument signal type; a payload-free notification is
+    /// `Signal1<()>`, matching the `Signal0` spelling in the issue.
+    pub data_changed: Signal1<()>,
     /// The attached chart data table binding (COMP-A8).
     chart_data_table: Option<ChartDataTableBinding>,
     /// The attached zoom strip binding (COMP-A8).
@@ -403,6 +408,7 @@ impl LineChart {
             point_unhovered: Signal1::new(),
             point_clicked: Signal1::new(),
             series_toggled: Signal1::new(),
+            data_changed: Signal1::new(),
             chart_data_table: None,
             zoom_strip: None,
             axis_picker: None,
@@ -465,6 +471,71 @@ impl LineChart {
         self.invalidate_data_cache();
         self.sync_legend();
         self.base.request_redraw();
+    }
+
+    /// Removes the series at `index`, returning whether it existed.
+    ///
+    /// The point-level API is index-addressed, so the remaining series shift down by one. A
+    /// chart emptied this way stays empty; [`Self::add_point`] recreates the primary series.
+    pub fn remove_series(&mut self, index: usize) -> bool {
+        if index >= self.series.len() {
+            return false;
+        }
+        self.clear_transition();
+        self.series.remove(index);
+        self.invalidate_data_cache();
+        self.revalidate_hover();
+        self.sync_legend();
+        self.base.request_redraw();
+        true
+    }
+
+    /// Replaces one point in a series.
+    ///
+    /// The point-level counterpart of
+    /// [`ChartWidget::push_point`](crate::widget::chart_widgets::chart::ChartWidget::push_point)
+    /// naming: `(series, point)` addresses the datum and `(x, y)` is its new value. A
+    /// non-finite sample is refused, matching [`Self::set_data`]. Returns `false` when either
+    /// index is out of bounds.
+    pub fn update_point(&mut self, series: usize, point: usize, x: f64, y: f64) -> bool {
+        if !is_finite_sample((x, y)) {
+            log::warn!("[line_chart] ignoring the non-finite point ({x}, {y})");
+            return false;
+        }
+        let Some(target) = self.series.get_mut(series).and_then(|item| item.points.get_mut(point))
+        else {
+            return false;
+        };
+        *target = (x, y);
+        self.clear_transition();
+        self.invalidate_data_cache();
+        self.revalidate_hover();
+        self.base.request_redraw();
+        true
+    }
+
+    /// Removes one point from a series, returning whether it existed.
+    pub fn remove_point(&mut self, series: usize, point: usize) -> bool {
+        let Some(item) = self.series.get_mut(series) else {
+            return false;
+        };
+        if point >= item.points.len() {
+            return false;
+        }
+        item.points.remove(point);
+        self.clear_transition();
+        self.invalidate_data_cache();
+        self.revalidate_hover();
+        self.base.request_redraw();
+        true
+    }
+
+    /// The revision of the current data.
+    ///
+    /// Bumped by every data mutation and by a series visibility change. A host can key a cached
+    /// snapshot on it instead of comparing whole lists.
+    pub fn data_revision(&self) -> u64 {
+        self.data_revision
     }
 
     /// The samples currently on screen for `series_index`, including any running transition.
@@ -980,6 +1051,7 @@ impl LineChart {
         self.flat_extents.set(SeriesExtents::default());
         *self.sorted_x.borrow_mut() = None;
         self.data_revision = self.data_revision.wrapping_add(1);
+        self.data_changed.emit(());
         self.projection_key = None;
     }
 
@@ -1925,6 +1997,15 @@ impl WidgetProperties for LineChart {
     fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
         match name {
             "stroke_width" => Ok(CapabilityValue::Float(self.stroke_width() as f64)),
+            // RW-67: `[x0, y0, x1, y1, ...]`. A pair list has no nested carrier, so the points are
+            // flattened in order. Multi-series data is not reachable through this property: the
+            // carrier has no series identity, and `set_series` remains the Rust-only route for it.
+            "data" => Ok(CapabilityValue::Tuple(
+                self.data()
+                    .iter()
+                    .flat_map(|(x, y)| [CapabilityValue::Float(*x), CapabilityValue::Float(*y)])
+                    .collect(),
+            )),
             _ => base_property_get(self, name),
         }
     }
@@ -1935,12 +2016,26 @@ impl WidgetProperties for LineChart {
                 self.set_stroke_width(expect_f32(value)?);
                 Ok(())
             }
+            "data" => {
+                let flat = crate::widget::capability::coercion::expect_number_list(value)?;
+                if flat.len() % 2 != 0 {
+                    // A half pair is not a point; accepting it would silently drop the last value.
+                    return Err(CapabilityAccessError::TypeMismatch);
+                }
+                let mut points = Vec::with_capacity(flat.len() / 2);
+                let mut iter = flat.into_iter();
+                while let (Some(x), Some(y)) = (iter.next(), iter.next()) {
+                    points.push((x, y));
+                }
+                self.set_data(points);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["stroke_width", BASE_PROPERTY_NAMES]
+        property_names_of!["data", "stroke_width", BASE_PROPERTY_NAMES]
     }
 }
 
@@ -2733,6 +2828,38 @@ mod tests {
     use super::*;
     use crate::widget::svg::render_to_svg;
 
+    /// RW-67: the flattened primary-series carrier round-trips.
+    #[test]
+    fn data_property_round_trips_flattened_points() {
+        use crate::widget::capability::WidgetProperties;
+        let mut chart = LineChart::new(Rect::new(0, 0, 300, 200));
+        chart
+            .set(
+                "data",
+                CapabilityValue::Tuple(vec![
+                    CapabilityValue::Float(0.0),
+                    CapabilityValue::Float(1.5),
+                    CapabilityValue::Float(1.0),
+                    CapabilityValue::Float(2.5),
+                ]),
+            )
+            .expect("the data property is writable");
+        assert_eq!(chart.data(), &[(0.0, 1.5), (1.0, 2.5)]);
+        assert_eq!(
+            chart.get("data").expect("the data property is readable"),
+            CapabilityValue::Tuple(vec![
+                CapabilityValue::Float(0.0),
+                CapabilityValue::Float(1.5),
+                CapabilityValue::Float(1.0),
+                CapabilityValue::Float(2.5),
+            ])
+        );
+        // A half pair is refused rather than silently dropping the trailing value.
+        assert!(chart
+            .set("data", CapabilityValue::Tuple(vec![CapabilityValue::Float(1.0)]))
+            .is_err());
+    }
+
     /// Every name the capability publishes must resolve, and a name it does not
     /// publish must stay unresolved — a dead arm reads as support it does not have.
     #[test]
@@ -3406,5 +3533,51 @@ mod tests {
         assert!(!lc.is_axis_picker_attached());
         assert!(picker.assign(0, AxisEdge::Top));
         assert!(!lc.poll_axis_picker(), "a detached picker reports nothing");
+    }
+
+    /// The data revision and its signal move together for every data mutation.
+    #[test]
+    fn data_mutations_bump_the_revision_and_emit_data_changed() {
+        let mut chart = LineChart::new(Rect::new(0, 0, 320, 200));
+        let hits = Arc::new(Mutex::new(0usize));
+        let sink = Arc::clone(&hits);
+        chart.data_changed.connect(move |_| {
+            *lock(&sink) += 1;
+        });
+
+        let start = chart.data_revision();
+        chart.set_data(vec![(0.0, 1.0), (1.0, 2.0)]);
+        assert_eq!(chart.data_revision(), start + 1);
+        assert_eq!(*lock(&hits), 1);
+
+        assert!(chart.update_point(0, 1, 2.0, 5.0));
+        assert_eq!(chart.series()[0].points[1], (2.0, 5.0));
+        assert_eq!(chart.data_revision(), start + 2);
+        assert_eq!(*lock(&hits), 2);
+    }
+
+    /// Point-level edits address one datum and leave every other sample in place.
+    #[test]
+    fn points_and_series_can_be_updated_and_removed_incrementally() {
+        let mut chart = LineChart::new(Rect::new(0, 0, 320, 200));
+        chart.set_series(vec![
+            LineSeries::new("alpha", vec![(0.0, 1.0), (1.0, 2.0), (2.0, 3.0)]),
+            LineSeries::new("beta", vec![(0.0, 4.0)]),
+        ]);
+
+        assert!(chart.update_point(0, 1, 9.0, 8.0));
+        assert_eq!(chart.series()[0].points.len(), 3, "an update moves nothing");
+        assert_eq!(chart.series()[0].points[1], (9.0, 8.0));
+        assert!(!chart.update_point(9, 0, 0.0, 0.0), "an absent series is refused");
+        assert!(!chart.update_point(0, 9, 0.0, 0.0), "an absent point is refused");
+        assert!(!chart.update_point(0, 0, f64::NAN, 0.0), "a non-finite sample is refused");
+
+        assert!(chart.remove_point(0, 0));
+        assert_eq!(chart.series()[0].points.len(), 2);
+        assert!(!chart.remove_point(0, 9));
+
+        assert!(chart.remove_series(1));
+        assert_eq!(chart.series().len(), 1);
+        assert!(!chart.remove_series(9));
     }
 }

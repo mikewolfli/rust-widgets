@@ -93,7 +93,7 @@ if ! "$PYTHON" - "$ROUTING" "$INJECT_DIR/injected.rs" <<'PY'
 import pathlib, sys
 source, destination = sys.argv[1], sys.argv[2]
 text = pathlib.Path(source).read_text()
-needle = "            | WidgetKind::GridViewHeader => ControlRoutePreference::CustomRequired,\n        }"
+needle = "            | WidgetKind::FormSet => ControlRoutePreference::CustomRequired,\n        }"
 if needle not in text:
     print("injection-point-missing")
     sys.exit(3)

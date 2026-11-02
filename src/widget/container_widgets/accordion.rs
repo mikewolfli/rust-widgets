@@ -33,6 +33,7 @@ use crate::widget::capability::coercion::expect_bool;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::save_state::SaveState;
 use crate::widget::{BaseWidget, Draw, IconSource, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 use std::cell::{Cell, RefCell};
@@ -355,6 +356,73 @@ impl Accordion {
     /// The ids of the open sections, in display order.
     pub fn expanded_ids(&self) -> Vec<&str> {
         self.sections.iter().filter(|s| s.expanded).map(|s| s.id.as_str()).collect()
+    }
+
+    /// Serialises the open section ids for session restore (RW-64).
+    ///
+    /// The section list belongs to the host's model; which sections the user opened is the
+    /// state this control owns. A blob is self-describing, so a section the host removed is
+    /// detectable rather than silently binding the state to a different row.
+    pub fn save_state(&self) -> Vec<u8> {
+        let expanded: Vec<&str> = self.expanded_ids();
+        let mut state = Vec::with_capacity(5 + expanded.len() * 8);
+        state.push(ACCORDION_STATE_VERSION);
+        state.extend_from_slice(&(expanded.len() as u32).to_le_bytes());
+        for id in expanded {
+            let bytes = id.as_bytes();
+            let length = bytes.len().min(u16::MAX as usize) as u16;
+            state.extend_from_slice(&length.to_le_bytes());
+            state.extend_from_slice(&bytes[..usize::from(length)]);
+        }
+        state
+    }
+
+    /// Restores a blob produced by [`Self::save_state`].
+    ///
+    /// Returns `false` when the blob is malformed or names a section this accordion does not
+    /// own, leaving every open state untouched. In single-expand mode only the first saved id
+    /// is applied, because a restore must not create a state the control's own policy cannot
+    /// represent.
+    pub fn restore_state(&mut self, state: &[u8]) -> bool {
+        if state.len() < 5 || state[0] != ACCORDION_STATE_VERSION {
+            return false;
+        }
+        let count = u32::from_le_bytes([state[1], state[2], state[3], state[4]]) as usize;
+        let mut at = 5;
+        let mut ids: Vec<String> = Vec::with_capacity(count);
+        for _ in 0..count {
+            if at + 2 > state.len() {
+                return false;
+            }
+            let length = u16::from_le_bytes([state[at], state[at + 1]]) as usize;
+            at += 2;
+            if at + length > state.len() {
+                return false;
+            }
+            let Ok(id) = core::str::from_utf8(&state[at..at + length]) else {
+                return false;
+            };
+            if !self.sections.iter().any(|section| section.id == id) {
+                return false;
+            }
+            ids.push(id.to_string());
+            at += length;
+        }
+        if at != state.len() {
+            return false;
+        }
+        if self.single_expand {
+            ids.truncate(1);
+        }
+        for section in &mut self.sections {
+            section.expanded = ids.iter().any(|id| id == &section.id);
+        }
+        // The animation map is derived from the new state; clearing it lets each section
+        // start from its settled open fraction instead of animating a restore.
+        self.open_progress.clear();
+        self.sync_body_widgets();
+        self.base.request_redraw();
+        true
     }
 
     /// Opens or closes a section. Returns whether the state changed.
@@ -692,6 +760,32 @@ impl Widget for Accordion {
 
     impl_draw_bridge!();
     impl_widget_property_hooks!();
+
+    fn save_state_dyn(&self) -> Option<&dyn SaveState> {
+        Some(self)
+    }
+
+    fn save_state_dyn_mut(&mut self) -> Option<&mut dyn SaveState> {
+        Some(self)
+    }
+}
+
+/// Version tag of the blob produced by [`Accordion::save_state`].
+const ACCORDION_STATE_VERSION: u8 = 1;
+
+/// RW-64: which sections are open is the accordion's user-visible state.
+impl SaveState for Accordion {
+    fn state_version(&self) -> u16 {
+        u16::from(ACCORDION_STATE_VERSION)
+    }
+
+    fn save_state(&self) -> Vec<u8> {
+        Accordion::save_state(self)
+    }
+
+    fn restore_state(&mut self, state: &[u8]) -> bool {
+        Accordion::restore_state(self, state)
+    }
 }
 
 impl WidgetProperties for Accordion {
@@ -1082,5 +1176,29 @@ mod tests {
         assert_eq!(accordion.focused_header(), Some(0));
         assert!(accordion.toggle_focused(), "the focused section toggles");
         assert_eq!(accordion.is_expanded("a"), Some(true));
+    }
+
+    /// RW-64: the set of open sections round-trips by id.
+    #[test]
+    fn the_open_sections_round_trip_by_id() {
+        let mut accordion = Accordion::new(Rect::new(0, 0, 300, 400));
+        accordion.add_section("a", "A", "body a");
+        accordion.add_section("b", "B", "body b");
+        accordion.set_single_expand(false);
+        accordion.set_expanded("b", true);
+        let saved = SaveState::save_state(&accordion);
+        assert_eq!(accordion.expanded_ids(), vec!["b"]);
+        accordion.set_expanded("b", false);
+        assert!(SaveState::restore_state(&mut accordion, &saved));
+        assert_eq!(accordion.expanded_ids(), vec!["b"]);
+
+        // A blob that names an unknown section is refused rather than applied partially.
+        let mut foreign = Vec::new();
+        foreign.push(1u8);
+        foreign.extend_from_slice(&1u32.to_le_bytes());
+        foreign.extend_from_slice(&4u16.to_le_bytes());
+        foreign.extend_from_slice(b"zzzz");
+        assert!(!SaveState::restore_state(&mut accordion, &foreign));
+        assert_eq!(accordion.expanded_ids(), vec!["b"]);
     }
 }

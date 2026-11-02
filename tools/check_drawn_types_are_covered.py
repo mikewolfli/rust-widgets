@@ -96,10 +96,6 @@ DRAW_IMPL = re.compile(r"^impl Draw for ([A-Za-z_][A-Za-z0-9_]*)", re.MULTILINE)
 #: `check_mechanism_has_a_consumer.py`'s table does: an acknowledgement without a successor is how
 #: a finding becomes permanent. An entry whose type later becomes registered is reported stale.
 ACKNOWLEDGED = {
-    "ChartCrosshair": (
-        "src/widget/chart_widgets/chart/chart_crosshair.rs",
-        "Drawn by `BarChart` / `LineChart` at the hover position; those controls' own snapshots and tests cover the picture. Registering it as a kind would expose a crosshair a host cannot meaningfully mount on its own.",
-    ),
     "ColumnChooser": (
         "src/widget/view_widgets/data_grid/column_chooser.rs",
         "Column-visibility companion for table/tree headers; drawn inside its owner's rect, no own census row.",
@@ -111,10 +107,6 @@ ACKNOWLEDGED = {
     "DataGridCellEditor": (
         "src/widget/view_widgets/data_grid/types.rs",
         "The in-place editor `DataGrid::begin_edit` hands a host and `commit_edit` reads back (V-002). Registering it as a factory kind would let a caller mount an editor with no cell behind it; the grid's own snapshot covers the frame it paints over a cell, and `the_cell_editor_paints_its_box_and_commits_its_text` covers the editor itself.",
-    ),
-    "DrumColumn": (
-        "src/widget/misc_widgets/drum_column.rs",
-        "One scrolling column of the drum picker; the picker's snapshot covers the assembled control.",
     ),
     "FormatToolbar": (
         "src/widget/input_widgets/text_entry/input_companions.rs",
@@ -128,18 +120,6 @@ ACKNOWLEDGED = {
         "src/widget/advanced_widgets/key_tip_badge.rs",
         "Key-tip overlay drawn beside a focused control; unregistered companion.",
     ),
-    "MapMarkerDetail": (
-        "src/widget/special_widgets/map_view/map_marker_detail.rs",
-        "Detail card `MapView` draws beside a selected marker; the map's snapshot covers it.",
-    ),
-    "MediaScrubber": (
-        "src/widget/special_widgets/media_player/media_scrubber.rs",
-        "Scrub bar of the media player; the player draws it, so it has no independent row.",
-    ),
-    "MediaTransportBar": (
-        "src/widget/special_widgets/media_player/media_transport.rs",
-        "Transport controls of the media player; same reasoning as `MediaScrubber`.",
-    ),
     "ModalHost": (
         "src/widget/dialog/modal_host.rs",
         "Host that centres a modal child; a layout role rather than a control a host mounts.",
@@ -147,10 +127,6 @@ ACKNOWLEDGED = {
     "PopupItemList": (
         "src/widget/macos/popup_item_list.rs",
         "macOS popup item list behind `ComboBox`; the combo's snapshot covers the closed and open pictures.",
-    ),
-    "PresetChipBar": (
-        "src/widget/misc_widgets/preset_chip_bar.rs",
-        "Row of preset chips; exported companion with no constructor.",
     ),
     "RecentValuesPopup": (
         "src/widget/input_widgets/text_entry/recent_values_popup.rs",
@@ -167,10 +143,6 @@ ACKNOWLEDGED = {
     "StickyHeader": (
         "src/widget/container_widgets/sticky_header.rs",
         "Container that pins a header over scrolling content; exported, unregistered.",
-    ),
-    "SubtitleBar": (
-        "src/widget/special_widgets/media_player/subtitle_bar.rs",
-        "Subtitle overlay of the video player; the player draws it.",
     ),
     "SuggestionPopup": (
         "src/widget/input_widgets/text_entry/suggestion_popup.rs",

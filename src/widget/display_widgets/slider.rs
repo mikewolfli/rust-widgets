@@ -1433,6 +1433,12 @@ impl WidgetProperties for Slider {
             "set_range" | "set_value" | "set_slider_position" => {
                 Err(CapabilityAccessError::OutOfRange)
             }
+            // RW-44: these setters exist and are schema-backed, so the published command list
+            // names them. A command carries no argument, so they answer `OutOfRange` exactly like
+            // the older three: recognised, and sent to the property route that can carry a value.
+            "set_minimum" | "set_maximum" | "set_single_step" | "set_page_step"
+            | "set_orientation" | "set_tick_position" | "set_tick_interval" | "set_tracking"
+            | "set_track_click" => Err(CapabilityAccessError::OutOfRange),
             _ => Err(CapabilityAccessError::UnknownCommand),
         }
     }

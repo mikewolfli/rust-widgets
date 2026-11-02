@@ -26,7 +26,7 @@
 #
 # What it asserts
 # ---------------
-#   [1] the count is 188 dark + 188 light = 376, named by canonical name, plus the two icon
+#   [1] the count is the parent factory's own control count, dark + light per control, plus the two icon
 #       sheets (BLUE25 ICON-7) and every companion pairing's dark/light file, which are
 #       counted separately
 #   [2] every file is non-empty and contains at least one drawing element
@@ -85,7 +85,7 @@ fi
 echo "[2/5] regenerate every snapshot in place"
 # `_DEFAULT_FEATURES`, not `desktop`: the snapshot set is the picture of what a plain
 # `cargo build` produces, and `default = ["desktop", "icons"]`. Rendering it from the `desktop`
-# *profile* alone would leave two of the 188 controls (`icon` among them) showing the shapes a
+# *profile* alone would leave two of those controls (`icon` among them) showing the shapes a
 # build without the icon data draws — a picture that is current for nobody, since no caller gets
 # `desktop` by itself without also asking for it. The gate's own contract is "what a reviewer
 # sees is what ships", so the exporter runs what ships.

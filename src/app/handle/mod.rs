@@ -14,6 +14,7 @@ mod keys;
 mod menu;
 mod pointer;
 mod scroll;
+mod tabwidget;
 mod types;
 mod window;
 

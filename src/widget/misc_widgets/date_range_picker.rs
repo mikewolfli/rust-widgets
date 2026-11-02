@@ -146,7 +146,7 @@ impl DateRangePicker {
     ///
     /// The displayed month is the current month.
     pub fn new(geometry: Rect) -> Self {
-        let today = chrono::Local::now().date_naive();
+        let today = crate::widget::advanced_widgets::calendar::clock_today();
         Self {
             base: BaseWidget::new(WidgetKind::DateRangePicker, geometry, "DateRangePicker"),
             display_year: today.year(),
@@ -173,7 +173,7 @@ impl DateRangePicker {
 
     /// Points the grid at the current month without changing the selection.
     pub fn set_current_month(&mut self) {
-        let today = chrono::Local::now().date_naive();
+        let today = crate::widget::advanced_widgets::calendar::clock_today();
         self.display_year = today.year();
         self.display_month = today.month();
         self.base.request_redraw();
@@ -195,7 +195,7 @@ impl DateRangePicker {
 
     /// Moves the grid to the current month and selects today as a single-day range.
     pub fn go_to_today(&mut self) {
-        let today = chrono::Local::now().date_naive();
+        let today = crate::widget::advanced_widgets::calendar::clock_today();
         self.display_year = today.year();
         self.display_month = today.month();
         let date = (today.year(), today.month(), today.day());
@@ -1962,6 +1962,22 @@ mod tests {
         assert!(picker.end_date().is_none());
         assert_eq!(picker.display_year(), today.year());
         assert_eq!(picker.display_month(), today.month());
+    }
+
+    /// RW-56: a pinned clock determines the month the picker opens on and what
+    /// `go_to_today` selects.
+    #[test]
+    fn a_pinned_clock_selects_the_default_month() {
+        let pinned = chrono::NaiveDate::from_ymd_opt(2031, 7, 9).expect("a valid date");
+        crate::widget::advanced_widgets::calendar::set_today_override(Some(pinned));
+        let mut picker = DateRangePicker::new(Rect::new(0, 0, 240, 260));
+        let opened = (picker.display_year(), picker.display_month());
+        picker.go_to_today();
+        let selected = picker.start_date();
+        crate::widget::advanced_widgets::calendar::set_today_override(None);
+
+        assert_eq!(opened, (2031, 7), "the picker opens on the pinned month");
+        assert_eq!(selected, Some((2031, 7, 9)));
     }
 
     #[test]

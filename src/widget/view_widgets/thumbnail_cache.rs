@@ -30,7 +30,10 @@ type LruKey = (u64, ThumbnailKey);
 type EntryMap = HashMap<ThumbnailKey, Entry>;
 /// The LRU index.
 type LruIndex = BTreeMap<LruKey, ()>;
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::{BaseWidget, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 
@@ -215,6 +218,75 @@ impl Widget for ThumbnailCache {
         let (width, height) = self.target_size.get();
         Size::new(width, height)
     }
+    impl_widget_property_hooks!();
+}
+
+/// `ThumbnailCache`'s property contract (RW-100).
+///
+/// The control paints no ink, but it is constructible and a host is expected to place it beside a
+/// gallery, so it needs a contract to be addressable through the factory and visible in a
+/// manifest. `target_width`/`target_height` split the tuple the Rust API uses, because the property
+/// API has no two-number scalar carrier other than a tuple, and two independent scalars round-trip
+/// without ambiguity when only one of them changes.
+impl crate::widget::capability::WidgetProperties for ThumbnailCache {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "max_entries" => Ok(CapabilityValue::UInt(self.max_entries() as u64)),
+            "target_width" => Ok(CapabilityValue::UInt(u64::from(self.target_size().0))),
+            "target_height" => Ok(CapabilityValue::UInt(u64::from(self.target_size().1))),
+            "cached_count" => Ok(CapabilityValue::UInt(self.len() as u64)),
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "max_entries" => {
+                let entries = crate::widget::capability::coercion::expect_usize(value)?;
+                self.set_max_entries(entries);
+                Ok(())
+            }
+            "target_width" | "target_height" => {
+                let dimension = match value {
+                    CapabilityValue::UInt(value) => {
+                        u32::try_from(value).map_err(|_| CapabilityAccessError::OutOfRange)?
+                    }
+                    _ => return Err(CapabilityAccessError::TypeMismatch),
+                };
+                let (width, height) = self.target_size();
+                let target =
+                    if name == "target_width" { (dimension, height) } else { (width, dimension) };
+                self.set_target_size(target);
+                Ok(())
+            }
+            "cached_count" => Err(CapabilityAccessError::ReadOnlyProperty),
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of![
+            "max_entries",
+            "target_width",
+            "target_height",
+            "cached_count",
+            BASE_PROPERTY_NAMES
+        ]
+    }
+
+    /// Runs the cache's one published action.
+    ///
+    /// `clear` is payload-free and genuinely executable, so it is implemented here rather than
+    /// published as a `set_foo` convention name.
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "clear" => {
+                self.clear();
+                Ok(())
+            }
+            _ => self.default_command(name),
+        }
+    }
 }
 
 impl crate::event::EventHandler for ThumbnailCache {
@@ -226,6 +298,22 @@ impl crate::event::EventHandler for ThumbnailCache {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// RW-100: the cache's registration contract round-trips.
+    #[test]
+    fn property_contract_round_trips() {
+        use crate::widget::capability::WidgetProperties;
+        let mut cache = ThumbnailCache::new(Rect::new(0, 0, 100, 100));
+        cache.set("max_entries", CapabilityValue::UInt(8)).expect("max_entries is writable");
+        cache.set("target_width", CapabilityValue::UInt(64)).expect("target_width is writable");
+        assert_eq!(cache.max_entries(), 8);
+        assert_eq!(cache.target_size(), (64, 96));
+        assert_eq!(cache.get("target_width"), Ok(CapabilityValue::UInt(64)));
+        assert_eq!(
+            cache.set("cached_count", CapabilityValue::UInt(0)),
+            Err(CapabilityAccessError::ReadOnlyProperty)
+        );
+    }
 
     fn rgba(width: u32, height: u32, value: u8) -> ImageData {
         ImageData::Rgba8(vec![value; (width * height * 4) as usize])

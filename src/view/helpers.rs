@@ -40,6 +40,28 @@ pub(crate) fn is_generated_wire_prop(name: &str) -> bool {
     name.starts_with(GENERATED_WIRE_PROP_PREFIX)
 }
 
+/// The property name a generated (or JSON-session) tree uses to carry a declared wire.
+///
+/// # Why a constructor rather than `format!` at each caller
+///
+/// `crate::json`'s incremental session writes the same carrier the designer's generator does, and
+/// the prefix must be spelled exactly once for the reader predicate above to recognise it. This is
+/// a `pub(crate)` door so neither front end needs to reach for a private constant.
+pub(crate) fn generated_wire_prop(key: &str) -> crate::compat::String {
+    let mut carrier = crate::compat::String::from(GENERATED_WIRE_PROP_PREFIX);
+    carrier.push_str(key);
+    carrier
+}
+
+/// The key carried by a generated wire property name, or `None` when `name` is not one.
+///
+/// The read half of [`generated_wire_prop`]: a JSON session or a generated `create_for` that binds
+/// a wire needs the document key, and slicing a prefix literal at the call site is how the two
+/// spellings drift apart.
+pub(crate) fn generated_wire_suffix(name: &str) -> Option<&str> {
+    name.strip_prefix(GENERATED_WIRE_PROP_PREFIX)
+}
+
 /// The wire-carrier prefix a generated program uses, spelled once for this module.
 ///
 /// See [`is_generated_wire_prop`] for why this is not read from `crate::designer`.

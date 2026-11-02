@@ -185,8 +185,6 @@ const PAIRS: &[(&str, &str, &str)] = &[
     ("data_grid", "data_grid", "GridFindBar"),
     ("menu_button", "menu_button", "MenuPanel"),
     ("canvas", "canvas", "LayerPanel"),
-    ("media_player", "media_player", "MediaTransportBar"),
-    ("video_player", "video_player", "SubtitleBar"),
     ("list_box", "list_box", "Scrollbar"),
     ("number_picker", "number_picker", "StepButtons"),
     ("date_range_picker", "date_range_picker", "PresetChipBar"),
@@ -506,23 +504,6 @@ fn build_pair_scene(factory: &WidgetFactory, stem: &str) -> Option<PairScene> {
             ]);
             layers.select_layer(1);
             Some(PairScene::new(primary, Companion::Widget(Box::new(layers)), false))
-        }
-        "media_player" => {
-            use rust_widgets::widget::media_widgets::media_transport::MediaTransportBar;
-            let primary = create(Rect::new(8, 8, 224, 104))?;
-            let mut transport = MediaTransportBar::new(Rect::new(8, 76, 224, 36));
-            transport.set_position(42_000, 180_000);
-            transport.set_playing(true);
-            transport.set_show_timecode(true);
-            Some(PairScene::new(primary, Companion::Widget(Box::new(transport)), false))
-        }
-        "video_player" => {
-            use rust_widgets::widget::media_widgets::subtitle_bar::SubtitleBar;
-            let primary = create(Rect::new(8, 8, 224, 104))?;
-            let mut subtitle = SubtitleBar::new(Rect::new(8, 80, 224, 32));
-            subtitle.set_text("The quick brown fox jumps over the lazy dog.");
-            subtitle.set_max_lines(2);
-            Some(PairScene::new(primary, Companion::Widget(Box::new(subtitle)), false))
         }
         "list_box" => {
             use rust_widgets::widget::input_widgets::input_companions::{

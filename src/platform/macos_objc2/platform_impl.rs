@@ -444,6 +444,55 @@ impl Platform for MacOSObjc2Platform {
         self.state.window_min_size(window_id)
     }
 
+    /// Raises the window through AppKit, or reports that there is no native window to raise.
+    ///
+    /// A state-only handle (created off the main thread) has nothing to activate, so the honest
+    /// answer is `false`; the handle layer must not pretend the window became key.
+    fn activate_window(&self, window_id: u64) -> bool {
+        // `window_id` is consumed by the native path; on a host without AppKit the call is the
+        // honest `false` below and the binding would otherwise be unused.
+        let _ = window_id;
+        #[cfg(all(target_os = "macos", feature = "macos"))]
+        {
+            let host = resolve_host(window_id);
+            if super::native::activate_window(host) {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Reads the frame origin from AppKit, falling back to the recorded geometry.
+    fn window_position(&self, window_id: u64) -> Option<(i32, i32)> {
+        #[cfg(all(target_os = "macos", feature = "macos"))]
+        {
+            let host = resolve_host(window_id);
+            if let Some(position) = super::native::window_position(host) {
+                return Some(position);
+            }
+        }
+        self.state.widget_geometry(window_id).map(|(x, y, _, _)| (x, y))
+    }
+
+    /// Moves the frame through AppKit and records the accepted position as the fallback.
+    fn set_window_position(&self, window_id: u64, x: i32, y: i32) -> bool {
+        #[cfg(all(target_os = "macos", feature = "macos"))]
+        {
+            let host = resolve_host(window_id);
+            if super::native::set_window_position(host, x, y) {
+                if let Some((_, _, width, height)) = self.state.widget_geometry(window_id) {
+                    self.state.set_geometry(window_id, x, y, width, height);
+                }
+                return true;
+            }
+        }
+        if let Some((_, _, width, height)) = self.state.widget_geometry(window_id) {
+            self.state.set_geometry(window_id, x, y, width, height);
+            return true;
+        }
+        false
+    }
+
     /// Applies a maximum content size through `NSWindow.setContentMaxSize:`.
     fn set_window_max_size(&self, window_id: u64, width: u32, height: u32) -> bool {
         #[cfg(all(target_os = "macos", feature = "macos"))]

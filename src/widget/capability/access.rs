@@ -262,36 +262,36 @@ pub fn default_named_property_value(
         ("chart_reference_line", "line_count") => Some(CapabilityValue::UInt(0)),
         ("chart_reference_line", "label_visible") => Some(CapabilityValue::Bool(true)),
         ("chart_reference_line", "hit_target") => Some(CapabilityValue::UInt(8)),
-        ("terminal_find_bar", "query") => Some(CapabilityValue::String(String::new())),
-        ("terminal_find_bar", "case_sensitive") => Some(CapabilityValue::Bool(false)),
-        ("terminal_find_bar", "use_regex") => Some(CapabilityValue::Bool(false)),
-        ("terminal_find_bar", "wrap_search") => Some(CapabilityValue::Bool(true)),
-        ("terminal_find_bar", "match_count") => Some(CapabilityValue::UInt(0)),
-        // The bar is created closed, and `visible` is its own open/close flag.
-        ("terminal_find_bar", "visible") => Some(CapabilityValue::Bool(false)),
-        ("map_attribution", "entry_count") => Some(CapabilityValue::UInt(0)),
-        ("map_attribution", "corner") => Some(CapabilityValue::String("top_left".to_string())),
-        ("map_attribution", "background_opacity") => Some(CapabilityValue::UInt(160)),
-        ("map_attribution", "font_scale") => Some(CapabilityValue::Float(1.0)),
-        ("gantt_task_grid", "row_height") => Some(CapabilityValue::UInt(24)),
-        ("gantt_task_grid", "indent_step") => Some(CapabilityValue::UInt(12)),
-        ("gantt_task_grid", "header_visible") => Some(CapabilityValue::Bool(true)),
-        ("gantt_task_grid", "columns") => Some(CapabilityValue::UInt(1)),
-        ("gantt_task_grid", "tasks") => Some(CapabilityValue::UInt(0)),
         ("web_history_panel", "max_entries") => Some(CapabilityValue::UInt(8)),
         ("web_history_panel", "show_timestamps") => Some(CapabilityValue::Bool(false)),
         ("web_history_panel", "group_by_day") => Some(CapabilityValue::Bool(false)),
         ("web_history_panel", "row_height") => Some(CapabilityValue::UInt(44)),
         ("web_history_panel", "filter_prefix") => Some(CapabilityValue::String(String::new())),
         ("web_history_panel", "visible_count") => Some(CapabilityValue::UInt(0)),
-        ("chapter_list_panel", "row_height") => Some(CapabilityValue::UInt(32)),
-        ("chapter_list_panel", "active_highlight") => Some(CapabilityValue::Bool(true)),
-        ("chapter_list_panel", "show_thumbnails") => Some(CapabilityValue::Bool(false)),
-        ("chapter_list_panel", "chapters") => Some(CapabilityValue::UInt(0)),
-        ("chapter_list_panel", "position_ms") => Some(CapabilityValue::UInt(0)),
-        ("map_overview", "viewport_ratio") => Some(CapabilityValue::Float(0.25)),
-        ("map_overview", "collapsed") => Some(CapabilityValue::Bool(false)),
-        ("map_overview", "map_view_attached") => Some(CapabilityValue::Bool(false)),
+        ("chart_crosshair", "position") => Some(CapabilityValue::Null),
+        ("chart_crosshair", "snap_to_data_point") => Some(CapabilityValue::Bool(false)),
+        ("chart_crosshair", "show_x") => Some(CapabilityValue::Bool(true)),
+        ("chart_crosshair", "show_y") => Some(CapabilityValue::Bool(true)),
+        ("chart_crosshair", "follow_pointer") => Some(CapabilityValue::Bool(false)),
+        ("drum_column", "items") => Some(CapabilityValue::Tuple(crate::compat::Vec::new())),
+        ("drum_column", "selected_index") => Some(CapabilityValue::UInt(0)),
+        ("drum_column", "item_count") => Some(CapabilityValue::UInt(0)),
+        ("drum_column", "loop_wrap") => Some(CapabilityValue::Bool(false)),
+        ("drum_column", "row_height") => Some(CapabilityValue::UInt(u64::from(
+            crate::widget::metrics::dimensions::PICKER_ROW_HEIGHT,
+        ))),
+        ("preset_chip_bar", "selected_preset") => Some(CapabilityValue::Null),
+        ("preset_chip_bar", "preset_count") => Some(CapabilityValue::UInt(0)),
+        ("preset_chip_bar", "orientation") => {
+            Some(CapabilityValue::String("horizontal".to_string()))
+        }
+        ("preset_chip_bar", "chip_height") => Some(CapabilityValue::UInt(24)),
+        ("preset_chip_bar", "chip_padding") => Some(CapabilityValue::UInt(10)),
+        ("preset_chip_bar", "spacing") => Some(CapabilityValue::UInt(6)),
+        ("thumbnail_cache", "max_entries") => Some(CapabilityValue::UInt(256)),
+        ("thumbnail_cache", "target_width") => Some(CapabilityValue::UInt(96)),
+        ("thumbnail_cache", "target_height") => Some(CapabilityValue::UInt(96)),
+        ("thumbnail_cache", "cached_count") => Some(CapabilityValue::UInt(0)),
         _ => None,
     }
 }
@@ -317,6 +317,10 @@ pub fn default_widget_property_default_value(
         "geometry" => {
             return Some(CapabilityValue::String("0,0,0,0".to_string()));
         }
+        // RW-35: a fresh control has no explicit role override; the empty spelling means "derive
+        // the role from the control's kind", which is what the a11y tree does when the registry
+        // has no entry.
+        "a11y_role" => return Some(CapabilityValue::String(String::new())),
         // `visible` is shared by every control and declared by every schema. It
         // always means the base widget's visibility, which defaults to shown —
         // including for the popup kinds. Those publish their own popup state under a
@@ -1039,45 +1043,6 @@ pub fn default_widget_property_default_value(
             "dismissible" => CapabilityValue::Bool(true),
             _ => return None,
         },
-        WidgetKind::CandlestickChart => match property_name {
-            "series" => CapabilityValue::String(alloc::string::String::new()),
-            "overlay_count" => CapabilityValue::UInt(0),
-            "show_price_levels" => CapabilityValue::Bool(false),
-            "show_overlay_legend" => CapabilityValue::Bool(true),
-            _ => return None,
-        },
-        WidgetKind::VolumeChart => match property_name {
-            "series" => CapabilityValue::String(alloc::string::String::new()),
-            "color_mode" => CapabilityValue::String(alloc::string::String::from("direction")),
-            "headroom" => CapabilityValue::Float(0.92),
-            _ => return None,
-        },
-        WidgetKind::DepthChart => match property_name {
-            "depth" => CapabilityValue::UInt(0),
-            "bid_color" => CapabilityValue::Color(crate::core::Color::rgb(38, 166, 91)),
-            "ask_color" => CapabilityValue::Color(crate::core::Color::rgb(220, 68, 70)),
-            _ => return None,
-        },
-        WidgetKind::OrderBook => match property_name {
-            "depth" => CapabilityValue::UInt(5),
-            "decimals" => CapabilityValue::Null,
-            "show_spread" => CapabilityValue::Bool(true),
-            _ => return None,
-        },
-        WidgetKind::QuoteBoard => match property_name {
-            "sort" => CapabilityValue::String(alloc::string::String::from("none")),
-            "selected_index" => CapabilityValue::Null,
-            "row_height" => CapabilityValue::UInt(22),
-            "scroll_offset" => CapabilityValue::UInt(0),
-            _ => return None,
-        },
-        WidgetKind::IndicatorChart => match property_name {
-            "series" => CapabilityValue::String(alloc::string::String::new()),
-            "mode" => CapabilityValue::String(alloc::string::String::from("macd")),
-            "period" => CapabilityValue::UInt(14),
-            "show_reference_levels" => CapabilityValue::Bool(true),
-            _ => return None,
-        },
         WidgetKind::SplashScreen => match property_name {
             "title" => CapabilityValue::String(String::new()),
             "subtitle" => CapabilityValue::String(String::new()),
@@ -1232,14 +1197,9 @@ pub fn default_widget_property_default_value(
             _ => return None,
         },
         WidgetKind::Chart => match property_name {
-            // `gantt_widget` shares this kind; a fresh chart has no tasks, and the empty list of
-            // the declared schema is what a dropped binding resets to (`Null` would be a value the
-            // schema refuses).
-            "tasks" => CapabilityValue::Records(crate::widget::capability::RecordList::new(
-                &crate::widget::chart_widgets::gantt_widget::GANTT_TASK_SCHEMA,
-            )),
-            "task_count" => CapabilityValue::UInt(0),
-            "selected_id" => CapabilityValue::Null,
+            // RW-67: `ChartWidget`'s primary series is empty on a fresh chart. The other Chart-kind
+            // capabilities do not declare `data`, so this answer is never reached for them.
+            "data" => CapabilityValue::Tuple(crate::compat::Vec::new()),
             "selected_marker_id" => CapabilityValue::Null,
             "viewport_start" => CapabilityValue::Int(0),
             "viewport_end" => CapabilityValue::Int(100),
@@ -1258,8 +1218,6 @@ pub fn default_widget_property_default_value(
             "point_count" => CapabilityValue::UInt(0),
             "label_count" => CapabilityValue::UInt(0),
             "series_count" => CapabilityValue::UInt(0),
-            "show_critical_path" => CapabilityValue::Bool(false),
-            "show_today" => CapabilityValue::Bool(true),
             "show_time_labels" => CapabilityValue::Bool(false),
             "lane_mode" => CapabilityValue::String("row".to_string()),
             _ => return None,
@@ -1299,31 +1257,7 @@ pub fn default_widget_property_default_value(
         // `Canvas` and `MapView` share `WidgetKind::Canvas`; defaults are keyed by
         // kind, so this arm answers for both controls.
         WidgetKind::Canvas => match property_name {
-            // `canvas`
             "command_count" => CapabilityValue::UInt(0),
-            // `map_view` — a fresh map has no markers; the empty list is what a dropped binding
-            // resets to. (A plain `Canvas` has no `markers` property, so this answer is never
-            // reached for it.)
-            "markers" => CapabilityValue::Records(crate::widget::capability::RecordList::new(
-                &crate::widget::special_widgets::map_view::MAP_MARKER_SCHEMA,
-            )),
-            // `map_view`
-            "center_x" => CapabilityValue::Float(0.0),
-            "center_y" => CapabilityValue::Float(0.0),
-            "zoom" => CapabilityValue::Float(1.0),
-            "marker_count" => CapabilityValue::UInt(0),
-            "selected_marker_id" => CapabilityValue::Null,
-            "projection" => CapabilityValue::String("linear".to_string()),
-            "layer_count" => CapabilityValue::UInt(0),
-            "anti_alias" => CapabilityValue::Bool(true),
-            "show_grid" => CapabilityValue::Bool(false),
-            "grid_step" => CapabilityValue::UInt(20),
-            "snap_to_grid" => CapabilityValue::Bool(false),
-            "zoom_range" => CapabilityValue::Tuple(crate::compat::Vec::from([
-                CapabilityValue::Float(0.125),
-                CapabilityValue::Float(16.0),
-            ])),
-            "zoom_step" => CapabilityValue::Float(1.1),
             _ => return None,
         },
         WidgetKind::Carousel => match property_name {
@@ -1585,6 +1519,8 @@ pub fn default_widget_property_default_value(
             _ => return None,
         },
         WidgetKind::RadarChart => match property_name {
+            // RW-71: a fresh chart has neither axes nor series.
+            "axes" | "series" => CapabilityValue::Tuple(crate::compat::Vec::new()),
             "axis_count" => CapabilityValue::UInt(0),
             "series_count" => CapabilityValue::UInt(0),
             // Mirrors `RadarChart::new`.
@@ -1595,29 +1531,11 @@ pub fn default_widget_property_default_value(
             "series_names" => CapabilityValue::Tuple(crate::compat::Vec::new()),
             _ => return None,
         },
-        WidgetKind::KanbanBoard => match property_name {
-            // A fresh board has no columns and no cards; the empty list of the declared schema is
-            // what a dropped binding resets to (`Null` would be a value the schema refuses).
-            "columns" => CapabilityValue::Records(crate::widget::capability::RecordList::new(
-                &crate::widget::chart_widgets::kanban_board::KANBAN_COLUMN_SCHEMA,
-            )),
-            "cards" => CapabilityValue::Records(crate::widget::capability::RecordList::new(
-                &crate::widget::chart_widgets::kanban_board::KANBAN_CARD_SCHEMA,
-            )),
-            "column_count" => CapabilityValue::UInt(0),
-            "card_count" => CapabilityValue::UInt(0),
-            "dragging_card_id" => CapabilityValue::Null,
-            "hovered_column" => CapabilityValue::Null,
-            // Mirrors the `COLUMN_WIDTH` layout constant in the control.
-            "column_width" => CapabilityValue::UInt(220),
-            "horizontal_scroll_offset" => CapabilityValue::UInt(0),
-            // The flat board is the default; lanes must be turned on explicitly.
-            "lane_mode" => CapabilityValue::String("none".to_string()),
-            "swimlanes" => CapabilityValue::Bool(false),
-            "lane_count" => CapabilityValue::UInt(0),
-            _ => return None,
-        },
         WidgetKind::Heatmap => match property_name {
+            // RW-70: no matrix and no labels on a fresh grid.
+            "values" | "row_labels" | "column_labels" => {
+                CapabilityValue::Tuple(crate::compat::Vec::new())
+            }
             "row_count" => CapabilityValue::UInt(0),
             "column_count" => CapabilityValue::UInt(0),
             // `None` means "derive the scale from the data", so the default is a null
@@ -2396,6 +2314,8 @@ pub fn default_widget_property_default_value(
 
         // ── New widgets (chart) ─────────────────────────────────────
         WidgetKind::LineChart => match property_name {
+            // RW-67: a freshly built chart has one empty primary series.
+            "data" => CapabilityValue::Tuple(crate::compat::Vec::new()),
             "stroke_width" => CapabilityValue::Float(2.0),
             _ => return None,
         },
@@ -2410,10 +2330,14 @@ pub fn default_widget_property_default_value(
             _ => return None,
         },
         WidgetKind::BarChart => match property_name {
+            // RW-67: no bars on a freshly built chart.
+            "data" => CapabilityValue::Tuple(crate::compat::Vec::new()),
             "bar_spacing" => CapabilityValue::Float(0.2),
             _ => return None,
         },
         WidgetKind::PieChart => match property_name {
+            // RW-67: no slices and no labels on a fresh chart.
+            "values" | "labels" => CapabilityValue::Tuple(crate::compat::Vec::new()),
             "donut" => CapabilityValue::Bool(false),
             _ => return None,
         },
@@ -2423,6 +2347,8 @@ pub fn default_widget_property_default_value(
             "playing" => CapabilityValue::Bool(false),
             "direction" => CapabilityValue::String("forward".to_string()),
             "frame_cache_limit" => CapabilityValue::UInt(MAX_PROVIDER_CACHE_FRAMES as u64),
+            // RW-83: an empty sequence shows frame 0.
+            "current_frame" => CapabilityValue::UInt(0),
             _ => return None,
         },
         WidgetKind::HeroAnimation => match property_name {
@@ -2435,6 +2361,8 @@ pub fn default_widget_property_default_value(
             "loops_completed" => CapabilityValue::Int(0),
             "direction" => CapabilityValue::String("forward".to_string()),
             "speed" => CapabilityValue::Float(1.0),
+            // RW-83: an unloaded animation shows frame 0.
+            "current_frame" => CapabilityValue::UInt(0),
             _ => return None,
         },
         WidgetKind::RiveWidget => match property_name {
@@ -2445,6 +2373,10 @@ pub fn default_widget_property_default_value(
             _ => return None,
         },
         WidgetKind::VideoPlayer => match property_name {
+            // RW-82: no source loaded and the clock at zero. `media_transport_bar` answers its own
+            // rows by canonical name before this table is read.
+            "source" => CapabilityValue::String(String::new()),
+            "position" | "duration" => CapabilityValue::Float(0.0),
             "is_playing" => CapabilityValue::Bool(false),
             "volume" => CapabilityValue::Float(0.8),
             "muted" => CapabilityValue::Bool(false),
@@ -2489,6 +2421,8 @@ pub fn default_widget_property_default_value(
 
         // ── New widgets (misc) ──────────────────────────────────────
         WidgetKind::AudioVisualizer => match property_name {
+            // RW-86: no samples on a fresh visualiser.
+            "sample_data" => CapabilityValue::Tuple(crate::compat::Vec::new()),
             "bar_count" => CapabilityValue::UInt(64),
             "peak_threshold" => CapabilityValue::Float(0.9),
             "mode" => CapabilityValue::String("waveform".to_string()),
@@ -2767,62 +2701,6 @@ pub fn default_widget_property_default_value(
             "overflow_policy" => CapabilityValue::String("drop_oldest".to_string()),
             _ => return None,
         },
-        WidgetKind::TileLoader => match property_name {
-            "url_template" => CapabilityValue::String("tiles/{z}/{x}/{y}.png".to_string()),
-            "min_zoom" => CapabilityValue::UInt(0),
-            "max_zoom" => CapabilityValue::UInt(19),
-            "tile_size" => CapabilityValue::UInt(256),
-            "cache_limit" => CapabilityValue::UInt(256),
-            "cache_size" => CapabilityValue::UInt(0),
-            _ => return None,
-        },
-        WidgetKind::ZoomControl => match property_name {
-            "zoom_level" => CapabilityValue::Float(1.0),
-            "min" => CapabilityValue::Float(0.25),
-            "max" => CapabilityValue::Float(8.0),
-            _ => return None,
-        },
-        WidgetKind::ScaleBar => match property_name {
-            "meters_per_pixel" => CapabilityValue::Float(1.0),
-            "units" => CapabilityValue::String("metric".to_string()),
-            "style" => CapabilityValue::String("plain".to_string()),
-            _ => return None,
-        },
-        WidgetKind::Compass => match property_name {
-            "bearing_deg" => CapabilityValue::Float(0.0),
-            "clickable" => CapabilityValue::Bool(true),
-            _ => return None,
-        },
-        WidgetKind::TimelineAxis => match property_name {
-            "tick_density" => CapabilityValue::UInt(6),
-            "date_format" => CapabilityValue::String("numeric".to_string()),
-            "zoom_level" => CapabilityValue::Float(1.0),
-            "range" => CapabilityValue::Tuple(crate::compat::Vec::from([
-                CapabilityValue::Int(0),
-                CapabilityValue::Int(100),
-            ])),
-            "range_start" => CapabilityValue::Int(0),
-            "range_end" => CapabilityValue::Int(100),
-            _ => return None,
-        },
-        WidgetKind::DependencyEditor => match property_name {
-            "dependencies" => CapabilityValue::UInt(0),
-            // An editor starts with no edges: the empty list of the declared schema.
-            "dependency_edges" => {
-                CapabilityValue::Records(crate::widget::capability::RecordList::new(
-                    &crate::widget::chart_widgets::gantt_widget::companions::DEPENDENCY_SCHEMA,
-                ))
-            }
-            "editable" => CapabilityValue::Bool(true),
-            _ => return None,
-        },
-        WidgetKind::DiffFileList => match property_name {
-            "files" => CapabilityValue::Tuple(crate::compat::Vec::new()),
-            "file_count" => CapabilityValue::UInt(0),
-            "selected_path" => CapabilityValue::Null,
-            "selection_mode" => CapabilityValue::String("single".to_string()),
-            _ => return None,
-        },
         WidgetKind::MarkdownOutlinePanel => match property_name {
             "entries" => CapabilityValue::Tuple(crate::compat::Vec::new()),
             "active_index" => CapabilityValue::Null,
@@ -2919,24 +2797,6 @@ pub fn default_widget_property_default_value(
             "editable" => CapabilityValue::Bool(false),
             "snap_to_grid" => CapabilityValue::Bool(false),
             "grid_step" => CapabilityValue::UInt(8),
-            _ => return None,
-        },
-        WidgetKind::KanbanCardView => match property_name {
-            "title" | "description" | "assignee" => CapabilityValue::String(String::new()),
-            "done" => CapabilityValue::Bool(false),
-            "tags" => CapabilityValue::Tuple(crate::compat::Vec::new()),
-            "draggable" => CapabilityValue::Bool(true),
-            "editing" => CapabilityValue::Bool(false),
-            _ => return None,
-        },
-        WidgetKind::KanbanColumnHeader => match property_name {
-            "title" => CapabilityValue::String(String::new()),
-            "count" => CapabilityValue::UInt(0),
-            "wip_limit" => CapabilityValue::Null,
-            "collapsed" => CapabilityValue::Bool(false),
-            "editable" => CapabilityValue::Bool(true),
-            "at_wip_limit" => CapabilityValue::Bool(false),
-            "editing" => CapabilityValue::Bool(false),
             _ => return None,
         },
         WidgetKind::RangePresetBar => match property_name {

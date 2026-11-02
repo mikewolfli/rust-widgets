@@ -25,6 +25,9 @@
 //! | `clipboard` | Cut, copy and paste |
 //! | `completion` | Completion popup and context menu |
 //! | `tokens` | Lexer state chaining and token queries |
+//! | `snippet` | Snippet sessions and tab-stop navigation |
+//! | `structural` | Structural selection and the navigation stack |
+//! | `inlays` | Host overlays, bookmark lifecycle and the diff baseline |
 //! | `events` | Event routing: keys, IME, pointer, wheel |
 //! | `widget_impl` | The `Widget` and property contracts |
 
@@ -33,6 +36,7 @@ use super::buffer::{
 };
 use super::grid::{LineGrid, RowLayout};
 use super::multicursor::{self, MultiCursor};
+use super::overlays::{CodeLens, InlayHint, SnippetSession, SnippetStop};
 use super::pairs::{self, PairAction};
 use super::range_command::{TextRangeCommand, TypingAccum, TypingCommand};
 use super::syntax::{BuiltinHighlighter, LanguageId, LineState, SyntaxHighlighter};
@@ -77,7 +81,11 @@ mod editing;
 mod events;
 mod find;
 mod folding;
+mod inlays;
+mod minimap_summary;
 mod rows;
+mod snippet;
+mod structural;
 mod tabs;
 mod tokens;
 mod viewport;
@@ -88,6 +96,13 @@ pub(crate) type SharedModel = Rc<RefCell<EditorModel>>;
 
 /// A shared document handle, re-exported from the `document` submodule.
 pub use document::CodeEditorDocument;
+
+pub(crate) use self::minimap_summary::minimap_partition;
+/// The minimap summary types, re-exported from the `minimap_summary` submodule.
+pub use self::minimap_summary::{MiniTone, MinimapBucket};
+
+/// The navigation-history bound, re-exported from the `structural` submodule.
+pub use self::structural::MAX_NAVIGATION_HISTORY;
 
 /// One caret's edit in a multi-caret batch.
 struct CaretEdit {
@@ -528,6 +543,25 @@ pub struct CodeEditor {
     pub(crate) extra_selections: Vec<ExtraSelection>,
     /// Lines bookmarked by the user.
     pub(crate) bookmarks: Vec<usize>,
+    /// Baseline text an inline diff marker is computed against.
+    ///
+    /// Owned by the editor rather than the configuration because it is document
+    /// content, not a rendering preference. `None` disables the comparison even
+    /// when [`CodeEditorConfig::show_inline_diff`] is on.
+    diff_baseline: Option<String>,
+    /// The baseline split into lines, so the paint pass indexes instead of
+    /// re-splitting the text for every visible row.
+    diff_baseline_lines: Vec<String>,
+    /// Host-supplied inline annotations, sorted by `(line, column)`.
+    pub(crate) inlay_hints: Vec<InlayHint>,
+    /// Host-supplied line affordances, sorted by line.
+    pub(crate) code_lenses: Vec<CodeLens>,
+    /// The active snippet expansion, when one is running.
+    snippet_session: Option<SnippetSession>,
+    /// Caret positions recorded by `push_navigation_position`, oldest first.
+    navigation_history: Vec<TextPosition>,
+    /// Position inside [`Self::navigation_history`] of the current entry.
+    navigation_index: usize,
     /// Lines carrying a breakpoint.
     pub(crate) breakpoints: Vec<usize>,
     /// Whether the gutter reserves a column for breakpoint marks.
@@ -645,6 +679,12 @@ pub struct CodeEditor {
     pub marker_activated: Signal1<usize>,
     /// Emitted when the editor rebuilds its palette for a new appearance.
     pub palette_changed: GenericSignal,
+    /// Emitted with the pointer position when a context menu is requested.
+    ///
+    /// Always emitted, before (and independently of) the built-in menu, so a
+    /// host that sets [`CodeEditorConfig::built_in_context_menu`] to `false` owns
+    /// the menu entirely and one that leaves it on can still observe the request.
+    pub context_menu_requested: Signal1<Point>,
     /// The line-number gutter this editor keeps in step, when one is attached.
     line_number_gutter: Option<LineNumberGutterBinding>,
 }
@@ -751,6 +791,13 @@ impl CodeEditor {
             caret_style: CaretStyle::Line,
             extra_selections: Vec::new(),
             bookmarks: Vec::new(),
+            diff_baseline: None,
+            diff_baseline_lines: Vec::new(),
+            inlay_hints: Vec::new(),
+            code_lenses: Vec::new(),
+            snippet_session: None,
+            navigation_history: Vec::new(),
+            navigation_index: 0,
             breakpoints: Vec::new(),
             breakpoint_gutter: false,
             goto_bar_visible: false,
@@ -793,6 +840,7 @@ impl CodeEditor {
             breakpoint_toggled: Signal1::new(),
             marker_activated: Signal1::new(),
             palette_changed: GenericSignal::new(),
+            context_menu_requested: Signal1::new(),
             line_number_gutter: None,
         };
         // An editable editor is an active insertion point the moment it exists, so its caret blinks
@@ -1789,144 +1837,6 @@ fn clamp_and_merge(text: &str, raw: Vec<TokenSpan>) -> Vec<TokenSpan> {
     }
     spans.sort_by(|a, b| a.start.cmp(&b.start).then_with(|| a.end.cmp(&b.end)));
     super::syntax::merge_adjacent(spans)
-}
-
-/// What a minimap bar is made of, at the granularity a thumbnail can show.
-///
-/// Three tones, not a token palette: a minimap bar is one to three pixels tall, so
-/// anything finer is invisible. Comment/string/code is enough to give a file the
-/// texture Zed's minimap has (green comment blocks, warm string runs, plain code).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum MiniTone {
-    /// Ordinary code.
-    #[default]
-    Plain,
-    /// A comment line.
-    Comment,
-    /// A line carrying a string literal.
-    String,
-}
-
-/// The longest common **leading whitespace** of a block of text.
-///
-/// Used by the paste path to rebase a block on the caret line's indentation. Blank
-/// lines are ignored: they carry no indentation to compare, and counting them would
-/// collapse the common prefix to nothing. The comparison is a byte prefix, which is
-/// correct for the only characters involved (` ` and `\t`).
-pub(crate) fn common_leading_whitespace(text: &str) -> String {
-    let mut common: Option<&str> = None;
-    for line in text.split('\n') {
-        let line = line.trim_end_matches(['\r']);
-        if line.trim().is_empty() {
-            continue;
-        }
-        let indent = &line[..line.len() - line.trim_start_matches([' ', '\t']).len()];
-        common = Some(match common {
-            None => indent,
-            Some(previous) => {
-                // Both sides are ASCII whitespace by construction, so a byte prefix is a
-                // char prefix and the slice below cannot split a character.
-                let shared = previous
-                    .bytes()
-                    .zip(indent.bytes())
-                    .take_while(|(left, right)| left == right)
-                    .count();
-                &previous[..shared]
-            }
-        });
-    }
-    common.unwrap_or("").to_string()
-}
-
-/// One row of the minimap: the longest non-blank line folded into it.
-///
-/// A bucket holds a *summary*, not a sum, so painting reads one value per strip
-/// row instead of walking the document. `blank` is tracked separately from
-/// `length == 0` because a bucket containing only whitespace lines is blank,
-/// while one containing a line of spaces is not.
-#[derive(Debug, Clone, Copy)]
-pub struct MinimapBucket {
-    /// First document line summarised into this bucket.
-    ///
-    /// A host drawing its own minimap decoration uses this to map a bucket back to a
-    /// document region; the control's own painter does not need it.
-    pub start_line: usize,
-    /// Indent column of the longest line seen in this bucket.
-    pub indent: usize,
-    /// Text length of that line, indentation excluded.
-    pub length: usize,
-    /// What that line mostly is, for the bar's colour.
-    pub tone: MiniTone,
-    /// `true` when no non-blank line has landed in this bucket.
-    pub blank: bool,
-    /// How many non-blank lines landed in this bucket.
-    ///
-    /// The bucket keeps a summary rather than a sum of every line, so this is the one
-    /// aggregate it tracks explicitly: it lets a host tell a dense block from a sparse one
-    /// without re-reading the document.
-    pub non_blank_lines: usize,
-}
-
-/// How many strip rows a document is summarized into, and how many lines each
-/// bucket covers.
-///
-/// The two numbers have to be derived together. `rows` is a pixel budget, while a
-/// bucket is a group of lines; resizing the vector to `rows` and dividing the
-/// document by `ceil(count / rows)` leaves a blank tail whenever the division does
-/// not come out even, and — worse — makes the "did anything change" check compare a
-/// derived count against a differently derived size, so the summary was rebuilt on
-/// every frame.
-fn minimap_partition(count: usize, rows: usize) -> (usize, usize) {
-    let per_bucket = count.div_ceil(rows.max(1)).max(1);
-    let buckets = count.div_ceil(per_bucket).max(1);
-    (buckets, per_bucket)
-}
-
-/// A bucket that has not seen a line yet is **blank**.
-///
-/// The derived default said `blank: false`, so every bucket the document did not
-/// reach — 106 of 120 in the demo's 14-line file — looked like a line and the
-/// minimap painted a 1 px bar for each of them: a dashed column down the whole
-/// strip instead of a page.
-impl Default for MinimapBucket {
-    fn default() -> Self {
-        Self {
-            start_line: 0,
-            indent: 0,
-            length: 0,
-            tone: MiniTone::Plain,
-            blank: true,
-            non_blank_lines: 0,
-        }
-    }
-}
-
-impl MinimapBucket {
-    /// Folds one line into the bucket, keeping the longest.
-    fn accumulate(slot: &mut Self, text: &str) {
-        let indent = text.chars().take_while(|ch| ch.is_whitespace()).count();
-        let length = text.trim_end().chars().count().saturating_sub(indent);
-        if length == 0 {
-            return;
-        }
-        if slot.blank || length > slot.length {
-            slot.indent = indent;
-            slot.length = length;
-            let trimmed = text.trim_start();
-            slot.tone = if trimmed.starts_with("//")
-                || trimmed.starts_with("/*")
-                || trimmed.starts_with('*')
-                || trimmed.starts_with('#')
-            {
-                MiniTone::Comment
-            } else if trimmed.contains('"') || trimmed.contains('\'') {
-                MiniTone::String
-            } else {
-                MiniTone::Plain
-            };
-        }
-        slot.blank = false;
-    }
 }
 
 #[cfg(test)]

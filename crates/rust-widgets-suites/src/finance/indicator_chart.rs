@@ -1,0 +1,1366 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
+//! The indicator pane — MACD, RSI, KDJ and the volume-derived oscillators.
+//!
+//! # Why one control with a mode rather than four controls
+//!
+//! These panes differ in *which* series they compute and how they are scaled. They do not
+//! differ in anything structural: all of them take a price series, produce one to three
+//! derived series, draw them against a y axis, and are read against zero or against a
+//! band. Four separate controls would repeat the axis, the scaling, the pointer handling
+//! and the signal plumbing four times — which is exactly the duplication principle #23
+//! exists to prevent.
+//!
+//! What is *not* shared is the arithmetic, and that is not duplicated either: every mode
+//! calls into `indicators`.
+//!
+//! # Why the y axis is mode-dependent
+//!
+//! MACD is unbounded and centred on zero, so its axis scales to the data. RSI and MFI are
+//! bounded `0..=100`, so their axis is fixed and the 30/70 bands mean the same thing in
+//! every window. KDJ is bounded `0..=100` like RSI but its signal lines are the %K/%D
+//! pair. A single auto-scaling axis would make RSI's overbought line move from window to
+//! window, which defeats the point of a level that is supposed to be comparable.
+
+use alloc::vec::Vec;
+
+use rust_widgets::core::{Color, HorizontalAlignment, Point, Rect};
+use rust_widgets::render::RenderContext;
+use rust_widgets::widget::capability::properties_trait::{base_property_get, base_property_set};
+use rust_widgets::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use rust_widgets::widget::capability::WidgetProperties;
+use crate::finance::indicators;
+use crate::finance::layout::{
+    panel_colors, IndexAxis, PanelColors, PlotArea, PriceAxis, PANEL_MIN_CONTRAST,
+};
+use crate::finance::types::Bar;
+use crate::finance::types::PriceSeries;
+use rust_widgets::widget::metrics::role_font;
+use rust_widgets::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use rust_widgets::{impl_widget_property_hooks, property_names_of};
+
+/// Which oscillator the pane shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum IndicatorMode {
+    /// Moving Average Convergence/Divergence: two lines and a histogram, centred on zero.
+    #[default]
+    Macd,
+    /// Relative Strength Index, bounded `0..=100`.
+    Rsi,
+    /// Stochastic oscillator, bounded `0..=100`.
+    Stochastic,
+    /// Money Flow Index, bounded `0..=100` and volume-weighted.
+    MoneyFlowIndex,
+    /// Average True Range — one line, unbounded, scaling to the data.
+    Atr,
+    /// On-Balance Volume — one cumulative line, scaling to the data.
+    OnBalanceVolume,
+}
+
+impl IndicatorMode {
+    /// The factory spelling of this mode.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            IndicatorMode::Macd => "macd",
+            IndicatorMode::Rsi => "rsi",
+            IndicatorMode::Stochastic => "stochastic",
+            IndicatorMode::MoneyFlowIndex => "money_flow_index",
+            IndicatorMode::Atr => "atr",
+            IndicatorMode::OnBalanceVolume => "on_balance_volume",
+        }
+    }
+
+    /// Parses a factory spelling into a mode.
+    pub fn from_name(name: &str) -> Option<Self> {
+        Some(match name {
+            "macd" => IndicatorMode::Macd,
+            "rsi" => IndicatorMode::Rsi,
+            "stochastic" | "kdj" => IndicatorMode::Stochastic,
+            "money_flow_index" | "mfi" => IndicatorMode::MoneyFlowIndex,
+            "atr" => IndicatorMode::Atr,
+            "on_balance_volume" | "obv" => IndicatorMode::OnBalanceVolume,
+            _ => return None,
+        })
+    }
+
+    /// Whether this mode's arithmetic needs each bar's traded volume.
+    ///
+    /// Money Flow Index weights the typical price by volume, and On-Balance Volume *is* a
+    /// running total of signed volume — both are meaningless without it. Named so a caller
+    /// (or the `series` property) can tell that a price-only series cannot feed them,
+    /// rather than discovering it from a blank pane.
+    pub fn requires_volume(self) -> bool {
+        matches!(self, IndicatorMode::MoneyFlowIndex | IndicatorMode::OnBalanceVolume)
+    }
+
+    /// The fixed `0..=100` range for the bounded modes, or `None` when the axis scales
+    /// to the data.
+    ///
+    /// Public because it is the difference between "the 70 line means overbought" and
+    /// "the 70 line is where 70% of this window's maximum happens to be"; a caller doing
+    /// its own annotation needs to know which it has.
+    pub fn fixed_range(self) -> Option<(f64, f64)> {
+        match self {
+            IndicatorMode::Rsi | IndicatorMode::Stochastic | IndicatorMode::MoneyFlowIndex => {
+                Some((0.0, 100.0))
+            }
+            IndicatorMode::Macd | IndicatorMode::Atr | IndicatorMode::OnBalanceVolume => None,
+        }
+    }
+
+    /// The overbought and oversold levels to draw, for the bounded modes.
+    ///
+    /// 70/30 for RSI and stochastic, 80/20 for MFI — the conventional settings. Drawn as
+    /// dashed horizontals so a reader can see at a glance whether the reading is in a
+    /// band rather than having to remember where the bands are.
+    pub fn reference_levels(self) -> &'static [f64] {
+        match self {
+            IndicatorMode::Rsi | IndicatorMode::Stochastic => &[30.0, 70.0],
+            IndicatorMode::MoneyFlowIndex => &[20.0, 80.0],
+            IndicatorMode::Macd => &[0.0],
+            IndicatorMode::Atr | IndicatorMode::OnBalanceVolume => &[],
+        }
+    }
+}
+
+/// One drawn series in the pane.
+///
+/// Kept as `(values, colour, width)` triples rather than three parallel vectors, so a
+/// series cannot lose its colour when the set is rebuilt — the failure mode of parallel
+/// arrays that this crate's `PriceSeries` avoids for the same reason.
+struct PaneSeries {
+    values: Vec<f64>,
+    color: Color,
+    width: u32,
+}
+
+/// The indicator pane control.
+pub struct IndicatorChart {
+    base: BaseWidget,
+    series: PriceSeries,
+    mode: IndicatorMode,
+    /// The MACD fast/slow/signal periods, the standard 12/26/9.
+    macd_periods: (usize, usize, usize),
+    /// The lookback for RSI, MFI and ATR.
+    period: usize,
+    /// The stochastic `%K` smoothing and `%D` period, the standard 3/3.
+    stochastic_periods: (usize, usize),
+    show_reference_levels: bool,
+    hovered_index: Option<usize>,
+    /// The bars shown, or `None` for every bar. Kept in step with the K-line pane by the host.
+    view: Option<(usize, usize)>,
+    /// The values last computed, kept so a caller can read the numbers behind the picture
+    /// without recomputing them — and so a tooltip and the drawn line cannot disagree.
+    last_values: Vec<Vec<f64>>,
+    /// Whether `last_values` still matches `series`/`mode`/the period settings.
+    ///
+    /// The indicator is O(bars) work plus several full-length allocations; before this
+    /// flag, a still pane recomputed MACD/RSI/ATR on every frame even when nothing had
+    /// changed. Every setter that can change the numbers clears it.
+    values_valid: bool,
+    /// Emitted with the bar index when the pane is clicked.
+    pub bar_clicked: rust_widgets::signal::Signal1<usize>,
+    /// Emitted with the bar index as the pointer moves across bars.
+    pub bar_hovered: rust_widgets::signal::Signal1<usize>,
+    /// Emitted with the visible `[start, end)` bar range after every view change.
+    pub view_changed: rust_widgets::signal::Signal1<(usize, usize)>,
+}
+
+impl IndicatorChart {
+    /// Creates an empty MACD pane.
+    pub fn new(geometry: Rect) -> Self {
+        Self {
+            base: BaseWidget::new(WidgetKind::IndicatorChart, geometry, "IndicatorChart"),
+            series: PriceSeries::new(),
+            mode: IndicatorMode::default(),
+            macd_periods: (12, 26, 9),
+            period: 14,
+            stochastic_periods: (3, 3),
+            show_reference_levels: true,
+            hovered_index: None,
+            view: None,
+            last_values: Vec::new(),
+            values_valid: false,
+            bar_clicked: rust_widgets::signal::Signal1::new(),
+            bar_hovered: rust_widgets::signal::Signal1::new(),
+            view_changed: rust_widgets::signal::Signal1::new(),
+        }
+    }
+
+    /// The series being analysed.
+    pub fn series(&self) -> &PriceSeries {
+        &self.series
+    }
+
+    /// Replaces the series and requests a repaint.
+    pub fn set_series(&mut self, series: PriceSeries) {
+        self.series = series;
+        self.values_valid = false;
+        self.view = self.clamped_view(self.view);
+        if self.hovered_index.is_some_and(|index| index >= self.series.len()) {
+            self.hovered_index = None;
+        }
+        self.base.request_redraw();
+    }
+
+    /// Appends one bar, returning its index.
+    ///
+    /// The streaming counterpart of [`Self::set_series`]. The derived indicator values are
+    /// invalidated so the next paint recomputes them over the new history.
+    pub fn append_point(&mut self, bar: Bar) -> usize {
+        self.series.push(bar);
+        self.values_valid = false;
+        self.view = self.clamped_view(self.view);
+        self.base.request_redraw();
+        self.series.len() - 1
+    }
+
+    /// Rewrites the newest bar, returning whether the series had one.
+    ///
+    /// This is the tick primitive a live candle needs: only the last bar changes, so the history
+    /// does not have to be copied on every update. The derived values are invalidated because
+    /// the indicator's final sample depends on that bar.
+    pub fn update_last(&mut self, bar: Bar) -> bool {
+        let Some(index) = self.series.len().checked_sub(1) else {
+            return false;
+        };
+        let updated = self.series.set_bar(index, bar);
+        if updated {
+            self.values_valid = false;
+            self.base.request_redraw();
+        }
+        updated
+    }
+
+    /// Removes every bar and restores the full-series view.
+    pub fn clear(&mut self) {
+        self.series = PriceSeries::new();
+        self.values_valid = false;
+        self.view = None;
+        self.hovered_index = None;
+        self.base.request_redraw();
+    }
+
+    /// The visible bar range, or `None` when every bar is shown.
+    pub fn view_range(&self) -> Option<(usize, usize)> {
+        self.view
+    }
+
+    /// Restricts the pane to `range`, the same contract the K-line pane uses.
+    pub fn set_view_range(&mut self, range: Option<(usize, usize)>) {
+        let range = self.clamped_view(range);
+        if self.view == range {
+            return;
+        }
+        self.view = range;
+        let (start, end) = self.view_bounds();
+        self.view_changed.emit((start, end));
+        self.base.request_redraw();
+    }
+
+    /// Restores the full series view.
+    pub fn reset_view(&mut self) {
+        self.set_view_range(None);
+    }
+
+    fn clamped_view(&self, range: Option<(usize, usize)>) -> Option<(usize, usize)> {
+        range.map(|(start, end)| {
+            let total = self.series.len();
+            let start = start.min(total.saturating_sub(1));
+            let end = end.clamp(start + 1, total.max(start + 1));
+            (start, end)
+        })
+    }
+
+    /// The visible `(start, end)` bar indices.
+    fn view_bounds(&self) -> (usize, usize) {
+        match self.view {
+            Some((start, end)) => (start.min(self.series.len()), end.min(self.series.len())),
+            None => (0, self.series.len()),
+        }
+    }
+
+    /// The active mode.
+    pub fn mode(&self) -> IndicatorMode {
+        self.mode
+    }
+
+    /// Sets the mode and requests a repaint.
+    pub fn set_mode(&mut self, mode: IndicatorMode) {
+        if self.mode == mode {
+            return;
+        }
+        self.mode = mode;
+        self.values_valid = false;
+        self.base.request_redraw();
+    }
+
+    /// The MACD fast, slow and signal periods.
+    pub fn macd_periods(&self) -> (usize, usize, usize) {
+        self.macd_periods
+    }
+
+    /// Sets the MACD periods. A zero period falls back to the default for that position,
+    /// because a zero-period EMA is the identity and would draw the price itself.
+    pub fn set_macd_periods(&mut self, fast: usize, slow: usize, signal: usize) {
+        self.macd_periods = (
+            if fast == 0 { 12 } else { fast },
+            if slow == 0 { 26 } else { slow },
+            if signal == 0 { 9 } else { signal },
+        );
+        self.values_valid = false;
+        self.base.request_redraw();
+    }
+
+    /// The lookback period used by RSI, MFI and ATR.
+    pub fn period(&self) -> usize {
+        self.period
+    }
+
+    /// Sets the lookback period, floored at 1.
+    ///
+    /// A period of zero would make every indicator return all gaps, which is a blank pane
+    /// with no explanation; one is the smallest period that produces any output at all.
+    pub fn set_period(&mut self, period: usize) {
+        let period = period.max(1);
+        if self.period == period {
+            return;
+        }
+        self.period = period;
+        self.values_valid = false;
+        self.base.request_redraw();
+    }
+
+    /// The stochastic `%K` smoothing and `%D` period.
+    pub fn stochastic_periods(&self) -> (usize, usize) {
+        self.stochastic_periods
+    }
+
+    /// Sets the stochastic smoothing periods.
+    pub fn set_stochastic_periods(&mut self, k_smoothing: usize, d_period: usize) {
+        let periods = (k_smoothing.max(1), d_period.max(1));
+        if self.stochastic_periods == periods {
+            return;
+        }
+        self.stochastic_periods = periods;
+        self.values_valid = false;
+        self.base.request_redraw();
+    }
+
+    /// Whether the reference levels are drawn.
+    pub fn shows_reference_levels(&self) -> bool {
+        self.show_reference_levels
+    }
+
+    /// Shows or hides the overbought/oversold reference levels.
+    pub fn set_show_reference_levels(&mut self, show: bool) {
+        if self.show_reference_levels == show {
+            return;
+        }
+        self.show_reference_levels = show;
+        self.base.request_redraw();
+    }
+
+    /// The bar index under the pointer.
+    pub fn hovered_index(&self) -> Option<usize> {
+        self.hovered_index
+    }
+
+    /// The series last drawn, in draw order.
+    ///
+    /// Empty until the pane has drawn at least once, because the values depend on the
+    /// series and the mode. A caller wanting them without waiting for a frame can call
+    /// [`Self::compute`].
+    pub fn last_values(&self) -> &[Vec<f64>] {
+        &self.last_values
+    }
+
+    /// Computes the active mode's series without drawing.
+    ///
+    /// Split out from `draw` so a caller can read the numbers — for a table, an alert or a
+    /// test — without needing a render target. `draw` calls this, so the two cannot
+    /// disagree about what is on screen.
+    pub fn compute(&self) -> Vec<Vec<f64>> {
+        let closes = self.series.closes();
+        let highs = self.series.highs();
+        let lows = self.series.lows();
+        let volumes = self.series.volumes();
+        match self.mode {
+            IndicatorMode::Macd => {
+                let (fast, slow, signal) = self.macd_periods;
+                let (line, signal_line, histogram) = indicators::macd(&closes, fast, slow, signal);
+                alloc::vec![line, signal_line, histogram]
+            }
+            IndicatorMode::Rsi => alloc::vec![indicators::rsi(&closes, self.period)],
+            IndicatorMode::Stochastic => {
+                let (k_smoothing, d_period) = self.stochastic_periods;
+                let (k, d) = indicators::stochastic(
+                    &highs,
+                    &lows,
+                    &closes,
+                    self.period,
+                    k_smoothing,
+                    d_period,
+                );
+                alloc::vec![k, d]
+            }
+            IndicatorMode::MoneyFlowIndex => {
+                alloc::vec![indicators::money_flow_index(
+                    &highs,
+                    &lows,
+                    &closes,
+                    &volumes,
+                    self.period
+                )]
+            }
+            IndicatorMode::Atr => alloc::vec![indicators::atr(&highs, &lows, &closes, self.period)],
+            IndicatorMode::OnBalanceVolume => {
+                alloc::vec![indicators::on_balance_volume(&closes, &volumes)]
+            }
+        }
+    }
+
+    /// The coloured series to draw, in order, with the histogram last so it sits behind.
+    fn pane_series(&self) -> Vec<PaneSeries> {
+        self.pane_series_from(self.compute())
+    }
+
+    /// The coloured series to draw, built from values the caller already has.
+    ///
+    /// Taking the values by value lets the draw path move `last_values` through the pane
+    /// record and back, so a cached frame neither recomputes the indicator nor clones its
+    /// float vectors.
+    fn pane_series_from(&self, values: Vec<Vec<f64>>) -> Vec<PaneSeries> {
+        let palette = self.series_colors();
+        values
+            .into_iter()
+            .enumerate()
+            .map(|(index, series)| PaneSeries {
+                values: series,
+                color: palette[index % palette.len()],
+                width: 1,
+            })
+            .collect()
+    }
+
+    /// The colour of each drawn series for the active mode.
+    fn series_colors(&self) -> Vec<Color> {
+        match self.mode {
+            IndicatorMode::Macd => alloc::vec![
+                Color::rgb(33, 150, 243),
+                Color::rgb(255, 193, 7),
+                Color::rgb(120, 144, 156),
+            ],
+            IndicatorMode::Rsi | IndicatorMode::MoneyFlowIndex | IndicatorMode::Atr => {
+                alloc::vec![Color::rgb(33, 150, 243)]
+            }
+            IndicatorMode::Stochastic => {
+                alloc::vec![Color::rgb(33, 150, 243), Color::rgb(255, 193, 7)]
+            }
+            IndicatorMode::OnBalanceVolume => alloc::vec![Color::rgb(156, 39, 176)],
+        }
+    }
+
+    /// The names of the drawn series for the active mode.
+    fn series_names(&self) -> &'static [&'static str] {
+        match self.mode {
+            IndicatorMode::Macd => &["macd", "signal", "histogram"],
+            IndicatorMode::Rsi => &["rsi"],
+            IndicatorMode::Stochastic => &["%K", "%D"],
+            IndicatorMode::MoneyFlowIndex => &["mfi"],
+            IndicatorMode::Atr => &["atr"],
+            IndicatorMode::OnBalanceVolume => &["obv"],
+        }
+    }
+
+    /// The hovered bar's readings, ready for a `ChartTooltip`.
+    ///
+    /// One line per drawn series, in the series' own colour, plus the bar's label (or its
+    /// index) as a heading. The values are the same ones the painter uses, so a tooltip
+    /// cannot disagree with the line under the pointer (COMP-J02).
+    pub fn hovered_summary(&self) -> Vec<rust_widgets::widget::companions::TooltipLine> {
+        use rust_widgets::widget::companions::TooltipLine;
+        let Some(index) = self.hovered_index else { return Vec::new() };
+        let mut lines = Vec::new();
+        lines.push(TooltipLine::new(match self.series.label_at(index) {
+            Some(label) => alloc::string::String::from(label),
+            None => alloc::format!("#{index}"),
+        }));
+        if self.series.is_empty() || index >= self.series.len() {
+            return lines;
+        }
+        // Recompute when the cache is cold (nothing has been painted yet), so a host that
+        // asks before the first frame gets real numbers rather than an empty list.
+        let computed;
+        let values: &[Vec<f64>] = if self.values_valid {
+            &self.last_values
+        } else {
+            computed = self.compute();
+            &computed
+        };
+        let colors = self.series_colors();
+        for (position, series) in values.iter().enumerate() {
+            let Some(value) = series.get(index).copied().filter(|value| value.is_finite()) else {
+                continue;
+            };
+            let name = self.series_names().get(position).copied().unwrap_or("value");
+            let color = colors[position % colors.len()];
+            lines.push(TooltipLine::colored(alloc::format!("{name} {value:.2}"), color));
+        }
+        lines
+    }
+
+    /// The axis range for the active mode.
+    fn axis_range(&self, series: &[PaneSeries], start: usize, end: usize) -> (f64, f64) {
+        if let Some(fixed) = self.mode.fixed_range() {
+            return fixed;
+        }
+        let mut low = f64::INFINITY;
+        let mut high = f64::NEG_INFINITY;
+        for pane in series {
+            let visible = &pane.values[start.min(pane.values.len())..end.min(pane.values.len())];
+            let (series_low, series_high) = indicators::series_extent(visible);
+            if series_low.is_finite() {
+                low = low.min(series_low);
+            }
+            if series_high.is_finite() {
+                high = high.max(series_high);
+            }
+        }
+        if !low.is_finite() || !high.is_finite() {
+            return (0.0, 1.0);
+        }
+        // A zero-centred mode must keep zero visible or the sign of the reading — which is
+        // the entire message of a MACD histogram — is off the pane.
+        if self.mode == IndicatorMode::Macd {
+            let magnitude = low.abs().max(high.abs());
+            if magnitude > 0.0 {
+                return (-magnitude, magnitude);
+            }
+        }
+        let span = high - low;
+        let pad = if span > 0.0 { span * 0.05 } else { high.abs().max(1.0) * 0.01 };
+        (low - pad, high + pad)
+    }
+
+    /// Draws a dashed horizontal reference level.
+    ///
+    /// `color` is passed in rather than resolved here so the level line comes from the same
+    /// [`PanelColors`] as the crosshair crossing it: a level that a theme move leaves behind
+    /// is exactly the defect this pane's four hardcoded literals used to be.
+    fn draw_reference_line(
+        context: &mut RenderContext,
+        area: &PlotArea,
+        price_axis: &PriceAxis,
+        level: f64,
+        color: Color,
+    ) {
+        let y = price_axis.y_for(level);
+        let mut x = area.rect.x;
+        while x < area.right() {
+            let dash_end = (x + 4).min(area.right());
+            context.draw_line_stroke(Point { x, y }, Point { x: dash_end, y }, color, 1);
+            x += 8;
+        }
+    }
+
+    /// Draws one derived series, breaking at gaps.
+    fn draw_series(
+        context: &mut RenderContext,
+        pane: &PaneSeries,
+        index_axis: &IndexAxis,
+        price_axis: &PriceAxis,
+        start: usize,
+        end: usize,
+    ) {
+        let mut previous: Option<(i32, i32)> = None;
+        let visible = &pane.values[start.min(pane.values.len())..end.min(pane.values.len())];
+        for (offset, value) in visible.iter().enumerate() {
+            if !value.is_finite() || offset >= index_axis.count {
+                previous = None;
+                continue;
+            }
+            let point = (index_axis.center_for(offset), price_axis.y_for(*value));
+            if let Some(from) = previous {
+                context.draw_line_stroke(
+                    Point { x: from.0, y: from.1 },
+                    Point { x: point.0, y: point.1 },
+                    pane.color,
+                    pane.width,
+                );
+            }
+            previous = Some(point);
+        }
+    }
+
+    /// Draws the MACD histogram as signed columns from the zero line.
+    ///
+    /// Only for `Macd`, because the histogram is the third series and its meaning is its
+    /// sign. Drawing it as a third line would lose that: a line crossing zero twice per
+    /// cycle does not read as "momentum building" the way a growing column does.
+    fn draw_histogram(
+        &self,
+        context: &mut RenderContext,
+        series: &[PaneSeries],
+        index_axis: &IndexAxis,
+        price_axis: &PriceAxis,
+        start: usize,
+        end: usize,
+    ) {
+        if self.mode != IndicatorMode::Macd {
+            return;
+        }
+        let Some(histogram) = series.get(2) else {
+            return;
+        };
+        let zero_y = price_axis.y_for(0.0);
+        let body_width = index_axis.body_width();
+        let visible =
+            &histogram.values[start.min(histogram.values.len())..end.min(histogram.values.len())];
+        for (offset, value) in visible.iter().enumerate() {
+            if !value.is_finite() || offset >= index_axis.count {
+                continue;
+            }
+            let y = price_axis.y_for(*value);
+            let top = y.min(zero_y);
+            let height = (y - zero_y).unsigned_abs().max(1);
+            context.fill_rect(
+                Rect::new(index_axis.x_for(offset), top, body_width as u32, height),
+                if *value >= 0.0 { Color::rgb(38, 166, 91) } else { Color::rgb(220, 68, 70) },
+            );
+        }
+    }
+
+    /// Draws the pane's left-hand value labels.
+    fn draw_labels(&self, context: &mut RenderContext, area: &PlotArea, price_axis: &PriceAxis) {
+        let (low, high) = (price_axis.low, price_axis.high);
+        // One role font and one label column for the whole axis; the old `len * 7`
+        // estimate put an eight-character value's origin outside the control.
+        let font = role_font(self.style(), 10.0);
+        let label_left = area.rect.x - area.left_margin;
+        let label_right = area.label_x();
+        let label_width = (label_right - label_left).max(0) as u32;
+        for step in 0..=3 {
+            let fraction = step as f64 / 3.0;
+            let value = low + fraction * (high - low);
+            let y = price_axis.y_for(value);
+            // Two decimals throughout: an indicator's own scale is not a price, so
+            // inferring precision from the data would give an unbounded axis like MACD a
+            // changing number of decimals as the window scrolls.
+            super::volume_chart::with_axis_label(|text| {
+                let _ = core::fmt::Write::write_fmt(&mut *text, format_args!("{value:.2}"));
+                let line_height = context.measure_text(text, &font).height.max(1);
+                let band =
+                    Rect::new(label_left, y - line_height as i32 / 2, label_width, line_height);
+                context.draw_text_fitted_cow(
+                    band,
+                    text,
+                    &font,
+                    self.chrome().ink.with_alpha(190),
+                    HorizontalAlignment::Right,
+                );
+            });
+        }
+    }
+
+    /// Draws the pane's frame and a `No data` message, for a series with nothing in it.
+    ///
+    /// The empty state used to be a bare slab: the pane filled its rectangle and returned,
+    /// so an indicator with no feed showed no axis, no reference level and no explanation.
+    /// The MACD zero line is drawn here as well as in the populated state because it is the
+    /// scale — zero is where the sign flips — and a reader has to see it to know what an
+    /// empty MACD pane is waiting to plot against.
+    fn draw_empty_state(&self, context: &mut RenderContext, area: &PlotArea) {
+        let chrome = self.chrome();
+        let price_axis = area.price_axis(-1.0, 1.0);
+        for step in 0..=3 {
+            let fraction = step as f64 / 3.0;
+            let value = price_axis.low + fraction * (price_axis.high - price_axis.low);
+            let y = price_axis.y_for(value);
+            context.draw_line(
+                Point { x: area.rect.x, y },
+                Point { x: area.right(), y },
+                chrome.grid,
+            );
+        }
+        context.draw_rect(area.rect, chrome.grid);
+        let font = role_font(self.style(), 12.0);
+        let line = context.text_line(area.rect, &font);
+        context.draw_text_fitted_cow(
+            line,
+            "No data",
+            &font,
+            // Same 4.5:1 floor the axis labels use, so the message is legible on whatever
+            // surface the appearance resolved rather than only on the panel it used to be.
+            chrome.ink.legible_on(chrome.surface, PANEL_MIN_CONTRAST).with_alpha(160),
+            HorizontalAlignment::Center,
+        );
+    }
+    ///
+    /// The shared indicator preset, not a hand-written margin list: this pane used to reserve
+    /// 52 px on the left while the K-line, volume and depth panes reserved 48, so the same
+    /// bar index was drawn four pixels apart in two panes that are stacked and read against
+    /// each other.
+    /// The hovered bar's anchor and suggested tooltip content, for an external read-out.
+    ///
+    /// The anchor is the primary series' point at the hovered index; when that series has no
+    /// finite value there, the pane's vertical middle is used so the bubble still points at the
+    /// bar the host is reading (gap 10).
+    pub fn hover_anchor(&self) -> Option<(Point, Vec<rust_widgets::widget::companions::TooltipLine>)> {
+        let index = self.hovered_index?;
+        let (start, end) = self.view_bounds();
+        if index < start || index >= end {
+            return None;
+        }
+        let area = self.plot_area();
+        if area.rect.width == 0 || area.rect.height == 0 {
+            return None;
+        }
+        // A hover query is a user action, not a frame path, so one clone of the cached values
+        // is cheaper than a second series-building pipeline that could disagree with the paint.
+        let values = if self.values_valid { self.last_values.clone() } else { self.compute() };
+        let series = self.pane_series_from(values);
+        let (low, high) = self.axis_range(&series, start, end);
+        let index_axis = area.index_axis(end.saturating_sub(start).max(1));
+        let x = index_axis.center_for(index - start);
+        let value = series
+            .iter()
+            .find_map(|pane| pane.values.get(index).copied().filter(|value| value.is_finite()));
+        let y = match value {
+            Some(value) => area.price_axis(low, high).y_for(value),
+            None => area.rect.y + area.rect.height as i32 / 2,
+        };
+        Some((Point::new(x, y), self.hovered_summary()))
+    }
+
+    fn plot_area(&self) -> PlotArea {
+        PlotArea::indicator_pane(self.base.geometry())
+    }
+
+    /// The pane's chrome, resolved from this control's own style first and the theme second.
+    fn chrome(&self) -> PanelColors {
+        panel_colors(Some(self.base.style()))
+    }
+}
+
+impl Widget for IndicatorChart {
+    fn base(&self) -> &BaseWidget {
+        &self.base
+    }
+    fn set_state_theme_hook(&mut self) {
+        rust_widgets::style::reapply_active_theme_state(self);
+    }
+    fn base_mut(&mut self) -> &mut BaseWidget {
+        &mut self.base
+    }
+    fn as_draw_mut(&mut self) -> Option<&mut dyn Draw> {
+        Some(self)
+    }
+    impl_widget_property_hooks!();
+    /// Resolves a published event name to the control's own signal.
+    ///
+    /// # Why this is explicit
+    ///
+    /// `connect_event` validates a name against the capability table and registers a hub slot; only
+    /// `event_signal_dyn` joins that name to the signal the control actually **emits**. Without an
+    /// arm a published name is valid and inert, which is the silent failure
+    /// `tools/check_event_signal_dyn.sh` exists to make impossible: the arm set is compared against
+    /// the capability's published names, so the two cannot drift.
+    ///
+    /// # Payload mapping
+    ///
+    /// A hub name carries no value, so a `Signal1<T>` needs a conversion. The one used here is the
+    /// same spelling the property side uses, so a designer reads one representation per kind: a
+    /// number as `Int`, a float as `Float`, a flag as `Bool`, text as `String`, and a structured
+    /// payload as its debug spelling. A `None` maps to `Null`, which is the same value an absent
+    /// optional property uses — so "no selection" is distinguishable from "selection 0".
+    fn event_signal_dyn(&self, name: &str) -> Option<rust_widgets::signal::EventSignalRef> {
+        use rust_widgets::signal::EventSignalRef;
+        match name {
+            "bar_clicked" => Some(EventSignalRef::mapped("bar_clicked", &self.bar_clicked, |v| {
+                CapabilityValue::UInt(*v as u64)
+            })),
+            "bar_hovered" => Some(EventSignalRef::mapped("bar_hovered", &self.bar_hovered, |v| {
+                CapabilityValue::UInt(*v as u64)
+            })),
+            "view_changed" => {
+                Some(EventSignalRef::mapped("view_changed", &self.view_changed, |v| {
+                    CapabilityValue::Tuple(rust_widgets::compat::Vec::from([
+                        CapabilityValue::UInt(v.0 as u64),
+                        CapabilityValue::UInt(v.1 as u64),
+                    ]))
+                }))
+            }
+            _ => None,
+        }
+    }
+}
+
+impl rust_widgets::event::EventHandler for IndicatorChart {
+    fn handle_event(&mut self, event: &rust_widgets::event::Event) {
+        use rust_widgets::event::Event;
+        match event {
+            Event::MouseMove { pos } | Event::PointerMove { pos, .. } => {
+                let area = self.plot_area();
+                let (start, end) = self.view_bounds();
+                let index_axis = area.index_axis(end.saturating_sub(start));
+                let next = index_axis
+                    .index_at(pos.x)
+                    .map(|index| start + index)
+                    .filter(|index| *index < end);
+                if next != self.hovered_index {
+                    if let Some(index) = next {
+                        self.bar_hovered.emit(index);
+                    }
+                    self.hovered_index = next;
+                    self.base.request_redraw();
+                }
+            }
+            Event::MouseLeave { .. } if self.hovered_index.take().is_some() => {
+                self.base.request_redraw();
+            }
+            // Wheel zoom, the same gesture and factors the K-line and volume panes use, so
+            // the three stacked panes zoom identically when a host links their views
+            // (FIN-03).
+            Event::Wheel { delta, .. } if delta.y != 0 => {
+                let total = self.series.len();
+                if total > 4 {
+                    let (start, end) = self.view_bounds();
+                    let anchor = self.hovered_index.unwrap_or((start + end) / 2);
+                    let span = (end - start).max(4);
+                    let factor = if delta.y > 0 { 1.25 } else { 0.8 };
+                    let new_span = ((span as f64 * factor).round() as usize).clamp(4, total);
+                    let half = new_span / 2;
+                    let new_start = anchor.saturating_sub(half).min(total - new_span);
+                    self.set_view_range(Some((new_start, new_start + new_span)));
+                }
+            }
+            Event::MousePress { pos, .. } | Event::PointerPress { pos, .. } => {
+                let area = self.plot_area();
+                let (start, end) = self.view_bounds();
+                let index_axis = area.index_axis(end.saturating_sub(start));
+                if let Some(index) = index_axis
+                    .index_at(pos.x)
+                    .map(|index| start + index)
+                    .filter(|index| *index < end)
+                {
+                    self.bar_clicked.emit(index);
+                }
+            }
+            _ => {}
+        }
+        self.base.handle_event(event);
+    }
+}
+
+impl Draw for IndicatorChart {
+    fn draw(&mut self, context: &mut RenderContext) {
+        let area = self.plot_area();
+        if area.rect.width == 0 || area.rect.height == 0 {
+            return;
+        }
+        // The pane surface resolves the caller's style first and the theme second. The
+        // indicator line colours below are which indicator is which: they are data.
+        let chrome = self.chrome();
+        context.fill_rect(area.rect, chrome.surface);
+        if self.series.is_empty() {
+            self.draw_empty_state(context, &area);
+            return;
+        }
+
+        let series = if self.values_valid {
+            // Move the cached values through the pane records and back at the end of the
+            // frame: no recompute, no float-vector clone.
+            let values = core::mem::take(&mut self.last_values);
+            self.pane_series_from(values)
+        } else {
+            self.pane_series()
+        };
+        let (start, end) = self.view_bounds();
+        let (low, high) = self.axis_range(&series, start, end);
+        let price_axis = area.price_axis(low, high);
+        let index_axis = area.index_axis(end.saturating_sub(start));
+
+        // The scale's gridlines, under everything: an oscillator is read against its bands
+        // and against zero, so a reading with no gridlines to line up with is a guess.
+        for step in 0..=3 {
+            let fraction = step as f64 / 3.0;
+            let value = price_axis.low + fraction * (price_axis.high - price_axis.low);
+            let y = price_axis.y_for(value);
+            context.draw_line(
+                Point { x: area.rect.x, y },
+                Point { x: area.right(), y },
+                chrome.grid,
+            );
+        }
+
+        // The histogram first, so the lines are drawn over it.
+        self.draw_histogram(context, &series, &index_axis, &price_axis, start, end);
+
+        if self.show_reference_levels {
+            for level in self.mode.reference_levels() {
+                Self::draw_reference_line(context, &area, &price_axis, *level, chrome.reference);
+            }
+        }
+
+        // The MACD histogram is also the third series; drawing it as a line too would
+        // trace a column chart with a polyline and make both harder to read.
+        let line_count = if self.mode == IndicatorMode::Macd { 2 } else { series.len() };
+        for pane in series.iter().take(line_count) {
+            Self::draw_series(context, pane, &index_axis, &price_axis, start, end);
+        }
+
+        self.draw_labels(context, &area, &price_axis);
+
+        // The bar index under the pane, from the series' own labels (FIN-01).
+        super::volume_chart::draw_index_ticks(
+            context,
+            &area,
+            start,
+            end,
+            |index, label| match self.series.label_at(index) {
+                Some(text) => label.push_str(text),
+                None => {
+                    let _ = core::fmt::Write::write_fmt(&mut *label, format_args!("{index}"));
+                }
+            },
+            &role_font(self.style(), 10.0),
+            chrome.ink.with_alpha(190),
+        );
+
+        if let Some(index) = self.hovered_index.filter(|index| *index >= start && *index < end) {
+            let x = index_axis.center_for(index - start);
+            context.draw_line_stroke(
+                Point { x, y: area.rect.y },
+                Point { x, y: area.bottom() },
+                chrome.crosshair,
+                1,
+            );
+            // The readings at that bar, one per drawn series.
+            let mut text = alloc::string::String::new();
+            for pane in series.iter() {
+                if let Some(value) = pane.values.get(index).filter(|value| value.is_finite()) {
+                    if !text.is_empty() {
+                        text.push_str("  ");
+                    }
+                    text.push_str(&alloc::format!("{:.2}", value));
+                }
+            }
+            if !text.is_empty() {
+                // Measured, not estimated: `len * 7` assumed a monospace advance the
+                // pane does not draw in, which clipped the readout on a proportional face
+                // and left a gap on a narrow one (J-P19).
+                let font = role_font(self.style(), 11.0);
+                let width = context.measure_text(&text, &font).width as i32;
+                let label_x = if x + 8 + width > area.right() { x - 8 - width } else { x + 8 };
+                context.draw_text(
+                    Point { x: label_x.max(area.rect.x), y: area.rect.y + 2 },
+                    &text,
+                    &font,
+                    chrome.ink,
+                    HorizontalAlignment::Left,
+                );
+            }
+        }
+
+        // The values are kept so a caller can read them without recomputing.
+        self.last_values = series.into_iter().map(|pane| pane.values).collect();
+        self.values_valid = true;
+    }
+}
+
+/// Test module for the indicator pane.
+impl WidgetProperties for IndicatorChart {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "mode" => Ok(CapabilityValue::String(alloc::string::String::from(self.mode.as_str()))),
+            "period" => Ok(CapabilityValue::UInt(self.period as u64)),
+            "show_reference_levels" => Ok(CapabilityValue::Bool(self.show_reference_levels)),
+            "series" => {
+                let mut text = alloc::string::String::new();
+                for (index, bar) in self.series.bars().iter().enumerate() {
+                    if index > 0 {
+                        text.push(',');
+                    }
+                    text.push_str(&alloc::format!("{}", bar.close));
+                }
+                Ok(CapabilityValue::String(text))
+            }
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "mode" => {
+                let CapabilityValue::String(text) = value else {
+                    return Err(CapabilityAccessError::TypeMismatch);
+                };
+                let mode =
+                    IndicatorMode::from_name(&text).ok_or(CapabilityAccessError::OutOfRange)?;
+                self.set_mode(mode);
+                Ok(())
+            }
+            "period" => {
+                let CapabilityValue::UInt(period) = value else {
+                    return Err(CapabilityAccessError::TypeMismatch);
+                };
+                self.set_period(period as usize);
+                Ok(())
+            }
+            "show_reference_levels" => {
+                let CapabilityValue::Bool(show) = value else {
+                    return Err(CapabilityAccessError::TypeMismatch);
+                };
+                self.set_show_reference_levels(show);
+                Ok(())
+            }
+            "series" => {
+                let CapabilityValue::String(text) = value else {
+                    return Err(CapabilityAccessError::TypeMismatch);
+                };
+                // The property carries closes only, so the bars it builds have no volume.
+                // A volume-weighted mode read off such a series is undefined (MFI produces
+                // `NAN` throughout, OBV a flat zero line), and silently accepting the write
+                // would leave the caller with a blank pane and no error. Refusing names the
+                // problem instead: the property cannot express what the mode needs.
+                if self.mode.requires_volume() {
+                    return Err(CapabilityAccessError::UnsupportedOnWidget);
+                }
+                let mut series = PriceSeries::new();
+                for token in text.split([',', ' ', ';']).filter(|token| !token.is_empty()) {
+                    let price: f64 =
+                        token.trim().parse().map_err(|_| CapabilityAccessError::OutOfRange)?;
+                    series.push(Bar::flat(price, 0.0));
+                }
+                self.set_series(series);
+                Ok(())
+            }
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of!["mode", "period", "show_reference_levels", "series", BASE_PROPERTY_NAMES]
+    }
+
+    /// Runs one of the commands `indicator_chart` publishes.
+    ///
+    /// The pane's own studies are selected through `mode` and `period`, not stacked
+    /// as overlays, so `add_overlay` — whose method exists only on
+    /// `CandlestickChart` — is answered as
+    /// [`CapabilityAccessError::UnsupportedOnWidget`]. That refusal is an honest
+    /// answer, not a fix: the `commands` list still advertises an action this control
+    /// cannot take, and reconciling it is a registry decision. The `set_*` write names
+    /// carry their values.
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "add_overlay" => Err(CapabilityAccessError::UnsupportedOnWidget),
+            _ if name.starts_with("set_") => Err(CapabilityAccessError::OutOfRange),
+            _ => Err(CapabilityAccessError::UnknownCommand),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::finance::types::fixtures;
+
+    /// The pane carries the series it was given.
+    #[test]
+    fn an_indicator_pane_carries_its_series() {
+        let mut chart = IndicatorChart::new(Rect::new(0, 0, 480, 160));
+        assert!(chart.series().is_empty());
+        chart.set_series(fixtures::sample_series(60));
+        assert_eq!(chart.series().len(), 60);
+    }
+
+    /// MACD is the default mode, as it is the most common secondary pane.
+    /// The indicator pane accepts the same view range the K-line pane publishes.
+    #[test]
+    fn a_view_range_restricts_the_indicator_and_reports_changes() {
+        let mut chart = IndicatorChart::new(Rect::new(0, 0, 240, 80));
+        let mut series = PriceSeries::new();
+        for value in [1.0, 2.0, 3.0, 4.0, 5.0] {
+            series.push(Bar::flat(value, 0.0));
+        }
+        chart.set_series(series);
+        chart.set_period(2);
+        chart.set_mode(IndicatorMode::Rsi);
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::<(usize, usize)>::new()));
+        let sink = std::sync::Arc::clone(&seen);
+        chart.view_changed.connect(move |range| sink.lock().unwrap().push(*range));
+
+        chart.set_view_range(Some((1, 4)));
+        assert_eq!(chart.view_range(), Some((1, 4)));
+        assert_eq!(*seen.lock().unwrap(), vec![(1, 4)]);
+        // Computing still returns full-length series; only the painted window is restricted.
+        assert_eq!(chart.compute()[0].len(), 5);
+        chart.reset_view();
+        assert_eq!(*seen.lock().unwrap(), vec![(1, 4), (0, 5)]);
+    }
+
+    #[test]
+    fn macd_is_the_default_mode() {
+        let chart = IndicatorChart::new(Rect::new(0, 0, 480, 160));
+        assert_eq!(chart.mode(), IndicatorMode::Macd);
+        assert_eq!(chart.macd_periods(), (12, 26, 9), "the standard periods");
+        assert_eq!(chart.period(), 14);
+        assert_eq!(chart.stochastic_periods(), (3, 3));
+    }
+
+    /// Every mode spelling round-trips, including the common aliases.
+    #[test]
+    fn mode_names_round_trip() {
+        for mode in [
+            IndicatorMode::Macd,
+            IndicatorMode::Rsi,
+            IndicatorMode::Stochastic,
+            IndicatorMode::MoneyFlowIndex,
+            IndicatorMode::Atr,
+            IndicatorMode::OnBalanceVolume,
+        ] {
+            let name = mode.as_str();
+            assert_eq!(IndicatorMode::from_name(name), Some(mode), "{name} must round-trip");
+        }
+        assert_eq!(IndicatorMode::from_name("kdj"), Some(IndicatorMode::Stochastic));
+        assert_eq!(IndicatorMode::from_name("mfi"), Some(IndicatorMode::MoneyFlowIndex));
+        assert_eq!(IndicatorMode::from_name("obv"), Some(IndicatorMode::OnBalanceVolume));
+        assert_eq!(IndicatorMode::from_name("nonsense"), None);
+    }
+
+    /// The bounded modes declare a fixed range and the unbounded ones do not.
+    ///
+    /// This is the difference between "the 70 line means overbought" and "the 70 line is
+    /// wherever 70% of this window happens to fall", so it is a contract rather than an
+    /// implementation detail.
+    #[test]
+    fn bounded_modes_have_a_fixed_range() {
+        for mode in [IndicatorMode::Rsi, IndicatorMode::Stochastic, IndicatorMode::MoneyFlowIndex] {
+            assert_eq!(mode.fixed_range(), Some((0.0, 100.0)), "{mode:?} is bounded");
+        }
+        for mode in [IndicatorMode::Macd, IndicatorMode::Atr, IndicatorMode::OnBalanceVolume] {
+            assert_eq!(mode.fixed_range(), None, "{mode:?} scales to its data");
+        }
+    }
+
+    /// The reference levels are the conventional settings per mode.
+    #[test]
+    fn reference_levels_follow_the_mode() {
+        assert_eq!(IndicatorMode::Rsi.reference_levels(), &[30.0, 70.0]);
+        assert_eq!(IndicatorMode::Stochastic.reference_levels(), &[30.0, 70.0]);
+        assert_eq!(IndicatorMode::MoneyFlowIndex.reference_levels(), &[20.0, 80.0]);
+        assert_eq!(IndicatorMode::Macd.reference_levels(), &[0.0]);
+        assert!(IndicatorMode::Atr.reference_levels().is_empty());
+    }
+
+    /// MACD computes three series, one of which is the histogram.
+    #[test]
+    fn macd_computes_three_series() {
+        let mut chart = IndicatorChart::new(Rect::new(0, 0, 480, 160));
+        chart.set_series(fixtures::sample_series(120));
+        let values = chart.compute();
+        assert_eq!(values.len(), 3, "the line, the signal and the histogram");
+        for series in &values {
+            assert_eq!(series.len(), 120, "every series must align with the bars");
+        }
+    }
+
+    /// Every mode computes at least one series of the right length.
+    #[test]
+    fn every_mode_computes_aligned_series() {
+        for mode in [
+            IndicatorMode::Macd,
+            IndicatorMode::Rsi,
+            IndicatorMode::Stochastic,
+            IndicatorMode::MoneyFlowIndex,
+            IndicatorMode::Atr,
+            IndicatorMode::OnBalanceVolume,
+        ] {
+            let mut chart = IndicatorChart::new(Rect::new(0, 0, 480, 160));
+            chart.set_series(fixtures::sample_series(90));
+            chart.set_mode(mode);
+            let values = chart.compute();
+            assert!(!values.is_empty(), "{mode:?} must compute something");
+            for series in &values {
+                assert_eq!(series.len(), 90, "{mode:?} must align with the bars");
+            }
+        }
+    }
+
+    /// RSI's output stays inside the mode's declared range.
+    ///
+    /// The declared range and the arithmetic must agree, or the pane would clamp a value
+    /// that is already correct and draw a flat line at the edge.
+    #[test]
+    fn rsi_output_fits_its_declared_range() {
+        let mut chart = IndicatorChart::new(Rect::new(0, 0, 480, 160));
+        chart.set_series(fixtures::sample_series(120));
+        chart.set_mode(IndicatorMode::Rsi);
+        let values = chart.compute();
+        for value in values[0].iter().filter(|value| value.is_finite()) {
+            assert!((0.0..=100.0).contains(value), "RSI out of its declared range: {value}");
+        }
+    }
+
+    /// A zero period is floored at one rather than producing a blank pane.
+    #[test]
+    fn a_zero_period_is_floored() {
+        let mut chart = IndicatorChart::new(Rect::new(0, 0, 480, 160));
+        chart.set_period(0);
+        assert_eq!(chart.period(), 1, "a zero period would make every indicator blank");
+        chart.set_stochastic_periods(0, 0);
+        assert_eq!(chart.stochastic_periods().1, 1, "a zero %D period is not a period");
+    }
+
+    /// A zero MACD period falls back to the standard for that position.
+    #[test]
+    fn a_zero_macd_period_falls_back() {
+        let mut chart = IndicatorChart::new(Rect::new(0, 0, 480, 160));
+        chart.set_macd_periods(0, 0, 0);
+        assert_eq!(chart.macd_periods(), (12, 26, 9), "a zero-period EMA is the identity");
+    }
+
+    /// The reference levels can be hidden.
+    #[test]
+    fn reference_levels_can_be_hidden() {
+        let mut chart = IndicatorChart::new(Rect::new(0, 0, 480, 160));
+        assert!(chart.shows_reference_levels(), "shown by default");
+        chart.set_show_reference_levels(false);
+        assert!(!chart.shows_reference_levels());
+    }
+
+    /// An empty series draws without panicking.
+    #[test]
+    fn an_empty_series_draws_without_panicking() {
+        let mut chart = IndicatorChart::new(Rect::new(0, 0, 320, 160));
+        let mut backend =
+            rust_widgets::render::SoftwarePaintBackend::new(rust_widgets::core::Size::new(320, 160), 1.0);
+        let mut context = RenderContext::new(&mut backend);
+        chart.draw(&mut context);
+    }
+
+    /// Every mode draws with a real series.
+    #[test]
+    fn every_mode_draws() {
+        for mode in [
+            IndicatorMode::Macd,
+            IndicatorMode::Rsi,
+            IndicatorMode::Stochastic,
+            IndicatorMode::MoneyFlowIndex,
+            IndicatorMode::Atr,
+            IndicatorMode::OnBalanceVolume,
+        ] {
+            let mut chart = IndicatorChart::new(Rect::new(0, 0, 400, 160));
+            chart.set_series(fixtures::sample_series(80));
+            chart.set_mode(mode);
+            let mut backend =
+                rust_widgets::render::SoftwarePaintBackend::new(rust_widgets::core::Size::new(400, 160), 1.0);
+            let mut context = RenderContext::new(&mut backend);
+            chart.draw(&mut context);
+        }
+    }
+
+    /// A malformed series draws without panicking in every mode.
+    #[test]
+    fn a_malformed_series_draws_in_every_mode() {
+        let mut series = crate::finance::types::PriceSeries::new();
+        for index in 0..30 {
+            if index % 7 == 0 {
+                series.push(crate::finance::types::Bar::new(
+                    f64::NAN,
+                    f64::NAN,
+                    f64::NAN,
+                    f64::NAN,
+                    f64::NAN,
+                ));
+            } else {
+                series.push(crate::finance::types::Bar::flat(
+                    100.0 + index as f64,
+                    0.0,
+                ));
+            }
+        }
+        for mode in [
+            IndicatorMode::Macd,
+            IndicatorMode::Rsi,
+            IndicatorMode::Stochastic,
+            IndicatorMode::MoneyFlowIndex,
+            IndicatorMode::Atr,
+            IndicatorMode::OnBalanceVolume,
+        ] {
+            let mut chart = IndicatorChart::new(Rect::new(0, 0, 400, 160));
+            chart.set_series(series.clone());
+            chart.set_mode(mode);
+            let mut backend =
+                rust_widgets::render::SoftwarePaintBackend::new(rust_widgets::core::Size::new(400, 160), 1.0);
+            let mut context = RenderContext::new(&mut backend);
+            chart.draw(&mut context);
+        }
+    }
+
+    /// The values a caller reads match what was computed.
+    ///
+    /// `last_values` exists so a tooltip and the drawn line cannot disagree; if it held
+    /// something other than `compute`'s output, that guarantee would be false.
+    ///
+    /// Compared element-wise rather than with `assert_eq!`, because every indicator is
+    /// `NAN` through its warm-up and `NAN != NAN` — a whole-slice comparison would fail
+    /// on the first gap of a series that is in fact identical.
+    #[test]
+    fn the_reported_values_match_the_computed_ones() {
+        let mut chart = IndicatorChart::new(Rect::new(0, 0, 400, 160));
+        chart.set_series(fixtures::sample_series(60));
+        chart.set_mode(IndicatorMode::Rsi);
+        let expected = chart.compute();
+        let mut backend =
+            rust_widgets::render::SoftwarePaintBackend::new(rust_widgets::core::Size::new(400, 160), 1.0);
+        let mut context = RenderContext::new(&mut backend);
+        chart.draw(&mut context);
+
+        let reported = chart.last_values();
+        assert_eq!(reported.len(), expected.len(), "the series count must match");
+        for (reported_series, expected_series) in reported.iter().zip(expected.iter()) {
+            assert_eq!(reported_series.len(), expected_series.len());
+            for (index, (left, right)) in
+                reported_series.iter().zip(expected_series.iter()).enumerate()
+            {
+                if left.is_nan() && right.is_nan() {
+                    continue;
+                }
+                assert!(
+                    (left - right).abs() < 1e-9,
+                    "index {index}: reported {left} but computed {right}"
+                );
+            }
+        }
+        assert!(
+            reported[0].iter().any(|value| value.is_finite()),
+            "the fixture must produce at least one real reading, or this proves nothing"
+        );
+    }
+
+    /// RW-78: a live feed can append, rewrite the newest bar, and clear; each step
+    /// invalidates the derived indicator values.
+    #[test]
+    fn streaming_entry_points_append_update_and_clear() {
+        let mut chart = IndicatorChart::new(Rect::new(0, 0, 480, 160));
+        chart.set_series(fixtures::sample_series(2));
+
+        let index = chart.append_point(Bar::flat(110.0, 500.0));
+        assert_eq!(index, 2);
+        assert_eq!(chart.series().len(), 3);
+        assert!(!chart.values_valid, "the derived values are recomputed");
+
+        assert!(chart.update_last(Bar::flat(120.0, 900.0)));
+        assert_eq!(chart.series().bars().last().expect("the appended bar").volume, 900.0);
+        assert!(!chart.values_valid);
+
+        chart.clear();
+        assert_eq!(chart.series().len(), 0);
+        assert_eq!(chart.view_range(), None);
+        assert!(!chart.update_last(Bar::flat(1.0, 1.0)), "an empty series has no last bar");
+    }
+}

@@ -47,7 +47,6 @@ impl WidgetFactory {
         self.register(meter_capability(), create_meter);
         self.register(radar_chart_capability(), create_radar_chart);
         self.register(heatmap_capability(), create_heatmap);
-        self.register(kanban_board_capability(), create_kanban_board);
         self.register(cascader_capability(), create_cascader);
         self.register(query_builder_capability(), create_query_builder);
         self.register(emoji_picker_capability(), create_emoji_picker);
@@ -106,11 +105,7 @@ impl WidgetFactory {
             self.register(color_picker_capability(), create_color_picker);
             self.register(color_dialog_capability(), create_color_dialog);
             self.register(code_editor_capability(), create_code_editor);
-            self.register(gantt_widget_capability(), create_gantt_widget);
-            self.register(terminal_view_capability(), create_terminal_view);
             self.register(snackbar_capability(), create_snackbar);
-            self.register(map_view_capability(), create_map_view);
-            self.register(media_player_capability(), create_media_player);
             self.register(breadcrumb_capability(), create_breadcrumb);
             self.register(signature_pad_capability(), create_signature_pad);
             self.register(drop_zone_capability(), create_drop_zone);
@@ -127,11 +122,6 @@ impl WidgetFactory {
             // no registration row, which is why `check_drawn_types_are_covered` reported every one
             // of them: a type that draws and that no factory name can build is outside every gate.
             self.register(chart_reference_line_capability(), create_chart_reference_line);
-            self.register(terminal_find_bar_capability(), create_terminal_find_bar);
-            self.register(map_attribution_capability(), create_map_attribution);
-            self.register(gantt_task_grid_capability(), create_gantt_task_grid);
-            self.register(chapter_list_panel_capability(), create_chapter_list_panel);
-            self.register(map_overview_capability(), create_map_overview);
             self.register(grid_capability(), create_grid);
             // Controls that existed with a complete implementation but were never
             // registered. Without these rows the factory could not construct them by
@@ -140,7 +130,6 @@ impl WidgetFactory {
             self.register(timeline_widget_capability(), create_timeline_widget);
             self.register(command_palette_capability(), create_command_palette);
             self.register(notification_center_capability(), create_notification_center);
-            self.register(diff_viewer_capability(), create_diff_viewer);
             self.register(markdown_editor_capability(), create_markdown_editor);
             self.register(markdown_toolbar_capability(), create_markdown_toolbar);
             self.register(toast_stack_capability(), create_toast_stack);
@@ -283,22 +272,11 @@ impl WidgetFactory {
             self.register(line_chart_capability(), create_line_chart);
             self.register(sparkline_capability(), create_sparkline);
             self.register(bar_chart_capability(), create_bar_chart);
-            self.register(candlestick_chart_capability(), create_candlestick_chart);
-            self.register(volume_chart_capability(), create_volume_chart);
-            self.register(depth_chart_capability(), create_depth_chart);
-            self.register(order_book_capability(), create_order_book);
-            self.register(quote_board_capability(), create_quote_board);
-            self.register(indicator_chart_capability(), create_indicator_chart);
             self.register(pie_chart_capability(), create_pie_chart);
             self.register(animated_image_capability(), create_animated_image);
             self.register(hero_animation_capability(), create_hero_animation);
             self.register(bezier_curve_editor_capability(), create_bezier_curve_editor);
-            self.register(lottie_widget_capability(), create_lottie_widget);
-            self.register(rive_widget_capability(), create_rive_widget);
-            self.register(video_player_capability(), create_video_player);
             self.register(image_gallery_capability(), create_image_gallery);
-            self.register(audio_visualizer_capability(), create_audio_visualizer);
-            self.register(camera_preview_capability(), create_camera_preview);
             self.register(barcode_scanner_capability(), create_barcode_scanner);
             self.register(tool_button_capability(), create_tool_button);
             self.register(status_bar_capability(), create_status_bar);
@@ -316,13 +294,6 @@ impl WidgetFactory {
             self.register(tooltip_manager_capability(), create_tooltip_manager);
             self.register(zoom_pan_controller_capability(), create_zoom_pan_controller);
             self.register(toast_host_capability(), create_toast_host);
-            self.register(tile_loader_capability(), create_tile_loader);
-            self.register(zoom_control_capability(), create_zoom_control);
-            self.register(scale_bar_capability(), create_scale_bar);
-            self.register(compass_capability(), create_compass);
-            self.register(timeline_axis_capability(), create_timeline_axis);
-            self.register(dependency_editor_capability(), create_dependency_editor);
-            self.register(diff_file_list_capability(), create_diff_file_list);
             self.register(markdown_outline_panel_capability(), create_markdown_outline_panel);
             self.register(find_bar_capability(), create_find_bar);
             self.register(menu_panel_capability(), create_menu_panel);
@@ -332,8 +303,6 @@ impl WidgetFactory {
             self.register(layer_panel_capability(), create_layer_panel);
             self.register(playlist_panel_capability(), create_playlist_panel);
             self.register(shape_canvas_capability(), create_shape_canvas);
-            self.register(kanban_card_view_capability(), create_kanban_card_view);
-            self.register(kanban_column_header_capability(), create_kanban_column_header);
             self.register(range_preset_bar_capability(), create_range_preset_bar);
             self.register(grid_view_header_capability(), create_grid_view_header);
 
@@ -352,6 +321,16 @@ impl WidgetFactory {
             self.register(chart_data_table_capability(), create_chart_data_table);
             self.register(calendar_mark_layer_capability(), create_calendar_mark_layer);
             self.register(drag_ghost_layer_capability(), create_drag_ghost_layer);
+
+            // Controls that were constructible but had no factory row (RW-77/RW-81/RW-100).
+            // Each keeps an honest canonical name; the borrowed kind is documented on its
+            // capability constructor and needs a concrete-type tie-break in `capability.rs`.
+            self.register(chart_crosshair_capability(), create_chart_crosshair);
+            self.register(drum_column_capability(), create_drum_column);
+            self.register(preset_chip_bar_capability(), create_preset_chip_bar);
+            // `ThumbnailCache` is deliberately not a factory control: it owns no ink and is a
+            // companion a gallery borrows, so registering it would put a non-paintable entry in
+            // the palette (RW-100's "internal companion" branch).
         }
     }
 }
@@ -448,6 +427,31 @@ mod tests {
                     "the alias `{expected}` for {kind:?} is not a name the factory knows"
                 );
             }
+        }
+    }
+
+    /// RW-77/RW-81/RW-100: the controls that existed without a registry row are now
+    /// constructible, carry a capability, and are visible in the manifest.
+    #[test]
+    fn the_newly_registered_controls_are_constructible_and_manifested() {
+        let factory = WidgetFactory::new_with_defaults();
+        for name in ["chart_crosshair", "drum_column", "preset_chip_bar"] {
+            assert!(
+                factory.create(name, crate::core::Rect::new(0, 0, 100, 100), "").is_some(),
+                "`{name}` must be constructible through the factory"
+            );
+            let capability = factory
+                .capability(name)
+                .unwrap_or_else(|| panic!("`{name}` must have a capability row"));
+            assert_eq!(capability.canonical_name, name);
+            assert!(
+                !capability.properties.is_empty(),
+                "`{name}` must publish a property schema, not just a name"
+            );
+            assert!(
+                factory.property_schema(name, "geometry").is_ok(),
+                "`{name}` must answer the shared property contract"
+            );
         }
     }
 }

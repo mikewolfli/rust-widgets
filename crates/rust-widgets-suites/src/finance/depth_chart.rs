@@ -1,0 +1,1031 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
+//! The depth chart — the cumulative supply and demand curve around the spread.
+//!
+//! # What the curve means
+//!
+//! Each point answers "how much can be bought (or sold) before the price reaches here".
+//! The bid curve descends to the left — as the price falls, more resting buy orders are
+//! within reach — and the ask curve rises to the right. The two meet at the spread, and
+//! the shape of the V around that meeting point is the liquidity reading: a shallow V
+//! means size is available close to the touch, a steep one means the book is thin.
+//!
+//! # Why it is separate from the order book
+//!
+//! They show the same data and answer different questions. A ladder shows *levels* —
+//! which price, how much, in order — and is read row by row. A depth curve shows the
+//! *accumulated* shape and is read as a single picture. One cannot be derived from the
+//! other's drawing, and a control that tried to be both would need a mode switch that
+//! changes what every pixel means.
+
+use alloc::vec::Vec;
+
+use rust_widgets::core::{Color, HorizontalAlignment, Point, Rect};
+use rust_widgets::render::RenderContext;
+use rust_widgets::widget::capability::properties_trait::{base_property_get, base_property_set};
+use rust_widgets::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use rust_widgets::widget::capability::WidgetProperties;
+use crate::finance::layout::{panel_colors, PanelColors, PlotArea};
+use crate::finance::types::{BookLevel, OrderBook};
+use crate::finance::volume_chart::draw_empty_pane;
+use rust_widgets::widget::metrics::role_font;
+use rust_widgets::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use rust_widgets::{impl_widget_property_hooks, property_names_of};
+
+/// Which side of the book a point on the depth curve belongs to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DepthSide {
+    /// Resting buy orders, drawn to the left of the mid price.
+    Bid,
+    /// Resting sell orders, drawn to the right.
+    Ask,
+}
+
+/// One point on the depth curve.
+///
+/// Exposed rather than kept private because a caller drawing its own tooltip needs the
+/// exact values behind the curve, and recomputing them would be a second implementation
+/// of the accumulation that could disagree with the drawn one.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DepthPoint {
+    /// The price level.
+    pub price: f64,
+    /// Total quantity resting at this price or better.
+    pub cumulative_quantity: f64,
+    /// Which side of the spread this point is on.
+    pub side: DepthSide,
+}
+
+/// The depth chart control.
+pub struct DepthChart {
+    base: BaseWidget,
+    book: OrderBook,
+    /// How many levels of each side to plot. Zero means every level.
+    depth: usize,
+    /// The bid curve colour.
+    bid_color: Color,
+    /// The ask curve colour.
+    ask_color: Color,
+    /// Emitted with the price level under the pointer.
+    pub level_hovered: rust_widgets::signal::Signal1<f64>,
+    /// Emitted with the price level when a row is clicked.
+    pub level_clicked: rust_widgets::signal::Signal1<f64>,
+    /// The price of the level the pointer is nearest, once snapped.
+    hovered_level: Option<f64>,
+    /// The usable levels and the accumulated curve, rebuilt when the book or depth changes.
+    bid_levels: Vec<BookLevel>,
+    ask_levels: Vec<BookLevel>,
+    curve_cache: Vec<DepthPoint>,
+    max_cumulative_cache: f64,
+    price_bounds_cache: (f64, f64),
+}
+
+impl DepthChart {
+    /// Creates an empty depth chart.
+    pub fn new(geometry: Rect) -> Self {
+        Self {
+            base: BaseWidget::new(WidgetKind::DepthChart, geometry, "DepthChart"),
+            book: OrderBook::new(),
+            depth: 0,
+            bid_color: Color::rgb(38, 166, 91),
+            ask_color: Color::rgb(220, 68, 70),
+            level_hovered: rust_widgets::signal::Signal1::new(),
+            level_clicked: rust_widgets::signal::Signal1::new(),
+            hovered_level: None,
+            bid_levels: Vec::new(),
+            ask_levels: Vec::new(),
+            curve_cache: Vec::new(),
+            max_cumulative_cache: 0.0,
+            price_bounds_cache: (f64::NAN, f64::NAN),
+        }
+    }
+
+    /// Rebuilds the filtered levels, the accumulated curve and the two scales.
+    ///
+    /// The two level vectors are **reused**: they are cleared and refilled in place, so a
+    /// tick's rebuild allocates nothing. The previous form built a fresh `Vec` per side (and
+    /// a second one to filter it), which made every order-book push three allocations
+    /// (J-P17).
+    fn rebuild(&mut self) {
+        Self::fill_plottable_into(&mut self.bid_levels, self.book.bids(), self.depth);
+        Self::fill_plottable_into(&mut self.ask_levels, self.book.asks(), self.depth);
+        self.curve_cache.clear();
+        let mut running = 0.0;
+        for level in &self.bid_levels {
+            running += level.quantity;
+            self.curve_cache.push(DepthPoint {
+                price: level.price,
+                cumulative_quantity: running,
+                side: DepthSide::Bid,
+            });
+        }
+        let mut running = 0.0;
+        for level in &self.ask_levels {
+            running += level.quantity;
+            self.curve_cache.push(DepthPoint {
+                price: level.price,
+                cumulative_quantity: running,
+                side: DepthSide::Ask,
+            });
+        }
+        let peak = |levels: &[BookLevel]| levels.iter().map(|level| level.quantity).sum::<f64>();
+        self.max_cumulative_cache = peak(&self.bid_levels).max(peak(&self.ask_levels));
+        self.price_bounds_cache = Self::compute_price_bounds(&self.bid_levels, &self.ask_levels);
+        if let Some(price) = self.hovered_level {
+            if !self.curve_cache.iter().any(|point| point.price == price) {
+                self.hovered_level = None;
+            }
+        }
+    }
+
+    fn compute_price_bounds(bids: &[BookLevel], asks: &[BookLevel]) -> (f64, f64) {
+        let mut low = f64::INFINITY;
+        let mut high = f64::NEG_INFINITY;
+        for level in bids.iter().chain(asks.iter()) {
+            low = low.min(level.price);
+            high = high.max(level.price);
+        }
+        if low > high {
+            return (f64::NAN, f64::NAN);
+        }
+        if high <= low {
+            let magnitude = low.abs().max(1.0) * 0.001;
+            return (low - magnitude, high + magnitude);
+        }
+        (low, high)
+    }
+
+    /// The hovered level's anchor and suggested tooltip content, for an external read-out.
+    ///
+    /// The anchor is the curve point under the pointer, computed by the same mapping the painter
+    /// and hit test use (gap 10).
+    pub fn hover_anchor(&self) -> Option<(Point, Vec<rust_widgets::widget::companions::TooltipLine>)> {
+        let level = self.hovered_level?;
+        let area = self.plot_area();
+        if area.rect.width == 0 || area.rect.height == 0 {
+            return None;
+        }
+        let (low, high) = self.price_bounds();
+        if !low.is_finite() || !high.is_finite() || high <= low {
+            return None;
+        }
+        let point = self.curve_cache.iter().find(|point| point.price == level)?;
+        let max = self.max_cumulative();
+        if max <= 0.0 {
+            return None;
+        }
+        let fraction = ((level - low) / (high - low)).clamp(0.0, 1.0);
+        let x = area.rect.x + (fraction * area.rect.width as f64).round() as i32;
+        let y = area.bottom()
+            - ((point.cumulative_quantity / max).clamp(0.0, 1.0) * area.rect.height as f64).round()
+                as i32;
+        Some((Point::new(x, y), self.hovered_summary()))
+    }
+
+    /// The plot area for this control's geometry.
+    ///
+    /// Shared by `draw` and `handle_event` rather than built twice: the pointer-to-price
+    /// mapping is only correct while the rectangle it inverts is the rectangle the curve was
+    /// drawn in, and two copies of the margin list are two chances for those to disagree.
+    fn plot_area(&self) -> PlotArea {
+        PlotArea::price_pane(self.base.geometry())
+    }
+
+    /// The pane's chrome, resolved from this control's own style first and the theme second.
+    fn chrome(&self) -> PanelColors {
+        panel_colors(Some(self.base.style()))
+    }
+
+    /// The book being plotted.
+    pub fn book(&self) -> &OrderBook {
+        &self.book
+    }
+
+    /// Replaces the book and requests a repaint.
+    pub fn set_book(&mut self, book: OrderBook) {
+        self.book = book;
+        self.rebuild();
+        self.base.request_redraw();
+    }
+
+    /// Applies one bid level edit, returning whether the curve changed.
+    ///
+    /// The incremental counterpart of [`Self::set_book`]. The plotted levels and the cumulative
+    /// curve are rebuilt from the edited book, so the drawn picture matches the model without a
+    /// full snapshot being handed in.
+    pub fn apply_bid_level(&mut self, price: f64, quantity: f64) -> bool {
+        if !self.book.apply_bid_level(price, quantity) {
+            return false;
+        }
+        self.rebuild();
+        self.base.request_redraw();
+        true
+    }
+
+    /// Applies one ask level edit, returning whether the curve changed.
+    pub fn apply_ask_level(&mut self, price: f64, quantity: f64) -> bool {
+        if !self.book.apply_ask_level(price, quantity) {
+            return false;
+        }
+        self.rebuild();
+        self.base.request_redraw();
+        true
+    }
+
+    /// How many levels per side are plotted; zero means all of them.
+    pub fn depth(&self) -> usize {
+        self.depth
+    }
+
+    /// Sets how many levels per side to plot.
+    ///
+    /// Zero (the default) plots everything the book holds. A positive value keeps the
+    /// curve near the touch, which is where the reading usually matters — a book with
+    /// hundreds of levels plotted whole puts the interesting part in a few pixels.
+    pub fn set_depth(&mut self, depth: usize) {
+        if self.depth == depth {
+            return;
+        }
+        self.depth = depth;
+        self.rebuild();
+        self.base.request_redraw();
+    }
+
+    /// The two curve colours.
+    pub fn colors(&self) -> (Color, Color) {
+        (self.bid_color, self.ask_color)
+    }
+
+    /// Sets the bid and ask curve colours.
+    pub fn set_colors(&mut self, bid: Color, ask: Color) {
+        self.bid_color = bid;
+        self.ask_color = ask;
+        self.base.request_redraw();
+    }
+
+    /// The cumulative curve, as plotted.
+    ///
+    /// Bids are returned best-first as the book holds them, with the cumulative total
+    /// growing as the price moves away from the touch. Asks follow the same rule. The
+    /// caller drawing its own annotation gets the same numbers the curve was drawn from.
+    pub fn curve(&self) -> Vec<DepthPoint> {
+        self.curve_cache.clone()
+    }
+
+    /// The price of the level the pointer is currently nearest, if any.
+    pub fn hovered_level(&self) -> Option<f64> {
+        self.hovered_level
+    }
+
+    /// The hovered point's readings, ready for a `ChartTooltip`.
+    ///
+    /// The price, the cumulative quantity at it and which side of the book it belongs to,
+    /// taken from the same `curve_cache` the step curve is drawn from (COMP-J02).
+    pub fn hovered_summary(&self) -> Vec<rust_widgets::widget::companions::TooltipLine> {
+        use rust_widgets::widget::companions::TooltipLine;
+        let Some(price) = self.hovered_level else { return Vec::new() };
+        let Some(point) = self.curve_cache.iter().find(|point| point.price == price) else {
+            return Vec::new();
+        };
+        let color = match point.side {
+            DepthSide::Bid => self.bid_color,
+            DepthSide::Ask => self.ask_color,
+        };
+        alloc::vec![
+            TooltipLine::new(alloc::format!("{price:.2}")),
+            TooltipLine::new(alloc::format!("cum {:.0}", point.cumulative_quantity)),
+            TooltipLine::colored(
+                match point.side {
+                    DepthSide::Bid => "bid",
+                    DepthSide::Ask => "ask",
+                }
+                .to_string(),
+                color,
+            ),
+        ]
+    }
+
+    /// The level price nearest `price`, across both sides of the book.
+    ///
+    /// The chart's hover used to report the interpolated pointer position, which is not a
+    /// price any order rests at: a caller highlighting the reported level had to search the
+    /// book for an approximate match. Snapping answers the question the signal asks.
+    fn nearest_level(&self, price: f64) -> Option<f64> {
+        let mut best: Option<(f64, f64)> = None;
+        for point in &self.curve_cache {
+            let distance = (point.price - price).abs();
+            if best.is_none_or(|(_, near)| distance < near) {
+                best = Some((point.price, distance));
+            }
+        }
+        best.map(|(price, _)| price)
+    }
+
+    /// The spread between the best bid and best ask, if the book has both sides.
+    fn spread(&self) -> Option<(f64, f64)> {
+        let bid =
+            self.book.bids().iter().map(|level| level.price).fold(f64::NEG_INFINITY, f64::max);
+        let ask = self.book.asks().iter().map(|level| level.price).fold(f64::INFINITY, f64::min);
+        (bid.is_finite() && ask.is_finite() && ask > bid).then_some((bid, ask))
+    }
+
+    /// Fills `out` with the plottable levels of one side, reusing its allocation.
+    ///
+    /// # Why the filter lives here rather than inside the draw loop
+    ///
+    /// A book routinely contains levels the curve cannot use — an exchange publishes a
+    /// zero-size level for every price in range, and a malformed tick can carry a `NAN`.
+    /// The scale (`max_cumulative`), the price bounds (`price_bounds`) and the segments
+    /// must all be computed from the *same* set of levels, or the axis is stretched by
+    /// data that is never drawn and a skipped level silently removes a segment.
+    /// Skipping inside the loop while the bounds still counted the skipped level was
+    /// exactly that bug: one zero-size level could erase the whole curve.
+    fn fill_plottable_into(out: &mut Vec<BookLevel>, levels: &[BookLevel], depth: usize) {
+        out.clear();
+        let count = if depth == 0 { levels.len() } else { levels.len().min(depth) };
+        out.extend(levels[..count].iter().copied().filter(|level| {
+            level.price.is_finite() && level.quantity.is_finite() && level.quantity > 0.0
+        }));
+    }
+
+    /// The quantity the plot scales against: the largest cumulative total on either side.
+    ///
+    /// Deliberately the *cumulative* maximum rather than the largest single level, because
+    /// the y axis carries the accumulation. Scaling against a single level would push the
+    /// curve off the top of the pane at its far end.
+    fn max_cumulative(&self) -> f64 {
+        self.max_cumulative_cache
+    }
+
+    /// Draws one side's step curve.
+    ///
+    /// A **step** rather than a smooth line: each level is a price at which a fixed
+    /// quantity sits, so the cumulative total is constant across that price and jumps at
+    /// the next level. A smooth interpolation would draw quantity that does not exist at
+    /// prices between levels.
+    fn draw_step_curve(
+        &self,
+        context: &mut RenderContext,
+        area: &PlotArea,
+        side: DepthSide,
+        color: Color,
+        max_cumulative: f64,
+    ) {
+        let levels = match side {
+            DepthSide::Bid => &self.bid_levels,
+            DepthSide::Ask => &self.ask_levels,
+        };
+        if levels.is_empty() || max_cumulative <= 0.0 {
+            return;
+        }
+        let (low_price, high_price) = self.price_bounds();
+        if !low_price.is_finite() || !high_price.is_finite() || high_price <= low_price {
+            return;
+        }
+
+        let to_x = |price: f64| -> i32 {
+            let fraction = (price - low_price) / (high_price - low_price);
+            area.rect.x + (fraction * area.rect.width as f64).round() as i32
+        };
+        let to_y = |quantity: f64| -> i32 {
+            let fraction = quantity / max_cumulative;
+            area.bottom() - (fraction * area.rect.height as f64).round() as i32
+        };
+
+        let mut previous: Option<(i32, i32)> = None;
+        let mut running = 0.0;
+        // Walk away from the touch, so the curve starts at the spread and grows outward.
+        for level in levels {
+            running += level.quantity;
+            let x = to_x(level.price);
+            let y = to_y(running);
+            match previous {
+                Some((previous_x, previous_y)) => {
+                    // The horizontal segment carries the previous total across to this level,
+                    // which is what makes it a step rather than a staircase of diagonals.
+                    context.draw_line_stroke(
+                        rust_widgets::core::Point { x: previous_x, y: previous_y },
+                        rust_widgets::core::Point { x, y: previous_y },
+                        color,
+                        1,
+                    );
+                    context.draw_line_stroke(
+                        rust_widgets::core::Point { x, y: previous_y },
+                        rust_widgets::core::Point { x, y },
+                        color,
+                        1,
+                    );
+                }
+                // A lone level has no run to draw a step on, so it is drawn as the vertical
+                // from the baseline to its own total. Without this the whole curve is absent
+                // for a side that holds exactly one usable level — which is the normal state
+                // of a one-level book, not an edge case.
+                None => {
+                    context.draw_line_stroke(
+                        rust_widgets::core::Point { x, y: area.bottom() },
+                        rust_widgets::core::Point { x, y },
+                        color,
+                        1,
+                    );
+                }
+            }
+            previous = Some((x, y));
+        }
+
+        // A filled area under the curve, so the two sides read as volumes of available
+        // size rather than as two lines crossing.
+        //
+        // The wash is a step from the side's own colour toward the pane's surface, so it
+        // follows the appearance instead of being one of two near-black slabs.
+        let wash = color.blend(&self.chrome().surface, 0.80);
+        let mut running = 0.0;
+        let mut previous_x: Option<i32> = None;
+        for level in levels {
+            running += level.quantity;
+            let x = to_x(level.price);
+            let y = to_y(running);
+            if let Some(from) = previous_x {
+                // `from.min(x)`: bids are ordered best-first, so `x` decreases as the loop
+                // advances. Anchoring at `from` with an unsigned width painted the band one
+                // step toward the spread instead of the span it belongs to.
+                context.fill_rect(
+                    Rect::new(
+                        from.min(x),
+                        y,
+                        (x - from).unsigned_abs().max(1),
+                        (area.bottom() - y).max(0) as u32,
+                    ),
+                    wash,
+                );
+            }
+            previous_x = Some(x);
+        }
+    }
+
+    /// The price range the plot spans.
+    ///
+    /// # Why a degenerate range is widened rather than rejected
+    ///
+    /// A book can legitimately have every usable level at one price — a one-level book, or
+    /// a side whose other levels are all zero-size. Returning a zero-width range would make
+    /// `high_price <= low_price` true and every caller bail out, so the pane would go blank
+    /// for data that is perfectly drawable. The range is therefore widened by a nominal
+    /// amount around the single price, which is the same degradation `PriceAxis::new` uses,
+    /// and the lone level then draws through the middle of the pane.
+    fn price_bounds(&self) -> (f64, f64) {
+        self.price_bounds_cache
+    }
+}
+
+impl Widget for DepthChart {
+    fn base(&self) -> &BaseWidget {
+        &self.base
+    }
+    fn set_state_theme_hook(&mut self) {
+        rust_widgets::style::reapply_active_theme_state(self);
+    }
+    fn base_mut(&mut self) -> &mut BaseWidget {
+        &mut self.base
+    }
+    fn as_draw_mut(&mut self) -> Option<&mut dyn Draw> {
+        Some(self)
+    }
+    impl_widget_property_hooks!();
+    /// Resolves a published event name to the control's own signal.
+    ///
+    /// # Why this is explicit
+    ///
+    /// `connect_event` validates a name against the capability table and registers a hub slot; only
+    /// `event_signal_dyn` joins that name to the signal the control actually **emits**. Without an
+    /// arm a published name is valid and inert, which is the silent failure
+    /// `tools/check_event_signal_dyn.sh` exists to make impossible: the arm set is compared against
+    /// the capability's published names, so the two cannot drift.
+    ///
+    /// # Payload mapping
+    ///
+    /// A hub name carries no value, so a `Signal1<T>` needs a conversion. The one used here is the
+    /// same spelling the property side uses, so a designer reads one representation per kind: a
+    /// number as `Int`, a float as `Float`, a flag as `Bool`, text as `String`, and a structured
+    /// payload as its debug spelling. A `None` maps to `Null`, which is the same value an absent
+    /// optional property uses — so "no selection" is distinguishable from "selection 0".
+    fn event_signal_dyn(&self, name: &str) -> Option<rust_widgets::signal::EventSignalRef> {
+        use rust_widgets::signal::EventSignalRef;
+        match name {
+            "level_hovered" => {
+                Some(EventSignalRef::mapped("level_hovered", &self.level_hovered, |v| {
+                    CapabilityValue::Float(*v)
+                }))
+            }
+            "level_clicked" => {
+                Some(EventSignalRef::mapped("level_clicked", &self.level_clicked, |v| {
+                    CapabilityValue::Float(*v)
+                }))
+            }
+            _ => None,
+        }
+    }
+}
+
+impl rust_widgets::event::EventHandler for DepthChart {
+    fn handle_event(&mut self, event: &rust_widgets::event::Event) {
+        use rust_widgets::event::Event;
+        match event {
+            Event::MouseMove { pos } | Event::PointerMove { pos, .. } => {
+                let area = self.plot_area();
+                let (low, high) = self.price_bounds();
+                if high > low && area.rect.width > 0 {
+                    let fraction = (pos.x - area.rect.x) as f64 / area.rect.width as f64;
+                    if (0.0..=1.0).contains(&fraction) {
+                        let pointer = low + fraction * (high - low);
+                        // Snap to a resting level: the signal names an order's price, not an
+                        // arbitrary coordinate between two of them.
+                        if let Some(level) = self.nearest_level(pointer) {
+                            if self.hovered_level != Some(level) {
+                                self.hovered_level = Some(level);
+                                self.level_hovered.emit(level);
+                                self.base.request_redraw();
+                            }
+                        }
+                    }
+                }
+            }
+            Event::MouseLeave { .. } => {
+                if self.hovered_level.take().is_some() {
+                    self.base.request_redraw();
+                }
+            }
+            Event::MousePress { pos, .. } | Event::PointerPress { pos, .. } => {
+                let area = self.plot_area();
+                let (low, high) = self.price_bounds();
+                if high > low && area.rect.width > 0 {
+                    let fraction = (pos.x - area.rect.x) as f64 / area.rect.width as f64;
+                    if (0.0..=1.0).contains(&fraction) {
+                        let pointer = low + fraction * (high - low);
+                        if let Some(level) = self.nearest_level(pointer) {
+                            self.hovered_level = Some(level);
+                            self.level_clicked.emit(level);
+                            self.base.request_redraw();
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+        self.base.handle_event(event);
+    }
+}
+
+impl Draw for DepthChart {
+    fn draw(&mut self, context: &mut RenderContext) {
+        let area = self.plot_area();
+        if area.rect.width == 0 || area.rect.height == 0 {
+            return;
+        }
+        // The pane surface resolves the caller's style first and the theme second. The bid
+        // and ask colours below are which side of the book a point belongs to: they are data,
+        // and `set_colors` is the caller's way to change them.
+        let chrome = self.chrome();
+        context.fill_rect(area.rect, chrome.surface);
+
+        let max_cumulative = self.max_cumulative();
+        // No usable level: the book is empty or every level is zero-size, and the curve
+        // would be two invisible hairlines on the baseline. The pane draws its frame and a
+        // message instead of leaving the slab this used to return after.
+        if max_cumulative <= 0.0 {
+            draw_empty_pane(context, &area, chrome, &role_font(self.style(), 12.0));
+            return;
+        }
+
+        // A price/quantity scale: the curve's whole reading is "how much is available by
+        // here", which is a comparison against the baseline, so the gridlines are what turn
+        // it from a shape into a quantity.
+        let axis_font = role_font(self.style(), 10.0);
+        let label_left = area.rect.x - area.left_margin;
+        let label_width = (area.label_x() - label_left).max(0) as u32;
+        for step in 0..=3 {
+            let y = area.rect.y + area.rect.height as i32 * step / 3;
+            context.draw_line(
+                rust_widgets::core::Point { x: area.rect.x, y },
+                rust_widgets::core::Point { x: area.right(), y },
+                chrome.grid,
+            );
+            // The quantity this gridline stands for, so a curve's height is readable.
+            let fraction = 1.0 - step as f64 / 3.0;
+            let value = max_cumulative * fraction;
+            super::volume_chart::with_axis_label(|text| {
+                let _ = core::fmt::Write::write_fmt(&mut *text, format_args!("{value:.0}"));
+                let line_height = context.measure_text(text, &axis_font).height.max(1);
+                context.draw_text_fitted_cow(
+                    Rect::new(label_left, y - line_height as i32 / 2, label_width, line_height),
+                    text,
+                    &axis_font,
+                    chrome.ink.with_alpha(190),
+                    HorizontalAlignment::Right,
+                );
+            });
+        }
+
+        // Bids first so the asks, drawn second, are on top where they overlap near the
+        // spread — the ask side is what a buyer reads, so it should not be occluded.
+        self.draw_step_curve(context, &area, DepthSide::Bid, self.bid_color, max_cumulative);
+        self.draw_step_curve(context, &area, DepthSide::Ask, self.ask_color, max_cumulative);
+
+        // The mid price, marked so the spread is readable without a separate label.
+        if let Some(mid) = self.book.mid_price() {
+            let (low, high) = self.price_bounds();
+            if high > low {
+                let fraction = (mid - low) / (high - low);
+                let x = area.rect.x + (fraction * area.rect.width as f64).round() as i32;
+                context.draw_line_stroke(
+                    rust_widgets::core::Point { x, y: area.rect.y },
+                    rust_widgets::core::Point { x, y: area.bottom() },
+                    chrome.crosshair,
+                    1,
+                );
+                // The spread annotation: the bid, the ask and their distance, on the mid line.
+                // A mid line alone says where the price is but not how wide the market is.
+                if let Some((bid, ask)) = self.spread() {
+                    let text = format!("{:.2} / {:.2}  spread {:.2}", bid, ask, ask - bid);
+                    let font = role_font(self.style(), 10.0);
+                    let width = context.measure_text(&text, &font).width as i32;
+                    let x_text = (x + 4).min(area.right() - width).max(area.rect.x);
+                    context.draw_text(
+                        rust_widgets::core::Point { x: x_text, y: area.rect.y + 2 },
+                        &text,
+                        &font,
+                        chrome.ink,
+                        HorizontalAlignment::Left,
+                    );
+                }
+            }
+        }
+
+        // The price axis under the curve. Without it the picture answered "what shape"
+        // but not "at what price"; the hover readout was the only way to recover a level
+        // (FIN-05).
+        let (low, high) = self.price_bounds();
+        if high > low && area.bottom_margin >= 14 {
+            let font = role_font(self.style(), 10.0);
+            const TICKS: i32 = 5;
+            let band = ((area.rect.width as i32 / TICKS).max(40)) as u32;
+            let y = area.bottom() + 2;
+            for step in 0..=TICKS {
+                let fraction = step as f64 / TICKS as f64;
+                let price = low + fraction * (high - low);
+                let x = area.rect.x + (fraction * area.rect.width as f64).round() as i32;
+                let text = alloc::format!("{price:.2}");
+                // Slide the label's band inward rather than letting it hang over the edge: a band
+                // centred on the last tick ran past the pane, and the painter's clip turned
+                // `121.30` into `1213` — a wrong number, not a cropped one.
+                let band_left = (x - band as i32 / 2)
+                    .clamp(area.rect.x, (area.right() - band as i32).max(area.rect.x));
+                context.draw_text_fitted_cow(
+                    Rect::new(band_left, y, band, 12),
+                    &text,
+                    &font,
+                    chrome.ink.with_alpha(190),
+                    HorizontalAlignment::Center,
+                );
+            }
+        }
+
+        // The hovered level gets a visible mark and its quantity, so the already-emitted
+        // `level_hovered` signal is not information the picture withholds.
+        if let Some(level) = self.hovered_level {
+            let (low, high) = self.price_bounds();
+            if high > low {
+                let fraction = (level - low) / (high - low);
+                let x = area.rect.x + (fraction * area.rect.width as f64).round() as i32;
+                let quantity = self
+                    .curve_cache
+                    .iter()
+                    .find(|point| point.price == level)
+                    .map(|point| point.cumulative_quantity)
+                    .unwrap_or(0.0);
+                let fraction_y = (quantity / max_cumulative).clamp(0.0, 1.0);
+                let y = area.bottom() - (fraction_y * area.rect.height as f64).round() as i32;
+                context.fill_circle(rust_widgets::core::Point { x, y }, 3, chrome.crosshair);
+                let text = format!("{level:.2} · {quantity:.0}");
+                let font = role_font(self.style(), 10.0);
+                let width = context.measure_text(&text, &font).width as i32;
+                let x_text = (x + 6).min(area.right() - width).max(area.rect.x);
+                context.draw_text(
+                    rust_widgets::core::Point { x: x_text, y: (y - 14).max(area.rect.y) },
+                    &text,
+                    &font,
+                    chrome.ink,
+                    HorizontalAlignment::Left,
+                );
+            }
+        }
+    }
+}
+
+/// Test module for the depth chart.
+impl WidgetProperties for DepthChart {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "depth" => Ok(CapabilityValue::UInt(self.depth as u64)),
+            "bid_color" => Ok(CapabilityValue::Color(self.bid_color)),
+            "ask_color" => Ok(CapabilityValue::Color(self.ask_color)),
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "depth" => {
+                let CapabilityValue::UInt(depth) = value else {
+                    return Err(CapabilityAccessError::TypeMismatch);
+                };
+                self.set_depth(depth as usize);
+                Ok(())
+            }
+            "bid_color" | "ask_color" => {
+                let CapabilityValue::Color(color) = value else {
+                    return Err(CapabilityAccessError::TypeMismatch);
+                };
+                let (bid, ask) = if name == "bid_color" {
+                    (color, self.ask_color)
+                } else {
+                    (self.bid_color, color)
+                };
+                self.set_colors(bid, ask);
+                Ok(())
+            }
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of!["depth", "bid_color", "ask_color", BASE_PROPERTY_NAMES]
+    }
+
+    /// Runs one of the commands `depth_chart` publishes.
+    ///
+    /// The pane has no overlay model — it draws the book it was given and nothing
+    /// else — so `add_overlay`, which the capability list shares with the other panes
+    /// in this module, is answered as
+    /// [`CapabilityAccessError::UnsupportedOnWidget`]: the name is real and this
+    /// control cannot perform it. That is an honest answer, not a fix: the
+    /// `commands` list still advertises an action this control cannot take, and
+    /// reconciling it is a registry decision. `set_series` / `set_depth` carry their
+    /// values.
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "add_overlay" => Err(CapabilityAccessError::UnsupportedOnWidget),
+            "set_series" | "set_depth" => Err(CapabilityAccessError::OutOfRange),
+            _ => Err(CapabilityAccessError::UnknownCommand),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::finance::types::fixtures;
+
+    /// The chart carries the book it was given.
+    #[test]
+    fn a_depth_chart_carries_its_book() {
+        let mut chart = DepthChart::new(Rect::new(0, 0, 480, 240));
+        assert!(chart.book().bids().is_empty());
+        chart.set_book(fixtures::sample_book(5));
+        assert_eq!(chart.book().bids().len(), 5);
+        assert_eq!(chart.book().asks().len(), 5);
+    }
+
+    /// The curve accumulates, and each side accumulates independently.
+    ///
+    /// This is what the pane draws, so an accumulation that ran across both sides would
+    /// put the ask curve at twice its real height — a chart that is wrong by a factor
+    /// nobody would notice by eye.
+    #[test]
+    fn the_curve_accumulates_per_side() {
+        let mut chart = DepthChart::new(Rect::new(0, 0, 480, 240));
+        let mut book = crate::finance::types::OrderBook::new();
+        book.set_bids(alloc::vec![
+            crate::finance::types::BookLevel::new(99.0, 10.0),
+            crate::finance::types::BookLevel::new(98.0, 20.0),
+        ]);
+        book.set_asks(alloc::vec![
+            crate::finance::types::BookLevel::new(101.0, 5.0),
+            crate::finance::types::BookLevel::new(102.0, 5.0),
+        ]);
+        chart.set_book(book);
+
+        let curve = chart.curve();
+        let bids: alloc::vec::Vec<_> =
+            curve.iter().filter(|point| point.side == DepthSide::Bid).collect();
+        let asks: alloc::vec::Vec<_> =
+            curve.iter().filter(|point| point.side == DepthSide::Ask).collect();
+        assert_eq!(bids.len(), 2);
+        assert_eq!(asks.len(), 2);
+        assert!((bids[0].cumulative_quantity - 10.0).abs() < 1e-9);
+        assert!((bids[1].cumulative_quantity - 30.0).abs() < 1e-9, "bids keep accumulating");
+        assert!((asks[0].cumulative_quantity - 5.0).abs() < 1e-9);
+        assert!(
+            (asks[1].cumulative_quantity - 10.0).abs() < 1e-9,
+            "the ask total must restart, not continue from the bids"
+        );
+    }
+
+    /// The depth limit trims both sides.
+    #[test]
+    fn the_depth_limit_trims_the_curve() {
+        let mut chart = DepthChart::new(Rect::new(0, 0, 480, 240));
+        chart.set_book(fixtures::sample_book(10));
+        assert_eq!(chart.curve().len(), 20, "all levels by default");
+        chart.set_depth(3);
+        assert_eq!(chart.depth(), 3);
+        assert_eq!(chart.curve().len(), 6, "three levels per side");
+    }
+
+    /// Colours are stored and returned.
+    #[test]
+    fn colours_round_trip() {
+        let mut chart = DepthChart::new(Rect::new(0, 0, 480, 240));
+        let (bid, ask) = chart.colors();
+        assert_ne!(bid, ask, "the two sides must be distinguishable by default");
+        chart.set_colors(rust_widgets::core::Color::rgb(1, 2, 3), rust_widgets::core::Color::rgb(4, 5, 6));
+        assert_eq!(
+            chart.colors(),
+            (rust_widgets::core::Color::rgb(1, 2, 3), rust_widgets::core::Color::rgb(4, 5, 6))
+        );
+    }
+
+    /// An empty book draws without panicking.
+    #[test]
+    fn an_empty_book_draws_without_panicking() {
+        let mut chart = DepthChart::new(Rect::new(0, 0, 320, 200));
+        let mut backend =
+            rust_widgets::render::SoftwarePaintBackend::new(rust_widgets::core::Size::new(320, 200), 1.0);
+        let mut context = RenderContext::new(&mut backend);
+        chart.draw(&mut context);
+    }
+
+    /// A one-sided book draws without panicking.
+    ///
+    /// This is what a book looks like for a moment after a snapshot arrives with only
+    /// one side, and the mid price has no value.
+    #[test]
+    fn a_one_sided_book_draws_without_panicking() {
+        let mut chart = DepthChart::new(Rect::new(0, 0, 320, 200));
+        let mut book = crate::finance::types::OrderBook::new();
+        book.set_bids(alloc::vec![crate::finance::types::BookLevel::new(
+            99.0, 10.0,
+        )]);
+        chart.set_book(book);
+        let mut backend =
+            rust_widgets::render::SoftwarePaintBackend::new(rust_widgets::core::Size::new(320, 200), 1.0);
+        let mut context = RenderContext::new(&mut backend);
+        chart.draw(&mut context);
+    }
+
+    /// A book of malformed levels draws without panicking.
+    #[test]
+    fn a_malformed_book_draws_without_panicking() {
+        let mut chart = DepthChart::new(Rect::new(0, 0, 320, 200));
+        let mut book = crate::finance::types::OrderBook::new();
+        book.set_bids(alloc::vec![
+            crate::finance::types::BookLevel::new(f64::NAN, f64::NAN),
+            crate::finance::types::BookLevel::new(99.0, -5.0),
+        ]);
+        book.set_asks(alloc::vec![crate::finance::types::BookLevel::new(
+            f64::INFINITY,
+            1.0,
+        )]);
+        chart.set_book(book);
+        let mut backend =
+            rust_widgets::render::SoftwarePaintBackend::new(rust_widgets::core::Size::new(320, 200), 1.0);
+        let mut context = RenderContext::new(&mut backend);
+        chart.draw(&mut context);
+    }
+
+    /// A flat price scale — every level at one price — draws without dividing by zero.
+    #[test]
+    fn a_flat_price_scale_draws_without_panicking() {
+        let mut chart = DepthChart::new(Rect::new(0, 0, 320, 200));
+        let mut book = crate::finance::types::OrderBook::new();
+        book.set_bids(alloc::vec![crate::finance::types::BookLevel::new(
+            100.0, 10.0,
+        )]);
+        book.set_asks(alloc::vec![crate::finance::types::BookLevel::new(
+            100.0, 10.0,
+        )]);
+        chart.set_book(book);
+        let mut backend =
+            rust_widgets::render::SoftwarePaintBackend::new(rust_widgets::core::Size::new(320, 200), 1.0);
+        let mut context = RenderContext::new(&mut backend);
+        chart.draw(&mut context);
+    }
+
+    /// The pane must paint a curve, not merely survive, when a level it cannot use is
+    /// present.
+    ///
+    /// Regression: the draw loop `continue`d past a zero-size or non-finite level while
+    /// the scale and the price bounds still counted it, so one such level could leave the
+    /// pane completely blank — the earlier test only asserted "does not panic", which the
+    /// blank pane satisfied. A zero-size level is a normal live-book state, so this is a
+    /// real failure mode rather than a contrived input.
+    #[test]
+    fn a_zero_size_level_does_not_erase_the_curve() {
+        let geometry = Rect::new(0, 0, 400, 200);
+        let mut book = crate::finance::types::OrderBook::new();
+        // The zero-size level is first, so it is the one the old loop skipped first.
+        book.set_bids(alloc::vec![
+            crate::finance::types::BookLevel::new(100.0, 0.0),
+            crate::finance::types::BookLevel::new(99.0, 100.0),
+        ]);
+        book.set_asks(alloc::vec![crate::finance::types::BookLevel::new(
+            101.0, 100.0,
+        )]);
+        let mut chart = DepthChart::new(geometry);
+        chart.set_book(book);
+
+        assert!(
+            pane_contains_bid_colour(&mut chart, geometry),
+            "a zero-size level must not erase the depth curve"
+        );
+        assert_eq!(chart.curve().len(), 2, "one bid and one ask are plottable");
+    }
+
+    /// A book whose only bid price is non-finite must still draw its ask side.
+    ///
+    /// Regression: `max_cumulative` and `price_bounds` both folded the `NAN`-priced level
+    /// into their arithmetic, so the whole pane went blank. A `NAN` price is now dropped
+    /// at the book boundary, and the bounds widen a single-price side so it stays drawable.
+    #[test]
+    fn a_non_finite_price_does_not_erase_the_curve() {
+        let geometry = Rect::new(0, 0, 400, 200);
+        let mut book = crate::finance::types::OrderBook::new();
+        book.set_bids(alloc::vec![crate::finance::types::BookLevel::new(
+            f64::NAN,
+            1000.0,
+        )]);
+        book.set_asks(alloc::vec![crate::finance::types::BookLevel::new(
+            101.0, 100.0,
+        )]);
+        let mut chart = DepthChart::new(geometry);
+        chart.set_book(book);
+
+        assert!(
+            pane_contains_ask_colour(&mut chart, geometry),
+            "the ask curve must survive a NAN-priced bid"
+        );
+    }
+
+    /// Whether any pixel of the pane carries the bid curve's colour.
+    fn pane_contains_bid_colour(chart: &mut DepthChart, geometry: Rect) -> bool {
+        use rust_widgets::render::PaintBackend as _;
+        let mut backend = rust_widgets::render::SoftwarePaintBackend::new(
+            rust_widgets::core::Size::new(geometry.width, geometry.height),
+            1.0,
+        );
+        backend.begin_frame(rust_widgets::core::Color::BLACK);
+        {
+            let mut context = RenderContext::new(&mut backend);
+            chart.draw(&mut context);
+        }
+        backend.end_frame();
+        let rgba = backend.frame_rgba();
+        let target = [38u8, 166, 91, 255];
+        rgba.as_chunks::<4>().0.contains(&target)
+    }
+
+    /// Whether any pixel of the pane carries the ask curve's colour.
+    fn pane_contains_ask_colour(chart: &mut DepthChart, geometry: Rect) -> bool {
+        use rust_widgets::render::PaintBackend as _;
+        let mut backend = rust_widgets::render::SoftwarePaintBackend::new(
+            rust_widgets::core::Size::new(geometry.width, geometry.height),
+            1.0,
+        );
+        backend.begin_frame(rust_widgets::core::Color::BLACK);
+        {
+            let mut context = RenderContext::new(&mut backend);
+            chart.draw(&mut context);
+        }
+        backend.end_frame();
+        let rgba = backend.frame_rgba();
+        let target = [220u8, 68, 70, 255];
+        rgba.as_chunks::<4>().0.contains(&target)
+    }
+
+    /// RW-80: a book tick can edit one level without a full snapshot.
+    #[test]
+    fn levels_can_be_applied_incrementally() {
+        let mut chart = DepthChart::new(Rect::new(0, 0, 480, 240));
+        chart.set_book(fixtures::sample_book(2));
+
+        assert!(chart.apply_bid_level(100.5, 42.0));
+        assert_eq!(chart.book().bids().len(), 3);
+        assert_eq!(chart.book().bids()[0].price, 100.5);
+        assert_eq!(chart.curve().iter().filter(|point| point.price == 100.5).count(), 1);
+
+        assert!(chart.apply_ask_level(100.1, 0.0));
+        assert_eq!(chart.book().asks().len(), 1, "a zero quantity removes the level");
+
+        assert!(!chart.apply_bid_level(f64::NAN, 1.0), "a non-finite price is refused");
+    }
+}

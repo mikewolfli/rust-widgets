@@ -691,6 +691,7 @@ name = "finance-demo"
 version = "0.1.0"
 dependencies = [
  "preview-common",
+ "rust-widgets-suites",
  "rust_widgets",
 ]
 
@@ -2407,11 +2408,20 @@ dependencies = [
 
 [[package]]
 name = "rust-widgets-font"
-version = "3.1.0"
+version = "3.3.0"
+
+[[package]]
+name = "rust-widgets-suites"
+version = "3.3.0"
+dependencies = [
+ "log",
+ "rust_widgets",
+ "serde_json",
+]
 
 [[package]]
 name = "rust_widgets"
-version = "3.2.1"
+version = "3.3.0"
 dependencies = [
  "aes",
  "cbc",

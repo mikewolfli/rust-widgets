@@ -14,6 +14,7 @@ use crate::widget::capability::coercion::{
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::save_state::SaveState;
 #[cfg(feature = "image")]
 use crate::widget::Image;
 use crate::widget::{
@@ -399,6 +400,55 @@ impl ToolBox {
     /// The indices of the open items, in display order.
     pub fn expanded_items(&self) -> Vec<usize> {
         self.items.iter().enumerate().filter(|(_, item)| item.expanded).map(|(i, _)| i).collect()
+    }
+
+    /// Serialises the selection and the open items for session restore (RW-64).
+    ///
+    /// The item list belongs to the host's model, so the blob stores the selection, a bitset
+    /// of open pages, and the item count the bitset describes. A restore against a different
+    /// item count maps the bits positionally and leaves the rest closed rather than refusing
+    /// a session whose model changed shape.
+    pub fn save_state(&self) -> Vec<u8> {
+        let bits = self.items.len().div_ceil(8);
+        let mut state = Vec::with_capacity(9 + bits);
+        state.push(TOOLBOX_STATE_VERSION);
+        state.extend_from_slice(&(self.current_index as u32).to_le_bytes());
+        state.extend_from_slice(&(bits as u32).to_le_bytes());
+        for byte in 0..bits {
+            let mut value = 0u8;
+            for bit in 0..8 {
+                let index = byte * 8 + bit;
+                if self.items.get(index).is_some_and(|item| item.expanded) {
+                    value |= 1 << bit;
+                }
+            }
+            state.push(value);
+        }
+        state
+    }
+
+    /// Restores a blob produced by [`Self::save_state`].
+    ///
+    /// Returns `false` for a malformed blob or an empty tool box, leaving the control
+    /// untouched.
+    pub fn restore_state(&mut self, state: &[u8]) -> bool {
+        if state.len() < 9 || state[0] != TOOLBOX_STATE_VERSION || self.items.is_empty() {
+            return false;
+        }
+        let current = u32::from_le_bytes([state[1], state[2], state[3], state[4]]) as usize;
+        let bits = u32::from_le_bytes([state[5], state[6], state[7], state[8]]) as usize;
+        if state.len().checked_sub(9) != Some(bits) {
+            return false;
+        }
+        for (index, item) in self.items.iter_mut().enumerate() {
+            item.expanded =
+                state.get(9 + index / 8).is_some_and(|byte| (*byte & (1 << (index % 8))) != 0);
+        }
+        self.current_index = current.min(self.items.len() - 1);
+        self.scroll_current_into_view();
+        self.sync_pages();
+        self.base.request_redraw();
+        true
     }
 
     /// Opens or closes the item at `index`, returning `false` for an unknown index.
@@ -1038,6 +1088,32 @@ impl Widget for ToolBox {
             )),
             _ => None,
         }
+    }
+
+    fn save_state_dyn(&self) -> Option<&dyn SaveState> {
+        Some(self)
+    }
+
+    fn save_state_dyn_mut(&mut self) -> Option<&mut dyn SaveState> {
+        Some(self)
+    }
+}
+
+/// Version tag of the blob produced by [`ToolBox::save_state`].
+const TOOLBOX_STATE_VERSION: u8 = 1;
+
+/// RW-64: the selected item and the open pages are the tool box's user-visible state.
+impl SaveState for ToolBox {
+    fn state_version(&self) -> u16 {
+        u16::from(TOOLBOX_STATE_VERSION)
+    }
+
+    fn save_state(&self) -> Vec<u8> {
+        ToolBox::save_state(self)
+    }
+
+    fn restore_state(&mut self, state: &[u8]) -> bool {
+        ToolBox::restore_state(self, state)
     }
 }
 
@@ -2231,5 +2307,29 @@ mod tests {
             }
         }
         let _ = crate::widget::runtime::unregister(id);
+    }
+
+    /// RW-64: the selection and open pages round-trip through the save-state bytes.
+    #[test]
+    fn the_selection_and_open_pages_round_trip() {
+        let mut tool_box = ToolBox::new(Rect::new(0, 0, 200, 300));
+        tool_box.add_item("One".to_string(), None);
+        tool_box.add_item("Two".to_string(), None);
+        tool_box.add_item("Three".to_string(), None);
+        tool_box.set_mode(ToolBoxMode::NonExclusive);
+        assert!(tool_box.set_item_expanded(0, false));
+        assert!(tool_box.set_item_expanded(1, true));
+        assert!(tool_box.set_item_expanded(2, true));
+        tool_box.set_current_index(2);
+        let saved = SaveState::save_state(&tool_box);
+
+        assert!(tool_box.set_item_expanded(1, false));
+        assert!(tool_box.set_item_expanded(2, false));
+        tool_box.set_current_index(0);
+        assert!(SaveState::restore_state(&mut tool_box, &saved));
+        assert_eq!(tool_box.selected_index(), Some(2));
+        assert_eq!(tool_box.expanded_items(), vec![1, 2]);
+        assert!(!SaveState::restore_state(&mut tool_box, &saved[..4]));
+        assert_eq!(tool_box.expanded_items(), vec![1, 2], "a refused blob changes nothing");
     }
 }

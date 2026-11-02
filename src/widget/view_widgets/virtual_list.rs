@@ -18,6 +18,9 @@ use crate::widget::capability::properties_trait::{base_property_get, base_proper
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::effective_font;
+use crate::widget::view_widgets::collection_state::{
+    paint_collection_placeholder, CollectionPlaceholder, CollectionState,
+};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -130,6 +133,8 @@ pub struct VirtualList {
     show_scrollbar: bool,
     /// Optional rich-row painter (V-010).
     row_delegate: Option<Arc<dyn VirtualRowDelegate>>,
+    /// Empty/error captions painted when the source has no rows (RW-17).
+    placeholder: CollectionPlaceholder,
 }
 
 impl VirtualList {
@@ -159,6 +164,7 @@ impl VirtualList {
             drag_finished: Signal1::new(),
             show_scrollbar: false,
             row_delegate: None,
+            placeholder: CollectionPlaceholder::new(),
         }
     }
 
@@ -1013,6 +1019,23 @@ impl WidgetProperties for VirtualList {
     }
 }
 
+impl VirtualList {
+    /// The empty/error captions painted when the source has no rows (RW-17).
+    pub fn placeholder(&self) -> &CollectionPlaceholder {
+        &self.placeholder
+    }
+}
+
+impl CollectionState for VirtualList {
+    fn collection_placeholder(&self) -> &CollectionPlaceholder {
+        &self.placeholder
+    }
+
+    fn collection_placeholder_mut(&mut self) -> &mut CollectionPlaceholder {
+        &mut self.placeholder
+    }
+}
+
 impl Draw for VirtualList {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.base.geometry();
@@ -1078,6 +1101,14 @@ impl Draw for VirtualList {
 
         let rows = self.fetch_visible_rows_shared();
         if rows.is_empty() {
+            // An empty source paints its own caption inside the control (RW-17).
+            paint_collection_placeholder(
+                context,
+                Rect::new(rect.x + 4, rect.y, rect.width.saturating_sub(8), rect.height),
+                &self.placeholder,
+                ink,
+                effective_font(self.style()),
+            );
             return;
         }
 
@@ -1761,5 +1792,21 @@ mod tests {
         list.set_selection_scrolls_into_view(false);
         assert!(list.select_row(60));
         assert_eq!(list.scroll_row(), 0, "the follow-on scroll is off");
+    }
+
+    /// RW-17: the empty/error captions are stored on the control and cleared by an empty string.
+    #[test]
+    fn empty_and_error_captions_are_stored() {
+        use crate::widget::view_widgets::collection_state::CollectionState;
+
+        let mut list = VirtualList::new(Rect::new(0, 0, 200, 120));
+        list.set_empty_text("No rows");
+        assert_eq!(list.empty_text(), Some("No rows"));
+        list.set_error_text("Load failed");
+        assert_eq!(list.placeholder().text(), Some("Load failed"));
+        list.clear_error_text();
+        assert_eq!(list.placeholder().text(), Some("No rows"));
+        list.set_empty_text("");
+        assert!(list.placeholder().is_empty());
     }
 }

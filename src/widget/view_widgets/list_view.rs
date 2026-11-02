@@ -25,6 +25,10 @@ use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::companions::{ListState, ListStateHost};
 use crate::widget::metrics::{dimensions, effective_font, ControlMetrics};
+use crate::widget::view_widgets::collection_state::{
+    paint_collection_placeholder, CollectionPlaceholder, CollectionState,
+};
+use crate::widget::view_widgets::table_widget::ItemDelegate as TableItemDelegate;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 use std::collections::BTreeSet;
@@ -552,6 +556,17 @@ pub struct ListView {
     item_tooltip: Option<Arc<dyn Fn(usize) -> Option<String> + Send + Sync>>,
     /// The state surface this list keeps in step, when one is attached.
     list_state: Option<ListStateBinding>,
+    /// Empty/error captions painted when the list has no rows (RW-17).
+    placeholder: CollectionPlaceholder,
+    /// The edit delegate a [`Self::begin_edit`] call drives (RW-18).
+    ///
+    /// Distinct from [`Self::item_delegate`], which is a **presentation** hook borrowed during a
+    /// paint and never asked to create a widget. This one is the shared
+    /// [`TableItemDelegate`](crate::widget::view_widgets::table_widget::ItemDelegate) protocol, so a
+    /// list and a table use one editing vocabulary rather than two lookalikes.
+    editor_delegate: Option<Arc<dyn TableItemDelegate>>,
+    /// The row an in-place edit is open on, if any (RW-18).
+    editing_row: Option<usize>,
 }
 
 /// The live link between a [`ListView`] and a [`ListStateHost`].
@@ -601,6 +616,9 @@ impl ListView {
             type_ahead_last: None,
             item_tooltip: None,
             list_state: None,
+            placeholder: CollectionPlaceholder::new(),
+            editor_delegate: None,
+            editing_row: None,
         }
     }
     /// Binds an external list model.
@@ -939,6 +957,14 @@ impl ListView {
         self.selection.selected_rows.retain(|row| *row < row_count);
         self.selection.current_row = self.selection.current_row.filter(|row| *row < row_count);
         self.focused_row = self.focused_row.filter(|row| *row < row_count);
+        // An open edit names a row too, so a shrinking model must not leave it pointing past the
+        // end (RW-18).
+        self.editing_row = self.editing_row.filter(|row| *row < row_count);
+    }
+
+    /// The empty/error captions this list paints when it has no rows (RW-17).
+    pub fn placeholder(&self) -> &CollectionPlaceholder {
+        &self.placeholder
     }
 
     /// The rows the control can actually paint: everything that fits the content box.
@@ -1195,13 +1221,92 @@ impl ListView {
         Some(Rect::new(row.x + (cell * column) as i32, row.y, cell, row.height))
     }
 
-    /// The row index a point falls on, if it falls on a visible row.
+    /// Returns the row index a point falls on, if it falls on a visible row.
     ///
     /// The public form of the hit test the press handling uses. A context-menu handler calls it to
     /// learn which row was right-clicked, and because both directions read the same geometry it
     /// cannot disagree with a left click (feedback C-9).
     pub fn row_index_at(&self, point: crate::core::Point) -> Option<usize> {
         self.row_at_point(point)
+    }
+
+    // ── In-place editing (RW-18) ──
+
+    /// Installs the edit delegate, replacing any previous one.
+    ///
+    /// The delegate speaks the shared
+    /// [`ItemDelegate`](crate::widget::view_widgets::table_widget::ItemDelegate) protocol, with
+    /// `column == 0` because a list has one column. Returns the replaced delegate, if any.
+    pub fn set_editor_delegate(
+        &mut self,
+        delegate: Option<Arc<dyn TableItemDelegate>>,
+    ) -> Option<Arc<dyn TableItemDelegate>> {
+        core::mem::replace(&mut self.editor_delegate, delegate)
+    }
+
+    /// The edit delegate, when one is installed.
+    pub fn editor_delegate_ref(&self) -> Option<&Arc<dyn TableItemDelegate>> {
+        self.editor_delegate.as_ref()
+    }
+
+    /// Whether an edit delegate is installed.
+    pub fn has_editor_delegate(&self) -> bool {
+        self.editor_delegate.is_some()
+    }
+
+    /// Begins an in-place edit of `(row, column)`, returning the editor the delegate built.
+    ///
+    /// The sequence is the table's: create, seed from the delegate, then place the editor over the
+    /// row's own band (from the same [`Self::item_rect`] the paint and the hit test read). A list
+    /// has one column, so any `column` other than `0` is meaningless and answers `None` — the
+    /// two-argument signature exists so a host can drive a list and a tree table with one call
+    /// shape (RW-18). Returns `None` when there is no delegate or model, or the row does not exist.
+    pub fn begin_edit(&mut self, row: usize, column: usize) -> Option<Box<dyn Widget>> {
+        if column != 0 {
+            return None;
+        }
+        let delegate = self.editor_delegate.clone()?;
+        if row >= self.row_count() {
+            return None;
+        }
+        let mut editor = delegate.create_editor(&mut self.base, row, column)?;
+        delegate.set_editor_data(editor.as_mut(), row, column);
+        let cell = self.item_rect(row).unwrap_or_else(|| self.base.geometry());
+        delegate.update_editor_geometry(editor.as_mut(), cell);
+        self.editing_row = Some(row);
+        self.base.request_redraw();
+        Some(editor)
+    }
+
+    /// [`Self::begin_edit`] for a list's only column.
+    pub fn begin_edit_row(&mut self, row: usize) -> Option<Box<dyn Widget>> {
+        self.begin_edit(row, 0)
+    }
+
+    /// Reads the current text back out of an editor and commits it, returning that text.
+    pub fn commit_edit(&mut self, editor: &dyn Widget) -> Option<String> {
+        let delegate = self.editor_delegate.clone()?;
+        let row = self.editing_row?;
+        let text = delegate.get_editor_data(editor, row, 0);
+        delegate.close_editor(editor);
+        self.editing_row = None;
+        self.base.request_redraw();
+        text
+    }
+
+    /// Abandons an in-place edit without committing it.
+    ///
+    /// The editor's widget is owned by the host, so it is the host that unmounts it; the list only
+    /// forgets which row was being edited (the same division `TableWidget::cancel_edit` draws).
+    pub fn cancel_edit(&mut self) {
+        if self.editing_row.take().is_some() {
+            self.base.request_redraw();
+        }
+    }
+
+    /// The row an edit is open on, if any.
+    pub fn editing_row(&self) -> Option<usize> {
+        self.editing_row
     }
 
     /// The row index a point falls on, if it falls on a visible row.
@@ -1457,6 +1562,16 @@ impl WidgetProperties for ListView {
     }
 }
 
+impl CollectionState for ListView {
+    fn collection_placeholder(&self) -> &CollectionPlaceholder {
+        &self.placeholder
+    }
+
+    fn collection_placeholder_mut(&mut self) -> &mut CollectionPlaceholder {
+        &mut self.placeholder
+    }
+}
+
 impl Draw for ListView {
     fn draw(&mut self, context: &mut RenderContext) {
         // The row-count state surface is a shared write, drained before painting so the frame
@@ -1526,6 +1641,19 @@ impl Draw for ListView {
         // The text inset and the label's placement come from the same resolved layout, so a mode that
         // changed the cell size cannot leave the label behind at the old inset — which is exactly the
         // class of defect the row height already had.
+        // An empty list paints its own caption inside its content box (RW-17) rather than leaving a
+        // blank surface a host has to annotate from outside. This is checked before the model block
+        // so a list with no model at all also explains its blank face.
+        if self.row_count() == 0 {
+            paint_collection_placeholder(
+                context,
+                self.list_layout().content,
+                &self.placeholder,
+                ink,
+                effective_font(style),
+            );
+            return;
+        }
         if self.model.is_some() {
             let layout = self.list_layout();
             let row_count = self.row_count();
@@ -2466,5 +2594,75 @@ mod tests {
         view.set_model(Arc::new(VecListModel::new(Vec::new())));
         assert!(!view.poll_list_state_host(), "a detached host is not polled");
         assert_eq!(host.state(), ListState::Idle, "detach stops updates");
+    }
+
+    // ── RW-17: empty/error captions ──
+
+    #[test]
+    fn empty_state_caption_is_stored_on_the_view() {
+        use crate::widget::view_widgets::collection_state::CollectionState;
+
+        let mut view = ListView::new(Rect::new(0, 0, 200, 120));
+        view.set_empty_text("Nothing here");
+        assert_eq!(view.empty_text(), Some("Nothing here"));
+        view.set_error_text("Could not load");
+        assert_eq!(view.placeholder().text(), Some("Could not load"));
+        view.clear_error_text();
+        view.clear_empty_text();
+        assert!(view.placeholder().is_empty());
+    }
+
+    // ── RW-18: in-place editing ──
+
+    struct EditDelegate;
+
+    impl TableItemDelegate for EditDelegate {
+        fn create_editor(
+            &self,
+            _parent: &mut BaseWidget,
+            _row: usize,
+            _column: usize,
+        ) -> Option<Box<dyn Widget>> {
+            Some(Box::new(crate::widget::Label::new("editor".to_string(), Rect::new(0, 0, 40, 20))))
+        }
+
+        fn set_editor_data(&self, _editor: &mut dyn Widget, _row: usize, _column: usize) {}
+
+        fn get_editor_data(
+            &self,
+            _editor: &dyn Widget,
+            _row: usize,
+            _column: usize,
+        ) -> Option<String> {
+            Some("committed".to_string())
+        }
+    }
+
+    #[test]
+    fn begin_edit_drives_the_shared_table_delegate_protocol() {
+        let mut view = ListView::new(Rect::new(0, 0, 200, 120));
+        view.set_model(Arc::new(VecListModel::new(vec!["one".to_string(), "two".to_string()])));
+        assert!(!view.has_editor_delegate());
+        assert!(view.begin_edit(0, 0).is_none(), "no delegate, no editor");
+
+        view.set_editor_delegate(Some(Arc::new(EditDelegate)));
+        assert!(view.has_editor_delegate());
+        assert!(view.editor_delegate_ref().is_some());
+
+        let editor = view.begin_edit(0, 0).expect("the delegate builds an editor");
+        assert_eq!(view.editing_row(), Some(0));
+        assert!(view.begin_edit(9, 0).is_none(), "there is no row 9");
+        assert!(view.begin_edit(0, 3).is_none(), "a list has one column");
+        assert_eq!(view.commit_edit(editor.as_ref()).as_deref(), Some("committed"));
+        assert_eq!(view.editing_row(), None);
+
+        let editor = view.begin_edit_row(1).expect("row 1 exists");
+        drop(editor);
+        view.cancel_edit();
+        assert_eq!(view.editing_row(), None);
+
+        let replaced = view.set_editor_delegate(None);
+        assert!(replaced.is_some(), "the previous delegate is returned");
+        assert!(!view.has_editor_delegate());
     }
 }

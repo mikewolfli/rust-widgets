@@ -53,6 +53,7 @@
 //! | Module | Responsibility |
 //! |--------|----------------|
 //! | `types` | Positions, cursor, markers, tokens, palette, config, find/completion/menu state |
+//! | `overlays` | Inlay hints, code lenses and snippet-session data |
 //! | `syntax` | Built-in lexer, [`LanguageId`], [`SyntaxHighlighter`] plugin seam |
 //! | `buffer` | Line-indexed document model, tabs, folds, splice primitive |
 //! | `coords` | Document ↔ screen coordinate map (`B3`/`B4`) |
@@ -86,6 +87,7 @@ mod editor;
 mod grid;
 mod input;
 mod multicursor;
+mod overlays;
 mod pairs;
 mod palette;
 mod range_command;
@@ -114,10 +116,14 @@ mod tests_batch7;
 #[cfg(test)]
 mod tests_batch8;
 
-pub use editor::{CodeEditor, CodeEditorDocument, MiniTone, MinimapBucket};
+#[cfg(test)]
+mod tests_batch9;
+
+pub use editor::{CodeEditor, CodeEditorDocument, MiniTone, MinimapBucket, MAX_NAVIGATION_HISTORY};
 pub use multicursor::MultiCursor;
+pub use overlays::{CodeLens, InlayHint, InlayHintKind, SnippetSession, SnippetStop};
 pub use palette::{CommandPalette, PaletteEntry};
-pub use syntax::{BuiltinHighlighter, LanguageId, LineState, SyntaxHighlighter};
+pub use syntax::{BuiltinHighlighter, LanguageId, LineState, StructuralKind, SyntaxHighlighter};
 pub use types::{
     CaretStyle, CodeEditorConfig, CompletionItem, CompletionSource, CompletionState,
     ContextMenuState, Cursor, DiagnosticMarker, DocumentCompletions, DocumentScale,

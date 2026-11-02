@@ -456,15 +456,7 @@ pub use chart_widgets::bar_chart::{BarChart, BarEntry};
 #[cfg(full_widgets)]
 pub use chart_widgets::chart::ChartWidget;
 #[cfg(full_widgets)]
-pub use chart_widgets::gantt_widget::{
-    DateFormat, Dependency, DependencyEditor, GanttTask, GanttWidget, TimelineAxis,
-};
-#[cfg(full_widgets)]
 pub use chart_widgets::heatmap::{Heatmap, HeatmapCell};
-#[cfg(full_widgets)]
-pub use chart_widgets::kanban_board::{
-    CardPosition, KanbanBoard, KanbanCard, KanbanCardView, KanbanColumn, KanbanColumnHeader,
-};
 #[cfg(full_widgets)]
 pub use chart_widgets::line_chart::LineChart;
 #[cfg(full_widgets)]
@@ -477,17 +469,7 @@ pub use chart_widgets::sparkline::Sparkline;
 #[cfg(full_widgets)]
 pub use media_widgets::animated_image::{AnimatedFrame, AnimatedImage, AnimatedImageFormat};
 #[cfg(full_widgets)]
-pub use media_widgets::audio_visualizer::AudioVisualizer;
-#[cfg(full_widgets)]
-pub use media_widgets::camera_preview::CameraPreview;
-#[cfg(full_widgets)]
 pub use media_widgets::hero_animation::HeroAnimation;
-#[cfg(full_widgets)]
-pub use media_widgets::lottie_widget::LottieWidget;
-#[cfg(full_widgets)]
-pub use media_widgets::rive_widget::{RiveInput, RiveInputValue, RiveWidget};
-#[cfg(full_widgets)]
-pub use media_widgets::video_player::VideoPlayer;
 // Re-export overlay widgets
 #[cfg(full_widgets)]
 pub use overlay_widgets::banner::Banner;
@@ -598,13 +580,11 @@ pub use view_widgets::{
 #[cfg(full_widgets)]
 pub use special_widgets::{
     Breadcrumb, BreadcrumbSegment, Canvas, Chip, ChipItem, CodeEditor, ColorPicker, CommandEntry,
-    CommandPalette, Compass, DiagnosticMarker, DiffFileList, DiffKind, DiffLine, DiffViewer,
-    FindBar, FreeformShapeWidget, GridWidget, MapMarker, MapView, MarkdownEditor,
-    MarkdownOutlinePanel, MarkerSeverity, MediaPlayer, NotificationCenter, NotificationItem,
-    NotificationLevel, ScaleBar, ScaleBarStyle, ScaleUnits, SegmentItem, SegmentedControl,
-    ShapeCanvas, SignaturePad, SignatureStroke, Snackbar, SplitAction, SplitButton, TerminalView,
-    TileKey, TileLoadError, TileLoader, TileRequest, TileViewport, TimelineItem, TimelineWidget,
-    Toast, ToastItem, ToastLevel, ToastStack, ZoomButton, ZoomControl,
+    CommandPalette, DiagnosticMarker, FindBar, FreeformShapeWidget, GridWidget, MarkdownEditor,
+    MarkdownOutlinePanel, MarkerSeverity, NotificationCenter, NotificationItem, NotificationLevel,
+    SegmentItem, SegmentedControl, ShapeCanvas, SignaturePad, SignatureStroke, Snackbar,
+    SplitAction, SplitButton, TimelineItem, TimelineWidget, Toast, ToastItem, ToastLevel,
+    ToastStack,
 };
 /// Alias for [`ProgressBar`], naming an indicator use case.
 /// This is a plain progress bar: it does not animate on its own.

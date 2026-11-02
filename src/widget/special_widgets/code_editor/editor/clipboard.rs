@@ -123,3 +123,34 @@ impl CodeEditor {
         out
     }
 }
+
+/// The longest common **leading whitespace** of a block of text.
+///
+/// Used by the paste path to rebase a block on the caret line's indentation. Blank
+/// lines are ignored: they carry no indentation to compare, and counting them would
+/// collapse the common prefix to nothing. The comparison is a byte prefix, which is
+/// correct for the only characters involved (` ` and `\t`).
+fn common_leading_whitespace(text: &str) -> String {
+    let mut common: Option<&str> = None;
+    for line in text.split('\n') {
+        let line = line.trim_end_matches(['\r']);
+        if line.trim().is_empty() {
+            continue;
+        }
+        let indent = &line[..line.len() - line.trim_start_matches([' ', '\t']).len()];
+        common = Some(match common {
+            None => indent,
+            Some(previous) => {
+                // Both sides are ASCII whitespace by construction, so a byte prefix is a
+                // char prefix and the slice below cannot split a character.
+                let shared = previous
+                    .bytes()
+                    .zip(indent.bytes())
+                    .take_while(|(left, right)| left == right)
+                    .count();
+                &previous[..shared]
+            }
+        });
+    }
+    common.unwrap_or("").to_string()
+}

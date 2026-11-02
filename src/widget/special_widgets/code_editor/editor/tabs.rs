@@ -176,6 +176,7 @@ impl CodeEditor {
         // than inherited by the buffer being entered. A host that re-locks the
         // new buffer re-adds them after the switch.
         self.read_only_spans.clear();
+        self.snippet_session = None;
         self.refresh_derived_state();
         // A switch replaces every line, so it is described as a wholesale change rather
         // than by cloning the new document into the signal payload (J-P12).

@@ -5,7 +5,7 @@
 //! the message-box handle.
 
 use super::*;
-use crate::core::{ObjectId, Orientation, Rect};
+use crate::core::{ObjectId, Orientation, Point, Rect};
 use crate::platform::WindowStateFlag;
 use alloc::rc::Rc;
 use core::cell::RefCell;
@@ -159,6 +159,7 @@ impl WindowHandle {
             state.w = w;
             state.h = h;
         });
+        crate::platform::window_control::record_window_position(id, Point::new(x, y));
     }
 
     /// The underlying object id, for the raw `set_widget_*` functions and for
@@ -188,6 +189,7 @@ impl WidgetHandle for WindowHandle {
             state.w = w;
             state.h = h;
         });
+        crate::platform::window_control::record_window_position(self.id, Point::new(x, y));
         crate::set_widget_geometry(self.raw_id(), x, y, w, h);
         apply_window_layout(self.id);
     }
@@ -1347,7 +1349,203 @@ impl WindowHandle {
             state.w = win_w;
             state.h = win_h;
         });
+        crate::platform::window_control::record_window_position(
+            self.raw_id(),
+            Point::new(centred_x, centred_y),
+        );
     }
+
+    /// Raise this window and give it the keyboard focus.
+    ///
+    /// This is the semantic counterpart of the user clicking the window: the host asks for it
+    /// when a command or a `window.activate` action should bring an existing window forward.
+    /// The platform decides how; a backend with no windowing system answers `false` rather
+    /// than pretending the window became active.
+    pub fn activate(&self) -> bool {
+        crate::platform::get_platform().activate_window(self.raw_id())
+    }
+
+    /// The window's top-left position in screen coordinates, when it can be known.
+    ///
+    /// The backend is asked first because it reports what the window manager actually did. The
+    /// in-process mirror is the fallback — it is written at creation, by [`Self::set_position`]
+    /// when the platform accepted the move, and by the platform's own move notification — so a
+    /// backend that has no position query (a state-only window) still answers with the last
+    /// position the library knows rather than inventing one.
+    pub fn position(&self) -> Option<Point> {
+        if let Some((x, y)) = crate::platform::get_platform().window_position(self.raw_id()) {
+            return Some(Point::new(x, y));
+        }
+        crate::platform::window_control::window_position_mirror(self.raw_id()).or_else(|| {
+            WINDOW_STATES.with(|map| {
+                map.borrow().get(&self.raw_id()).map(|state| Point::new(state.x, state.y))
+            })
+        })
+    }
+
+    /// Move the window to `position` in screen coordinates.
+    ///
+    /// The mirror is updated only when the platform accepted the request, matching the
+    /// `set_min_size`/`set_icon` rule: a rejected move must not be reported by [`Self::position`]
+    /// as if it happened. Returns whether the backend accepted it.
+    pub fn set_position(&self, position: Point) -> bool {
+        let applied = crate::platform::get_platform().set_window_position(
+            self.raw_id(),
+            position.x,
+            position.y,
+        );
+        if applied {
+            crate::platform::window_control::record_window_position(self.raw_id(), position);
+        }
+        applied
+    }
+
+    /// The control inside this window that currently owns keyboard focus.
+    ///
+    /// `None` when nothing is focused, or when the focused control belongs to another window —
+    /// which is exactly the distinction a window-level key handler needs before deciding whether
+    /// a chord is its own.
+    pub fn focused_control(&self) -> Option<ObjectId> {
+        let focused = crate::widget::runtime::focused_widget()?;
+        (crate::widget::runtime::top_level_window_of(focused) == Some(self.raw_id()))
+            .then_some(focused)
+    }
+
+    /// Installs the window-level key handler, ahead of the focused control.
+    ///
+    /// # Contract
+    ///
+    /// The handler is called for a [`crate::event::Event::KeyPress`] routed through this
+    /// window, with the chord normalised to the platform's accelerator convention
+    /// (`Shortcut::primary` answers to `Ctrl` on Windows/Linux and `Command` on macOS).
+    /// Returning `true` claims the key; returning `false` lets it continue to the host's
+    /// accelerator hook and then to the focused control.
+    ///
+    /// # What is never offered
+    ///
+    /// * committed text (`TextInput`, `ImePreedit`, `ImeCommit`);
+    /// * any key while an input method is composing;
+    /// * a text-producing key with no command modifier, so a typed `s` (and `Shift+S`) is
+    ///   text rather than a command.
+    ///
+    /// This happens before the global shortcut hook, so a window can own a chord that a global
+    /// binding also registered. Replacing the handler for the same window replaces the previous
+    /// one; call [`Self::clear_key_handler`] to remove it.
+    pub fn set_key_handler<F>(&self, handler: F)
+    where
+        F: Fn(&crate::shortcut::Shortcut, &crate::event::FocusInfo) -> bool + 'static,
+    {
+        crate::shortcut::route::set_key_handler(self.raw_id(), alloc::boxed::Box::new(handler));
+    }
+
+    /// Removes this window's key handler, returning whether one was installed.
+    pub fn clear_key_handler(&self) -> bool {
+        crate::shortcut::route::clear_key_handler(self.raw_id())
+    }
+
+    /// Installs a close veto handler for this window.
+    ///
+    /// The handler returns `true` when the window may close and `false` to refuse it — the
+    /// "save before closing" path. It is consulted by every OS close notification (the macOS
+    /// `windowShouldClose:`, Win32 `WM_CLOSE`, and GTK's `delete-event`) **before** the window
+    /// is destroyed. In addition, a control that consumes
+    /// [`crate::event::Event::WindowCloseRequest`] also vetoes the close, so a widget-level
+    /// handler has the same power without reaching into the window API.
+    ///
+    /// This is a veto, not the notification callback: [`Self::on_close`] runs after the close
+    /// has been accepted and reports the lifecycle fact.
+    pub fn set_close_handler<F>(&self, handler: F)
+    where
+        F: Fn() -> bool + 'static,
+    {
+        crate::platform::window_control::set_close_handler(
+            self.raw_id(),
+            alloc::boxed::Box::new(handler),
+        );
+    }
+
+    /// Removes the close veto handler, returning whether one was installed.
+    pub fn clear_close_handler(&self) -> bool {
+        crate::platform::window_control::clear_close_handler(self.raw_id())
+    }
+
+    /// Registers a callback for the window gaining keyboard focus.
+    ///
+    /// Returns `false` when the id does not name a mounted window, so a caller can tell a
+    /// registration that took from one that had nothing to attach to.
+    pub fn on_focus_gained<F>(&self, callback: F) -> bool
+    where
+        F: FnMut() + Send + Sync + 'static,
+    {
+        self.connect_window_signal(callback, WindowSignal::FocusGained)
+    }
+
+    /// Registers a callback for the window losing keyboard focus.
+    pub fn on_focus_lost<F>(&self, callback: F) -> bool
+    where
+        F: FnMut() + Send + Sync + 'static,
+    {
+        self.connect_window_signal(callback, WindowSignal::FocusLost)
+    }
+
+    /// Registers a callback for the window moving, receiving the new top-left position.
+    ///
+    /// The callback is invoked by the platform notification path, not only by
+    /// [`Self::set_position`], so a user drag and a programmatic move are one stream.
+    pub fn on_moved<F>(&self, callback: F) -> bool
+    where
+        F: FnMut(Point) + Send + Sync + 'static,
+    {
+        let mut callback = Some(callback);
+        let mut connected = false;
+        let _ = crate::widget::runtime::with_widget_mut(self.raw_id(), |widget| {
+            if let Some(window) =
+                crate::widget::capability::widget_as::<crate::widget::Window>(widget)
+            {
+                if let Some(mut callback) = callback.take() {
+                    window.moved.connect(move |position| callback(*position));
+                    connected = true;
+                }
+            }
+        });
+        connected
+    }
+
+    /// Shared connection helper for the two unit signals.
+    fn connect_window_signal<F>(&self, callback: F, signal: WindowSignal) -> bool
+    where
+        F: FnMut() + Send + Sync + 'static,
+    {
+        let mut callback = Some(callback);
+        let mut connected = false;
+        let _ = crate::widget::runtime::with_widget_mut(self.raw_id(), |widget| {
+            if let Some(window) =
+                crate::widget::capability::widget_as::<crate::widget::Window>(widget)
+            {
+                match signal {
+                    WindowSignal::FocusGained => {
+                        if let Some(callback) = callback.take() {
+                            window.focus_gained.connect(callback);
+                            connected = true;
+                        }
+                    }
+                    WindowSignal::FocusLost => {
+                        if let Some(callback) = callback.take() {
+                            window.focus_lost.connect(callback);
+                            connected = true;
+                        }
+                    }
+                }
+            }
+        });
+        connected
+    }
+}
+
+/// Which unit signal [`WindowHandle::connect_window_signal`] connects.
+enum WindowSignal {
+    FocusGained,
+    FocusLost,
 }
 
 /// The top-left position that centres a `window_w` × `window_h` window.

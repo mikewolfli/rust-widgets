@@ -39,6 +39,8 @@ pub mod hints;
 pub mod inspector;
 /// Adjusts a rect to avoid the on-screen software keyboard.
 pub mod keyboard_aware;
+/// Solver-level clamp/overflow telemetry for arrange passes (RW-48).
+pub mod report;
 /// Divisible panes with draggable handles; see
 /// `crate::widget::Splitter` for the widget front end.
 pub mod splitter;
@@ -63,6 +65,7 @@ pub use grid::*;
 pub use hints::*;
 pub use inspector::*;
 pub use keyboard_aware::*;
+pub use report::*;
 pub use splitter::*;
 pub use stack::*;
 pub use types::*;

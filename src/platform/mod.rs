@@ -131,6 +131,14 @@ pub(crate) mod fonts_apple;
 /// Host-reported mobile lifecycle, orientation, and the animation-clock link (BLUE28 B28.24).
 pub mod lifecycle;
 
+/// Shared window lifecycle policy: close veto, focus and move announcements.
+///
+/// The policy is platform-independent, but it needs the widget runtime to resolve a window
+/// and dispatch the close-request event, so it is compiled with the unstripped widget set.
+/// Every desktop backend calls into it rather than re-implementing the ordering.
+#[cfg(widgets_unstripped)]
+pub(crate) mod window_control;
+
 /// Locale interning and the POSIX environment fallback shared by the desktop backends.
 ///
 /// `intern`/`environment_revision` are available in every profile (the iOS/state backends call them

@@ -18,7 +18,7 @@
 //! a subtraction from the message's width.
 
 use crate::compat::{Rc, RefCell, String, ToString, Vec};
-use crate::core::{Color, HorizontalAlignment, Point, Rect};
+use crate::core::{Color, HorizontalAlignment, ObjectId, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -27,7 +27,7 @@ use crate::widget::capability::properties_trait::{base_property_get, base_proper
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::{dimensions, effective_font};
-use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::widget::{BaseWidget, Draw, SimpleRegistry, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 /// Status bar widget — shows status messages and permanent widgets.
 ///
@@ -58,6 +58,11 @@ pub struct StatusBar {
     pub message_changed: Signal1<String>,
     /// Child widgets shown on the strip.
     widgets: Vec<StatusSlot>,
+    /// Optional shared registry used to paint and route events for id-backed children.
+    ///
+    /// An owned child is driven through its box; a child added by [`StatusBar::add_widget_id`]
+    /// has no box here, so the registry is the only path that can reach it.
+    registry: Option<Rc<RefCell<SimpleRegistry>>>,
     /// The press origin of an active size-grip drag and the last delta reported.
     grip_drag: Option<(Point, (i32, i32))>,
     /// Emitted while the size grip is dragged, with the total delta since the press.
@@ -80,7 +85,7 @@ type SlotBandsCache = RefCell<Option<(u64, Rc<Vec<(usize, Rect)>>)>>;
 
 /// One child placed on the status strip.
 struct StatusSlot {
-    widget: Box<dyn Widget>,
+    content: StatusContent,
     permanent: bool,
     /// Share of the segment's leftover width, or `0` for a fixed-width slot.
     ///
@@ -88,6 +93,68 @@ struct StatusSlot {
     /// boxes it had before the factor existed (M-017).
     stretch: u32,
 }
+
+/// How a slot addresses its control.
+///
+/// The two forms are kept apart rather than unified behind a `Box<dyn Widget>` because an
+/// id-backed child lives in the widget registry, not in this control: boxing it here would
+/// make the status bar a second owner of a control the host mounted.
+enum StatusContent {
+    /// A child this status bar owns.
+    Owned(Box<dyn Widget>),
+    /// A child mounted elsewhere and addressed through the shared registry.
+    Registered(ObjectId),
+}
+
+impl StatusContent {
+    /// The width the slot asks for.
+    ///
+    /// A registered child is read through the runtime so its own `size_hint` still decides
+    /// the band; a control with no hint falls back to its current width, then to the strip's
+    /// default slot width.
+    fn width_hint(&self) -> u32 {
+        match self {
+            StatusContent::Owned(widget) => widget.size_hint().width,
+            StatusContent::Registered(id) => {
+                let hinted =
+                    crate::widget::runtime::read_widget(*id, |widget| widget.size_hint().width)
+                        .unwrap_or(0);
+                if hinted > 0 {
+                    hinted
+                } else {
+                    // A fixed slot width: reading the current geometry here would feed the
+                    // band width back into the next layout pass and let a stretched slot
+                    // grow on every frame.
+                    STATUS_ID_SLOT_WIDTH
+                }
+            }
+        }
+    }
+
+    fn widget(&self) -> Option<&dyn Widget> {
+        match self {
+            StatusContent::Owned(widget) => Some(widget.as_ref()),
+            StatusContent::Registered(_) => None,
+        }
+    }
+
+    fn widget_mut(&mut self) -> Option<&mut (dyn Widget + '_)> {
+        match self {
+            StatusContent::Owned(widget) => Some(widget.as_mut()),
+            StatusContent::Registered(_) => None,
+        }
+    }
+
+    fn registered_id(&self) -> Option<ObjectId> {
+        match self {
+            StatusContent::Owned(_) => None,
+            StatusContent::Registered(id) => Some(*id),
+        }
+    }
+}
+
+/// Width used for an id-backed slot whose control publishes no size hint and has no geometry.
+const STATUS_ID_SLOT_WIDTH: u32 = 80;
 impl StatusBar {
     /// Creates an empty status bar with the size grip enabled.
     ///
@@ -102,6 +169,7 @@ impl StatusBar {
             elapsed_ms: 0,
             message_changed: Signal1::new(),
             widgets: Vec::new(),
+            registry: None,
             grip_drag: None,
             size_grip_dragged: Signal1::new(),
             slot_bands_cache: RefCell::new(None),
@@ -205,6 +273,20 @@ impl StatusBar {
         self.size_grip_enabled = enabled;
         self.base.request_redraw();
     }
+    /// Binds the shared registry used for id-backed children (RW-2).
+    ///
+    /// A child added with [`Self::add_widget_id`] lives in the registry rather than in this
+    /// control, so both its painting and its pointer events travel through this table. An
+    /// owned child (`add_widget`) never consults the registry.
+    pub fn set_registry(&mut self, registry: Rc<RefCell<SimpleRegistry>>) {
+        self.registry = Some(registry);
+        self.base.request_redraw();
+    }
+
+    /// The shared registry, if one was bound.
+    pub fn registry(&self) -> Option<&Rc<RefCell<SimpleRegistry>>> {
+        self.registry.as_ref()
+    }
     /// Appends a transient child widget and returns its index.
     ///
     /// A transient widget sits in the message column, right-aligned, and yields to the
@@ -220,7 +302,26 @@ impl StatusBar {
     /// historical fixed box, and two slots with the same positive factor receive
     /// equal shares (M-017).
     pub fn add_widget_with_stretch(&mut self, widget: Box<dyn Widget>, stretch: u32) -> usize {
-        self.widgets.push(StatusSlot { widget, permanent: false, stretch });
+        self.widgets.push(StatusSlot {
+            content: StatusContent::Owned(widget),
+            permanent: false,
+            stretch,
+        });
+        self.base.request_redraw();
+        self.widgets.len() - 1
+    }
+
+    /// Appends an already-mounted control as a transient child and returns its index (RW-2).
+    ///
+    /// The control is addressed by id and painted/forwarded through the registry bound with
+    /// [`Self::set_registry`]; the status bar does not take ownership of it. `stretch` shares
+    /// the message segment's leftover width exactly as [`Self::add_widget_with_stretch`] does.
+    pub fn add_widget_id(&mut self, widget: ObjectId, stretch: u32) -> usize {
+        self.widgets.push(StatusSlot {
+            content: StatusContent::Registered(widget),
+            permanent: false,
+            stretch,
+        });
         self.base.request_redraw();
         self.widgets.len() - 1
     }
@@ -241,7 +342,24 @@ impl StatusBar {
         widget: Box<dyn Widget>,
         stretch: u32,
     ) -> usize {
-        self.widgets.push(StatusSlot { widget, permanent: true, stretch });
+        self.widgets.push(StatusSlot {
+            content: StatusContent::Owned(widget),
+            permanent: true,
+            stretch,
+        });
+        self.base.request_redraw();
+        self.widgets.len() - 1
+    }
+
+    /// Appends an already-mounted control as a permanent child and returns its index (RW-2).
+    ///
+    /// See [`Self::add_widget_id`] for the ownership and registry contract.
+    pub fn add_permanent_widget_id(&mut self, widget: ObjectId, stretch: u32) -> usize {
+        self.widgets.push(StatusSlot {
+            content: StatusContent::Registered(widget),
+            permanent: true,
+            stretch,
+        });
         self.base.request_redraw();
         self.widgets.len() - 1
     }
@@ -253,7 +371,18 @@ impl StatusBar {
         }
         let slot = self.widgets.remove(index);
         self.base.request_redraw();
-        Some(slot.widget)
+        match slot.content {
+            StatusContent::Owned(widget) => Some(widget),
+            StatusContent::Registered(_) => None,
+        }
+    }
+
+    /// The id of the child at `index` when it was added by id, or `None`.
+    ///
+    /// An owned child has no id to report: it belongs to this control, so addressing it
+    /// through the shared registry would be a second ownership path.
+    pub fn widget_id(&self, index: usize) -> Option<ObjectId> {
+        self.widgets.get(index).and_then(|slot| slot.content.registered_id())
     }
 
     /// The number of child widgets on the strip.
@@ -263,12 +392,12 @@ impl StatusBar {
 
     /// The child at `index`.
     pub fn widget(&self, index: usize) -> Option<&dyn Widget> {
-        self.widgets.get(index).map(|slot| slot.widget.as_ref())
+        self.widgets.get(index).and_then(|slot| slot.content.widget())
     }
 
     /// The child at `index`, mutably.
     pub fn widget_mut(&mut self, index: usize) -> Option<&mut (dyn Widget + '_)> {
-        self.widgets.get_mut(index).map(|slot| slot.widget.as_mut())
+        self.widgets.get_mut(index).and_then(|slot| slot.content.widget_mut())
     }
 
     /// Whether the child at `index` is permanent.
@@ -317,10 +446,10 @@ impl StatusBar {
             ^ (rect.width as u64).rotate_left(27)
             ^ (rect.height as u64).rotate_left(39);
         for (index, slot) in self.widgets.iter().enumerate() {
-            let hint = slot.widget.size_hint();
+            let hint_width = slot.content.width_hint();
             signature = signature.rotate_left(4)
                 ^ (index as u64)
-                ^ (hint.width as u64).rotate_left(20)
+                ^ (hint_width as u64).rotate_left(20)
                 ^ ((slot.permanent as u64) << 52)
                 ^ ((slot.stretch as u64) << 48);
         }
@@ -340,7 +469,7 @@ impl StatusBar {
                 .iter()
                 .enumerate()
                 .filter(|(_, slot)| slot.permanent == want_permanent)
-                .map(|(index, slot)| (index, slot, slot.widget.size_hint().width))
+                .map(|(index, slot)| (index, slot, slot.content.width_hint()))
                 .collect();
             if members.is_empty() {
                 continue;
@@ -639,9 +768,28 @@ impl EventHandler for StatusBar {
             let bands = self.slot_bands();
             for (index, band) in bands.iter().copied() {
                 if band.contains_point(*pos) {
-                    let slot = &mut self.widgets[index];
-                    slot.widget.set_geometry(band);
-                    slot.widget.handle_event(event);
+                    match &mut self.widgets[index].content {
+                        StatusContent::Owned(widget) => {
+                            widget.set_geometry(band);
+                            widget.handle_event(event);
+                        }
+                        // An id-backed child lives in the registry, so both the placement
+                        // and the event must travel through that table. Without a bound
+                        // registry the control is unreachable rather than silently skipped
+                        // at draw time only.
+                        StatusContent::Registered(widget_id) => {
+                            crate::set_widget_geometry(
+                                *widget_id,
+                                band.x,
+                                band.y,
+                                band.width,
+                                band.height,
+                            );
+                            if let Some(registry) = &self.registry {
+                                registry.borrow_mut().forward_event(*widget_id, event);
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -740,10 +888,21 @@ impl Draw for StatusBar {
         // so their hit boxes and their pixels agree.
         let bands = self.slot_bands();
         for (index, band) in bands.iter().copied() {
-            let slot = &mut self.widgets[index];
-            slot.widget.set_geometry(band);
-            if let Some(drawable) = crate::widget::draw_bridge::draw_of(slot.widget.as_mut()) {
-                drawable.draw(context);
+            match &mut self.widgets[index].content {
+                StatusContent::Owned(widget) => {
+                    widget.set_geometry(band);
+                    if let Some(drawable) = crate::widget::draw_bridge::draw_of(widget.as_mut()) {
+                        drawable.draw(context);
+                    }
+                }
+                StatusContent::Registered(widget_id) => {
+                    crate::set_widget_geometry(*widget_id, band.x, band.y, band.width, band.height);
+                    if let Some(registry) = &self.registry {
+                        let mut registry = registry.borrow_mut();
+                        registry.set_widget_geometry(*widget_id, band);
+                        registry.draw_widget(*widget_id, context);
+                    }
+                }
             }
         }
     }
@@ -1139,5 +1298,34 @@ mod tests {
             (left_rect.width as i32 - right_rect.width as i32).abs() <= 1,
             "equal factors receive equal shares (one integer remainder): {left_rect:?} {right_rect:?}"
         );
+    }
+
+    /// RW-2: an id-backed slot is painted through the shared registry, not through a box.
+    #[test]
+    fn an_id_backed_slot_is_painted_through_the_registry() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let drawn = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&drawn);
+        let mut registry = SimpleRegistry::new();
+        registry.register(
+            0x51,
+            move |_context| {
+                counter.fetch_add(1, Ordering::SeqCst);
+            },
+            |_event| {},
+        );
+        let registry = Rc::new(RefCell::new(registry));
+
+        let mut bar = StatusBar::new(Rect::new(0, 0, 400, 24));
+        bar.set_registry(Rc::clone(&registry));
+        let index = bar.add_widget_id(0x51, 0);
+        assert_eq!(bar.widget_id(index), Some(0x51));
+        assert!(bar.widget(index).is_none(), "an id-backed slot owns no widget");
+        let _svg = crate::widget::svg::render_to_svg(&mut bar);
+        assert!(drawn.load(Ordering::SeqCst) >= 1, "the registry drew the child");
+        assert!(bar.remove_widget(index).is_none(), "removal returns no owned box");
+        assert_eq!(bar.widget_count(), 0);
     }
 }

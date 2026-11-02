@@ -82,12 +82,32 @@ impl JsonLoader {
     ///
     /// Returns a [`BoundJsonLayout`] for typed widget access.
     ///
+    /// # Incremental reloads (G-406 / RW-43)
+    ///
+    /// This entry parses and instantiates **once**: loading the same edited document again builds
+    /// a second independent tree, so focus, scroll and selection on unchanged controls are lost.
+    /// A designer's edit-reload loop should use [`JsonLoader::session`], which forwards the same
+    /// parsed document through `crate::view::ViewEngine` and patches only what changed. This
+    /// full-mount path remains the one that applies every loader-owned key (geometry, spacing,
+    /// colours, construction-time switches).
+    ///
     /// # Errors
     ///
     /// Returns an error if JSON parsing fails, an unknown widget type is
     /// encountered, or the widget tree exceeds `MAX_DEPTH`.
     pub fn load(json_str: &str) -> Result<BoundJsonLayout, String> {
         Self::load_with_optional_icon_resolver(json_str, None)
+    }
+
+    /// Opens an incremental session over this loader's parser (G-406 / RW-43).
+    ///
+    /// The returned [`JsonViewSession`](crate::json::JsonViewSession) mounts a document through
+    /// `ViewEngine` and updates an edited one by diffing it against what is mounted, so unchanged
+    /// controls keep their ids (and their focus, scroll and selection). It is a fresh session, not
+    /// a global: two editors over two documents do not share a mounted tree.
+    #[cfg(declarative_view)]
+    pub fn session() -> crate::json::JsonViewSession {
+        crate::json::JsonViewSession::new()
     }
 
     /// Load a JSON layout while resolving resource-backed `icon_source` properties explicitly.

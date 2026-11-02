@@ -37,9 +37,9 @@ use winapi::um::winuser::{
     LoadCursorW, RegisterClassW, SetFocus, SetWindowPos, TrackMouseEvent, UpdateWindow, CS_HREDRAW,
     CS_OWNDC, CS_VREDRAW, IDC_ARROW, PAINTSTRUCT, SWP_NOACTIVATE, SWP_NOZORDER, TME_LEAVE,
     TRACKMOUSEEVENT, WM_CHAR, WM_CLOSE, WM_ERASEBKGND, WM_KEYDOWN, WM_KEYUP, WM_KILLFOCUS,
-    WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSELEAVE, WM_MOUSEMOVE, WM_MOUSEWHEEL,
-    WM_PAINT, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETFOCUS, WM_SIZE, WM_TOUCH, WM_UNICHAR, WNDCLASSW,
-    WS_CHILD, WS_TABSTOP, WS_VISIBLE,
+    WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEHWHEEL, WM_MOUSELEAVE, WM_MOUSEMOVE,
+    WM_MOUSEWHEEL, WM_PAINT, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETFOCUS, WM_SIZE, WM_TOUCH,
+    WM_UNICHAR, WNDCLASSW, WS_CHILD, WS_TABSTOP, WS_VISIBLE,
 };
 #[cfg(widgets_unstripped)]
 use winapi::um::winuser::{WM_IME_COMPOSITION, WM_IME_ENDCOMPOSITION, WM_IME_STARTCOMPOSITION};
@@ -295,7 +295,14 @@ unsafe extern "system" fn canvas_wnd_proc(
         // `windows::types::forward_window_wheel` for the decoding, which this mirrors so a
         // canvas and a window scroll identically.
         WM_MOUSEWHEEL => {
-            forward_wheel(hwnd, wparam, lparam);
+            forward_wheel(hwnd, wparam, lparam, false);
+            0
+        }
+        // A horizontal wheel (a tilt wheel or a trackpad's sideways gesture). Before this arm
+        // existed the message fell through to `DefWindowProcW` and the horizontal component was
+        // silently discarded, so a timeline or grid could not be panned with real input.
+        WM_MOUSEHWHEEL => {
+            forward_wheel(hwnd, wparam, lparam, true);
             0
         }
         // IME composition (P-201). A canvas hosts editable controls, so it must receive the
@@ -817,16 +824,21 @@ unsafe fn forward_mouse(hwnd: HWND, lparam: LPARAM, phase: MousePhase) {
     }
 }
 
-/// Translates a `WM_MOUSEWHEEL` on a canvas into a widget wheel event and delivers it.
+/// Translates a `WM_MOUSEWHEEL`/`WM_MOUSEHWHEEL` on a canvas into a widget wheel event and
+/// delivers it.
 ///
 /// Mirrors `windows::types::forward_window_wheel`, including the two Win32 quirks it
 /// records: the delta is in `wParam`'s high word and the point is in *screen* space. The
 /// only difference is the extra canvas origin, because widget geometry is absolute while
 /// this child window's client area starts at its own corner.
 ///
+/// `horizontal` selects the axis the delta belongs to. Both axes travel in one [`Event::Wheel`]
+/// payload, so a diagonal trackpad gesture keeps the component it actually reported instead of
+/// being flattened onto the vertical axis.
+///
 /// # Safety
 /// `hwnd` must be a live window handle this backend created.
-unsafe fn forward_wheel(hwnd: HWND, wparam: WPARAM, lparam: LPARAM) {
+unsafe fn forward_wheel(hwnd: HWND, wparam: WPARAM, lparam: LPARAM, horizontal: bool) {
     use winapi::um::winuser::{GET_WHEEL_DELTA_WPARAM, WHEEL_DELTA};
     let Some(widget_id) = widget_id_of(hwnd) else {
         return;
@@ -846,12 +858,17 @@ unsafe fn forward_wheel(hwnd: HWND, wparam: WPARAM, lparam: LPARAM) {
         return;
     };
     let position = Point::new(origin_x + screen.x, origin_y + screen.y);
+    // The widget layer speaks in whole notches with a downward-positive / right-positive
+    // convention. A positive vertical Win32 delta means "away from the user", so the sign is
+    // inverted; a positive horizontal delta means a tilt to the right, which already matches the
+    // widget convention (positive x = content moves right).
     let notches = match raw_delta / WHEEL_DELTA {
         0 if raw_delta > 0 => 1,
         0 => -1,
         whole => whole as i32,
     };
-    let event = Event::Wheel { delta: Point::new(0, -notches), modifiers: current_modifiers() };
+    let delta = if horizontal { Point::new(notches, 0) } else { Point::new(0, -notches) };
+    let event = Event::Wheel { delta, modifiers: current_modifiers() };
     if crate::platform::platform_facts().route_pointer_event(widget_id, &event, position) {
         invalidate_canvas(hwnd);
     }
@@ -1114,7 +1131,7 @@ unsafe fn forward_key(hwnd: HWND, wparam: WPARAM) {
     const WIDGET_SHIFT: u32 = 1;
     if key == VK_TAB {
         let forward = current_modifiers() & WIDGET_SHIFT == 0;
-        crate::widget::runtime::focus_next(forward);
+        crate::widget::window::focus_next_in_window(forward);
         invalidate_canvas(hwnd);
         return;
     }

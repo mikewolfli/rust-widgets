@@ -1367,6 +1367,68 @@ impl Platform for MacOSPlatform {
         self.state.window_min_size(widget_id)
     }
 
+    /// Raises the window and makes it key through AppKit.
+    ///
+    /// A minimised window is deminiaturised first, because ordering it front while it is still
+    /// in the Dock does not bring it back. A state-only handle has no `NSWindow`, so the honest
+    /// answer is `false`.
+    fn activate_window(&self, widget_id: ObjectId) -> bool {
+        if !super::types::is_main_thread() {
+            return false;
+        }
+        let Some(window) = resolve_window_ptr(self, widget_id) else {
+            return false;
+        };
+        // SAFETY: `window` is an `NSWindow` this backend created on the AppKit main thread;
+        // `isMiniaturized`, `deminiaturize:` and `makeKeyAndOrderFront:` are documented
+        // `NSWindow` operations.
+        unsafe {
+            let minimized: BOOL = msg_send![window, isMiniaturized];
+            if minimized != NO {
+                let _: () = msg_send![window, deminiaturize: nil];
+            }
+            let _: () = msg_send![window, makeKeyAndOrderFront: nil];
+        }
+        true
+    }
+
+    /// Reads the window's frame origin from AppKit, falling back to the recorded geometry.
+    fn window_position(&self, widget_id: ObjectId) -> Option<(i32, i32)> {
+        if super::types::is_main_thread() {
+            if let Some(window) = resolve_window_ptr(self, widget_id) {
+                // SAFETY: a live `NSWindow` on the AppKit main thread; `frame` is a scalar
+                // struct accessor.
+                unsafe {
+                    let frame: NSRect = msg_send![window, frame];
+                    return Some((frame.origin.x.round() as i32, frame.origin.y.round() as i32));
+                }
+            }
+        }
+        self.state.widget_geometry(widget_id).map(|(x, y, _, _)| (x, y))
+    }
+
+    /// Moves the frame through AppKit and records the accepted position as the fallback.
+    fn set_window_position(&self, widget_id: ObjectId, x: i32, y: i32) -> bool {
+        if super::types::is_main_thread() {
+            if let Some(window) = resolve_window_ptr(self, widget_id) {
+                // SAFETY: a live `NSWindow` on the AppKit main thread; `setFrameOrigin:` only
+                // moves the frame of that window.
+                unsafe {
+                    let _: () = msg_send![window, setFrameOrigin: NSPoint::new(x as f64, y as f64)];
+                }
+                if let Some((_, _, width, height)) = self.state.widget_geometry(widget_id) {
+                    self.state.set_geometry(widget_id, x, y, width, height);
+                }
+                return true;
+            }
+        }
+        if let Some((_, _, width, height)) = self.state.widget_geometry(widget_id) {
+            self.state.set_geometry(widget_id, x, y, width, height);
+            return true;
+        }
+        false
+    }
+
     /// Applies a maximum content size through `NSWindow.setContentMaxSize:`.
     ///
     /// AppKit clamps user resizing only; a programmatic `setFrame:` can still exceed it, which is

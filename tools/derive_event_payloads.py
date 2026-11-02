@@ -176,6 +176,11 @@ MANUAL: dict[tuple[str, str], tuple[str, str]] = {
     ("key_sequence_editor", "conflict_detected"): ("Some(K::String)", "Some(S::Scalar)"),
     # A unit signal carries no payload.
     ("key_sequence_editor", "editing_finished"): ("None", "None"),
+    # A column change is a struct (`kind`, `index`). The wire publishes the kind token and the
+    # index as two positional components, so `Mixed` states that the tuple is heterogeneous.
+    ("table_widget", "column_changed"): ("Some(K::String)", "Some(S::Mixed)"),
+    ("table", "column_changed"): ("Some(K::String)", "Some(S::Mixed)"),
+    ("data_grid", "column_changed"): ("Some(K::String)", "Some(S::Mixed)"),
     # A sort column is an enum token plus the ascending flag.
     ("file_dialog", "sort_changed"): ("Some(K::String)", "Some(S::Mixed)"),
     # `pan_changed` carries a `Point`, which the property side has no kind for. The arm delivers

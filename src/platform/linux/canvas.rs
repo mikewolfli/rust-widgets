@@ -304,7 +304,7 @@ pub(crate) fn mount_canvas(
             // than through `Modifiers`, because this is the platform boundary.
             const WIDGET_SHIFT: u32 = 1;
             let forward = modifier_bits(event) & WIDGET_SHIFT == 0;
-            crate::widget::runtime::focus_next(forward);
+            crate::widget::window::focus_next_in_window(forward);
             widget.queue_draw();
             note_canvas_redraw(id);
             return glib::Propagation::Stop;
@@ -362,17 +362,21 @@ pub(crate) fn mount_canvas(
     });
 
     area.connect_scroll_event(move |widget, event| {
-        let (_, delta_y) = event.delta();
+        let (delta_x, delta_y) = event.delta();
         // GTK reports direction for discrete wheels and a delta for smooth
-        // scrolls; direction wins when it is set, matching platform convention.
-        let dy = match event.direction() {
-            gdk::ScrollDirection::Up => -1.0,
-            gdk::ScrollDirection::Down => 1.0,
-            _ => delta_y,
+        // scrolls; direction wins when it is set, matching platform convention. Both axes are
+        // preserved: a horizontal wheel or a diagonal trackpad gesture must keep the component
+        // it actually reported.
+        let (dx, dy) = match event.direction() {
+            gdk::ScrollDirection::Up => (0.0, -1.0),
+            gdk::ScrollDirection::Down => (0.0, 1.0),
+            gdk::ScrollDirection::Left => (-1.0, 0.0),
+            gdk::ScrollDirection::Right => (1.0, 0.0),
+            _ => (delta_x, delta_y),
         };
         if crate::widget::runtime::dispatch_event(
             id,
-            &Event::Wheel { delta: Point::new(0, dy.round() as i32), modifiers: 0 },
+            &Event::Wheel { delta: Point::new(dx.round() as i32, dy.round() as i32), modifiers: 0 },
         ) {
             widget.queue_draw();
             note_canvas_redraw(id);

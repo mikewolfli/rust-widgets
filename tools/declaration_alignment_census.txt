@@ -10,8 +10,8 @@
 #           placeholder is not a lie, so it is not required to be answered
 # failed  = declarations that disagree with the implementation
 
-controls   268
-skipped    270
+controls   240
+skipped    242
 failed     0
 
 ## skipped entries (each with its reason)
@@ -122,12 +122,6 @@ failed     0
 - shortcut_editor::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
 - animated_image::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
 - hero_animation::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
-- lottie_widget::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
-- rive_widget::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
-- video_player::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
-- audio_visualizer::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
-- camera_preview::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
-- chapter_list_panel::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
 - action::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
 - menu::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
 - context_menu::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
@@ -140,18 +134,13 @@ failed     0
 - window::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
 - lcd_number::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
 - code_editor::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
-- gantt_widget::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
-- terminal_view::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
 - snackbar::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
-- map_view::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
-- media_player::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
 - breadcrumb::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
 - signature_pad::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
 - drop_zone::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
 - timeline_widget::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
 - command_palette::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
 - notification_center::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
-- diff_viewer::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
 - markdown_toolbar::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
 - toast_stack::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
 - split_button::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
@@ -167,7 +156,6 @@ failed     0
 - emoji_picker::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
 - query_builder::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
 - cascader::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
-- kanban_board::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
 - mini_chart::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
 - mini_canvas::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
 - canvas::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
@@ -202,12 +190,6 @@ failed     0
 - line_chart::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
 - sparkline::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
 - bar_chart::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
-- candlestick_chart::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
-- volume_chart::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
-- depth_chart::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
-- order_book::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
-- quote_board::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
-- indicator_chart::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
 - pie_chart::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
 - bezier_curve_editor::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
 - barcode_scanner::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
@@ -217,10 +199,9 @@ failed     0
 - command_palette_host::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
 - header_menu::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
 - chart_reference_line::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
-- terminal_find_bar::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
-- map_attribution::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
-- gantt_task_grid::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
-- map_overview::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
+- chart_crosshair::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
+- drum_column::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
+- preset_chip_bar::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
 - tag::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
 - clock::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
 - gauge::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
@@ -236,13 +217,6 @@ failed     0
 - tooltip_manager::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
 - zoom_pan_controller::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
 - toast_host::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
-- tile_loader::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
-- zoom_control::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
-- scale_bar::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
-- compass::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
-- timeline_axis::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
-- dependency_editor::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
-- diff_file_list::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
 - markdown_outline_panel::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
 - find_bar::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
 - menu_panel::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
@@ -252,8 +226,6 @@ failed     0
 - layer_panel::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
 - playlist_panel::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
 - shape_canvas::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
-- kanban_card_view::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
-- kanban_column_header::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
 - range_preset_bar::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
 - grid_view_header::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
 - line_number_gutter::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered

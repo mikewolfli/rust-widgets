@@ -11,6 +11,7 @@ use crate::widget::capability::coercion::expect_usize;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::save_state::SaveState;
 use crate::widget::{BaseWidget, Draw, SimpleRegistry, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 use std::cell::RefCell;
@@ -170,6 +171,40 @@ impl StackedWidget {
             }
             self.current_changed.emit(index);
         }
+    }
+
+    /// Serialises the selected page for session restore (RW-64).
+    ///
+    /// The page *list* belongs to the host's model; only the selection is user state, so only
+    /// the index is stored. A restore clamps an index past the current last page, because a
+    /// saved preference is not an assertion that the page set did not shrink.
+    pub fn save_state(&self) -> Vec<u8> {
+        let mut state = Vec::with_capacity(5);
+        state.push(STACKED_WIDGET_STATE_VERSION);
+        state.extend_from_slice(&(self.current_index as u32).to_le_bytes());
+        state
+    }
+
+    /// Restores a blob produced by [`Self::save_state`].
+    ///
+    /// Returns `false` for a malformed blob or an empty stack, leaving the control untouched.
+    pub fn restore_state(&mut self, state: &[u8]) -> bool {
+        if state.len() != 5 || state[0] != STACKED_WIDGET_STATE_VERSION {
+            return false;
+        }
+        if self.widgets.is_empty() {
+            return false;
+        }
+        let index = u32::from_le_bytes([state[1], state[2], state[3], state[4]]) as usize;
+        let index = index.min(self.widgets.len() - 1);
+        // A restore is a state assignment, not a user navigation, so it lands on the page
+        // directly rather than starting a slide from whatever was selected before.
+        self.current_index = index;
+        self.previous_page = None;
+        self.transition = 1.0;
+        self.sync_pages();
+        self.base.request_redraw();
+        true
     }
 
     /// Applies the page model to the mounted children: the current page is shown and
@@ -356,6 +391,32 @@ impl Widget for StackedWidget {
             }
             _ => None,
         }
+    }
+
+    fn save_state_dyn(&self) -> Option<&dyn SaveState> {
+        Some(self)
+    }
+
+    fn save_state_dyn_mut(&mut self) -> Option<&mut dyn SaveState> {
+        Some(self)
+    }
+}
+
+/// Version tag of the blob produced by [`StackedWidget::save_state`].
+const STACKED_WIDGET_STATE_VERSION: u8 = 1;
+
+/// RW-64: the selected page is the stacked widget's user-visible state.
+impl SaveState for StackedWidget {
+    fn state_version(&self) -> u16 {
+        u16::from(STACKED_WIDGET_STATE_VERSION)
+    }
+
+    fn save_state(&self) -> Vec<u8> {
+        StackedWidget::save_state(self)
+    }
+
+    fn restore_state(&mut self, state: &[u8]) -> bool {
+        StackedWidget::restore_state(self, state)
     }
 }
 
@@ -1290,5 +1351,36 @@ mod tests {
         stack.add_widget(id);
         assert_eq!(stack.size_hint(), expected);
         let _ = crate::widget::runtime::unregister(id);
+    }
+
+    /// RW-64: the selection round-trips through the save-state bytes.
+    #[test]
+    fn the_stacked_selection_round_trips() {
+        use crate::widget::base_widgets::label::Label;
+
+        let pages: Vec<_> = (0..3)
+            .map(|index| {
+                crate::widget::runtime::register(Box::new(Label::new(
+                    std::format!("page {index}"),
+                    Rect::new(0, 0, 100, 40),
+                )))
+                .expect("the page mounts")
+            })
+            .collect();
+        let mut stack = StackedWidget::new(Rect::new(0, 0, 300, 200));
+        for page in &pages {
+            stack.add_widget(*page);
+        }
+        stack.set_current_index(2);
+        let saved = SaveState::save_state(&stack);
+        assert_eq!(SaveState::state_version(&stack), 1);
+        stack.set_current_index(0);
+        assert!(SaveState::restore_state(&mut stack, &saved));
+        assert_eq!(stack.selected_index(), Some(2));
+        assert!(!SaveState::restore_state(&mut stack, &[1, 0]));
+        assert_eq!(stack.selected_index(), Some(2), "a refused blob changes nothing");
+        for page in pages {
+            let _ = crate::widget::runtime::unregister(page);
+        }
     }
 }

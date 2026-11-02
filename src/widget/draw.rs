@@ -18,7 +18,11 @@ use crate::render::RenderContext;
 /// An all-zero radius keeps the historical square call (including its 1 px `draw_rect` form); any
 /// non-zero radius strokes a rounded rectangle with the same width — per corner since STY-01, so a
 /// non-uniform fill shape gets the matching outline instead of a silently square one.
-pub(crate) fn stroke_surface_border(
+///
+/// Public because the `rust-widgets-suites` package paints its controls with the same helper: a
+/// suite that re-implemented the fill/outline pairing would disagree with this crate about the
+/// rounded-corner rule on the first control it moved.
+pub fn stroke_surface_border(
     context: &mut RenderContext,
     rect: Rect,
     radii: [u32; 4],

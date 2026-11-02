@@ -86,9 +86,55 @@ fn monotonic_ms(epoch: crate::compat::Instant) -> u64 {
 /// A timer is fed through for exactly that reason. Every other non-touch event is still skipped, so
 /// the engine is not asked to interpret a `KeyPress` or a `Resize` as a gesture, and the events the
 /// engine itself produces (`Tap`, `Swipe`, …) are `is_touch()`-true and so still round-trip.
+///
+/// Mouse input is accepted too (RW-95): a recogniser chain fed only by `Touch*` could never
+/// recognise a long-press or a pan performed with a mouse, which left those gestures impossible
+/// to demonstrate or replay on a machine without a touchscreen. The raw mouse event is converted
+/// to its touch equivalent by [`mouse_gesture_input`] before it reaches the recognisers, so their
+/// touch semantics — and every existing touch caller — stay unchanged.
 #[cfg(feature = "touch")]
 fn feeds_the_gesture_engine(event: &Event) -> bool {
-    event.is_touch() || matches!(event, Event::Timer { .. })
+    event.is_touch()
+        || matches!(
+            event,
+            Event::Timer { .. }
+                | Event::MousePress { .. }
+                | Event::MouseRelease { .. }
+                | Event::MouseMove { .. }
+        )
+}
+
+/// The touch id a mouse-driven gesture is reported under.
+///
+/// Distinct from any id a platform assigns to a real contact, so a mouse and a finger can be in
+/// flight at the same time without either recogniser confusing one for the other. The value is at
+/// the far end of the `u64` space, which no platform's contact counter reaches.
+#[cfg(feature = "touch")]
+const MOUSE_GESTURE_TOUCH_ID: u64 = u64::MAX;
+
+/// Rewrites a mouse event into the touch event the recognisers follow.
+///
+/// # Why translation rather than recogniser changes
+///
+/// The eleven recognisers are written against `TouchBegin`/`TouchMove`/`TouchEnd` and their unit
+/// tests drive exactly those variants. Giving each one a second mouse arm would duplicate that
+/// state machine in eleven places. Translating at the loop's boundary keeps one definition of
+/// "a pointer went down, moved, and came up". The caller still delivers the **original** mouse
+/// event to the control; this value is only handed to the gesture engine.
+#[cfg(feature = "touch")]
+fn mouse_gesture_input(event: &Event) -> Option<Event> {
+    match event {
+        Event::MousePress { pos, .. } => {
+            Some(Event::TouchBegin { pos: *pos, touch_id: MOUSE_GESTURE_TOUCH_ID })
+        }
+        Event::MouseRelease { pos, .. } => {
+            Some(Event::TouchEnd { pos: *pos, touch_id: MOUSE_GESTURE_TOUCH_ID })
+        }
+        Event::MouseMove { pos } => {
+            Some(Event::TouchMove { pos: *pos, touch_id: MOUSE_GESTURE_TOUCH_ID })
+        }
+        _ => None,
+    }
 }
 
 /// Whether `event` is a mouse-move spelling this loop may coalesce (W-10).
@@ -926,6 +972,36 @@ impl EventLoop {
                             event.clone()
                         };
 
+                        // C-10': the window's own key handler runs before the host accelerator
+                        // hook and before control delivery. A window owns its local commands, so
+                        // its answer wins; the hook and the control are the fallback for every
+                        // key it declines. Bare characters and an active IME composition are
+                        // filtered inside `dispatch_window_key`, which is why a typed `s` is
+                        // never mistaken for `Ctrl+S`.
+                        //
+                        // EV-X05: the same panic barrier the filter chain uses. A panicking
+                        // window handler is logged and the key is treated as unconsumed.
+                        #[cfg(full_widgets)]
+                        {
+                            crate::shortcut::route::observe_input_event(&canonical);
+                            if matches!(canonical, Event::KeyPress { .. }) {
+                                let consumed =
+                                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                        crate::shortcut::route::dispatch_window_key(
+                                            target, &canonical,
+                                        )
+                                    }));
+                                match consumed {
+                                    Ok(true) => return,
+                                    Ok(false) => {}
+                                    Err(error) => log::error!(
+                                        "[event-loop] Window key handler panicked for target \
+                                         {target:?}; treating the event as unconsumed: {error:?}"
+                                    ),
+                                }
+                            }
+                        }
+
                         // The accelerator hook runs before the focused control sees the key.
                         // A consumed key press must not also be delivered as text/activation:
                         // the host asked the shortcut path to own it. Non-key events are
@@ -1044,8 +1120,12 @@ impl EventLoop {
                             // are just no longer *required*): an extra `Event::Timer` for a
                             // hold that already fired is a no-op, because the recogniser's
                             // `fired` latch ignores it.
+                            //
+                            // A mouse press arms the same deadline: the recognisers then see
+                            // the translated `TouchBegin`, and a stationary held button reaches
+                            // `LongPressGesture` through the same timer a finger does.
                             match &canonical {
-                                Event::TouchBegin { .. } => {
+                                Event::TouchBegin { .. } | Event::MousePress { .. } => {
                                     let interval = Duration::from_millis(
                                         crate::gesture::tuning().long_press_min_ms,
                                     );
@@ -1060,7 +1140,7 @@ impl EventLoop {
                                         );
                                     }
                                 }
-                                Event::TouchEnd { .. } => {
+                                Event::TouchEnd { .. } | Event::MouseRelease { .. } => {
                                     let _ = gesture_timer.stop(target, GESTURE_LONG_PRESS_TIMER_ID);
                                 }
                                 other if is_touch_cancel(other) => {
@@ -1068,7 +1148,11 @@ impl EventLoop {
                                 }
                                 _ => {}
                             }
-                            gesture_ref.process(target, &canonical, monotonic_ms(gesture_epoch))
+                            // A mouse event is fed to the engine in its touch spelling; the
+                            // control still receives the original `Mouse*` event below.
+                            let translated = mouse_gesture_input(&canonical);
+                            let fed = translated.as_ref().unwrap_or(&canonical);
+                            gesture_ref.process(target, fed, monotonic_ms(gesture_epoch))
                         } else {
                             None
                         };
@@ -1328,6 +1412,26 @@ impl EventLoop {
         // a second match (EV-X02).
         let canonical =
             if event.is_legacy_alias() { event.clone().into_canonical() } else { event.clone() };
+        // C-10': the window handler is consulted for every key press before the host hook and
+        // before delivery. `mini` has no window registry, so the call is compiled out with
+        // `full_widgets`; the existing semantic path below is unchanged.
+        #[cfg(full_widgets)]
+        {
+            crate::shortcut::route::observe_input_event(&canonical);
+            if matches!(canonical, Event::KeyPress { .. }) {
+                let consumed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    crate::shortcut::route::dispatch_window_key(target, &canonical)
+                }));
+                match consumed {
+                    Ok(true) => return true,
+                    Ok(false) => {}
+                    Err(error) => log::error!(
+                        "[event-loop] Window key handler panicked for target {target:?}; \
+                         treating the event as unconsumed: {error:?}"
+                    ),
+                }
+            }
+        }
         if matches!(canonical, Event::KeyPress { .. }) {
             if let Some(shortcut) = self.shortcut_dispatch.as_ref() {
                 // EV-X05: the same barrier the threaded dispatch uses for its accelerator hook.
@@ -1770,6 +1874,60 @@ mod tests {
         }));
         // And the engine's own output still round-trips.
         assert!(feeds_the_gesture_engine(&Event::LongPress { pos: Point::new(0, 0) }));
+        // RW-95: a mouse stream reaches the engine too, so long-press and pan are not
+        // touchscreen-only gestures.
+        assert!(feeds_the_gesture_engine(&Event::mouse_press(1, 1, 1)));
+        assert!(feeds_the_gesture_engine(&Event::mouse_release(1, 1, 1)));
+        assert!(feeds_the_gesture_engine(&Event::MouseMove { pos: Point::new(1, 1) }));
+    }
+
+    /// RW-95: a mouse press/drag/release reaches the recognisers as the touch stream they
+    /// understand, and the pan recogniser produces a `Drag` for it.
+    #[test]
+    #[cfg(all(feature = "touch", not(alloc_frugal)))]
+    fn a_mouse_drag_reaches_the_pan_recognizer() {
+        use crate::core::Point;
+        let mut registry = GestureRegistry::new();
+        let begin = mouse_gesture_input(&Event::mouse_press(0, 0, 1)).expect("press translates");
+        assert!(
+            matches!(begin, Event::TouchBegin { touch_id, .. } if touch_id == MOUSE_GESTURE_TOUCH_ID)
+        );
+        assert!(registry.process(1, &begin, 0).is_none());
+
+        let moved = mouse_gesture_input(&Event::MouseMove { pos: Point::new(50, 0) })
+            .expect("move translates");
+        let produced = registry.process(1, &moved, 10);
+        assert!(
+            matches!(produced, Some(Event::Drag { .. })),
+            "a 50 px mouse drag must reach the pan recogniser, got {produced:?}"
+        );
+
+        let end = mouse_gesture_input(&Event::mouse_release(50, 0, 1)).expect("release translates");
+        let ended = registry.process(1, &end, 20);
+        // RW-95: the release finishes the pan. A recogniser may report the final drag or a
+        // terminal event; what must not happen is a different gesture class being synthesised.
+        assert!(
+            matches!(ended, None | Some(Event::Drag { .. }) | Some(Event::Fling { .. })),
+            "a mouse release may only finish the drag it started, got {ended:?}"
+        );
+        // The original mouse event is never rewritten; only the engine's copy is.
+        assert!(mouse_gesture_input(&Event::KeyPress { key: 65, modifiers: 0 }).is_none());
+    }
+
+    /// A stationary mouse press reaches the long-press recogniser through the same timer a
+    /// held finger uses.
+    #[test]
+    #[cfg(all(feature = "touch", not(alloc_frugal)))]
+    fn a_held_mouse_press_reaches_the_long_press_recognizer() {
+        use crate::core::Point;
+        let mut registry = GestureRegistry::new();
+        let begin = mouse_gesture_input(&Event::mouse_press(20, 30, 1)).expect("press translates");
+        assert!(registry.process(2, &begin, 0).is_none());
+        let fired = registry.process(2, &Event::Timer { id: 0 }, 600);
+        assert!(
+            matches!(fired, Some(Event::LongPress { pos }) if pos == Point::new(20, 30)),
+            "a held mouse button must produce a LongPress, got {fired:?}"
+        );
     }
 
     /// An idle task must actually run once the loop ticks enough frames.

@@ -73,8 +73,11 @@ use crate::widget::capability::coercion::{expect_bool, expect_string, expect_u32
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::save_state::SaveState;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
+
+mod state;
 
 use super::theme_snapshot::ThemeSnapshot;
 
@@ -990,6 +993,14 @@ impl Widget for Carousel {
             }
             _ => None,
         }
+    }
+
+    fn save_state_dyn(&self) -> Option<&dyn SaveState> {
+        Some(self)
+    }
+
+    fn save_state_dyn_mut(&mut self) -> Option<&mut dyn SaveState> {
+        Some(self)
     }
 }
 
@@ -3097,5 +3108,21 @@ mod tests {
         let y = rect.y as u32 + rect.height - 2;
         let pixel = pixel(&rgba, size.width, 150, y);
         assert_eq!((pixel.0, pixel.1, pixel.2), (52, 120, 246));
+    }
+
+    /// RW-64: the selected page round-trips and is clamped on restore.
+    #[test]
+    fn the_selected_page_round_trips_through_save_state() {
+        let mut carousel = Carousel::new(Rect::new(0, 0, 300, 200));
+        carousel.add_page("A", Color::rgb(1, 2, 3));
+        carousel.add_page("B", Color::rgb(4, 5, 6));
+        carousel.add_page("C", Color::rgb(7, 8, 9));
+        carousel.set_current(2);
+        let saved = SaveState::save_state(&carousel);
+        carousel.set_current(0);
+        assert!(SaveState::restore_state(&mut carousel, &saved));
+        assert_eq!(carousel.selected_index(), Some(2));
+        assert!(!SaveState::restore_state(&mut carousel, b"short"));
+        assert_eq!(carousel.selected_index(), Some(2), "a refused blob changes nothing");
     }
 }

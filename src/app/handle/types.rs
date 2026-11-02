@@ -277,6 +277,24 @@ pub trait WidgetHandle: Sized {
         crate::set_widget_geometry(self.raw_id(), x, y, w, h);
     }
 
+    /// Read the widget's current geometry (RW-63).
+    ///
+    /// `None` when the id is not a mounted widget. The read goes through the runtime's
+    /// geometry channel, so it answers the same rectangle `set_geometry` last wrote and the
+    /// tree painter last saw.
+    fn geometry(&self) -> Option<Rect> {
+        crate::widget::runtime::geometry_of(self.raw_id())
+    }
+
+    /// Whether this widget currently owns keyboard focus (RW-63).
+    ///
+    /// This is the read half only. The runtime exposes no per-widget focus subscription, so
+    /// there is no `on_focus_gained` / `on_focus_lost` hook here; a host observes the
+    /// `FocusGained` / `FocusLost` events through the normal event path instead.
+    fn is_focused(&self) -> bool {
+        crate::widget::runtime::has_focus(self.raw_id())
+    }
+
     /// Update the widget's text / label.
     fn set_text(&self, text: &str) {
         crate::set_widget_text(self.raw_id(), text);

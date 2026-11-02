@@ -946,6 +946,147 @@ impl EventSchema {
     }
 }
 
+/// The manifest spelling of "this container accepts any constructible child".
+///
+/// A container's allowed-child list is a constraint, and "no constraint" is not the same fact as
+/// "no children". An empty list cannot express both, so an unconstrained container publishes this
+/// wildcard in its manifest row instead. It is a token, not a [`WidgetKind`], and therefore never
+/// appears in [`child_kinds_for`].
+pub const ANY_CHILD_WILDCARD: &str = "*";
+
+/// The child kinds a container of `kind` constrains its children to, empty when it constrains none.
+///
+/// # Why this is a lookup and not a field on [`WidgetCapability`]
+///
+/// `WidgetCapability` is written as a struct literal in every registration table in this crate. A
+/// new field would break all of them at once for a fact that only a handful of kinds have, and the
+/// rows that *do* have a constraint can state it with [`WidgetCapability::with_children`]. The
+/// default answer here covers the containers that exist today, so no existing literal changes.
+///
+/// # Empty means "unconstrained", not "no children"
+///
+/// A generic container — a tab widget, a stacked widget, a splitter, a grid, a panel — accepts any
+/// constructible child. An empty slice is that fact. [`is_container_kind`] distinguishes it from a
+/// control that holds no children at all; a manifest reader uses both, so the two answers cannot be
+/// confused.
+pub fn child_kinds_for(kind: WidgetKind) -> &'static [WidgetKind] {
+    match kind {
+        // A dock panel is the one container whose children are constrained by identity: a dock
+        // holds dock panels, not arbitrary widgets.
+        #[cfg(widgets_unstripped)]
+        WidgetKind::DockWidget => &[WidgetKind::DockPanel],
+        // An MDI area hosts sub-windows, which in this crate are panel-shaped children.
+        #[cfg(widgets_unstripped)]
+        WidgetKind::MdiArea => &[WidgetKind::Panel],
+        _ => &[],
+    }
+}
+
+/// Whether `kind` is a container that may hold child widgets.
+///
+/// This is deliberately separate from [`child_kinds_for`]: that function's empty answer means
+/// "unconstrained" for a container and carries no meaning for a leaf control.
+pub fn is_container_kind(kind: WidgetKind) -> bool {
+    match kind {
+        WidgetKind::Panel | WidgetKind::Frame | WidgetKind::GroupBox | WidgetKind::ScrollArea => {
+            true
+        }
+        #[cfg(widgets_unstripped)]
+        WidgetKind::DockWidget
+        | WidgetKind::DockPanel
+        | WidgetKind::MdiArea
+        | WidgetKind::TabWidget
+        | WidgetKind::StackedWidget
+        | WidgetKind::Splitter
+        | WidgetKind::Grid
+        | WidgetKind::CollapsiblePane
+        | WidgetKind::Toolbox
+        | WidgetKind::Carousel
+        | WidgetKind::Accordion
+        // Layout wrappers: each holds one or more children, so a designer must still be able to
+        // ask "what may I drop here?" even though the answer is "anything".
+        | WidgetKind::Flex
+        | WidgetKind::FlowLayout
+        | WidgetKind::WrapLayout
+        | WidgetKind::Center
+        | WidgetKind::Align
+        | WidgetKind::SizedBox
+        | WidgetKind::Padding
+        | WidgetKind::Expanded
+        | WidgetKind::Flexible
+        | WidgetKind::IntrinsicWidth
+        | WidgetKind::AspectRatio
+        // Surfaces that own a content area.
+        | WidgetKind::NavigationStack
+        | WidgetKind::SafeArea
+        | WidgetKind::BottomSheet
+        | WidgetKind::NavigationDrawer
+        | WidgetKind::ModalBottomSheet
+        | WidgetKind::Popover
+        | WidgetKind::AdaptiveScaffold
+        | WidgetKind::SwipeToDismiss => true,
+        _ => false,
+    }
+}
+
+/// Every name a designer may use for `capability`, sorted and de-duplicated.
+///
+/// The capability's own `aliases` list holds doc spellings (`btn` for `button`); the registry holds
+/// *capability rows* that share the struct (`context_menu` for `menu`). Both are names a designer can
+/// drop, so a manifest lists both. Sorting here is what keeps the export byte-stable.
+pub fn manifest_aliases(capability: &WidgetCapability) -> Vec<String> {
+    let mut aliases: Vec<String> =
+        capability.aliases.iter().map(|alias| String::from(*alias)).collect();
+    aliases
+        .extend(crate::widget::capability::aliases_of(capability.canonical_name).map(String::from));
+    aliases.sort();
+    aliases.dedup();
+    aliases
+}
+
+/// The factory names a designer may nest inside `capability`.
+///
+/// A container with no explicit constraint accepts any constructible child, which the manifest
+/// spells as [`ANY_CHILD_WILDCARD`]. A leaf answers an empty list.
+pub fn child_factory_names(capability: &WidgetCapability) -> Vec<String> {
+    if !is_container_kind(capability.kind) {
+        return Vec::new();
+    }
+    let declared = capability.child_kinds();
+    if declared.is_empty() {
+        return core::iter::once(String::from(ANY_CHILD_WILDCARD)).collect();
+    }
+    #[cfg(widgets_unstripped)]
+    {
+        declared
+            .iter()
+            .filter_map(|child| {
+                crate::widget::capability::factory_name_for_kind(*child).map(String::from)
+            })
+            .collect()
+    }
+    // A stripped build has no factory to name children from. The wildcard answer above still
+    // applies; an explicitly constrained container reports no names rather than inventing them.
+    #[cfg(not(widgets_unstripped))]
+    {
+        Vec::new()
+    }
+}
+
+/// Child-kind constraints a capability row declared explicitly.
+///
+/// Keyed by canonical name rather than by kind: several capabilities may share one kind
+/// (`panel`/`group_box`), and a constraint belongs to the capability that declared it. The table is
+/// append-only in practice — `with_children` records a row once per process build — so a mutex
+/// around a map is sufficient and keeps the accessor allocation-free.
+fn child_overrides(
+) -> &'static crate::compat::Mutex<crate::compat::HashMap<&'static str, &'static [WidgetKind]>> {
+    static OVERRIDES: crate::compat::OnceLock<
+        crate::compat::Mutex<crate::compat::HashMap<&'static str, &'static [WidgetKind]>>,
+    > = crate::compat::OnceLock::new();
+    OVERRIDES.get_or_init(|| crate::compat::Mutex::new(crate::compat::HashMap::new()))
+}
+
 /// Capability metadata for a widget kind.
 #[derive(Debug, Clone)]
 pub struct WidgetCapability {
@@ -972,6 +1113,30 @@ pub struct WidgetCapability {
     pub events: &'static [EventSchema],
     /// Names of the commands the kind accepts.
     pub commands: &'static [&'static str],
+}
+
+impl WidgetCapability {
+    /// The child kinds this capability constrains its children to, empty when it constrains none.
+    ///
+    /// Uses an explicit [`Self::with_children`] declaration when one was made, and otherwise falls
+    /// back to the shared table [`child_kinds_for`]. The fallback is what lets the existing
+    /// registration literals stay unchanged while still publishing the containers that exist.
+    pub fn child_kinds(&self) -> &'static [WidgetKind] {
+        if let Some(declared) = crate::compat::lock(child_overrides()).get(self.canonical_name) {
+            return declared;
+        }
+        child_kinds_for(self.kind)
+    }
+
+    /// Declares this capability's child-kind constraint explicitly.
+    ///
+    /// Additive builder for a new registration row: a control whose allowed children are narrower
+    /// (or wider) than [`child_kinds_for`]'s default states the fact here instead of editing the
+    /// shared table, so two controls that share a kind cannot overwrite one another's constraint.
+    pub fn with_children(self, children: &'static [WidgetKind]) -> Self {
+        let _ = crate::compat::lock(child_overrides()).insert(self.canonical_name, children);
+        self
+    }
 }
 
 /// One property entry in exported capability manifest.
@@ -1165,6 +1330,24 @@ mod constraint_tests {
         let schema = PropertySchema::new("value", PropertyValueKind::Float, true, true)
             .constrained(&[Constraint::Precision { places: Some(2) }]);
         assert!(validate_property_value("value", &schema, &CapabilityValue::Float(1.23456)).is_ok());
+    }
+
+    /// RW-41: `with_children` records an explicit constraint that `child_kinds` reports.
+    #[test]
+    fn with_children_records_an_explicit_constraint() {
+        let capability = WidgetCapability {
+            kind: WidgetKind::Panel,
+            // A name no registration uses, so this test cannot affect another control's answer.
+            canonical_name: "rw41_test_capability",
+            aliases: &[],
+            properties: &[],
+            events: &[],
+            commands: &[],
+        }
+        .with_children(&[WidgetKind::Button]);
+        assert_eq!(capability.child_kinds(), &[WidgetKind::Button]);
+        assert!(is_container_kind(WidgetKind::Panel));
+        assert!(!is_container_kind(WidgetKind::Button));
     }
 
     /// `RangeSpec::contains` must be inclusive and reject non-finite values.

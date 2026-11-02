@@ -16,6 +16,7 @@ use crate::widget::capability::properties_trait::{base_property_get, base_proper
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::effective_font;
+use crate::widget::view_widgets::table_widget::ItemDelegate;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -85,6 +86,16 @@ pub trait TreeTableModel: Send + Sync {
     fn fetch_more(&self, path: &[usize]) -> bool {
         let _ = path;
         false
+    }
+
+    /// The icon token painted before `path`'s label in the tree column (RW-10).
+    ///
+    /// Path-addressed rather than index-addressed because [`TreeTableModel`] addresses nodes by
+    /// their full path — the same address [`Self::data`] and [`Self::child_count`] use. The
+    /// default answers `None`, leaving a text-only model unchanged.
+    fn node_icon(&self, path: &[usize]) -> Option<&str> {
+        let _ = path;
+        None
     }
 }
 
@@ -306,6 +317,10 @@ pub struct TreeTable {
     scroll_column: usize,
     /// Expansion snapshot replayed after a model reset (V-004).
     saved_expansion: Vec<Vec<usize>>,
+    /// Optional display/editor delegate (RW-18), shared with `TableWidget`'s protocol.
+    delegate: Option<Arc<dyn ItemDelegate>>,
+    /// The `(visible row, column)` an in-place edit is open on, if any (RW-18).
+    editing: Option<(usize, usize)>,
 }
 
 impl TreeTable {
@@ -353,6 +368,8 @@ impl TreeTable {
             column_alignments: HashMap::new(),
             scroll_column: 1,
             saved_expansion: Vec::new(),
+            delegate: None,
+            editing: None,
         }
     }
 
@@ -393,6 +410,8 @@ impl TreeTable {
         // (BLUE-issue E-20): a subscriber must see the selection go from its old value to `None`, not
         // have it vanish silently.
         let previous_selection = self.selected_row.take();
+        // An open edit names a visible row of the old projection, which the new model replaces.
+        self.editing = None;
         self.rebuild_projection();
         self.announce_selection_change(previous_selection);
         self.base.request_layout();
@@ -406,6 +425,7 @@ impl TreeTable {
         self.expanded_paths.clear();
         self.visible_rows.clear();
         self.selected_row = None;
+        self.editing = None;
         self.projection_changed.emit(0);
         self.selection_changed.emit(None);
         self.base.request_layout();
@@ -1081,6 +1101,74 @@ impl TreeTable {
     /// vertical band is consulted, exactly as a left press does.
     pub fn row_index_at(&self, point: Point) -> Option<usize> {
         self.row_at(point.y)
+    }
+
+    // ── In-place editing (RW-18) ──
+
+    /// Installs the display/editor delegate, replacing any previous one.
+    ///
+    /// The delegate is the same [`ItemDelegate`] protocol `TableWidget` uses (create, seed, place,
+    /// read back, close), addressed with `row = the visible row` and the real column index. A
+    /// host that already edits a table therefore keeps one editing vocabulary for both controls.
+    pub fn set_delegate(&mut self, delegate: Arc<dyn ItemDelegate>) {
+        self.delegate = Some(delegate);
+    }
+
+    /// Whether a delegate is installed.
+    pub fn has_delegate(&self) -> bool {
+        self.delegate.is_some()
+    }
+
+    /// The installed delegate, if any.
+    pub fn delegate_ref(&self) -> Option<&Arc<dyn ItemDelegate>> {
+        self.delegate.as_ref()
+    }
+
+    /// Begins an in-place edit of `(row, column)`, returning the editor the delegate built.
+    ///
+    /// The editor is placed over the cell's painted rectangle, derived from the same
+    /// [`Self::column_span`] and header offset the paint loop reads, so an editor cannot land on a
+    /// cell it was not opened for. Returns `None` when there is no delegate or model, or the
+    /// address is out of range.
+    pub fn begin_edit(&mut self, row: usize, column: usize) -> Option<Box<dyn Widget>> {
+        let delegate = self.delegate.clone()?;
+        if row >= self.visible_rows.len() || column >= self.column_count() {
+            return None;
+        }
+        let mut editor = delegate.create_editor(&mut self.base, row, column)?;
+        delegate.set_editor_data(editor.as_mut(), row, column);
+        let rect = self.base.geometry();
+        let y = rect.y
+            + self.header_offset()
+            + (row as i32 - self.scroll_row as i32) * self.row_height as i32;
+        let (x, width) = self.column_span(column);
+        delegate.update_editor_geometry(editor.as_mut(), Rect::new(x, y, width, self.row_height));
+        self.editing = Some((row, column));
+        self.base.request_redraw();
+        Some(editor)
+    }
+
+    /// Reads the current text back out of an editor and commits it, returning that text.
+    pub fn commit_edit(&mut self, editor: &dyn Widget) -> Option<String> {
+        let delegate = self.delegate.clone()?;
+        let (row, column) = self.editing?;
+        let text = delegate.get_editor_data(editor, row, column);
+        delegate.close_editor(editor);
+        self.editing = None;
+        self.base.request_redraw();
+        text
+    }
+
+    /// Abandons an in-place edit without committing it.
+    pub fn cancel_edit(&mut self) {
+        if self.editing.take().is_some() {
+            self.base.request_redraw();
+        }
+    }
+
+    /// The `(visible row, column)` an edit is open on, if any.
+    pub fn editing_cell(&self) -> Option<(usize, usize)> {
+        self.editing
     }
 
     /// The vertical room the column-title row takes.
@@ -1875,10 +1963,31 @@ impl Draw for TreeTable {
                     // half a line low. The band starts after the indent, so the tree's hierarchy
                     // still reads while the line box is derived correctly. Fitting keeps a deep
                     // node's value inside its column.
-                    let text_x = match disclosure {
+                    let mut text_x = match disclosure {
                         Some(box_rect) => box_rect.x + box_rect.width as i32 + 2,
                         None => x + 4 + indent,
                     };
+                    // A node icon sits between the disclosure gutter and the label (RW-10).
+                    // Column 0 is the tree column, so only it carries the icon.
+                    if col == 0 {
+                        let icon_name = self
+                            .row_path(row)
+                            .and_then(|path| {
+                                self.model.as_ref().and_then(|model| model.node_icon(path))
+                            })
+                            .map(str::to_string);
+                        if let Some(name) = icon_name.as_deref() {
+                            let side = self.row_height.saturating_sub(6).clamp(1, 20);
+                            let icon_rect = Rect::new(
+                                text_x,
+                                y + (self.row_height as i32 - side as i32) / 2,
+                                side,
+                                side,
+                            );
+                            crate::widget::draw_icon_named(context, icon_rect, ink, name);
+                            text_x = text_x.saturating_add(side as i32 + 4);
+                        }
+                    }
                     let band = Rect::new(
                         text_x,
                         y,
@@ -2841,5 +2950,101 @@ mod tests {
             10,
             "the second rebuild reuses the cache"
         );
+    }
+
+    // ── RW-10: node icons ──
+
+    struct IconModel;
+
+    impl TreeTableModel for IconModel {
+        fn root_count(&self) -> usize {
+            2
+        }
+
+        fn child_count(&self, _path: &[usize]) -> usize {
+            0
+        }
+
+        fn column_count(&self) -> usize {
+            2
+        }
+
+        fn data(&self, path: &[usize], column: usize) -> Option<String> {
+            Some(format!("{column}:{}", path.first().copied().unwrap_or(0)))
+        }
+
+        fn node_icon(&self, path: &[usize]) -> Option<&str> {
+            (path.first() == Some(&0)).then_some("folder")
+        }
+    }
+
+    #[test]
+    fn a_tree_table_paints_a_node_icon_from_its_model() {
+        use crate::render::{PaintBackend, SoftwarePaintBackend};
+
+        let mut tree = TreeTable::new(Rect::new(0, 0, 240, 120));
+        tree.set_model(Arc::new(IconModel));
+        assert_eq!(tree.row_count(), 2);
+        assert_eq!(tree.row_path(0), Some(&[0usize][..]));
+
+        let mut backend = SoftwarePaintBackend::new(crate::core::Size::new(240, 120), 1.0);
+        backend.begin_frame(Color::WHITE);
+        {
+            let mut context = RenderContext::new(&mut backend);
+            tree.draw(&mut context);
+        }
+        backend.end_frame();
+        // Painting a row with an icon must not disturb the projection.
+        assert_eq!(tree.row_count(), 2);
+    }
+
+    // ── RW-18: in-place editing ──
+
+    struct EditDelegate;
+
+    impl ItemDelegate for EditDelegate {
+        fn create_editor(
+            &self,
+            _parent: &mut BaseWidget,
+            _row: usize,
+            _column: usize,
+        ) -> Option<Box<dyn Widget>> {
+            Some(Box::new(crate::widget::Label::new("editor".to_string(), Rect::new(0, 0, 40, 20))))
+        }
+
+        fn set_editor_data(&self, _editor: &mut dyn Widget, _row: usize, _column: usize) {}
+
+        fn get_editor_data(
+            &self,
+            _editor: &dyn Widget,
+            _row: usize,
+            _column: usize,
+        ) -> Option<String> {
+            Some("committed".to_string())
+        }
+    }
+
+    #[test]
+    fn begin_edit_on_a_tree_table_uses_the_table_delegate_protocol() {
+        let mut tree = TreeTable::new(Rect::new(0, 0, 240, 120));
+        tree.set_model(Arc::new(IconModel));
+        assert!(!tree.has_delegate());
+        assert!(tree.begin_edit(0, 0).is_none(), "no delegate, no editor");
+
+        tree.set_delegate(Arc::new(EditDelegate));
+        assert!(tree.has_delegate());
+        assert!(tree.delegate_ref().is_some());
+
+        let editor = tree.begin_edit(0, 1).expect("the delegate builds an editor");
+        assert_eq!(tree.editing_cell(), Some((0, 1)));
+        assert!(tree.begin_edit(9, 0).is_none(), "there is no row 9");
+        assert!(tree.begin_edit(0, 9).is_none(), "there is no column 9");
+        assert_eq!(tree.commit_edit(editor.as_ref()).as_deref(), Some("committed"));
+        assert_eq!(tree.editing_cell(), None);
+
+        let editor = tree.begin_edit(1, 0).expect("row 1 exists");
+        drop(editor);
+        tree.cancel_edit();
+        assert_eq!(tree.editing_cell(), None);
     }
 }

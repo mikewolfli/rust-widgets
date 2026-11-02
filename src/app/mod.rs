@@ -32,14 +32,15 @@ pub(crate) use handle::record_unwired_binding;
 pub(crate) use handle::set_widget_value_callback as handle_set_widget_value_callback;
 pub use handle::{
     binding_report, dispatch_trigger, drain_triggers, remove_callbacks,
-    reset_unwired_binding_count, unwired_binding_count, BindingReport, ButtonHandle,
-    CheckBoxHandle, CheckState, ComboBoxHandle, CustomWidgetHandle, CustomWidgetMountError,
-    DialogHandle, EchoMode, FrameHandle, GridWidgetHandle, LabelHandle, LineEditHandle,
-    ListBoxHandle, ListModel, ListViewHandle, MenuBarHandle, MenuHandle, MenuItemHandle,
-    MessageBoxHandle, PanelHandle, ProgressBarHandle, RadioButtonHandle, ScrollAreaHandle,
-    ScrollBarHandle, SelectionMode, SliderHandle, SpinBoxHandle, SplitterHandle, StatusBarHandle,
-    SurfaceHandle, SurfaceMountError, TabWidgetHandle, TextEditHandle, ToolBarHandle,
-    WebViewHandle, WidgetHandle, WindowHandle, WindowOptions,
+    reset_unwired_binding_count, unwired_binding_count, BindingReport, ButtonHandle, CanvasHandle,
+    CheckBoxHandle, CheckState, CodeEditorHandle, ComboBoxHandle, CommandPaletteHandle,
+    CustomWidgetHandle, CustomWidgetMountError, DialogHandle, EchoMode, FrameHandle,
+    GridWidgetHandle, LabelHandle, LineEditHandle, ListBoxHandle, ListModel, ListViewHandle,
+    MenuBarHandle, MenuHandle, MenuItemHandle, MessageBoxHandle, PanelHandle, ProgressBarHandle,
+    PropertyGridHandle, RadioButtonHandle, ScrollAreaHandle, ScrollBarHandle, SelectionMode,
+    SliderHandle, SpinBoxHandle, SplitterHandle, StatusBarHandle, SurfaceHandle, SurfaceMountError,
+    TabWidgetHandle, TextEditHandle, ToolBarHandle, WebViewHandle, WidgetHandle, WindowHandle,
+    WindowOptions,
 };
 pub use wiring::{
     assemble_event_loop, assemble_event_loop_with, default_dispatch_fn, default_parent_lookup,

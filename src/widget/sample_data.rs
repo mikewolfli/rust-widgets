@@ -164,18 +164,21 @@ pub fn tree_nodes() -> Vec<NodeView> {
                 depth: 0,
                 has_children: true,
                 expanded: true,
+                icon: None,
             });
             nodes.push(NodeView {
                 label: format!("{name} · child 1"),
                 depth: 1,
                 has_children: false,
                 expanded: true,
+                icon: None,
             });
             nodes.push(NodeView {
                 label: format!("{name} · child 2"),
                 depth: 1,
                 has_children: false,
                 expanded: true,
+                icon: None,
             });
         } else {
             nodes.push(NodeView {
@@ -183,6 +186,7 @@ pub fn tree_nodes() -> Vec<NodeView> {
                 depth: 0,
                 has_children: false,
                 expanded: true,
+                icon: None,
             });
         }
     }

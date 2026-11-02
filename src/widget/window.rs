@@ -2,11 +2,12 @@
 // SPDX-License-Identifier: MIT
 
 //! Window widget and platform integration.
-use crate::compat::{String, ToString};
+use crate::compat::{String, ToString, Vec};
 use crate::core::{Color, ObjectId, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::GenericSignal;
+use crate::signal::Signal1;
 #[cfg(device_profile)]
 use crate::theme::Material;
 use crate::widget::capability::coercion::{expect_string, expect_u32};
@@ -62,6 +63,21 @@ pub struct Window {
     decorated: bool,
     /// Emitted when the window is closed.
     pub closed: GenericSignal,
+    /// Emitted when the window gains keyboard focus (it became active/key).
+    ///
+    /// This is a **window-manager fact**, not a control-level focus move: the platform backend
+    /// announces it when the whole top-level window gains focus, while [`BaseWidget::focus_gained`]
+    /// describes one control inside it. The two are deliberately separate signals so a host can
+    /// repaint window chrome without confusing it with a control's focus ring.
+    pub focus_gained: GenericSignal,
+    /// Emitted when the window loses keyboard focus (another window became active).
+    pub focus_lost: GenericSignal,
+    /// Emitted when the window moves, carrying its new top-left position in screen coordinates.
+    ///
+    /// The existing `WidgetTriggerKind::Moved` trigger still tells a layout to re-run; this
+    /// signal additionally carries the point, which the trigger's `(id, kind)` payload cannot
+    /// express without breaking every constructor of that frozen type.
+    pub moved: Signal1<Point>,
 }
 impl Window {
     /// Creates a new window with title and geometry.
@@ -80,6 +96,9 @@ impl Window {
             icon: None,
             decorated: false,
             closed: GenericSignal::new(),
+            focus_gained: GenericSignal::new(),
+            focus_lost: GenericSignal::new(),
+            moved: Signal1::new(),
         }
     }
     /// Adds a child widget to the window.
@@ -336,7 +355,95 @@ impl Window {
         self.base.closed.emit();
         self.closed.emit();
     }
+
+    /// Emits the window's `focus_gained` signal.
+    ///
+    /// The platform backends call this through `platform::window_control`; a host reads it as a
+    /// signal, so this is only the single emission point.
+    pub fn notify_focus_gained(&mut self) {
+        self.focus_gained.emit();
+    }
+
+    /// Emits the window's `focus_lost` signal.
+    pub fn notify_focus_lost(&mut self) {
+        self.focus_lost.emit();
+    }
+
+    /// Emits the window's `moved` signal with its new top-left position.
+    pub fn notify_moved(&mut self, position: Point) {
+        self.moved.emit(position);
+    }
 }
+/// Version tag of the blob produced by [`Window::save_state`].
+const WINDOW_STATE_VERSION: u8 = 1;
+
+impl Window {
+    /// Serialises the window's placement and chrome flags for session restore (RW-64).
+    ///
+    /// The position lives in the window's own geometry, which is also what the platform reads;
+    /// saving it here means a restored session opens where the previous one was rather than at
+    /// an arbitrary default. Maximised/fullscreen state is platform-held and is deliberately not
+    /// claimed: the library has no authoritative read for it.
+    pub fn save_state(&self) -> Vec<u8> {
+        let rect = self.base.geometry();
+        let mut state = Vec::with_capacity(22);
+        state.push(WINDOW_STATE_VERSION);
+        state.extend_from_slice(&rect.x.to_le_bytes());
+        state.extend_from_slice(&rect.y.to_le_bytes());
+        state.extend_from_slice(&rect.width.to_le_bytes());
+        state.extend_from_slice(&rect.height.to_le_bytes());
+        let mut flags = 0u8;
+        if self.modal {
+            flags |= 1;
+        }
+        if self.always_on_top {
+            flags |= 2;
+        }
+        if self.decorated {
+            flags |= 4;
+        }
+        state.push(flags);
+        state.extend_from_slice(&self.opacity.to_bits().to_le_bytes());
+        state
+    }
+
+    /// Restores a blob produced by [`Self::save_state`].
+    ///
+    /// A malformed or unsupported blob leaves the window unchanged.
+    pub fn restore_state(&mut self, state: &[u8]) -> bool {
+        if state.len() != 22 || state[0] != WINDOW_STATE_VERSION {
+            return false;
+        }
+        let x = i32::from_le_bytes([state[1], state[2], state[3], state[4]]);
+        let y = i32::from_le_bytes([state[5], state[6], state[7], state[8]]);
+        let width = u32::from_le_bytes([state[9], state[10], state[11], state[12]]);
+        let height = u32::from_le_bytes([state[13], state[14], state[15], state[16]]);
+        let flags = state[17];
+        let opacity =
+            f32::from_bits(u32::from_le_bytes([state[18], state[19], state[20], state[21]]));
+        self.base.set_geometry(crate::core::Rect::new(x, y, width, height));
+        self.modal = flags & 1 != 0;
+        self.always_on_top = flags & 2 != 0;
+        self.decorated = flags & 4 != 0;
+        self.opacity = if opacity.is_finite() { opacity.clamp(0.0, 1.0) } else { 1.0 };
+        true
+    }
+}
+
+impl crate::widget::save_state::SaveState for Window {
+    fn state_version(&self) -> u16 {
+        u16::from(WINDOW_STATE_VERSION)
+    }
+
+    fn save_state(&self) -> Vec<u8> {
+        Window::save_state(self)
+    }
+
+    fn restore_state(&mut self, state: &[u8]) -> bool {
+        Window::restore_state(self, state)
+    }
+}
+
 impl Widget for Window {
     fn base(&self) -> &BaseWidget {
         &self.base
@@ -353,6 +460,14 @@ impl Widget for Window {
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
+
+    fn save_state_dyn(&self) -> Option<&dyn crate::widget::save_state::SaveState> {
+        Some(self)
+    }
+
+    fn save_state_dyn_mut(&mut self) -> Option<&mut dyn crate::widget::save_state::SaveState> {
+        Some(self)
+    }
     /// Resolves a published event name to the control's own signal.
     ///
     /// # Why this is explicit
@@ -366,6 +481,16 @@ impl Widget for Window {
         use crate::signal::EventSignalRef;
         match name {
             "closed" => Some(EventSignalRef::unit("closed", &self.closed)),
+            "focus_gained" => Some(EventSignalRef::unit("focus_gained", &self.focus_gained)),
+            "focus_lost" => Some(EventSignalRef::unit("focus_lost", &self.focus_lost)),
+            // A window-manager move carries a screen-space point; a `Point` has no property kind,
+            // so the arm delivers its `"x,y"` spelling (the canvas uses the same carrier).
+            "moved" => Some(EventSignalRef::mapped("moved", &self.moved, |position| {
+                crate::widget::capability::CapabilityValue::String(format!(
+                    "{},{}",
+                    position.x, position.y
+                ))
+            })),
             _ => None,
         }
     }
@@ -612,6 +737,99 @@ impl Draw for Window {
         }
     }
 }
+
+/// Moves keyboard focus to the next control in the **same top-level window**.
+///
+/// # Why the window is part of the traversal predicate
+///
+/// The focus order is a thread-wide list, so a multi-window host (a designer canvas plus a
+/// floating preview, for example) used to have Tab walk from the end of one window straight
+/// into another. That is not focus navigation the user can see; it hands the keyboard to a
+/// window they did not activate. Scoping the predicate to `top_level_window_of` keeps Tab
+/// inside the window that owns the focused control.
+///
+/// A single-window host is unaffected: every candidate belongs to the same window, so the
+/// filter accepts exactly what the previous traversal did. When nothing is focused yet the
+/// first acceptable candidate's window becomes the scope, so a multi-window host still
+/// cannot have Tab cross window boundaries before the user has focused a control.
+///
+/// # FocusPolicy and stop-at-end
+///
+/// [`FocusManager::find_next`](crate::event::FocusManager::find_next) applies the per-control
+/// [`FocusPolicy`](crate::event::FocusPolicy) itself, so a `ClickFocus` control is not a Tab
+/// stop. It also honours
+/// [`FocusManager::focus_wrap`](crate::event::FocusManager::focus_wrap): when a host clears
+/// wrapping, Tab on the last control stays put instead of jumping back to the first.
+///
+/// Returns the newly focused control, or `None` when nothing in scope accepts focus.
+///
+/// Compiled only where the widget runtime exists: the `mini` profile has no registry to walk.
+#[cfg(not(alloc_frugal))]
+pub fn focus_next_in_window(forward: bool) -> Option<ObjectId> {
+    use crate::event::FocusReason;
+    use crate::widget::runtime;
+
+    let previous = runtime::focused_widget();
+    // With a focused control the scope is its window. With none (a freshly shown window) the
+    // first candidate's window becomes the scope, so Tab cannot walk from one window into
+    // another even before anything has been focused.
+    let mut scope = previous.and_then(runtime::top_level_window_of);
+    let reason = if forward { FocusReason::Tab } else { FocusReason::BackTab };
+    let selected = runtime::with_focus_manager(|focus| {
+        let wrap = focus.focus_wrap();
+        focus.find_next(
+            forward,
+            reason,
+            |id| {
+                let candidate_window = runtime::top_level_window_of(id);
+                if scope.is_none() {
+                    scope = candidate_window;
+                }
+                let in_scope = match (scope, candidate_window) {
+                    (Some(scope), Some(candidate)) => scope == candidate,
+                    // A candidate with no window (an unmounted or unowned id) is never in a
+                    // window scope; when there is no scope at all, it is the only thing there.
+                    (Some(_), None) => false,
+                    (None, None) => true,
+                    (None, Some(_)) => false,
+                };
+                in_scope
+                    && runtime::read_widget(id, |widget| widget.is_enabled() && widget.is_visible())
+                        .unwrap_or(false)
+            },
+            wrap,
+        )
+    });
+    let next = match selected {
+        Some(next) => next?,
+        // No focus manager on this thread: the historical entry point has the honest answer
+        // (which is also `None` when there is no manager at all).
+        None => return runtime::focus_next(forward),
+    };
+    if Some(next) == previous {
+        return Some(next);
+    }
+    runtime::focus_widget_with_reason(next, reason).then_some(next)
+}
+
+/// Sets whether window-scoped Tab traversal wraps from the last control back to the first.
+///
+/// Wrapping is on by default, which is the historical behaviour. A dialog-like window can turn
+/// it off so Tab on the last control stays there; [`focus_next_in_window`] then stops at the end
+/// of the focus order instead of moving to the first control.
+///
+/// Returns `false` on a thread with no focus manager, where there is nothing to configure.
+#[cfg(not(alloc_frugal))]
+pub fn set_focus_wrap(wrap: bool) -> bool {
+    crate::widget::runtime::with_focus_manager(|focus| focus.set_focus_wrap(wrap)).is_some()
+}
+
+/// Whether window-scoped Tab traversal currently wraps.
+#[cfg(not(alloc_frugal))]
+pub fn focus_wrap() -> bool {
+    crate::widget::runtime::with_focus_manager(|focus| focus.focus_wrap()).unwrap_or(true)
+}
+
 // NOTE: The show() method is now handled by platform backend.
 // For full application integration, use the platform event loop via crate::run().
 // The platform backend (macOS: NSApp().run(), Windows: message loop, etc.)

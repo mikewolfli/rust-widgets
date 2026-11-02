@@ -22,13 +22,17 @@
 //! attaches a tree and [`ViewEngine::update`] diffs a rebuild against the previous
 //! one, leaving untouched controls' focus, scroll offsets and internal state alive —
 //! what a designer's edit-reload loop needs. The forward that routes **this**
-//! module's loader through that engine (G-406) has not landed: today the loader's
-//! own layout-registered tree is still the one production applies, and `crate::view`
-//! documents the coexistence and the removal condition for the second path.
+//! module's documents through that engine (G-406) is `JsonViewSession`: it converts
+//! a parsed document to a `view::Node` tree and mounts/updates it through
+//! `ViewEngine::mount_tree_shared` / `update_tree_shared`, so a reload keeps every
+//! control the edit did not touch and reports the ids it removed. `JsonLoader::load`
+//! remains the full-mount path that applies every loader-owned key (geometry, spacing,
+//! colours, construction-time switches); the session is the incremental preview path.
 //!
 //! (`crate::view` is compiled for `desktop`/`tablet`/`mobile`; this module and that
 //! one share the same platform gate.)
 //!
+//! [`JsonLoader::load`]: crate::json::JsonLoader::load
 //! [`ViewEngine::mount`]: crate::view::ViewEngine::mount
 //! [`ViewEngine::update`]: crate::view::ViewEngine::update
 //!
@@ -114,6 +118,9 @@ mod loader;
 pub mod project;
 mod properties;
 mod schema_factory;
+/// The loader's incremental (retained-tree) path — see `JsonViewSession`.
+#[cfg(declarative_view)]
+mod view_session;
 
 pub use element::BoundJsonLayout;
 pub use event_route::{
@@ -165,6 +172,18 @@ pub use properties::records_to_json;
 /// Re-exported rather than duplicated: the loader's write and the generator's pre-check must agree
 /// about what a document's value *is* before they can agree about whether it is acceptable.
 #[cfg(feature = "designer")]
-pub(crate) use properties::{to_capability_value, to_capability_value_with_record_schema};
+pub(crate) use properties::to_capability_value;
+/// The row-schema-aware conversion, shared with the incremental view session.
+///
+/// The session exists on every profile that has `crate::view` (not only the designer host), so
+/// the gate on this re-export is the union of the two consumers. One conversion means the
+/// interpreted preview and the generator judge a document's value identically.
+#[cfg(any(feature = "designer", declarative_view))]
+pub(crate) use properties::to_capability_value_with_record_schema;
+#[cfg(declarative_view)]
+pub use view_session::{
+    create_control_from_factory, json_to_view_tree, JsonViewDrop, JsonViewRunReport,
+    JsonViewSession, JsonViewTree,
+};
 
 pub(crate) use schema_factory::schema_factory;

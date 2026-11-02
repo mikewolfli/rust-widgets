@@ -140,16 +140,16 @@ fn pointer_position(display: &gtk::gdk::Display) -> Option<(i32, i32)> {
 /// noticed a theme or animation change was the 250 ms derived poll — and a cached fact could not
 /// be dropped early at all.
 ///
-/// # Why these three properties
+/// # Why these properties
 ///
 /// They are exactly the GTK settings the environment facts read:
 /// `gtk-theme-name` backs [`Platform::high_contrast`], `gtk-enable-animations` backs
-/// [`Platform::reduce_motion`], and `gtk-application-prefer-dark-theme` backs
-/// [`Platform::system_theme`]. The last is what the theme manager resolves an application's
-/// appearance from. This is the push half of P-208: the 250 ms style-layer poll is
-/// the backstop for a session whose toolkit was not initialised on this thread, not the only
-/// signal. There is no GTK signal for "the user changed their desktop accent", so that fact stays
-/// derived — the honest limit, not a fabricated signal.
+/// [`Platform::reduce_motion`], `gtk-application-prefer-dark-theme` backs
+/// [`Platform::system_theme`], and `gtk-xft-dpi` backs [`Platform::text_scale`]. The last is what
+/// the theme manager resolves an application's appearance from. This is the push half of P-208:
+/// the 250 ms style-layer poll is the backstop for a session whose toolkit was not initialised on
+/// this thread, not the only signal. There is no GTK signal for "the user changed their desktop
+/// accent", so that fact stays derived — the honest limit, not a fabricated signal.
 ///
 /// # Why it runs once and only on the main thread
 ///
@@ -172,8 +172,12 @@ fn watch_environment_settings() {
         // the same answer, and re-arming it on every `init()` would only repeat the lookup.
         return;
     };
-    for property in ["gtk-theme-name", "gtk-application-prefer-dark-theme", "gtk-enable-animations"]
-    {
+    for property in [
+        "gtk-theme-name",
+        "gtk-application-prefer-dark-theme",
+        "gtk-enable-animations",
+        "gtk-xft-dpi",
+    ] {
         // `connect_notify_local` rather than `connect_notify`: `GtkSettings` is main-thread-only and
         // `!Send`, and GTK emits these signals on the thread `gtk::init` ran on — which is the
         // thread installing them. The handler itself captures nothing, so it is safe either way;
@@ -501,6 +505,43 @@ impl Platform for LinuxPlatform {
     #[cfg(not(all(unix_desktop, feature = "gtk-native")))]
     fn system_theme(&self) -> Option<bool> {
         None
+    }
+
+    /// The user's text-size multiplier, derived from GTK's `gtk-xft-dpi` setting.
+    ///
+    /// # Why `gtk-xft-dpi` and not the font size
+    ///
+    /// GTK has no "text scale" property. The closest measurable fact is Xft's DPI, which is
+    /// stored as `dpi * 1024` and is what GTK scales drawn text by. Dividing by the nominal
+    /// `96 * 1024` turns it into the same kind of multiplier the Windows and Android backends
+    /// report. When the property is unset (`-1`) or no display exists, the honest answer is
+    /// `1.0` — "no preference reported" — not a fabricated scale.
+    ///
+    /// The reading goes through the shared environment cache, so the style-layer poll does not
+    /// re-query `gtk::Settings` every 250 ms. `watch_environment_settings` also subscribes to the
+    /// property, which drops the cached value as soon as the user changes it.
+    #[cfg(all(unix_desktop, feature = "gtk-native"))]
+    fn text_scale(&self) -> f32 {
+        if !gtk::is_initialized_main_thread() {
+            return 1.0;
+        }
+        static CACHE: crate::platform::environment_cache::EnvironmentFactCache<Option<f32>> =
+            crate::compat::OnceLock::new();
+        crate::platform::environment_cache::cached_environment_fact(&CACHE, || {
+            let settings = gtk::Settings::default()?;
+            let dpi = settings.gtk_xft_dpi();
+            if dpi <= 0 {
+                return None;
+            }
+            // `gtk-xft-dpi` is the DPI multiplied by 1024; 96 DPI is the unscaled reference.
+            Some(dpi as f32 / (96.0 * 1024.0))
+        })
+        .unwrap_or(1.0)
+    }
+
+    #[cfg(not(all(unix_desktop, feature = "gtk-native")))]
+    fn text_scale(&self) -> f32 {
+        1.0
     }
 
     /// A revision of the environment facts, derived from their current values.
@@ -1108,7 +1149,7 @@ impl Platform for LinuxPlatform {
                 if super::canvas::gdk_keyval_is_tab(*event.keyval()) {
                     const WIDGET_SHIFT: u32 = 1;
                     let forward = super::canvas::modifier_bits(event) & WIDGET_SHIFT == 0;
-                    crate::widget::runtime::focus_next(forward);
+                    crate::widget::window::focus_next_in_window(forward);
                     key_area.queue_draw();
                     crate::platform::linux::canvas::note_canvas_redraw(window_widget);
                     return glib::Propagation::Stop;
@@ -1355,15 +1396,19 @@ impl Platform for LinuxPlatform {
                     return glib::Propagation::Proceed;
                 };
                 // The canvas decodes the wheel the same way; see `linux::canvas` for why
-                // `direction()` wins over `delta()` when it is set.
-                let (_, delta_y) = event.delta();
-                let dy = match event.direction() {
-                    gtk::gdk::ScrollDirection::Up => -1.0,
-                    gtk::gdk::ScrollDirection::Down => 1.0,
-                    _ => delta_y,
+                // `direction()` wins over `delta()` when it is set. Both axes are kept: a
+                // `Left`/`Right` wheel or a smooth diagonal gesture must not be flattened onto
+                // the vertical axis.
+                let (delta_x, delta_y) = event.delta();
+                let (dx, dy) = match event.direction() {
+                    gtk::gdk::ScrollDirection::Up => (0.0, -1.0),
+                    gtk::gdk::ScrollDirection::Down => (0.0, 1.0),
+                    gtk::gdk::ScrollDirection::Left => (-1.0, 0.0),
+                    gtk::gdk::ScrollDirection::Right => (1.0, 0.0),
+                    _ => (delta_x, delta_y),
                 };
                 let wheel = crate::event::Event::Wheel {
-                    delta: crate::core::Point::new(0, dy.round() as i32),
+                    delta: crate::core::Point::new(dx.round() as i32, dy.round() as i32),
                     modifiers: 0,
                 };
                 let target = crate::widget::runtime::hovered_widget().unwrap_or(window_widget);
@@ -1512,10 +1557,16 @@ impl Platform for LinuxPlatform {
                             crate::widget::runtime::widget_id_for_host_window(id)
                         {
                             #[cfg(not(alloc_frugal))]
-                            crate::inject_widget_trigger_event(
-                                widget_id,
-                                crate::platform::WidgetTriggerKind::Moved,
-                            );
+                            {
+                                crate::platform::window_control::notify_window_moved(
+                                    widget_id,
+                                    crate::core::Point::new(position.0, position.1),
+                                );
+                                crate::inject_widget_trigger_event(
+                                    widget_id,
+                                    crate::platform::WidgetTriggerKind::Moved,
+                                );
+                            }
                         }
                     }
                 }
@@ -1525,6 +1576,15 @@ impl Platform for LinuxPlatform {
             });
             window.connect_delete_event(move |_, _| {
                 if let Some(widget_id) = crate::widget::runtime::widget_id_for_host_window(id) {
+                    // A close is a proposal: a host with unsaved work refuses it and GTK must
+                    // leave the window alone. `Stop` is how a `delete-event` handler vetoes the
+                    // default destroy.
+                    #[cfg(widgets_unstripped)]
+                    if !crate::platform::window_control::request_window_close(widget_id) {
+                        return glib::Propagation::Stop;
+                    }
+                    #[cfg(widgets_unstripped)]
+                    let _ = crate::close_widget(widget_id);
                     #[cfg(not(alloc_frugal))]
                     crate::inject_widget_trigger_event(
                         widget_id,
@@ -1532,6 +1592,20 @@ impl Platform for LinuxPlatform {
                     );
                 }
                 glib::Propagation::Proceed
+            });
+
+            // Focus of the whole toplevel, distinct from the per-control focus the widget
+            // runtime tracks. `is-active` is GTK's own "this window is the active one" fact, so
+            // it fires on activate/deactivate regardless of which child holds the keyboard; a
+            // `focus-in-event` on the toplevel reports the same transition only for some
+            // child layouts (and would also fire on intra-window focus moves).
+            window.connect_notify_local(Some("is-active"), move |window, _| {
+                if let Some(widget_id) = crate::widget::runtime::widget_id_for_host_window(id) {
+                    crate::platform::window_control::notify_window_focus(
+                        widget_id,
+                        window.is_active(),
+                    );
+                }
             });
 
             let mut native = self.native.lock_guard();
@@ -1685,6 +1759,53 @@ impl Platform for LinuxPlatform {
     /// The minimum size recorded for a window; GTK exposes no getter for its geometry hints.
     fn window_min_size(&self, widget_id: crate::core::ObjectId) -> Option<(u32, u32)> {
         self.state.window_min_size(widget_id)
+    }
+
+    /// Raises the window and gives it the keyboard focus through GTK's `present()`.
+    ///
+    /// `present()` both de-iconifies the toplevel and focuses it, which is the toolkit's own
+    /// definition of "activate this window". A state-only window (no GTK toplevel, or a call
+    /// from another thread) has nothing to present, so the answer is `false`.
+    fn activate_window(&self, widget_id: crate::core::ObjectId) -> bool {
+        // The identifier is only read by the GTK-backed branch; a state-only build still has to
+        // accept it, and an unused warning here would be noise rather than a defect.
+        let _ = widget_id;
+        #[cfg(all(unix_desktop, feature = "gtk-native"))]
+        if let Some(window) = native_window_for(self, widget_id) {
+            window.present();
+            return true;
+        }
+        false
+    }
+
+    /// Reads the toplevel's screen-space position from GTK, falling back to the recorded value.
+    ///
+    /// `gtk::Window::position()` is the window manager's answer, and `(0, 0)` can be a real
+    /// position, so no sentinel is treated as "unknown". The state record is the honest fallback
+    /// for a state-only window, exactly as it is for the min-size getter.
+    fn window_position(&self, widget_id: crate::core::ObjectId) -> Option<(i32, i32)> {
+        #[cfg(all(unix_desktop, feature = "gtk-native"))]
+        if let Some(window) = native_window_for(self, widget_id) {
+            return Some(window.position());
+        }
+        self.state.widget_geometry(widget_id).map(|(x, y, _, _)| (x, y))
+    }
+
+    /// Moves the toplevel with `gtk::Window::move_`, keeping its size and focus.
+    fn set_window_position(&self, widget_id: crate::core::ObjectId, x: i32, y: i32) -> bool {
+        #[cfg(all(unix_desktop, feature = "gtk-native"))]
+        if let Some(window) = native_window_for(self, widget_id) {
+            window.move_(x, y);
+            if let Some((_, _, width, height)) = self.state.widget_geometry(widget_id) {
+                self.state.set_geometry(widget_id, x, y, width, height);
+            }
+            return true;
+        }
+        if let Some((_, _, width, height)) = self.state.widget_geometry(widget_id) {
+            self.state.set_geometry(widget_id, x, y, width, height);
+            return true;
+        }
+        false
     }
 
     /// Applies a maximum size through `gtk::Window::set_geometry_hints` (`MAX_SIZE`).

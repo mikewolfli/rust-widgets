@@ -349,6 +349,35 @@ pub fn probe_capability(
     TargetProbe { target, availability }
 }
 
+/// A probe for a target the **host has already verified at build time** (RW-46).
+///
+/// # What this is, and what it is not
+///
+/// This is an explicit channel for a build system to declare "the target was compiled with this
+/// capability". The library cannot verify that declaration: it does not see the host's build
+/// graph, and pretending to probe would be the fake evidence this module exists to prevent. The
+/// function therefore performs **no probing at all** — it reports exactly the fact the caller
+/// handed over, at [`VerificationLevel::BuiltVerified`], and names the target so a report can
+/// attribute the claim.
+///
+/// # When to use it
+///
+/// * Use it in a generated artifact whose build recipe already compiled the target with the
+///   capability enabled. The host is the authority for that fact.
+/// * Do **not** use it to turn an unverified name into "supported": if the host did not build the
+///   target, the honest answer is still [`probe_capability`] with
+///   [`CurrentBuildVerdict::Unknown`].
+///
+/// `name` is accepted and kept for the caller's report line, exactly as [`probe_capability`] does;
+/// the probe itself has no place for it because the caller already holds it as the lookup key.
+pub fn declared_built_verified(name: &str, target: TargetSpec) -> TargetProbe {
+    let _ = name;
+    TargetProbe {
+        target,
+        availability: Availability::Available { level: VerificationLevel::BuiltVerified },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -482,6 +511,18 @@ mod tests {
         assert!(!probe.availability.is_unsupported());
         assert!(!probe.availability.is_usable());
         assert!(probe.describe().contains("unverified"));
+    }
+
+    /// RW-46: an offline build-time declaration is reported as built-verified for the declared
+    /// target, and it is explicit in the answer rather than inferred from the running build.
+    #[test]
+    fn a_declared_build_time_verification_is_reported_honestly() {
+        let target = TargetSpec { profile: "mini", triple: "thumbv7em-none-eabihf" };
+        let probe = declared_built_verified("video_codec", target);
+        assert_eq!(probe.target.profile, target.profile);
+        assert_eq!(probe.target.triple, target.triple);
+        assert_eq!(probe.availability.level(), Some(VerificationLevel::BuiltVerified));
+        assert!(probe.is_conclusive());
     }
 
     /// Every probe line must name the target, so an answer is never unattributed.

@@ -5,6 +5,74 @@ The canonical project changelog is maintained at [docs/reports/CHANGELOG.md](doc
 This root-level file exists for tools and release automation that expect `CHANGELOG.md` at repository root.
 When the two disagree, this file is the one that ships; `tools/check_changelog_sync.sh` keeps them identical.
 
+## 3.3.0 (2026-11-02) — the suite-split round
+
+**Minor**: the parent package's sources must fit crates.io's 10 MiB tarball ceiling, so five
+domain-specific widget groups moved to the optional `rust-widgets-suites` package. Their
+**public paths changed** — see *Migration* below. Nothing else in the parent changed behaviour.
+
+### Packaging
+
+- **`rust_widgets` is ~0.5 MiB smaller compressed.** Five families left the parent tarball:
+  finance (candlestick/volume/depth/indicator/order-book/quote-board), maps (map view, overview,
+  attribution, tile loader, zoom control, scale bar, compass), project (Gantt, Gantt task grid,
+  timeline axis, dependency editor, kanban board/card/column header), devtools (terminal view,
+  terminal find bar, diff viewer, diff file list) and media playback (video player, Lottie, Rive,
+  audio visualiser, camera preview, chapter list, media player, transport bar, scrubber, subtitle
+  bar). Everything a general-purpose UI needs — the primitives, the layout engines, the runtime,
+  the platform backends, and the frequently used controls — stays in the parent.
+- **The dependency still runs one way**: `rust-widgets-suites` depends on `rust_widgets`, never the
+  reverse. `WidgetKind` stays in the parent, so a suite control keeps its kind and its signal
+  semantics.
+
+### `rust-widgets-suites`
+
+- **Five new features**: `finance`, `maps`, `project`, `devtools`, `media-playback`, plus the
+  existing `form` group. Each group installs through its own entry point —
+  `install_form_group`, `install_finance_group`, `install_maps_group`, `install_project_group`,
+  `install_devtools_group`, `install_media_playback_group` — and `install` runs every enabled
+  group in registration order.
+- **Every migrated control keeps its capability row**, including its aliases, property schemas,
+  event payload kinds and declared defaults, so the designer manifest, the JSON loader and the
+  generic property API see the same contract as before — they just read it from the shared table
+  once the group is installed.
+
+### Parent API
+
+- **`apply_control_label`** (new, `widget::capability`): applies a constructor's `text` through the
+  label property the control publishes. The suite constructors use it so the “which property
+  carries a label” decision stays in one place.
+- **`stroke_surface_border`** and **`RenderContext::draw_text_line_cow`** are now `pub`: the
+  migrated controls paint their surfaces and fitted text through the same helpers they did before,
+  and a second copy would have drifted.
+
+### Migration
+
+A host that uses a migrated control must depend on the suite package, enable the group and install
+it before the first control is created or the first document is parsed:
+
+```toml
+[dependencies]
+rust_widgets = "3.3.0"
+rust-widgets-suites = { version = "3.3.0", features = ["finance", "maps"] }
+```
+
+```rust
+// Before anything builds a control or parses a document:
+rust_widgets::widget::register_shared_extension(rust_widgets_suites::install)
+    .expect("the shared table was not built yet");
+```
+
+Rust-side paths move with the control: `rust_widgets::widget::chart_widgets::finance::CandlestickChart`
+becomes `rust_widgets_suites::finance::CandlestickChart`, and the same shape applies to
+`rust_widgets_suites::{maps, project, devtools, media_playback}`. The parent's re-exports
+(`rust_widgets::widget::…`, `rust_widgets::api::widgets::…`, the crate root) no longer name them,
+and the C-ABI `create_*` construction methods for those controls are gone — the factory name route
+(`WidgetFactory::create("candlestick_chart", …)`) is the supported path after installing the group.
+
+`demo/finance` is the worked example: it depends on the suite with `features = ["finance"]` and
+imports the controls from `rust_widgets_suites::finance`.
+
 ## 3.2.1 (2026-11-01) — the consumer-seam round
 
 **Patch**: no existing signature changes. New capabilities are additive; the one behavioural change

@@ -41,8 +41,8 @@
 //!
 //! Every published name has an arm in [`Widget::event_signal_dyn`], which is what makes
 //! `connect_event`/`invoke_command` reach a real signal rather than a valid-but-inert name:
-//! `submitted`, `reset`, `submit_failed`, `validity_changed`, `dirty_changed`, `field_added`,
-//! `field_removed` and `field_changed`.
+//! `submitted`, `reset`, `cancel`, `submit_failed`, `validity_changed`, `dirty_changed`,
+//! `field_added`, `field_removed`, `field_changed` and `field_validated`.
 
 use rust_widgets::core::{Color, HorizontalAlignment, ObjectId, Rect, Size};
 use rust_widgets::event::{Event, EventHandler};
@@ -53,16 +53,27 @@ use rust_widgets::widget::capability::coercion::{expect_bool, expect_string, exp
 use rust_widgets::widget::capability::properties_trait::{base_property_get, base_property_set};
 use rust_widgets::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use rust_widgets::widget::capability::WidgetProperties;
+use rust_widgets::widget::input_widgets::input_validator::Validator;
 use rust_widgets::widget::metrics::role_font;
 use rust_widgets::widget::{BaseWidget, Draw, SimpleRegistry, Widget, WidgetKind};
 use rust_widgets::{impl_widget_property_hooks, property_names_of};
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 
-use super::model::FormField;
+use super::model::{FieldKind, FormField};
+use super::rules::{
+    field_validation_error, validator_for_kind, AsyncFieldValidator, FieldValidator, FormRule,
+    Signal0, Signal2, ValidationTicket,
+};
+
+/// Process-unique identity source for forms.
+///
+/// A `ValidationTicket` must only resolve against the form that issued it; a
+/// per-form serial is cheaper and stricter than comparing field contents.
+static NEXT_FORM_SERIAL: AtomicU64 = AtomicU64::new(1);
 
 /// The minimum width a form lays out at when its own geometry is unhelpfully narrow.
 pub const DEFAULT_WIDTH: u32 = 320;
@@ -79,8 +90,6 @@ const BUTTON_H: u32 = 28;
 /// The narrowest action button the form lays out.
 const BUTTON_MIN_W: u32 = 72;
 
-/// A host rule for one field's value: `None` means the value is acceptable.
-type FieldValidator = Rc<dyn Fn(&str) -> Option<String>>;
 /// `(revision, x, y, width, boxes)` of the last computed layout.
 type LayoutCache = (u32, i32, i32, u32, Vec<FormFieldLayout>);
 
@@ -154,6 +163,25 @@ pub struct Form {
     /// Stored here rather than on `FormField` so the field stays a plain comparable value — a
     /// closure cannot live in a type that derives `PartialEq`/`Eq`.
     validators: BTreeMap<String, FieldValidator>,
+    /// Typed rules bridged from `rust_widgets`' input validators.
+    ///
+    /// A separately typed map rather than a second closure shape: the trait's
+    /// three-way state is richer than `Option<String>`, so flattening it into the
+    /// closure map would lose the distinction between "invalid" and "incomplete".
+    input_validators: BTreeMap<String, Arc<dyn Validator>>,
+    /// Cross-field rules attached to the field they judge.
+    form_rules: BTreeMap<String, Vec<FormRule>>,
+    /// Asynchronous rules, keyed by field. Resolving a ticket runs the rule only
+    /// through [`Form::resolve_async`]; [`Form::resolve`] applies a host result.
+    async_validators: BTreeMap<String, AsyncFieldValidator>,
+    /// Bumped whenever a value changes, so outstanding tickets go stale.
+    pub(crate) validation_revision: u64,
+    /// Identity of this form, stamped into every ticket it issues.
+    pub(crate) form_serial: u64,
+    /// Source of ticket ids.
+    next_ticket_id: u64,
+    /// The label of the optional cancel button; empty hides it.
+    cancel_label: String,
     /// The last observed value of each bound field: an edge detector for `field_changed` and the
     /// derived flags. The value of record stays in the child control.
     observed: Vec<(String, Option<String>)>,
@@ -177,6 +205,13 @@ pub struct Form {
     pub field_removed: Signal1<String>,
     /// Emitted with the key of a field whose value was written through the form.
     pub field_changed: Signal1<String>,
+    /// Emitted with `(key, valid)` when an asynchronous ticket is resolved.
+    pub field_validated: Signal2<String, bool>,
+    /// Emitted when the user abandons the form without restoring its baseline.
+    ///
+    /// Distinct from [`Self::reset_requested`]: reset writes the baseline values
+    /// back, cancel leaves the edits in place and only clears the verdicts.
+    pub cancel_requested: Signal0,
 }
 
 impl Form {
@@ -217,6 +252,13 @@ impl Form {
             last_valid: true,
             last_dirty: false,
             validators: BTreeMap::new(),
+            input_validators: BTreeMap::new(),
+            form_rules: BTreeMap::new(),
+            async_validators: BTreeMap::new(),
+            validation_revision: 0,
+            form_serial: NEXT_FORM_SERIAL.fetch_add(1, Ordering::Relaxed),
+            next_ticket_id: 0,
+            cancel_label: String::new(),
             observed: Vec::new(),
             layout_revision,
             layout_cache: RefCell::new(None),
@@ -228,6 +270,8 @@ impl Form {
             field_added: Signal1::new(),
             field_removed: Signal1::new(),
             field_changed: Signal1::new(),
+            field_validated: Signal1::new(),
+            cancel_requested: GenericSignal::new(),
         }
     }
 
@@ -421,6 +465,21 @@ impl Form {
         self.base.request_redraw();
     }
 
+    /// The cancel button's caption, or an empty string when there is none.
+    pub fn cancel_label(&self) -> &str {
+        &self.cancel_label
+    }
+
+    /// Sets the cancel caption. An empty caption hides the button.
+    ///
+    /// The button is additive: the default is empty, so the action row is
+    /// exactly the submit/reset pair it has always been.
+    pub fn set_cancel_label(&mut self, label: impl Into<String>) {
+        self.cancel_label = label.into();
+        self.base.request_layout();
+        self.base.request_redraw();
+    }
+
     /// The width of one action button.
     pub fn button_width(&self) -> u32 {
         self.button_width
@@ -479,8 +538,13 @@ impl Form {
         }
         let key = field.key.clone();
         let initial = field.baseline.clone();
+        let kind = field.kind;
         self.fields.push(field);
+        if let Some(validator) = validator_for_kind(kind) {
+            self.input_validators.insert(key.clone(), validator);
+        }
         self.observed.push((key.clone(), initial));
+        self.bump_validation_revision();
         self.base.request_layout();
         self.base.request_redraw();
         self.field_added.emit(key);
@@ -509,6 +573,10 @@ impl Form {
             self.base.remove_child_linked(widget);
         }
         self.observed.retain(|(existing, _)| existing != key);
+        self.form_rules.remove(key);
+        self.input_validators.remove(key);
+        self.async_validators.remove(key);
+        self.bump_validation_revision();
         self.base.request_layout();
         self.base.request_redraw();
         self.field_removed.emit(key.to_string());
@@ -525,6 +593,10 @@ impl Form {
             self.field_removed.emit(field.key);
         }
         self.observed.clear();
+        self.form_rules.clear();
+        self.input_validators.clear();
+        self.async_validators.clear();
+        self.bump_validation_revision();
         self.base.request_layout();
         self.base.request_redraw();
         self.publish_derived_state();
@@ -634,6 +706,160 @@ impl Form {
         self.validators.remove(key).is_some()
     }
 
+    /// Installs a typed rule from `rust_widgets`' input-validator family.
+    ///
+    /// The rule is the same value a `LineEdit`/`SpinBox` enforces, so a form and
+    /// its fields cannot disagree about what an e-mail address or a range is. It
+    /// runs after the required check and before the closure rule; a value that the
+    /// validator calls `Invalid` (or `Intermediate` while non-empty) becomes this
+    /// field's error with the validator's own message.
+    ///
+    /// Returns `false` for an unknown key.
+    pub fn set_field_input_validator<V>(&mut self, key: &str, validator: V) -> bool
+    where
+        V: Validator + 'static,
+    {
+        if self.field(key).is_none() {
+            return false;
+        }
+        self.input_validators.insert(key.to_string(), Arc::new(validator));
+        self.base.request_redraw();
+        true
+    }
+
+    /// Removes the typed rule for `key`, returning whether one was installed.
+    pub fn clear_field_input_validator(&mut self, key: &str) -> bool {
+        self.input_validators.remove(key).is_some()
+    }
+
+    /// Declares a field's value grammar and installs its validator.
+    ///
+    /// This is the method form of [`FormField::with_kind`]; it allows a host to
+    /// change the kind after mounting. A previous typed rule is replaced, so an
+    /// explicit [`Self::set_field_input_validator`] call after this one wins.
+    /// `FieldKind::Text` removes the kind-derived rule.
+    pub fn set_field_kind(&mut self, key: &str, kind: FieldKind) -> bool {
+        let Some(field) = self.field_mut(key) else {
+            return false;
+        };
+        field.set_kind(kind);
+        match validator_for_kind(kind) {
+            Some(validator) => {
+                self.input_validators.insert(key.to_string(), validator);
+            }
+            None => {
+                self.input_validators.remove(key);
+            }
+        }
+        self.base.request_redraw();
+        true
+    }
+
+    /// Attaches a cross-field rule to the field it judges.
+    ///
+    /// Several rules may attach to one field; they run in insertion order and the
+    /// first failure is the error shown. Returns `false` for an unknown key.
+    pub fn set_form_rule(&mut self, key: &str, rule: FormRule) -> bool {
+        if self.field(key).is_none() {
+            return false;
+        }
+        self.form_rules.entry(key.to_string()).or_default().push(rule);
+        self.base.request_redraw();
+        true
+    }
+
+    /// Removes every cross-field rule attached to `key`.
+    ///
+    /// Returns whether any rule was removed. Rules are attached to one field, so
+    /// this is the whole lifetime of that field's cross-field rules.
+    pub fn remove_form_rule(&mut self, key: &str) -> bool {
+        self.form_rules.remove(key).is_some()
+    }
+
+    /// The cross-field rules attached to `key`, in evaluation order.
+    pub fn form_rules(&self, key: &str) -> &[FormRule] {
+        self.form_rules.get(key).map(Vec::as_slice).unwrap_or(&[])
+    }
+
+    /// Registers an asynchronous rule and issues a ticket for the current value.
+    ///
+    /// The host runs its work wherever it likes and then either resolves the
+    /// ticket with [`Self::resolve`] (a result it computed itself) or calls
+    /// [`Self::resolve_async`] (runs the registered rule). The ticket records the
+    /// value and the form's revision, so a late result for text that changed is
+    /// refused. An unknown key returns a cancelled ticket rather than pretending
+    /// a request exists.
+    pub fn set_field_async_validator<F>(&mut self, key: &str, validator: F) -> ValidationTicket
+    where
+        F: Fn(&str) -> Option<String> + 'static,
+    {
+        let known = self.field(key).is_some();
+        let value = self.value_of(key).unwrap_or_default();
+        // Issuing a ticket must not invalidate a ticket for another field: the
+        // revision tracks **value changes**, not request count.
+        self.next_ticket_id = self.next_ticket_id.wrapping_add(1);
+        if known {
+            self.async_validators.insert(key.to_string(), Rc::new(validator));
+        }
+        ValidationTicket {
+            form: self.form_serial,
+            id: self.next_ticket_id,
+            key: key.to_string(),
+            value,
+            revision: self.validation_revision,
+            resolved: false,
+            cancelled: !known,
+        }
+    }
+
+    /// Applies an asynchronous result, if the ticket is still current.
+    ///
+    /// Returns `false` when the ticket is stale (another form, a newer value, a
+    /// cancel). A successful resolve stores the error on the field, emits
+    /// [`Self::field_validated`] with `(key, valid)` and republishes the form's
+    /// aggregate validity.
+    pub fn resolve(&mut self, ticket: &mut ValidationTicket, error: Option<String>) -> bool {
+        if ticket.resolved || ticket.cancelled {
+            return false;
+        }
+        if ticket.form != self.form_serial
+            || self.field(&ticket.key).is_none()
+            || ticket.revision != self.validation_revision
+            || self.value_of(&ticket.key).unwrap_or_default() != ticket.value
+        {
+            ticket.resolved = true;
+            return false;
+        }
+        let valid = error.is_none();
+        if let Some(field) = self.field_mut(&ticket.key) {
+            field.set_async_error(error);
+        }
+        ticket.resolved = true;
+        self.base.request_layout();
+        self.base.request_redraw();
+        self.field_validated.emit((ticket.key.clone(), valid));
+        self.publish_derived_state();
+        true
+    }
+
+    /// Runs the registered asynchronous rule for `ticket` and resolves it.
+    ///
+    /// This is the convenience path for a rule that needs no I/O of its own (a
+    /// server response is resolved through [`Self::resolve`]). Returns `false`
+    /// when the ticket is stale or no rule is registered.
+    pub fn resolve_async(&mut self, ticket: &mut ValidationTicket) -> bool {
+        if ticket.is_stale(self) {
+            ticket.resolved = true;
+            return false;
+        }
+        let Some(rule) = self.async_validators.get(&ticket.key).cloned() else {
+            ticket.resolved = true;
+            return false;
+        };
+        let error = rule(&ticket.value);
+        self.resolve(ticket, error)
+    }
+
     // ── Values and validity ──────────────────────────────────────────────────
 
     /// The current value of `key`, read from its control's property contract.
@@ -666,6 +892,12 @@ impl Form {
         if !write_field_value(widget, value) {
             return false;
         }
+        // A stored asynchronous verdict describes the *old* text, so a write
+        // retires it in the same step that bumps the revision.
+        if let Some(field) = self.field_mut(key) {
+            field.async_error = None;
+        }
+        self.bump_validation_revision();
         self.base.request_redraw();
         self.note_observed(key);
         self.field_changed.emit(key.to_string());
@@ -693,54 +925,79 @@ impl Form {
         })
     }
 
-    /// Runs the required-field pass and publishes the new aggregate validity.
+    /// Runs the required, typed, host and cross-field passes and publishes the
+    /// new aggregate validity.
     ///
     /// A host-reported error is left alone: `validate` owns the *derived* error slot only, so a
     /// domain rule a caller installed survives a validation pass (and can only be cleared by
-    /// [`Self::clear_field_error`]).
+    /// [`Self::clear_field_error`]). The same is true of an asynchronous result
+    /// already stored on the field.
     pub fn validate(&mut self) -> bool {
-        let required_error = self.required_error.clone();
-        {
-            let validators = &self.validators;
-            for field in &mut self.fields {
-                let value = field.widget.and_then(read_field_value);
-                let missing =
-                    field.required && value.as_deref().is_none_or(|value| value.trim().is_empty());
-                field.validation_error = if missing {
-                    Some(required_error.clone())
-                } else {
-                    value.and_then(|value| validators.get(&field.key).and_then(|rule| rule(&value)))
-                };
-            }
-        }
+        self.apply_validation(None);
         self.base.request_layout();
         let valid = self.is_valid();
         self.publish_validity(valid);
         valid
     }
 
-    /// Runs the required-field pass for one field and publishes the aggregate edge.
+    /// Runs the validation pass for one field and publishes the aggregate edge.
     ///
     /// Returns `false` for an unknown key. A host that validates field by field still sees one
     /// `validity_changed` edge for the form as a whole, because the aggregate is republished after
     /// the single-field pass — the same rule [`Self::validate`] follows.
     pub fn validate_field(&mut self, key: &str) -> bool {
-        let required_error = self.required_error.clone();
-        let validators = &self.validators;
-        let Some(field) = self.fields.iter_mut().find(|field| field.key == key) else {
+        if self.field(key).is_none() {
             return false;
-        };
-        let value = field.widget.and_then(read_field_value);
-        let missing =
-            field.required && value.as_deref().is_none_or(|value| value.trim().is_empty());
-        field.validation_error = if missing {
-            Some(required_error)
-        } else {
-            value.and_then(|value| validators.get(&field.key).and_then(|rule| rule(&value)))
-        };
+        }
+        self.apply_validation(Some(key));
         self.base.request_layout();
         self.publish_derived_state();
         true
+    }
+
+    /// Runs one validation pass, for every field or for `only`.
+    ///
+    /// The value map is materialised once so a cross-field rule sees one consistent
+    /// snapshot instead of re-reading the registry per comparison.
+    fn apply_validation(&mut self, only: Option<&str>) {
+        let values = self.current_values();
+        let required_error = self.required_error.clone();
+        {
+            let validators = &self.validators;
+            let input_validators = &self.input_validators;
+            let rules = &self.form_rules;
+            for field in &mut self.fields {
+                if only.is_some_and(|key| key != field.key.as_str()) {
+                    continue;
+                }
+                let value = field.widget.and_then(read_field_value);
+                field.validation_error = field_validation_error(
+                    &field.key,
+                    field.required,
+                    value.as_deref(),
+                    &values,
+                    &required_error,
+                    validators,
+                    input_validators,
+                    rules,
+                );
+            }
+        }
+    }
+
+    /// Every field's current value, with unbound fields reported as empty.
+    fn current_values(&self) -> BTreeMap<String, String> {
+        self.fields
+            .iter()
+            .map(|field| {
+                (field.key.clone(), field.widget.and_then(read_field_value).unwrap_or_default())
+            })
+            .collect()
+    }
+
+    /// Invalidates outstanding asynchronous tickets.
+    fn bump_validation_revision(&mut self) {
+        self.validation_revision = self.validation_revision.wrapping_add(1);
     }
 
     /// Whether every field currently reports no error and every required field has a value.
@@ -797,10 +1054,30 @@ impl Form {
             }
             field.clear_error();
         }
+        self.bump_validation_revision();
         self.base.request_layout();
         self.base.request_redraw();
         self.sync_observed();
         self.reset_requested.emit();
+        self.publish_derived_state();
+    }
+
+    /// Abandons the validation state without restoring the baseline.
+    ///
+    /// This is deliberately **not** [`Self::reset`]: reset writes the values the
+    /// form opened with, while cancelling means "stop judging these edits" — the
+    /// user's values stay in the child controls, every error is cleared and
+    /// outstanding asynchronous tickets are invalidated. Emits
+    /// [`Self::cancel_requested`].
+    pub fn cancel(&mut self) {
+        for field in &mut self.fields {
+            field.clear_error();
+        }
+        // A ticket issued before the cancel must not land after it.
+        self.bump_validation_revision();
+        self.base.request_layout();
+        self.base.request_redraw();
+        self.cancel_requested.emit();
         self.publish_derived_state();
     }
 
@@ -821,6 +1098,7 @@ impl Form {
     /// is an edge detector, not a second value store — the value of record stays in the child.
     fn resync_derived(&mut self) {
         let mut changed = false;
+        let mut changed_keys: Vec<String> = Vec::new();
         for field in &self.fields {
             let Some(widget) = field.widget else {
                 continue;
@@ -831,6 +1109,7 @@ impl Form {
                     if *observed != current {
                         *observed = current;
                         changed = true;
+                        changed_keys.push(field.key.clone());
                         self.field_changed.emit(field.key.clone());
                     }
                 }
@@ -838,6 +1117,14 @@ impl Form {
             }
         }
         if changed {
+            // An asynchronous result for the previous text is no longer an
+            // answer about the current one.
+            for field in &mut self.fields {
+                if changed_keys.contains(&field.key) {
+                    field.async_error = None;
+                }
+            }
+            self.bump_validation_revision();
             self.base.request_redraw();
             self.publish_derived_state();
         }
@@ -944,6 +1231,19 @@ impl Form {
         let submit = self.submit_rect();
         let width = self.button_width.max(BUTTON_MIN_W);
         Rect::new(submit.x - self.row_spacing as i32 - width as i32, submit.y, width, BUTTON_H)
+    }
+
+    /// The cancel button's box, or `None` when no cancel label is configured.
+    ///
+    /// It sits to the left of reset so adding it never moves the submit button,
+    /// which is the anchor every host and test already relies on.
+    pub fn cancel_rect(&self) -> Option<Rect> {
+        if self.cancel_label.is_empty() {
+            return None;
+        }
+        let reset = self.reset_rect();
+        let width = self.button_width.max(BUTTON_MIN_W);
+        Some(Rect::new(reset.x - self.row_spacing as i32 - width as i32, reset.y, width, BUTTON_H))
     }
 
     fn title_band_height(&self) -> u32 {
@@ -1290,6 +1590,17 @@ impl Widget for Form {
                     CapabilityValue::String(value.clone())
                 }))
             }
+            "field_validated" => Some(EventSignalRef::mapped(
+                "field_validated",
+                &self.field_validated,
+                |(key, valid)| {
+                    CapabilityValue::Tuple(rust_widgets::compat::Vec::from([
+                        CapabilityValue::String(key.clone()),
+                        CapabilityValue::Bool(*valid),
+                    ]))
+                },
+            )),
+            "cancel" => Some(EventSignalRef::unit("cancel", &self.cancel_requested)),
             _ => None,
         }
     }
@@ -1316,6 +1627,7 @@ impl WidgetProperties for Form {
             "show_buttons" => Ok(CapabilityValue::Bool(self.show_buttons)),
             "submit_label" => Ok(CapabilityValue::String(self.submit_label.clone())),
             "reset_label" => Ok(CapabilityValue::String(self.reset_label.clone())),
+            "cancel_label" => Ok(CapabilityValue::String(self.cancel_label.clone())),
             "button_width" => Ok(CapabilityValue::UInt(self.button_width as u64)),
             "field_count" => Ok(CapabilityValue::UInt(self.field_count() as u64)),
             "valid" => Ok(CapabilityValue::Bool(self.is_valid())),
@@ -1394,6 +1706,10 @@ impl WidgetProperties for Form {
                 self.set_reset_label(expect_string(value)?);
                 Ok(())
             }
+            "cancel_label" => {
+                self.set_cancel_label(expect_string(value)?);
+                Ok(())
+            }
             "button_width" => {
                 self.set_button_width(expect_u32(value)?);
                 Ok(())
@@ -1438,6 +1754,7 @@ impl WidgetProperties for Form {
             "show_buttons",
             "submit_label",
             "reset_label",
+            "cancel_label",
             "button_width",
             "field_count",
             "valid",
@@ -1455,6 +1772,10 @@ impl WidgetProperties for Form {
             }
             "reset" => {
                 self.reset();
+                Ok(())
+            }
+            "cancel" => {
+                self.cancel();
                 Ok(())
             }
             "validate" => {
@@ -1558,6 +1879,9 @@ impl Draw for Form {
         if self.show_buttons {
             self.draw_button(context, self.submit_rect(), &self.submit_label, ink);
             self.draw_button(context, self.reset_rect(), &self.reset_label, ink);
+            if let Some(rect) = self.cancel_rect() {
+                self.draw_button(context, rect, &self.cancel_label, ink);
+            }
         }
 
         // The children are drawn by the tree painter; this only has to keep their boxes current
@@ -1577,6 +1901,10 @@ impl EventHandler for Form {
             if self.show_buttons {
                 if self.submit_rect().contains_point(*pos) {
                     let _ = self.submit();
+                    return;
+                }
+                if self.cancel_rect().is_some_and(|rect| rect.contains_point(*pos)) {
+                    self.cancel();
                     return;
                 }
                 if self.reset_rect().contains_point(*pos) {

@@ -37,8 +37,23 @@ pub struct ProjectNode {
     pub widget: String,
     /// Where this node sits in the tree; `[]` is the root.
     pub path: Vec<usize>,
-    /// The document's stable key, or a path-derived default.
+    /// The stable key the generator emits, or a path-derived default.
+    ///
+    /// This is **not** the document's `id` when one is declared: the generator emits
+    /// `.key("n_0")` so a generated file is a function of the tree's shape alone. An
+    /// incremental consumer that wants the document's identity reads [`Self::id`].
     pub key: String,
+    /// The document's `"id"` attribute, when it declared one.
+    ///
+    /// # Why this is carried separately from [`Self::key`]
+    ///
+    /// The two answer different questions. `key` is the generator's path-shaped spelling (stable
+    /// for one document shape, and used for the committed generated sources); `id` is the
+    /// designer's identity, which survives a sibling insertion that would shift every later
+    /// path. The incremental view path (`json::JsonViewSession`) keys its nodes on `id` when one
+    /// exists, so editing a list does not renumber the controls after the insertion — the same
+    /// identity the runtime loader records.
+    pub id: Option<String>,
     /// Scalar properties, in the document's own key order.
     ///
     /// A `Vec` of pairs rather than a map: the generator's output has to be a function of the input
@@ -448,6 +463,7 @@ fn collect_preorder(
         widget: String::from(widget),
         path: path.clone(),
         key: key_from_path(path),
+        id: obj.get("id").and_then(Value::as_str).filter(|id| !id.is_empty()).map(String::from),
         properties: collect_properties(obj),
         wire_declaration: obj.get(crate::json::EVENTS_KEY).cloned(),
         marker_declarations: crate::json::MARKER_KEYS
@@ -672,6 +688,16 @@ mod tests {
         let button = project.node(&[0]).unwrap();
         assert_eq!(button.key, "n_0", "the key is path-derived so two runs agree");
         assert!(button.property("id").is_none(), "`id` is structure, not a property");
+    }
+
+    #[test]
+    fn the_documented_id_is_carried_separately_from_the_generator_key() {
+        let project = JsonProject::parse(simple()).expect("valid document");
+        assert_eq!(project.root().unwrap().id.as_deref(), Some("w"));
+        assert_eq!(project.node(&[0]).unwrap().id.as_deref(), Some("b"));
+        assert_eq!(project.node(&[1]).unwrap().id, None, "a node without an id has none");
+        // The generator's key stays path-shaped, so generated output is unchanged.
+        assert_eq!(project.node(&[0]).unwrap().key, "n_0");
     }
 
     #[test]

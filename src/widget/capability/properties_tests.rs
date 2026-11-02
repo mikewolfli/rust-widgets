@@ -242,15 +242,15 @@ fn color_picker_satisfies_the_contract() {
     assert_contract(&mut picker, "ColorPicker");
 }
 
-/// Media widgets.
+/// Media widgets that stay in this crate.
+///
+/// The playback controls (`video_player`, `lottie_widget`, `rive_widget`, `camera_preview`, the
+/// media player family) moved to `rust-widgets-suites` in 3.3.0; their contract is asserted by
+/// that package's own tests.
 #[test]
 fn media_widgets_satisfy_the_contract() {
     use crate::widget::media_widgets::animated_image::AnimatedImage;
-    use crate::widget::media_widgets::camera_preview::CameraPreview;
     use crate::widget::media_widgets::hero_animation::HeroAnimation;
-    use crate::widget::media_widgets::lottie_widget::LottieWidget;
-    use crate::widget::media_widgets::rive_widget::RiveWidget;
-    use crate::widget::media_widgets::video_player::VideoPlayer;
 
     let mut animated = AnimatedImage::new(Rect::new(0, 0, 100, 100));
     assert_eq!(get(&animated, "playing"), CapabilityValue::Bool(false));
@@ -260,20 +260,6 @@ fn media_widgets_satisfy_the_contract() {
     let mut hero = HeroAnimation::new(Rect::new(0, 0, 100, 100));
     assert!(widget_property_get(&hero, "animation_progress").is_ok());
     assert_contract(&mut hero, "HeroAnimation");
-
-    let mut lottie = LottieWidget::new(Rect::new(0, 0, 100, 100));
-    assert_contract(&mut lottie, "LottieWidget");
-
-    let mut rive = RiveWidget::new(Rect::new(0, 0, 100, 100));
-    assert_contract(&mut rive, "RiveWidget");
-
-    let mut video = VideoPlayer::new(Rect::new(0, 0, 320, 240));
-    assert!(widget_property_get(&video, "volume").is_ok());
-    assert_contract(&mut video, "VideoPlayer");
-
-    let mut camera = CameraPreview::new(Rect::new(0, 0, 320, 240));
-    assert_eq!(get(&camera, "is_active"), CapabilityValue::Bool(false));
-    assert_contract(&mut camera, "CameraPreview");
 }
 
 /// Advanced and menu widgets.
@@ -673,8 +659,17 @@ fn schema_and_contract_publish_the_same_names() {
         let Some(published) = widget_property_names(widget.as_ref()) else {
             continue;
         };
-        let declared: alloc::vec::Vec<&str> =
+        // RW-35: the shared rows are part of every control's published contract even when the
+        // control's own table does not repeat them (`a11y_role`). Treat them as declared so the
+        // forward direction compares like with like instead of reporting a universal name as a
+        // missing per-kind row.
+        let mut declared: alloc::vec::Vec<&str> =
             capability.properties.iter().map(|schema| schema.name).collect();
+        for shared in crate::widget::capability::properties_trait::BASE_PROPERTY_SCHEMAS {
+            if !declared.contains(&shared.name) {
+                declared.push(shared.name);
+            }
+        }
 
         // Forward: the control must not publish a name its schema omits.
         for name in published {
@@ -1312,6 +1307,44 @@ fn a_hyphenated_command_reaches_the_same_command_as_its_published_spelling() {
         checked > 0,
         "no published command contains an underscore, so this test proves nothing"
     );
+}
+
+/// RW-44: the slider's schema-backed setters are visible in the command table.
+///
+/// The narrowed honest fix: a setter that has a declared property gets a `set_*` command; a
+/// Rust-only setter with no property does not, because publishing it would name a route the
+/// property contract cannot serve.
+#[test]
+fn slider_setters_are_visible_as_commands() {
+    let factory = WidgetFactory::new_with_defaults();
+    let capability = factory.capability("slider").expect("slider is registered");
+    for command in [
+        "set_value",
+        "set_slider_position",
+        "set_minimum",
+        "set_maximum",
+        "set_single_step",
+        "set_page_step",
+        "set_orientation",
+        "set_tick_position",
+        "set_tick_interval",
+        "set_tracking",
+        "set_track_click",
+    ] {
+        assert!(capability.commands.contains(&command), "`{command}` must be published");
+        let property = command.strip_prefix("set_").expect("a setter");
+        assert!(
+            capability.properties.iter().any(|schema| schema.name == property),
+            "`{command}` must name a declared property (`{property}`)"
+        );
+    }
+    // A setter with no schema property stays unpublished rather than inventing one.
+    for absent in ["set_range", "set_link_mode", "set_track_highlight"] {
+        assert!(
+            !capability.commands.contains(&absent),
+            "`{absent}` has no property carrier and must not be published"
+        );
+    }
 }
 
 /// B26.03: a published `set_*` command takes its **parameter and kind from the control's own

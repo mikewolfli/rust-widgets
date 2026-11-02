@@ -294,10 +294,11 @@ pub trait Platform: Send + Sync {
     ///
     /// `WindowsPlatform` reads
     /// `HKCU\Software\Microsoft\Accessibility\TextScaleFactor` and reports the user's chosen
-    /// percentage; `AndroidPlatform` reads `Configuration.fontScale` through the JNI bridge. The
-    /// remaining backends report `1.0`, which says "no preference reported" rather than "the user
-    /// chose 100%". Those two facts are different and only the first is a safe default — see the
-    /// Windows override for why the DPI override is *not* the same setting, and this method's
+    /// percentage; `AndroidPlatform` reads `Configuration.fontScale` through the JNI bridge; the
+    /// Linux/GTK backend derives it from `gtk-xft-dpi` (the Xft DPI divided by the nominal 96).
+    /// The remaining backends report `1.0`, which says "no preference reported" rather than "the
+    /// user chose 100%". Those two facts are different and only the first is a safe default — see
+    /// the Windows override for why the DPI override is *not* the same setting, and this method's
     /// sibling [`Self::dpi_scale_factor`] for the layout scale. iOS's `UIContentSizeCategory` is
     /// deliberately not read: it is a *category* name rather than a multiplier, and mapping it
     /// needs the app's preferred content size, which this backend cannot observe.
@@ -2206,6 +2207,37 @@ pub trait Platform: Send + Sync {
     /// answer and is documented as such.
     fn window_icon(&self, _widget_id: ObjectId) -> Option<String> {
         None
+    }
+
+    /// Raise a window and give it the keyboard focus.
+    ///
+    /// This is the semantic "bring this window forward" request a host makes when a command
+    /// activates a window that already exists. Win32 uses `SetForegroundWindow` (restoring a
+    /// minimised window first), AppKit `makeKeyAndOrderFront:`, and GTK `present()`.
+    ///
+    /// Returns `false` when the id is not a window, the call is off the toolkit's thread, or the
+    /// backend has no windowing system to raise. It does **not** report success merely because
+    /// the id is known: a state-only backend has nothing to activate.
+    fn activate_window(&self, _widget_id: ObjectId) -> bool {
+        false
+    }
+
+    /// Read a window's top-left position in screen coordinates.
+    ///
+    /// `None` when the id is not a window, the backend has no windowing system, or the position
+    /// cannot be read on this thread. A backend that answers `Some` must answer with the position
+    /// the compositor reports, not a request it merely recorded.
+    fn window_position(&self, _widget_id: ObjectId) -> Option<(i32, i32)> {
+        None
+    }
+
+    /// Move a window to `(x, y)` in screen coordinates without resizing or activating it.
+    ///
+    /// Returns `true` when the backend accepted the request. A backend with no windowing system
+    /// returns `false` rather than pretending the position took effect; the handle layer keeps a
+    /// mirror only for a successful call, which is what makes a later `position()` honest.
+    fn set_window_position(&self, _widget_id: ObjectId, _x: i32, _y: i32) -> bool {
+        false
     }
 
     /// Set a text entry's selection range as `(start, end)` character offsets.

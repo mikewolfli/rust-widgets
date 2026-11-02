@@ -109,6 +109,8 @@ pub struct DataGrid {
     pub(crate) cell_double_clicked: Signal1<(usize, usize)>,
     /// Emitted after a user resize with `(column, width)`.
     pub(crate) column_resized: Signal1<(usize, u32)>,
+    /// Emitted when a column is inserted, removed, renamed or re-typed (RW-5).
+    pub column_changed: Signal1<ColumnChange>,
     /// The projected `(row, column)` under the pointer, or `None` when it is elsewhere.
     ///
     /// Set through the **same** [`Self::cell_at`] the press uses, so the cell a hover points at is
@@ -242,6 +244,7 @@ impl DataGrid {
             cell_clicked: Signal1::new(),
             cell_double_clicked: Signal1::new(),
             column_resized: Signal1::new(),
+            column_changed: Signal1::new(),
             hovered_cell: None,
             visible_window_changed: Signal1::new(),
             full_model_projection: false,

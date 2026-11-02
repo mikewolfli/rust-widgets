@@ -58,16 +58,9 @@ use crate::widget::advanced_widgets::dial::Dial;
 use crate::widget::advanced_widgets::pie_menu::PieMenu;
 use crate::widget::advanced_widgets::ribbon_bar::RibbonBar;
 use crate::widget::advanced_widgets::tab_bar::TabBar;
-use crate::widget::chart_widgets::finance::candlestick_chart::CandlestickChart;
-use crate::widget::chart_widgets::finance::depth_chart::DepthChart;
-use crate::widget::chart_widgets::finance::indicator_chart::IndicatorChart;
-use crate::widget::chart_widgets::finance::order_book::OrderBookWidget;
-use crate::widget::chart_widgets::finance::quote_board::QuoteBoard;
-use crate::widget::chart_widgets::finance::volume_chart::VolumeChart;
-use crate::widget::chart_widgets::finance::{Bar, BookLevel, OrderBook, PriceSeries, Quote};
-use crate::widget::chart_widgets::gantt_widget::{GanttTask, GanttWidget};
-use crate::widget::chart_widgets::kanban_board::{KanbanBoard, KanbanCard, KanbanColumn};
-use crate::widget::chart_widgets::{ChartReferenceLine, LineChart, ReferenceLineSpec};
+use crate::widget::chart_widgets::{
+    ChartCrosshair, ChartReferenceLine, LineChart, ReferenceLineSpec,
+};
 use crate::widget::companions::{
     CommandPaletteHost, DragGhostLayer, DrawerSectionHeader, DropDownPopupHost, FindReplaceBar,
     HeaderMenu, LayerEntry, LayerPanel, Legend, LegendEntry, ListState, ListStateHost, MenuPanel,
@@ -103,14 +96,13 @@ use crate::widget::input_widgets::font_combo_box::FontComboBox;
 use crate::widget::input_widgets::listbox::ListBox;
 use crate::widget::input_widgets::multi_select_combo_box::{MultiSelectComboBox, MultiSelectItem};
 use crate::widget::input_widgets::shortcut_editor::{ShortcutEditor, ShortcutEntry};
-use crate::widget::media_widgets::chapter_list_panel::ChapterListPanel;
-use crate::widget::media_widgets::video_player::VideoChapter;
 use crate::widget::menu_toolbar::menu::Menu;
 use crate::widget::menu_toolbar::menu_bar::MenuBar;
 use crate::widget::menu_toolbar::menu_button::{MenuButton, MenuItem};
 use crate::widget::menu_toolbar::tool_bar::ToolBar;
 use crate::widget::misc_widgets::avatar::{Avatar, GroupAvatar};
 use crate::widget::misc_widgets::date_range_picker::{RangePreset, RangePresetBar};
+use crate::widget::misc_widgets::preset_chip_bar::PresetChipBar;
 use crate::widget::misc_widgets::segmented_button::{Segment, SegmentedButton};
 use crate::widget::nav_widgets::bottom_navigation_bar::BottomNavigationBar;
 use crate::widget::nav_widgets::navigation_drawer::NavigationDrawer;
@@ -122,13 +114,11 @@ use crate::widget::special_widgets::canvas::Canvas;
 use crate::widget::special_widgets::chip::{Chip, ChipItem};
 use crate::widget::special_widgets::command_palette::{CommandEntry, CommandPalette};
 use crate::widget::special_widgets::grid::GridWidget;
-use crate::widget::special_widgets::map_attribution::MapAttributionOverlay;
 use crate::widget::special_widgets::notification_center::{
     NotificationCenter, NotificationItem, NotificationLevel,
 };
 use crate::widget::special_widgets::segmented_control::{SegmentItem, SegmentedControl};
 use crate::widget::special_widgets::snackbar::Snackbar;
-use crate::widget::special_widgets::terminal_find_bar::TerminalFindBar;
 use crate::widget::special_widgets::timeline_widget::{TimelineItem, TimelineWidget};
 use crate::widget::special_widgets::toast::{ToastItem, ToastLevel, ToastStack};
 use crate::widget::view_widgets::data_grid::DataGrid;
@@ -652,23 +642,6 @@ pub fn apply(name: &str, widget: &mut dyn Widget) -> bool {
             None => false,
         },
 
-        "kanban_board" => match widget_as_mut::<KanbanBoard>(widget) {
-            Some(board) => {
-                board.add_column(KanbanColumn::new("todo", "To Do"));
-                board.add_column(KanbanColumn::new("doing", "In Progress").with_wip_limit(2));
-                board.add_column(KanbanColumn::new("done", "Done"));
-                board.add_card(0, KanbanCard::new("card1", "Design the layout"));
-                board.add_card(
-                    0,
-                    KanbanCard::new("card2", "Write the spec").with_description("Owner: Ada"),
-                );
-                board.add_card(1, KanbanCard::new("card3", "Build the board"));
-                board.add_card(2, KanbanCard::new("card4", "Set up the repo").with_done(true));
-                true
-            }
-            None => false,
-        },
-
         "timeline_widget" => match widget_as_mut::<TimelineWidget>(widget) {
             Some(timeline) => {
                 // The viewport is stated rather than left at its default so the three items
@@ -680,21 +653,6 @@ pub fn apply(name: &str, widget: &mut dyn Widget) -> bool {
                     TimelineItem::new("t3", "Build", 55, 95),
                 ]);
                 timeline.select_index(1);
-                true
-            }
-            None => false,
-        },
-
-        "gantt_widget" => match widget_as_mut::<GanttWidget>(widget) {
-            Some(gantt) => {
-                gantt.set_viewport(0, 100);
-                gantt.set_tasks(vec![
-                    GanttTask::new("g1", "Research", 0, 25, 100),
-                    GanttTask::new("g2", "Design", 25, 50, 60).depends_on(["g1"]),
-                    GanttTask::new("g3", "Build", 50, 90, 10).depends_on(["g2"]),
-                    GanttTask::milestone("m1", "Ship", 95),
-                ]);
-                gantt.select_index(1);
                 true
             }
             None => false,
@@ -928,56 +886,6 @@ pub fn apply(name: &str, widget: &mut dyn Widget) -> bool {
             None => false,
         },
 
-        // ── Financial charts ──
-        //
-        // These six controls have no default data and draw a literal "No data" plate at rest,
-        // which is the correct *empty* state and an uninformative *snapshot* one: axes, the
-        // candle/liquidity geometry, the depth curve and the quote columns were all absent from
-        // the census. The data is deterministic so the snapshots do not rotate.
-        "candlestick_chart" => match widget_as_mut::<CandlestickChart>(widget) {
-            Some(chart) => {
-                chart.set_series(sample_price_series());
-                true
-            }
-            None => false,
-        },
-        "volume_chart" => match widget_as_mut::<VolumeChart>(widget) {
-            Some(chart) => {
-                chart.set_series(sample_price_series());
-                true
-            }
-            None => false,
-        },
-        "indicator_chart" => match widget_as_mut::<IndicatorChart>(widget) {
-            Some(chart) => {
-                chart.set_series(sample_price_series());
-                true
-            }
-            None => false,
-        },
-        "depth_chart" => match widget_as_mut::<DepthChart>(widget) {
-            Some(chart) => {
-                chart.set_book(sample_order_book());
-                true
-            }
-            None => false,
-        },
-        "order_book" => match widget_as_mut::<OrderBookWidget>(widget) {
-            Some(book) => {
-                book.set_book(sample_order_book());
-                true
-            }
-            None => false,
-        },
-        "quote_board" => match widget_as_mut::<QuoteBoard>(widget) {
-            Some(board) => {
-                board.set_quotes(sample_quotes());
-                true
-            }
-            None => false,
-        },
-
-        // Everything else has no data concept, or is already seeded by its own constructor (the charts).
         // ── View controls with a lightweight data entry (VIEW-N05 unblocked these) ──
         //
         // `data_view` is an alias of `virtual_list` in the capability table, so one arm
@@ -1281,35 +1189,6 @@ pub fn apply(name: &str, widget: &mut dyn Widget) -> bool {
             }
             None => false,
         },
-        "terminal_find_bar" => match widget_as_mut::<TerminalFindBar>(widget) {
-            Some(bar) => {
-                bar.set_query("widget");
-                bar.set_match_count(3, 1);
-                bar.open();
-                true
-            }
-            None => false,
-        },
-        "chapter_list_panel" => match widget_as_mut::<ChapterListPanel>(widget) {
-            Some(panel) => {
-                panel.set_chapters(vec![
-                    VideoChapter::new("Intro", 0.0),
-                    VideoChapter::new("Main topic", 90.0),
-                    VideoChapter::new("Wrap-up", 240.0),
-                ]);
-                panel.set_position_ms(95_000);
-                true
-            }
-            None => false,
-        },
-        "map_attribution" => match widget_as_mut::<MapAttributionOverlay>(widget) {
-            Some(overlay) => {
-                overlay.add_entry("Map data (c) OpenStreetMap contributors", None::<&str>);
-                overlay.add_entry("Tiles (c) CARTO", None::<&str>);
-                true
-            }
-            None => false,
-        },
         "menu_panel" => match widget_as_mut::<MenuPanel>(widget) {
             Some(panel) => {
                 panel.set_items(vec![
@@ -1438,6 +1317,28 @@ pub fn apply(name: &str, widget: &mut dyn Widget) -> bool {
             None => false,
         },
 
+        // ── Companion chrome that only paints once it has content (RW-77/RW-81/RW-100) ──
+        //
+        // These three are constructible through the factory but carry no data of their own at
+        // rest, so the verification paths would photograph an empty frame. The arms give each
+        // the smallest state that makes its own drawing branch run.
+        "chart_crosshair" => match widget_as_mut::<ChartCrosshair>(widget) {
+            Some(crosshair) => {
+                crosshair.set_position(Some(Point::new(120, 60)));
+                true
+            }
+            None => false,
+        },
+        "preset_chip_bar" => match widget_as_mut::<PresetChipBar>(widget) {
+            Some(bar) => {
+                let first = bar.add_preset("Preset A");
+                let _ = bar.add_preset("Preset B");
+                bar.set_selected(first);
+                true
+            }
+            None => false,
+        },
+
         _ => false,
     }
 }
@@ -1516,73 +1417,6 @@ fn sample_cascade() -> Vec<CascaderOption> {
         CascaderOption::branch("items", "Items", leaves(&["Widget", "Gadget", "Cog"])),
         CascaderOption::branch("parts", "Parts", leaves(&["Bolt", "Nut", "Washer"])),
     ]
-}
-
-/// A deterministic 24-bar price series with hour labels.
-///
-/// One series serves the candlestick, volume and indicator charts, so the three snapshots are
-/// three views of the same data — a difference between them is a layout difference, which is
-/// what a reviewer is looking for. Deterministic (no clock, no RNG) because these files are
-/// committed artifacts.
-fn sample_price_series() -> PriceSeries {
-    let mut series = PriceSeries::new();
-    let mut price: f64 = 100.0;
-    for index in 0..24 {
-        // A mild saw pattern: rising over each six-bar window, with a pull-back in the middle.
-        let drift = match index % 6 {
-            0 => 1.8,
-            1 => 0.9,
-            2 => -0.7,
-            3 => 1.4,
-            4 => -1.1,
-            _ => 0.6,
-        };
-        let open = price;
-        let close = open + drift;
-        let high = open.max(close) + 0.6;
-        let low = open.min(close) - 0.5;
-        let volume = 1200.0 + index as f64 * 137.0;
-        series
-            .push_with_label(Bar::new(open, high, low, close, volume), format!("{:02}:00", index));
-        price = close;
-    }
-    series
-}
-
-/// A five-level book on each side, with size growing away from the touch.
-fn sample_order_book() -> OrderBook {
-    let mut book = OrderBook::new();
-    book.set_bids(
-        (0..5)
-            .map(|level| BookLevel::new(99.9 - level as f64 * 0.1, 12.0 + level as f64 * 7.0))
-            .collect(),
-    );
-    book.set_asks(
-        (0..5)
-            .map(|level| BookLevel::new(100.0 + level as f64 * 0.1, 10.0 + level as f64 * 6.0))
-            .collect(),
-    );
-    book
-}
-
-/// Five quotes with both a riser and a faller, so the board's up/down colours are both visible.
-fn sample_quotes() -> Vec<Quote> {
-    let rows: [(&str, f64, f64, f64); 5] = [
-        ("AAPL", 189.5, 187.2, 54_120_000.0),
-        ("MSFT", 412.8, 416.1, 21_400_000.0),
-        ("NVDA", 128.4, 121.9, 310_800_000.0),
-        ("TSLA", 246.2, 249.7, 98_600_000.0),
-        ("AMD", 162.7, 159.4, 44_900_000.0),
-    ];
-    rows.iter()
-        .map(|(symbol, last, previous_close, volume)| {
-            let mut quote = Quote::new(symbol, *last, *previous_close);
-            quote.high = (*last).max(*previous_close) + 1.2;
-            quote.low = (*last).min(*previous_close) - 1.2;
-            quote.volume = *volume;
-            quote
-        })
-        .collect()
 }
 
 /// A `TableModel` over [`crate::widget::sample_data::ROWS`].

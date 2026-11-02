@@ -15,6 +15,10 @@ use crate::widget::capability::properties_trait::{base_property_get, base_proper
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::{effective_font, ControlMetrics};
+use crate::widget::save_state::SaveState;
+use crate::widget::view_widgets::collection_state::{
+    paint_collection_placeholder, CollectionPlaceholder, CollectionState,
+};
 use crate::widget::view_widgets::data_grid::ColumnWidthMode;
 use crate::widget::view_widgets::list_view::SelectionMode;
 use crate::widget::view_widgets::table_widget::ItemDelegate;
@@ -114,6 +118,11 @@ pub struct NodeView {
     /// explicit override and falls back to this. A model that rebuilds itself can therefore
     /// declare "branches start closed" without the view keeping any state of its own.
     pub expanded: bool,
+    /// An icon token painted before the label (RW-10).
+    ///
+    /// The token is the same named-icon spelling [`ListModel::icon`] uses, so a tree and a list
+    /// resolve their glyphs through one registry. `None` keeps a text-only node unchanged.
+    pub icon: Option<String>,
 }
 
 impl NodeView {
@@ -122,7 +131,18 @@ impl NodeView {
     /// The shape a model that only knows labels produces, and the one
     /// [`TreeModel::node`]'s default derives from [`TreeModel::node_path`].
     pub fn leaf(label: impl Into<String>) -> Self {
-        Self { label: label.into(), depth: 0, has_children: false, expanded: true }
+        Self { label: label.into(), depth: 0, has_children: false, expanded: true, icon: None }
+    }
+
+    /// Attaches an icon token to the node (RW-10).
+    pub fn with_icon(mut self, token: impl Into<String>) -> Self {
+        self.icon = Some(token.into());
+        self
+    }
+
+    /// The node's icon token, when it has one (RW-10).
+    pub fn icon(&self) -> Option<&str> {
+        self.icon.as_deref()
     }
 }
 
@@ -237,6 +257,17 @@ pub trait TreeModel: Send + Sync {
             None
         }
     }
+
+    /// The icon token painted before node `index`'s label, when the model has one (RW-10).
+    ///
+    /// The default answers `None`, which keeps a text-only model rendering exactly as before. A
+    /// model that works through [`Self::node`] can put the token on its [`NodeView`] instead; the
+    /// view prefers the node's own icon and falls back to this method, so both spellings reach the
+    /// same paint path.
+    fn node_icon(&self, index: usize) -> Option<&str> {
+        let _ = index;
+        None
+    }
 }
 /// In-memory tree model backed by a vector of nodes.
 pub struct VecTreeModel {
@@ -304,6 +335,9 @@ impl TreeModel for VecTreeModel {
     }
     fn node(&self, index: usize) -> Option<NodeView> {
         self.nodes.get(index).cloned()
+    }
+    fn node_icon(&self, index: usize) -> Option<&str> {
+        self.nodes.get(index).and_then(|node| node.icon.as_deref())
     }
     fn data_changed_signal(&self) -> Option<&GenericSignal> {
         Some(&self.data_changed)
@@ -453,6 +487,15 @@ pub struct TreeView {
     node_tooltip: Option<Arc<dyn Fn(usize) -> Option<String> + Send + Sync>>,
     /// Expansion snapshot replayed after a model reset (V-004).
     saved_expansion: Vec<Vec<usize>>,
+    /// Per-path lazy-load failures and their messages (RW-18).
+    ///
+    /// Keyed by the model path rather than by a visible row, because the row a failed branch sits
+    /// at moves with every expansion above it, while the branch itself does not.
+    fetch_failures: Vec<(Vec<usize>, String)>,
+    /// Emitted with `(path, message)` when a lazy fetch fails (RW-18).
+    pub fetch_failure: Signal1<(Vec<usize>, String)>,
+    /// Empty/error captions painted when the tree has no visible rows (RW-17).
+    placeholder: CollectionPlaceholder,
 }
 impl TreeView {
     /// Creates an empty tree view.
@@ -507,6 +550,9 @@ impl TreeView {
             on_header_clicked: Signal1::new(),
             node_tooltip: None,
             saved_expansion: Vec::new(),
+            fetch_failures: Vec::new(),
+            fetch_failure: Signal1::new(),
+            placeholder: CollectionPlaceholder::new(),
         }
     }
     /// Binds an external tree model.
@@ -531,6 +577,10 @@ impl TreeView {
         // host captured with `expanded_paths` (V-004).
         self.restore_saved_expansion();
         self.editing = None;
+        // A failure names a path in the previous model's space, so it cannot survive a rebind.
+        self.fetch_failures.clear();
+        self.loading_paths.clear();
+        self.loading_indicator_visible = false;
         self.normalize_projection_state();
         self.data_generation.fetch_add(1, Ordering::Relaxed);
         self.rebuild_projection();
@@ -1014,9 +1064,63 @@ impl TreeView {
             // the cached projection is stale even though the generation did not move.
             self.rebuild_projection();
             self.base.request_layout();
+            // A branch that answered is no longer failing, so its old message would be a stale
+            // statement about the current data (RW-18).
+            self.fetch_failures.retain(|(failed, _)| failed != path);
         }
         self.fetch_finished.emit((path.to_vec(), changed));
         self.base.request_redraw();
+    }
+
+    /// Reports that the fetch for `path` failed, with a message to paint (RW-18).
+    ///
+    /// The failure clears the path's loading state exactly as a completion does — a failed fetch
+    /// is finished, not pending — and is reported twice: [`Self::fetch_finished`] with `false`
+    /// keeps every existing listener working (the boolean contract is unchanged), and
+    /// [`Self::fetch_failure`] carries the message a host displays elsewhere. The view itself
+    /// paints the message as an inline row below the branch, so a reader sees why a branch stayed
+    /// empty without consulting the host.
+    pub fn fetch_failed(&mut self, path: &[usize], message: impl Into<String>) {
+        let message = message.into();
+        self.loading_paths.retain(|pending| pending != path);
+        self.loading_indicator_visible = !self.loading_paths.is_empty();
+        match self.fetch_failures.iter_mut().find(|(failed, _)| failed == path) {
+            Some((_, slot)) => *slot = message.clone(),
+            None => self.fetch_failures.push((path.to_vec(), message.clone())),
+        }
+        self.fetch_finished.emit((path.to_vec(), false));
+        self.fetch_failure.emit((path.to_vec(), message));
+        self.base.request_layout();
+        self.base.request_redraw();
+    }
+
+    /// The message recorded for a failed fetch of `path`, if any (RW-18).
+    pub fn fetch_failure_message(&self, path: &[usize]) -> Option<&str> {
+        self.fetch_failures
+            .iter()
+            .find(|(failed, _)| failed == path)
+            .map(|(_, message)| message.as_str())
+    }
+
+    /// Every recorded fetch failure, in the order they were reported (RW-18).
+    pub fn fetch_failures(&self) -> &[(Vec<usize>, String)] {
+        &self.fetch_failures
+    }
+
+    /// Forgets the failure recorded for `path`, returning whether one was recorded.
+    pub fn clear_fetch_failure(&mut self, path: &[usize]) -> bool {
+        let before = self.fetch_failures.len();
+        self.fetch_failures.retain(|(failed, _)| failed != path);
+        let removed = self.fetch_failures.len() != before;
+        if removed {
+            self.base.request_redraw();
+        }
+        removed
+    }
+
+    /// The empty/error captions this tree paints when it has no visible rows (RW-17).
+    pub fn placeholder(&self) -> &CollectionPlaceholder {
+        &self.placeholder
     }
 
     /// The first visible row.
@@ -1869,6 +1973,125 @@ impl TreeView {
         }
     }
 }
+/// Version tag of the blob produced by [`TreeView::save_state`].
+const TREE_STATE_VERSION: u8 = 1;
+
+impl TreeView {
+    /// Serialises the tree's user-visible state (RW-64): scroll row, focus, selection and every
+    /// explicit expansion override.
+    ///
+    /// Expansion is keyed by model index, which is the tree's node identity, so restoring a
+    /// snapshot re-opens the same branches even when unrelated rows were added or removed.
+    pub fn save_state(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.push(TREE_STATE_VERSION);
+        out.extend_from_slice(&(self.scroll_row as u64).to_le_bytes());
+        out.extend_from_slice(&self.focused_node.map_or(u64::MAX, |n| n as u64).to_le_bytes());
+
+        out.extend_from_slice(&(self.selected_nodes.len() as u32).to_le_bytes());
+        for node in &self.selected_nodes {
+            out.extend_from_slice(&(*node as u64).to_le_bytes());
+        }
+
+        out.extend_from_slice(&(self.expanded_override.len() as u32).to_le_bytes());
+        for (node, expanded) in &self.expanded_override {
+            out.extend_from_slice(&(*node as u64).to_le_bytes());
+            out.push(u8::from(*expanded));
+        }
+        out
+    }
+
+    /// Restores a blob produced by [`Self::save_state`].
+    ///
+    /// Returns `false` for an unsupported version or a truncated/oversized blob, leaving the tree
+    /// unchanged: a half-read snapshot is not applied.
+    pub fn restore_state(&mut self, state: &[u8]) -> bool {
+        if state.first().copied() != Some(TREE_STATE_VERSION) {
+            return false;
+        }
+        let mut cursor = 1usize;
+        let Some(scroll_row) = read_u64(state, &mut cursor) else {
+            return false;
+        };
+        let Some(focused) = read_u64(state, &mut cursor) else {
+            return false;
+        };
+        let Some(selection_count) = read_u32(state, &mut cursor) else {
+            return false;
+        };
+        let mut selected = std::collections::BTreeSet::new();
+        for _ in 0..selection_count {
+            let Some(node) = read_u64(state, &mut cursor) else {
+                return false;
+            };
+            if let Ok(node) = usize::try_from(node) {
+                selected.insert(node);
+            }
+        }
+        let Some(expansion_count) = read_u32(state, &mut cursor) else {
+            return false;
+        };
+        let mut expanded = HashMap::new();
+        for _ in 0..expansion_count {
+            let Some(node) = read_u64(state, &mut cursor) else {
+                return false;
+            };
+            let Some(flag) = state.get(cursor).copied() else {
+                return false;
+            };
+            cursor += 1;
+            if let Ok(node) = usize::try_from(node) {
+                expanded.insert(node, flag != 0);
+            }
+        }
+        if cursor != state.len() {
+            return false;
+        }
+
+        self.scroll_row = usize::try_from(scroll_row).unwrap_or(usize::MAX);
+        self.focused_node = usize::try_from(focused).ok();
+        self.selected_nodes = selected;
+        self.selected_node = self.selected_nodes.iter().next().copied();
+        self.expanded_override = expanded;
+        self.base.request_redraw();
+        true
+    }
+}
+
+impl SaveState for TreeView {
+    fn state_version(&self) -> u16 {
+        u16::from(TREE_STATE_VERSION)
+    }
+
+    fn save_state(&self) -> Vec<u8> {
+        TreeView::save_state(self)
+    }
+
+    fn restore_state(&mut self, state: &[u8]) -> bool {
+        TreeView::restore_state(self, state)
+    }
+}
+
+/// Reads one little-endian `u64`, advancing the cursor.
+fn read_u64(state: &[u8], cursor: &mut usize) -> Option<u64> {
+    let end = cursor.checked_add(8)?;
+    let bytes = state.get(*cursor..end)?;
+    let mut array = [0u8; 8];
+    array.copy_from_slice(bytes);
+    *cursor = end;
+    Some(u64::from_le_bytes(array))
+}
+
+/// Reads one little-endian `u32`, advancing the cursor.
+fn read_u32(state: &[u8], cursor: &mut usize) -> Option<u32> {
+    let end = cursor.checked_add(4)?;
+    let bytes = state.get(*cursor..end)?;
+    let mut array = [0u8; 4];
+    array.copy_from_slice(bytes);
+    *cursor = end;
+    Some(u32::from_le_bytes(array))
+}
+
 impl Widget for TreeView {
     fn base(&self) -> &BaseWidget {
         &self.base
@@ -1897,6 +2120,14 @@ impl Widget for TreeView {
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
+
+    fn save_state_dyn(&self) -> Option<&dyn SaveState> {
+        Some(self)
+    }
+
+    fn save_state_dyn_mut(&mut self) -> Option<&mut dyn SaveState> {
+        Some(self)
+    }
 
     /// Opts the tree into the runtime's drag coordinator as a source (V-016).
     fn drag_source_mut(&mut self) -> Option<&mut dyn DragSource> {
@@ -2011,6 +2242,20 @@ impl Widget for TreeView {
                     crate::widget::capability::CapabilityValue::Tuple(crate::compat::Vec::from([
                         crate::widget::capability::CapabilityValue::UInt(v.0 as u64),
                         crate::widget::capability::CapabilityValue::UInt(v.1 as u64),
+                    ]))
+                }))
+            }
+            "fetch_failure" => {
+                Some(EventSignalRef::mapped("fetch_failure", &self.fetch_failure, |v| {
+                    crate::widget::capability::CapabilityValue::Tuple(crate::compat::Vec::from([
+                        crate::widget::capability::CapabilityValue::Tuple(
+                            v.0.iter()
+                                .map(|item| {
+                                    crate::widget::capability::CapabilityValue::UInt(*item as u64)
+                                })
+                                .collect(),
+                        ),
+                        crate::widget::capability::CapabilityValue::String(v.1.clone()),
                     ]))
                 }))
             }
@@ -2225,6 +2470,16 @@ impl WidgetProperties for TreeView {
     }
 }
 
+impl CollectionState for TreeView {
+    fn collection_placeholder(&self) -> &CollectionPlaceholder {
+        &self.placeholder
+    }
+
+    fn collection_placeholder_mut(&mut self) -> &mut CollectionPlaceholder {
+        &mut self.placeholder
+    }
+}
+
 impl Draw for TreeView {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.base.geometry();
@@ -2427,12 +2682,30 @@ impl Draw for TreeView {
                         context.draw_line(c, a, row_ink);
                     }
                 }
+                // The node's icon sits between the disclosure gutter and the label (RW-10). The
+                // node's own token wins, otherwise the model's `node_icon` answers, so a model
+                // that already describes shape through `node` and one that only answers by index
+                // both reach this one paint path.
+                let icon_name: Option<String> =
+                    node.icon.clone().or_else(|| model.node_icon(model_index).map(str::to_string));
+                let mut icon_allowance = 0i32;
+                if let Some(name) = icon_name.as_deref() {
+                    let side = (TREE_ROW_HEIGHT - 6).clamp(1, 20) as u32;
+                    let icon_rect = Rect::new(
+                        row.x + indent,
+                        row.y + (row.height as i32 - side as i32) / 2,
+                        side,
+                        side,
+                    );
+                    crate::widget::draw_icon_named(context, icon_rect, row_ink, name);
+                    icon_allowance = side as i32 + 4;
+                }
                 if self.columns.is_empty() {
                     if !node.label.is_empty() {
                         let cell = crate::core::Rect::new(
-                            row.x + indent,
+                            row.x + indent + icon_allowance,
                             row.y,
-                            row.width.saturating_sub(indent.max(0) as u32),
+                            row.width.saturating_sub((indent + icon_allowance).max(0) as u32),
                             row.height,
                         );
                         context.draw_text_fitted_cow(
@@ -2454,9 +2727,9 @@ impl Draw for TreeView {
                             let cell_width = width.saturating_sub(indent.max(0) as u32);
                             if cell_width > 0 && !node.label.is_empty() {
                                 let cell = crate::core::Rect::new(
-                                    row.x + indent,
+                                    row.x + indent + icon_allowance,
                                     row.y,
-                                    cell_width,
+                                    cell_width.saturating_sub(icon_allowance.max(0) as u32),
                                     row.height,
                                 );
                                 context.draw_text_fitted_cow(
@@ -2525,6 +2798,69 @@ impl Draw for TreeView {
                     }
                 }
             }
+
+            // A failed fetch paints its message where the branch's first child would appear
+            // (RW-18). The error text reads the crate's error colour, so "the load failed" is
+            // distinguishable from "still loading" and from "this branch is empty" without a
+            // second glyph. A failure whose parent is not currently visible is simply not painted;
+            // its message stays recorded and is reported through `fetch_failure`.
+            for (path, message) in &self.fetch_failures {
+                let parent = path.last().copied().unwrap_or(0);
+                let Some(visible) = self.visible_position_of(parent) else {
+                    continue;
+                };
+                if visible < self.scroll_row {
+                    continue;
+                }
+                let slot = visible - self.scroll_row + 1;
+                let y = content.y + self.header_offset() + slot as i32 * TREE_ROW_HEIGHT;
+                if y + TREE_ROW_HEIGHT > content.bottom() {
+                    continue;
+                }
+                let band = Rect::new(content.x, y, content.width, TREE_ROW_HEIGHT as u32);
+                context.fill_rect(band, surface.blend(&Color::ERROR, 0.10));
+                let indent = TREE_INDENT.saturating_mul(path.len() as i32 + 1);
+                let text_x = band.x + indent;
+                let text_band = Rect::new(
+                    text_x,
+                    y,
+                    (band.right() - text_x).max(0) as u32,
+                    TREE_ROW_HEIGHT as u32,
+                );
+                context.draw_text_fitted_cow(
+                    context.text_line(text_band, font),
+                    message,
+                    font,
+                    Color::ERROR,
+                    HorizontalAlignment::Left,
+                );
+            }
+
+            // No visible rows at all is handled after the model block, because a tree with no
+            // model is just as empty and must paint the same caption (RW-17).
+        }
+
+        // ── Empty/error caption (RW-17) ──
+        //
+        // Painted outside the model block so a tree with no model at all still says why it is
+        // blank, and inside the control's content band so the caption cannot land outside the
+        // frame the user is looking at.
+        if self.model.is_none() || self.visible_row_count() == 0 {
+            let content = ControlMetrics::band_inset(rect, TREE_INSET);
+            let top = content.y + self.header_offset();
+            let band = Rect::new(
+                content.x,
+                top,
+                content.width,
+                content.height.saturating_sub(self.header_offset().max(0) as u32),
+            );
+            paint_collection_placeholder(
+                context,
+                band,
+                &self.placeholder,
+                ink,
+                effective_font(style),
+            );
         }
 
         // ── Hover tooltip (V-005) ──
@@ -2861,6 +3197,7 @@ mod tests {
                 depth: 0,
                 has_children: true,
                 expanded: true,
+                icon: None,
             }];
             for i in 0..count {
                 nodes.push(NodeView {
@@ -2868,6 +3205,7 @@ mod tests {
                     depth: 1,
                     has_children: true,
                     expanded: true,
+                    icon: None,
                 });
             }
             Self { nodes, lookups: std::sync::atomic::AtomicUsize::new(0) }
@@ -2967,6 +3305,7 @@ mod tests {
                 depth: *depth,
                 has_children: *has_children,
                 expanded: *expanded,
+                icon: None,
             })
         }
     }
@@ -3443,12 +3782,14 @@ mod tests {
                         depth: 0,
                         has_children: true,
                         expanded: true,
+                        icon: None,
                     }),
                     1 => Some(NodeView {
                         label: "child".to_string(),
                         depth: 1,
                         has_children: false,
                         expanded: false,
+                        icon: None,
                     }),
                     _ => None,
                 }
@@ -3529,5 +3870,110 @@ mod tests {
             DropEffect::Move
         );
         assert_eq!(*requested.lock().expect("request sink"), vec![(0, 2)]);
+    }
+
+    // ── RW-10: node icons ──
+
+    struct IconModel;
+
+    impl TreeModel for IconModel {
+        fn node_count(&self) -> usize {
+            2
+        }
+
+        fn node_path(&self, index: usize) -> Option<String> {
+            Some(format!("node {index}"))
+        }
+
+        fn node_icon(&self, index: usize) -> Option<&str> {
+            (index == 0).then_some("folder")
+        }
+    }
+
+    #[test]
+    fn node_icons_reach_the_view_from_the_node_or_the_model() {
+        // The builder stores the token and the accessor answers it.
+        let node = NodeView::leaf("branch").with_icon("folder");
+        assert_eq!(node.icon(), Some("folder"));
+        assert_eq!(NodeView::leaf("leaf").icon(), None);
+
+        // The model's index-addressed answer is the fallback the paint path reads.
+        let model = IconModel;
+        assert_eq!(model.node_icon(0), Some("folder"));
+        assert_eq!(model.node_icon(1), None);
+
+        // A view over the model paints without panicking and keeps its rows.
+        use crate::render::{PaintBackend, SoftwarePaintBackend};
+        let mut view = TreeView::new(Rect::new(0, 0, 200, 120));
+        view.set_model(Arc::new(IconModel));
+        let mut backend = SoftwarePaintBackend::new(crate::core::Size::new(200, 120), 1.0);
+        backend.begin_frame(Color::WHITE);
+        {
+            let mut context = RenderContext::new(&mut backend);
+            view.draw(&mut context);
+        }
+        backend.end_frame();
+        assert_eq!(view.node_count(), 2);
+    }
+
+    // ── RW-18: a failed lazy fetch carries a message ──
+
+    #[test]
+    fn fetch_failed_records_a_message_and_keeps_the_boolean_contract() {
+        let mut view = TreeView::new(Rect::new(0, 0, 220, 160));
+        view.set_lazy_loading(true);
+
+        let finished = Arc::new(std::sync::Mutex::new(Vec::<(Vec<usize>, bool)>::new()));
+        let failures = Arc::new(std::sync::Mutex::new(Vec::<(Vec<usize>, String)>::new()));
+        let finished_sink = Arc::clone(&finished);
+        let failure_sink = Arc::clone(&failures);
+        view.fetch_finished.connect(move |payload| {
+            finished_sink.lock().expect("lock").push(payload.as_ref().clone());
+        });
+        view.fetch_failure.connect(move |payload| {
+            failure_sink.lock().expect("lock").push(payload.as_ref().clone());
+        });
+
+        view.fetch_failed(&[0], "network is down");
+        assert_eq!(view.fetch_failure_message(&[0]), Some("network is down"));
+        assert_eq!(view.fetch_failures().len(), 1);
+        assert!(!view.loading_indicator_visible());
+        assert_eq!(
+            *finished.lock().expect("lock"),
+            vec![(vec![0usize], false)],
+            "the existing boolean contract still reports a completion"
+        );
+        assert_eq!(
+            *failures.lock().expect("lock"),
+            vec![(vec![0usize], "network is down".to_string())]
+        );
+
+        // Reporting again replaces the message instead of accumulating duplicates.
+        view.fetch_failed(&[0], "still down");
+        assert_eq!(view.fetch_failure_message(&[0]), Some("still down"));
+        assert_eq!(view.fetch_failures().len(), 1);
+
+        // A successful completion clears the stale message.
+        view.finish_fetch(&[0], true);
+        assert_eq!(view.fetch_failure_message(&[0]), None);
+
+        view.fetch_failed(&[1], "no permission");
+        assert!(view.clear_fetch_failure(&[1]));
+        assert!(!view.clear_fetch_failure(&[1]), "clearing twice is not a change");
+    }
+
+    // ── RW-17: empty/error captions ──
+
+    #[test]
+    fn the_empty_caption_is_stored_on_the_tree() {
+        use crate::widget::view_widgets::collection_state::CollectionState;
+
+        let mut view = TreeView::new(Rect::new(0, 0, 200, 120));
+        view.set_empty_text("No nodes");
+        assert_eq!(view.empty_text(), Some("No nodes"));
+        view.set_error_text("Load failed");
+        assert_eq!(view.placeholder().text(), Some("Load failed"));
+        view.clear_error_text();
+        assert_eq!(view.placeholder().text(), Some("No nodes"));
     }
 }

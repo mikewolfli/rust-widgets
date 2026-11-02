@@ -42,16 +42,18 @@
 //! The bridge is `SharedLayoutRegistry` plus `SharedLayoutRegistry::apply_with_hints`
 //! (and the free `apply_layout_with_hints`): a caller that has the child hints (the view
 //! engine does) can drive the stored layouts through `Layout::arrange`, instead of the
-//! id-only `update` path `apply_layout` uses. The thread-local `LAYOUT_MAP` remains the
-//! transitional default. What the view side still has to do is hold one registry instance
-//! and call the hint-aware entry when it applies a subtree; that edit belongs to
-//! `src/view/**`, which this module does not own.
+//! id-only `update` path `apply_layout` uses. The context-aware twins
+//! (`apply_layout_with_context` / `apply_with_hints_and_context`) close the same gap for
+//! `LayoutContext`, so a preview and a high-DPI runtime read the same scale. The thread-local
+//! `LAYOUT_MAP` remains the transitional default. The identity/diff side of G-406 lives in
+//! `view/engine` and is now reached by the JSON front end through `json::JsonViewSession`;
+//! this module stays the layout registry for callers that apply a layout directly.
 
 use crate::compat::{BTreeSet, Box, HashMap, Vec};
 use core::cell::RefCell;
 
 use crate::core::{ObjectId, Rect};
-use crate::layout::{ChildInfo, Layout};
+use crate::layout::{ArrangeReport, ChildInfo, Layout, LayoutContext};
 
 /// Sentinel child id a layout uses to reserve stretchable space.
 ///
@@ -230,6 +232,53 @@ impl SharedLayoutRegistry {
             dirty.retain(|id| *id != parent_id);
         }
         geometries
+    }
+
+    /// Applies a stored layout through the hint **and context** channel, clearing its dirty flag.
+    ///
+    /// [`Self::apply_with_hints`] runs `Layout::arrange`, which has no device context: a
+    /// `FlexLayout` under a scale other than 1 therefore previewed differently from the same
+    /// layout applied through `update_with_context`. This entry runs `arrange_with_context` on the
+    /// stored layout, so the preview and the runtime read the same scale and touch floor (RW-49).
+    pub fn apply_with_hints_and_context(
+        &self,
+        parent_id: ObjectId,
+        rect: Rect,
+        children: &[ChildInfo],
+        context: &LayoutContext,
+    ) -> Vec<(ObjectId, Rect)> {
+        self.apply_with_hints_and_context_reported(parent_id, rect, children, context).0
+    }
+
+    /// [`Self::apply_with_hints_and_context`] with the solver's clamp/overflow report (RW-48).
+    pub fn apply_with_hints_and_context_reported(
+        &self,
+        parent_id: ObjectId,
+        rect: Rect,
+        children: &[ChildInfo],
+        context: &LayoutContext,
+    ) -> (Vec<(ObjectId, Rect)>, ArrangeReport) {
+        let applied = self.run(parent_id, |layout| {
+            let mut raw: Vec<(ObjectId, Rect)> = Vec::new();
+            layout.arrange_with_context(rect, children, context, &mut |child_id, child_rect| {
+                if child_id != SPACER_ID {
+                    // RW-48: geometry recording is automatic on this path. `record_geometry`
+                    // is a no-op unless the inspector was enabled.
+                    crate::layout::inspector::LayoutInspector::record_geometry(
+                        child_id, child_rect,
+                    );
+                }
+                raw.push((child_id, child_rect));
+            });
+            let geometries: Vec<(ObjectId, Rect)> =
+                raw.iter().copied().filter(|(id, _)| *id != SPACER_ID).collect();
+            let report = ArrangeReport::from_placements(rect, children, &geometries);
+            (geometries, report)
+        });
+        if let Ok(mut dirty) = self.dirty.lock() {
+            dirty.retain(|id| *id != parent_id);
+        }
+        applied
     }
 
     /// Runs `read` against the stored layout, or returns an empty list when there is none.
@@ -550,10 +599,61 @@ pub fn apply_layout_with_hints(
         let mut geometries = Vec::new();
         layout.arrange(rect, children, &mut |child_id, child_rect| {
             if child_id != SPACER_ID {
+                // RW-48: the inspector is fed from the one place child rectangles become
+                // widget state, so a caller no longer has to remember to record them.
+                crate::layout::inspector::LayoutInspector::record_geometry(child_id, child_rect);
                 geometries.push((child_id, child_rect));
             }
         });
         geometries
+    })
+}
+
+/// Recomputes `parent_id`'s geometry through the hint and device-context channels (RW-49).
+///
+/// # Why this exists
+///
+/// [`apply_layout_with_hints`] runs `Layout::arrange`, which cannot see a [`LayoutContext`]. A
+/// layout that scales (flex, border, box) therefore produced one geometry in a design preview
+/// and another through `update_with_context`, and the two disagreed only when the scale was not
+/// 1 — the case a high-DPI host always runs in. This entry runs `arrange_with_context` on the
+/// stored layout, so a preview and the runtime read the same scale and touch floor.
+///
+/// The spacer is filtered for the same reason [`apply_layout`] filters it, and every child
+/// rectangle is recorded with [`LayoutInspector::record_geometry`](crate::layout::inspector::LayoutInspector::record_geometry)
+/// (a no-op unless the inspector is enabled), which is the automatic wiring RW-48 asks for.
+pub fn apply_layout_with_context(
+    parent_id: ObjectId,
+    rect: Rect,
+    children: &[ChildInfo],
+    context: &LayoutContext,
+) -> Vec<(ObjectId, Rect)> {
+    apply_layout_with_context_reported(parent_id, rect, children, context).0
+}
+
+/// [`apply_layout_with_context`] with the solver's clamp/overflow report (RW-48).
+pub fn apply_layout_with_context_reported(
+    parent_id: ObjectId,
+    rect: Rect,
+    children: &[ChildInfo],
+    context: &LayoutContext,
+) -> (Vec<(ObjectId, Rect)>, ArrangeReport) {
+    LAYOUT_MAP.with(|map| {
+        let map = map.borrow();
+        let Some(layout) = map.get(&parent_id) else {
+            return (Vec::new(), ArrangeReport::default());
+        };
+        let mut raw: Vec<(ObjectId, Rect)> = Vec::new();
+        layout.arrange_with_context(rect, children, context, &mut |child_id, child_rect| {
+            if child_id != SPACER_ID {
+                crate::layout::inspector::LayoutInspector::record_geometry(child_id, child_rect);
+            }
+            raw.push((child_id, child_rect));
+        });
+        let geometries: Vec<(ObjectId, Rect)> =
+            raw.iter().copied().filter(|(id, _)| *id != SPACER_ID).collect();
+        let report = ArrangeReport::from_placements(rect, children, &geometries);
+        (geometries, report)
     })
 }
 
@@ -757,6 +857,108 @@ mod tests {
         let out = registry.apply_with_hints(PARENT, Rect::new(0, 0, 200, 20), &children);
         assert_eq!(out.iter().find(|(id, _)| *id == 301).expect("child").1.width, 70);
         assert_eq!(out.iter().find(|(id, _)| *id == 302).expect("child").1.width, 130);
+    }
+
+    /// RW-49: the context-aware entry reaches `arrange_with_context`, so a scaled layout previews
+    /// exactly as its runtime path lays out. RW-48: the reported twin names the clamp.
+    #[test]
+    fn applying_with_context_runs_the_context_aware_arrange_path() {
+        use crate::layout::{Hints, LayoutContext};
+
+        /// A one-child layout whose geometry is a function of the context's layout scale.
+        struct ScaleProbe;
+        impl Layout for ScaleProbe {
+            fn add_widget(&mut self, _widget_id: ObjectId, _stretch: u32) {}
+            fn remove_widget(&mut self, _widget_id: ObjectId) {}
+            fn update(&self, rect: Rect, out: &mut dyn FnMut(ObjectId, Rect)) {
+                out(1, Rect::new(rect.x, rect.y, 10, 10));
+            }
+            fn update_with_context(
+                &self,
+                rect: Rect,
+                context: &LayoutContext,
+                out: &mut dyn FnMut(ObjectId, Rect),
+            ) {
+                let width = (10.0 * context.layout_scale) as u32;
+                out(1, Rect::new(rect.x, rect.y, width, 10));
+            }
+            fn arrange(
+                &self,
+                rect: Rect,
+                _children: &[ChildInfo],
+                out: &mut dyn FnMut(ObjectId, Rect),
+            ) {
+                out(1, Rect::new(rect.x, rect.y, 10, 10));
+            }
+            fn arrange_with_context(
+                &self,
+                rect: Rect,
+                _children: &[ChildInfo],
+                context: &LayoutContext,
+                out: &mut dyn FnMut(ObjectId, Rect),
+            ) {
+                let width = (10.0 * context.layout_scale) as u32;
+                out(1, Rect::new(rect.x, rect.y, width, 10));
+            }
+            fn as_any(&self) -> &dyn crate::compat::Any {
+                self
+            }
+            fn as_any_mut(&mut self) -> &mut dyn crate::compat::Any {
+                self
+            }
+        }
+
+        const PARENT: ObjectId = 0x5EF5;
+        store_layout(PARENT, Box::new(ScaleProbe));
+        let children = [ChildInfo::new(1, Hints::fixed(10, 10))];
+        let rect = Rect::new(0, 0, 100, 20);
+
+        let unscaled = apply_layout_with_hints(PARENT, rect, &children);
+        assert_eq!(unscaled[0].1.width, 10);
+
+        let context =
+            LayoutContext { layout_scale: 2.0, font_scale: 1.0, ..LayoutContext::default() };
+        let scaled = apply_layout_with_context(PARENT, rect, &children, &context);
+        assert_eq!(
+            scaled[0].1.width, 20,
+            "the context entry must run `arrange_with_context`, not `arrange`"
+        );
+
+        let (reported, report) = apply_layout_with_context_reported(
+            PARENT,
+            rect,
+            &[ChildInfo::new(1, Hints::fixed(40, 10))],
+            &context,
+        );
+        assert_eq!(reported[0].1.width, 20);
+        assert!(!report.is_clean(), "a 20 px child under a 40 px floor is clamped");
+        assert_eq!(report.clamped_children(), 1);
+
+        assert!(forget_layout(PARENT));
+    }
+
+    /// RW-49: the shared registry has the same context-aware door.
+    #[test]
+    fn the_shared_registry_applies_with_hints_and_context() {
+        use crate::layout::{GridLayout, Hints, LayoutContext};
+
+        const PARENT: ObjectId = 0x5EF6;
+        let mut grid = GridLayout::new(1, 2, 0, 0);
+        grid.set_widget(0, 0, 311);
+        grid.set_widget(0, 1, 312);
+        let registry = SharedLayoutRegistry::new();
+        registry.store(PARENT, Box::new(grid));
+        let children =
+            [ChildInfo::new(311, Hints::fixed(60, 10)), ChildInfo::new(312, Hints::fixed(140, 10))];
+
+        let out = registry.apply_with_hints_and_context(
+            PARENT,
+            Rect::new(0, 0, 200, 20),
+            &children,
+            &LayoutContext::default(),
+        );
+        assert_eq!(out.iter().find(|(id, _)| *id == 311).expect("child").1.width, 60);
+        assert_eq!(out.iter().find(|(id, _)| *id == 312).expect("child").1.width, 140);
     }
 
     /// Unregistering must be possible, or a reused id would inherit a stale layout.

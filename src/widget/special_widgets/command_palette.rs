@@ -35,6 +35,16 @@ pub struct CommandEntry {
     pub keywords: Vec<String>,
     /// The keyboard shortcut shown at the row's trailing edge.
     pub shortcut: Option<String>,
+    /// Whether the command can be run right now (RW-15).
+    ///
+    /// A disabled entry is still listed — a command that is unavailable *because of the current
+    /// selection* is the one case where hiding it leaves the user unable to discover that the
+    /// command exists — but it is painted dimmed and refuses activation.
+    pub enabled: bool,
+    /// Why the entry is disabled, shown to the user (RW-15).
+    pub disabled_reason: Option<String>,
+    /// An icon token painted before the title (RW-16).
+    pub icon: Option<String>,
 }
 
 /// The declared shape of one palette entry, as a record (BLUE26 B26.09).
@@ -66,6 +76,18 @@ pub const COMMAND_ENTRY_SCHEMA: crate::widget::capability::RecordSchema =
                 "shortcut",
                 crate::widget::capability::PropertyValueKind::String,
             ),
+            crate::widget::capability::RecordField::optional(
+                "enabled",
+                crate::widget::capability::PropertyValueKind::Bool,
+            ),
+            crate::widget::capability::RecordField::optional(
+                "disabled_reason",
+                crate::widget::capability::PropertyValueKind::String,
+            ),
+            crate::widget::capability::RecordField::optional(
+                "icon",
+                crate::widget::capability::PropertyValueKind::String,
+            ),
         ],
         id_field: "id",
         ids_unique: true,
@@ -90,6 +112,15 @@ fn command_entry_record(entry: &CommandEntry) -> crate::widget::capability::Reco
         );
     if let Some(shortcut) = &entry.shortcut {
         record = record.with("shortcut", CapabilityValue::String(shortcut.clone()));
+    }
+    if !entry.enabled {
+        record = record.with("enabled", CapabilityValue::Bool(false));
+    }
+    if let Some(reason) = &entry.disabled_reason {
+        record = record.with("disabled_reason", CapabilityValue::String(reason.clone()));
+    }
+    if let Some(icon) = &entry.icon {
+        record = record.with("icon", CapabilityValue::String(icon.clone()));
     }
     record
 }
@@ -123,7 +154,31 @@ fn command_entry_from_record(
         Some(CapabilityValue::String(shortcut)) => Some(shortcut.clone()),
         Some(_) => return Err(CapabilityAccessError::TypeMismatch),
     };
-    Ok(CommandEntry { id: text("id")?, title: text("title")?, category, keywords, shortcut })
+    let enabled = match record.get("enabled") {
+        None | Some(CapabilityValue::Null) => true,
+        Some(CapabilityValue::Bool(enabled)) => *enabled,
+        Some(_) => return Err(CapabilityAccessError::TypeMismatch),
+    };
+    let disabled_reason = match record.get("disabled_reason") {
+        None | Some(CapabilityValue::Null) => None,
+        Some(CapabilityValue::String(reason)) => Some(reason.clone()),
+        Some(_) => return Err(CapabilityAccessError::TypeMismatch),
+    };
+    let icon = match record.get("icon") {
+        None | Some(CapabilityValue::Null) => None,
+        Some(CapabilityValue::String(icon)) => Some(icon.clone()),
+        Some(_) => return Err(CapabilityAccessError::TypeMismatch),
+    };
+    Ok(CommandEntry {
+        id: text("id")?,
+        title: text("title")?,
+        category,
+        keywords,
+        shortcut,
+        enabled,
+        disabled_reason,
+        icon,
+    })
 }
 
 impl CommandEntry {
@@ -135,6 +190,9 @@ impl CommandEntry {
             category: String::new(),
             keywords: Vec::new(),
             shortcut: None,
+            enabled: true,
+            disabled_reason: None,
+            icon: None,
         }
     }
 
@@ -154,6 +212,43 @@ impl CommandEntry {
     pub fn with_shortcut(mut self, shortcut: impl Into<String>) -> Self {
         self.shortcut = Some(shortcut.into());
         self
+    }
+
+    /// Enables or disables the entry, with an optional reason (RW-15).
+    ///
+    /// Builder form for the state a host derives from its own selection: a `disabled` entry is
+    /// painted dimmed and `activate_highlighted` refuses to run it. The reason is shown in place
+    /// of the shortcut, so the user learns *why* rather than finding a silent row.
+    pub fn with_enabled(mut self, enabled: bool, reason: Option<impl Into<String>>) -> Self {
+        self.enabled = enabled;
+        self.disabled_reason = reason.map(Into::into);
+        self
+    }
+
+    /// Whether the command can be run (RW-15).
+    pub fn is_enabled(&self) -> bool {
+        self.enabled
+    }
+
+    /// The accessor spelling of [`Self::is_enabled`], for symmetry with `disabled_reason`.
+    pub fn enabled(&self) -> bool {
+        self.enabled
+    }
+
+    /// Why the command is disabled (RW-15).
+    pub fn disabled_reason(&self) -> Option<&str> {
+        self.disabled_reason.as_deref()
+    }
+
+    /// Sets the entry's icon token (RW-16). Builder form.
+    pub fn with_icon(mut self, token: impl Into<String>) -> Self {
+        self.icon = Some(token.into());
+        self
+    }
+
+    /// The entry's icon token, when it has one (RW-16).
+    pub fn icon(&self) -> Option<&str> {
+        self.icon.as_deref()
     }
 }
 
@@ -250,10 +345,64 @@ impl CommandPalette {
     }
 
     /// Replaces command entries.
+    ///
+    /// The highlight and the scroll offset are reset, which is the historical behaviour. A host
+    /// that updates a long list on every keystroke should use [`Self::update_entries`] instead: it
+    /// keeps the highlighted command selected (RW-16).
     pub fn set_entries(&mut self, entries: Vec<CommandEntry>) {
         self.entries = entries;
         self.rebuild_entry_cache();
         self.refresh_filter();
+        self.base.request_layout();
+        self.base.request_redraw();
+    }
+
+    /// Replaces the entries while keeping the highlighted command highlighted (RW-16).
+    ///
+    /// The id — not the filtered position — is the identity that survives: a regenerated list can
+    /// reorder rows without moving the highlight to an unrelated command. If the highlighted id is
+    /// gone the highlight falls back to the first result, and the scroll offset is clamped to the
+    /// new result set. This is the incremental form a dynamic provider needs; the control does not
+    /// re-create its state on every refresh.
+    pub fn update_entries(&mut self, entries: Vec<CommandEntry>) {
+        self.apply_entries_preserving_highlight(entries);
+    }
+
+    /// Replaces one entry, addressed by its stable id, keeping the highlight and scroll (RW-16).
+    ///
+    /// Returns `false` when no entry has that id; the id is the key because it is what
+    /// [`Self::record_use`] and activation already address.
+    pub fn replace_entry(&mut self, id: &str, entry: CommandEntry) -> bool {
+        let Some(index) = self.entries.iter().position(|existing| existing.id == id) else {
+            return false;
+        };
+        let mut entries = core::mem::take(&mut self.entries);
+        entries[index] = entry;
+        self.apply_entries_preserving_highlight(entries);
+        true
+    }
+
+    /// Installs `entries` and restores the highlighted command by id (RW-16).
+    fn apply_entries_preserving_highlight(&mut self, entries: Vec<CommandEntry>) {
+        let previous = self
+            .highlighted_index()
+            .and_then(|index| self.filtered_entry(index).map(|entry| entry.id.clone()));
+        let previous_scroll = self.scroll_offset;
+        self.entries = entries;
+        self.rebuild_entry_cache();
+        self.refresh_filter();
+        if let Some(id) = previous {
+            if let Some(position) = self
+                .filtered_indices
+                .iter()
+                .position(|index| self.entries.get(*index).is_some_and(|entry| entry.id == id))
+            {
+                self.highlighted_index = Some(position);
+                let last = self.filtered_indices.len().saturating_sub(1);
+                self.scroll_offset = previous_scroll.min(last);
+                self.rebuild_slots();
+            }
+        }
         self.base.request_layout();
         self.base.request_redraw();
     }
@@ -300,6 +449,15 @@ impl CommandPalette {
 
     /// Sets query string and refreshes filtered command list.
     pub fn set_query(&mut self, query: impl Into<String>) {
+        self.set_query_with(query, false);
+    }
+
+    /// Sets the query, optionally without emitting [`Self::query_changed`] (RW-16).
+    ///
+    /// A host that mirrors a text field into the palette already knows the query it just wrote;
+    /// the echoed signal made it schedule its own handler onto the main queue to avoid a feedback
+    /// loop. `silent` says "update the results, do not tell me what I wrote".
+    pub fn set_query_with(&mut self, query: impl Into<String>, silent: bool) {
         let next = query.into();
         if self.query == next {
             return;
@@ -307,8 +465,15 @@ impl CommandPalette {
         self.query = next;
         self.rebuild_prompt_buffer();
         self.refresh_filter();
-        self.query_changed.emit(self.query.clone());
+        if !silent {
+            self.query_changed.emit(self.query.clone());
+        }
         self.base.request_redraw();
+    }
+
+    /// Sets the query without echoing it through [`Self::query_changed`] (RW-16).
+    pub fn set_query_silent(&mut self, query: impl Into<String>) {
+        self.set_query_with(query, true);
     }
 
     /// Rebuilds the painted `> {query}` line into the reused buffer (VP-006).
@@ -528,10 +693,32 @@ impl CommandPalette {
         let Some(entry) = self.filtered_entry(filtered_index) else {
             return false;
         };
+        // A disabled command refuses activation (RW-15): no MRU record and no `command_activated`,
+        // because both would be claims that something ran.
+        if !entry.enabled {
+            return false;
+        }
         let id = entry.id.clone();
         self.record_use(id.clone());
         self.command_activated.emit(id);
         true
+    }
+
+    /// Whether the highlighted command can be activated (RW-15).
+    ///
+    /// `false` when nothing is highlighted or the highlighted entry is disabled, so a host's
+    /// "Run" affordance can follow the same state the palette itself enforces.
+    pub fn highlighted_enabled(&self) -> bool {
+        self.highlighted_index()
+            .and_then(|index| self.filtered_entry(index))
+            .is_some_and(|entry| entry.enabled)
+    }
+
+    /// The reason the highlighted command is disabled, when one is known (RW-15).
+    pub fn highlighted_disabled_reason(&self) -> Option<&str> {
+        self.highlighted_index()
+            .and_then(|index| self.filtered_entry(index))
+            .and_then(|entry| entry.disabled_reason())
     }
 
     fn refresh_filter(&mut self) {
@@ -1185,14 +1372,40 @@ impl Draw for CommandPalette {
             }
 
             if let Some(entry) = self.filtered_entry(filtered_index) {
-                let trailing = if entry.shortcut.is_some() { 64 } else { 0 };
-                let band = Rect::new(
+                // A disabled row publishes its reason where a shortcut would sit, so the reason is
+                // visible without a second line (RW-15).
+                let trailing_text = match (entry.shortcut.as_deref(), entry.enabled) {
+                    (Some(shortcut), _) => Some(shortcut),
+                    (None, false) => entry.disabled_reason.as_deref(),
+                    (None, true) => None,
+                };
+                let trailing = if trailing_text.is_some() { 64 } else { 0 };
+                let mut band = Rect::new(
                     rect.x + 8,
                     y,
                     rect.width.saturating_sub(16 + trailing),
                     self.row_height,
                 );
                 let font = effective_font(style);
+                // A disabled row is dimmed rather than hidden (RW-15): the ink is pulled toward the
+                // surface, which is the same "not actionable" weight the table family uses for a
+                // disabled cell.
+                let row_ink =
+                    if entry.enabled { text_color } else { text_color.blend(&background, 0.45) };
+                // An entry icon occupies the leading slot and shrinks the text band (RW-16).
+                if let Some(icon) = entry.icon.as_deref() {
+                    let side = self.row_height.saturating_sub(6).clamp(1, 20);
+                    let icon_rect = Rect::new(
+                        band.x,
+                        y + (self.row_height as i32 - side as i32) / 2,
+                        side,
+                        side,
+                    );
+                    crate::widget::draw_icon_named(context, icon_rect, row_ink, icon);
+                    let shift = side.saturating_add(4);
+                    band.x = band.x.saturating_add(shift as i32);
+                    band.width = band.width.saturating_sub(shift);
+                }
                 let line_box = context.text_line(band, font);
                 // Fitted to the row and centred by its line box. The old origin was the row's
                 // midpoint used as a glyph top edge, so every result sat half a line low.
@@ -1210,7 +1423,7 @@ impl Draw for CommandPalette {
                     line_box,
                     text,
                     font,
-                    text_color,
+                    row_ink,
                     HorizontalAlignment::Left,
                 );
                 // Match highlight: a tinted box behind the matched run, measured with the same
@@ -1229,7 +1442,7 @@ impl Draw for CommandPalette {
                     context
                         .fill_rect(Rect::new(start_x, y, width.max(1), self.row_height), highlight);
                 }
-                if let Some(shortcut) = entry.shortcut.as_deref() {
+                if let Some(shortcut) = trailing_text {
                     let key_box = Rect::new(
                         rect.x + rect.width as i32 - 60,
                         y + 2,
@@ -1240,7 +1453,7 @@ impl Draw for CommandPalette {
                         key_box,
                         shortcut,
                         font,
-                        text_color,
+                        row_ink,
                         HorizontalAlignment::Right,
                     );
                 }
@@ -1623,5 +1836,118 @@ mod tests {
         // A host-supplied history is clipped to the same bound.
         palette.set_mru((0..(MRU_LIMIT * 2)).map(|index| format!("x{index}")).collect());
         assert_eq!(palette.mru().len(), MRU_LIMIT);
+    }
+
+    // ── RW-15: disabled entries ──
+
+    #[test]
+    fn a_disabled_entry_refuses_activation_and_keeps_its_reason() {
+        let mut palette = CommandPalette::new(Rect::new(0, 0, 320, 160));
+        palette.set_entries(vec![
+            CommandEntry::new("edit.copy", "Copy").with_enabled(false, Some("nothing selected")),
+            CommandEntry::new("edit.paste", "Paste"),
+        ]);
+
+        let entry = palette.filtered_entry(0).expect("the first result");
+        assert!(!entry.is_enabled());
+        assert!(!entry.enabled());
+        assert_eq!(entry.disabled_reason(), Some("nothing selected"));
+        assert!(!palette.highlighted_enabled());
+        assert_eq!(palette.highlighted_disabled_reason(), Some("nothing selected"));
+
+        let activated = Arc::new(Mutex::new(Vec::<String>::new()));
+        let sink = Arc::clone(&activated);
+        palette.command_activated.connect(move |id| {
+            sink.lock().expect("lock").push(id.as_ref().clone());
+        });
+        assert!(!palette.activate_highlighted(), "a disabled command cannot run");
+        assert!(activated.lock().expect("lock").is_empty());
+        assert!(palette.mru().is_empty(), "a refused command is not recorded as used");
+
+        palette.move_highlight(1);
+        assert!(palette.highlighted_enabled());
+        assert_eq!(palette.highlighted_disabled_reason(), None);
+        assert!(palette.activate_highlighted());
+        assert_eq!(*activated.lock().expect("lock"), vec!["edit.paste".to_string()]);
+    }
+
+    // ── RW-16: incremental updates, silent query, icons ──
+
+    #[test]
+    fn a_silent_query_updates_results_without_echoing() {
+        let mut palette = CommandPalette::new(Rect::new(0, 0, 320, 160));
+        palette.set_entries(sample_entries());
+
+        let seen = Arc::new(Mutex::new(Vec::<String>::new()));
+        let sink = Arc::clone(&seen);
+        palette.query_changed.connect(move |query| {
+            sink.lock().expect("lock").push(query.as_ref().clone());
+        });
+
+        palette.set_query_silent("save");
+        assert_eq!(palette.query(), "save");
+        assert_eq!(palette.filtered_count(), 1, "the results still refresh");
+        assert!(seen.lock().expect("lock").is_empty(), "the host is not echoed its own write");
+
+        palette.set_query("file");
+        assert_eq!(*seen.lock().expect("lock"), vec!["file".to_string()]);
+
+        palette.set_query_with("open", true);
+        assert_eq!(palette.query(), "open");
+        assert_eq!(seen.lock().expect("lock").len(), 1);
+    }
+
+    #[test]
+    fn updating_entries_keeps_the_highlighted_command_highlighted() {
+        let mut palette = CommandPalette::new(Rect::new(0, 0, 320, 160));
+        palette.set_entries(sample_entries());
+        palette.move_highlight(2);
+        let highlighted = palette
+            .highlighted_index()
+            .and_then(|index| palette.filtered_entry(index))
+            .map(|entry| entry.id.clone())
+            .expect("a command is highlighted");
+        assert_eq!(highlighted, "view.toggle_sidebar");
+
+        // Regenerate the list in a different order; the id is the identity that survives.
+        let mut reordered = sample_entries();
+        reordered.reverse();
+        palette.update_entries(reordered);
+        let highlighted_after = palette
+            .highlighted_index()
+            .and_then(|index| palette.filtered_entry(index))
+            .map(|entry| entry.id.clone());
+        assert_eq!(highlighted_after.as_deref(), Some("view.toggle_sidebar"));
+
+        // Replacing one entry in place also keeps it highlighted.
+        assert!(palette.replace_entry(
+            "view.toggle_sidebar",
+            CommandEntry::new("view.toggle_sidebar", "Toggle Sidebar Panel").with_category("View"),
+        ));
+        let title = palette
+            .highlighted_index()
+            .and_then(|index| palette.filtered_entry(index))
+            .map(|entry| entry.title.clone());
+        assert_eq!(title.as_deref(), Some("Toggle Sidebar Panel"));
+        assert!(!palette.replace_entry("missing", CommandEntry::new("missing", "Missing")));
+    }
+
+    #[test]
+    fn an_entry_icon_is_stored_and_painted() {
+        use crate::render::{PaintBackend, SoftwarePaintBackend};
+
+        let entry = CommandEntry::new("file.open", "Open File").with_icon("folder");
+        assert_eq!(entry.icon(), Some("folder"));
+
+        let mut palette = CommandPalette::new(Rect::new(0, 0, 320, 160));
+        palette.set_entries(vec![entry]);
+        let mut backend = SoftwarePaintBackend::new(crate::core::Size::new(320, 160), 1.0);
+        backend.begin_frame(Color::WHITE);
+        {
+            let mut context = RenderContext::new(&mut backend);
+            palette.draw(&mut context);
+        }
+        backend.end_frame();
+        assert_eq!(palette.filtered_count(), 1);
     }
 }

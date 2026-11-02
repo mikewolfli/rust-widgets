@@ -27,6 +27,7 @@ pub mod form;
 /// The ordered set of forms.
 pub mod formset;
 mod model;
+mod rules;
 
 #[cfg(test)]
 mod tests;
@@ -37,4 +38,5 @@ pub use capability::{
 };
 pub use form::{Form, FormFieldLayout, FormLabelPosition, DEFAULT_WIDTH};
 pub use formset::{FormSet, FormSetHeaderStyle};
-pub use model::{FormField, FormPage};
+pub use model::{FieldKind, FormField, FormPage};
+pub use rules::{FormRule, Signal0, Signal2, ValidationTicket};

@@ -8,7 +8,7 @@
 //! power keyword/string/comment/number colouring, plus the [`SyntaxHighlighter`]
 //! trait that a plugin implements to replace it wholesale.
 
-use super::types::{TokenKind, TokenSpan};
+use super::types::{TextPosition, TokenKind, TokenSpan};
 use alloc::vec::Vec;
 
 /// Lexer state carried across a line boundary.
@@ -65,6 +65,24 @@ impl LineState {
     }
 }
 
+/// A structural unit a selection can expand to.
+///
+/// This is the vocabulary shared by the editor's `expand_selection` command and
+/// the optional [`SyntaxHighlighter::selection_ranges`] hook. A grammar-aware
+/// highlighter can answer with precise ranges; the editor's textual fallback is
+/// used when it returns nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum StructuralKind {
+    /// The identifier/word under the caret.
+    Word,
+    /// The whole line, including its terminator when there is one.
+    Line,
+    /// The innermost enclosing bracket pair (`()`, `[]` or `{}`).
+    Bracket,
+    /// The innermost enclosing brace block, or the paragraph around the caret.
+    Block,
+}
+
 /// Single-line lexer interface.
 ///
 /// Implement this to plug a real grammar into the editor:
@@ -109,6 +127,26 @@ pub trait SyntaxHighlighter: Send + Sync {
     /// Human-readable language name used by the status bar and plugin registry.
     fn language_name(&self) -> &str {
         "Plain Text"
+    }
+
+    /// Returns the structural ranges a grammar recognises around `position`.
+    ///
+    /// The list must be ordered from the innermost range outwards, so the editor
+    /// can implement "expand once more" by taking the first range strictly larger
+    /// than the current selection. The default returns no ranges, which is the
+    /// honest answer for a tokenizer that has no structural model; the editor
+    /// then falls back to its own textual scan.
+    ///
+    /// `text` is the whole document and `position` is a character-addressed
+    /// location in it, matching every other position in this widget.
+    fn selection_ranges(
+        &self,
+        text: &str,
+        position: TextPosition,
+        kind: StructuralKind,
+    ) -> Vec<(TextPosition, TextPosition)> {
+        let _ = (text, position, kind);
+        Vec::new()
     }
 
     /// Returns `true` when `line` starts its own construct and the previous

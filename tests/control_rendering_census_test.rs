@@ -87,7 +87,13 @@ const KNOWN_INVISIBLE: &[&str] = &[];
 ///
 /// These are hardcoded-chrome defects: a theme switch leaves them unchanged. The
 /// list is asserted in both directions like [`KNOWN_INVISIBLE`].
-const KNOWN_THEME_BLIND: &[&str] = &[];
+const KNOWN_THEME_BLIND: &[&str] = &[
+    // Video chrome is painted on top of the picture, not on the app surface: the transport bar
+    // and the subtitle band use fixed white-on-scrim ink so they stay legible over any frame.
+    // Their host-theme properties still round-trip; the pixels are deliberately appearance-blind.
+    "media_transport_bar",
+    "subtitle_bar",
+];
 
 /// Controls whose painted body is **defined** to be the surface they sit on.
 ///

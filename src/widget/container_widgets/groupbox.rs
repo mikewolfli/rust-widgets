@@ -23,7 +23,7 @@
 //! frame while its width was computed correctly. `GroupBox::title_columns` states it once, so the
 //! reserve and the placement are one answer.
 
-use crate::compat::{Rc, RefCell, String, ToString};
+use crate::compat::{Rc, RefCell, String, ToString, Vec};
 use crate::core::{Alignment, Color, HorizontalAlignment, ObjectId, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
@@ -35,6 +35,7 @@ use crate::widget::capability::properties_trait::{base_property_get, base_proper
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::{dimensions, effective_font, ControlMetrics};
+use crate::widget::save_state::SaveState;
 use crate::widget::{BaseWidget, Draw, IconName, SimpleRegistry, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -167,6 +168,37 @@ impl GroupBox {
     /// Toggles the collapsed state; no-op when not collapsible.
     pub fn toggle_collapsed(&mut self) {
         self.set_collapsed(!self.collapsed);
+    }
+
+    /// Serialises the checked and collapsed flags for session restore (RW-64).
+    ///
+    /// Both flags are user-visible state the host cannot reconstruct from its own model. A
+    /// flag whose affordance is currently disabled is still written, so toggling the
+    /// capability on again after a restore reproduces the saved state.
+    pub fn save_state(&self) -> Vec<u8> {
+        let mut flags = 0u8;
+        if self.checked {
+            flags |= 1;
+        }
+        if self.collapsed {
+            flags |= 1 << 1;
+        }
+        vec![GROUPBOX_STATE_VERSION, flags]
+    }
+
+    /// Restores a blob produced by [`Self::save_state`].
+    ///
+    /// Returns `false` for a malformed blob. A flag whose affordance is not currently
+    /// available is ignored rather than forced, because the control's own setters refuse
+    /// states the user cannot reach from the UI.
+    pub fn restore_state(&mut self, state: &[u8]) -> bool {
+        if state.len() != 2 || state[0] != GROUPBOX_STATE_VERSION {
+            return false;
+        }
+        let flags = state[1];
+        self.set_checked(flags & 1 != 0);
+        self.set_collapsed(flags & (1 << 1) != 0);
+        true
     }
 
     /// Pushes the collapsed state onto every mounted child.
@@ -762,6 +794,32 @@ impl Widget for GroupBox {
             }
             _ => None,
         }
+    }
+
+    fn save_state_dyn(&self) -> Option<&dyn SaveState> {
+        Some(self)
+    }
+
+    fn save_state_dyn_mut(&mut self) -> Option<&mut dyn SaveState> {
+        Some(self)
+    }
+}
+
+/// Version tag of the blob produced by [`GroupBox::save_state`].
+const GROUPBOX_STATE_VERSION: u8 = 1;
+
+/// RW-64: the checked and collapsed flags are the group box's user-visible state.
+impl SaveState for GroupBox {
+    fn state_version(&self) -> u16 {
+        u16::from(GROUPBOX_STATE_VERSION)
+    }
+
+    fn save_state(&self) -> Vec<u8> {
+        GroupBox::save_state(self)
+    }
+
+    fn restore_state(&mut self, state: &[u8]) -> bool {
+        GroupBox::restore_state(self, state)
     }
 }
 
@@ -1571,5 +1629,28 @@ mod tests {
         });
         assert!(!gb.is_collapsed(), "a title-band press expands the group");
         assert!(gb.content_rect().height > 0);
+    }
+
+    /// RW-64: the checked and collapsed flags round-trip, and an unavailable flag is ignored.
+    #[test]
+    fn the_group_flags_round_trip_through_save_state() {
+        let mut gb = GroupBox::new(Rect::new(0, 0, 200, 150));
+        gb.set_checkable(true);
+        gb.set_collapsible(true);
+        gb.set_checked(false);
+        gb.set_collapsed(true);
+        let saved = SaveState::save_state(&gb);
+        gb.set_checked(true);
+        gb.set_collapsed(false);
+        assert!(SaveState::restore_state(&mut gb, &saved));
+        assert!(!gb.is_checked());
+        assert!(gb.is_collapsed());
+        assert!(!SaveState::restore_state(&mut gb, &[1]));
+
+        // A plain box has no reachable unchecked/collapsed state, so a restore cannot force one.
+        let mut plain = GroupBox::new(Rect::new(0, 0, 200, 150));
+        assert!(SaveState::restore_state(&mut plain, &saved));
+        assert!(plain.is_checked(), "a non-checkable box stays checked");
+        assert!(!plain.is_collapsed(), "a non-collapsible box stays open");
     }
 }

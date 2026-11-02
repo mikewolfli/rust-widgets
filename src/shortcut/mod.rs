@@ -38,6 +38,13 @@
 //! **State:** Production callers: `src/platform/types/values.rs:204`
 //! (`compile_target_shortcut_style`) and the shortcut formatting it feeds. 15 files reference it.
 mod manager;
+/// Window-scoped key routing ahead of the focused control (C-10').
+///
+/// The registry needs the widget runtime to resolve the focused control and its top-level
+/// window, so it is compiled with the full widget set only. A stripped profile has no window
+/// handles to register a handler through either.
+#[cfg(full_widgets)]
+pub(crate) mod route;
 #[cfg(test)]
 mod tests;
 mod types;

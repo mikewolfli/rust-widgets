@@ -218,6 +218,49 @@ fn payload_free_command_reason(
 /// number can fail, and a failed parse is a runtime error that a designer's simple wire has no way
 /// to report. A project that needs it must say so with an explicit conversion node, which is a
 /// decision the author makes rather than one the tool makes silently.
+/// One published event and whether a running control currently has a subscriber for it.
+///
+/// # Why `wired` is a runtime fact, not a capability fact
+///
+/// `WidgetCapability::events` is a **static declaration**: it says what a control *publishes*,
+/// not what a particular mounted instance has connected. The two questions differ, and rule #97
+/// requires the difference to be queryable. A capability-level query can answer the second half
+/// honestly only by saying "no subscription information" — which is what [`Self::wired`] reports
+/// as `false` from [`bindings_of`]. A caller that needs a live per-instance answer uses
+/// [`EventSignalBinder::event_is_wired`](crate::signal::EventSignalBinder::event_is_wired).
+pub struct EventBinding {
+    /// The published event name.
+    pub name: &'static str,
+    /// Whether the control has a live subscription for this event.
+    ///
+    /// `false` from [`bindings_of`] means "not known to be wired", not "known not to be wired":
+    /// the capability table holds no runtime subscriber counts. See the function's documentation.
+    pub wired: bool,
+}
+
+/// The published events of `capability`, with an honest `wired: false` for each (RW-45).
+///
+/// # Why this exists and what it cannot answer
+///
+/// A designer's inspector wants to show "this control has N signal wires". The capability table
+/// is the only registry-level description of a control, but it is static metadata: there is no
+/// subscriber count on [`WidgetCapability`], so a capability-level query has no runtime fact to
+/// report. Rather than inventing one, this function states the limitation in its return type:
+/// every row carries `wired: false`, documented as "unknown", and a caller that holds a mounted
+/// widget asks the binder instead.
+///
+/// # The live query
+///
+/// `EventSignalBinder::event_is_wired(&widget, name)` answers per instance and per signal identity,
+/// including the case where another observer attached directly to the signal. Use that when the
+/// question is about a running control; use this function when the question is about the
+/// declaration a designer reads before anything is mounted.
+pub fn bindings_of(
+    capability: &crate::widget::capability::WidgetCapability,
+) -> crate::compat::Vec<EventBinding> {
+    capability.events.iter().map(|event| EventBinding { name: event.name, wired: false }).collect()
+}
+
 fn rejection_reason(
     source: Option<crate::widget::capability::types::PropertyValueKind>,
     target: crate::widget::capability::types::PropertyValueKind,
@@ -395,6 +438,37 @@ mod tests {
     fn every_rule_states_a_reason() {
         for rule in WIRE_RULES {
             assert!(!rule.reason.trim().is_empty(), "rule {rule:?} has no reason");
+        }
+    }
+
+    /// RW-45: the capability-level binding view lists every published event and reports the
+    /// documented `wired: false` ("unknown") rather than inventing a subscriber count.
+    #[test]
+    fn bindings_of_lists_every_published_event_as_not_known_to_be_wired() {
+        use crate::widget::capability::types::{EventSchema, PropertySchema, WidgetCapability};
+        use crate::widget::WidgetKind;
+
+        const PROPERTIES: &[PropertySchema] = &[];
+        const EVENTS: &[EventSchema] = &[
+            EventSchema::unit("clicked"),
+            EventSchema::scalar(
+                "value_changed",
+                crate::widget::capability::types::PropertyValueKind::Int,
+            ),
+        ];
+        let capability = WidgetCapability {
+            kind: WidgetKind::Button,
+            canonical_name: "button",
+            aliases: &[],
+            properties: PROPERTIES,
+            events: EVENTS,
+            commands: &[],
+        };
+        let bindings = bindings_of(&capability);
+        assert_eq!(bindings.len(), EVENTS.len());
+        for (binding, event) in bindings.iter().zip(EVENTS) {
+            assert_eq!(binding.name, event.name);
+            assert!(!binding.wired, "a capability carries no runtime wire fact");
         }
     }
 

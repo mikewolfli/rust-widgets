@@ -76,40 +76,6 @@ pub(crate) fn code_editor_capability() -> WidgetCapability {
 }
 
 #[cfg(not(alloc_frugal))]
-pub(crate) fn gantt_widget_capability() -> WidgetCapability {
-    WidgetCapability {
-        kind: WidgetKind::Chart,
-        canonical_name: "gantt_widget",
-        aliases: &["gantt"],
-        properties: GANTT_WIDGET_PROPERTIES,
-        events: events_of!("gantt_widget"),
-        // `set_viewport` stays unpublished — the viewport is the writable
-        // `viewport_start`/`viewport_end` pair (principle #18). `set_tasks` names its payload
-        // through the `tasks` records property (B26.03), whose `dependencies` field carries each
-        // relationship kind as an `<id>:<fts|sts|ftf>` token, so a schedule write cannot lose a
-        // link. `select_task` names a task while `selected_id` is read-only, so it stays
-        // unpublished.
-        commands: &["zoom", "set_tasks"],
-    }
-}
-
-#[cfg(not(alloc_frugal))]
-pub(crate) fn terminal_view_capability() -> WidgetCapability {
-    WidgetCapability {
-        kind: WidgetKind::TextEdit,
-        canonical_name: "terminal_view",
-        aliases: &["terminal"],
-        properties: TERMINAL_VIEW_PROPERTIES,
-        events: events_of!("terminal_view"),
-        // Audit 20261026: `append_output` stays unpublished — output is an append-only stream and
-        // the control publishes only its line count (`output_line_count`), with no property that
-        // carries the buffer itself; the control's own `append_output` API is the write path
-        // (principle #18).
-        commands: &["submit"],
-    }
-}
-
-#[cfg(not(alloc_frugal))]
 pub(crate) fn snackbar_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::StatusBar,
@@ -122,34 +88,6 @@ pub(crate) fn snackbar_capability() -> WidgetCapability {
         // `show_with_action` additionally takes an action label, and `action_label` is read-only,
         // so it has no complete property route and also stays unpublished.
         commands: &["dismiss"],
-    }
-}
-
-#[cfg(not(alloc_frugal))]
-pub(crate) fn map_view_capability() -> WidgetCapability {
-    WidgetCapability {
-        kind: WidgetKind::Canvas,
-        canonical_name: "map_view",
-        aliases: &[],
-        properties: MAP_VIEW_PROPERTIES,
-        events: events_of!("map_view"),
-        // set_markers now carries its list through the `markers` records property (B26.03); the
-        // bare command reports the value is what is missing.
-        commands: &["set_center_x", "set_center_y", "set_zoom", "set_markers"],
-    }
-}
-
-#[cfg(not(alloc_frugal))]
-pub(crate) fn media_player_capability() -> WidgetCapability {
-    WidgetCapability {
-        kind: WidgetKind::WebEngineView,
-        canonical_name: "media_player",
-        aliases: &[],
-        properties: MEDIA_PLAYER_PROPERTIES,
-        events: events_of!("media_player"),
-        // Audit 20261026: `seek_to` stays unpublished — the position is the writable
-        // `position_ms` property, so a seek is that property's write (principle #18).
-        commands: &["set_source", "clear_source", "play", "pause", "set_volume"],
     }
 }
 
@@ -242,22 +180,6 @@ pub(crate) fn notification_center_capability() -> WidgetCapability {
         // property is that payload channel (B26.03), and `set_items` is its published command
         // form. `select_index` names a position with no property route.
         commands: &["clear", "mark_all_read", "activate_selected", "set_items"],
-    }
-}
-
-#[cfg(not(alloc_frugal))]
-pub(crate) fn diff_viewer_capability() -> WidgetCapability {
-    WidgetCapability {
-        kind: WidgetKind::Table,
-        canonical_name: "diff_viewer",
-        aliases: &["diff"],
-        properties: DIFF_VIEWER_PROPERTIES,
-        events: events_of!("diff_viewer"),
-        // Audit 20261026: `set_texts` stays unpublished because its name resolves to no property —
-        // the two writable properties `left_text` / `right_text` each write through `set_texts`
-        // and recompute the diff, so the pair is the honest route (principle #18). `select_index`
-        // names a line with no property route; `selected_index` is read-only.
-        commands: &[],
     }
 }
 
@@ -540,24 +462,6 @@ pub(crate) fn cascader_capability() -> WidgetCapability {
         // an option carries `children`, and a record field cannot carry a nested record list, so
         // the tree has no property route.
         commands: &["expand", "collapse", "set_selected_path"],
-    }
-}
-
-/// `KanbanBoard` — columns of draggable cards.
-///
-/// The first control built on `event::dnd`: its own `DropTarget` impl is the
-/// acceptance path a dragged card resolves through.
-#[cfg(not(alloc_frugal))]
-pub(crate) fn kanban_board_capability() -> WidgetCapability {
-    WidgetCapability {
-        kind: WidgetKind::KanbanBoard,
-        canonical_name: "kanban_board",
-        aliases: &["kanban", "board"],
-        properties: KANBAN_BOARD_PROPERTIES,
-        events: events_of!("kanban_board"),
-        // `cancel_drag` is payload-free; `set_columns` / `set_cards` name their payload through
-        // the `columns` / `cards` records properties (B26.03).
-        commands: &["cancel_drag", "set_columns", "set_cards"],
     }
 }
 
@@ -987,108 +891,6 @@ pub(crate) fn bar_chart_capability() -> WidgetCapability {
     }
 }
 
-#[cfg(not(alloc_frugal))]
-pub(crate) fn candlestick_chart_capability() -> WidgetCapability {
-    WidgetCapability {
-        kind: WidgetKind::CandlestickChart,
-        canonical_name: "candlestick_chart",
-        aliases: &["candlestick", "kline", "k_line", "k_line_chart", "ohlc_chart"],
-        properties: CANDLESTICK_CHART_PROPERTIES,
-        events: events_of!("candlestick_chart"),
-        commands: &["set_series", "add_overlay"],
-    }
-}
-
-#[cfg(not(alloc_frugal))]
-pub(crate) fn volume_chart_capability() -> WidgetCapability {
-    WidgetCapability {
-        kind: WidgetKind::VolumeChart,
-        canonical_name: "volume_chart",
-        aliases: &["volume", "volume_histogram", "volume_bars"],
-        properties: VOLUME_CHART_PROPERTIES,
-        events: events_of!("volume_chart"),
-        // `add_overlay` was advertised but only `CandlestickChart` implements
-        // it; the other finance views have no overlay API, so naming it here
-        // promised an action that could not be obtained (principle #18).
-        commands: &["set_series"],
-    }
-}
-
-#[cfg(not(alloc_frugal))]
-pub(crate) fn depth_chart_capability() -> WidgetCapability {
-    WidgetCapability {
-        kind: WidgetKind::DepthChart,
-        canonical_name: "depth_chart",
-        aliases: &["market_depth", "depth_graph", "liquidity_chart"],
-        properties: DEPTH_CHART_PROPERTIES,
-        events: events_of!("depth_chart"),
-        // `add_overlay` was advertised but only `CandlestickChart` implements
-        // it; the other finance views have no overlay API, so naming it here
-        // promised an action that could not be obtained (principle #18).
-        // Audit 20261026: `set_series` stays unpublished — a depth series is a nested
-        // price/volume list with no property carrier; the published names are the display knobs
-        // (`depth`, colours) the view does carry (principle #18).
-        // Mutations go through the property route or the widget's own API; the
-        // command arm stays as a defensive refusal.
-        commands: &[],
-    }
-}
-
-#[cfg(not(alloc_frugal))]
-pub(crate) fn order_book_capability() -> WidgetCapability {
-    WidgetCapability {
-        kind: WidgetKind::OrderBook,
-        canonical_name: "order_book",
-        aliases: &["book_ladder", "market_depth_ladder"],
-        properties: ORDER_BOOK_PROPERTIES,
-        events: events_of!("order_book"),
-        // `add_overlay` was advertised but only `CandlestickChart` implements
-        // it; the other finance views have no overlay API, so naming it here
-        // promised an action that could not be obtained (principle #18).
-        // Audit 20261026: `set_series` stays unpublished — an order book is a nested price/size
-        // list with no property carrier; the published names are the display knobs the view does
-        // carry (principle #18).
-        // Mutations go through the property route or the widget's own API; the
-        // command arm stays as a defensive refusal.
-        commands: &[],
-    }
-}
-
-#[cfg(not(alloc_frugal))]
-pub(crate) fn quote_board_capability() -> WidgetCapability {
-    WidgetCapability {
-        kind: WidgetKind::QuoteBoard,
-        canonical_name: "quote_board",
-        aliases: &["quotes", "watchlist", "quote_table", "market_watch"],
-        properties: QUOTE_BOARD_PROPERTIES,
-        events: events_of!("quote_board"),
-        // `add_overlay` was advertised but only `CandlestickChart` implements
-        // it; the other finance views have no overlay API, so naming it here
-        // promised an action that could not be obtained (principle #18).
-        // Audit 20261026: `set_series` stays unpublished — a quote board is a row list with no
-        // property carrier; the published names are the sort and display controls it does carry
-        // (principle #18).
-        // Mutations go through the property route or the widget's own API; the
-        // command arm stays as a defensive refusal.
-        commands: &[],
-    }
-}
-
-#[cfg(not(alloc_frugal))]
-pub(crate) fn indicator_chart_capability() -> WidgetCapability {
-    WidgetCapability {
-        kind: WidgetKind::IndicatorChart,
-        canonical_name: "indicator_chart",
-        aliases: &["indicator", "technical_indicator", "oscillator", "macd_chart"],
-        properties: INDICATOR_CHART_PROPERTIES,
-        events: events_of!("indicator_chart"),
-        // `add_overlay` was advertised but only `CandlestickChart` implements
-        // it; the other finance views have no overlay API, so naming it here
-        // promised an action that could not be obtained (principle #18).
-        commands: &["set_series"],
-    }
-}
-
 pub(crate) fn pie_chart_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::PieChart,
@@ -1212,65 +1014,47 @@ pub(crate) fn chart_reference_line_capability() -> WidgetCapability {
     }
 }
 
-/// Terminal scrollback find bar (COMP-A2).
+/// Chart crosshair overlay (RW-77).
 ///
-/// It shares `WidgetKind::SearchBar` with the search field; the bar attaches to a `TerminalView`
-/// and reports no factory event of its own.
+/// The crate has no `ChartCrosshair` kind. It borrows `WidgetKind::ChartTooltip` — the closest
+/// existing role (a pointer-following chart overlay) — and its canonical name is what keeps the two
+/// capabilities distinct. It publishes no events here: its `position_changed`/`crosshair_moved`
+/// signals have no `event_signal_dyn` arm, so publishing names would be a wire that never fires.
 #[cfg(not(alloc_frugal))]
-pub(crate) fn terminal_find_bar_capability() -> WidgetCapability {
+pub(crate) fn chart_crosshair_capability() -> WidgetCapability {
     WidgetCapability {
-        kind: WidgetKind::SearchBar,
-        canonical_name: "terminal_find_bar",
-        aliases: &[],
-        properties: TERMINAL_FIND_BAR_PROPERTIES,
-        events: events_of!("terminal_find_bar"),
+        kind: WidgetKind::ChartTooltip,
+        canonical_name: "chart_crosshair",
+        aliases: &["crosshair"],
+        properties: CHART_CROSSHAIR_PROPERTIES,
+        events: events_of!("chart_crosshair"),
         commands: &[],
     }
 }
 
-/// Map attribution overlay (COMP-A3).
-///
-/// It shares `WidgetKind::Canvas` with the map's own scene canvas and with the overview below, so
-/// each of the three needs its own concrete-type tie-break.
+/// A scrolling picker column (RW-100). Registered under `MobileDatePicker`, the control it is the
+/// building block of, with its own canonical name.
 #[cfg(not(alloc_frugal))]
-pub(crate) fn map_attribution_capability() -> WidgetCapability {
+pub(crate) fn drum_column_capability() -> WidgetCapability {
     WidgetCapability {
-        kind: WidgetKind::Canvas,
-        canonical_name: "map_attribution",
+        kind: WidgetKind::MobileDatePicker,
+        canonical_name: "drum_column",
         aliases: &[],
-        properties: MAP_ATTRIBUTION_PROPERTIES,
-        events: events_of!("map_attribution"),
-        commands: &[],
+        properties: DRUM_COLUMN_PROPERTIES,
+        events: events_of!("drum_column"),
+        commands: &["set_selected_index"],
     }
 }
 
-/// Gantt task column (COMP-A4).
-///
-/// It shares `WidgetKind::Chart` with the chart controls; the column is the row-aligned task list
-/// the gantt chart draws beside its bars.
+/// A row of preset chips (RW-100). Registered under `Chip` with its own canonical name.
 #[cfg(not(alloc_frugal))]
-pub(crate) fn gantt_task_grid_capability() -> WidgetCapability {
+pub(crate) fn preset_chip_bar_capability() -> WidgetCapability {
     WidgetCapability {
-        kind: WidgetKind::Chart,
-        canonical_name: "gantt_task_grid",
+        kind: WidgetKind::Chip,
+        canonical_name: "preset_chip_bar",
         aliases: &[],
-        properties: GANTT_TASK_GRID_PROPERTIES,
-        events: events_of!("gantt_task_grid"),
-        commands: &[],
-    }
-}
-
-/// Map overview (COMP-A7).
-///
-/// It shares `WidgetKind::Canvas` with the scene canvas and the attribution overlay.
-#[cfg(not(alloc_frugal))]
-pub(crate) fn map_overview_capability() -> WidgetCapability {
-    WidgetCapability {
-        kind: WidgetKind::Canvas,
-        canonical_name: "map_overview",
-        aliases: &[],
-        properties: MAP_OVERVIEW_PROPERTIES,
-        events: events_of!("map_overview"),
-        commands: &[],
+        properties: PRESET_CHIP_BAR_PROPERTIES,
+        events: events_of!("preset_chip_bar"),
+        commands: &["set_selected_preset"],
     }
 }

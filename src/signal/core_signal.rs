@@ -35,7 +35,7 @@
 use crate::compat::{lock, read_lock, write_lock, Box, HashMap, Vec};
 use crate::compat::{Mutex, RwLock, VecDeque};
 use alloc::sync::Arc;
-use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 /// Slot execution priority. Higher-priority slots fire before lower-priority ones.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
@@ -349,6 +349,13 @@ struct SignalInner<T: Clone + Send + 'static> {
     /// storage makes the documented "High → Normal → Low, then connection order" contract a
     /// property of the data rather than work repeated per frame.
     order: RwLock<[Vec<ConnectionHandle>; 3]>,
+    /// Nesting depth of [`Signal::block_all`]. Emit is a no-op while this is non-zero.
+    ///
+    /// An atomic rather than a `Mutex<bool>` because emit reads it on every call, while the
+    /// control-plane operations (batching a document load) are rare. Counting rather than a plain
+    /// flag makes nested RAII guards safe: an inner guard lifting its pause must not resume a
+    /// signal the outer guard is still holding.
+    paused: AtomicUsize,
 }
 
 impl<T: Clone + Send + 'static> SignalInner<T> {
@@ -356,7 +363,36 @@ impl<T: Clone + Send + 'static> SignalInner<T> {
         Self {
             slots: RwLock::new(HashMap::new()),
             order: RwLock::new([Vec::new(), Vec::new(), Vec::new()]),
+            paused: AtomicUsize::new(0),
         }
+    }
+
+    fn block_all(&self) -> usize {
+        self.paused.fetch_add(1, Ordering::AcqRel) + 1
+    }
+
+    /// Decrements the pause depth. Returns `true` when the pause is fully lifted, `false` while
+    /// another guard still holds it (and when the signal was not paused at all).
+    fn unblock_all(&self) -> bool {
+        let mut current = self.paused.load(Ordering::Acquire);
+        loop {
+            if current == 0 {
+                return false;
+            }
+            match self.paused.compare_exchange_weak(
+                current,
+                current - 1,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return current == 1,
+                Err(actual) => current = actual,
+            }
+        }
+    }
+
+    fn is_paused(&self) -> bool {
+        self.paused.load(Ordering::Acquire) > 0
     }
 
     fn push_order(&self, handle: ConnectionHandle, priority: Priority) {
@@ -654,6 +690,35 @@ impl<T: Clone + Send + 'static> Signal<T> {
         self.inner.is_blocked(handle)
     }
 
+    /// Pauses every connection on this signal, returning the new nesting depth.
+    ///
+    /// An emit while paused delivers to nobody, including once-slots (they stay connected and
+    /// fire after the pause is lifted). Use [`Self::silence`] for the RAII form, which pairs every
+    /// `block_all` with an `unblock_all` even on an unwind.
+    pub fn block_all(&self) -> usize {
+        self.inner.block_all()
+    }
+
+    /// Lifts one level of [`Self::block_all`]. Returns `true` when no pause remains.
+    pub fn unblock_all(&self) -> bool {
+        self.inner.unblock_all()
+    }
+
+    /// Whether this signal is currently paused.
+    pub fn is_paused(&self) -> bool {
+        self.inner.is_paused()
+    }
+
+    /// Pauses this signal for the guard's lifetime.
+    ///
+    /// This is the shape a batch operation wants: create the guard, mutate the model, drop the
+    /// guard, and emit one final change afterwards. Nested guards are counted, so an inner scope
+    /// cannot resume delivery the outer scope is still holding.
+    pub fn silence(&self) -> SignalSilenceGuard<T> {
+        self.block_all();
+        SignalSilenceGuard { signal: self.clone() }
+    }
+
     /// Returns `true` if the handle is still connected (valid).
     pub fn is_connected(&self, handle: ConnectionHandle) -> bool {
         read_lock(&self.inner.slots).contains_key(&handle)
@@ -732,6 +797,14 @@ impl<T: Clone + Send + 'static> Signal<T> {
 
     /// The emit pass: snapshot the slot list, then invoke each slot in priority order.
     fn emit_inner(&self, mut value: EmitValue<'_, T>) {
+        // Whole-signal pause: a batch load can silence a `changed` signal without disconnecting it
+        // or blocking each slot individually. Skipping the value entirely (rather than queueing
+        // it) is the documented contract: the signal reports "something happened", and a paused
+        // consumer will read the current state after the batch, so replaying intermediate values
+        // would only make it do the same work repeatedly.
+        if self.inner.is_paused() {
+            return;
+        }
         let identity = self.identity();
 
         // Fast path: a signal with exactly one subscriber has no order to compute, so the
@@ -878,6 +951,25 @@ impl<T: Clone + Send + 'static> Signal<T> {
                 let _ = inner.disconnect(handle);
             }
         }));
+    }
+}
+
+/// RAII pause for one signal. Dropping it lifts exactly one [`Signal::block_all`] level.
+#[must_use = "dropping the guard immediately lifts the pause it just created"]
+pub struct SignalSilenceGuard<T: Clone + Send + 'static> {
+    signal: Signal<T>,
+}
+
+impl<T: Clone + Send + 'static> SignalSilenceGuard<T> {
+    /// Whether the signal is still paused (by this guard or an outer one).
+    pub fn is_paused(&self) -> bool {
+        self.signal.is_paused()
+    }
+}
+
+impl<T: Clone + Send + 'static> Drop for SignalSilenceGuard<T> {
+    fn drop(&mut self) {
+        self.signal.unblock_all();
     }
 }
 

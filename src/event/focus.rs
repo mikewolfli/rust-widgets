@@ -62,6 +62,66 @@ impl FocusPolicy {
         }
     }
 }
+/// A read-only snapshot of the focus state a window-level key handler needs.
+///
+/// # Why this is passed with the key instead of queried later
+///
+/// A window handler decides synchronously whether it owns a chord. Asking the
+/// runtime afterwards could describe a focus move the key itself caused (Enter
+/// activating a control, Tab moving on), so the facts are captured before the
+/// handler runs and handed over as one value.
+///
+/// `accepts_text_input` and `is_ime_composing` are what keep a bare character from
+/// being mistaken for a command: a printable key with no command modifier must reach
+/// the focused control as text, and nothing is routed while an input method is
+/// composing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FocusInfo {
+    focused: Option<ObjectId>,
+    window: Option<ObjectId>,
+    text_input: bool,
+    ime_composing: bool,
+}
+
+impl FocusInfo {
+    /// Snapshots a focus state.
+    pub fn new(focused: Option<ObjectId>, window: Option<ObjectId>) -> Self {
+        Self { focused, window, text_input: false, ime_composing: false }
+    }
+
+    /// Records whether the focused control accepts committed text.
+    pub fn with_text_input(mut self, accepts: bool) -> Self {
+        self.text_input = accepts;
+        self
+    }
+
+    /// Records whether an input method is currently composing.
+    pub fn with_ime_composition(mut self, composing: bool) -> Self {
+        self.ime_composing = composing;
+        self
+    }
+
+    /// The control the keyboard is currently routed to, if any.
+    pub fn focused_widget(&self) -> Option<ObjectId> {
+        self.focused
+    }
+
+    /// The top-level window the key was delivered through, if it could be resolved.
+    pub fn window(&self) -> Option<ObjectId> {
+        self.window
+    }
+
+    /// Whether the focused control has a text-entry caret (and so consumes committed text).
+    pub fn accepts_text_input(&self) -> bool {
+        self.text_input
+    }
+
+    /// Whether an input method is mid-composition, in which case no key is a command.
+    pub fn is_ime_composing(&self) -> bool {
+        self.ime_composing
+    }
+}
+
 /// Manages keyboard focus across widgets.
 pub struct FocusManager {
     /// Currently focused widget, if any.
@@ -101,6 +161,13 @@ pub struct FocusManager {
     /// a duplicated id wins — `set_focus_order` accepts duplicates — matching the `position`
     /// scan this replaces.
     positions: HashMap<ObjectId, usize>,
+    /// Whether traversal wraps from the last control back to the first.
+    ///
+    /// `true` is the historical behaviour and therefore the default. A host that wants
+    /// Tab to stop at the end of a window clears it; [`Self::find_next`] is the traversal
+    /// that honours the setting, while the older `focus_next` entry points keep their
+    /// documented wrapping contract.
+    wrap: bool,
 }
 impl FocusManager {
     /// Creates a new focus manager.
@@ -116,6 +183,7 @@ impl FocusManager {
             registered: BTreeSet::new(),
             policies: HashMap::new(),
             positions: HashMap::new(),
+            wrap: true,
         }
     }
     /// Returns the currently focused widget, if any.
@@ -329,6 +397,72 @@ impl FocusManager {
     /// Whether `id` accepts focus arriving from `reason`.
     pub fn accepts_focus(&self, id: ObjectId, reason: FocusReason) -> bool {
         self.focus_policy(id).accepts(reason)
+    }
+
+    /// Sets whether traversal wraps at the end of the order.
+    ///
+    /// This does **not** change the older [`Self::focus_next`]/[`Self::focus_next_matching`]
+    /// entry points, whose names and documentation promise wrapping. It is read by
+    /// [`Self::find_next`], which is what the runtime's window-scoped Tab traversal uses.
+    pub fn set_focus_wrap(&mut self, wrap: bool) {
+        self.wrap = wrap;
+    }
+
+    /// Whether traversal currently wraps.
+    pub fn focus_wrap(&self) -> bool {
+        self.wrap
+    }
+
+    /// Finds the next candidate that both the focus policy and `accept` allow, without
+    /// moving focus.
+    ///
+    /// # Why this exists separately from `focus_next_matching`
+    ///
+    /// The runtime traversal has to resolve the candidate before it can dispatch the
+    /// `FocusLost`/`FocusGained` pair and update the IME bridge; those steps need the
+    /// candidate, not a manager that has already moved. Keeping the selection pure here also
+    /// lets the caller supply the window-scoping predicate.
+    ///
+    /// [`FocusPolicy`] is applied inside this method (a `ClickFocus` control is skipped by
+    /// Tab), so no caller has to remember to ask `accepts_focus` itself. `wrap` decides
+    /// whether the walk stops at the end of the order. When no candidate is acceptable the
+    /// answer is `None` and the focused control does not move.
+    pub fn find_next(
+        &self,
+        forward: bool,
+        reason: FocusReason,
+        mut accept: impl FnMut(ObjectId) -> bool,
+        wrap: bool,
+    ) -> Option<ObjectId> {
+        let len = self.focusable_widgets.len();
+        if len == 0 {
+            return None;
+        }
+        let start = self.focused_widget.and_then(|id| self.positions.get(&id).copied());
+        let steps = if wrap {
+            len
+        } else {
+            match start {
+                Some(index) if forward => len - 1 - index,
+                Some(index) => index,
+                None => len,
+            }
+        };
+        for step in 1..=steps {
+            let index = match (start, forward) {
+                (Some(index), true) if wrap => (index + step) % len,
+                (Some(index), true) => index + step,
+                (Some(index), false) if wrap => (index + len - (step % len)) % len,
+                (Some(index), false) => index - step,
+                (None, true) => step - 1,
+                (None, false) => len - step,
+            };
+            let candidate = self.focusable_widgets[index];
+            if self.accepts_focus(candidate, reason) && accept(candidate) {
+                return Some(candidate);
+            }
+        }
+        None
     }
 
     /// Moves focus forward or backward to the next widget that accepts `reason`, wrapping.
@@ -809,5 +943,74 @@ mod tests {
         fm.set_focus(30);
         assert_eq!(fm.focus_next_matching(false, |id| id == 10), Some(10));
         assert_eq!(fm.focus_next_for(true, FocusReason::Programmatic), Some(30));
+    }
+
+    /// `find_next` applies the route policy itself: a `ClickFocus` control is skipped by Tab
+    /// even though the caller's predicate accepted it.
+    #[test]
+    fn find_next_honours_the_focus_policy() {
+        let mut fm = FocusManager::new();
+        fm.set_focus_order(vec![1, 2]);
+        fm.set_focus_policy(1, FocusPolicy::ClickFocus);
+
+        // Tab from 1 must skip the click-only control and land on 2.
+        fm.set_focus(1);
+        assert_eq!(
+            fm.find_next(true, FocusReason::Tab, |_| true, true),
+            Some(2),
+            "a click-only control must not be a Tab stop"
+        );
+
+        // The pointer route may land on it when it is the next candidate.
+        fm.set_focus(2);
+        assert_eq!(
+            fm.find_next(true, FocusReason::Pointer, |_| true, true),
+            Some(1),
+            "the pointer route may land on a click-only control"
+        );
+    }
+
+    /// Without wrapping, traversal stops at the end instead of returning to the first control.
+    #[test]
+    fn find_next_without_wrap_stops_at_the_end() {
+        let mut fm = FocusManager::new();
+        fm.set_focus_order(vec![10, 20, 30]);
+        fm.set_focus(30);
+        assert_eq!(fm.find_next(true, FocusReason::Tab, |_| true, false), None);
+        assert_eq!(fm.find_next(false, FocusReason::BackTab, |_| true, false), Some(20));
+
+        fm.set_focus(10);
+        assert_eq!(fm.find_next(false, FocusReason::BackTab, |_| true, false), None);
+        assert_eq!(fm.find_next(true, FocusReason::Tab, |_| true, false), Some(20));
+    }
+
+    /// The wrap setting is opt-out: the historical default stays on so existing hosts are
+    /// unaffected.
+    #[test]
+    fn traversal_wraps_by_default_and_can_be_switched_off() {
+        let mut fm = FocusManager::new();
+        assert!(fm.focus_wrap());
+        fm.set_focus_wrap(false);
+        assert!(!fm.focus_wrap());
+        fm.set_focus_wrap(true);
+        assert!(fm.focus_wrap());
+    }
+
+    /// The snapshot reports exactly what the window handler was told, and the two text facts
+    /// stay independent of each other.
+    #[test]
+    fn focus_info_reports_the_snapshot_it_was_built_from() {
+        let info =
+            FocusInfo::new(Some(7), Some(1)).with_text_input(true).with_ime_composition(true);
+        assert_eq!(info.focused_widget(), Some(7));
+        assert_eq!(info.window(), Some(1));
+        assert!(info.accepts_text_input());
+        assert!(info.is_ime_composing());
+
+        let empty = FocusInfo::new(None, None);
+        assert_eq!(empty.focused_widget(), None);
+        assert_eq!(empty.window(), None);
+        assert!(!empty.accepts_text_input());
+        assert!(!empty.is_ime_composing());
     }
 }

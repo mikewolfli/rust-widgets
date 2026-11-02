@@ -48,17 +48,25 @@
 //!
 //! **State:** Production callers: `src/widget/base.rs:1`; 147 files reference it (every control's public signals).
 mod core_signal;
+#[cfg(not(alloc_frugal))]
+mod debounce;
 mod event_bridge;
 mod event_signal_ref;
 mod generic_signal;
 mod hub;
-pub use core_signal::{ConnectionHandle, ConnectionScope, Priority, Signal};
+#[cfg(not(alloc_frugal))]
+mod queued;
+pub use core_signal::{ConnectionHandle, ConnectionScope, Priority, Signal, SignalSilenceGuard};
+#[cfg(not(alloc_frugal))]
+pub use debounce::{DebounceDispatcher, Debounced};
 pub use event_bridge::{
     is_wired, payload_kind, payload_kinds, unwired_events, EventPayloadKind, EventSignalBinder,
 };
 pub use event_signal_ref::EventSignalRef;
 pub use generic_signal::{GenericSignal, Signal1};
 pub use hub::CustomSignalHub;
+#[cfg(not(alloc_frugal))]
+pub use queued::{QueuedDispatcher, QueuedWork};
 #[cfg(test)]
 mod tests {
     use super::{ConnectionScope, GenericSignal, Priority, Signal};
@@ -160,6 +168,61 @@ mod tests {
         assert_eq!(signal.is_blocked(handle), Some(false));
         signal.emit(3);
         assert_eq!(hits.load(Ordering::SeqCst), 4);
+    }
+
+    /// Whole-signal pause suppresses every connection, and nesting is counted.
+    #[test]
+    fn block_all_pauses_every_connection_and_nesting_is_counted() {
+        let signal = Signal::<u32>::new();
+        let hits = Arc::new(AtomicUsize::new(0));
+        let first = hits.clone();
+        signal.connect(move |_| {
+            first.fetch_add(1, Ordering::SeqCst);
+        });
+        let second = hits.clone();
+        signal.connect(move |_| {
+            second.fetch_add(1, Ordering::SeqCst);
+        });
+
+        signal.emit(1);
+        assert_eq!(hits.load(Ordering::SeqCst), 2);
+
+        assert_eq!(signal.block_all(), 1);
+        assert_eq!(signal.block_all(), 2);
+        signal.emit(2);
+        assert_eq!(hits.load(Ordering::SeqCst), 2, "a paused signal delivers to nobody");
+
+        assert!(!signal.unblock_all(), "one guard still holds the pause");
+        assert!(signal.is_paused(), "the depth is one after the first lift");
+        signal.emit(3);
+        assert_eq!(hits.load(Ordering::SeqCst), 2, "depth one is still paused");
+
+        assert!(signal.unblock_all(), "the final lift resumes delivery");
+        assert!(!signal.is_paused());
+        signal.emit(4);
+        assert_eq!(hits.load(Ordering::SeqCst), 4);
+        assert!(!signal.unblock_all(), "lifting an unpaused signal is a no-op");
+    }
+
+    /// The RAII guard lifts the pause even when the scope is left by an unwind.
+    #[test]
+    fn the_silence_guard_lifts_the_pause_on_drop() {
+        let signal = Signal::<u32>::new();
+        let hits = Arc::new(AtomicUsize::new(0));
+        let counter = hits.clone();
+        signal.connect(move |_| {
+            counter.fetch_add(1, Ordering::SeqCst);
+        });
+
+        {
+            let _silence = signal.silence();
+            assert!(signal.is_paused());
+            signal.emit(1);
+            assert_eq!(hits.load(Ordering::SeqCst), 0);
+        }
+        assert!(!signal.is_paused());
+        signal.emit(2);
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
     }
 
     #[test]

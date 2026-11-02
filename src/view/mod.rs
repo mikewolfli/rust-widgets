@@ -84,11 +84,17 @@
 //! `LAYOUT_MAP` keyed by parent id whose identity is the **path** a document happens to place a
 //! control at, re-solved in full on every `apply_layout`. This module is the one that carries
 //! key identity, minimal-move patching and scoped diffs. The decision (principle #101) is that
-//! this engine is the **single** implementation, so the declarative loader must hand its
-//! produced `Node` tree to `ViewEngine::mount_tree` / `ViewEngine::update_tree` instead of
-//! keeping the second registry, and the engine must own the layout registration that `LAYOUT_MAP`
-//! performs today. Until that forward lands, the two paths coexist: this one is complete and
-//! tested, and the loader's path-only tree is the one production still applies.
+//! this engine is the **single** implementation, so the declarative loader forwards its produced
+//! `Node` tree to `ViewEngine::mount_tree` / `ViewEngine::update_tree` instead of keeping the
+//! second registry.
+//!
+//! The forward has landed for the JSON front end: `json::JsonViewSession` converts a project
+//! document to a [`Node`] tree and drives it through `mount_tree_shared` / `update_tree_shared`,
+//! reporting the controls an edit removed and leaving unchanged controls (and therefore their
+//! focus, scroll and selection) alive. The runtime loader's own layout registration remains the
+//! **full-mount** path: it is what applies every loader-owned key (geometry, spacing, colours,
+//! construction-time switches) that a `Node` property cannot express. The two are one engine
+//! with two entry points, not two trees.
 //!
 //! Removal condition: this module is not a candidate for removal while the declarative loader
 //! has its own path-only retained tree. It goes only if that loader is retired together with
@@ -140,7 +146,10 @@ pub use node::{Host, Node};
 pub use reactive::{reactive_pump_event, ReactiveHost, REACTIVE_PUMP_EVENT};
 pub use row_signal::{RowChange, RowModel, RowRef, RowRole, RowSignal};
 
-pub(crate) use helpers::{is_generated_wire_prop, is_transparent_node, mounted_slots};
+pub(crate) use helpers::{
+    generated_wire_prop, generated_wire_suffix, is_generated_wire_prop, is_transparent_node,
+    mounted_slots,
+};
 // The prefix itself has exactly one consumer: the designer's test asserting that
 // `designer::generator::WIRE_PROP_PREFIX` and this one cannot drift. Re-exporting it only
 // for that build keeps the non-test build warning-free (principle #10), and the

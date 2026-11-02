@@ -491,6 +491,12 @@ def main() -> int:
     missing = sorted(kind for kind in kinds if kind not in preference_map)
 
     rows: List[MatrixRow] = []
+    # Kinds whose `create_*` lives in the nested `rust-widgets-suites` package rather than in
+    # this crate's custom backend. The parent cannot name those constructors (it must not depend
+    # on a package that depends on it), so a missing custom arm here is by construction, not an
+    # unimplemented control. They are reported as `ExternalSuite` instead of `Placeholder`.
+    external_suite_kinds = {"Form", "FormSet"}
+
     for kind in sorted(kinds):
         expected_method = kind_to_create_method(kind)
         pref = preference_map.get(kind, "UNMAPPED")
@@ -522,7 +528,9 @@ def main() -> int:
             )
             continue
 
-        if pref == "NativePreferred":
+        if kind in external_suite_kinds:
+            hybrid_grade = "ExternalSuite"
+        elif pref == "NativePreferred":
             hybrid_grade = native_grade
         else:
             hybrid_grade = custom_grade
@@ -569,7 +577,9 @@ def main() -> int:
         return 3
 
     contract_miss = sorted(
-        row.kind for row in rows if not row.trait_has_method
+        row.kind
+        for row in rows
+        if not row.trait_has_method and row.kind not in external_suite_kinds
     )
     if args.fail_on_contract_miss and contract_miss:
         print(

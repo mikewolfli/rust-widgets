@@ -37,6 +37,9 @@
 use super::types::{
     CapabilityValue, EventManifest, EventPayloadShape, PropertySchema, PropertyValueKind,
 };
+
+/// Re-exported at its historical path; the implementation lives with `CommandSchema`.
+pub use super::command_schema::designer_command_from;
 use crate::compat::{format, String, Vec};
 
 /// The key names in the exported document.
@@ -91,6 +94,8 @@ mod keys {
     pub(crate) const PLACES: &str = "places";
     /// A constraint's kind token.
     pub(crate) const RULE: &str = "rule";
+    /// The child-kind constraints of a container control (RW-41).
+    pub(crate) const CHILDREN: &str = "children";
 }
 
 /// The manifest protocol version this build writes and can read.
@@ -121,7 +126,11 @@ mod keys {
 /// * `5` — adds `category`, the designer-palette grouping token
 ///   ([`WidgetKind::designer_category`](crate::widget::WidgetKind::designer_category)). Absent in
 ///   older documents and read as the empty string, so a protocol-4 file still opens.
-pub const MANIFEST_PROTOCOL_VERSION: u32 = 5;
+/// * `6` — adds `children`, the allowed-child-kind list for a container (RW-41). Absent in older
+///   documents and read as an empty list. A new key is a change to the document's *shape*, which is
+///   the stated criterion for a protocol bump: a v5 reader rejects the unknown key, so writing it
+///   under v5 would make this build's output unreadable to itself without an explicit version.
+pub const MANIFEST_PROTOCOL_VERSION: u32 = 6;
 
 /// The oldest protocol version this reader still accepts.
 ///
@@ -324,6 +333,16 @@ pub struct DesignerManifest {
     pub events: Vec<DesignerEvent>,
     /// The commands it accepts, with parameter shape and effect.
     pub commands: Vec<DesignerCommand>,
+    /// The child kinds this control accepts, as canonical factory names (RW-41).
+    ///
+    /// Empty for a control that holds no children. For a container that accepts *any*
+    /// constructible child the list is [`ANY_CHILD_WILDCARD`](super::types::ANY_CHILD_WILDCARD),
+    /// because "unconstrained" is not the same fact as "no children" and an empty list cannot say
+    /// both. A constrained container lists the **factory** names of its allowed kinds — a kind's
+    /// factory spelling is the one a document can actually construct, so a dock widget lists
+    /// `dock_widget` (the factory name of the dock-panel kind) rather than an unregistered variant
+    /// spelling.
+    pub children: Vec<String>,
 }
 
 /// Why a designer document could not be read.
@@ -700,6 +719,16 @@ fn write_manifest(out: &mut String, manifest: &DesignerManifest) {
         out.push_str(if index + 1 == manifest.events.len() { "\n" } else { ",\n" });
     }
     out.push_str("  ],\n");
+
+    push_array(
+        out,
+        keys::CHILDREN,
+        &manifest.children,
+        |out, child| {
+            push_json_string(out, child);
+        },
+        true,
+    );
 
     out.push_str("  ");
     push_json_string(out, keys::COMMANDS);
@@ -1399,34 +1428,6 @@ fn command_effect_token(token: &str) -> Option<&'static str> {
     }
 }
 
-/// Builds a [`DesignerCommand`] from a capability's command schema.
-///
-/// Kept here rather than in `command_schema` so the *wire vocabulary* (`"none"`/`"value"`/
-/// `"composite"`) lives with the rest of the document's vocabulary, while the derivation of the
-/// shape stays in `command_schema`. A command with no derivable schema is dropped by the caller —
-/// publishing a command a designer cannot describe is the gap B26.03 closes.
-pub fn designer_command_from(
-    name: &str,
-    schema: &super::command_schema::CommandSchema,
-) -> DesignerCommand {
-    use super::command_schema::{CommandEffect, CommandSignature};
-    let (signature, parameter, kind, arity, element) = match schema.signature {
-        CommandSignature::PayloadFree => ("none", String::new(), None, None, None),
-        CommandSignature::OneValue { parameter, kind } => {
-            ("value", String::from(parameter), Some(kind), None, None)
-        }
-        CommandSignature::Composite { parameter, arity, element } => {
-            ("composite", String::from(parameter), None, arity, element)
-        }
-    };
-    let effect = match schema.effect {
-        CommandEffect::MutatesControl => "mutates-control",
-        CommandEffect::MutatesCollection => "mutates-collection",
-        CommandEffect::SideEffecting => "side-effecting",
-    };
-    DesignerCommand { name: String::from(name), signature, parameter, kind, arity, element, effect }
-}
-
 /// Reads a JSON value into a [`CapabilityValue`].
 ///
 /// Strings are taken verbatim: `"#DCDCDCFF"` and `"0,0,0,0"` are how the capability table spells a
@@ -1642,6 +1643,7 @@ impl DesignerManifest {
         let mut properties = Vec::new();
         let mut events = Vec::new();
         let mut commands = Vec::new();
+        let mut children = Vec::new();
 
         loop {
             let key = reader.read_key()?;
@@ -1658,6 +1660,9 @@ impl DesignerManifest {
                 // Optional so a document written before the identity field existed still reads:
                 // an absent `alias_of` means "this is a canonical row".
                 k if k == keys::ALIAS_OF => alias_of = reader.read_string()?,
+                // Optional so a protocol-5 document still reads: an absent list is the empty one,
+                // which is the same answer a leaf control gives.
+                k if k == keys::CHILDREN => children = read_string_array(&mut reader)?,
                 k if k == keys::COMMANDS => {
                     reader.expect(b'[', "expected `[` to start the command list")?;
                     if !reader.peek(b']') {
@@ -1740,6 +1745,7 @@ impl DesignerManifest {
             properties,
             events,
             commands,
+            children,
         })
     }
 }
@@ -1769,6 +1775,8 @@ pub fn designer_manifest(
     let capability = factory.capability(control).ok_or(ManifestExportError::UnknownControl)?;
 
     let mut properties = Vec::with_capacity(capability.properties.len());
+    let mut declared: crate::compat::Vec<&'static str> =
+        crate::compat::Vec::with_capacity(capability.properties.len());
     for schema in capability.properties {
         // Resolved through `default_property_value` rather than the kind-keyed table: a control
         // that shares a `WidgetKind` with its owner answers some defaults by canonical name (the
@@ -1777,6 +1785,7 @@ pub fn designer_manifest(
         let default_value = factory
             .default_property_value(capability.canonical_name, schema.name)
             .map_err(|_| ManifestExportError::IncompleteDefaults)?;
+        declared.push(schema.name);
         properties.push(DesignerProperty {
             name: schema.name.into(),
             kind: schema.value_kind,
@@ -1784,6 +1793,26 @@ pub fn designer_manifest(
             writable: schema.writable,
             tokens: schema.accepted_tokens.iter().map(|token| String::from(*token)).collect(),
             constraints: schema.constraints.iter().map(designer_constraint_from).collect(),
+            default_value,
+        });
+    }
+    // RW-35: shared rows a control's own table does not repeat (`a11y_role`). A control's schema is
+    // its own declaration, but the shared rows are part of its contract too, and a designer that
+    // reads only the doc would otherwise not offer them.
+    for schema in crate::widget::capability::properties_trait::BASE_PROPERTY_SCHEMAS {
+        if declared.contains(&schema.name) {
+            continue;
+        }
+        let default_value = factory
+            .default_property_value(capability.canonical_name, schema.name)
+            .map_err(|_| ManifestExportError::IncompleteDefaults)?;
+        properties.push(DesignerProperty {
+            name: schema.name.into(),
+            kind: schema.value_kind,
+            readable: schema.readable,
+            writable: schema.writable,
+            tokens: Vec::new(),
+            constraints: Vec::new(),
             default_value,
         });
     }
@@ -1805,21 +1834,13 @@ pub fn designer_manifest(
         .iter()
         .filter_map(|command| {
             super::command_schema::command_schema(command, capability.properties)
-                .map(|schema| designer_command_from(command, &schema))
+                .map(|schema| super::command_schema::designer_command_from(command, &schema))
         })
         .collect();
     commands.sort_by(|left, right| left.name.cmp(&right.name));
 
-    let mut aliases: Vec<String> =
-        capability.aliases.iter().map(|alias| String::from(*alias)).collect();
-    // The capability's `aliases` list holds doc spellings (`btn` for `button`); the registry holds
-    // *capability rows* that share this struct (`context_menu` for `menu`). Both are names a
-    // designer can drop, so the manifest lists both. Source order does not matter — the list is
-    // sorted and de-duplicated below, which is what keeps the export byte-stable.
-    aliases
-        .extend(crate::widget::capability::aliases_of(capability.canonical_name).map(String::from));
-    aliases.sort();
-    aliases.dedup();
+    let aliases = crate::widget::capability::manifest_aliases(capability);
+    let children = crate::widget::capability::child_factory_names(capability);
 
     Ok(DesignerManifest {
         protocol: MANIFEST_PROTOCOL_VERSION,
@@ -1835,6 +1856,7 @@ pub fn designer_manifest(
         properties,
         events,
         commands,
+        children,
     })
 }
 
@@ -1993,7 +2015,43 @@ mod tests {
                 element: None,
                 effect: "mutates-control",
             }],
+            children: vec![String::from("*")],
         }
+    }
+
+    /// RW-41: a container publishes its constraint, an unconstrained container publishes the
+    /// wildcard, and a leaf publishes nothing.
+    #[test]
+    #[cfg(full_widgets)]
+    fn a_container_publishes_its_child_constraint() {
+        let factory = crate::widget::capability::WidgetFactory::new_with_defaults();
+        let dock = designer_manifest(&factory, "dock_widget").expect("dock_widget exports");
+        // `DockPanel` is the kind; its factory spelling is `dock_widget`, the only name a document
+        // can hand to `create`.
+        assert_eq!(dock.children, vec![String::from("dock_widget")]);
+        let tabs = designer_manifest(&factory, "tab_widget").expect("tab_widget exports");
+        assert_eq!(
+            tabs.children,
+            vec![String::from(crate::widget::capability::ANY_CHILD_WILDCARD)]
+        );
+        let button = designer_manifest(&factory, "button").expect("button exports");
+        assert!(button.children.is_empty(), "a leaf control has no child constraint");
+    }
+
+    /// RW-41: a container's child list survives the round trip, and a leaf's absence of one is
+    /// still an empty list rather than a missing key.
+    #[test]
+    fn child_kinds_round_trip_through_the_document() {
+        let mut manifest = sample();
+        manifest.children = vec![String::from("dock_panel"), String::from("panel")];
+        let text = manifest_to_json(&manifest);
+        let reloaded = DesignerManifest::from_json(&text).expect("the document parses");
+        assert_eq!(reloaded.children, manifest.children);
+
+        manifest.children.clear();
+        let reloaded = DesignerManifest::from_json(&manifest_to_json(&manifest))
+            .expect("a leaf document parses");
+        assert!(reloaded.children.is_empty());
     }
 
     /// The round trip must reproduce the document byte for byte.

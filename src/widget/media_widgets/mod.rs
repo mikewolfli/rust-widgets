@@ -19,38 +19,10 @@
 //! excluded on the reduced profiles, so `AnimatedImage` is absent there too.
 
 pub mod animated_image;
-pub mod audio_visualizer;
-pub mod camera_preview;
-pub mod chapter_list_panel;
 pub mod hero_animation;
-pub mod lottie_widget;
 pub mod pixels;
-pub mod rive_widget;
-pub mod video_player;
-
-// The player family lives in `special_widgets/media_player/`; re-export the three controls here
-// so every `media_widgets::media_scrubber::X` / `::media_transport::X` / `::subtitle_bar::X`
-// path that predates the move keeps resolving.
-pub use crate::widget::special_widgets::media_player::{
-    media_scrubber, media_transport, subtitle_bar,
-};
 
 pub use animated_image::{
     AnimatedFrame, AnimatedFrameProvider, AnimatedImage, AnimatedImageFormat, PlaybackDirection,
 };
-pub use audio_visualizer::AudioVisualizer;
-pub use camera_preview::{CameraDevice, CameraFrame, CameraPreview, PixelFormat};
-pub use chapter_list_panel::ChapterListPanel;
 pub use hero_animation::HeroAnimation;
-pub use lottie_widget::{
-    LottieDirection, LottieFontProvider, LottieImage, LottieImageLayer, LottieImageProvider,
-    LottieTextLayer, LottieWidget,
-};
-pub use media_scrubber::{MediaScrubber, ScrubberThumbStyle};
-pub use media_transport::{MediaTargetKind, MediaTransportBar};
-pub use rive_widget::{RiveInput, RiveInputValue, RiveState, RiveWidget};
-pub use subtitle_bar::{SubtitleBar, SubtitlePosition};
-pub use video_player::{
-    AudioTrack, SubtitleTrack, VideoFrame, VideoMetadata, VideoPipelineState, VideoPixelFormat,
-    VideoPlayer,
-};

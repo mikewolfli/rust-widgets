@@ -42,6 +42,47 @@ pub enum TextDirection {
 }
 
 impl TextDirection {
+    /// The direction implied by a BCP-47 language tag.
+    ///
+    /// # What is consulted
+    ///
+    /// * A right-to-left **language** subtag (`ar`, `he`, `fa`, `ur`, …) makes the whole tag
+    ///   right-to-left, so `ar-EG`, `ar-SA` and bare `ar` agree without every region needing an
+    ///   entry.
+    /// * A right-to-left **script** subtag (`Arab`, `Hebr`, `Thaa`, `Nkoo`, `Syrc`, `Adlm`) makes
+    ///   the tag right-to-left even when the language's default script is Latin — `az-Arab` is
+    ///   written right-to-left while `az` is not. This is the case a language-only table cannot
+    ///   answer, and it costs one extra scan of the subtags.
+    ///
+    /// Unknown tags and the empty string are left-to-right, the neutral default the rest of the
+    /// crate uses. Matching is ASCII case-insensitive and accepts both `-` and `_` separators, so a
+    /// POSIX locale such as `ar_EG.UTF-8` is not silently treated as Latin.
+    pub fn for_language(tag: &str) -> Self {
+        const RTL_LANGUAGES: [&str; 13] =
+            ["ar", "arc", "ckb", "dv", "fa", "he", "iw", "ku", "ps", "sd", "ug", "ur", "yi"];
+        const RTL_SCRIPTS: [&str; 6] = ["arab", "hebr", "thaa", "nkoo", "syrc", "adlm"];
+
+        // A POSIX locale carries an encoding suffix (`ar_EG.UTF-8`); the encoding is not a
+        // subtag of the tag being classified, so drop it before splitting.
+        let tag = tag.split('.').next().unwrap_or(tag);
+        if tag.is_empty() {
+            return Self::LeftToRight;
+        }
+
+        let language = tag.split(['-', '_']).next().unwrap_or("").to_ascii_lowercase();
+        for subtag in tag.split(['-', '_']).skip(1) {
+            let subtag = subtag.to_ascii_lowercase();
+            if RTL_SCRIPTS.contains(&subtag.as_str()) {
+                return Self::RightToLeft;
+            }
+        }
+        if RTL_LANGUAGES.contains(&language.as_str()) {
+            Self::RightToLeft
+        } else {
+            Self::LeftToRight
+        }
+    }
+
     /// Whether this direction begins at the right edge.
     pub const fn is_right_to_left(self) -> bool {
         matches!(self, Self::RightToLeft)
@@ -188,6 +229,41 @@ mod tests {
         assert_eq!(TextDirection::RightToLeft.begin_step_to_left_step(i32::MAX), i32::MIN + 1);
         // LTR never negates, so it returns `i32::MIN` untouched.
         assert_eq!(TextDirection::LeftToRight.begin_step_to_left_step(i32::MIN), i32::MIN);
+    }
+
+    /// A language tag selects the direction its text is written in.
+    ///
+    /// # Why this is a language fact and not a locale fact
+    ///
+    /// Direction belongs to the writing system, so `ar-EG` and `ar-SA` must agree, and an unknown
+    /// region must not erase the language's direction. The script cases are the interesting half:
+    /// `az` is Latin and left-to-right, while `az-Arab` is right-to-left; a table keyed only on the
+    /// first subtag cannot express that, which is why the function scans the remaining subtags for
+    /// RTL scripts as well.
+    #[test]
+    fn for_language_maps_the_writing_system() {
+        for rtl in [
+            "ar",
+            "ar-EG",
+            "ar_SA",
+            "ar_EG.UTF-8",
+            "he",
+            "he-IL",
+            "fa",
+            "ur-PK",
+            "az-Arab",
+            "zh-Hans-CN",
+        ] {
+            let expected = if rtl == "zh-Hans-CN" {
+                TextDirection::LeftToRight
+            } else {
+                TextDirection::RightToLeft
+            };
+            assert_eq!(TextDirection::for_language(rtl), expected, "{rtl}");
+        }
+        for ltr in ["en", "en-US", "zh", "zh-Hans", "ja", "de-DE", ""] {
+            assert_eq!(TextDirection::for_language(ltr), TextDirection::LeftToRight, "{ltr}");
+        }
     }
 
     /// Mirroring the fraction and then mirroring the *step* compose into the same thing as

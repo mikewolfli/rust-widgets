@@ -420,6 +420,69 @@ impl Key {
         }
     }
 
+    /// Whether pressing this key without a command modifier produces text.
+    ///
+    /// This is the window key router's guard against a bare character being mistaken for a
+    /// command. The classification is deliberately narrow: letters, digits, space and the
+    /// punctuation keys a layout can produce are text; Enter, Tab, Escape, the arrows, the
+    /// function keys and the editing keys are commands even with no modifier held.
+    ///
+    /// `Shift` is **not** a command modifier here: `Shift+S` is an upper-case `S`, not a
+    /// shortcut. Callers that need the chord distinction test `CTRL`, `ALT`, `META` and
+    /// `PRIMARY` separately.
+    pub const fn is_text_producing(self) -> bool {
+        matches!(
+            self,
+            Key::A
+                | Key::B
+                | Key::C
+                | Key::D
+                | Key::E
+                | Key::F
+                | Key::G
+                | Key::H
+                | Key::I
+                | Key::J
+                | Key::K
+                | Key::L
+                | Key::M
+                | Key::N
+                | Key::O
+                | Key::P
+                | Key::Q
+                | Key::R
+                | Key::S
+                | Key::T
+                | Key::U
+                | Key::V
+                | Key::W
+                | Key::X
+                | Key::Y
+                | Key::Z
+                | Key::Num0
+                | Key::Num1
+                | Key::Num2
+                | Key::Num3
+                | Key::Num4
+                | Key::Num5
+                | Key::Num6
+                | Key::Num7
+                | Key::Num8
+                | Key::Num9
+                | Key::Space
+                | Key::Minus
+                | Key::Equals
+                | Key::LeftBracket
+                | Key::RightBracket
+                | Key::Semicolon
+                | Key::Quote
+                | Key::Comma
+                | Key::Period
+                | Key::Slash
+                | Key::Backslash
+        )
+    }
+
     /// Parses a key from a string.
     pub fn from_string(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {

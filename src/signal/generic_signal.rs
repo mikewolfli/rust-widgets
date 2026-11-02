@@ -76,6 +76,26 @@ impl GenericSignal {
         self.inner.is_blocked(handle)
     }
 
+    /// Pauses every connection on this signal. See [`Signal::block_all`].
+    pub fn block_all(&self) -> usize {
+        self.inner.block_all()
+    }
+
+    /// Lifts one pause level. See [`Signal::unblock_all`].
+    pub fn unblock_all(&self) -> bool {
+        self.inner.unblock_all()
+    }
+
+    /// Whether this signal is currently paused.
+    pub fn is_paused(&self) -> bool {
+        self.inner.is_paused()
+    }
+
+    /// Pauses this signal for the guard's lifetime. See [`Signal::silence`].
+    pub fn silence(&self) -> super::SignalSilenceGuard<()> {
+        self.inner.silence()
+    }
+
     /// Change the priority of an existing connection.
     pub fn set_priority(&self, handle: ConnectionHandle, priority: Priority) -> bool {
         self.inner.set_priority(handle, priority)

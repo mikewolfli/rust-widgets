@@ -285,8 +285,11 @@ impl ThemeManager {
             self.registration_order.push(name);
         }
         // A re-registration replaces the theme's body, so it changes resolution as surely as a
-        // new name does.
+        // new name does. The revision bump alone only makes the *next* paint resolve the new
+        // colours; a host token editor subscribed to `theme_changed` also needs the notification,
+        // so the signal fires here exactly as it does for a name switch or an accent re-derive.
         note_theme_mutation();
+        self.theme_changed.emit(());
     }
 
     /// Selects the appearance the **device** asks for, if a theme declares it.
@@ -3004,6 +3007,35 @@ mod tests {
                 manager.effective_colors().error
             );
         }
+    }
+
+    /// Registering or replacing a theme body notifies listeners as well as bumping the revision.
+    ///
+    /// A token editor subscribes to `theme_changed`; before this, a re-registration changed the
+    /// palette (the revision moved) but the editor was never told, so its swatches stayed stale
+    /// until an unrelated theme-name switch. Both facts are asserted here: the revision moves and
+    /// the signal fires exactly once.
+    #[test]
+    fn registering_a_theme_emits_theme_changed_and_bumps_the_revision() {
+        use alloc::sync::Arc;
+        use core::sync::atomic::{AtomicUsize, Ordering};
+
+        let _guard = crate::theme::theme_test_guard();
+        let mut manager = ThemeManager::new();
+        let hits = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&hits);
+        manager.on_theme_changed().connect(move |_| {
+            counter.fetch_add(1, Ordering::SeqCst);
+        });
+
+        let before = theme_revision();
+        manager.register_theme(Theme::dark());
+        assert!(theme_revision() > before, "a body replacement must invalidate resolutions");
+        assert_eq!(hits.load(Ordering::SeqCst), 1, "listeners must learn about the edit");
+
+        // Re-registering the same name is also a body replacement and must notify again.
+        manager.register_theme(Theme::dark());
+        assert_eq!(hits.load(Ordering::SeqCst), 2);
     }
 
     /// A theme mutation must arm the next frame's full repaint.

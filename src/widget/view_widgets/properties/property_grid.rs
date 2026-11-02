@@ -24,6 +24,12 @@ use crate::{impl_widget_property_hooks, property_names_of};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
+use super::properties_panel::PropertyValue;
+
+mod records;
+use records::{property_item_from_record, property_item_record};
+pub use records::{NumberBounds, PROPERTY_ITEM_SCHEMA};
+
 /// The editor a property row uses.
 ///
 /// [`PropertyItem`] used to carry only `name`/`value`/`editable`, so every row — including one
@@ -34,7 +40,7 @@ pub enum PropertyItemKind {
     /// Free-form text.
     #[default]
     Text,
-    /// A floating-point number.
+    /// A floating-point number; bounds live on [`PropertyItem::number_bounds`] (RW-13).
     Number,
     /// A checkbox-style flag.
     Bool,
@@ -134,6 +140,12 @@ pub struct PropertyItem {
     /// Consecutive rows with the same category are painted under one non-selectable header; a
     /// `None` row starts an ungrouped section.
     pub category: Option<String>,
+    /// The numeric bounds a number row enforces on commit (RW-13).
+    ///
+    /// `None` keeps the historical behaviour (any parseable number is accepted). Included in the
+    /// row rather than in [`PropertyItemKind::Number`] so an existing `kind` match keeps compiling
+    /// and a custom editor can read the limits from the item it is already given.
+    pub number_bounds: Option<NumberBounds>,
 }
 
 impl PropertyItem {
@@ -147,6 +159,7 @@ impl PropertyItem {
             placeholder: None,
             kind: PropertyItemKind::Text,
             category: None,
+            number_bounds: None,
         }
     }
 
@@ -164,6 +177,7 @@ impl PropertyItem {
             placeholder: None,
             kind: PropertyItemKind::Text,
             category: None,
+            number_bounds: None,
         }
     }
 
@@ -190,154 +204,18 @@ impl PropertyItem {
         self.category = Some(category.into());
         self
     }
-}
 
-/// The published token for a row's editor kind.
-fn property_item_kind_token(kind: &PropertyItemKind) -> &'static str {
-    match kind {
-        PropertyItemKind::Text => "text",
-        PropertyItemKind::Number => "number",
-        PropertyItemKind::Bool => "bool",
-        PropertyItemKind::Color => "color",
-        PropertyItemKind::Choice(_) => "choice",
-        PropertyItemKind::File => "file",
+    /// Attaches numeric bounds to a number row (RW-13). Builder form.
+    pub fn with_bounds(mut self, min: Option<f64>, max: Option<f64>, step: Option<f64>) -> Self {
+        self.number_bounds = Some(NumberBounds { min, max, step });
+        self
     }
-}
 
-/// The declared shape of one property row, as a record (BLUE26 B26.09).
-///
-/// This is the row shape of the `properties` property, and the control owns both ends of it: the
-/// field names are [`PropertyItem`]'s own fields. `name` and `value` are required because
-/// [`PropertyItem::new`] requires them; the rest are optional because a row that omits them is an
-/// editable text property with no category. `kind` is the editor token and `choices` carries a
-/// [`PropertyItemKind::Choice`]'s option list (the only kind with a payload).
-pub const PROPERTY_ITEM_SCHEMA: crate::widget::capability::RecordSchema =
-    crate::widget::capability::RecordSchema {
-        fields: &[
-            crate::widget::capability::RecordField::required(
-                "name",
-                crate::widget::capability::PropertyValueKind::String,
-            ),
-            crate::widget::capability::RecordField::required(
-                "value",
-                crate::widget::capability::PropertyValueKind::String,
-            ),
-            crate::widget::capability::RecordField::optional(
-                "editable",
-                crate::widget::capability::PropertyValueKind::Bool,
-            ),
-            crate::widget::capability::RecordField::optional(
-                "kind",
-                crate::widget::capability::PropertyValueKind::String,
-            ),
-            crate::widget::capability::RecordField::optional(
-                "choices",
-                crate::widget::capability::PropertyValueKind::StringList,
-            ),
-            crate::widget::capability::RecordField::optional(
-                "category",
-                crate::widget::capability::PropertyValueKind::String,
-            ),
-            crate::widget::capability::RecordField::optional(
-                "mixed",
-                crate::widget::capability::PropertyValueKind::Bool,
-            ),
-            crate::widget::capability::RecordField::optional(
-                "placeholder",
-                crate::widget::capability::PropertyValueKind::String,
-            ),
-        ],
-        // A row has no separate identity field; its name is what a document spells it by, and two
-        // rows may legitimately share a name across categories.
-        id_field: "name",
-        ids_unique: false,
-        ids_required: false,
-    };
-
-/// One row of [`PROPERTY_ITEM_SCHEMA`].
-fn property_item_record(item: &PropertyItem) -> crate::widget::capability::RecordValue {
-    let mut record = crate::widget::capability::RecordValue::new()
-        .with("name", CapabilityValue::String(item.name.clone()))
-        .with("value", CapabilityValue::String(item.value.clone()))
-        .with("editable", CapabilityValue::Bool(item.editable))
-        .with("kind", CapabilityValue::String(property_item_kind_token(&item.kind).to_string()));
-    if let PropertyItemKind::Choice(choices) = &item.kind {
-        record = record.with(
-            "choices",
-            CapabilityValue::Tuple(
-                choices.iter().map(|choice| CapabilityValue::String(choice.clone())).collect(),
-            ),
-        );
+    /// Attaches a [`NumberBounds`] value to a number row (RW-13). Builder form.
+    pub fn with_number_bounds(mut self, bounds: NumberBounds) -> Self {
+        self.number_bounds = Some(bounds);
+        self
     }
-    if let Some(category) = &item.category {
-        record = record.with("category", CapabilityValue::String(category.clone()));
-    }
-    if item.mixed {
-        record = record.with("mixed", CapabilityValue::Bool(true));
-    }
-    if let Some(placeholder) = &item.placeholder {
-        record = record.with("placeholder", CapabilityValue::String(placeholder.clone()));
-    }
-    record
-}
-
-/// Rebuilds one [`PropertyItem`] from a row of [`PROPERTY_ITEM_SCHEMA`].
-fn property_item_from_record(
-    record: &crate::widget::capability::RecordValue,
-) -> Result<PropertyItem, CapabilityAccessError> {
-    let name = match record.get("name") {
-        Some(CapabilityValue::String(name)) => name.clone(),
-        _ => return Err(CapabilityAccessError::TypeMismatch),
-    };
-    let value = match record.get("value") {
-        Some(CapabilityValue::String(value)) => value.clone(),
-        _ => return Err(CapabilityAccessError::TypeMismatch),
-    };
-    let editable = match record.get("editable") {
-        None | Some(CapabilityValue::Null) => true,
-        Some(CapabilityValue::Bool(flag)) => *flag,
-        Some(_) => return Err(CapabilityAccessError::TypeMismatch),
-    };
-    let choices = match record.get("choices") {
-        None | Some(CapabilityValue::Null) => Vec::new(),
-        Some(CapabilityValue::Tuple(items)) => items
-            .iter()
-            .map(|item| match item {
-                CapabilityValue::String(choice) => Ok(choice.clone()),
-                _ => Err(CapabilityAccessError::TypeMismatch),
-            })
-            .collect::<Result<Vec<_>, CapabilityAccessError>>()?,
-        Some(_) => return Err(CapabilityAccessError::TypeMismatch),
-    };
-    let kind = match record.get("kind") {
-        None | Some(CapabilityValue::Null) => PropertyItemKind::Text,
-        Some(CapabilityValue::String(token)) => match token.as_str() {
-            "text" => PropertyItemKind::Text,
-            "number" => PropertyItemKind::Number,
-            "bool" => PropertyItemKind::Bool,
-            "color" => PropertyItemKind::Color,
-            "choice" => PropertyItemKind::Choice(choices),
-            "file" => PropertyItemKind::File,
-            _ => return Err(CapabilityAccessError::OutOfRange),
-        },
-        Some(_) => return Err(CapabilityAccessError::TypeMismatch),
-    };
-    let category = match record.get("category") {
-        None | Some(CapabilityValue::Null) => None,
-        Some(CapabilityValue::String(category)) => Some(category.clone()),
-        Some(_) => return Err(CapabilityAccessError::TypeMismatch),
-    };
-    let mixed = match record.get("mixed") {
-        None | Some(CapabilityValue::Null) => false,
-        Some(CapabilityValue::Bool(mixed)) => *mixed,
-        Some(_) => return Err(CapabilityAccessError::TypeMismatch),
-    };
-    let placeholder = match record.get("placeholder") {
-        None | Some(CapabilityValue::Null) => None,
-        Some(CapabilityValue::String(placeholder)) => Some(placeholder.clone()),
-        Some(_) => return Err(CapabilityAccessError::TypeMismatch),
-    };
-    Ok(PropertyItem { name, value, editable, mixed, placeholder, kind, category })
 }
 
 /// One painted line of the property grid: a group header or a property row (V-17).
@@ -425,6 +303,21 @@ pub struct PropertyGrid {
     entry_delegates: HashMap<usize, Arc<dyn PropertyEditorDelegate>>,
     /// An editor a delegate built and the grid is holding for the host (V-008).
     delegate_editor: Option<(usize, Box<dyn Widget>)>,
+    /// Per-row error messages painted in the value column (RW-12).
+    row_errors: HashMap<usize, String>,
+    /// Emitted with `(row, message)` when an edit is refused (RW-12).
+    ///
+    /// A refusal covers both faults the grid can see: a read-only row asked to edit, and a value
+    /// the row's kind refuses (not a number, outside the row's bounds, not one of a choice row's
+    /// options). Emitting rather than silently keeping the old value is what lets a host show the
+    /// reason instead of guessing why a keystroke did nothing.
+    pub cell_change_rejected: Signal1<(usize, String)>,
+    /// Emitted with `(property name, typed value)` when a cell commits (RW-14).
+    ///
+    /// `cell_changed` keeps its `(row, text)` payload unchanged; this is the type-tagged
+    /// counterpart, so a host that needs a `f64` or a `bool` does not have to re-parse text using
+    /// a row map it maintains itself.
+    pub property_committed: Signal1<(String, PropertyValue)>,
 }
 
 impl PropertyGrid {
@@ -548,6 +441,9 @@ impl PropertyGrid {
             on_category_toggled: Signal1::new(),
             entry_delegates: HashMap::new(),
             delegate_editor: None,
+            row_errors: HashMap::new(),
+            cell_change_rejected: Signal1::new(),
+            property_committed: Signal1::new(),
         }
     }
 
@@ -596,6 +492,7 @@ impl PropertyGrid {
         self.editing = None;
         self.choice_popup = None;
         self.delegate_editor = None;
+        self.row_errors.clear();
         self.base.request_redraw();
     }
 
@@ -610,16 +507,14 @@ impl PropertyGrid {
         }
         let removed = self.properties.remove(index);
         self.group_revision = self.group_revision.wrapping_add(1);
-        self.selected_index = match self.selected_index {
-            Some(selected) if selected == index => None,
-            Some(selected) if selected > index => Some(selected - 1),
-            other => other.filter(|&selected| selected < self.properties.len()),
-        };
+        // Selection, an open editor, a choice popup, a delegate binding and a row error all name a
+        // row index, so they move with the rows rather than being dropped wholesale (RW-11).
+        self.shift_row_state(index, -1);
+        // A hover is transient pointer position over a row that just moved; the next `MouseMove`
+        // re-derives it from the new geometry.
         self.hovered_row = None;
-        self.editing = None;
-        self.choice_popup = None;
-        self.delegate_editor = None;
         self.scroll_offset = self.scroll_offset.min(self.max_scroll());
+        self.base.request_layout();
         self.base.request_redraw();
         Some(removed)
     }
@@ -667,6 +562,199 @@ impl PropertyGrid {
     pub fn add_property_item(&mut self, item: PropertyItem) {
         self.properties.push(item);
         self.group_revision = self.group_revision.wrapping_add(1);
+        self.base.request_redraw();
+    }
+
+    // ── Incremental row edits (RW-11) ──
+
+    /// Inserts `item` at `index` (clamped), returning the index it landed at.
+    ///
+    /// The incremental counterpart of `clear()` + `add_property_item()`: the rest of the rows are
+    /// untouched, the selection, hover, open editor, choice popup and custom-editor bindings move
+    /// with their rows instead of being dropped, and only the affected geometry is recomputed.
+    pub fn insert_property(&mut self, index: usize, item: PropertyItem) -> usize {
+        let index = index.min(self.properties.len());
+        self.properties.insert(index, item);
+        self.group_revision = self.group_revision.wrapping_add(1);
+        self.shift_row_state(index, 1);
+        self.base.request_layout();
+        self.base.request_redraw();
+        index
+    }
+
+    /// Replaces the row at `index` in place, returning whether it exists.
+    ///
+    /// The selection and any open edit are preserved: the row keeps its index, so an editor that
+    /// was open on it still names the same row. A host that changed only a value should prefer
+    /// [`Self::set_value`], which leaves the row's name, kind and category alone as well.
+    pub fn update_property(&mut self, index: usize, item: PropertyItem) -> bool {
+        let Some(slot) = self.properties.get_mut(index) else {
+            return false;
+        };
+        let category_changed = slot.category != item.category;
+        *slot = item;
+        if category_changed {
+            // Group headers are derived from the row categories, so the display cache must rebuild.
+            self.group_revision = self.group_revision.wrapping_add(1);
+            self.scroll_offset = self.scroll_offset.min(self.max_scroll());
+        }
+        self.base.request_redraw();
+        true
+    }
+
+    /// Moves every row-indexed piece of state across an insertion (`delta = 1`) or removal
+    /// (`delta = -1`).
+    ///
+    /// Kept in one place because the grid holds six separate row-indexed maps and fields; a new
+    /// one added later has one obvious home rather than six places to remember.
+    fn shift_row_state(&mut self, at: usize, delta: isize) {
+        let shift = move |index: usize| -> Option<usize> {
+            if index == at && delta < 0 {
+                return None;
+            }
+            if index >= at {
+                return usize::try_from(index as isize + delta).ok();
+            }
+            Some(index)
+        };
+        self.selected_index = self.selected_index.and_then(shift);
+        self.hovered_row = self.hovered_row.and_then(shift);
+        self.choice_popup = self.choice_popup.and_then(shift);
+        // An edit on the removed row is closed; an edit below it moves up with its row.
+        self.editing = match self.editing.take() {
+            Some(mut edit) => {
+                if delta < 0 && edit.row == at {
+                    None
+                } else {
+                    edit.row = shift(edit.row).unwrap_or(edit.row);
+                    (edit.row < self.properties.len()).then_some(edit)
+                }
+            }
+            None => None,
+        };
+        if let Some(row) = self.delegate_editor.as_ref().map(|(row, _)| *row) {
+            match shift(row) {
+                Some(next) => {
+                    if let Some((row, _)) = self.delegate_editor.as_mut() {
+                        *row = next;
+                    }
+                }
+                None => self.delegate_editor = None,
+            }
+        }
+        let delegates = core::mem::take(&mut self.entry_delegates);
+        for (row, delegate) in delegates {
+            if let Some(row) = shift(row) {
+                self.entry_delegates.insert(row, delegate);
+            }
+        }
+        shift_index_map(&mut self.row_errors, at, delta);
+    }
+
+    // ── Row errors (RW-12) ──
+
+    /// Sets or clears the error message painted on row `index`, returning whether it exists.
+    pub fn set_row_error(&mut self, index: usize, message: Option<String>) -> bool {
+        if index >= self.properties.len() {
+            return false;
+        }
+        match message.filter(|message| !message.is_empty()) {
+            Some(message) => {
+                self.row_errors.insert(index, message);
+            }
+            None => {
+                self.row_errors.remove(&index);
+            }
+        }
+        self.base.request_redraw();
+        true
+    }
+
+    /// Clears the error message on row `index`, returning whether one was set.
+    pub fn clear_row_error(&mut self, index: usize) -> bool {
+        if self.row_errors.remove(&index).is_some() {
+            self.base.request_redraw();
+            true
+        } else {
+            false
+        }
+    }
+
+    /// The error message painted on row `index`, if any.
+    pub fn row_error(&self, index: usize) -> Option<&str> {
+        if index >= self.properties.len() {
+            return None;
+        }
+        self.row_errors.get(&index).map(String::as_str)
+    }
+
+    /// Clears every row error.
+    pub fn clear_row_errors(&mut self) {
+        if self.row_errors.is_empty() {
+            return;
+        }
+        self.row_errors.clear();
+        self.base.request_redraw();
+    }
+
+    /// Sets or clears the numeric bounds of row `index` (RW-13), returning whether it exists.
+    pub fn set_number_bounds(&mut self, index: usize, bounds: Option<NumberBounds>) -> bool {
+        let Some(item) = self.properties.get_mut(index) else {
+            return false;
+        };
+        if item.number_bounds == bounds {
+            return true;
+        }
+        item.number_bounds = bounds;
+        self.base.request_redraw();
+        true
+    }
+
+    /// The numeric bounds row `index` enforces, if any (RW-13).
+    pub fn number_bounds(&self, index: usize) -> Option<NumberBounds> {
+        self.properties.get(index).and_then(|item| item.number_bounds)
+    }
+
+    /// Opens the editor for `index`, reporting a refusal through
+    /// [`Self::cell_change_rejected`] (RW-12).
+    ///
+    /// The public entry point: a double-click reaches the same sequence, but a host driving the
+    /// grid from its own gesture needs one call that also reports a read-only row rather than
+    /// returning `false` silently.
+    pub fn edit_property(&mut self, index: usize) -> bool {
+        if index >= self.properties.len() {
+            self.reject_cell_change(index, format!("row {index} does not exist"));
+            return false;
+        }
+        if !self.properties[index].editable {
+            let name = self.properties[index].name.clone();
+            self.reject_cell_change(index, format!("{name} is read-only"));
+            return false;
+        }
+        self.begin_grid_edit(index)
+    }
+
+    /// Commits `text` to row `index` through the row's kind and bounds, reporting a refusal.
+    ///
+    /// Returns whether the value was accepted. This is the host-facing counterpart of pressing
+    /// Enter in the built-in editor: the same coercion, the same bounds and the same rejection
+    /// signal, so a host that edits a row with its own widget behaves identically.
+    pub fn commit_property_text(&mut self, index: usize, text: &str) -> bool {
+        match self.coerce_edit_value(index, text) {
+            Ok(value) => {
+                self.commit_edit_value(index, value);
+                true
+            }
+            Err(message) => {
+                self.reject_cell_change(index, message);
+                false
+            }
+        }
+    }
+
+    /// Reports a refused edit on `index`.
+    fn reject_cell_change(&mut self, index: usize, message: impl Into<String>) {
+        self.cell_change_rejected.emit((index, message.into()));
         self.base.request_redraw();
     }
 
@@ -785,9 +873,14 @@ impl PropertyGrid {
     /// Writes a committed value into row `index` and reports it.
     ///
     /// An empty commit on a **mixed** row is not a value: the user has not said which of the
-    /// differing values to apply, so the row stays mixed and no `cell_changed` is emitted. Any
-    /// other commit resolves the difference and clears the flag.
+    /// differing values to apply, so the row stays mixed and no signal is emitted. Any other commit
+    /// resolves the difference and clears the flag.
+    ///
+    /// Two reports leave here (RW-14): `cell_changed` keeps its historical `(row, text)` payload,
+    /// and `property_committed` adds `(name, typed value)` so a host does not have to re-parse the
+    /// text with a row map it maintains itself.
     fn commit_edit_value(&mut self, index: usize, value: String) {
+        let mut committed = None;
         if let Some(item) = self.properties.get_mut(index) {
             if item.mixed && value.is_empty() {
                 self.base.request_redraw();
@@ -795,50 +888,61 @@ impl PropertyGrid {
             }
             item.value = value.clone();
             item.mixed = false;
+            committed = Some((item.name.clone(), committed_value(item, &value)));
         }
         self.cell_changed.emit((index, value));
+        if let Some((name, typed)) = committed {
+            self.property_committed.emit((name, typed));
+        }
         self.base.request_redraw();
     }
 
-    /// Validates a text buffer against the row's kind and returns the value to store.
+    /// Validates a text buffer against the row's kind and bounds and returns the value to store.
     ///
-    /// A buffer that cannot be parsed keeps the row's previous value rather than writing an
-    /// invalid one; that is the grid's equivalent of `PropertiesPanel::commit_edit` refusing a
-    /// malformed number.
-    fn coerce_edit_value(&self, index: usize, text: &str) -> String {
+    /// A refusal is an `Err` carrying the reason, which every caller reports through
+    /// [`Self::cell_change_rejected`] (RW-12) instead of quietly keeping the old value. Bounds and
+    /// step are enforced here (RW-13), so the built-in editor and a host-driven commit share one
+    /// rule.
+    fn coerce_edit_value(&self, index: usize, text: &str) -> Result<String, String> {
         let Some(item) = self.properties.get(index) else {
-            return text.to_string();
+            return Err(format!("row {index} does not exist"));
         };
         match &item.kind {
-            PropertyItemKind::Number => text.trim().parse::<f64>().map_or_else(
-                |_| item.value.clone(),
-                |number| {
-                    if number.fract() == 0.0 && number.is_finite() {
-                        format!("{}", number as i64)
-                    } else {
-                        format!("{number}")
-                    }
-                },
-            ),
+            PropertyItemKind::Number => {
+                let number =
+                    text.trim().parse::<f64>().map_err(|_| format!("{text} is not a number"))?;
+                if !number.is_finite() {
+                    return Err(format!("{text} is not a finite number"));
+                }
+                if let Some(bounds) = item.number_bounds {
+                    bounds.validate(number)?;
+                }
+                Ok(if number.fract() == 0.0 {
+                    format!("{}", number as i64)
+                } else {
+                    format!("{number}")
+                })
+            }
             PropertyItemKind::Color => Color::parse_hex(text)
-                .map_or_else(|| item.value.clone(), |color| color.to_hex_rgb()),
+                .map(|color| color.to_hex_rgb())
+                .ok_or_else(|| format!("{text} is not a colour")),
             PropertyItemKind::Choice(options) => {
                 if options.iter().any(|option| option == text) {
-                    text.to_string()
+                    Ok(text.to_string())
                 } else {
-                    item.value.clone()
+                    Err(format!("{text} is not one of this property's options"))
                 }
             }
             PropertyItemKind::Bool => {
                 if text.eq_ignore_ascii_case("true") {
-                    "true".to_string()
+                    Ok("true".to_string())
                 } else if text.eq_ignore_ascii_case("false") {
-                    "false".to_string()
+                    Ok("false".to_string())
                 } else {
-                    item.value.clone()
+                    Err(format!("{text} is neither true nor false"))
                 }
             }
-            PropertyItemKind::Text | PropertyItemKind::File => text.to_string(),
+            PropertyItemKind::Text | PropertyItemKind::File => Ok(text.to_string()),
         }
     }
 
@@ -941,9 +1045,16 @@ impl PropertyGrid {
         let delegate = self.entry_delegates.get(&index)?.clone();
         let entry = self.properties.get(index)?.clone();
         let text = delegate.commit_value(&entry, editor.as_ref())?;
-        let value = self.coerce_edit_value(index, &text);
-        self.commit_edit_value(index, value);
-        Some(text)
+        match self.coerce_edit_value(index, &text) {
+            Ok(value) => {
+                self.commit_edit_value(index, value);
+                Some(text)
+            }
+            Err(message) => {
+                self.reject_cell_change(index, message);
+                None
+            }
+        }
     }
 }
 
@@ -1019,6 +1130,24 @@ impl Widget for PropertyGrid {
                 &self.file_picker_requested,
                 |v| crate::widget::capability::CapabilityValue::UInt(*v as u64),
             )),
+            "cell_change_rejected" => Some(EventSignalRef::mapped(
+                "cell_change_rejected",
+                &self.cell_change_rejected,
+                |v| {
+                    crate::widget::capability::CapabilityValue::Tuple(crate::compat::Vec::from([
+                        crate::widget::capability::CapabilityValue::UInt(v.0 as u64),
+                        crate::widget::capability::CapabilityValue::String(v.1.clone()),
+                    ]))
+                },
+            )),
+            "property_committed" => {
+                Some(EventSignalRef::mapped("property_committed", &self.property_committed, |v| {
+                    crate::widget::capability::CapabilityValue::Tuple(crate::compat::Vec::from([
+                        crate::widget::capability::CapabilityValue::String(v.0.clone()),
+                        crate::widget::capability::CapabilityValue::String(format!("{:?}", v.1)),
+                    ]))
+                }))
+            }
             _ => None,
         }
     }
@@ -1325,42 +1454,63 @@ impl Draw for PropertyGrid {
                     // Value text. A mixed row shows its placeholder in a muted ink instead of a
                     // value, so “these selected objects differ” is visible in the cell that the
                     // edit will resolve (feedback C-3).
+                    //
+                    // A row error (RW-12) takes the value cell's ink entirely: the message is what
+                    // the user needs, and painting it over the value would make both unreadable.
                     // An editable value is a link-like affordance, so it reads the theme's accent
                     // instead of a literal navy that disappears on a dark surface.
                     let item = &self.properties[i];
                     let editing_this_row = self.editing.as_ref().is_some_and(|edit| edit.row == i);
-                    let value_color = if !is_enabled {
-                        disabled_ink
-                    } else if item.mixed && !editing_this_row {
-                        ink.blend(&surface, 0.45)
-                    } else if item.editable {
-                        accent
+                    if let Some(message) = self.row_errors.get(&i) {
+                        context.draw_text_fitted_cow(
+                            Rect::new(
+                                row_rect.x + name_col_width as i32 + 4,
+                                row_line.y,
+                                row_rect.width.saturating_sub(name_col_width).saturating_sub(8),
+                                row_line.height.max(1),
+                            ),
+                            message,
+                            &value_font,
+                            Color::ERROR,
+                            HorizontalAlignment::Left,
+                        );
                     } else {
-                        ink
-                    };
-                    let value_text = if editing_this_row {
-                        std::borrow::Cow::Owned(
-                            self.editing.as_ref().expect("the row was checked above").with_caret(),
-                        )
-                    } else if item.mixed {
-                        std::borrow::Cow::Borrowed(
-                            item.placeholder.as_deref().unwrap_or(MIXED_PLACEHOLDER),
-                        )
-                    } else {
-                        std::borrow::Cow::Borrowed(item.value.as_str())
-                    };
-                    context.draw_text_fitted_cow(
-                        Rect::new(
-                            row_rect.x + name_col_width as i32 + 4,
-                            row_line.y,
-                            row_rect.width.saturating_sub(name_col_width).saturating_sub(8),
-                            row_line.height.max(1),
-                        ),
-                        &value_text,
-                        &value_font,
-                        value_color,
-                        HorizontalAlignment::Left,
-                    );
+                        let value_color = if !is_enabled {
+                            disabled_ink
+                        } else if item.mixed && !editing_this_row {
+                            ink.blend(&surface, 0.45)
+                        } else if item.editable {
+                            accent
+                        } else {
+                            ink
+                        };
+                        let value_text = if editing_this_row {
+                            std::borrow::Cow::Owned(
+                                self.editing
+                                    .as_ref()
+                                    .expect("the row was checked above")
+                                    .with_caret(),
+                            )
+                        } else if item.mixed {
+                            std::borrow::Cow::Borrowed(
+                                item.placeholder.as_deref().unwrap_or(MIXED_PLACEHOLDER),
+                            )
+                        } else {
+                            std::borrow::Cow::Borrowed(item.value.as_str())
+                        };
+                        context.draw_text_fitted_cow(
+                            Rect::new(
+                                row_rect.x + name_col_width as i32 + 4,
+                                row_line.y,
+                                row_rect.width.saturating_sub(name_col_width).saturating_sub(8),
+                                row_line.height.max(1),
+                            ),
+                            &value_text,
+                            &value_font,
+                            value_color,
+                            HorizontalAlignment::Left,
+                        );
+                    }
                 }
             }
 
@@ -1416,8 +1566,10 @@ impl EventHandler for PropertyGrid {
                                 .find(|(_, rect)| rect.contains_point(*pos));
                             self.choice_popup = None;
                             if let Some((option, _)) = hit {
-                                let value = self.coerce_edit_value(popup, &option);
-                                self.commit_edit_value(popup, value);
+                                match self.coerce_edit_value(popup, &option) {
+                                    Ok(value) => self.commit_edit_value(popup, value),
+                                    Err(message) => self.reject_cell_change(popup, message),
+                                }
                             }
                             self.base.request_redraw();
                             return;
@@ -1531,7 +1683,9 @@ impl EventHandler for PropertyGrid {
             }
             Event::MouseDoubleClick { pos, button: 1 } => {
                 if let Some(row) = self.row_index_at(*pos) {
-                    let _ = self.begin_grid_edit(row);
+                    // The public entry point, so a read-only row reports the refusal through
+                    // `cell_change_rejected` instead of silently doing nothing (RW-12).
+                    let _ = self.edit_property(row);
                 }
             }
             Event::ContextMenu { pos } => self.context_menu_requested.emit(*pos),
@@ -1567,8 +1721,10 @@ impl EventHandler for PropertyGrid {
                             let edit = self.editing.take();
                             if let Some(edit) = edit {
                                 let (row, text) = (edit.row, edit.buffer);
-                                let value = self.coerce_edit_value(row, &text);
-                                self.commit_edit_value(row, value);
+                                match self.coerce_edit_value(row, &text) {
+                                    Ok(value) => self.commit_edit_value(row, value),
+                                    Err(message) => self.reject_cell_change(row, message),
+                                }
                             }
                             false
                         }
@@ -1717,6 +1873,49 @@ impl EventHandler for PropertyGrid {
             }
         }
     }
+}
+
+/// Converts a committed text value into the typed shape the row's kind describes (RW-14).
+///
+/// The conversion is total: a value the kind cannot parse stays [`PropertyValue::Text`], so a
+/// host that pattern-matches never has to handle a "typed but meaningless" variant. The commit
+/// path has already validated the text, so the fallback only triggers for a caller that wrote the
+/// string through `set_value`.
+fn committed_value(item: &PropertyItem, value: &str) -> PropertyValue {
+    match &item.kind {
+        PropertyItemKind::Number => value
+            .trim()
+            .parse::<f64>()
+            .map(PropertyValue::Number)
+            .unwrap_or_else(|_| PropertyValue::Text(value.to_string())),
+        PropertyItemKind::Bool => PropertyValue::Bool(value.eq_ignore_ascii_case("true")),
+        PropertyItemKind::Color => Color::parse_hex(value)
+            .map(PropertyValue::Color)
+            .unwrap_or_else(|| PropertyValue::Text(value.to_string())),
+        PropertyItemKind::Choice(options) => PropertyValue::Choice {
+            options: options.clone(),
+            selected: options.iter().position(|option| option == value).unwrap_or(0),
+        },
+        PropertyItemKind::File => PropertyValue::File(value.to_string()),
+        PropertyItemKind::Text => PropertyValue::Text(value.to_string()),
+    }
+}
+
+/// Moves a row-indexed map across an insertion (`delta = 1`) or removal (`delta = -1`).
+fn shift_index_map<V>(map: &mut HashMap<usize, V>, at: usize, delta: isize) {
+    if map.is_empty() {
+        return;
+    }
+    let mut shifted = HashMap::with_capacity(map.len());
+    for (key, value) in map.drain() {
+        if delta < 0 && key == at {
+            continue;
+        }
+        let key =
+            if key >= at { usize::try_from(key as isize + delta).unwrap_or(key) } else { key };
+        shifted.insert(key, value);
+    }
+    *map = shifted;
 }
 
 #[cfg(test)]
@@ -2410,5 +2609,137 @@ mod tests {
         let third = grid.display_rows();
         assert!(!Rc::ptr_eq(&first, &third), "a structural change rebuilds the row set");
         assert_eq!(third.len(), 3);
+    }
+
+    // ── RW-11: incremental row edits ──
+
+    #[test]
+    fn insert_and_update_keep_the_selection_on_its_row() {
+        let mut grid = PropertyGrid::new(Rect::new(0, 0, 300, 200));
+        grid.add_property("A", "1", true);
+        grid.add_property("B", "2", true);
+        grid.set_selected_index(Some(1));
+
+        let at = grid.insert_property(0, PropertyItem::new("C", "3", true));
+        assert_eq!(at, 0);
+        assert_eq!(grid.property_count(), 3);
+        assert_eq!(grid.properties()[0].name, "C");
+        assert_eq!(grid.selected_index(), Some(2), "the selection follows its row");
+
+        assert!(grid.update_property(2, PropertyItem::new("B2", "20", true)));
+        assert_eq!(grid.properties()[2].name, "B2");
+        assert_eq!(grid.value(2), Some("20"));
+        assert_eq!(grid.selected_index(), Some(2), "an update keeps the selection");
+        assert!(!grid.update_property(9, PropertyItem::new("x", "y", true)));
+
+        let removed = grid.remove_property(0).expect("row 0 exists");
+        assert_eq!(removed.name, "C");
+        assert_eq!(grid.selected_index(), Some(1), "the selection moves back with its row");
+    }
+
+    // ── RW-12: row errors and refused edits ──
+
+    #[test]
+    fn row_errors_move_with_their_rows_and_read_only_edits_are_reported() {
+        let mut grid = PropertyGrid::new(Rect::new(0, 0, 300, 200));
+        grid.add_property("A", "1", true);
+        grid.add_property("ReadOnly", "x", false);
+
+        assert!(grid.set_row_error(1, Some("must be positive".to_string())));
+        assert_eq!(grid.row_error(1), Some("must be positive"));
+        assert!(!grid.set_row_error(9, Some("nope".to_string())));
+
+        grid.insert_property(0, PropertyItem::new("New", "0", true));
+        assert_eq!(grid.row_error(2), Some("must be positive"), "the error follows its row");
+        assert_eq!(grid.row_error(1), None);
+        assert!(grid.clear_row_error(2));
+        assert_eq!(grid.row_error(2), None);
+
+        let rejected = Arc::new(Mutex::new(Vec::<(usize, String)>::new()));
+        let sink = Arc::clone(&rejected);
+        grid.cell_change_rejected.connect(move |payload| {
+            sink.lock().expect("lock").push(payload.as_ref().clone());
+        });
+
+        assert!(!grid.edit_property(2), "a read-only row refuses the editor");
+        let seen = rejected.lock().expect("lock");
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0].0, 2);
+        assert!(seen[0].1.contains("read-only"), "the reason names the cause: {seen:?}");
+    }
+
+    // ── RW-13: number bounds ──
+
+    #[test]
+    fn number_bounds_are_exposed_and_enforced_on_commit() {
+        let mut grid = PropertyGrid::new(Rect::new(0, 0, 300, 200));
+        grid.add_property_item(
+            PropertyItem::new("count", "5", true)
+                .with_kind(PropertyItemKind::Number)
+                .with_number_bounds(NumberBounds::range(0.0, 10.0).with_step(1.0)),
+        );
+        assert_eq!(
+            grid.number_bounds(0),
+            Some(NumberBounds { min: Some(0.0), max: Some(10.0), step: Some(1.0) })
+        );
+
+        let rejected = Arc::new(Mutex::new(Vec::<String>::new()));
+        let sink = Arc::clone(&rejected);
+        grid.cell_change_rejected.connect(move |payload| {
+            sink.lock().expect("lock").push(payload.1.clone());
+        });
+
+        assert!(!grid.commit_property_text(0, "20"), "above the maximum");
+        assert_eq!(grid.value(0), Some("5"), "a refused value does not overwrite the row");
+        assert!(!grid.commit_property_text(0, "2.5"), "not on the step grid");
+        assert_eq!(rejected.lock().expect("lock").len(), 2);
+
+        assert!(grid.commit_property_text(0, "7"));
+        assert_eq!(grid.value(0), Some("7"));
+        assert!(!grid.commit_property_text(0, "not a number"));
+
+        assert!(grid.set_number_bounds(0, None));
+        assert_eq!(grid.number_bounds(0), None);
+        assert!(!grid.set_number_bounds(9, Some(NumberBounds::unbounded())));
+    }
+
+    // ── RW-14: typed commit signal ──
+
+    #[test]
+    fn a_commit_reports_the_name_and_the_typed_value() {
+        let mut grid = PropertyGrid::new(Rect::new(0, 0, 300, 200));
+        grid.add_property_item(
+            PropertyItem::new("count", "1", true).with_kind(PropertyItemKind::Number),
+        );
+        grid.add_property_item(
+            PropertyItem::new("visible", "true", true).with_kind(PropertyItemKind::Bool),
+        );
+
+        let typed = Arc::new(Mutex::new(Vec::<(String, PropertyValue)>::new()));
+        let text = Arc::new(Mutex::new(Vec::<(usize, String)>::new()));
+        let typed_sink = Arc::clone(&typed);
+        let text_sink = Arc::clone(&text);
+        grid.property_committed.connect(move |payload| {
+            typed_sink.lock().expect("lock").push(payload.as_ref().clone());
+        });
+        grid.cell_changed.connect(move |payload| {
+            text_sink.lock().expect("lock").push(payload.as_ref().clone());
+        });
+
+        assert!(grid.commit_property_text(0, "42"));
+        assert!(grid.commit_property_text(1, "false"));
+
+        assert_eq!(
+            *typed.lock().expect("lock"),
+            vec![
+                ("count".to_string(), PropertyValue::Number(42.0)),
+                ("visible".to_string(), PropertyValue::Bool(false)),
+            ]
+        );
+        assert_eq!(
+            *text.lock().expect("lock"),
+            vec![(0usize, "42".to_string()), (1usize, "false".to_string())],
+            "cell_changed keeps its historical payload"
+        );
     }
 }

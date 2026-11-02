@@ -96,16 +96,6 @@ macro_rules! default_modern_widgets {
             0
         }
         /// Create audio visualizer control.
-        fn create_audio_visualizer(
-            &self,
-            _parent: ObjectId,
-            _x: i32,
-            _y: i32,
-            _width: u32,
-            _height: u32,
-        ) -> ObjectId {
-            0
-        }
         /// Create auto-complete edit control.
         fn create_auto_complete_edit(
             &self,
@@ -195,16 +185,6 @@ macro_rules! default_modern_widgets {
             0
         }
         /// Create camera preview control.
-        fn create_camera_preview(
-            &self,
-            _parent: ObjectId,
-            _x: i32,
-            _y: i32,
-            _width: u32,
-            _height: u32,
-        ) -> ObjectId {
-            0
-        }
         /// Create carousel control.
         fn create_carousel(
             &self,
@@ -547,16 +527,6 @@ macro_rules! default_modern_widgets {
             0
         }
         /// Create lottie widget control.
-        fn create_lottie_widget(
-            &self,
-            _parent: ObjectId,
-            _x: i32,
-            _y: i32,
-            _width: u32,
-            _height: u32,
-        ) -> ObjectId {
-            0
-        }
         /// Create masked edit control.
         fn create_masked_edit(
             &self,
@@ -801,16 +771,6 @@ macro_rules! default_modern_widgets {
             0
         }
         /// Create rive widget control.
-        fn create_rive_widget(
-            &self,
-            _parent: ObjectId,
-            _x: i32,
-            _y: i32,
-            _width: u32,
-            _height: u32,
-        ) -> ObjectId {
-            0
-        }
         /// Create roller control.
         fn create_roller(
             &self,
@@ -982,77 +942,6 @@ macro_rules! default_modern_widgets {
         ) -> ObjectId {
             0
         }
-        /// Create candlestick (K-line) chart control.
-        fn create_candlestick_chart(
-            &self,
-            _parent: ObjectId,
-            _x: i32,
-            _y: i32,
-            _width: u32,
-            _height: u32,
-        ) -> ObjectId {
-            0
-        }
-
-        /// Create volume histogram control.
-        fn create_volume_chart(
-            &self,
-            _parent: ObjectId,
-            _x: i32,
-            _y: i32,
-            _width: u32,
-            _height: u32,
-        ) -> ObjectId {
-            0
-        }
-
-        /// Create market depth chart control.
-        fn create_depth_chart(
-            &self,
-            _parent: ObjectId,
-            _x: i32,
-            _y: i32,
-            _width: u32,
-            _height: u32,
-        ) -> ObjectId {
-            0
-        }
-
-        /// Create order book ladder control.
-        fn create_order_book(
-            &self,
-            _parent: ObjectId,
-            _x: i32,
-            _y: i32,
-            _width: u32,
-            _height: u32,
-        ) -> ObjectId {
-            0
-        }
-
-        /// Create quote board control.
-        fn create_quote_board(
-            &self,
-            _parent: ObjectId,
-            _x: i32,
-            _y: i32,
-            _width: u32,
-            _height: u32,
-        ) -> ObjectId {
-            0
-        }
-
-        /// Create technical indicator chart control.
-        fn create_indicator_chart(
-            &self,
-            _parent: ObjectId,
-            _x: i32,
-            _y: i32,
-            _width: u32,
-            _height: u32,
-        ) -> ObjectId {
-            0
-        }
         /// Create sparkline control.
         fn create_sparkline(
             &self,
@@ -1201,16 +1090,6 @@ macro_rules! default_modern_widgets {
             0
         }
         /// Create video player control.
-        fn create_video_player(
-            &self,
-            _parent: ObjectId,
-            _x: i32,
-            _y: i32,
-            _width: u32,
-            _height: u32,
-        ) -> ObjectId {
-            0
-        }
         /// Create wizard dialog control.
         fn create_wizard_dialog(
             &self,

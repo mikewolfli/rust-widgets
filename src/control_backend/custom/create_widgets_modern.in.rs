@@ -66,18 +66,7 @@ macro_rules! impl_modern_widgets {
         }
 
         #[cfg(not(alloc_frugal))]
-        fn create_audio_visualizer(
-            &self,
-            parent: ObjectId,
-            x: i32,
-            y: i32,
-            width: u32,
-            height: u32,
-        ) -> ObjectId {
-            self.mount_widget_of_kind(WidgetKind::AudioVisualizer, parent, "", x, y, width, height)
-        }
-
-        #[cfg(not(alloc_frugal))]
+                #[cfg(not(alloc_frugal))]
         fn create_auto_complete_edit(
             &self,
             parent: ObjectId,
@@ -190,18 +179,7 @@ macro_rules! impl_modern_widgets {
         }
 
         #[cfg(not(alloc_frugal))]
-        fn create_camera_preview(
-            &self,
-            parent: ObjectId,
-            x: i32,
-            y: i32,
-            width: u32,
-            height: u32,
-        ) -> ObjectId {
-            self.mount_widget_of_kind(WidgetKind::CameraPreview, parent, "", x, y, width, height)
-        }
-
-        #[cfg(not(alloc_frugal))]
+                #[cfg(not(alloc_frugal))]
         fn create_carousel(
             &self,
             parent: ObjectId,
@@ -609,18 +587,7 @@ macro_rules! impl_modern_widgets {
         }
 
         #[cfg(not(alloc_frugal))]
-        fn create_lottie_widget(
-            &self,
-            parent: ObjectId,
-            x: i32,
-            y: i32,
-            width: u32,
-            height: u32,
-        ) -> ObjectId {
-            self.mount_widget_of_kind(WidgetKind::LottieWidget, parent, "", x, y, width, height)
-        }
-
-        #[cfg(not(alloc_frugal))]
+                #[cfg(not(alloc_frugal))]
         fn create_masked_edit(
             &self,
             parent: ObjectId,
@@ -886,18 +853,7 @@ macro_rules! impl_modern_widgets {
         }
 
         #[cfg(not(alloc_frugal))]
-        fn create_rive_widget(
-            &self,
-            parent: ObjectId,
-            x: i32,
-            y: i32,
-            width: u32,
-            height: u32,
-        ) -> ObjectId {
-            self.mount_widget_of_kind(WidgetKind::RiveWidget, parent, "", x, y, width, height)
-        }
-
-        fn create_roller(
+                fn create_roller(
             &self,
             parent: ObjectId,
             x: i32,
@@ -1077,78 +1033,6 @@ macro_rules! impl_modern_widgets {
         }
 
         #[cfg(not(alloc_frugal))]
-        fn create_candlestick_chart(
-            &self,
-            parent: ObjectId,
-            x: i32,
-            y: i32,
-            width: u32,
-            height: u32,
-        ) -> ObjectId {
-            self.mount_widget_of_kind(WidgetKind::CandlestickChart, parent, "", x, y, width, height)
-        }
-
-        #[cfg(not(alloc_frugal))]
-        fn create_volume_chart(
-            &self,
-            parent: ObjectId,
-            x: i32,
-            y: i32,
-            width: u32,
-            height: u32,
-        ) -> ObjectId {
-            self.mount_widget_of_kind(WidgetKind::VolumeChart, parent, "", x, y, width, height)
-        }
-
-        #[cfg(not(alloc_frugal))]
-        fn create_depth_chart(
-            &self,
-            parent: ObjectId,
-            x: i32,
-            y: i32,
-            width: u32,
-            height: u32,
-        ) -> ObjectId {
-            self.mount_widget_of_kind(WidgetKind::DepthChart, parent, "", x, y, width, height)
-        }
-
-        #[cfg(not(alloc_frugal))]
-        fn create_order_book(
-            &self,
-            parent: ObjectId,
-            x: i32,
-            y: i32,
-            width: u32,
-            height: u32,
-        ) -> ObjectId {
-            self.mount_widget_of_kind(WidgetKind::OrderBook, parent, "", x, y, width, height)
-        }
-
-        #[cfg(not(alloc_frugal))]
-        fn create_quote_board(
-            &self,
-            parent: ObjectId,
-            x: i32,
-            y: i32,
-            width: u32,
-            height: u32,
-        ) -> ObjectId {
-            self.mount_widget_of_kind(WidgetKind::QuoteBoard, parent, "", x, y, width, height)
-        }
-
-        #[cfg(not(alloc_frugal))]
-        fn create_indicator_chart(
-            &self,
-            parent: ObjectId,
-            x: i32,
-            y: i32,
-            width: u32,
-            height: u32,
-        ) -> ObjectId {
-            self.mount_widget_of_kind(WidgetKind::IndicatorChart, parent, "", x, y, width, height)
-        }
-
-        #[cfg(not(alloc_frugal))]
         fn create_sparkline(
             &self,
             parent: ObjectId,
@@ -1255,18 +1139,7 @@ macro_rules! impl_modern_widgets {
         }
 
         #[cfg(not(alloc_frugal))]
-        fn create_video_player(
-            &self,
-            parent: ObjectId,
-            x: i32,
-            y: i32,
-            width: u32,
-            height: u32,
-        ) -> ObjectId {
-            self.mount_widget_of_kind(WidgetKind::VideoPlayer, parent, "", x, y, width, height)
-        }
-
-        #[cfg(not(alloc_frugal))]
+                #[cfg(not(alloc_frugal))]
         fn create_wizard_dialog(
             &self,
             parent: ObjectId,
@@ -1342,40 +1215,7 @@ macro_rules! impl_modern_widgets {
             self.mount_widget_of_kind(WidgetKind::ChartTooltip, parent, "", x, y, width, height)
         }
 
-        fn create_compass(
-            &self,
-            parent: ObjectId,
-            x: i32,
-            y: i32,
-            width: u32,
-            height: u32,
-        ) -> ObjectId {
-            self.mount_widget_of_kind(WidgetKind::Compass, parent, "", x, y, width, height)
-        }
-
-        fn create_dependency_editor(
-            &self,
-            parent: ObjectId,
-            x: i32,
-            y: i32,
-            width: u32,
-            height: u32,
-        ) -> ObjectId {
-            self.mount_widget_of_kind(WidgetKind::DependencyEditor, parent, "", x, y, width, height)
-        }
-
-        fn create_diff_file_list(
-            &self,
-            parent: ObjectId,
-            x: i32,
-            y: i32,
-            width: u32,
-            height: u32,
-        ) -> ObjectId {
-            self.mount_widget_of_kind(WidgetKind::DiffFileList, parent, "", x, y, width, height)
-        }
-
-        fn create_filter_row(
+                                fn create_filter_row(
             &self,
             parent: ObjectId,
             x: i32,
@@ -1493,37 +1333,7 @@ macro_rules! impl_modern_widgets {
             self.mount_widget_of_kind(WidgetKind::GridViewHeader, parent, "", x, y, width, height)
         }
 
-        fn create_kanban_card_view(
-            &self,
-            parent: ObjectId,
-            x: i32,
-            y: i32,
-            width: u32,
-            height: u32,
-        ) -> ObjectId {
-            self.mount_widget_of_kind(WidgetKind::KanbanCardView, parent, "", x, y, width, height)
-        }
-
-        fn create_kanban_column_header(
-            &self,
-            parent: ObjectId,
-            x: i32,
-            y: i32,
-            width: u32,
-            height: u32,
-        ) -> ObjectId {
-            self.mount_widget_of_kind(
-                WidgetKind::KanbanColumnHeader,
-                parent,
-                "",
-                x,
-                y,
-                width,
-                height,
-            )
-        }
-
-        fn create_legend(
+                        fn create_legend(
             &self,
             parent: ObjectId,
             x: i32,
@@ -1564,18 +1374,7 @@ macro_rules! impl_modern_widgets {
             self.mount_widget_of_kind(WidgetKind::RangePresetBar, parent, "", x, y, width, height)
         }
 
-        fn create_scale_bar(
-            &self,
-            parent: ObjectId,
-            x: i32,
-            y: i32,
-            width: u32,
-            height: u32,
-        ) -> ObjectId {
-            self.mount_widget_of_kind(WidgetKind::ScaleBar, parent, "", x, y, width, height)
-        }
-
-        fn create_shape_canvas(
+                fn create_shape_canvas(
             &self,
             parent: ObjectId,
             x: i32,
@@ -1597,29 +1396,7 @@ macro_rules! impl_modern_widgets {
             self.mount_widget_of_kind(WidgetKind::Swatch, parent, "", x, y, width, height)
         }
 
-        fn create_tile_loader(
-            &self,
-            parent: ObjectId,
-            x: i32,
-            y: i32,
-            width: u32,
-            height: u32,
-        ) -> ObjectId {
-            self.mount_widget_of_kind(WidgetKind::TileLoader, parent, "", x, y, width, height)
-        }
-
-        fn create_timeline_axis(
-            &self,
-            parent: ObjectId,
-            x: i32,
-            y: i32,
-            width: u32,
-            height: u32,
-        ) -> ObjectId {
-            self.mount_widget_of_kind(WidgetKind::TimelineAxis, parent, "", x, y, width, height)
-        }
-
-        fn create_toast_host(
+                        fn create_toast_host(
             &self,
             parent: ObjectId,
             x: i32,
@@ -1641,18 +1418,7 @@ macro_rules! impl_modern_widgets {
             self.mount_widget_of_kind(WidgetKind::TooltipManager, parent, "", x, y, width, height)
         }
 
-        fn create_zoom_control(
-            &self,
-            parent: ObjectId,
-            x: i32,
-            y: i32,
-            width: u32,
-            height: u32,
-        ) -> ObjectId {
-            self.mount_widget_of_kind(WidgetKind::ZoomControl, parent, "", x, y, width, height)
-        }
-
-        fn create_zoom_pan_controller(
+                fn create_zoom_pan_controller(
             &self,
             parent: ObjectId,
             x: i32,

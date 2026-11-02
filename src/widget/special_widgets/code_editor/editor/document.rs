@@ -513,6 +513,8 @@ impl CodeEditor {
         // them point at unrelated text. Breakpoints are anchored the same way.
         self.bookmarks.clear();
         self.breakpoints.clear();
+        // A snippet's stops are positions in the text that was just replaced.
+        self.snippet_session = None;
         self.invalidate_line_states();
         self.minimap_line_count = 0;
         // The word index describes text that no longer exists.
@@ -820,6 +822,20 @@ impl CodeEditor {
                 None => None,
             },
         };
+        let anchor_edit = match (&checkpoint.range, &removed) {
+            (Some((start, _, inserted)), Some(removed_text)) => {
+                let start = self.position_of(*start);
+                let old_end = super::snippet::advance_position(
+                    start,
+                    removed_text,
+                    removed_text.chars().count(),
+                );
+                let new_end =
+                    super::snippet::advance_position(start, inserted, inserted.chars().count());
+                Some((start, old_end, new_end))
+            }
+            _ => None,
+        };
         let before_snapshot = if checkpoint.before.is_some() {
             checkpoint.before
         } else if already_applied {
@@ -852,6 +868,11 @@ impl CodeEditor {
         if let Some((first, lines_now, lines_before)) = dirty {
             self.shift_read_only_spans_for_edit(first, lines_now, lines_before);
         }
+        // Bookmarks, breakpoints and snippet stops are document coordinates too.
+        // The same `dirty` range that moved the locked spans is what moves them,
+        // so no edit path can leave an anchor pointing at unrelated text.
+        self.migrate_document_anchors(dirty, anchor_edit);
+
         // Whether the document actually changed, decided while the pre-edit snapshot is still
         // owned here. Used both to skip a pointless dirty flag and to keep the revision honest
         // (BLUE26 B26.08): a splice that rewrites a line with identical bytes is legitimate but is

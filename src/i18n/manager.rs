@@ -3,7 +3,8 @@
 
 //! i18n manager - core internationalization management
 use crate::compat::{HashMap, String, ToString, Vec};
-use crate::i18n::types::{KeyAudit, ReloadEvent, TranslationFile};
+use crate::i18n::types::{KeyAudit, LanguageChanged, ReloadEvent, TranslationFile};
+use crate::signal::Signal;
 use crossbeam_channel::Sender;
 use std::fs::File;
 use std::io::Read;
@@ -73,6 +74,14 @@ pub struct I18nManager {
     /// paints the missing labels as raw identifiers, which reads as a broken application instead
     /// of as the packaging error it is.
     required_keys: Vec<String>,
+    /// Languages tried after the active language and its BCP-47 parents miss.
+    ///
+    /// Defaults to `["en"]`, preserving the historical single-level fallback. A host can inject
+    /// its own chain with [`Self::set_fallback_languages`]; the chain is consulted in order and
+    /// stops at the first catalogue that has the key.
+    fallback_languages: Vec<String>,
+    /// Emitted whenever the active language changes, and by [`Self::retranslate`].
+    language_changed: Signal<LanguageChanged>,
 }
 impl I18nManager {
     /// Create a new i18n manager
@@ -85,6 +94,8 @@ impl I18nManager {
             hot_reload_enabled: false,
             reload_sender: None,
             required_keys: Vec::new(),
+            fallback_languages: Vec::from(["en".to_string()]),
+            language_changed: Signal::new(),
         }
     }
     /// Enable hot reload functionality
@@ -327,13 +338,176 @@ impl I18nManager {
     pub fn inject_translations(&mut self, language: String, file: TranslationFile) {
         self.translations.insert(language, file);
     }
-    /// Set current language
+
+    /// Inject translations **and** register the file that originated them for hot reload.
+    ///
+    /// # Why this exists next to [`Self::inject_translations`]
+    ///
+    /// Embedded data is generated into a file at build time by some hosts, and those hosts still
+    /// want an edit of that file to reload without restarting. Plain `inject_translations` has no
+    /// path, so `reload_translation` reported "no translation file is registered" — the embedded
+    /// catalogue was a dead end even though a file was sitting on disk. This entry point records
+    /// the path and its fingerprint, so the same watcher path as [`Self::load_translations`]
+    /// applies. The file name must match `language`, because that is how the watcher identifies a
+    /// changed catalogue.
+    pub fn inject_translations_with_path(
+        &mut self,
+        language: String,
+        file: TranslationFile,
+        path: impl Into<PathBuf>,
+    ) -> Result<(), String> {
+        let path = path.into();
+        let stem = path.file_stem().and_then(|s| s.to_str()).ok_or_else(|| {
+            format!(
+                "translation file '{}' has no usable file name; it must be named \
+                 '<language>.json' so hot reload can identify it",
+                path.display()
+            )
+        })?;
+        if stem != language {
+            return Err(format!(
+                "translation file '{}' is named '{stem}.json' but is being injected for language \
+                 \"{language}\"; inject it as '{language}.json' or rename the file",
+                path.display()
+            ));
+        }
+        // Apply the same declared-key contract the file loader applies: an injected catalogue is
+        // still a catalogue the running application will paint.
+        if !self.required_keys.is_empty() {
+            let audit = audit_against(&file, &self.required_keys);
+            if !audit.missing.is_empty() {
+                return Err(format!(
+                    "translation file '{}' is missing {} required key(s): {}; keeping the \
+                     previously loaded catalogue",
+                    path.display(),
+                    audit.missing.len(),
+                    audit.missing.join(", ")
+                ));
+            }
+        }
+        self.translations.insert(language.clone(), file);
+        self.register_watch_path(&language, path)
+    }
+
+    /// Registers an existing catalogue's source path for hot reload.
+    ///
+    /// This is the smaller half of [`Self::inject_translations_with_path`] for a caller that has
+    /// already injected the catalogue and only wants the watcher to track a file. The path's file
+    /// stem must equal `language`; the fingerprint is recorded immediately so an edit made after
+    /// this call is detected on the next [`Self::check_and_reload`].
+    pub fn register_watch_path(
+        &mut self,
+        language: &str,
+        path: impl Into<PathBuf>,
+    ) -> Result<(), String> {
+        let path = path.into();
+        let stem = path.file_stem().and_then(|s| s.to_str()).ok_or_else(|| {
+            format!(
+                "translation file '{}' has no usable file name; it must be named '<language>.json'",
+                path.display()
+            )
+        })?;
+        if stem != language {
+            return Err(format!(
+                "translation file '{}' is named '{stem}.json' but is registered for language \
+                 \"{language}\"; the watcher identifies a language by file name",
+                path.display()
+            ));
+        }
+        if let Some(fingerprint) = FileFingerprint::read(&path) {
+            self.file_fingerprints.insert(language.to_string(), fingerprint);
+        }
+        self.translation_paths.insert(language.to_string(), path);
+        Ok(())
+    }
+
+    /// Set current language. Emits [`LanguageChanged`] when it actually changes.
     pub fn set_language(&mut self, language: &str) {
+        if self.current_language == language {
+            return;
+        }
+        let previous = core::mem::replace(&mut self.current_language, language.to_string());
+        self.language_changed
+            .emit(LanguageChanged { previous, current: self.current_language.clone() });
+    }
+
+    /// Updates the language without emitting [`LanguageChanged`].
+    ///
+    /// The global [`crate::i18n::set_language`] uses this while it holds the process-wide i18n
+    /// mutex, then emits the signal after releasing it. Emitting with that mutex held would make a
+    /// slot that calls `translate` deadlock on the non-reentrant lock.
+    pub(crate) fn set_language_quiet(&mut self, language: &str) {
         self.current_language = language.to_string();
     }
+
+    /// Emits a [`LanguageChanged`] event for the current language.
+    ///
+    /// This is the retranslation hook: the language did not change, but every label built from
+    /// `tr!` needs to be resolved again (for example after a catalogue was reloaded while the
+    /// active language stayed the same). Consumers subscribed through
+    /// [`Self::on_language_changed`] re-resolve their text on this event.
+    pub fn retranslate(&self) {
+        self.language_changed.emit(LanguageChanged {
+            previous: self.current_language.clone(),
+            current: self.current_language.clone(),
+        });
+    }
+
+    /// The signal emitted when the active language changes or a retranslation is requested.
+    pub fn on_language_changed(&self) -> &Signal<LanguageChanged> {
+        &self.language_changed
+    }
+
     /// Get current language
     pub fn current_language(&self) -> &String {
         &self.current_language
+    }
+
+    /// Replaces the fallback chain consulted when the active language has no entry.
+    ///
+    /// Each entry is tried **exactly** and in order, after the active tag and its BCP-47 parents.
+    /// Duplicates and empty strings are dropped so a host that appends its current language does
+    /// not pay for a second lookup. An empty chain is legal and means "no cross-language fallback"
+    /// — the key itself is then the last resort.
+    pub fn set_fallback_languages(&mut self, languages: Vec<String>) {
+        let mut seen: Vec<String> = Vec::new();
+        for language in languages {
+            if language.is_empty() || seen.contains(&language) {
+                continue;
+            }
+            seen.push(language);
+        }
+        self.fallback_languages = seen;
+    }
+
+    /// The configured fallback chain, in lookup order.
+    pub fn fallback_languages(&self) -> &[String] {
+        &self.fallback_languages
+    }
+
+    /// The keys one catalogue provides, sorted, or `None` when that language is not loaded.
+    ///
+    /// This is the per-language view [`Self::audit_keys`] deliberately is not: the audit is the
+    /// union across every loaded catalogue, which is the right shape for "what keys exist" but
+    /// useless for answering "what does this one locale provide?". Returning `Option` keeps "no
+    /// such catalogue" distinct from "a catalogue with no keys".
+    pub fn keys_for(&self, language: &str) -> Option<Vec<String>> {
+        let file = self.translations.get(language)?;
+        let mut keys: Vec<String> = file.translations.keys().cloned().collect();
+        keys.sort();
+        Some(keys)
+    }
+
+    /// One loaded catalogue, by language, with no union fallback.
+    pub fn catalogue_for(&self, language: &str) -> Option<&TranslationFile> {
+        self.translations.get(language)
+    }
+
+    /// The languages that have a loaded catalogue, sorted.
+    pub fn languages(&self) -> Vec<&str> {
+        let mut languages: Vec<&str> = self.translations.keys().map(String::as_str).collect();
+        languages.sort();
+        languages
     }
     /// Return all unique translation keys across all loaded languages.
     pub fn audit_keys(&self) -> Vec<String> {
@@ -461,6 +635,48 @@ impl I18nManager {
         interpolate_into(&message, args, out);
     }
 
+    /// Translate and fill placeholders whose values carry a type.
+    ///
+    /// # Why this exists next to [`Self::translate_with_args`]
+    ///
+    /// String arguments make every numeric placeholder a formatting decision the caller has
+    /// already made — and the caller usually made it with `to_string()`, which is the C locale.
+    /// A German user then reads `1,234.5` where `1.234,5` is correct. Typed arguments keep the
+    /// number a number until this crate formats it for the active language, and the plain string
+    /// path is left untouched, so existing callers see exactly the behaviour they had.
+    ///
+    /// `count` still selects the plural form; it is not used to format a placeholder (the
+    /// `{count}` placeholder, if used, is an explicit argument so the caller chooses its type).
+    pub fn translate_with_typed_args(
+        &self,
+        key: &str,
+        context: Option<&str>,
+        count: u32,
+        args: &[(&str, PlaceholderArgument<'_>)],
+    ) -> String {
+        let mut out = String::new();
+        self.translate_with_typed_args_into(key, context, count, args, &mut out);
+        out
+    }
+
+    /// [`Self::translate_with_typed_args`], appending to `out`.
+    pub fn translate_with_typed_args_into(
+        &self,
+        key: &str,
+        context: Option<&str>,
+        count: u32,
+        args: &[(&str, PlaceholderArgument<'_>)],
+        out: &mut String,
+    ) {
+        if args.is_empty() {
+            self.translate_with_context_into(key, context, count, out);
+            return;
+        }
+        let mut message = String::new();
+        self.translate_with_context_into(key, context, count, &mut message);
+        interpolate_typed_into(&message, args, Some(self.current_language.as_str()), out);
+    }
+
     /// Zero-allocation counterpart of [`Self::translate`]: appends the resolved message to `out`.
     pub fn translate_into(&self, key: &str, out: &mut String) {
         self.translate_with_context_into(key, None, 1, out);
@@ -478,20 +694,31 @@ impl I18nManager {
         count: u32,
         out: &mut String,
     ) {
+        // The common case is a hit in the active language, so it costs one lookup and no
+        // allocation. Only a miss builds the parent chain.
         if self.lookup_into(&self.current_language, key, context, count, out) {
             return;
         }
-        // No entry in the active language. Fall back to `en`, which is embedded at build
-        // time (`language/en.json`), before giving up and echoing the key: a user of a
-        // partially translated locale is better served by the source string than by a
-        // raw identifier. `en` is skipped when it *is* the active language, so this
-        // cannot loop or repeat the same miss.
-        const FALLBACK_LANGUAGE: &str = "en";
-        if self.current_language != FALLBACK_LANGUAGE
-            && self.lookup_into(FALLBACK_LANGUAGE, key, context, count, out)
-        {
-            return;
+
+        // Walk the BCP-47 parent chain: `zh-Hans-CN` -> `zh-Hans` -> `zh`. A catalogue keyed by a
+        // more specific tag wins; a region-only variant therefore still finds its language's text
+        // instead of jumping straight to the fallback. `skip(1)` drops the tag already tried above.
+        for candidate in bcp47_lookup_chain(&self.current_language).into_iter().skip(1) {
+            if self.lookup_into(&candidate, key, context, count, out) {
+                return;
+            }
         }
+
+        // Then the host-injected chain, in order. `en` is the default, preserving the historical
+        // single-level fallback. A candidate that was already tried (the active language itself,
+        // or one of its parents) simply misses again; the map lookup is cheap and keeping the
+        // chain explicit is clearer than maintaining a skip set on the hot path.
+        for fallback in &self.fallback_languages {
+            if self.lookup_into(fallback, key, context, count, out) {
+                return;
+            }
+        }
+
         // Last resort: the key itself. Documented behaviour, and the caller can see the
         // miss because the returned text equals the key.
         out.push_str(key);
@@ -533,6 +760,29 @@ impl I18nManager {
 }
 crate::impl_default_via_new!(I18nManager);
 
+/// The ordered lookup candidates for a BCP-47 language tag.
+///
+/// `zh-Hans-CN` yields `zh-Hans-CN`, `zh-Hans`, `zh`; a bare `en` yields just `en`. Both `-` and
+/// `_` are accepted as separators so a POSIX locale (`pt_BR`) is not treated as one opaque tag.
+/// Private because it exists to serve [`I18nManager::translate_with_context_into`], whose
+/// documented behaviour is the contract; a caller that wants to resolve keys itself uses
+/// [`I18nManager::catalogue_for`].
+fn bcp47_lookup_chain(tag: &str) -> Vec<String> {
+    let mut chain = Vec::new();
+    if tag.is_empty() {
+        return chain;
+    }
+    let mut current = tag;
+    loop {
+        chain.push(current.to_string());
+        match current.rfind(['-', '_']) {
+            Some(index) => current = &current[..index],
+            None => break,
+        }
+    }
+    chain
+}
+
 /// Appends `message` to `out` with every `{name}` placeholder replaced by its argument.
 ///
 /// # The rule, in full
@@ -557,9 +807,194 @@ crate::impl_default_via_new!(I18nManager);
 /// without a manager, which is what lets one filler serve both the lookup path and the direct
 /// path instead of each having its own.
 pub fn interpolate_into(message: &str, args: &[(&str, &str)], out: &mut String) {
+    interpolate_with(
+        message,
+        |name, value| {
+            if let Some((_, text)) = args.iter().find(|(arg, _)| *arg == name) {
+                value.push_str(text);
+                true
+            } else {
+                false
+            }
+        },
+        out,
+    );
+}
+
+/// One placeholder value with its type preserved until formatting.
+///
+/// # Why a typed value rather than a pre-formatted string
+///
+/// A locale-aware number cannot be produced by `to_string()`: it needs a decimal separator and
+/// grouping rules that depend on the active language. Keeping the number typed here lets
+/// [`interpolate_typed_into`] apply those rules at the one point where the locale is known, and
+/// leaves [`interpolate_into`]'s string contract unchanged.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum PlaceholderArgument<'a> {
+    /// Text inserted verbatim.
+    Text(&'a str),
+    /// A whole number, grouped according to the locale.
+    Integer(i64),
+    /// A finite decimal with a fixed number of fractional digits.
+    Decimal {
+        /// The value to format.
+        value: f64,
+        /// Fractional digits to print. Clamped by the formatter to a sane maximum.
+        decimals: u32,
+    },
+}
+
+/// The separators one locale uses for ordinary decimal numbers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NumberFormat {
+    /// The character between the integer and fractional parts.
+    pub decimal_separator: char,
+    /// The character between digit groups of three.
+    pub grouping_separator: char,
+}
+
+impl NumberFormat {
+    /// The C-locale format: `.` decimal, `,` grouping.
+    pub const C_LOCALE: Self = Self { decimal_separator: '.', grouping_separator: ',' };
+}
+
+/// The number format implied by a BCP-47 language tag.
+///
+/// The table is intentionally small and explicit: it covers the languages whose conventions a
+/// host is likely to need, and everything else keeps the C-locale shape. That is a documented
+/// boundary rather than a claim of full CLDR coverage — a host with an unusual locale supplies
+/// its own pre-formatted text through [`PlaceholderArgument::Text`].
+pub fn number_format_for(locale: Option<&str>) -> NumberFormat {
+    let Some(locale) = locale else {
+        return NumberFormat::C_LOCALE;
+    };
+    let tag = locale.split('.').next().unwrap_or(locale);
+    let language = tag.split(['-', '_']).next().unwrap_or("").to_ascii_lowercase();
+    const COMMA_DECIMAL: [&str; 27] = [
+        "bg", "ca", "cs", "da", "de", "el", "es", "fi", "fr", "hr", "hu", "id", "it", "nb", "nl",
+        "nn", "pl", "pt", "ro", "ru", "sk", "sl", "sr", "sv", "tr", "uk", "vi",
+    ];
+    const SPACE_GROUPING: [&str; 14] =
+        ["ca", "cs", "da", "fi", "fr", "hu", "nb", "nn", "pl", "ru", "sk", "sv", "uk", "vi"];
+    if COMMA_DECIMAL.contains(&language.as_str()) {
+        NumberFormat {
+            decimal_separator: ',',
+            // The narrow no-break space is what French, Russian and Nordic locales use between
+            // groups. A plain space would let a line break split the number.
+            grouping_separator: if SPACE_GROUPING.contains(&language.as_str()) {
+                '\u{202F}'
+            } else {
+                '.'
+            },
+        }
+    } else {
+        NumberFormat::C_LOCALE
+    }
+}
+
+/// Formats a whole number with the locale's grouping separator.
+pub fn format_integer(value: i64, locale: Option<&str>) -> String {
+    let mut out = String::new();
+    format_integer_into(value, number_format_for(locale), &mut out);
+    out
+}
+
+/// Formats a fixed-point decimal with the locale's separators.
+///
+pub fn format_number(value: f64, decimals: u32, locale: Option<&str>) -> String {
+    let mut out = String::new();
+    format_number_into(value, decimals, number_format_for(locale), &mut out);
+    out
+}
+
+fn format_integer_into(value: i64, format: NumberFormat, out: &mut String) {
+    if value < 0 {
+        out.push('-');
+    }
+    // `i64::MIN` has no positive `i64`, so the magnitude is taken in `i128`.
+    let digits = (value as i128).abs().to_string();
+    push_grouped(&digits, format.grouping_separator, out);
+}
+
+fn format_number_into(value: f64, decimals: u32, format: NumberFormat, out: &mut String) {
+    if !value.is_finite() {
+        // `NaN`/`inf` have no locale-specific spelling here; the Rust spelling is the honest
+        // fallback rather than a fabricated word.
+        out.push_str(&value.to_string());
+        return;
+    }
+    let decimals = decimals.min(12) as usize;
+    let magnitude = value.abs();
+    let text = format!("{:.*}", decimals, magnitude);
+    let (integer, fraction) = text.split_once('.').unwrap_or((text.as_str(), ""));
+    if value.is_sign_negative() && magnitude != 0.0 {
+        out.push('-');
+    }
+    push_grouped(integer, format.grouping_separator, out);
+    if decimals > 0 {
+        out.push(format.decimal_separator);
+        out.push_str(fraction);
+    }
+}
+
+/// Appends `digits` with a separator every three characters from the right.
+fn push_grouped(digits: &str, separator: char, out: &mut String) {
+    let length = digits.len();
+    for (index, digit) in digits.chars().enumerate() {
+        if index > 0 && (length - index).is_multiple_of(3) {
+            out.push(separator);
+        }
+        out.push(digit);
+    }
+}
+
+/// Appends `message` to `out`, resolving each placeholder from a typed argument.
+///
+/// The placeholder grammar is exactly [`interpolate_into`]'s — this function shares its scanner,
+/// so it cannot drift from the string path. Values are formatted for `locale`: whole numbers are
+/// grouped, decimals use the locale's decimal separator, and text is inserted verbatim. A
+/// placeholder with no matching argument is left as written, for the same reason the string
+/// filler leaves it: a visible `{name}` is a defect a test can see, whereas an empty substitution
+/// is indistinguishable from a real empty value.
+pub fn interpolate_typed_into(
+    message: &str,
+    args: &[(&str, PlaceholderArgument<'_>)],
+    locale: Option<&str>,
+    out: &mut String,
+) {
+    let format = number_format_for(locale);
+    interpolate_with(
+        message,
+        |name, value| {
+            let Some((_, argument)) = args.iter().find(|(arg, _)| *arg == name) else {
+                return false;
+            };
+            match argument {
+                PlaceholderArgument::Text(text) => value.push_str(text),
+                PlaceholderArgument::Integer(number) => format_integer_into(*number, format, value),
+                PlaceholderArgument::Decimal { value: number, decimals } => {
+                    format_number_into(*number, *decimals, format, value)
+                }
+            }
+            true
+        },
+        out,
+    );
+}
+
+/// The shared placeholder scanner behind both interpolation entry points.
+///
+/// `resolve` writes the replacement into the second argument and returns whether the placeholder
+/// was recognised. Splitting it out is what makes the typed and untyped paths agree on the
+/// grammar rather than each carrying its own copy.
+fn interpolate_with<F>(message: &str, mut resolve: F, out: &mut String)
+where
+    F: FnMut(&str, &mut String) -> bool,
+{
     let bytes = message.as_bytes();
     let mut copied = 0usize;
     let mut index = 0usize;
+    let mut value = String::new();
     while index < bytes.len() {
         if bytes[index] != b'{' {
             index += 1;
@@ -581,9 +1016,10 @@ pub fn interpolate_into(message: &str, args: &[(&str, &str)], out: &mut String) 
             index += 1;
             continue;
         }
-        if let Some((_, value)) = args.iter().find(|(arg, _)| *arg == name) {
+        value.clear();
+        if resolve(name, &mut value) {
             out.push_str(&message[copied..index]);
-            out.push_str(value);
+            out.push_str(&value);
             copied = end + 1;
         }
         // No value: leave the braces in place, which the `copied..index` run keeps intact.

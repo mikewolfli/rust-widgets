@@ -60,8 +60,15 @@ impl EventHandler for CodeEditor {
                 // A secondary click opens the context menu. The menu has always
                 // existed, but no event path could open it: only button 1 was
                 // handled, so the whole menu was unreachable from the pointer.
+                //
+                // The request is announced on `context_menu_requested` first, so a
+                // host that disables the built-in menu (`built_in_context_menu`)
+                // still receives the pointer position and can show its own.
                 crate::event::mouse_button::SECONDARY => {
-                    self.open_context_menu(*pos);
+                    self.context_menu_requested.emit(*pos);
+                    if self.config.built_in_context_menu {
+                        self.open_context_menu(*pos);
+                    }
                 }
                 _ => {}
             },

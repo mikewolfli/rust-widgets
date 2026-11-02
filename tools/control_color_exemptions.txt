@@ -125,7 +125,6 @@ pie_chart series-palette true A pie slice colour identifies the category, and th
 # longer what the measurement sees. Leaving the entries in place would have licensed one of
 # the three to regress to a fixed literal without the gate noticing, which is exactly the
 # "stale exemption" direction `check_control_rendering.sh` refuses.
-camera_preview video-surface true The preview surface is the camera frame, not chrome; it is content.
 # `media_player` was listed here as `video-surface` until round 75. The **media the player shows** is
 # still content, but this control paints none of it: its `draw` is a title line, a status line and a
 # transport rule — chrome. The exemption never covered those six literals; it covered a decoded frame

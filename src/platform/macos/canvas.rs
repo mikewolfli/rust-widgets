@@ -31,7 +31,7 @@ use crate::core::{Color, ObjectId, Point, Rect, Size};
 use crate::event::Event;
 use crate::platform::types::MousePhase;
 use cocoa::appkit::NSWindow;
-use cocoa::base::{id, nil, NO, YES};
+use cocoa::base::{id, nil, BOOL, NO, YES};
 use cocoa::foundation::{
     NSArray, NSAutoreleasePool, NSNotFound, NSPoint, NSRange, NSRect, NSSize, NSString, NSUInteger,
 };
@@ -811,7 +811,7 @@ extern "C" fn key_down(this: &Object, _cmd: Sel, event: id) {
             const WIDGET_CONTROL: u32 = 2;
             const WIDGET_META: u32 = 8;
             if u32::from(translated_key.appkit_key_code) == KEY_TAB {
-                crate::widget::runtime::focus_next(modifiers & WIDGET_SHIFT == 0);
+                crate::widget::window::focus_next_in_window(modifiers & WIDGET_SHIFT == 0);
                 let _: () = msg_send![view, setNeedsDisplay: YES];
                 note_native_redraw(widget_id);
                 return;
@@ -1731,6 +1731,25 @@ fn window_delegate_class() -> *const Class {
                 sel!(windowDidResize:),
                 window_did_resize_impl as extern "C" fn(&Object, Sel, id),
             );
+            // The close veto, focus announcements and the point-carrying move notification.
+            // These are the same delegate the resize path already uses, so a window has one
+            // object observing every lifecycle fact instead of several competing observers.
+            decl.add_method(
+                sel!(windowShouldClose:),
+                window_should_close_impl as extern "C" fn(&Object, Sel, id) -> BOOL,
+            );
+            decl.add_method(
+                sel!(windowDidBecomeKey:),
+                window_did_become_key_impl as extern "C" fn(&Object, Sel, id),
+            );
+            decl.add_method(
+                sel!(windowDidResignKey:),
+                window_did_resign_key_impl as extern "C" fn(&Object, Sel, id),
+            );
+            decl.add_method(
+                sel!(windowDidMove:),
+                window_did_move_impl as extern "C" fn(&Object, Sel, id),
+            );
         }
         (decl.register() as *const Class) as usize
     })) as *const Class
@@ -1807,6 +1826,77 @@ extern "C" fn window_did_resize_impl(this: &Object, cmd: Sel, notification: id) 
     // which guarantees `this` is the delegate object and `notification` is the
     // `NSNotification` for the window that resized.
     unsafe { window_did_resize(this, cmd, notification) }
+}
+
+/// Safe-ABI trampoline for the close veto.
+extern "C" fn window_should_close_impl(this: &Object, _cmd: Sel, _window: id) -> BOOL {
+    // SAFETY: AppKit invokes this only through `windowShouldClose:`, so `this` is the
+    // delegate object carrying the associated widget id.
+    unsafe { window_should_close(this) }
+}
+
+/// Asks the shared window policy whether this window may close.
+unsafe fn window_should_close(this: &Object) -> BOOL {
+    let widget_id = associated_widget_id(this, window_association_key());
+    if widget_id == 0 {
+        return YES;
+    }
+    // Returning `NO` from `windowShouldClose:` is how AppKit refuses the close. The
+    // decision (handler + `WindowCloseRequest`) lives in the shared policy module.
+    if !crate::platform::window_control::request_window_close(widget_id) {
+        return NO;
+    }
+    let _ = crate::close_widget(widget_id);
+    YES
+}
+
+/// Safe-ABI trampoline for `windowDidBecomeKey:`.
+extern "C" fn window_did_become_key_impl(this: &Object, _cmd: Sel, _notification: id) {
+    // SAFETY: AppKit invokes this only through `windowDidBecomeKey:`; `this` is the delegate.
+    unsafe { notify_become_key(this) }
+}
+
+unsafe fn notify_become_key(this: &Object) {
+    let widget_id = associated_widget_id(this, window_association_key());
+    if widget_id != 0 {
+        crate::platform::window_control::notify_window_focus(widget_id, true);
+    }
+}
+
+/// Safe-ABI trampoline for `windowDidResignKey:`.
+extern "C" fn window_did_resign_key_impl(this: &Object, _cmd: Sel, _notification: id) {
+    // SAFETY: AppKit invokes this only through `windowDidResignKey:`; `this` is the delegate.
+    unsafe { notify_resign_key(this) }
+}
+
+unsafe fn notify_resign_key(this: &Object) {
+    let widget_id = associated_widget_id(this, window_association_key());
+    if widget_id != 0 {
+        crate::platform::window_control::notify_window_focus(widget_id, false);
+    }
+}
+
+/// Safe-ABI trampoline for `windowDidMove:`.
+extern "C" fn window_did_move_impl(this: &Object, _cmd: Sel, notification: id) {
+    // SAFETY: AppKit invokes this only through `windowDidMove:`; `this` is the delegate and
+    // `notification.object` is the window that moved.
+    unsafe { window_did_move(this, notification) }
+}
+
+unsafe fn window_did_move(this: &Object, notification: id) {
+    let widget_id = associated_widget_id(this, window_association_key());
+    if widget_id == 0 {
+        return;
+    }
+    let window: id = msg_send![notification, object];
+    if window == nil {
+        return;
+    }
+    let frame: NSRect = msg_send![window, frame];
+    crate::platform::window_control::notify_window_moved(
+        widget_id,
+        crate::core::Point::new(frame.origin.x.round() as i32, frame.origin.y.round() as i32),
+    );
 }
 
 /// `windowDidResize:` — records the new client size and queues a `Resized` trigger.

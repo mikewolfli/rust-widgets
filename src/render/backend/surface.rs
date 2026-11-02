@@ -2522,7 +2522,7 @@ impl<'a> RenderContext<'a> {
     ///
     /// See [`Self::draw_text_fitted_cow`]: the same allocation argument applies, and the public
     /// method delegates here so the two forms draw identically.
-    pub(crate) fn draw_text_line_cow<'t>(
+    pub fn draw_text_line_cow<'t>(
         &mut self,
         bounds: Rect,
         text: &'t str,

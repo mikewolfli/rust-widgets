@@ -2,14 +2,149 @@
 // SPDX-License-Identifier: MIT
 
 //! i18n global - global functions and static instances
-use crate::compat::{MiniToString, Mutex, MutexGuard, String, Vec};
+use crate::compat::{lock, MiniToString, Mutex, MutexGuard, OnceLock, String, Vec};
 use crate::i18n::manager::I18nManager;
 use crate::i18n::options::{InitOptions, InitReport};
-use crate::i18n::types::TranslationFile;
+use crate::i18n::types::{LanguageChanged, TranslationFile};
+use crate::signal::Signal;
+use alloc::sync::Arc;
+use core::sync::atomic::{AtomicU64, Ordering};
 /// Embedded English translations as a compile-time fallback.
 const EMBEDDED_EN_JSON: &str = include_str!("../../language/en.json");
 /// Global i18n manager instance using Mutex for thread-safe access
 pub(crate) static GLOBAL_I18N: Mutex<Option<I18nManager>> = Mutex::new(None);
+
+/// Switch the active language at runtime.
+///
+/// Returns whether the language actually changed. The manager's [`LanguageChanged`] signal is
+/// emitted after the process-wide i18n lock is released, so a listener that calls [`translate`]
+/// from its slot cannot deadlock on the non-reentrant lock.
+///
+/// This is the entry point a language picker should call: it changes the catalogue used by every
+/// subsequent `tr!` lookup and notifies listeners that already-built labels are stale. A widget
+/// that stored the result of `tr!` should either re-resolve on the signal or resolve at draw time.
+pub fn set_language(language: &str) -> bool {
+    let (changed, signal, event) = {
+        let mut guard = get_manager();
+        if !ensure_initialized(&mut guard) {
+            return false;
+        }
+        let Some(manager) = guard.as_mut() else {
+            return false;
+        };
+        let previous = manager.current_language().clone();
+        let changed = previous != language;
+        manager.set_language_quiet(language);
+        let event = LanguageChanged { previous, current: language.to_string() };
+        (changed, manager.on_language_changed().clone(), event)
+    };
+    if !changed {
+        return false;
+    }
+    signal.emit(event);
+    arm_repaint_for_language_change();
+    true
+}
+
+/// The process-wide language-change signal.
+///
+/// The manager is initialised on first use (with the embedded English catalogue) so a caller can
+/// subscribe before deciding on a language. A host that replaces the manager through
+/// [`init_with_options`] must re-acquire this signal afterwards: it is the new manager's signal,
+/// and subscriptions made against the previous one are not carried across an explicit
+/// re-initialisation.
+pub fn on_language_changed() -> Signal<LanguageChanged> {
+    let mut guard = get_manager();
+    if !ensure_initialized(&mut guard) {
+        return Signal::new();
+    }
+    guard.as_ref().map(|manager| manager.on_language_changed().clone()).unwrap_or_default()
+}
+
+/// Requests that every label built from `tr!` be resolved again.
+///
+/// This is for a catalogue edit that reloaded while the language stayed the same. It emits the
+/// same [`LanguageChanged`] event as a real switch (`previous == current`) and then runs every
+/// callback registered through [`register_retranslator`]. The i18n lock is released before any
+/// callback runs, so a callback may call [`translate`] safely.
+pub fn retranslate() {
+    let event = {
+        let mut guard = get_manager();
+        if !ensure_initialized(&mut guard) {
+            None
+        } else {
+            guard.as_ref().map(|manager| {
+                let language = manager.current_language().clone();
+                (
+                    manager.on_language_changed().clone(),
+                    LanguageChanged { previous: language.clone(), current: language },
+                )
+            })
+        }
+    };
+    if let Some((signal, event)) = event {
+        // Emitted after the global i18n lock is released, so a slot may call `translate`.
+        signal.emit(event);
+    }
+    arm_repaint_for_language_change();
+    run_retranslators();
+}
+
+/// A callback run by [`retranslate`] after the language-change signal.
+///
+/// This is the mechanism a widget uses when it stores translated text: the signal reports that
+/// the text is stale, and the retranslator re-resolves it into the widget's own field. The
+/// callback runs with no i18n lock held and must schedule its own redraw through the normal
+/// widget path (or rely on [`retranslate`]'s global repaint request).
+pub fn register_retranslator<F>(callback: F) -> RetranslatorHandle
+where
+    F: Fn() + Send + Sync + 'static,
+{
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    let id = NEXT.fetch_add(1, Ordering::Relaxed);
+    lock(retranslators()).push(Retranslator { id, callback: Arc::new(callback) });
+    RetranslatorHandle { id }
+}
+
+/// Handle for a registered retranslator; dropping it unregisters the callback.
+#[derive(Debug)]
+pub struct RetranslatorHandle {
+    id: u64,
+}
+
+impl Drop for RetranslatorHandle {
+    fn drop(&mut self) {
+        lock(retranslators()).retain(|entry| entry.id != self.id);
+    }
+}
+
+struct Retranslator {
+    id: u64,
+    callback: Arc<dyn Fn() + Send + Sync>,
+}
+
+fn retranslators() -> &'static Mutex<Vec<Retranslator>> {
+    static RETRANSLATORS: OnceLock<Mutex<Vec<Retranslator>>> = OnceLock::new();
+    RETRANSLATORS.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+fn run_retranslators() {
+    // `retranslators()` creates the registry on first use; an empty registry costs one lock and
+    // no allocation beyond the (empty) snapshot.
+    let registry = retranslators();
+    // Snapshot the callbacks and release the lock first: a retranslator may register or drop
+    // another one, and running user code under the registry lock would deadlock that.
+    let callbacks: Vec<Arc<dyn Fn() + Send + Sync>> =
+        lock(registry).iter().map(|entry| Arc::clone(&entry.callback)).collect();
+    for callback in callbacks {
+        callback();
+    }
+}
+
+fn arm_repaint_for_language_change() {
+    #[cfg(device_profile)]
+    crate::widget::runtime::arm_global_repaint();
+}
 
 #[cfg(test)]
 std::thread_local! {
@@ -225,6 +360,44 @@ pub fn translate_into_with_args(
         None => crate::i18n::interpolate_into(key, args, out),
     }
 }
+/// Translate and fill typed placeholders with the active language's number formatting.
+///
+pub fn translate_with_typed_args(
+    key: &str,
+    context: Option<&str>,
+    count: u32,
+    args: &[(&str, crate::i18n::PlaceholderArgument<'_>)],
+) -> String {
+    let mut out = String::new();
+    translate_into_with_typed_args(key, context, count, args, &mut out);
+    out
+}
+
+/// Translate and fill typed placeholders into `out`.
+///
+/// The no-manager path emits the key and fills it with the C-locale format, matching the string
+/// filler's behaviour: a host that has not initialised i18n still sees its values rather than a
+/// raw identifier.
+pub fn translate_into_with_typed_args(
+    key: &str,
+    context: Option<&str>,
+    count: u32,
+    args: &[(&str, crate::i18n::PlaceholderArgument<'_>)],
+    out: &mut String,
+) {
+    let mut guard = get_manager();
+    if !ensure_initialized(&mut guard) {
+        crate::i18n::interpolate_typed_into(key, args, None, out);
+        return;
+    }
+    match *guard {
+        Some(ref mut manager) => {
+            manager.translate_with_typed_args_into(key, context, count, args, out);
+        }
+        None => crate::i18n::interpolate_typed_into(key, args, None, out),
+    }
+}
+
 /// Get the global i18n manager
 pub fn get_manager() -> MutexGuard<'static, Option<I18nManager>> {
     crate::compat::lock(&GLOBAL_I18N)
@@ -264,6 +437,58 @@ mod tests {
         assert!(count > 0, "init should load English translations");
         // Reset global state so other tests don't see loaded translations
         // (drop the manager guard first, then acquire the lock again for reset)
+        *crate::compat::lock(&GLOBAL_I18N) = None;
+    }
+
+    /// `set_language` changes the active catalogue and emits the language-change event after the
+    /// global lock is released.
+    #[test]
+    fn a_runtime_language_switch_emits_and_changes_the_catalogue() {
+        let _lock = global_i18n_test_lock();
+        init_with_options(InitOptions::default());
+
+        let events = alloc::sync::Arc::new(crate::compat::Mutex::new(Vec::new()));
+        let sink = alloc::sync::Arc::clone(&events);
+        let signal = on_language_changed();
+        signal.connect(move |event: alloc::sync::Arc<LanguageChanged>| {
+            crate::compat::lock(&sink).push((*event).clone());
+        });
+
+        assert!(set_language("fr"), "a different language is a change");
+        assert!(!set_language("fr"), "assigning the same language again is not");
+        let reported = {
+            let events = crate::compat::lock(&events);
+            events.first().map(|event| event.current.clone())
+        };
+        assert_eq!(reported.as_deref(), Some("fr"));
+        let active = {
+            let guard = get_manager();
+            guard.as_ref().map(|manager| manager.current_language().clone())
+        };
+        assert_eq!(active.as_deref(), Some("fr"));
+
+        *crate::compat::lock(&GLOBAL_I18N) = None;
+    }
+
+    /// A registered retranslator runs on `retranslate` and stops after its handle is dropped.
+    #[test]
+    fn retranslate_runs_registered_callbacks_until_their_handle_is_dropped() {
+        use core::sync::atomic::{AtomicUsize, Ordering};
+
+        let _lock = global_i18n_test_lock();
+        init_with_options(InitOptions::default());
+        let calls = alloc::sync::Arc::new(AtomicUsize::new(0));
+        let counter = alloc::sync::Arc::clone(&calls);
+        let handle = register_retranslator(move || {
+            counter.fetch_add(1, Ordering::SeqCst);
+        });
+
+        retranslate();
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        drop(handle);
+        retranslate();
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "a dropped handle must unregister");
+
         *crate::compat::lock(&GLOBAL_I18N) = None;
     }
 }

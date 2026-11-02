@@ -1913,6 +1913,18 @@ impl SaveState for TabWidget {
 }
 
 // Implement Widget trait
+impl TabWidget {
+    /// RW-62: the hint of the tab under `pos`, or `None`.
+    ///
+    /// Only the strip region resolves: the content page is not an entry and keeps whatever
+    /// control-level tooltip the page's own widget publishes.
+    pub fn entry_tooltip_at(&self, pos: Point) -> Option<(usize, &str)> {
+        let index = self.tab_index_at(pos)?;
+        let tab = self.tabs.get(index)?;
+        (!tab.tooltip.is_empty()).then_some((index, tab.tooltip.as_str()))
+    }
+}
+
 impl Widget for TabWidget {
     fn base(&self) -> &BaseWidget {
         &self.base
@@ -4315,6 +4327,26 @@ mod tests {
         assert!(
             tw.close_button_rect(1, rect, &font).is_none(),
             "the override hides the affordance"
+        );
+    }
+
+    /// RW-62: the tab strip reports the hint of the entry under a point.
+    #[test]
+    fn the_tab_entry_reports_its_own_tooltip() {
+        let mut tw = TabWidget::new(Rect::new(0, 0, 300, 200));
+        tw.add_tab("one".to_string(), None);
+        tw.add_tab("two".to_string(), None);
+        assert!(tw.set_tab_tooltip(1, "Second tab"));
+        let band = tw.tab_rect(1).expect("the second tab has a band");
+        assert_eq!(
+            tw.entry_tooltip_at(Point::new(band.x + 2, band.y + 2)),
+            Some((1, "Second tab"))
+        );
+        let first = tw.tab_rect(0).expect("the first tab has a band");
+        assert_eq!(
+            tw.entry_tooltip_at(Point::new(first.x + 2, first.y + 2)),
+            None,
+            "an entry with no hint reports none"
         );
     }
 }

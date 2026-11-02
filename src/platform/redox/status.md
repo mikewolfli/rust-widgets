@@ -9,7 +9,7 @@ documentation only; this crate does not depend on winit.
 | Window painting | ✅ Implemented | `render_frame_tree_cached_shared` → `Window::data_mut` → `Window::sync`, one frame per tick; an unchanged cached frame skips the conversion and the sync. |
 | Pointer input and focus | ✅ Implemented | Orbital mouse/button records are routed through `dispatch_pointer_event`, which also focuses the hit control (the same entry point every backend uses). |
 | Keyboard / text input | ✅ Implemented | Key records become `KeyPress`/`KeyRelease`; Orbital `TextInput` records become `Event::TextInput` and are never forwarded as a second key event. Control chords suppress text so `Ctrl+C` stays a command. |
-| Tab traversal | ✅ Implemented | `K_TAB` calls `runtime::focus_next` (Shift reverses), matching the GTK/Windows hosts. |
+| Tab traversal | ✅ Implemented | `K_TAB` calls `focus_next_in_window` (Shift reverses), matching the GTK/Windows hosts. |
 | Window resize | ✅ Implemented | `Resize` records queue the library's `Resized` trigger and update `Window::set_size`. |
 | Clipboard (text) | ✅ Implemented | `Window::set_clipboard` / `Window::clipboard` with `MediaKind::Text`. |
 | Display enumeration | ✅ Implemented | `get_display_size` + `EVENT_SCALE`; `displays()` reports the screen the compositor described. |

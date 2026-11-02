@@ -11,6 +11,37 @@
 
 use rust_widgets::core::ObjectId;
 
+/// The value grammar a field is expected to hold.
+///
+/// The kind is suite metadata, not a second value store: [`Form::add_field`]
+/// uses it to install the matching `rust_widgets` input validator, and a host
+/// can read it to choose an editor control. `Text` is the default and imposes no
+/// rule of its own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FieldKind {
+    /// Unconstrained text.
+    #[default]
+    Text,
+    /// An e-mail address (`InputValidator::Email`).
+    Email,
+    /// A phone number (`InputValidator::Phone`).
+    Phone,
+    /// An inclusive whole-number range.
+    Integer {
+        /// Lowest accepted value.
+        minimum: i64,
+        /// Highest accepted value.
+        maximum: i64,
+    },
+    /// An inclusive character-count range.
+    Length {
+        /// Lowest accepted character count.
+        minimum: usize,
+        /// Highest accepted character count.
+        maximum: usize,
+    },
+}
+
 /// One row of a [`Form`](crate::form_widgets::Form).
 ///
 /// # Identity
@@ -33,11 +64,15 @@ pub struct FormField {
     pub(crate) help: String,
     /// An error a host reported for this field (server-side validation, a domain rule).
     pub(crate) external_error: Option<String>,
+    /// The result of an asynchronous rule resolved through a `ValidationTicket`.
+    pub(crate) async_error: Option<String>,
     /// The error the form's own required/validity pass produced.
     pub(crate) validation_error: Option<String>,
     /// The value at the last baseline capture, restored by `Form::reset`.
     pub(crate) baseline: Option<String>,
     pub(crate) visible: bool,
+    /// The grammar this field is expected to hold.
+    pub(crate) kind: FieldKind,
 }
 
 impl FormField {
@@ -50,9 +85,11 @@ impl FormField {
             required: false,
             help: String::new(),
             external_error: None,
+            async_error: None,
             validation_error: None,
             baseline: None,
             visible: true,
+            kind: FieldKind::Text,
         }
     }
 
@@ -77,6 +114,16 @@ impl FormField {
         self
     }
 
+    /// Declares the value grammar this field expects.
+    ///
+    /// [`Form::add_field`](crate::form_widgets::Form::add_field) installs the
+    /// matching input validator, so the rule runs from the form's validity pass
+    /// rather than from the child control.
+    pub fn with_kind(mut self, kind: FieldKind) -> Self {
+        self.kind = kind;
+        self
+    }
+
     /// The field's stable identity.
     pub fn key(&self) -> &str {
         &self.key
@@ -97,14 +144,27 @@ impl FormField {
         self.required
     }
 
+    /// The value grammar this field expects.
+    pub fn kind(&self) -> FieldKind {
+        self.kind
+    }
+
     /// The help text shown when the field has no error.
     pub fn help(&self) -> &str {
         &self.help
     }
 
-    /// The error currently shown: a host-reported one wins over the form's own validity pass.
+    /// The error currently shown: a host-reported one wins over an asynchronous
+    /// result, which in turn wins over the form's own validity pass.
+    ///
+    /// The order is the order of authority: an explicit host refusal is a fact the
+    /// form cannot overrule, a resolved asynchronous rule is newer than the local
+    /// pass, and the local pass is the fallback.
     pub fn error(&self) -> Option<&str> {
-        self.external_error.as_deref().or(self.validation_error.as_deref())
+        self.external_error
+            .as_deref()
+            .or(self.async_error.as_deref())
+            .or(self.validation_error.as_deref())
     }
 
     /// Whether this field is laid out and painted.
@@ -122,6 +182,14 @@ impl FormField {
         self.required = required;
     }
 
+    /// Changes the declared value grammar.
+    ///
+    /// Call [`Form::set_field_kind`](crate::form_widgets::Form::set_field_kind)
+    /// instead when the kind-derived validator should be installed too.
+    pub fn set_kind(&mut self, kind: FieldKind) {
+        self.kind = kind;
+    }
+
     /// Sets or clears the help text.
     pub fn set_help(&mut self, help: impl Into<String>) {
         self.help = help.into();
@@ -137,9 +205,20 @@ impl FormField {
         self.external_error = error.map(Into::into);
     }
 
+    /// Stores a resolved asynchronous rule's result.
+    pub fn set_async_error(&mut self, error: Option<impl Into<String>>) {
+        self.async_error = error.map(Into::into);
+    }
+
+    /// The error a resolved asynchronous ticket produced, if any.
+    pub fn async_error(&self) -> Option<&str> {
+        self.async_error.as_deref()
+    }
+
     /// Clears both error slots.
     pub fn clear_error(&mut self) {
         self.external_error = None;
+        self.async_error = None;
         self.validation_error = None;
     }
 

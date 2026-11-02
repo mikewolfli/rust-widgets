@@ -3,9 +3,9 @@
 
 //! i18n tests - unit tests for internationalization
 use super::global;
-use super::manager::I18nManager;
+use super::manager::{I18nManager, PlaceholderArgument};
 use super::options::{InitOptions, InitReport};
-use super::types::{ReloadEvent, Translation, TranslationFile};
+use super::types::{LanguageChanged, ReloadEvent, Translation, TranslationFile};
 use crate::compat::HashMap;
 use crossbeam_channel::unbounded;
 use std::fs;
@@ -1320,4 +1320,167 @@ fn the_system_language_is_a_primary_subtag() {
     assert!(!options.language.is_empty(), "there is always a language to start from");
     assert!(options.preload_dir.is_none());
     assert!(!options.diagnostics);
+}
+
+// ── Per-language catalogues and BCP-47 fallback (RW-38 / RW-97) ─────────────────
+
+fn catalogue(language: &str, entries: &[(&str, &str)]) -> TranslationFile {
+    let mut translations = HashMap::new();
+    for (key, message) in entries {
+        translations.insert(
+            (*key).to_string(),
+            Translation { context: None, message: (*message).to_string(), plural: None },
+        );
+    }
+    TranslationFile { language: language.to_string(), translations }
+}
+
+/// `keys_for` reports one catalogue, not the union across every loaded language.
+#[test]
+fn keys_for_is_per_language_and_unloaded_languages_are_none() {
+    let mut manager = I18nManager::new();
+    manager.inject_translations("en".to_string(), catalogue("en", &[("a", "A"), ("b", "B")]));
+    manager.inject_translations("de".to_string(), catalogue("de", &[("a", "A-deus")]));
+
+    assert_eq!(manager.keys_for("en"), Some(vec!["a".to_string(), "b".to_string()]));
+    assert_eq!(manager.keys_for("de"), Some(vec!["a".to_string()]));
+    assert_eq!(manager.keys_for("fr"), None, "an unloaded language must not borrow another's keys");
+    assert_eq!(manager.translation_count(), 2);
+    assert_eq!(manager.languages(), vec!["de", "en"]);
+    assert_eq!(manager.catalogue_for("de").map(|file| file.language.as_str()), Some("de"));
+    assert!(manager.catalogue_for("fr").is_none());
+}
+
+/// Lookup strips BCP-47 subtags before consulting the injected fallback chain.
+#[test]
+fn lookup_walks_the_bcp47_parent_chain_then_the_injected_fallback() {
+    let mut manager = I18nManager::new();
+    manager
+        .inject_translations("zh".to_string(), catalogue("zh", &[("hello", "\u{4f60}\u{597d}")]));
+    manager.inject_translations(
+        "zh-Hans".to_string(),
+        catalogue("zh-Hans", &[("hello", "\u{4f60}\u{597d}\u{ff08}\u{7b80}\u{ff09}")]),
+    );
+    manager.inject_translations("fr".to_string(), catalogue("fr", &[("only_fr", "Seulement")]));
+
+    manager.set_language("zh-Hans-CN");
+    assert_eq!(manager.translate("hello"), "\u{4f60}\u{597d}\u{ff08}\u{7b80}\u{ff09}");
+    // `zh-Hans-CN` misses the exact key in `zh-Hans`, then `zh-Hans` again, then `zh`; the
+    // first parent with the key wins.
+    assert_eq!(manager.translate("missing"), "missing");
+
+    // `fr` is not the active language; it is reachable only through the injected fallback.
+    manager.set_fallback_languages(vec!["fr".to_string()]);
+    assert_eq!(manager.translate("only_fr"), "Seulement");
+    assert_eq!(manager.fallback_languages().to_vec(), vec!["fr".to_string()]);
+
+    // An empty chain means no cross-language fallback: the key is the last resort.
+    manager.set_fallback_languages(Vec::new());
+    assert_eq!(manager.translate("only_fr"), "only_fr");
+}
+
+/// Injected translations with a path participate in hot reload.
+#[test]
+fn injected_translations_with_a_path_can_be_reloaded() {
+    let temp_dir = TempDir::new().unwrap();
+    let path = temp_dir.path().join("en.json");
+    let initial = catalogue("en", &[("hello", "Hello")]);
+    fs::write(&path, serde_json::to_string(&initial).unwrap()).unwrap();
+
+    let mut manager = I18nManager::new();
+    manager
+        .inject_translations_with_path("en".to_string(), initial, path.clone())
+        .expect("a matching file name must be accepted");
+    assert_eq!(manager.translate("hello"), "Hello");
+
+    let updated = catalogue("en", &[("hello", "Hello Updated")]);
+    fs::write(&path, serde_json::to_string(&updated).unwrap()).unwrap();
+    manager
+        .reload_translation("en")
+        .expect("the injected path must be registered, not reported as missing");
+    assert_eq!(manager.translate("hello"), "Hello Updated");
+
+    // A mismatched file name is refused up front, because the watcher identifies a language by
+    // the file stem and would otherwise re-request the wrong key.
+    let mut other = I18nManager::new();
+    assert!(other
+        .inject_translations_with_path(
+            "de".to_string(),
+            catalogue("de", &[("hello", "Hallo")]),
+            path.clone()
+        )
+        .is_err());
+}
+
+/// The language-change signal fires on a real switch and on an explicit retranslation.
+#[test]
+fn switching_and_retranslating_emit_the_language_change_signal() {
+    use crate::compat::Arc;
+    use crate::compat::Mutex;
+
+    let mut manager = I18nManager::new();
+    let events = Arc::new(Mutex::new(Vec::<LanguageChanged>::new()));
+    let sink = Arc::clone(&events);
+    manager.on_language_changed().connect(move |event: Arc<LanguageChanged>| {
+        crate::compat::lock(&sink).push((*event).clone());
+    });
+
+    manager.set_language("fr");
+    // A second assignment to the same language is not a change and must not notify.
+    manager.set_language("fr");
+    manager.retranslate();
+
+    let events = crate::compat::lock(&events);
+    assert_eq!(events.len(), 2, "one switch and one retranslation");
+    assert_eq!(events[0].previous, "en");
+    assert_eq!(events[0].current, "fr");
+    assert_eq!(events[1].previous, "fr");
+    assert_eq!(events[1].current, "fr");
+}
+
+// ── Typed interpolation and locale-aware numbers (RW-98) ────────────────────────
+
+#[test]
+fn typed_placeholders_format_numbers_for_the_locale() {
+    let mut manager = I18nManager::new();
+    manager.inject_translations(
+        "en".to_string(),
+        catalogue("en", &[("files", "{count} files, {ratio}")]),
+    );
+    manager.inject_translations(
+        "de".to_string(),
+        catalogue("de", &[("files", "{count} Dateien, {ratio}")]),
+    );
+
+    let args = [
+        ("count", PlaceholderArgument::Integer(1_234_567)),
+        ("ratio", PlaceholderArgument::Decimal { value: 1234.5, decimals: 1 }),
+    ];
+    assert_eq!(
+        manager.translate_with_typed_args("files", None, 1, &args),
+        "1,234,567 files, 1,234.5"
+    );
+
+    manager.set_language("de");
+    assert_eq!(
+        manager.translate_with_typed_args("files", None, 1, &args),
+        "1.234.567 Dateien, 1.234,5"
+    );
+}
+
+#[test]
+fn number_formatting_is_locale_aware_and_leaves_string_filling_alone() {
+    assert_eq!(super::manager::format_integer(1_234_567, Some("en-US")), "1,234,567");
+    assert_eq!(super::manager::format_integer(-1234, Some("de-DE")), "-1.234");
+    assert_eq!(super::manager::format_number(1234.5, 2, Some("en-US")), "1,234.50");
+    assert_eq!(super::manager::format_number(1234.5, 2, Some("de-DE")), "1.234,50");
+    // French groups with a narrow no-break space, which must not be a plain ASCII space.
+    assert_eq!(super::manager::format_number(1234.5, 1, Some("fr-FR")), "1\u{202F}234,5");
+    // Extraction of finite/infinite values remains honest rather than guessing a spelling.
+    assert_eq!(super::manager::format_number(f64::NAN, 2, Some("de")), "NaN");
+
+    // `interpolate_into` keeps its original string-only semantics.
+    let mut out = String::new();
+    super::manager::interpolate_into("a {x} b {y}", &[("x", "1")], &mut out);
+    assert_eq!(out, "a 1 b {y}");
 }

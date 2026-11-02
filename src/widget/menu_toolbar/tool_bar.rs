@@ -28,7 +28,7 @@ use crate::widget::menu_toolbar::menu_button::{
     draw_menu_panel_range, menu_item_rect, menu_panel_rect, MenuItem,
 };
 use crate::widget::metrics::{dimensions, effective_font, ControlMetrics};
-use crate::widget::{BaseWidget, Draw, IconSource, Widget, WidgetKind};
+use crate::widget::{BaseWidget, Draw, IconSource, SimpleRegistry, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
 /// The width of the drag grip at the strip's trailing end: 12 px.
@@ -374,8 +374,11 @@ impl ToolBarItem {
         &self.tooltip
     }
 
-    /// Sets the hover tooltip. Note that this widget only stores it: nothing in
-    /// `ToolBar`'s own drawing shows a tooltip.
+    /// Sets the hover tooltip.
+    ///
+    /// The text is stored on the item and presented by the tooltip pipeline while the pointer
+    /// is over the item's band (RW-62): the strip registers the hint with its own manager, and
+    /// [`ToolBar::entry_tooltip_at`] also exposes the hit test to a host-level manager.
     pub fn set_tooltip(&mut self, tooltip: impl Into<String>) {
         self.tooltip = tooltip.into();
     }
@@ -558,6 +561,28 @@ pub struct ToolBarWidgetItem {
     widget: Box<dyn Widget>,
 }
 
+/// One already-mounted control hosted as a toolbar item by id (RW-2).
+///
+/// The control is not owned by the toolbar; it is addressed through the registry bound with
+/// [`ToolBar::set_registry`]. This is the counterpart of [`ToolBarWidgetItem`], which owns a
+/// boxed control.
+pub struct ToolBarIdItem {
+    id: String,
+    widget: ObjectId,
+}
+
+impl ToolBarIdItem {
+    /// The item's stable id.
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    /// The mounted control's id.
+    pub fn widget_id(&self) -> ObjectId {
+        self.widget
+    }
+}
+
 impl ToolBarWidgetItem {
     /// The item's stable id.
     pub fn id(&self) -> &str {
@@ -671,6 +696,14 @@ pub struct ToolBar {
     /// after the action items; keeping them separate is what lets both representations keep their
     /// contract.
     widget_items: Vec<ToolBarWidgetItem>,
+    /// Already-mounted controls hosted by id (RW-2).
+    ///
+    /// Kept apart from `widget_items` for the same reason the owned list is apart from the
+    /// action items: one list owns its controls and the other only addresses them. Both share
+    /// the `widget_bands` routing table, because a pointer cannot tell the difference.
+    widget_id_items: Vec<ToolBarIdItem>,
+    /// The shared registry used to paint and route id-backed items.
+    registry: Option<Rc<RefCell<SimpleRegistry>>>,
     /// The box each hosted widget occupied on the last paint, for event routing.
     widget_bands: Vec<(String, Rect)>,
     /// The layout signature the resident `widget_bands` rectangles were computed for.
@@ -717,6 +750,8 @@ impl ToolBar {
             tooltip_now_ms: 0,
             bands_cache: RefCell::new(None),
             widget_items: Vec::new(),
+            widget_id_items: Vec::new(),
+            registry: None,
             widget_bands: Vec::new(),
             widget_bands_key: u64::MAX,
         }
@@ -753,6 +788,26 @@ impl ToolBar {
         &self.widget_items
     }
 
+    /// The controls mounted by id, in draw order (RW-2).
+    pub fn widget_id_items(&self) -> &[ToolBarIdItem] {
+        &self.widget_id_items
+    }
+
+    /// Binds the shared registry used for id-backed items (RW-2).
+    ///
+    /// An id-backed item has no box in this control, so both its painting and its pointer
+    /// events travel through this table. An owned item (`add_widget`) never consults it.
+    pub fn set_registry(&mut self, registry: Rc<RefCell<SimpleRegistry>>) {
+        self.registry = Some(registry);
+        self.widget_bands_key = u64::MAX;
+        self.base.request_redraw();
+    }
+
+    /// The shared registry, if one was bound.
+    pub fn registry(&self) -> Option<&Rc<RefCell<SimpleRegistry>>> {
+        self.registry.as_ref()
+    }
+
     /// Mounts `widget` as a toolbar item after the action items.
     ///
     /// The id must be unique among the mounted widgets; a duplicate is refused so
@@ -761,12 +816,38 @@ impl ToolBar {
     /// pointer events inside its box are forwarded to it.
     pub fn add_widget(&mut self, id: impl Into<String>, widget: Box<dyn Widget>) -> bool {
         let id = id.into();
-        if id.is_empty() || self.widget_items.iter().any(|item| item.id == id) {
+        if id.is_empty()
+            || self.widget_items.iter().any(|item| item.id == id)
+            || self.widget_id_items.iter().any(|item| item.id == id)
+        {
             return false;
         }
         self.widget_items.push(ToolBarWidgetItem { id: id.clone(), widget });
         // The resident band list mirrors the hosted widgets, so a paint never clones an id.
         // The zero-sized placeholder cannot be hit until the next paint fills it.
+        self.widget_bands.push((id, Rect::default()));
+        self.widget_bands_key = u64::MAX;
+        self.base.request_layout();
+        self.base.request_redraw();
+        true
+    }
+
+    /// Mounts an already-mounted control as a toolbar item (RW-2).
+    ///
+    /// The id must be unique across both hosted lists. The control is addressed through the
+    /// registry bound with [`Self::set_registry`] for both painting and pointer forwarding; the
+    /// toolbar does not take ownership of it. Returns `false` for an empty or duplicate id, or
+    /// for an id that is not mounted.
+    pub fn add_widget_item(&mut self, id: impl Into<String>, widget: ObjectId) -> bool {
+        let id = id.into();
+        if id.is_empty()
+            || self.widget_items.iter().any(|item| item.id == id)
+            || self.widget_id_items.iter().any(|item| item.id == id)
+            || !crate::widget::runtime::is_mounted(widget)
+        {
+            return false;
+        }
+        self.widget_id_items.push(ToolBarIdItem { id: id.clone(), widget });
         self.widget_bands.push((id, Rect::default()));
         self.widget_bands_key = u64::MAX;
         self.base.request_layout();
@@ -787,6 +868,22 @@ impl ToolBar {
     /// The hosted widget `id`.
     pub fn widget_item(&self, id: &str) -> Option<&dyn Widget> {
         self.widget_items.iter().find(|item| item.id == id).map(ToolBarWidgetItem::widget)
+    }
+
+    /// The id of the control mounted as item `id` through [`Self::add_widget_item`].
+    pub fn widget_id(&self, id: &str) -> Option<ObjectId> {
+        self.widget_id_items.iter().find(|item| item.id == id).map(ToolBarIdItem::widget_id)
+    }
+
+    /// Removes the id-backed item `id`, returning the control's id.
+    pub fn remove_widget_item(&mut self, id: &str) -> Option<ObjectId> {
+        let index = self.widget_id_items.iter().position(|item| item.id == id)?;
+        let removed = self.widget_id_items.remove(index);
+        self.widget_bands.retain(|(band_id, _)| band_id != id);
+        self.widget_bands_key = u64::MAX;
+        self.base.request_layout();
+        self.base.request_redraw();
+        Some(removed.widget)
     }
 
     /// The hosted widget `id` mutably.
@@ -1808,7 +1905,8 @@ impl ToolBar {
     /// Painting here is still before the action items, and the layout starts after the last
     /// visible item, so the two groups never overlap.
     fn paint_widget_items(&mut self, context: &mut RenderContext) {
-        if self.collapsed || self.widget_items.is_empty() {
+        let total = self.widget_items.len() + self.widget_id_items.len();
+        if self.collapsed || total == 0 {
             self.widget_bands.clear();
             return;
         }
@@ -1838,12 +1936,17 @@ impl ToolBar {
         // A signature of everything the band arithmetic reads, including each widget's
         // hint. `size_hint` is still called every frame; it feeds this key, so an unchanged
         // frame reuses the resident bands instead of allocating a list and cloning ids.
-        let mut key = self.layout_signature().rotate_left(13) ^ (self.widget_items.len() as u64);
+        let mut key = self.layout_signature().rotate_left(13) ^ (total as u64);
         for item in &self.widget_items {
             let hint = item.widget.size_hint();
             key = key.rotate_left(7) ^ (u64::from(hint.width) << 32 | u64::from(hint.height));
         }
-        if key == self.widget_bands_key && self.widget_bands.len() == self.widget_items.len() {
+        for item in &self.widget_id_items {
+            let hint = Self::registered_item_hint(item.widget);
+            key = key.rotate_left(7) ^ (u64::from(hint.width) << 32 | u64::from(hint.height));
+        }
+        let registry = self.registry.clone();
+        if key == self.widget_bands_key && self.widget_bands.len() == total {
             for (index, item) in self.widget_items.iter_mut().enumerate() {
                 let band = self.widget_bands[index].1;
                 // The strip did not move, so a widget already in its band pays nothing for
@@ -1855,14 +1958,21 @@ impl ToolBar {
                     drawable.draw(context);
                 }
             }
+            for (offset, item) in self.widget_id_items.iter().enumerate() {
+                let band = self.widget_bands[self.widget_items.len() + offset].1;
+                Self::paint_registered_item(registry.as_ref(), item.widget, band, context);
+            }
             return;
         }
 
-        // Refill the resident list in place: `add_widget`/`remove_widget` keep its ids
-        // aligned with `widget_items`, so a relayout writes only the rectangles.
-        if self.widget_bands.len() != self.widget_items.len() {
+        // Refill the resident list in place: the add/remove entries keep its ids
+        // aligned with both hosted lists, so a relayout writes only the rectangles.
+        if self.widget_bands.len() != total {
             self.widget_bands.clear();
             for item in &self.widget_items {
+                self.widget_bands.push((item.id.clone(), Rect::default()));
+            }
+            for item in &self.widget_id_items {
                 self.widget_bands.push((item.id.clone(), Rect::default()));
             }
         }
@@ -1886,7 +1996,67 @@ impl ToolBar {
             }
             cursor += extent as i32 + dimensions::TOOLBAR_SPACING as i32;
         }
+        for (offset, item) in self.widget_id_items.iter().enumerate() {
+            let index = self.widget_items.len() + offset;
+            let hint = Self::registered_item_hint(item.widget);
+            let hinted = if horizontal { hint.width } else { hint.height };
+            let extent = Self::registered_item_extent(item.widget, hinted, horizontal);
+            let band = if horizontal {
+                Rect::new(cursor, rect.y + inset, extent, cross)
+            } else {
+                Rect::new(rect.x + inset, cursor, cross, extent)
+            };
+            if self.widget_bands[index].0 != item.id {
+                self.widget_bands[index].0.clone_from(&item.id);
+            }
+            self.widget_bands[index].1 = band;
+            Self::paint_registered_item(registry.as_ref(), item.widget, band, context);
+            cursor += extent as i32 + dimensions::TOOLBAR_SPACING as i32;
+        }
         self.widget_bands_key = key;
+    }
+
+    /// The size a hosted-by-id control asks for, or zero when it cannot be read.
+    fn registered_item_hint(widget_id: ObjectId) -> crate::core::Size {
+        crate::widget::runtime::read_widget(widget_id, |widget| widget.size_hint())
+            .unwrap_or(crate::core::Size::new(0, 0))
+    }
+
+    /// The main-axis extent of a hosted-by-id control.
+    ///
+    /// A control with no hint falls back to its current geometry and then to the strip's
+    /// default item width, so an unstyled child still gets a usable band.
+    fn registered_item_extent(widget_id: ObjectId, hinted: u32, horizontal: bool) -> u32 {
+        if hinted > 0 {
+            return hinted;
+        }
+        crate::widget_geometry(widget_id)
+            .map(|(_, _, width, height)| if horizontal { width } else { height })
+            .unwrap_or(80)
+            .max(1)
+    }
+
+    /// Places and paints one id-backed control through the shared registry.
+    fn paint_registered_item(
+        registry: Option<&Rc<RefCell<SimpleRegistry>>>,
+        widget_id: ObjectId,
+        band: Rect,
+        context: &mut RenderContext,
+    ) {
+        crate::set_widget_geometry(widget_id, band.x, band.y, band.width, band.height);
+        if let Some(registry) = registry {
+            let mut registry = registry.borrow_mut();
+            registry.set_widget_geometry(widget_id, band);
+            registry.draw_widget(widget_id, context);
+        }
+    }
+
+    /// The painted box of item `index`, or `None` when the index is not offered.
+    ///
+    /// This is the same box the hit test reads, exposed for a host that anchors its own
+    /// affordance (a context menu, an entry-level tooltip) to the item the user is over.
+    pub fn item_rect(&self, index: usize) -> Option<Rect> {
+        self.item_bands().get(index).copied()
     }
 
     fn item_bands(&self) -> Rc<Vec<Rect>> {
@@ -2077,6 +2247,21 @@ impl ToolBar {
         self.item_bands().iter().position(|band| band.contains_point(pos))
     }
 }
+impl ToolBar {
+    /// RW-62: the hint of the item under `pos`, or `None`.
+    ///
+    /// The hint is the [`ToolBarItem::tooltip`] value, the same text the item-level tooltip
+    /// pipeline reads; this method exposes the hit test so a host-level
+    /// [`TooltipManager`](crate::widget::companions::TooltipManager) can resolve an entry hint
+    /// without mirroring the item list.
+    pub fn entry_tooltip_at(&self, pos: Point) -> Option<(usize, &str)> {
+        let index = self.hit_item(pos)?;
+        let item = self.items.get(index)?;
+        let text = item.tooltip();
+        (!text.is_empty()).then_some((index, text))
+    }
+}
+
 impl Widget for ToolBar {
     fn base(&self) -> &BaseWidget {
         &self.base
@@ -2317,6 +2502,15 @@ impl EventHandler for ToolBar {
             {
                 if let Some(item) = self.widget_items.iter_mut().find(|item| item.id == id) {
                     item.widget.handle_event(event);
+                    return;
+                }
+                if let Some(item) = self.widget_id_items.iter().find(|item| item.id == id) {
+                    // An id-backed item is not owned here: its event path is the registry,
+                    // exactly as its paint path is.
+                    if let Some(registry) = &self.registry {
+                        let widget_id = item.widget;
+                        registry.borrow_mut().forward_event(widget_id, event);
+                    }
                     return;
                 }
             }
@@ -3311,6 +3505,57 @@ mod tests {
 
         assert!(bar.remove_widget("hosted").is_some());
         assert!(bar.widget_band("hosted").is_none(), "a removed widget has no band");
+    }
+
+    /// RW-2: an id-backed item is laid out, painted and routed through the shared registry.
+    #[test]
+    fn an_id_backed_item_uses_the_registry_for_paint_and_events() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let widget = crate::widget::runtime::register(Box::new(
+            crate::widget::base_widgets::button::Button::new(
+                "Go".to_string(),
+                Rect::new(0, 0, 40, 20),
+            ),
+        ))
+        .expect("the control mounts");
+        let drawn = Arc::new(AtomicUsize::new(0));
+        let events = Arc::new(AtomicUsize::new(0));
+        let draw_sink = Arc::clone(&drawn);
+        let event_sink = Arc::clone(&events);
+        let mut registry = SimpleRegistry::new();
+        registry.register(
+            widget,
+            move |_context| {
+                draw_sink.fetch_add(1, Ordering::SeqCst);
+            },
+            move |_event| {
+                event_sink.fetch_add(1, Ordering::SeqCst);
+            },
+        );
+        let registry = Rc::new(RefCell::new(registry));
+
+        let mut bar = ToolBar::new(Rect::new(0, 0, 300, dimensions::TOOLBAR_HEIGHT));
+        bar.add_action("open", "Open");
+        bar.set_registry(Rc::clone(&registry));
+        assert!(bar.add_widget_item("hosted-id", widget));
+        assert_eq!(bar.widget_id("hosted-id"), Some(widget));
+        assert!(!bar.add_widget_item("hosted-id", widget), "a duplicate id is refused");
+
+        let _ = crate::widget::svg::render_to_svg(&mut bar);
+        let band = bar.widget_band("hosted-id").expect("the id-backed item is laid out");
+        assert!(drawn.load(Ordering::SeqCst) >= 1, "the registry drew the item");
+        bar.handle_event(&crate::event::Event::MousePress {
+            pos: crate::core::Point::new(band.x + 2, band.y + 2),
+            button: 1,
+            modifiers: 0,
+        });
+        assert_eq!(events.load(Ordering::SeqCst), 1, "the registry received the press");
+
+        assert_eq!(bar.remove_widget_item("hosted-id"), Some(widget));
+        assert!(bar.widget_band("hosted-id").is_none());
+        crate::widget::runtime::unregister(widget);
     }
 }
 #[cfg(test)]

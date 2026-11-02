@@ -549,6 +549,38 @@ pub(crate) fn window_min_size(window_id: u64) -> Option<(u32, u32)> {
     }
 }
 
+/// Raises a window and makes it the key window.
+///
+/// `makeKeyAndOrderFront:` is AppKit's own "activate this window" operation: it orders the
+/// window front and gives it the keyboard focus. A minimised window is deminiaturised first,
+/// because ordering a miniaturised window front does not bring it back.
+pub(crate) fn activate_window(window_id: u64) -> bool {
+    let Some(window) = window_ref(window_id) else {
+        return false;
+    };
+    if window.isMiniaturized() {
+        window.deminiaturize(None);
+    }
+    window.makeKeyAndOrderFront(None);
+    true
+}
+
+/// Reads a window's top-left frame origin in screen coordinates.
+pub(crate) fn window_position(window_id: u64) -> Option<(i32, i32)> {
+    let window = window_ref(window_id)?;
+    let origin = window.frame().origin;
+    Some((origin.x.round() as i32, origin.y.round() as i32))
+}
+
+/// Moves a window's frame origin without changing its size or activation state.
+pub(crate) fn set_window_position(window_id: u64, x: i32, y: i32) -> bool {
+    let Some(window) = window_ref(window_id) else {
+        return false;
+    };
+    window.setFrameOrigin(objc2_foundation::NSPoint::new(x as f64, y as f64));
+    true
+}
+
 /// Applies a maximum content size through AppKit.
 pub(crate) fn set_window_max_size(window_id: u64, width: u32, height: u32) -> bool {
     let Some(window) = window_ref(window_id) else {
@@ -937,6 +969,13 @@ pub(crate) struct CanvasIvars {
     /// that, rather than hiding a field that is genuinely used.
     #[cfg_attr(not(widgets_unstripped), allow(dead_code))]
     is_window: std::cell::Cell<bool>,
+    /// Carried sub-notch remainder for precise (trackpad/pixel) scrolling, per axis.
+    ///
+    /// AppKit reports precise deltas in points; rounding each sample on its own inflated a
+    /// light two-finger swipe by an order of magnitude. The accumulator keeps the remainder
+    /// across events, so the emitted notches stay proportional to the finger travel. Both axes
+    /// are carried independently so a diagonal gesture does not lose one of them.
+    scroll_accumulator: std::cell::RefCell<crate::event::WheelNotchAccumulator>,
 }
 
 define_class!(
@@ -1246,15 +1285,58 @@ define_class!(
             }
         }
 
-        /// The window delegate hook for the close button: emit the widget's `closed`
-        /// signal (so `on_close` handlers run), then allow AppKit to close the window.
+        /// The window delegate hook for the close button.
+        ///
+        /// The close is a **proposal**: a host may refuse it (unsaved changes, a running job),
+        /// and AppKit honours that by doing nothing when this returns `false`. The decision is
+        /// made once, in `platform::window_control`, so the macOS, Windows and GTK backends all
+        /// consult the same close handler and `WindowCloseRequest` route.
         #[unsafe(method(windowShouldClose:))]
         fn window_should_close(&self, _window: &NSWindow) -> bool {
             #[cfg(widgets_unstripped)]
             if let Some(widget_id) = self.widget_target() {
+                if !crate::platform::window_control::request_window_close(widget_id) {
+                    return false;
+                }
                 let _ = crate::close_widget(widget_id);
             }
             true
+        }
+
+        /// The window became key: the whole top-level window gained keyboard focus.
+        #[unsafe(method(windowDidBecomeKey:))]
+        fn window_did_become_key(&self, _notification: &NSNotification) {
+            #[cfg(widgets_unstripped)]
+            if let Some(widget_id) = self.widget_target() {
+                crate::platform::window_control::notify_window_focus(widget_id, true);
+            }
+        }
+
+        /// The window resigned key: another window took the keyboard.
+        #[unsafe(method(windowDidResignKey:))]
+        fn window_did_resign_key(&self, _notification: &NSNotification) {
+            #[cfg(widgets_unstripped)]
+            if let Some(widget_id) = self.widget_target() {
+                crate::platform::window_control::notify_window_focus(widget_id, false);
+            }
+        }
+
+        /// The window moved. The frame's origin is the screen-space point the host mirrors.
+        #[unsafe(method(windowDidMove:))]
+        fn window_did_move(&self, _notification: &NSNotification) {
+            #[cfg(widgets_unstripped)]
+            if let Some(widget_id) = self.widget_target() {
+                if let Some(window) = self.window() {
+                    let frame = window.frame();
+                    crate::platform::window_control::notify_window_moved(
+                        widget_id,
+                        crate::core::Point::new(
+                            frame.origin.x.round() as i32,
+                            frame.origin.y.round() as i32,
+                        ),
+                    );
+                }
+            }
         }
 
         #[unsafe(method(windowWillClose:))]
@@ -1537,6 +1619,7 @@ impl RustWidgetsObjc2CanvasView {
         let this = mtm.alloc::<Self>().set_ivars(CanvasIvars {
             widget_id: std::cell::Cell::new(widget_id),
             is_window: std::cell::Cell::new(is_window),
+            scroll_accumulator: std::cell::RefCell::new(crate::event::WheelNotchAccumulator::new()),
         });
         // SAFETY: `this` is an allocated instance with its ivars initialised, and
         // `initWithFrame:` is the designated initializer of `NSView`.
@@ -1676,6 +1759,20 @@ impl RustWidgetsObjc2CanvasView {
     }
 
     /// Translates an AppKit scroll-wheel event into a widget wheel event.
+    ///
+    /// # Precise versus line deltas (RW-88)
+    ///
+    /// A classic mouse wheel speaks in **line** units: one notch is `1`, and rounding it is
+    /// correct. A trackpad (or a high-resolution wheel) sets `hasPreciseScrollingDeltas` and
+    /// reports **points**, often fractions: 0.8, 1.7, 2.4 on a gentle two-finger swipe.
+    /// Rounding each of those on its own turned one short gesture into several notches, which is
+    /// why scrolling on macOS felt far faster than the same gesture elsewhere. Precise samples
+    /// therefore go through a per-axis sub-notch accumulator, so only whole notches are emitted
+    /// and the remainder survives to the next event.
+    ///
+    /// Both axes are emitted in the one [`Event::Wheel`] payload. The horizontal sign is kept as
+    /// AppKit reports it; the vertical sign is inverted because AppKit's positive delta means
+    /// "up" while the widget layer's positive `y` means "content moves down".
     #[cfg(widgets_unstripped)]
     fn forward_wheel(&self, event: &NSEvent) {
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -1686,14 +1783,23 @@ impl RustWidgetsObjc2CanvasView {
             let modifiers = crate::platform::macos::accelerator::map_modifiers(
                 event.modifierFlags().bits() as u64,
             );
-            // AppKit reports a positive `scrollingDeltaY` for scrolling up; the widget
-            // layer's wheel `delta.y` is positive for scrolling down, so the sign is
-            // inverted (matching `macos::canvas` and `windows::canvas`).
-            let translated = Event::wheel(
-                event.scrollingDeltaX().round() as i32,
-                -(event.scrollingDeltaY().round() as i32),
-                modifiers,
-            );
+            let dx = event.scrollingDeltaX();
+            let dy = -event.scrollingDeltaY();
+            let delta = if event.hasPreciseScrollingDeltas() {
+                let mut accumulator = self.ivars().scroll_accumulator.borrow_mut();
+                accumulator.add_points(dx, dy)
+            } else {
+                // A line-mode wheel does not share the precise stream's unit. Drop any carried
+                // precise remainder so a later trackpad sample starts from a clean accumulator.
+                self.ivars().scroll_accumulator.borrow_mut().reset();
+                crate::core::Point::new(dx.round() as i32, dy.round() as i32)
+            };
+            if delta.x == 0 && delta.y == 0 {
+                // Nothing crossed a notch boundary yet. Delivering a zero-delta wheel event
+                // would make a control repaint for a scroll that has not happened.
+                return;
+            }
+            let translated = Event::wheel(delta.x, delta.y, modifiers);
             if crate::platform::platform_facts().route_pointer_event(
                 widget_id,
                 &translated,
@@ -1772,6 +1878,17 @@ impl RustWidgetsObjc2CanvasView {
             let translated_key = translate_key_event(event);
             let key = u32::from(translated_key.appkit_key_code);
             let modifiers = translated_key.modifiers;
+            // Tab is a library action, not text: it moves focus before the text path sees it.
+            // Without this arm AppKit's translation would deliver a tab character as
+            // `TextInput`, leaving a window-hosted control unreachable by keyboard on this
+            // backend. The scoped traversal keeps focus inside this window (RW-92).
+            const APP_KIT_TAB: u32 = 48;
+            const WIDGET_SHIFT: u32 = 1;
+            if !release && key == APP_KIT_TAB {
+                crate::widget::window::focus_next_in_window(modifiers & WIDGET_SHIFT == 0);
+                self.setNeedsDisplay(true);
+                return;
+            }
             if release {
                 // A release produces no text, so `KeyRelease` is the only event it can be.
                 let target = crate::widget::runtime::focused_widget().unwrap_or(widget_id);

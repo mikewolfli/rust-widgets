@@ -15,8 +15,16 @@ pub mod matchers;
 pub mod snapshot;
 /// Shared data types used by the harness and matchers.
 pub mod test_types;
+/// Tree-level assertions for a whole declarative or mounted tree (RW-57).
+///
+/// Gated on the declarative layer: a `mini`/`embedded` build has no `view` tree to assert on, and
+/// the module's subject is exactly that tree.
+#[cfg(declarative_view)]
+pub mod tree_assert;
 
 pub use harness::*;
 pub use matchers::*;
 pub use snapshot::*;
 pub use test_types::*;
+#[cfg(declarative_view)]
+pub use tree_assert::*;

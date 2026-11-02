@@ -37,10 +37,11 @@ pub(crate) unsafe extern "system" fn wnd_proc(
     // route into the tree (paint, mouse, wheel, key, character).
     #[cfg(widgets_unstripped)]
     use winapi::um::winuser::{
-        GetClientRect, WM_CHAR, WM_IME_COMPOSITION, WM_IME_ENDCOMPOSITION, WM_IME_STARTCOMPOSITION,
-        WM_KEYDOWN, WM_KEYUP, WM_KILLFOCUS, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_LBUTTONUP,
-        WM_MOUSELEAVE, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_PAINT, WM_RBUTTONDOWN, WM_RBUTTONUP,
-        WM_SETFOCUS, WM_SIZE, WM_UNICHAR,
+        GetClientRect, WA_INACTIVE, WM_ACTIVATE, WM_CHAR, WM_IME_COMPOSITION,
+        WM_IME_ENDCOMPOSITION, WM_IME_STARTCOMPOSITION, WM_KEYDOWN, WM_KEYUP, WM_KILLFOCUS,
+        WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEHWHEEL, WM_MOUSELEAVE,
+        WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_MOVE, WM_PAINT, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETFOCUS,
+        WM_SIZE, WM_UNICHAR,
     };
     match msg {
         // The window's own painting: every control the window owns, drawn as one frame.
@@ -132,7 +133,15 @@ pub(crate) unsafe extern "system" fn wnd_proc(
         // applied — a scroll area needs the direction, not the raw tick count.
         #[cfg(widgets_unstripped)]
         WM_MOUSEWHEEL => {
-            forward_window_wheel(hwnd, wparam, lparam);
+            forward_window_wheel(hwnd, wparam, lparam, false);
+            0
+        }
+        // A horizontal wheel is its own Win32 message. Before this arm the component was
+        // handed to `DefWindowProcW` and lost, so no window-hosted control could pan
+        // horizontally with a tilt wheel or a trackpad's sideways gesture.
+        #[cfg(widgets_unstripped)]
+        WM_MOUSEHWHEEL => {
+            forward_window_wheel(hwnd, wparam, lparam, true);
             0
         }
         // A hover highlight has to be cleared when the pointer leaves, or it sticks.
@@ -176,7 +185,7 @@ pub(crate) unsafe extern "system" fn wnd_proc(
                 const WIDGET_SHIFT: u32 = 1;
                 if wparam as u32 == VK_TAB {
                     let forward = super::canvas::current_modifiers() & WIDGET_SHIFT == 0;
-                    crate::widget::runtime::focus_next(forward);
+                    crate::widget::window::focus_next_in_window(forward);
                     invalidate_window(hwnd);
                     return 0;
                 }
@@ -499,6 +508,40 @@ pub(crate) unsafe extern "system" fn wnd_proc(
             }
             DefWindowProcW(hwnd, msg, wparam, lparam)
         }
+        #[cfg(widgets_unstripped)]
+        WM_MOVE => {
+            // The low/high words of `lParam` are the new client origin in screen coordinates.
+            // Both the typed `Moved` trigger (layout re-run) and the point-carrying
+            // notification are produced, so a host that only polls triggers and one that
+            // subscribes to the window signal both hear about the same move.
+            #[cfg(widgets_unstripped)]
+            if let Some(window_id) = window_widget_for(hwnd) {
+                let x = (lparam & 0xFFFF) as u16 as i16 as i32;
+                let y = ((lparam >> 16) & 0xFFFF) as u16 as i16 as i32;
+                crate::platform::window_control::notify_window_moved(
+                    window_id,
+                    crate::core::Point::new(x, y),
+                );
+                crate::inject_widget_trigger_event(
+                    window_id,
+                    crate::platform::WidgetTriggerKind::Moved,
+                );
+            }
+            DefWindowProcW(hwnd, msg, wparam, lparam)
+        }
+        // The window became active or inactive with respect to the desktop. This is the
+        // whole-window focus fact a host paints its chrome from; `WM_SETFOCUS` above is the
+        // keyboard fact for the window's own controls and is not the same thing (moving to
+        // another application sends `WM_ACTIVATE` with `WA_INACTIVE`, not `WM_KILLFOCUS` to
+        // every window).
+        #[cfg(widgets_unstripped)]
+        WM_ACTIVATE => {
+            if let Some(window_id) = window_widget_for(hwnd) {
+                let active = (wparam & 0xFFFF) as u32 != WA_INACTIVE;
+                crate::platform::window_control::notify_window_focus(window_id, active);
+            }
+            DefWindowProcW(hwnd, msg, wparam, lparam)
+        }
         // The user asked to close the window, by the title bar's X or the system menu.
         //
         // # Why this is not left to `DefWindowProcW`
@@ -519,6 +562,11 @@ pub(crate) unsafe extern "system" fn wnd_proc(
             // because running it needs the widget tree `window_widget_for` resolves through.
             #[cfg(widgets_unstripped)]
             if let Some(window_id) = window_widget_for(hwnd) {
+                if !crate::platform::window_control::request_window_close(window_id) {
+                    // The close was refused: returning 0 without calling `DefWindowProcW`
+                    // leaves the window alive, which is exactly the veto contract.
+                    return 0;
+                }
                 if !crate::close_widget(window_id) {
                     // The id exists in the registry (the painter found it) but carries no
                     // widget to close. Reported rather than swallowed: a close that ran no
@@ -863,7 +911,7 @@ unsafe fn forward_window_mouse(hwnd: HWND, lparam: isize, phase: MousePhase) {
 #[cfg(all(target_os = "windows", widgets_unstripped))]
 const MOUSE_PRIMARY: u32 = crate::event::mouse_button::PRIMARY;
 
-/// Translates a `WM_MOUSEWHEEL` into a widget wheel event and delivers it.
+/// Translates a `WM_MOUSEWHEEL`/`WM_MOUSEHWHEEL` into a widget wheel event and delivers it.
 ///
 /// # Why this is not `forward_window_mouse`
 ///
@@ -879,6 +927,11 @@ const MOUSE_PRIMARY: u32 = crate::event::mouse_button::PRIMARY;
 /// `ScreenToClient` conversion would scroll whatever control sits at the pointer's *screen*
 /// position, which is normally a different control (or none) entirely.
 ///
+/// `horizontal` selects the axis: `WM_MOUSEWHEEL` is vertical and its sign is inverted
+/// because a positive Win32 value means "away from the user"; `WM_MOUSEHWHEEL` is horizontal
+/// and already matches the widget convention (positive x = content moves right). Both axes
+/// use the same [`crate::event::Event::Wheel`] payload, so neither is dropped.
+///
 /// # Why the wheel goes to the widget under the pointer
 ///
 /// That is what every desktop toolkit does, and it is what makes scrolling the control the
@@ -893,7 +946,7 @@ const MOUSE_PRIMARY: u32 = crate::event::mouse_button::PRIMARY;
 ///
 /// # Safety
 /// `hwnd` must be a live window handle this backend created.
-unsafe fn forward_window_wheel(hwnd: HWND, wparam: usize, lparam: isize) {
+unsafe fn forward_window_wheel(hwnd: HWND, wparam: usize, lparam: isize, horizontal: bool) {
     use crate::core::Point;
     use winapi::um::winuser::{ScreenToClient, GET_WHEEL_DELTA_WPARAM, WHEEL_DELTA};
     let Some(window_id) = window_widget_for(hwnd) else {
@@ -913,15 +966,18 @@ unsafe fn forward_window_wheel(hwnd: HWND, wparam: usize, lparam: isize) {
         return;
     }
     let position = Point::new(screen.x, screen.y);
-    // The widget layer speaks in whole notches with a downward-positive convention; a
-    // positive Win32 delta means "away from the user", so the sign is inverted.
+    // The widget layer speaks in whole notches with a downward-positive / right-positive
+    // convention. A positive vertical Win32 delta means "away from the user", so the sign is
+    // inverted; a positive horizontal delta already means a tilt to the right, which is the
+    // widget layer's positive x.
     let notches = match raw_delta / WHEEL_DELTA {
         0 if raw_delta > 0 => 1,
         0 => -1,
         whole => whole as i32,
     };
+    let delta = if horizontal { Point::new(notches, 0) } else { Point::new(0, -notches) };
     let event = crate::event::Event::Wheel {
-        delta: Point::new(0, -notches),
+        delta,
         modifiers: crate::platform::windows::canvas::current_modifiers(),
     };
     if crate::widget::runtime::dispatch_pointer_event(window_id, &event, position) {

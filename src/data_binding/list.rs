@@ -195,6 +195,269 @@ impl<T: Clone + Send + 'static> ObservableList<T> {
     }
 }
 
+#[cfg(all(full_widgets, not(alloc_frugal)))]
+mod observable_model {
+    //! The bridge from [`ObservableList`] to the view layer's model protocols (RW-9).
+    //!
+    //! # Why this lives beside the list rather than in the view
+    //!
+    //! `ObservableList` is the data-binding layer's collection primitive and `ListModel` is the
+    //! view layer's read protocol. Neither module may depend on the other's `full_widgets`-gated
+    //! surface, but this module already sits on the binding side and can name both, so the bridge
+    //! is the one place that knows both vocabularies.
+
+    use super::{ListChange, ObservableList};
+    use crate::compat::{format, lock, Arc, MiniToString, Mutex, String, Vec};
+    use crate::core::ObjectId;
+    use crate::signal::{GenericSignal, Signal1};
+    use crate::widget::view_widgets::data_source::ListModelDataSource;
+    use crate::widget::view_widgets::list_view::ListModel;
+    use crate::widget::view_widgets::table_widget::{TableModel, TableWidget};
+
+    /// An [`ObservableList`] projected as a [`ListModel`], with fine-grained row signals (RW-9).
+    ///
+    /// # Why a mirrored snapshot instead of a reference
+    ///
+    /// A `ListModel` is `Send + Sync` and is held by a view through an `Arc`, so it cannot borrow
+    /// the list that owns it. The model therefore keeps its own snapshot and every
+    /// [`ListChange`] — which already carries the index and the value — applies to that snapshot
+    /// incrementally. No change re-reads the whole list.
+    ///
+    /// # Lifetime
+    ///
+    /// The change listener the list holds captures an `Arc` of this model, so the model lives at
+    /// least as long as the list. [`ObservableList::unsubscribe_changes`] with the same key ends it
+    /// early; the key is [`Self::subscription_key`].
+    pub struct ObservableListModel<T: Clone + Send + 'static> {
+        items: Mutex<Vec<T>>,
+        data_changed: GenericSignal,
+        row_changed: Signal1<usize>,
+        rows_changed: GenericSignal,
+        subscription_key: String,
+    }
+
+    impl<T: Clone + Send + 'static> ObservableListModel<T> {
+        /// Projects `list` and subscribes to its changes, returning the shared model.
+        ///
+        /// `list` is taken mutably because a subscription is a mutation of the list's listener
+        /// table; there is no way to observe an `ObservableList` through a shared reference, and
+        /// pretending otherwise (a one-shot snapshot) would be a silent lie about liveness.
+        pub fn bind(list: &mut ObservableList<T>) -> Arc<Self> {
+            use core::sync::atomic::{AtomicU64, Ordering};
+            // Two models over the same list must not overwrite each other's listener, so the key
+            // carries a process-unique counter rather than an item count.
+            static NEXT_MODEL_ID: AtomicU64 = AtomicU64::new(1);
+            let items: Vec<T> = list.iter().cloned().collect();
+            let key =
+                format!("observable-list-model:{}", NEXT_MODEL_ID.fetch_add(1, Ordering::Relaxed));
+            let model = Arc::new(Self {
+                items: Mutex::new(items),
+                data_changed: GenericSignal::new(),
+                row_changed: Signal1::new(),
+                rows_changed: GenericSignal::new(),
+                subscription_key: key.clone(),
+            });
+            let sink = Arc::clone(&model);
+            list.subscribe_changes(&key, move |change| sink.apply(change));
+            model
+        }
+
+        /// The subscription key the list's change listener is registered under.
+        pub fn subscription_key(&self) -> &str {
+            &self.subscription_key
+        }
+
+        /// Applies one change to the snapshot and reports it at the finest granularity available.
+        ///
+        /// A row insertion/removal fires [`Self::rows_changed_signal`] (the projection shrank or
+        /// grew) **and** [`Self::row_changed_signal`] for the index that moved; a clear fires only
+        /// the structural signal. Every arm also advances the coarse `data_changed` signal the
+        /// model protocol already publishes, so an existing view redraws.
+        pub fn apply(&self, change: &ListChange<T>) {
+            let changed_row = {
+                let mut items = lock(&self.items);
+                match change {
+                    ListChange::Push { index, value } => {
+                        debug_assert!(*index <= items.len());
+                        items.insert(*index, value.clone());
+                        Some(*index)
+                    }
+                    ListChange::Pop { index, .. } => {
+                        if *index < items.len() {
+                            items.remove(*index);
+                        }
+                        None
+                    }
+                    ListChange::Insert { index, value } => {
+                        let at = (*index).min(items.len());
+                        items.insert(at, value.clone());
+                        Some(*index)
+                    }
+                    ListChange::Remove { index, .. } => {
+                        if *index < items.len() {
+                            items.remove(*index);
+                        }
+                        None
+                    }
+                    ListChange::Clear { .. } => {
+                        items.clear();
+                        None
+                    }
+                }
+            };
+            self.rows_changed.emit();
+            if let Some(row) = changed_row {
+                self.row_changed.emit(row);
+            }
+            self.data_changed.emit();
+        }
+
+        /// The mirrored items, in order.
+        pub fn items(&self) -> Vec<T> {
+            lock(&self.items).clone()
+        }
+
+        /// The number of mirrored items.
+        pub fn len(&self) -> usize {
+            lock(&self.items).len()
+        }
+
+        /// Whether the model mirrors no items.
+        pub fn is_empty(&self) -> bool {
+            lock(&self.items).is_empty()
+        }
+
+        /// The signal emitted with the index of an inserted row.
+        pub fn row_changed_signal(&self) -> &Signal1<usize> {
+            &self.row_changed
+        }
+
+        /// The signal emitted when rows are inserted, removed or cleared.
+        pub fn rows_changed_signal(&self) -> &GenericSignal {
+            &self.rows_changed
+        }
+    }
+
+    impl<T: Clone + Send + MiniToString + 'static> ListModel for ObservableListModel<T> {
+        fn row_count(&self) -> usize {
+            lock(&self.items).len()
+        }
+
+        fn data(&self, row: usize) -> Option<String> {
+            lock(&self.items).get(row).map(MiniToString::to_string)
+        }
+
+        fn fill_data(&self, row: usize, out: &mut String) -> bool {
+            let items = lock(&self.items);
+            match items.get(row) {
+                Some(item) => {
+                    out.push_str(&item.to_string());
+                    true
+                }
+                None => false,
+            }
+        }
+
+        fn data_changed_signal(&self) -> Option<&GenericSignal> {
+            Some(&self.data_changed)
+        }
+    }
+
+    /// The one-column table projection, so a [`TableWidget`] can consume the same model (RW-9).
+    impl<T: Clone + Send + MiniToString + 'static> TableModel for ObservableListModel<T> {
+        fn row_count(&self) -> usize {
+            lock(&self.items).len()
+        }
+
+        fn column_count(&self) -> usize {
+            1
+        }
+
+        fn data(&self, row: usize, column: usize) -> Option<String> {
+            if column != 0 {
+                return None;
+            }
+            lock(&self.items).get(row).map(MiniToString::to_string)
+        }
+
+        fn fill_data(&self, row: usize, column: usize, out: &mut String) -> bool {
+            if column != 0 {
+                return false;
+            }
+            let items = lock(&self.items);
+            match items.get(row) {
+                Some(item) => {
+                    out.push_str(&item.to_string());
+                    true
+                }
+                None => false,
+            }
+        }
+
+        fn data_changed_signal(&self) -> Option<&GenericSignal> {
+            Some(&self.data_changed)
+        }
+    }
+
+    /// Projects `list` and binds the resulting model into the mounted widget at `widget_id` (RW-9).
+    ///
+    /// The widget is addressed the way every other runtime binding addresses one, and the model is
+    /// attached according to what the widget actually is:
+    ///
+    /// * a [`ListView`](crate::widget::view_widgets::list_view::ListView) gets it through
+    ///   `set_model`;
+    /// * a [`TableWidget`] gets it through `set_model` (one implied column);
+    /// * a [`DataGrid`](crate::widget::view_widgets::data_grid::DataGrid),
+    ///   [`VirtualList`](crate::widget::view_widgets::virtual_list::VirtualList) or
+    ///   [`VirtualTable`](crate::widget::view_widgets::virtual_table::VirtualTable) gets a
+    ///   [`ListModelDataSource`] projection through `set_data_source`.
+    ///
+    /// A widget of any other type is left untouched — the model is still returned so the caller can
+    /// bind it itself — because silently writing to an unrelated property would be worse than an
+    /// unconsumed model. The initial rows are pushed by the attach itself; every later change
+    /// reaches the view through the model's own change signal, so no per-change work is done here.
+    ///
+    /// `list` is `&mut` for the reason [`ObservableListModel::bind`] documents: subscribing is a
+    /// mutation of the list.
+    pub fn bind_widget_model<T>(
+        widget_id: ObjectId,
+        list: &mut ObservableList<T>,
+    ) -> Arc<ObservableListModel<T>>
+    where
+        T: Clone + Send + MiniToString + 'static,
+    {
+        let model = ObservableListModel::bind(list);
+        let list_model: Arc<dyn ListModel> = model.clone();
+        let table_model: Arc<dyn TableModel> = model.clone();
+        let _ = crate::widget::runtime::with_widget_mut(widget_id, |widget| {
+            let any = widget as &mut dyn core::any::Any;
+            if let Some(view) =
+                any.downcast_mut::<crate::widget::view_widgets::list_view::ListView>()
+            {
+                view.set_model(list_model);
+            } else if let Some(table) = any.downcast_mut::<TableWidget>() {
+                table.set_model(table_model);
+            } else if let Some(grid) =
+                any.downcast_mut::<crate::widget::view_widgets::data_grid::DataGrid>()
+            {
+                grid.set_data_source(Arc::new(ListModelDataSource::new(list_model)));
+            } else if let Some(list) =
+                any.downcast_mut::<crate::widget::view_widgets::virtual_list::VirtualList>()
+            {
+                list.set_data_source(Arc::new(ListModelDataSource::new(list_model)));
+            } else if let Some(table) =
+                any.downcast_mut::<crate::widget::view_widgets::virtual_table::VirtualTable>()
+            {
+                table.set_data_source(Arc::new(ListModelDataSource::new(list_model)));
+            }
+        });
+        model
+    }
+}
+
+#[cfg(all(full_widgets, not(alloc_frugal)))]
+pub use observable_model::{bind_widget_model, ObservableListModel};
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -345,5 +608,78 @@ mod tests {
         );
         list.remove(0);
         assert_eq!(count.load(Ordering::SeqCst), 1);
+    }
+
+    /// RW-9: every `ListChange` applies to the model's snapshot once, and the model reports the
+    /// row that moved on the fine-grained signal.
+    #[cfg(all(full_widgets, not(alloc_frugal)))]
+    #[test]
+    fn an_observable_list_model_maps_changes_to_rows() {
+        use crate::widget::view_widgets::list_view::ListModel;
+
+        let mut list = ObservableList::with_items(vec!["a".to_string(), "b".to_string()]);
+        let model = ObservableListModel::bind(&mut list);
+        assert_eq!(model.row_count(), 2);
+        assert_eq!(model.data(0).as_deref(), Some("a"));
+        assert_eq!(model.data(1).as_deref(), Some("b"));
+        assert_eq!(model.data(2), None);
+
+        let moved = Arc::new(Mutex::new(Vec::<usize>::new()));
+        let structural = Arc::new(AtomicI32::new(0));
+        let moved_sink = Arc::clone(&moved);
+        let structural_sink = Arc::clone(&structural);
+        model.row_changed_signal().connect(move |row| {
+            moved_sink.lock().expect("lock").push(*row.as_ref());
+        });
+        model.rows_changed_signal().connect(move || {
+            structural_sink.fetch_add(1, Ordering::SeqCst);
+        });
+
+        list.push("c".to_string());
+        assert_eq!(model.row_count(), 3);
+        assert_eq!(model.data(2).as_deref(), Some("c"));
+
+        list.insert(0, "z".to_string());
+        list.remove(1);
+        assert_eq!(model.items(), vec!["z".to_string(), "b".to_string(), "c".to_string()]);
+
+        list.clear();
+        assert!(model.is_empty());
+        assert_eq!(*moved.lock().expect("lock"), vec![2usize, 0usize]);
+        assert_eq!(structural.load(Ordering::SeqCst), 4, "one structural report per change");
+    }
+
+    /// RW-9: the binding attaches the projected model to a mounted view and later changes reach
+    /// that view through the model's own signal, with no per-change work in the binding.
+    #[cfg(all(full_widgets, not(alloc_frugal)))]
+    #[test]
+    fn bind_widget_model_attaches_to_a_mounted_list_view() {
+        use crate::widget::view_widgets::list_view::ListView;
+
+        let mut list = ObservableList::with_items(vec!["one".to_string()]);
+        let id = crate::widget::runtime::register(Box::new(ListView::new(crate::core::Rect::new(
+            0, 0, 120, 120,
+        ))))
+        .expect("the list view mounts");
+
+        let model = bind_widget_model(id, &mut list);
+        assert_eq!(model.len(), 1);
+
+        let rows = crate::widget::runtime::with_widget(id, |widget| {
+            (widget as &dyn core::any::Any).downcast_ref::<ListView>().map(|view| view.row_count())
+        })
+        .expect("the widget is mounted")
+        .expect("the widget is a ListView");
+        assert_eq!(rows, 1, "the initial rows are attached");
+
+        list.push("two".to_string());
+        let rows = crate::widget::runtime::with_widget(id, |widget| {
+            (widget as &dyn core::any::Any).downcast_ref::<ListView>().map(|view| view.row_count())
+        })
+        .expect("the widget is mounted")
+        .expect("the widget is a ListView");
+        assert_eq!(rows, 2, "a list change reaches the attached view");
+
+        crate::widget::runtime::unregister(id);
     }
 }

@@ -40,6 +40,110 @@ use crate::{impl_widget_property_hooks, property_names_of};
 mod icon_names;
 pub use icon_names::IconName;
 
+/// Designer semantic names that an existing, truthful glyph can stand in for.
+///
+/// # Why these are aliases and not enum variants
+///
+/// Every `IconName` variant indexes a row of `ICON_DATA` and `ICON_FALLBACK`; adding a variant
+/// without a vendored outline is exactly the "invent SVG data silently" failure the icon pipeline
+/// is built to prevent, and the generator refuses two tokens that resolve to one picture. The
+/// designer vocabulary contains names this crate has no distinct outline for. For the entries
+/// below, one of the shipped glyphs *is* the same idea, so accepting the designer spelling and
+/// drawing that glyph is honest; for the rest (listed in the module report) there is no truthful
+/// stand-in and no alias is invented.
+///
+/// Aliases are **input-only**: [`IconName::from_name_or_alias`] accepts them, while
+/// [`IconName::from_name`], [`IconName::as_str`], [`IconName::all_tokens`] and [`IconName::ALL`]
+/// continue to describe the glyph-bearing variants exactly. That keeps the generated tables
+/// one-to-one with the enum while letting a host's designer JSON resolve, and it keeps
+/// `tools/gen_icon_names.py --check` byte-identical.
+pub const DESIGNER_ALIASES: [(&str, IconName); 13] = [
+    // A library of assets is a folder of files.
+    ("assets-library", IconName::Folder),
+    // A pipeline is a connected graph; `share` is this crate's node-and-branches glyph.
+    ("build-pipeline", IconName::Share),
+    // A build target is something that runs.
+    ("build-target", IconName::Play),
+    // A source map is a file that describes a source document.
+    ("code-source-map", IconName::File),
+    // The conventional debugger breakpoint mark is a filled square.
+    ("debug-breakpoint", IconName::Stop),
+    // A canvas is an editable surface.
+    ("design-canvas", IconName::Edit),
+    // A flow is a connected graph.
+    ("design-flow", IconName::Share),
+    // Inspecting is searching.
+    ("design-inspect", IconName::Search),
+    // A layout is a grid.
+    ("design-layout", IconName::Table),
+    // A theme is configured with a gear.
+    ("design-theme", IconName::Settings),
+    // A preview matrix is a grid of cells.
+    ("preview-matrix", IconName::Table),
+    // The AI/sparkle convention is a star in this vocabulary.
+    ("tools-ai", IconName::Star),
+    // Version-control branches are a connected graph.
+    ("vcs-branch", IconName::Share),
+];
+
+/// Resolves a designer semantic name to the truthful glyph that stands in for it.
+///
+/// Matching is ASCII case-sensitive and accepts both the hyphenated designer spelling and the
+/// underscore spelling used by `IconName` tokens (`vcs-branch` / `vcs_branch`), because a host
+/// may have written either. A name that is not in [`DESIGNER_ALIASES`] returns `None`; no fuzzy
+/// or prefix matching is performed, since guessing at an icon is worse than drawing the
+/// documented question-mark placeholder. This is the resolver behind
+/// [`IconName::from_name_or_alias`]; [`IconName::from_name`] itself stays token-only.
+pub fn designer_alias(name: &str) -> Option<IconName> {
+    DESIGNER_ALIASES.iter().find_map(|(alias, target)| {
+        if alias_spelling_matches(name, alias) {
+            Some(*target)
+        } else {
+            None
+        }
+    })
+}
+
+/// Whether `name` is a designer alias this crate understands.
+pub fn is_designer_alias(name: &str) -> bool {
+    designer_alias(name).is_some()
+}
+
+/// Compares an input spelling to a table alias, treating `-` and `_` as the same separator.
+///
+/// Byte-wise rather than `to_ascii_lowercase`/`replace` so a draw-time lookup allocates nothing.
+fn alias_spelling_matches(input: &str, alias: &str) -> bool {
+    input.len() == alias.len()
+        && input.bytes().zip(alias.bytes()).all(|(input, alias)| {
+            input == alias || (input == b'_' && alias == b'-') || (input == b'-' && alias == b'_')
+        })
+}
+
+impl IconName {
+    /// Resolves a canonical token **or** a designer alias to a glyph-bearing variant.
+    ///
+    /// [`IconName::from_name`] is generated from `tools/icon_tokens.txt` and consequently knows
+    /// only the enum's own tokens. This method adds the alias table on top without editing that
+    /// generated file, so `gen_icon_names.py --check` stays byte-identical while the icon widget
+    /// and the inline-drawing helpers still accept a designer name. A caller that wants strict
+    /// token-only parsing keeps using `from_name`.
+    pub fn from_name_or_alias(name: &str) -> Option<IconName> {
+        IconName::from_name(name).or_else(|| designer_alias(name))
+    }
+
+    /// The designer semantic names accepted by [`IconName::from_name_or_alias`], with their
+    /// glyphs.
+    pub fn designer_aliases() -> &'static [(&'static str, IconName)] {
+        &DESIGNER_ALIASES
+    }
+
+    /// The canonical token of the glyph a designer alias reuses, or `None` when the name is not
+    /// an alias.
+    pub fn canonical_token_for_alias(name: &str) -> Option<&'static str> {
+        designer_alias(name).map(|icon| icon.as_str())
+    }
+}
+
 /// Draws `name`'s icon outline into `rect`, in `color`.
 ///
 /// # Why this is a free function and not a method on [`Icon`]
@@ -345,6 +449,22 @@ pub fn paint_icon(
     slot: Rect,
     color: Color,
 ) -> Result<IconPaintOutcome, IconPaintError> {
+    paint_icon_with_transform(ctx, source, slot, color, IconTransform::IDENTITY)
+}
+
+/// [`paint_icon`] with an explicit draw-time transform.
+///
+/// This is the entry point a caller uses when the picture depends on something the icon source
+/// does not carry — the RTL mirror is the motivating case. Keeping the transform an argument
+/// rather than making `paint_icon` stateful means the free function stays usable from a control's
+/// `draw`, where there is no `Icon` widget to ask.
+pub fn paint_icon_with_transform(
+    ctx: &mut RenderContext,
+    source: IconRef<'_>,
+    slot: Rect,
+    color: Color,
+    transform: IconTransform,
+) -> Result<IconPaintOutcome, IconPaintError> {
     if slot.width == 0 || slot.height == 0 {
         return Ok(IconPaintOutcome::SkippedEmptySlot);
     }
@@ -353,7 +473,7 @@ pub fn paint_icon(
         IconRef::Builtin(name) => {
             #[cfg(feature = "icons")]
             if let Some(data) = name.data_opt() {
-                draw_outline_in(ctx, slot, color, &data, IconTransform::IDENTITY)?;
+                draw_outline_in(ctx, slot, color, &data, transform)?;
                 return Ok(IconPaintOutcome::Drawn);
             }
             // The generated table is what a build without the bundled outlines draws. Its `false`
@@ -361,7 +481,7 @@ pub fn paint_icon(
             // `EmptyGeometry` failure, not a draw. Ignoring the return would make "nothing was
             // drawn" indistinguishable from "an icon was drawn", which is what §19.4 forbids an
             // outcome from doing.
-            if draw_fallback_in(ctx, slot, color, name.as_str(), IconTransform::IDENTITY) {
+            if draw_fallback_in(ctx, slot, color, name.as_str(), transform) {
                 Ok(IconPaintOutcome::Drawn)
             } else {
                 Err(IconPaintError::EmptyGeometry)
@@ -370,12 +490,12 @@ pub fn paint_icon(
         IconRef::StaticGeometry(data) => {
             #[cfg(any(feature = "icons", widgets_unstripped))]
             {
-                draw_outline_in(ctx, slot, color, data, IconTransform::IDENTITY)?;
+                draw_outline_in(ctx, slot, color, data, transform)?;
                 Ok(IconPaintOutcome::Drawn)
             }
             #[cfg(not(any(feature = "icons", widgets_unstripped)))]
             {
-                let _ = (ctx, data, color);
+                let _ = (ctx, data, color, transform);
                 Err(IconPaintError::UnsupportedSourceForProfile)
             }
         }
@@ -417,8 +537,8 @@ pub fn draw_icon_named(ctx: &mut RenderContext, rect: Rect, color: Color, name: 
             }
             true
         }
-        Some(NamedIcon::Fallback) => {
-            draw_fallback_in(ctx, rect, color, name, IconTransform::IDENTITY);
+        Some(NamedIcon::Fallback(token)) => {
+            draw_fallback_in(ctx, rect, color, token, IconTransform::IDENTITY);
             true
         }
         None => false,
@@ -482,8 +602,9 @@ enum NamedIcon {
     /// so the variant is not merely unused there — it is unrepresentable.
     #[cfg(any(feature = "icons", widgets_unstripped))]
     Outline(IconData),
-    /// Generated fallback geometry for a token with no outline.
-    Fallback,
+    /// Generated fallback geometry for a token with no outline. The token is the **canonical**
+    /// one, so an alias input draws the same fallback geometry as the glyph it stands for.
+    Fallback(&'static str),
 }
 
 /// Resolves a host-supplied icon name, in the order both entry points document.
@@ -491,6 +612,10 @@ enum NamedIcon {
 /// Factored out of [`draw_icon_named`] so the "is this name an icon" question and the "draw this
 /// name as an icon" question cannot drift apart.
 fn resolve_named_icon(name: &str) -> Option<NamedIcon> {
+    // Designer names resolve to the glyph that truthfully stands in for them. `from_name`
+    // deliberately stays canonical/token-only because it is generated; this is the alias-aware
+    // door the widget and the inline-drawing helpers use.
+    let canonical = IconName::from_name_or_alias(name);
     // The bundled outline and the host registration both draw through `draw_outline_in`, which
     // exists only where an outline can be drawn at all. Gating this block the same way keeps a
     // build without an outline path compiling: there the token/registration lookups are skipped
@@ -498,7 +623,7 @@ fn resolve_named_icon(name: &str) -> Option<NamedIcon> {
     #[cfg(any(feature = "icons", widgets_unstripped))]
     {
         #[cfg(feature = "icons")]
-        if let Some(known) = IconName::from_name(name) {
+        if let Some(known) = canonical {
             if let Some(data) = known.data_opt() {
                 return Some(NamedIcon::Outline(data));
             }
@@ -506,17 +631,21 @@ fn resolve_named_icon(name: &str) -> Option<NamedIcon> {
         // The runtime registry lives in the unstripped widget set — it is a lock and a table, which
         // a sized profile drops — while the bundled outlines come with `icons` alone. The two are
         // separate conditions, so a build with `icons` on a sized profile reaches the outlines and
-        // no registry, which is what this gate says.
+        // no registry, which is what this gate says. A host name is looked up verbatim, not as an
+        // alias: the alias table belongs to this crate's vocabulary.
         #[cfg(widgets_unstripped)]
         if let Some(data) = crate::widget::display_widgets::icon_data_set::lookup_registered(name) {
             return Some(NamedIcon::Outline(data));
         }
     }
     // The generated fallback geometry is the answer on a build with no outline path, and the
-    // last resort everywhere else. A name it does not know was never an icon, which is what `None`
-    // reports to the caller.
-    if fallback_entry(name).is_some() {
-        return Some(NamedIcon::Fallback);
+    // last resort everywhere else. A name that is not one of this crate's tokens was never an
+    // icon, which is what `None` reports to the caller. A host name was handled above; only a
+    // canonical token can reach the fallback table. The token is `'static` because it comes from
+    // the enum, which is what lets `NamedIcon::Fallback` carry it.
+    let token = canonical.map(|icon| icon.as_str())?;
+    if fallback_entry(token).is_some() {
+        return Some(NamedIcon::Fallback(token));
     }
     None
 }
@@ -916,6 +1045,11 @@ pub struct Icon {
     /// The identity is the default, so an icon that never asks for a transform paints exactly
     /// as it always did.
     transform: IconTransform,
+    /// Whether this icon mirrors horizontally when the ambient text direction is right-to-left.
+    ///
+    /// The direction is read at draw time rather than captured here, so a runtime language switch
+    /// mirrors (or un-mirrors) the icon on the next frame without the widget being rebuilt.
+    rtl_mirror: bool,
 }
 
 #[cfg(widgets_unstripped)]
@@ -949,6 +1083,7 @@ impl Icon {
             #[cfg(feature = "image")]
             frame_tint_key: None,
             transform: IconTransform::IDENTITY,
+            rtl_mirror: false,
         }
     }
 
@@ -956,9 +1091,9 @@ impl Icon {
     /// render as a simple question mark shape.
     ///
     /// The name is stored verbatim and matched case-sensitively at draw time
-    /// against [`IconName::as_str`] tokens, so an unknown or differently-cased
-    /// name does not fail: it draws the placeholder shape instead. Setting a
-    /// name requests a redraw.
+    /// against [`IconName::as_str`] tokens and the documented designer aliases
+    /// ([`DESIGNER_ALIASES`]), so an unknown or differently-cased name does not fail: it draws
+    /// the placeholder shape instead. Setting a name requests a redraw.
     pub fn set_icon(&mut self, name: &str) {
         if self.icon_name == name && self.icon_source.is_none() {
             return;
@@ -1074,6 +1209,47 @@ impl Icon {
     /// The draw-time transform applied to the icon's geometry.
     pub fn icon_transform(&self) -> IconTransform {
         self.transform
+    }
+
+    /// Mirrors this icon horizontally when the ambient text direction is right-to-left.
+    ///
+    /// # What is read, and when
+    ///
+    /// The boolean records the widget's **intent**; the direction is read from
+    /// [`crate::style::environment`] at draw time. So a language switch that changes the ambient
+    /// direction takes effect on the next frame without the widget being rebuilt, and an icon that
+    /// never asks for this behaviour paints exactly as before (the default is `false`).
+    ///
+    /// This composes with [`Self::set_icon_flip`] by exclusive-or rather than by overwriting it:
+    /// an explicit horizontal flip plus RTL mirroring cancels, which is the only reading under
+    /// which both setters stay independent. The existing mirroring primitives are unchanged.
+    pub fn set_rtl_mirror(&mut self, enabled: bool) {
+        if self.rtl_mirror == enabled {
+            return;
+        }
+        self.rtl_mirror = enabled;
+        self.base.request_redraw();
+    }
+
+    /// Whether this icon mirrors itself in a right-to-left environment.
+    pub fn rtl_mirror(&self) -> bool {
+        self.rtl_mirror
+    }
+
+    /// The transform actually used for painting: the explicit transform with the RTL mirror
+    /// applied when the ambient direction asks for one.
+    ///
+    /// Kept separate from [`Self::icon_transform`] so the getter reports what the caller set,
+    /// while the draw path reports what is painted. Mixing the two would make a language switch
+    /// look like the caller had changed the explicit transform.
+    fn effective_transform(&self) -> IconTransform {
+        let mut transform = self.transform;
+        if self.rtl_mirror
+            && crate::style::environment::environment().text_direction.is_right_to_left()
+        {
+            transform.flip_horizontal = !transform.flip_horizontal;
+        }
+        transform
     }
 
     /// Sets a mirror on either axis. The default is no mirroring.
@@ -1370,15 +1546,20 @@ impl Icon {
     /// the two paths cannot describe different shapes for one token.
     fn draw_icon(&self, ctx: &mut RenderContext) {
         if let Some(source) = self.icon_source {
-            if let Err(error) = paint_icon(ctx, source.into(), self.icon_rect(), self.draw_color())
-            {
+            if let Err(error) = paint_icon_with_transform(
+                ctx,
+                source.into(),
+                self.icon_rect(),
+                self.draw_color(),
+                self.effective_transform(),
+            ) {
                 log::error!("typed icon could not be painted: {error:?}");
             }
             return;
         }
         #[cfg(feature = "icons")]
         {
-            if let Some(name) = IconName::from_name(&self.icon_name) {
+            if let Some(name) = IconName::from_name_or_alias(&self.icon_name) {
                 // `Some` because the feature is on: the outline is known to exist, so a `None`
                 // here would mean the gate let a tokened name through without data.
                 if let Some(data) = name.data_opt() {
@@ -1411,8 +1592,10 @@ impl Icon {
         if rect.width == 0 || rect.height == 0 {
             return;
         }
-        let token = self.icon_name.as_str();
-        if !draw_fallback_in(ctx, rect, self.draw_color(), token, self.transform) {
+        let token = IconName::from_name_or_alias(&self.icon_name)
+            .map(|name| name.as_str())
+            .unwrap_or_else(|| self.icon_name.as_str());
+        if !draw_fallback_in(ctx, rect, self.draw_color(), token, self.effective_transform()) {
             self.draw_unknown(ctx);
         }
     }
@@ -1435,7 +1618,9 @@ impl Icon {
         }
         // One geometry path, shared with the free `draw_icon_at` a control uses to paint an icon
         // inline, so an `Icon` widget and a control-drawn icon cannot render differently.
-        if let Err(error) = draw_outline_in(ctx, rect, self.draw_color(), data, self.transform) {
+        if let Err(error) =
+            draw_outline_in(ctx, rect, self.draw_color(), data, self.effective_transform())
+        {
             log::error!("icon '{}' could not be painted: {error:?}", data.name);
         }
     }
@@ -1897,6 +2082,88 @@ mod tests {
         // And the enum must have more than one variant, so an `ALL` that accidentally fell empty
         // cannot make the loop above pass vacuously.
         assert!(IconName::ALL.len() > 1, "the enum must declare more than one icon");
+    }
+
+    /// Every designer alias points at a real, drawable variant and accepts both spellings.
+    ///
+    /// The table is deliberately small: an alias is only added when the reused glyph is a
+    /// truthful stand-in. This test keeps the two halves of that claim together — the target must
+    /// be in `ALL` (so it has data), and the designer spelling must resolve through the same
+    /// `from_name` door a host uses.
+    #[test]
+    fn designer_aliases_resolve_to_real_glyphs() {
+        assert!(!IconName::designer_aliases().is_empty());
+        for (alias, target) in IconName::designer_aliases() {
+            assert!(
+                IconName::ALL.contains(target),
+                "alias {alias:?} points outside the glyph-bearing vocabulary"
+            );
+            assert_eq!(IconName::from_name_or_alias(alias), Some(*target), "{alias}");
+            let underscored = alias.replace('-', "_");
+            assert_eq!(IconName::from_name_or_alias(&underscored), Some(*target), "{underscored}");
+            // The generated parser stays token-only, which is what keeps its producer's
+            // `--check` byte-identical.
+            assert_eq!(IconName::from_name(alias), None, "{alias} is an alias, not a token");
+            assert_eq!(IconName::canonical_token_for_alias(alias), Some(target.as_str()));
+            assert!(is_designer_alias(alias));
+        }
+        // A designer name with no truthful glyph must stay unresolved rather than draw a
+        // misleading picture; the question-mark placeholder is the honest answer.
+        assert_eq!(IconName::from_name_or_alias("debug-bug"), None);
+        assert_eq!(IconName::from_name_or_alias("tools-terminal"), None);
+    }
+
+    /// The RTL mirror is intent, and the direction is read at draw time.
+    ///
+    /// This is the behaviour a language switch needs: the same widget mirrors without being
+    /// rebuilt, and an explicit flip composes with the automatic one by exclusive-or.
+    #[test]
+    fn the_rtl_mirror_follows_the_ambient_direction() {
+        use crate::core::TextDirection;
+        use crate::style::environment::{
+            install_environment, uninstall_environment, DefaultEnvironment, EnvironmentProvider,
+        };
+
+        struct Rtl;
+        impl EnvironmentProvider for Rtl {
+            fn text_direction(&self) -> TextDirection {
+                TextDirection::RightToLeft
+            }
+        }
+
+        let mut icon = Icon::new(Rect::new(0, 0, 24, 24));
+        assert!(!icon.rtl_mirror());
+        assert!(!icon.effective_transform().flip_horizontal);
+
+        let previous = install_environment(Box::new(Rtl));
+        icon.set_rtl_mirror(true);
+        assert!(icon.rtl_mirror());
+        assert!(
+            icon.effective_transform().flip_horizontal,
+            "an RTL environment must mirror an icon that asked for it"
+        );
+        assert!(
+            !icon.icon_transform().flip_horizontal,
+            "the getter reports what the caller set, not the ambient mirror"
+        );
+
+        icon.set_icon_flip(true, false);
+        assert!(
+            !icon.effective_transform().flip_horizontal,
+            "the explicit flip and the RTL mirror cancel"
+        );
+
+        let _previous = install_environment(Box::new(DefaultEnvironment));
+        assert!(
+            icon.effective_transform().flip_horizontal,
+            "an LTR environment leaves the explicit flip alone"
+        );
+        icon.set_icon_flip(false, false);
+        icon.set_rtl_mirror(false);
+        assert!(!icon.effective_transform().flip_horizontal);
+
+        drop(previous);
+        uninstall_environment();
     }
 
     #[test]

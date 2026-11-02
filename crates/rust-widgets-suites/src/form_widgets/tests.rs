@@ -21,12 +21,14 @@ use super::capability::{
 };
 use super::form::{Form, FormLabelPosition};
 use super::formset::{FormSet, FormSetHeaderStyle};
-use super::model::{FormField, FormPage};
+use super::model::{FieldKind, FormField, FormPage};
+use super::rules::FormRule;
 use rust_widgets::core::{ObjectId, Rect};
 use rust_widgets::event::{Event, EventHandler};
 use rust_widgets::style::SemanticState;
 use rust_widgets::widget::capability::types::CapabilityValue;
 use rust_widgets::widget::capability::WidgetFactory;
+use rust_widgets::widget::input_widgets::input_validator::RangeValidator;
 use rust_widgets::widget::runtime;
 use rust_widgets::widget::SimpleRegistry;
 use rust_widgets::widget::{Widget, WidgetProperties};
@@ -850,4 +852,208 @@ fn the_factory_answers_the_schema_defaults_it_was_taught() {
         CapabilityValue::UInt(36)
     );
     assert!(factory.default_property_value("form", "no_such_property").is_err());
+}
+
+// ── RW-25: cross-field rules ────────────────────────────────────────────────
+
+#[test]
+fn a_same_as_rule_reports_on_the_judged_field() {
+    let factory = factory();
+    let password = mount(&factory, "line_edit", "secret");
+    let confirm = mount(&factory, "line_edit", "typo");
+    let mut form = Form::new(Rect::new(0, 0, 320, 240));
+    assert!(form.add_field(FormField::new("password", "Password").with_widget(password)));
+    assert!(form.add_field(FormField::new("confirm", "Confirm").with_widget(confirm)));
+
+    assert!(form.set_form_rule("confirm", FormRule::same_as("password")));
+    assert_eq!(form.form_rules("confirm").len(), 1);
+    assert!(!form.validate());
+    assert_eq!(form.field("confirm").unwrap().error(), Some("Must match password"));
+    assert_eq!(form.field("password").unwrap().error(), None, "only the judged row errors");
+
+    assert!(form.set_value_of("confirm", "secret"));
+    assert!(form.validate(), "matching values satisfy the rule");
+
+    assert!(form.remove_form_rule("confirm"));
+    assert!(!form.remove_form_rule("confirm"), "the rule is gone after one removal");
+}
+
+#[test]
+fn different_from_and_required_when_rules_run_from_validate() {
+    let factory = factory();
+    let first = mount(&factory, "line_edit", "a");
+    let second = mount(&factory, "line_edit", "a");
+    let country = mount(&factory, "line_edit", "DE");
+    let vat = mount(&factory, "line_edit", "");
+    let mut form = Form::new(Rect::new(0, 0, 320, 240));
+    assert!(form.add_field(FormField::new("first", "First").with_widget(first)));
+    assert!(form.add_field(FormField::new("second", "Second").with_widget(second)));
+    assert!(form.add_field(FormField::new("country", "Country").with_widget(country)));
+    assert!(form.add_field(FormField::new("vat", "VAT").with_widget(vat)));
+
+    assert!(form.set_form_rule(
+        "second",
+        FormRule::different_from("first").with_message("Pick another value")
+    ));
+    assert!(form.set_form_rule("vat", FormRule::required_when("country", ["DE", "FR"])));
+
+    assert!(!form.validate());
+    assert_eq!(form.field("second").unwrap().error(), Some("Pick another value"));
+    assert_eq!(form.field("vat").unwrap().error(), Some("Required when country is set"));
+
+    assert!(form.set_value_of("second", "b"));
+    assert!(form.set_value_of("vat", "DE123"));
+    assert!(form.validate());
+
+    // The trigger value decides whether the requirement is active at all.
+    assert!(form.set_value_of("country", "US"));
+    assert!(form.set_value_of("vat", ""));
+    assert!(form.validate());
+}
+
+// ── RW-26: asynchronous validation tickets ──────────────────────────────────
+
+#[test]
+fn a_validation_ticket_resolves_once_and_emits_its_verdict() {
+    let factory = factory();
+    let email = mount(&factory, "line_edit", "not-an-address");
+    let mut form = Form::new(Rect::new(0, 0, 320, 240));
+    assert!(form.add_field(FormField::new("email", "Email").with_widget(email)));
+
+    let seen = Arc::new(Mutex::new(Vec::<(String, bool)>::new()));
+    let sink = Arc::clone(&seen);
+    form.field_validated.connect_ref(move |(key, valid)| {
+        sink.lock().unwrap().push((key.clone(), *valid));
+    });
+
+    let mut ticket = form.set_field_async_validator("email", |value| {
+        if value.contains('@') {
+            None
+        } else {
+            Some("Invalid address".to_string())
+        }
+    });
+    assert!(!ticket.is_stale(&form));
+    assert!(!ticket.is_resolved());
+    assert!(form.resolve_async(&mut ticket));
+    assert!(ticket.is_resolved());
+    assert_eq!(form.field("email").unwrap().error(), Some("Invalid address"));
+    assert_eq!(*seen.lock().unwrap(), vec![("email".to_string(), false)]);
+    assert!(!form.resolve(&mut ticket, None), "a resolved ticket cannot resolve twice");
+
+    assert!(form.set_value_of("email", "ada@example.com"));
+    assert!(form.validate());
+}
+
+#[test]
+fn a_ticket_goes_stale_when_the_value_changes_or_it_is_cancelled() {
+    let factory = factory();
+    let email = mount(&factory, "line_edit", "ada@example.com");
+    let mut form = Form::new(Rect::new(0, 0, 320, 240));
+    assert!(form.add_field(FormField::new("email", "Email").with_widget(email)));
+
+    let mut ticket = form.set_field_async_validator("email", |_| None);
+    assert!(form.set_value_of("email", "grace@example.com"));
+    assert!(ticket.is_stale(&form));
+    assert!(!form.resolve(&mut ticket, None));
+
+    let mut cancelled = form.set_field_async_validator("email", |_| None);
+    assert!(cancelled.cancel());
+    assert!(cancelled.is_stale(&form));
+    assert!(!cancelled.cancel(), "a second cancel is a no-op");
+    assert!(!form.resolve(&mut cancelled, None));
+
+    let unknown = form.set_field_async_validator("missing", |_| None);
+    assert!(unknown.is_cancelled(), "an unknown key issues a cancelled ticket");
+}
+
+// ── RW-27: typed validators bridged from the input widgets ─────────────────
+
+#[test]
+fn a_declared_field_kind_installs_the_shared_input_rule() {
+    let factory = factory();
+    let email = mount(&factory, "line_edit", "not-an-address");
+    let mut form = Form::new(Rect::new(0, 0, 320, 240));
+    assert!(form.add_field(
+        FormField::new("email", "Email").with_widget(email).with_kind(FieldKind::Email)
+    ));
+    assert!(!form.validate());
+    assert!(form.field("email").unwrap().error().is_some());
+    assert!(form.set_value_of("email", "ada@example.com"));
+    assert!(form.validate());
+
+    assert!(form.set_field_kind("email", FieldKind::Text));
+    assert!(!form.set_field_kind("missing", FieldKind::Text));
+}
+
+#[test]
+fn a_typed_input_validator_replaces_the_string_closure_channel() {
+    let factory = factory();
+    let age = mount(&factory, "line_edit", "200");
+    let mut form = Form::new(Rect::new(0, 0, 320, 240));
+    assert!(form.add_field(FormField::new("age", "Age").with_widget(age)));
+
+    assert!(form.set_field_input_validator("age", RangeValidator::int(0, 130)));
+    assert!(!form.validate());
+    assert_eq!(form.field("age").unwrap().error(), Some("200 is outside 0..=130"));
+
+    assert!(form.set_value_of("age", "30"));
+    assert!(form.validate());
+
+    assert!(form.clear_field_input_validator("age"));
+    assert!(!form.clear_field_input_validator("age"));
+    assert!(form.set_value_of("age", "999"));
+    assert!(form.validate(), "without the typed rule the host closure is the only judge");
+    assert!(!form.set_field_input_validator("missing", RangeValidator::int(0, 1)));
+}
+
+#[test]
+fn a_length_kind_judges_characters_not_bytes() {
+    let factory = factory();
+    let name = mount(&factory, "line_edit", "日本語");
+    let mut form = Form::new(Rect::new(0, 0, 320, 240));
+    assert!(form.add_field(
+        FormField::new("name", "Name")
+            .with_widget(name)
+            .with_kind(FieldKind::Length { minimum: 1, maximum: 2 })
+    ));
+    assert!(!form.validate(), "three characters exceed the two-character bound");
+    assert!(form.set_value_of("name", "日本"));
+    assert!(form.validate());
+}
+
+// ── RW-28: cancel is not reset ─────────────────────────────────────────────
+
+#[test]
+fn cancel_clears_verdicts_without_restoring_the_baseline() {
+    let factory = factory();
+    let name = mount(&factory, "line_edit", "Ada");
+    let mut form = Form::new(Rect::new(0, 0, 320, 240));
+    assert!(form.add_field(FormField::new("name", "Name").with_widget(name).with_required(true)));
+
+    let cancels = Arc::new(Mutex::new(0usize));
+    let sink = Arc::clone(&cancels);
+    form.cancel_requested.connect(move || *sink.lock().unwrap() += 1);
+
+    assert!(form.set_value_of("name", ""));
+    assert!(!form.validate());
+    assert!(form.field("name").unwrap().error().is_some());
+
+    form.cancel();
+    assert_eq!(*cancels.lock().unwrap(), 1);
+    assert_eq!(form.value_of("name").as_deref(), Some(""), "cancel keeps the edit");
+    assert_eq!(form.field("name").unwrap().error(), None, "cancel clears the verdict");
+
+    form.reset();
+    assert_eq!(
+        form.value_of("name").as_deref(),
+        Some("Ada"),
+        "reset is the command that restores the baseline"
+    );
+
+    assert_eq!(form.cancel_label(), "");
+    assert!(form.cancel_rect().is_none(), "an empty caption hides the cancel button");
+    form.set_cancel_label("Cancel");
+    assert_eq!(form.cancel_label(), "Cancel");
+    assert!(form.cancel_rect().is_some());
 }

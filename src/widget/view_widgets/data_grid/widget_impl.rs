@@ -155,6 +155,16 @@ impl Widget for DataGrid {
                     ]))
                 }))
             }
+            "column_changed" => {
+                Some(EventSignalRef::mapped("column_changed", self.column_changed_signal(), |v| {
+                    crate::widget::capability::CapabilityValue::Tuple(crate::compat::Vec::from([
+                        crate::widget::capability::CapabilityValue::String(String::from(
+                            v.kind.as_str(),
+                        )),
+                        crate::widget::capability::CapabilityValue::UInt(v.index as u64),
+                    ]))
+                }))
+            }
             _ => None,
         }
     }

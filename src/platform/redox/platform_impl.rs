@@ -498,7 +498,7 @@ impl OrbitalPlatform {
                     runtime::dispatch_text_char(target, ch);
                 }
                 Pending::Tab(forward) => {
-                    runtime::focus_next(forward);
+                    crate::widget::window::focus_next_in_window(forward);
                 }
                 Pending::Resize(window, width, height) => {
                     self.queue_resize_trigger(window, width, height);

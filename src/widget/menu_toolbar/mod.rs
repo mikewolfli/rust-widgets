@@ -24,5 +24,5 @@ pub use menu::{
 };
 pub use menu_button::{MenuButton, MenuItem};
 pub use status_bar::StatusBar;
-pub use tool_bar::ToolBar;
+pub use tool_bar::{ToolBar, ToolBarIdItem};
 pub use tool_button::ToolButton;

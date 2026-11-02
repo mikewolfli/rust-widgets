@@ -27,6 +27,7 @@ use crate::widget::capability::properties_trait::{base_property_get, base_proper
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::dimensions;
+use crate::widget::save_state::SaveState;
 use crate::widget::{BaseWidget, Draw, SimpleRegistry, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -1008,6 +1009,33 @@ impl ScrollArea {
         self.scroll_position
     }
 
+    /// Serialises the viewport offset for session restore (RW-64).
+    ///
+    /// The content and its extent are the host's model; the offset is the user-visible state
+    /// this control owns.
+    pub fn save_state(&self) -> Vec<u8> {
+        let mut state = Vec::with_capacity(9);
+        state.push(SCROLL_AREA_STATE_VERSION);
+        state.extend_from_slice(&self.scroll_position.0.to_le_bytes());
+        state.extend_from_slice(&self.scroll_position.1.to_le_bytes());
+        state
+    }
+
+    /// Restores a blob produced by [`Self::save_state`].
+    ///
+    /// Returns `false` for a malformed blob and leaves the offset untouched. A well-formed
+    /// offset is applied through [`Self::set_scroll_position`], so it is clamped against the
+    /// current content and viewport exactly as a live gesture would be.
+    pub fn restore_state(&mut self, state: &[u8]) -> bool {
+        if state.len() != 9 || state[0] != SCROLL_AREA_STATE_VERSION {
+            return false;
+        }
+        let x = i32::from_le_bytes([state[1], state[2], state[3], state[4]]);
+        let y = i32::from_le_bytes([state[5], state[6], state[7], state[8]]);
+        self.set_scroll_position(x, y);
+        true
+    }
+
     /// Sets the scroll position, clamped within the content extent.
     pub fn set_scroll_position(&mut self, x: i32, y: i32) {
         // The usable viewport is the viewport minus the content inset (C-21). Bars are
@@ -1631,6 +1659,24 @@ struct ChromeBands {
     corner: Option<Rect>,
 }
 // Implement Widget trait
+/// Version tag of the blob produced by [`ScrollArea::save_state`].
+const SCROLL_AREA_STATE_VERSION: u8 = 1;
+
+/// RW-64: the viewport offset is the scroll area's user-visible state.
+impl SaveState for ScrollArea {
+    fn state_version(&self) -> u16 {
+        u16::from(SCROLL_AREA_STATE_VERSION)
+    }
+
+    fn save_state(&self) -> Vec<u8> {
+        ScrollArea::save_state(self)
+    }
+
+    fn restore_state(&mut self, state: &[u8]) -> bool {
+        ScrollArea::restore_state(self, state)
+    }
+}
+
 impl Widget for ScrollArea {
     fn base(&self) -> &BaseWidget {
         &self.base
@@ -1736,6 +1782,14 @@ impl Widget for ScrollArea {
             )),
             _ => None,
         }
+    }
+
+    fn save_state_dyn(&self) -> Option<&dyn SaveState> {
+        Some(self)
+    }
+
+    fn save_state_dyn_mut(&mut self) -> Option<&mut dyn SaveState> {
+        Some(self)
     }
 }
 
@@ -2959,5 +3013,20 @@ mod tests {
         assert_eq!(inset.y - full.y, 10);
         assert_eq!(inset.height + 20, full.height);
         assert_eq!(area.content_margins(), (10, 10, 5, 5));
+    }
+
+    /// RW-64: the viewport offset round-trips and is re-clamped on restore.
+    #[test]
+    fn the_scroll_offset_round_trips_through_save_state() {
+        let mut area = ScrollArea::new(Rect::new(0, 0, 200, 200));
+        area.set_viewport(Rect::new(0, 0, 200, 200));
+        area.set_content_size(Size::new(400, 400));
+        area.set_scroll_position(120, 90);
+        let saved = SaveState::save_state(&area);
+        area.set_scroll_position(0, 0);
+        assert!(SaveState::restore_state(&mut area, &saved));
+        assert_eq!(area.scroll_position(), (120, 90));
+        assert!(!SaveState::restore_state(&mut area, &saved[..4]), "a truncated blob is refused");
+        assert_eq!(area.scroll_position(), (120, 90), "a refused blob changes nothing");
     }
 }

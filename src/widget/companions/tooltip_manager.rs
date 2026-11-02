@@ -53,6 +53,15 @@ use super::helpers::{clamp_axis, surface_ink};
 // COMP-09 TooltipManager
 // ---------------------------------------------------------------------------
 
+/// The identity an entry (a toolbar item, a tab header) uses inside the tooltip pipeline.
+///
+/// An entry has no `ObjectId` of its own: it is a row inside a control, not a mounted widget.
+/// The derived id is stable for `(owner, index)`, so a pointer moving within one entry keeps the
+/// bubble it already showed and a move to a neighbouring entry restarts the delay.
+fn entry_hover_id(owner: ObjectId, index: usize) -> ObjectId {
+    owner.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ (index as u64 + 1)
+}
+
 /// The hover registration the runtime bridge currently owns.
 #[derive(Debug, Clone)]
 struct BridgeHover {
@@ -270,6 +279,54 @@ impl TooltipManager {
         if self.visible && self.follow_pointer {
             self.base.request_redraw();
         }
+    }
+
+    /// Registers an entry-level tooltip for `owner` under `pointer` (RW-62).
+    ///
+    /// Reads entry metadata from controls that publish it — toolbar items and tab headers —
+    /// and routes the hint through the same hover/delay pipeline as a control-level tooltip.
+    /// The control-level registration is untouched: when no entry hint is found this returns
+    /// `false` and changes nothing, so a host that drives both paths cannot lose the widget's
+    /// own `tooltip`.
+    ///
+    /// Returns whether an entry hint was registered and made hovered.
+    pub fn note_entry_hover(&mut self, owner: ObjectId, pointer: Point) -> bool {
+        let resolved = crate::widget::runtime::with_widget(owner, |widget| {
+            #[cfg(full_widgets)]
+            {
+                if let Some(bar) = crate::widget::capability::coercion::widget_as::<
+                    crate::widget::menu_toolbar::tool_bar::ToolBar,
+                >(widget)
+                {
+                    return bar
+                        .entry_tooltip_at(pointer)
+                        .map(|(index, text)| (index, String::from(text)));
+                }
+            }
+            #[cfg(widgets_unstripped)]
+            {
+                if let Some(tabs) = crate::widget::capability::coercion::widget_as::<
+                    crate::widget::container_widgets::tabwidget::TabWidget,
+                >(widget)
+                {
+                    return tabs
+                        .entry_tooltip_at(pointer)
+                        .map(|(index, text)| (index, String::from(text)));
+                }
+            }
+            let _ = (widget, pointer);
+            None
+        })
+        .flatten();
+        let Some((index, text)) = resolved else {
+            return false;
+        };
+        let entry_id = entry_hover_id(owner, index);
+        if self.text_for(entry_id) != Some(text.as_str()) {
+            self.register(entry_id, text);
+        }
+        self.note_hover(entry_id);
+        true
     }
 
     /// Applies a hover change forwarded by the runtime's global hover registry.
@@ -641,6 +698,34 @@ mod tests {
         manager.note_runtime_hover(Some(5), Some("   "));
         assert_eq!(manager.text_for(5), None);
         assert!(manager.active_widget().is_none());
+    }
+
+    /// RW-62: an entry-level hint is read from the control's own item metadata.
+    ///
+    /// The manager previously only knew control-level `tooltip` properties, so a toolbar
+    /// item's hint was stored and never presented. The entry path now hit-tests the item and
+    /// routes its text through the same delay/duration pipeline.
+    #[cfg(full_widgets)]
+    #[test]
+    fn an_entry_hint_is_resolved_from_the_toolbar_item_metadata() {
+        use crate::core::Rect;
+
+        let mut bar = crate::widget::menu_toolbar::tool_bar::ToolBar::new(Rect::new(0, 0, 300, 36));
+        bar.add_action("open", "Open");
+        bar.item_mut(0).expect("the item exists").set_tooltip("Open a file");
+        let band = bar.item_rect(0).expect("the first item has a band");
+        let id = crate::widget::runtime::register(Box::new(bar)).expect("the bar mounts");
+
+        let mut manager = TooltipManager::new(Rect::new(0, 0, 300, 36));
+        let pointer = Point::new(band.x + 2, band.y + 2);
+        assert!(manager.note_entry_hover(id, pointer), "the item hint is registered");
+        assert!(manager.tick(600, 600), "the delay elapses into a visible bubble");
+        assert_eq!(manager.tooltip(), Some("Open a file"));
+        assert_eq!(manager.active_widget(), Some(entry_hover_id(id, 0)));
+
+        // A point outside every item leaves the entry path without a hint.
+        assert!(!manager.note_entry_hover(id, Point::new(2_000, 2_000)));
+        crate::widget::runtime::unregister(id);
     }
 
     /// The manager paints through the `Tooltip` renderer, so a bubble feature configured on the

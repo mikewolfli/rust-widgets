@@ -10,6 +10,8 @@ pub mod carousel;
 #[cfg(widgets_unstripped)]
 pub mod collapsible_pane;
 #[cfg(widgets_unstripped)]
+pub mod dock_area_layout;
+#[cfg(widgets_unstripped)]
 pub mod dockwidget;
 pub mod groupbox;
 /// The layout-family wrapper controls (`Spacer`, `Center`, `Align`, `SizedBox`, `Padding`,
@@ -25,6 +27,8 @@ pub mod masonry_layout;
 pub mod mdiarea;
 #[cfg(widgets_unstripped)]
 pub mod safe_area;
+/// The generic scroll read/write contract shared by the scrolling containers (RW-58).
+pub mod scroll_surface;
 pub mod scrollarea;
 #[cfg(widgets_unstripped)]
 pub mod splitter;
@@ -50,6 +54,8 @@ pub use carousel::{Carousel, WidgetAndDraw};
 #[cfg(widgets_unstripped)]
 pub use collapsible_pane::CollapsiblePane;
 #[cfg(widgets_unstripped)]
+pub use dock_area_layout::DockAreaLayout;
+#[cfg(widgets_unstripped)]
 pub use dockwidget::{DockArea, DockWidget};
 pub use groupbox::GroupBox;
 #[cfg(full_widgets)]
@@ -65,6 +71,7 @@ pub use masonry_layout::{MasonryItem, MasonryLayout};
 pub use mdiarea::MdiArea;
 #[cfg(widgets_unstripped)]
 pub use safe_area::{SafeArea, SafeAreaInsets};
+pub use scroll_surface::ScrollableSurface;
 pub use scrollarea::ScrollArea;
 #[cfg(widgets_unstripped)]
 pub use splitter::Splitter;

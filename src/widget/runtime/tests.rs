@@ -1907,28 +1907,17 @@ fn the_cached_renderer_remembers_its_frame() {
 #[test]
 fn a_control_offset_from_the_origin_paints_into_its_own_frame() {
     let geometry = Rect::new(12, 42, 200, 160);
-    let mut chart =
-        crate::widget::chart_widgets::finance::candlestick_chart::CandlestickChart::new(geometry);
-    let mut series = crate::widget::chart_widgets::finance::types::PriceSeries::new();
-    for index in 0..20 {
-        let open = 100.0 + index as f64;
-        series.push(crate::widget::chart_widgets::finance::types::Bar::new(
-            open,
-            open + 2.0,
-            open - 2.0,
-            open + 1.0,
-            1000.0,
-        ));
-    }
-    chart.set_series(series);
+    // Any control that paints its whole box serves here; a chart with no data paints its
+    // panel plus the no-data state, which is exactly the "substantially painted" case.
+    let chart = crate::widget::chart_widgets::pie_chart::PieChart::new(geometry);
     let id = register(Box::new(chart)).expect("registry");
 
     let size = Size::new(geometry.width, geometry.height);
     let frame = render_frame(id, size, Color::BLACK).expect("frame");
 
-    // The panel background is a dark slate, not the clear colour, and the control
-    // fills its plot area — so the frame must be substantially painted rather than
-    // carrying a blank band as tall as the geometry's y offset.
+    // The panel background is the theme surface, not the clear colour, and the control
+    // fills its box — so the frame must be substantially painted rather than carrying a
+    // blank band as tall as the geometry's y offset.
     let painted = frame.as_chunks::<4>().0.iter().filter(|pixel| **pixel != [0, 0, 0, 255]).count();
     let total = size.width as usize * size.height as usize;
     assert!(
@@ -2305,11 +2294,9 @@ fn render_frame_at_geometry_uses_widget_geometry() {
 /// the widgets the demos and the factory expose.
 #[test]
 fn custom_widgets_report_the_draw_bridge() {
-    use crate::widget::chart_widgets::gantt_widget::GanttWidget;
     use crate::widget::special_widgets::chip::Chip;
     use crate::widget::special_widgets::color_picker::ColorPicker;
     use crate::widget::special_widgets::snackbar::Snackbar;
-    use crate::widget::special_widgets::terminal_view::TerminalView;
 
     fn assert_mountable(name: &str, widget: &mut dyn Widget) {
         assert!(
@@ -2322,9 +2309,7 @@ fn custom_widgets_report_the_draw_bridge() {
     assert_mountable("CodeEditor", &mut CodeEditor::new(Rect::new(0, 0, 80, 60)));
     assert_mountable("Chip", &mut Chip::new(Rect::new(0, 0, 80, 24)));
     assert_mountable("ColorPicker", &mut ColorPicker::new(Rect::new(0, 0, 200, 150)));
-    assert_mountable("GanttWidget", &mut GanttWidget::new(Rect::new(0, 0, 200, 150)));
     assert_mountable("Snackbar", &mut Snackbar::new(Rect::new(0, 0, 200, 40)));
-    assert_mountable("TerminalView", &mut TerminalView::new(Rect::new(0, 0, 200, 150)));
 }
 
 /// A built-in control must report itself as paintable.
@@ -4342,62 +4327,6 @@ fn a_control_that_stops_animating_lets_the_frame_loop_sleep() {
     );
     assert_eq!(after.controls_ticked, 0);
     assert_eq!(after.repaints_submitted, 0, "and a still frame costs no submission");
-}
-
-/// A mounted, playing `MediaPlayer` advances through the frame loop and then stops it.
-///
-/// # The defect this pins, and why it belongs in **this** module's tests
-///
-/// `MediaPlayer` had a `position_ms`, a progress ratio, a `position_changed` signal and a
-/// progress rule in `draw` — and nothing that moved the position. The missing piece was not
-/// inside the control (a `tick` is) but at the **seam**: the frame loop is what turns "this
-/// control would advance" into "this control advanced", and it only does so for a mounted
-/// control that answers [`Widget::is_animating`]. So the test that proves the seam is closed
-/// belongs here, next to `drive_frame`, rather than only in the control's unit tests —
-/// a `tick` nobody calls is exactly the shape BLUE24 §0A.1 measurement 1 is about.
-#[test]
-fn a_playing_media_player_advances_through_the_frame_loop() {
-    let _serial = serialise_drive_frame();
-    use crate::widget::special_widgets::media_player::MediaPlayer;
-
-    let mut player = MediaPlayer::new(crate::core::Rect::new(0, 0, 320, 200));
-    player.set_source("clip.mp4", 1_000);
-    assert!(player.play());
-    let id = register(Box::new(player)).expect("mount");
-    let _unmount = MountGuard(id);
-
-    // One frame of the frame loop's own delta must move the control, and the loop must be
-    // told it still owes another frame.
-    let outcome = drive_frame(16);
-    assert_eq!(outcome.controls_ticked, 1, "the player is the one control animating");
-    assert!(outcome.needs_another_frame, "a playing player keeps the loop awake");
-    assert_eq!(
-        with_widget(id, |widget| widget.is_animating()),
-        Some(true),
-        "and it says so through the trait, not only through its own methods"
-    );
-
-    // The next frames are the media's own duration: at the loop's 16 ms delta it takes 63
-    // frames to cover the 1_000 ms, so the bound below has margin and the assertion is about
-    // "it stops at all", not about the exact frame it stops on. What must not happen is the
-    // loop staying awake for ever, which is the failure a missing end condition produces.
-    let mut stopped_at = None;
-    for frame in 1..=120 {
-        let outcome = drive_frame(16);
-        if !outcome.needs_another_frame {
-            stopped_at = Some(frame);
-            break;
-        }
-    }
-    assert!(
-        stopped_at.is_some(),
-        "playback must end on its own, not keep the frame loop awake for ever"
-    );
-    let stats = last_frame_stats().expect("a frame ran");
-    assert_eq!(
-        stats.controls_ticked, 0,
-        "the frame that observed the end no longer ticks the player"
-    );
 }
 
 /// BLUE24 §8 criterion 3: five requests for one surface submit once and coalesce four.

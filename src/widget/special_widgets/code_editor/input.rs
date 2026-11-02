@@ -176,6 +176,9 @@ impl CodeEditor {
                     self.insert_newline();
                 }
             }
+            // A snippet session owns Tab/Shift+Tab while it runs. The fallback is
+            // the unchanged indent/outdent behaviour, so a session that cannot move
+            // (no stops, or the first stop) never eats the gesture.
             9 => {
                 if self.completion.visible {
                     self.accept_completion();
@@ -185,6 +188,11 @@ impl CodeEditor {
                     if let Some(id) = id {
                         self.activate_menu_item(id);
                     }
+                } else if self.is_in_snippet() && shift && self.previous_placeholder() {
+                    // The session owns Shift+Tab while it runs; the fallback below
+                    // is the unchanged indent/outdent behaviour.
+                } else if self.is_in_snippet() && !shift && self.next_placeholder() {
+                    // The session owns Tab while it runs.
                 } else if alt {
                     self.outdent_selection();
                 } else {
@@ -198,6 +206,10 @@ impl CodeEditor {
                     self.dismiss_completion();
                 } else if self.find.visible {
                     self.close_find();
+                } else if self.cancel_snippet_session() {
+                    // Escape leaves the snippet but keeps the text that was inserted,
+                    // which is the difference between abandoning navigation and
+                    // undoing the expansion.
                 } else if self.column_select_anchor.is_some() {
                     // Escape leaves the rectangular gesture and keeps the primary caret's
                     // line as an ordinary selection, so the block editing can still be
@@ -215,6 +227,7 @@ impl CodeEditor {
             0x84 => {
                 self.dismiss_completion();
                 self.close_context_menu();
+                let _ = self.cancel_snippet_session();
                 self.base.request_redraw();
             }
             // Ctrl/Meta chords.

@@ -20,7 +20,22 @@ pub(crate) fn slider_capability() -> WidgetCapability {
         // Audit 20261026: `set_range` stays unpublished — the range is the writable
         // `minimum`/`maximum` pair, so a whole-range write is reachable through the property route
         // (principle #18).
-        commands: &["set_value", "set_slider_position"],
+        // RW-44: every schema-backed setter has a command spelling. `default_command` resolves each
+        // `set_foo` to the `foo` property and answers OutOfRange ("supply a value"), so the table
+        // advertises only routes the property contract really serves.
+        commands: &[
+            "set_value",
+            "set_slider_position",
+            "set_minimum",
+            "set_maximum",
+            "set_single_step",
+            "set_page_step",
+            "set_orientation",
+            "set_tick_position",
+            "set_tick_interval",
+            "set_tracking",
+            "set_track_click",
+        ],
     }
 }
 

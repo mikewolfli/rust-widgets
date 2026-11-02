@@ -10,7 +10,7 @@ use crate::style::{MotionSlot, PropertyDriver};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
-use crate::widget::companions::{ChartTooltip, Legend, LegendEntry};
+use crate::widget::companions::{ChartDataTable, ChartTooltip, Legend, LegendEntry, ZoomStrip};
 use crate::widget::metrics::{effective_font, role_font};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
@@ -122,6 +122,35 @@ impl ChartType {
             _ => 1,
         }
     }
+}
+
+/// A chart data snapshot: `(name, points)` series and the indices to show.
+type ChartSeriesSnapshot = (Vec<(String, Vec<(f64, f64)>)>, Vec<usize>);
+
+/// Ties an attached [`ChartDataTable`] to this chart (COMP-A8).
+struct ChartDataTableBinding {
+    /// Writer end of the table's snapshot queue; the table drains it in its own paint/event path.
+    snapshots: crate::compat::Arc<crate::compat::Mutex<Option<ChartSeriesSnapshot>>>,
+    /// Series indices the table toggled since the last poll.
+    toggles: crate::compat::Arc<crate::compat::Mutex<Vec<usize>>>,
+    /// The snapshot last pushed, so an unchanged chart does not rebuild the table.
+    last_snapshot: ChartSeriesSnapshot,
+    /// The subscription, dropped with the binding so a detached chart leaves no slot behind.
+    _scope: crate::signal::ConnectionScope,
+}
+
+/// Ties an attached [`ZoomStrip`] to this chart (COMP-A8).
+struct ZoomStripBinding {
+    /// Levels the strip requested since the last poll.
+    requests: crate::compat::Arc<crate::compat::Mutex<Option<f32>>>,
+    /// Whether the strip's Fit segment was activated since the last poll.
+    fit_requests: crate::compat::Arc<crate::compat::Mutex<bool>>,
+    /// Writer end of the strip's mirror queue; the strip drains it to follow a chart gesture.
+    mirror: crate::compat::Arc<crate::compat::Mutex<Option<f32>>>,
+    /// The factor last written to `mirror`, so a wheel zoom is forwarded once.
+    last_pushed: f32,
+    /// The subscription, dropped with the binding so a detached chart leaves no slot behind.
+    _scope: crate::signal::ConnectionScope,
 }
 
 /// Chart widget for data visualization.
@@ -238,6 +267,15 @@ pub struct ChartWidget {
     pub series_toggled: Signal1<(usize, bool)>,
     /// Emitted with the new vertical zoom window, or `None` when it was restored.
     pub zoom_y_changed: Signal1<Option<(f64, f64)>>,
+    /// Emitted after every mutation that bumps [`Self::data_revision`].
+    ///
+    /// The crate has no zero-argument signal type; a payload-free notification is
+    /// `Signal1<()>`, matching the `Signal0` spelling in the issue.
+    pub data_changed: Signal1<()>,
+    /// The attached chart data table binding (COMP-A8).
+    chart_data_table: Option<ChartDataTableBinding>,
+    /// The attached zoom strip binding (COMP-A8).
+    zoom_strip: Option<ZoomStripBinding>,
 }
 impl ChartWidget {
     /// Creates a new chart widget.
@@ -283,6 +321,9 @@ impl ChartWidget {
             viewport_changed: Signal1::new(),
             series_toggled: Signal1::new(),
             zoom_y_changed: Signal1::new(),
+            data_changed: Signal1::new(),
+            chart_data_table: None,
+            zoom_strip: None,
         }
     }
 
@@ -308,6 +349,14 @@ impl ChartWidget {
     /// Returns the chart data labels.
     pub fn labels(&self) -> &[String] {
         &self.labels
+    }
+
+    /// The revision of the current data.
+    ///
+    /// Bumped by every mutator that changes the series. A host can key a cached snapshot on it
+    /// instead of comparing whole lists.
+    pub fn data_revision(&self) -> u64 {
+        self.data_generation
     }
 
     /// Returns the index of the hovered data point, if any.
@@ -341,7 +390,7 @@ impl ChartWidget {
         self.series = if data.is_empty() { Vec::new() } else { vec![data] };
         self.series_visible = vec![true; self.series.len()];
         self.visibility_generation = self.visibility_generation.wrapping_add(1);
-        self.data_generation = self.data_generation.wrapping_add(1);
+        self.bump_data_generation();
         self.restart_reveal();
         self.revalidate_hover();
         self.sync_legend();
@@ -357,7 +406,7 @@ impl ChartWidget {
         self.series = series;
         self.series_visible = vec![true; self.series.len()];
         self.visibility_generation = self.visibility_generation.wrapping_add(1);
-        self.data_generation = self.data_generation.wrapping_add(1);
+        self.bump_data_generation();
         self.restart_reveal();
         self.revalidate_hover();
         self.sync_legend();
@@ -376,7 +425,7 @@ impl ChartWidget {
         }
         if let Some(series) = self.series.first_mut() {
             series.push(value);
-            self.data_generation = self.data_generation.wrapping_add(1);
+            self.bump_data_generation();
             self.base.request_redraw();
         }
     }
@@ -391,7 +440,7 @@ impl ChartWidget {
             return false;
         };
         series.push(value);
-        self.data_generation = self.data_generation.wrapping_add(1);
+        self.bump_data_generation();
         self.base.request_redraw();
         true
     }
@@ -422,7 +471,7 @@ impl ChartWidget {
         if dropped > 0 {
             series.drain(0..dropped);
         }
-        self.data_generation = self.data_generation.wrapping_add(1);
+        self.bump_data_generation();
         if dropped > 0 {
             if let Some((low, high)) = self.zoom_x {
                 if high >= previous_len as f64 {
@@ -572,6 +621,243 @@ impl ChartWidget {
             self.series_toggled.emit((index, visible));
         }
         self.base.request_redraw();
+        true
+    }
+
+    // ── COMP-A8 companion wiring ──
+
+    /// Follows `table` as this chart's data table (COMP-A8).
+    ///
+    /// This is the same attach point [`BarChart`](crate::widget::chart_widgets::bar_chart::BarChart)
+    /// and [`LineChart`](crate::widget::chart_widgets::line_chart::LineChart) expose, mounted on
+    /// the generic [`ChartWidget`] so every chart style can share one table control. Data flows
+    /// chart → table: the current series are written into
+    /// [`ChartDataTable::set_from_series`] immediately, and
+    /// [`Self::poll_chart_data_table`] re-pushes the snapshot whenever the series change. Each
+    /// value uses its index in the series as X and the value as Y; for the single-value styles
+    /// that index is the category index. A nameless series is reported as `Series N`. Toggles
+    /// flow table → chart: a row click emits `series_toggled`, which the poll applies through
+    /// [`Self::set_series_visible`].
+    ///
+    /// Attaching replaces any previous table; after [`Self::detach_chart_data_table`] the table
+    /// keeps its last snapshot.
+    pub fn attach_chart_data_table(&mut self, table: &mut ChartDataTable) {
+        let snapshots = crate::compat::Arc::new(crate::compat::Mutex::new(None));
+        table.accept_series_updates(crate::compat::Arc::clone(&snapshots));
+
+        let toggles = crate::compat::Arc::new(crate::compat::Mutex::new(Vec::new()));
+        let scope = crate::signal::ConnectionScope::new();
+        let sink = crate::compat::Arc::clone(&toggles);
+        let redraw = self.base.redraw_requested_signal().clone();
+        table.series_toggled.connect_scoped(&scope, move |index| {
+            crate::compat::lock(&sink).push(*index);
+            // A table edit redraws the chart, so the poll that applies it happens next frame.
+            redraw.emit();
+        });
+
+        let snapshot = self.chart_data_snapshot();
+        table.set_from_series(&snapshot.0);
+        table.set_visible_series(snapshot.1.clone());
+        self.chart_data_table = Some(ChartDataTableBinding {
+            snapshots,
+            toggles,
+            last_snapshot: snapshot,
+            _scope: scope,
+        });
+        self.base.request_redraw();
+    }
+
+    /// Stops following the attached data table; its last snapshot stays.
+    pub fn detach_chart_data_table(&mut self) {
+        if self.chart_data_table.take().is_some() {
+            self.base.request_redraw();
+        }
+    }
+
+    /// Whether a [`ChartDataTable`] is attached.
+    pub fn is_chart_data_table_attached(&self) -> bool {
+        self.chart_data_table.is_some()
+    }
+
+    /// Applies the table's toggles and refreshes its rows when the chart's series changed.
+    ///
+    /// Called from `draw` and `handle_event`. Returns whether a toggle was applied or a new
+    /// snapshot was queued; an unchanged chart and an idle table return `false`.
+    pub fn poll_chart_data_table(&mut self) -> bool {
+        let toggles = match self.chart_data_table.as_ref() {
+            Some(binding) => core::mem::take(&mut *crate::compat::lock(&binding.toggles)),
+            None => return false,
+        };
+        let mut changed = false;
+        for index in toggles {
+            let next = !self.is_series_visible(index);
+            changed |= self.set_series_visible(index, next);
+        }
+        let current = self.chart_data_snapshot();
+        let differs =
+            self.chart_data_table.as_ref().is_some_and(|binding| current != binding.last_snapshot);
+        if differs {
+            if let Some(binding) = self.chart_data_table.as_mut() {
+                *crate::compat::lock(&binding.snapshots) = Some(current.clone());
+                binding.last_snapshot = current;
+            }
+            changed = true;
+        }
+        changed
+    }
+
+    /// Follows `strip` as this chart's zoom control (COMP-A8).
+    ///
+    /// This is the same attach point `BarChart` and `LineChart` expose. Intent flows strip →
+    /// chart: `zoom_requested` and `fit_requested` are queued and applied by
+    /// [`Self::poll_zoom_strip`]. A requested level is absolute over the full category axis —
+    /// the window becomes `category_count / level`, centred on the current view, capped at one
+    /// category — while Fit restores the whole axis. The readout flows chart → strip: a wheel
+    /// zoom or pan changes the view factor, and the poll mirrors that factor back so the
+    /// percentage follows the chart.
+    pub fn attach_zoom_strip(&mut self, strip: &mut ZoomStrip) {
+        let requests = crate::compat::Arc::new(crate::compat::Mutex::new(None));
+        let fit_requests = crate::compat::Arc::new(crate::compat::Mutex::new(false));
+        let mirror = crate::compat::Arc::new(crate::compat::Mutex::new(None));
+        let scope = crate::signal::ConnectionScope::new();
+        let redraw = self.base.redraw_requested_signal().clone();
+
+        // Mirror the chart's current view before subscribing: a level pushed now must not come
+        // back as a fresh request.
+        let factor = self.zoom_factor();
+        strip.set_zoom(factor);
+        strip.accept_zoom_updates(crate::compat::Arc::clone(&mirror));
+
+        let request_sink = crate::compat::Arc::clone(&requests);
+        let request_redraw = redraw.clone();
+        strip.zoom_requested.connect_scoped(&scope, move |level| {
+            *crate::compat::lock(&request_sink) = Some(*level);
+            // A strip click redraws the chart, so the poll that applies it happens next frame.
+            request_redraw.emit();
+        });
+        let fit_sink = crate::compat::Arc::clone(&fit_requests);
+        strip.fit_requested.connect_scoped(&scope, move |_mode| {
+            *crate::compat::lock(&fit_sink) = true;
+            redraw.emit();
+        });
+
+        self.zoom_strip = Some(ZoomStripBinding {
+            requests,
+            fit_requests,
+            mirror,
+            last_pushed: factor,
+            _scope: scope,
+        });
+        self.base.request_redraw();
+    }
+
+    /// Stops following the attached strip; the last applied view stays.
+    pub fn detach_zoom_strip(&mut self) {
+        if self.zoom_strip.take().is_some() {
+            self.base.request_redraw();
+        }
+    }
+
+    /// Whether a [`ZoomStrip`] is attached.
+    pub fn is_zoom_strip_attached(&self) -> bool {
+        self.zoom_strip.is_some()
+    }
+
+    /// Applies what the attached strip requested and mirrors the resulting factor back.
+    ///
+    /// Called from `draw` and `handle_event`. Returns whether a request was consumed or the
+    /// mirrored factor changed.
+    pub fn poll_zoom_strip(&mut self) -> bool {
+        let (request, fit) = {
+            let Some(binding) = self.zoom_strip.as_ref() else {
+                return false;
+            };
+            (
+                crate::compat::lock(&binding.requests).take(),
+                core::mem::replace(&mut *crate::compat::lock(&binding.fit_requests), false),
+            )
+        };
+        let mut changed = fit || request.is_some();
+        if fit {
+            self.set_zoom_range(None);
+        }
+        if let Some(level) = request {
+            let _ = self.apply_zoom_level(level);
+        }
+        let factor = self.zoom_factor();
+        if let Some(binding) = self.zoom_strip.as_mut() {
+            if (factor - binding.last_pushed).abs() > f32::EPSILON {
+                *crate::compat::lock(&binding.mirror) = Some(factor);
+                binding.last_pushed = factor;
+                changed = true;
+            }
+        }
+        changed
+    }
+
+    /// The chart's series and visibility as the data table's snapshot.
+    fn chart_data_snapshot(&self) -> ChartSeriesSnapshot {
+        let series = (0..self.series.len())
+            .map(|index| {
+                let name = self
+                    .series_names
+                    .get(index)
+                    .filter(|name| !name.is_empty())
+                    .cloned()
+                    .unwrap_or_else(|| format!("Series {}", index + 1));
+                let points = self.series[index]
+                    .iter()
+                    .enumerate()
+                    .map(|(point, value)| (point as f64, *value))
+                    .collect();
+                (name, points)
+            })
+            .collect();
+        let visible =
+            (0..self.series.len()).filter(|index| self.is_series_visible(*index)).collect();
+        (series, visible)
+    }
+
+    /// The chart's current category zoom as a factor over the full axis.
+    fn zoom_factor(&self) -> f32 {
+        let total = point_count_for(self.chart_type, self.data().len()) as f64;
+        let (low, high) = self.zoom_x.unwrap_or((0.0, total));
+        let span = high - low;
+        if total <= 0.0 || !span.is_finite() || span <= 0.0 {
+            return 1.0;
+        }
+        let factor = (total / span) as f32;
+        if factor.is_finite() {
+            factor
+        } else {
+            1.0
+        }
+    }
+
+    /// Sets the category window to `total / level`, centred on the current view.
+    ///
+    /// Returns whether the view moved. A non-positive or non-finite level, or an empty chart,
+    /// is refused.
+    fn apply_zoom_level(&mut self, level: f32) -> bool {
+        let level = f64::from(level);
+        if !level.is_finite() || level <= 0.0 {
+            return false;
+        }
+        let total = point_count_for(self.chart_type, self.data().len()) as f64;
+        if total <= 0.0 {
+            return false;
+        }
+        let (low, high) = self.zoom_x.unwrap_or((0.0, total));
+        let centre = low + (high - low) * 0.5;
+        let half = total / level * 0.5;
+        let next = (centre - half, centre + half);
+        let tolerance = total * 1e-9;
+        if self.zoom_x.is_some_and(|(old_low, old_high)| {
+            (old_low - next.0).abs() <= tolerance && (old_high - next.1).abs() <= tolerance
+        }) {
+            return false;
+        }
+        self.set_zoom_range(Some(next));
         true
     }
 
@@ -845,6 +1131,12 @@ impl ChartWidget {
             idx = end.saturating_sub(1);
         }
         Some(idx)
+    }
+
+    /// Bumps the data revision and announces the change.
+    fn bump_data_generation(&mut self) {
+        self.data_generation = self.data_generation.wrapping_add(1);
+        self.data_changed.emit(());
     }
 
     /// Restarts the value reveal, for a newly supplied series.
@@ -1146,6 +1438,11 @@ impl Widget for ChartWidget {
                     None => CapabilityValue::Null,
                 }))
             }
+            "data_changed" => {
+                Some(EventSignalRef::mapped("data_changed", &self.data_changed, |_| {
+                    CapabilityValue::Null
+                }))
+            }
             _ => None,
         }
     }
@@ -1172,6 +1469,11 @@ impl WidgetProperties for ChartWidget {
             ) as u64)),
             "label_count" => Ok(CapabilityValue::UInt(self.labels().len() as u64)),
             "series_count" => Ok(CapabilityValue::UInt(self.series().len() as u64)),
+            // RW-67: the primary series' values. `set_series` remains the route for more than one
+            // series, because this carrier has one row and no series identity.
+            "data" => Ok(CapabilityValue::Tuple(
+                self.data().iter().map(|value| CapabilityValue::Float(*value)).collect(),
+            )),
             _ => base_property_get(self, name),
         }
     }
@@ -1187,12 +1489,18 @@ impl WidgetProperties for ChartWidget {
             "point_count" | "label_count" | "series_count" => {
                 Err(CapabilityAccessError::ReadOnlyProperty)
             }
+            "data" => {
+                let values = crate::widget::capability::coercion::expect_number_list(value)?;
+                self.set_data(values);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
         property_names_of![
+            "data",
             "chart_type",
             "point_count",
             "label_count",
@@ -1219,6 +1527,10 @@ fn expect_chart_type(value: CapabilityValue) -> Result<ChartType, CapabilityAcce
 
 impl Draw for ChartWidget {
     fn draw(&mut self, context: &mut RenderContext) {
+        // Companions are drained before the frame is built so a table toggle or a strip request
+        // applies to the picture being painted, not the next one.
+        self.poll_chart_data_table();
+        self.poll_zoom_strip();
         // The attached legend is a standard control: keep its rows aligned with the series before
         // either the self-drawn path or the attached control is painted.
         self.sync_legend();
@@ -2591,6 +2903,10 @@ impl EventHandler for ChartWidget {
         if !self.base.is_enabled() {
             return;
         }
+        // A queued companion action is applied before the event is interpreted, so the pointer
+        // sees the view the table or strip has just requested.
+        self.poll_chart_data_table();
+        self.poll_zoom_strip();
         // A mounted legend is the hit-test and selection path for its rectangle. Its own
         // `series_toggled` is queued by the slot `set_legend` installed, then drained into the
         // chart's existing visibility so both controls cannot disagree.
@@ -2726,6 +3042,30 @@ pub use crate::widget::chart_widgets::chart_crosshair::ChartCrosshair;
 mod tests {
     use super::*;
     use std::sync::{Arc, Mutex};
+
+    /// RW-67: the primary-series data carrier round-trips.
+    #[test]
+    fn data_property_round_trips_the_primary_series() {
+        use crate::widget::capability::WidgetProperties;
+        let mut chart = ChartWidget::new(Rect::new(0, 0, 200, 100));
+        chart
+            .set(
+                "data",
+                crate::widget::capability::CapabilityValue::Tuple(vec![
+                    crate::widget::capability::CapabilityValue::Float(1.0),
+                    crate::widget::capability::CapabilityValue::Float(2.0),
+                ]),
+            )
+            .expect("data is writable");
+        assert_eq!(chart.data(), &[1.0, 2.0]);
+        assert_eq!(
+            chart.get("data").expect("data is readable"),
+            crate::widget::capability::CapabilityValue::Tuple(vec![
+                crate::widget::capability::CapabilityValue::Float(1.0),
+                crate::widget::capability::CapabilityValue::Float(2.0),
+            ])
+        );
+    }
 
     #[test]
     fn chart_mouse_interaction_emits_data_index_signals() {
@@ -3382,5 +3722,67 @@ mod issue_2_8_tests {
         assert!(chart.chart_tooltip().expect("attached").is_visible());
         chart.handle_event(&Event::mouse_leave(200, 100));
         assert!(!chart.chart_tooltip().expect("attached").is_visible());
+    }
+
+    /// The data revision and its signal move together for every data mutation.
+    #[test]
+    fn data_mutations_bump_the_revision_and_emit_data_changed() {
+        let mut chart = ChartWidget::new(Rect::new(0, 0, 200, 100));
+        let hits = Arc::new(Mutex::new(0usize));
+        let sink = Arc::clone(&hits);
+        chart.data_changed.connect(move |_| {
+            if let Ok(mut guard) = sink.lock() {
+                *guard += 1;
+            }
+        });
+
+        let start = chart.data_revision();
+        chart.set_data(vec![1.0, 2.0, 3.0]);
+        assert_eq!(chart.data_revision(), start + 1);
+        assert_eq!(*hits.lock().unwrap(), 1);
+
+        chart.push_point(4.0);
+        assert_eq!(chart.data_revision(), start + 2);
+        assert_eq!(*hits.lock().unwrap(), 2);
+    }
+
+    /// The generic chart exposes the same data-table attach point as Bar/Line.
+    #[test]
+    fn the_generic_chart_attaches_a_data_table() {
+        let mut chart = ChartWidget::new(Rect::new(0, 0, 200, 100));
+        chart.set_series(vec![vec![1.0, 2.0], vec![3.0, 4.0]]);
+        chart.set_series_names(vec!["alpha".into(), "beta".into()]);
+        let mut table = ChartDataTable::new(Rect::new(0, 0, 200, 100));
+        chart.attach_chart_data_table(&mut table);
+        assert!(chart.is_chart_data_table_attached());
+        assert_eq!(table.visible_series(), &[0usize, 1], "both series start visible");
+
+        chart.push_point(9.0);
+        assert!(chart.poll_chart_data_table(), "the new sample refreshes the rows");
+        assert!(!chart.poll_chart_data_table(), "an unchanged chart reports nothing");
+
+        chart.detach_chart_data_table();
+        assert!(!chart.is_chart_data_table_attached());
+        chart.push_point(10.0);
+        assert!(!chart.poll_chart_data_table(), "a detached table is not polled");
+    }
+
+    /// The generic chart exposes the same zoom-strip attach point as Bar/Line.
+    #[test]
+    fn the_generic_chart_attaches_a_zoom_strip() {
+        let mut chart = ChartWidget::new(Rect::new(0, 0, 200, 100));
+        chart.set_data((0..10).map(|value| value as f64).collect());
+        let mut strip = ZoomStrip::new(Rect::new(0, 0, 160, 24));
+        chart.attach_zoom_strip(&mut strip);
+        assert!(chart.is_zoom_strip_attached());
+        assert!((strip.zoom_level() - 1.0).abs() < f32::EPSILON, "100% is mirrored at attach");
+
+        strip.set_zoom(2.0);
+        assert!(chart.poll_zoom_strip(), "the request is consumed");
+        let (low, high) = chart.zoom_range().expect("the window is applied");
+        assert!((high - low - 5.0).abs() < 1e-9, "ten categories at 2x is a five-category window");
+
+        chart.detach_zoom_strip();
+        assert!(!chart.is_zoom_strip_attached());
     }
 }

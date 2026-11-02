@@ -281,6 +281,12 @@ pub struct BarChart {
     pub bar_clicked_with_series: Signal1<(usize, usize)>,
     /// Emitted with `(series, visible)` after a legend click or [`Self::set_series_visible`].
     pub series_toggled: Signal1<(usize, bool)>,
+    /// Emitted after every mutation that bumps [`Self::data_revision`].
+    ///
+    /// The crate has no zero-argument signal type; a payload-free notification is
+    /// `Signal1<()>`, the same spelling `DockArea::layout_changed` uses for the
+    /// `Signal0` the issue asks for.
+    pub data_changed: Signal1<()>,
     /// The chart title, painted centred at the top (CH-07).
     title: Option<String>,
     /// The x-axis title, painted under the plot (CH-07).
@@ -430,6 +436,7 @@ impl BarChart {
             bar_unhovered_with_series: Signal1::new(),
             bar_clicked_with_series: Signal1::new(),
             series_toggled: Signal1::new(),
+            data_changed: Signal1::new(),
             title: None,
             x_axis_label: None,
             y_axis_label: None,
@@ -484,9 +491,18 @@ impl BarChart {
             self.restart_growth();
         }
         self.data_revision = self.data_revision.wrapping_add(1);
+        self.data_changed.emit(());
         self.revalidate_hover();
         self.sync_legend();
         self.base.request_redraw();
+    }
+
+    /// The revision of the current data.
+    ///
+    /// Bumped by every mutator that changes the bars, series, category labels or a series'
+    /// visibility. A host can key a cached snapshot on it instead of comparing whole lists.
+    pub fn data_revision(&self) -> u64 {
+        self.data_revision
     }
 
     /// Returns the multi-series data.
@@ -671,6 +687,7 @@ impl BarChart {
         }
         series.visible = visible;
         self.data_revision = self.data_revision.wrapping_add(1);
+        self.data_changed.emit(());
         self.revalidate_hover();
         self.sync_legend();
         // A disabled chart still applies the toggle and repaints; it must not announce a series
@@ -1180,11 +1197,21 @@ impl BarChart {
 
     /// How far the bars have grown, in `0.0..=1.0`.
     pub fn growth_progress(&self) -> f32 {
-        if self.animate_bars {
-            self.reveal.value()
-        } else {
-            1.0
+        self.reveal.value()
+    }
+
+    /// Sets the bar growth fraction, clamped to `0.0..=1.0`.
+    ///
+    /// This is the scrubbing counterpart of [`Self::growth_progress`]: a designer timeline can
+    /// place the reveal at an exact frame instead of waiting for [`Widget::tick`]. The value is
+    /// painted even while [`Self::set_animate_bars`] is off, because the draw path reads the same
+    /// progress either way; a non-finite value is ignored.
+    pub fn set_bar_growth_progress(&mut self, progress: f32) {
+        if !progress.is_finite() {
+            return;
         }
+        self.reveal.jump_to(progress.clamp(0.0, 1.0));
+        self.base.request_redraw();
     }
 
     /// The hovered category index, if any.
@@ -1470,6 +1497,7 @@ impl BarChart {
             self.restart_growth();
         }
         self.data_revision = self.data_revision.wrapping_add(1);
+        self.data_changed.emit(());
         self.revalidate_hover();
         self.base.request_redraw();
     }
@@ -1489,6 +1517,7 @@ impl BarChart {
         self.clear_value_transition();
         self.bars.push(entry);
         self.data_revision = self.data_revision.wrapping_add(1);
+        self.data_changed.emit(());
         self.base.request_redraw();
     }
 
@@ -1499,6 +1528,7 @@ impl BarChart {
             self.clear_value_transition();
             self.bars.remove(index);
             self.data_revision = self.data_revision.wrapping_add(1);
+            self.data_changed.emit(());
             self.base.request_redraw();
             true
         } else {
@@ -1511,7 +1541,91 @@ impl BarChart {
         self.clear_value_transition();
         self.bars.clear();
         self.data_revision = self.data_revision.wrapping_add(1);
+        self.data_changed.emit(());
         self.base.request_redraw();
+    }
+
+    /// Appends one named series, returning its index.
+    ///
+    /// The incremental counterpart of [`Self::set_series`]: it keeps the existing category
+    /// labels and every other series, so a live feed can add a feed without rebuilding the
+    /// whole multi-series snapshot. Non-finite values are dropped for the same reason
+    /// [`Self::set_bars`] drops them.
+    pub fn add_series(&mut self, mut series: BarSeries) -> usize {
+        series.values.retain(|value| value.is_finite());
+        self.clear_value_transition();
+        self.series.push(series);
+        self.data_revision = self.data_revision.wrapping_add(1);
+        self.data_changed.emit(());
+        self.revalidate_hover();
+        self.sync_legend();
+        self.base.request_redraw();
+        self.series.len() - 1
+    }
+
+    /// Removes the series at `index`.
+    ///
+    /// Returns `true` if it existed. The category labels are left untouched: they describe the
+    /// shared category axis, not any one series.
+    pub fn remove_series(&mut self, index: usize) -> bool {
+        if index >= self.series.len() {
+            return false;
+        }
+        self.clear_value_transition();
+        self.series.remove(index);
+        self.data_revision = self.data_revision.wrapping_add(1);
+        self.data_changed.emit(());
+        self.revalidate_hover();
+        self.sync_legend();
+        self.base.request_redraw();
+        true
+    }
+
+    /// Replaces one category value in series `series_index`.
+    ///
+    /// The multi-series counterpart of [`Self::set_bar_data`]. Returns `false` when either
+    /// index is out of bounds or `value` is non-finite.
+    pub fn update_bar(&mut self, series_index: usize, category: usize, value: f64) -> bool {
+        if !value.is_finite() {
+            log::warn!(
+                "[bar_chart] ignoring the non-finite value {value} for series {series_index} "
+            );
+            return false;
+        }
+        let Some(series) = self.series.get_mut(series_index) else {
+            return false;
+        };
+        let Some(slot) = series.values.get_mut(category) else {
+            return false;
+        };
+        *slot = value;
+        self.clear_value_transition();
+        self.data_revision = self.data_revision.wrapping_add(1);
+        self.data_changed.emit(());
+        self.revalidate_hover();
+        self.base.request_redraw();
+        true
+    }
+
+    /// Replaces the value of the single-series bar at `index`.
+    ///
+    /// The in-place counterpart of [`Self::add_bar`] / [`Self::remove_bar`]. Returns `false`
+    /// when the index is out of bounds or `value` is non-finite.
+    pub fn set_bar_data(&mut self, index: usize, value: f64) -> bool {
+        if !value.is_finite() {
+            log::warn!("[bar_chart] ignoring the non-finite value {value} for bar {index}");
+            return false;
+        }
+        let Some(bar) = self.bars.get_mut(index) else {
+            return false;
+        };
+        bar.value = value;
+        self.clear_value_transition();
+        self.data_revision = self.data_revision.wrapping_add(1);
+        self.data_changed.emit(());
+        self.revalidate_hover();
+        self.base.request_redraw();
+        true
     }
 
     /// Returns the number of bars.
@@ -1841,6 +1955,11 @@ impl Widget for BarChart {
                     ]))
                 }))
             }
+            "data_changed" => {
+                Some(EventSignalRef::mapped("data_changed", &self.data_changed, |_| {
+                    CapabilityValue::Null
+                }))
+            }
             _ => None,
         }
     }
@@ -1858,6 +1977,11 @@ impl WidgetProperties for BarChart {
     fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
         match name {
             "bar_spacing" => Ok(CapabilityValue::Float(self.bar_spacing() as f64)),
+            // RW-67: the single-series bar values. Multi-series data has per-series labels and
+            // cannot be reconstructed from one flat list, so it is not carried here.
+            "data" => Ok(CapabilityValue::Tuple(
+                self.bars().iter().map(|bar| CapabilityValue::Float(bar.value)).collect(),
+            )),
             _ => base_property_get(self, name),
         }
     }
@@ -1868,12 +1992,30 @@ impl WidgetProperties for BarChart {
                 self.set_bar_spacing(expect_f32(value)?);
                 Ok(())
             }
+            "data" => {
+                let values = crate::widget::capability::coercion::expect_number_list(value)?;
+                // Preserve the labels already at each position: this carrier owns the values, not
+                // the category names, and dropping them would make a value-only write relabel the
+                // whole chart.
+                let existing = self.bars();
+                let entries = values
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, value)| BarEntry {
+                        label: existing.get(index).map(|bar| bar.label.clone()).unwrap_or_default(),
+                        value,
+                        color: None,
+                    })
+                    .collect();
+                self.set_bars(entries);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["bar_spacing", BASE_PROPERTY_NAMES]
+        property_names_of!["data", "bar_spacing", BASE_PROPERTY_NAMES]
     }
 }
 
@@ -2665,6 +2807,32 @@ mod tests {
     use super::*;
     use crate::widget::svg::render_to_svg;
 
+    /// RW-67: the primary-series carrier round-trips and preserves bar labels by position.
+    #[test]
+    fn data_property_round_trips_bar_values() {
+        use crate::widget::capability::WidgetProperties;
+        let mut chart = BarChart::new(Rect::new(0, 0, 300, 200));
+        chart.set_bars(vec![
+            BarEntry { label: "a".into(), value: 1.0, color: None },
+            BarEntry { label: "b".into(), value: 2.0, color: None },
+        ]);
+        chart
+            .set(
+                "data",
+                CapabilityValue::Tuple(vec![
+                    CapabilityValue::Float(3.0),
+                    CapabilityValue::Float(4.0),
+                ]),
+            )
+            .expect("the data property is writable");
+        assert_eq!(chart.bars()[0].value, 3.0);
+        assert_eq!(chart.bars()[1].label, "b", "existing labels are preserved");
+        assert_eq!(
+            chart.get("data").expect("readable"),
+            CapabilityValue::Tuple(vec![CapabilityValue::Float(3.0), CapabilityValue::Float(4.0)])
+        );
+    }
+
     /// Every name the capability publishes must resolve, and a name it does not
     /// publish must stay unresolved — a dead arm reads as support it does not have.
     #[test]
@@ -3453,5 +3621,70 @@ mod tests {
         assert!(!chart.is_axis_picker_attached());
         assert!(picker.assign(0, AxisEdge::Top));
         assert!(!chart.poll_axis_picker(), "a detached picker reports nothing");
+    }
+
+    /// The data revision and its signal move together, so a host can key a snapshot on either.
+    #[test]
+    fn data_mutations_bump_the_revision_and_emit_data_changed() {
+        let mut chart = BarChart::new(Rect::new(0, 0, 300, 200));
+        let hits = Arc::new(Mutex::new(0usize));
+        let sink = Arc::clone(&hits);
+        chart.data_changed.connect(move |_| {
+            *lock(&sink) += 1;
+        });
+
+        let start = chart.data_revision();
+        chart.add_bar(BarEntry::new("A", 3.0));
+        assert_eq!(chart.data_revision(), start + 1);
+        assert_eq!(*lock(&hits), 1, "one emission per bump");
+
+        chart.set_bar_data(0, 4.0);
+        assert_eq!(chart.data_revision(), start + 2);
+        assert_eq!(*lock(&hits), 2);
+    }
+
+    /// The multi-series incremental API keeps every other series and the category labels.
+    #[test]
+    fn series_can_be_added_updated_and_removed_incrementally() {
+        let mut chart = BarChart::new(Rect::new(0, 0, 300, 200));
+        chart.set_series(vec![BarSeries::new("one", vec![1.0, 2.0])], vec!["a".into(), "b".into()]);
+
+        let index = chart.add_series(BarSeries::new("two", vec![3.0, 4.0]));
+        assert_eq!(index, 1);
+        assert_eq!(chart.series().len(), 2);
+        assert_eq!(chart.category_labels().len(), 2, "the shared category labels survive");
+
+        assert!(chart.update_bar(1, 0, 9.0));
+        assert_eq!(chart.series()[1].values[0], 9.0);
+        assert!(!chart.update_bar(9, 0, 9.0), "an absent series is refused");
+        assert!(!chart.update_bar(1, 9, 9.0), "an absent category is refused");
+
+        assert!(chart.remove_series(1));
+        assert_eq!(chart.series().len(), 1);
+        assert!(!chart.remove_series(7));
+    }
+
+    /// The single-series data primitive writes one bar in place and refuses a bad index.
+    #[test]
+    fn set_bar_data_updates_one_bar_in_place() {
+        let mut chart = BarChart::new(Rect::new(0, 0, 300, 200));
+        chart.set_bars(vec![BarEntry::new("A", 1.0), BarEntry::new("B", 2.0)]);
+        assert!(chart.set_bar_data(1, 7.0));
+        assert_eq!(chart.bars()[1].value, 7.0);
+        assert!(!chart.set_bar_data(5, 7.0));
+        assert!(!chart.set_bar_data(0, f64::NAN), "a non-finite value is refused");
+    }
+
+    /// The growth reveal can be scrubbed to an exact frame instead of only being read.
+    #[test]
+    fn bar_growth_progress_can_be_scrubbed() {
+        let mut chart = BarChart::new(Rect::new(0, 0, 300, 200));
+        chart.set_bars(vec![BarEntry::new("A", 5.0)]);
+        chart.set_bar_growth_progress(0.25);
+        assert!((chart.growth_progress() - 0.25).abs() < f32::EPSILON);
+        chart.set_bar_growth_progress(2.0);
+        assert!((chart.growth_progress() - 1.0).abs() < f32::EPSILON);
+        chart.set_bar_growth_progress(f32::NAN);
+        assert!((chart.growth_progress() - 1.0).abs() < f32::EPSILON, "NaN is ignored");
     }
 }

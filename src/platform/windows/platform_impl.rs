@@ -527,6 +527,93 @@ impl Platform for WindowsPlatform {
         self.state.window_min_size(widget_id)
     }
 
+    /// Raises the window and gives it the foreground keyboard focus.
+    ///
+    /// A minimised window is restored first: `SetForegroundWindow` on a minimised handle does
+    /// nothing visible, so the restore is part of "activate" rather than a separate step the
+    /// caller would have to remember. Returns `false` for a non-window id or a state-only
+    /// window (created off the message-loop thread), where there is no `HWND` to raise.
+    fn activate_window(&self, widget_id: ObjectId) -> bool {
+        let Some(kind) = self.state.kind_of(widget_id) else {
+            return false;
+        };
+        if !matches!(kind, super::types::WindowsHandleKind::Window) {
+            return false;
+        }
+        #[cfg(target_os = "windows")]
+        {
+            use winapi::um::winuser::{SetForegroundWindow, ShowWindow, SW_RESTORE};
+            if let Some(hwnd) = self.get_native_handle(widget_id) {
+                // SAFETY: `hwnd` was resolved from the live widget map above; both calls only
+                // change the activation state of that window.
+                unsafe {
+                    ShowWindow(hwnd, SW_RESTORE);
+                    SetForegroundWindow(hwnd);
+                }
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Reads the window's screen-space origin through `GetWindowRect`.
+    ///
+    /// The state model is the fallback for a state-only window, exactly as it is for the other
+    /// window getters: it records the position the library was asked for, and a caller can tell
+    /// that apart from an OS reading because the native query is tried first.
+    fn window_position(&self, widget_id: ObjectId) -> Option<(i32, i32)> {
+        let kind = self.state.kind_of(widget_id)?;
+        if !matches!(kind, super::types::WindowsHandleKind::Window) {
+            return None;
+        }
+        #[cfg(target_os = "windows")]
+        {
+            use winapi::shared::windef::RECT;
+            use winapi::um::winuser::GetWindowRect;
+            if let Some(hwnd) = self.get_native_handle(widget_id) {
+                let mut rect = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+                // SAFETY: `hwnd` is live and `rect` is a valid local out-parameter.
+                if unsafe { GetWindowRect(hwnd, &mut rect) } != 0 {
+                    return Some((rect.left, rect.top));
+                }
+            }
+        }
+        self.state.widget_geometry(widget_id).map(|(x, y, _, _)| (x, y))
+    }
+
+    /// Moves the window with `SetWindowPos`, keeping its size, z-order and activation.
+    fn set_window_position(&self, widget_id: ObjectId, x: i32, y: i32) -> bool {
+        let Some(kind) = self.state.kind_of(widget_id) else {
+            return false;
+        };
+        if !matches!(kind, super::types::WindowsHandleKind::Window) {
+            return false;
+        }
+        if let Some((_, _, width, height)) = self.state.widget_geometry(widget_id) {
+            self.state.set_geometry(widget_id, x, y, width, height);
+        }
+        #[cfg(target_os = "windows")]
+        {
+            use winapi::um::winuser::{SetWindowPos, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER};
+            if let Some(hwnd) = self.get_native_handle(widget_id) {
+                // SAFETY: `hwnd` is live and the flags keep the call to a pure move; the
+                // null insert-after handle is ignored because `SWP_NOZORDER` is set.
+                unsafe {
+                    SetWindowPos(
+                        hwnd,
+                        std::ptr::null_mut(),
+                        x,
+                        y,
+                        0,
+                        0,
+                        SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+                    );
+                }
+            }
+        }
+        true
+    }
+
     /// Records a maximum content size and asks Win32 to recompute its frame constraints.
     ///
     /// Win32 has no `SetWindowMaxSize`; like the minimum, the value is consumed by the

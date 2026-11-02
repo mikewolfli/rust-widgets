@@ -65,6 +65,7 @@ pub use bindings::HeaderMenuPoll;
 pub use grid::DataGrid;
 pub use header::GridViewHeader;
 pub use types::{
-    CellSpan, ColumnFilter, ColumnSpec, ColumnWidthMode, DataGridCellDelegate, DataGridCellEditor,
-    DataGridSelectionBehavior, EditTriggers, RowDetailProvider, SortOrder, SortSpec,
+    CellSpan, ColumnChange, ColumnChangeKind, ColumnDataType, ColumnFilter, ColumnSpec,
+    ColumnWidthMode, DataGridCellDelegate, DataGridCellEditor, DataGridSelectionBehavior,
+    EditTriggers, RowDetailProvider, SortOrder, SortSpec,
 };

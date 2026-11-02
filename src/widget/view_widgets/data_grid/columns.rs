@@ -757,3 +757,301 @@ impl DataGrid {
         &self.filter_expr
     }
 }
+
+// ── Column structure (RW-5) ──
+//
+// A grid's *data* columns belong to the bound [`IncrementalTableDataSource`]: only the source can
+// say how many exist, and there is no column-mutation method on that protocol. What the grid owns
+// is the column **description** — the specs a header contributes, the per-column widths, the
+// alignments, the sort roles and the hidden set. The methods below edit that description and shift
+// every index-keyed map with it, so the description cannot drift out of alignment with itself.
+//
+// A host that also changes its source's column space (a writable in-memory source, for example)
+// keeps the two in step by re-binding after the edit; a host that cannot change its source uses
+// these methods for renaming and re-describing the columns it already has. The doc comment on each
+// method states that boundary rather than implying the grid can grow a read-only source.
+
+impl DataGrid {
+    /// The structural column-change signal (RW-5).
+    pub fn column_changed_signal(&self) -> &Signal1<ColumnChange> {
+        &self.column_changed
+    }
+
+    /// The column descriptions this grid paints, one per described column.
+    ///
+    /// Empty until [`Self::set_header`], [`Self::set_header_labels`] or one of the structural
+    /// mutators below describes a column; the paint path falls back to the source's own names and
+    /// the uniform width while it is empty, which is the historical behaviour.
+    pub fn column_specs(&self) -> &[ColumnSpec] {
+        &self.header_columns
+    }
+
+    /// Grows the description to `count` entries, keeping existing specs and their titles.
+    fn ensure_column_specs(&mut self, count: usize) {
+        while self.header_columns.len() < count {
+            let column = self.header_columns.len();
+            let title = self
+                .header_labels
+                .get(column)
+                .cloned()
+                .or_else(|| self.data_source.as_ref().and_then(|source| source.column_name(column)))
+                .unwrap_or_default();
+            let width = self.column_widths.get(&column).copied().unwrap_or(self.column_width);
+            self.header_columns.push(ColumnSpec::new(title, width));
+        }
+        while self.header_labels.len() < count {
+            let column = self.header_labels.len();
+            let label =
+                self.header_columns.get(column).map(|spec| spec.title.clone()).unwrap_or_default();
+            self.header_labels.push(label);
+        }
+    }
+
+    /// Inserts `spec` as the description of a column at `at`, returning the index it landed at.
+    ///
+    /// `at` is clamped to the current description length. Every per-column map keyed by an index
+    /// at or after the insertion point is shifted right, the selection is re-mapped so it still
+    /// names the same visual columns, and [`Self::column_changed_signal`] reports
+    /// [`ColumnChangeKind::Inserted`].
+    ///
+    /// The bound data source's column space is **not** changed (the protocol has no column
+    /// mutation); a source with a fixed column count keeps painting its own columns, and the
+    /// inserted spec describes whichever data column now occupies `at`.
+    pub fn insert_column(&mut self, at: usize, spec: ColumnSpec) -> usize {
+        let at = at.min(self.header_columns.len().max(self.column_count()));
+        self.ensure_column_specs(self.column_count().max(self.header_columns.len()));
+        let at = at.min(self.header_columns.len());
+
+        shift_usize_map(&mut self.column_widths, at);
+        shift_usize_map(&mut self.column_alignments, at);
+        shift_usize_map(&mut self.sort_roles, at);
+        self.hidden_columns = self
+            .hidden_columns
+            .iter()
+            .map(|column| if *column >= at { column + 1 } else { *column })
+            .collect();
+        for sort in &mut self.sort_specs {
+            if sort.column >= at {
+                sort.column += 1;
+            }
+        }
+        for filter in &mut self.filters {
+            if filter.column >= at {
+                filter.column += 1;
+            }
+        }
+        for row in &mut self.extra_header_rows {
+            if row.len() > at {
+                row.insert(at, String::new());
+            }
+        }
+        self.column_order = self
+            .column_order
+            .iter()
+            .map(|column| if *column >= at { column + 1 } else { *column })
+            .collect();
+
+        self.column_widths.insert(at, spec.width.max(1));
+        if spec.alignment != HorizontalAlignment::Left {
+            self.column_alignments.insert(at, spec.alignment);
+        }
+        self.header_labels.insert(at.min(self.header_labels.len()), spec.title.clone());
+        self.header_columns.insert(at, spec);
+
+        // A selection names columns too, so it moves with them.
+        if self.selection_behavior != DataGridSelectionBehavior::Rows {
+            self.selected_cells = self
+                .selected_cells
+                .iter()
+                .map(|(row, column)| (*row, if *column >= at { column + 1 } else { *column }))
+                .collect();
+            self.current_cell = self
+                .current_cell
+                .map(|(row, column)| (row, if column >= at { column + 1 } else { column }));
+            self.selection_anchor = self
+                .selection_anchor
+                .map(|(row, column)| (row, if column >= at { column + 1 } else { column }));
+            self.hovered_cell = self
+                .hovered_cell
+                .map(|(row, column)| (row, if column >= at { column + 1 } else { column }));
+            self.editing = self
+                .editing
+                .map(|(row, column)| (row, if column >= at { column + 1 } else { column }));
+        }
+        if self.scroll_column >= at {
+            self.scroll_column += 1;
+        }
+
+        self.finish_column_structure_change();
+        self.column_changed.emit(ColumnChange::new(ColumnChangeKind::Inserted, at));
+        at
+    }
+
+    /// Removes the column description at `at`, returning it when the index was described.
+    ///
+    /// Every per-column map keyed by a later index is shifted left, a selection that named the
+    /// removed column loses that unit (rather than silently pointing at the next column), the
+    /// scroll offsets are clamped, and [`ColumnChangeKind::Removed`] is reported.
+    ///
+    /// As with [`Self::insert_column`], the bound source's data columns are untouched: the grid's
+    /// description loses an entry, and the host keeps its source in step.
+    pub fn remove_column(&mut self, at: usize) -> Option<ColumnSpec> {
+        self.ensure_column_specs(self.column_count().max(self.header_columns.len()));
+        if at >= self.header_columns.len() {
+            return None;
+        }
+        let removed = self.header_columns.remove(at);
+        if at < self.header_labels.len() {
+            self.header_labels.remove(at);
+        }
+
+        unshift_usize_map(&mut self.column_widths, at);
+        unshift_usize_map(&mut self.column_alignments, at);
+        unshift_usize_map(&mut self.sort_roles, at);
+        self.hidden_columns = self
+            .hidden_columns
+            .iter()
+            .filter(|column| **column != at)
+            .map(|column| if *column > at { column - 1 } else { *column })
+            .collect();
+        self.sort_specs.retain(|sort| sort.column != at);
+        for sort in &mut self.sort_specs {
+            if sort.column > at {
+                sort.column -= 1;
+            }
+        }
+        self.filters.retain(|filter| filter.column != at);
+        for filter in &mut self.filters {
+            if filter.column > at {
+                filter.column -= 1;
+            }
+        }
+        for row in &mut self.extra_header_rows {
+            if row.len() > at {
+                row.remove(at);
+            }
+        }
+        self.column_order = self
+            .column_order
+            .iter()
+            .filter(|column| **column != at)
+            .map(|column| if *column > at { column - 1 } else { *column })
+            .collect();
+
+        if self.selection_behavior != DataGridSelectionBehavior::Rows {
+            self.selected_cells = self
+                .selected_cells
+                .iter()
+                .filter(|(_, column)| *column != at)
+                .map(|(row, column)| (*row, if *column > at { column - 1 } else { *column }))
+                .collect();
+            self.current_cell = self
+                .current_cell
+                .filter(|(_, column)| *column != at)
+                .map(|(row, column)| (row, if column > at { column - 1 } else { column }));
+            self.selection_anchor = self
+                .selection_anchor
+                .filter(|(_, column)| *column != at)
+                .map(|(row, column)| (row, if column > at { column - 1 } else { column }));
+            self.hovered_cell = self
+                .hovered_cell
+                .filter(|(_, column)| *column != at)
+                .map(|(row, column)| (row, if column > at { column - 1 } else { column }));
+            self.editing = self
+                .editing
+                .filter(|(_, column)| *column != at)
+                .map(|(row, column)| (row, if column > at { column - 1 } else { column }));
+        }
+        if self.scroll_column > at {
+            self.scroll_column -= 1;
+        }
+        self.frozen_columns = self.frozen_columns.min(self.column_count());
+
+        self.finish_column_structure_change();
+        self.column_changed.emit(ColumnChange::new(ColumnChangeKind::Removed, at));
+        Some(removed)
+    }
+
+    /// Sets the title of column `col`, returning whether it exists.
+    ///
+    /// The title is stored on the grid's own description, so a grid without a bound header can be
+    /// renamed without replacing its whole header, and a grid with one keeps the header's other
+    /// fields. Reports [`ColumnChangeKind::TitleChanged`] when the text actually changed.
+    pub fn set_column_title(&mut self, col: usize, title: impl Into<String>) -> bool {
+        self.ensure_column_specs(self.column_count().max(self.header_columns.len()));
+        let title = title.into();
+        if let Some(spec) = self.header_columns.get_mut(col) {
+            let changed = spec.title != title;
+            spec.title = title.clone();
+            if let Some(label) = self.header_labels.get_mut(col) {
+                *label = title;
+            }
+            if changed {
+                self.header_text_revision = self.header_text_revision.wrapping_add(1);
+                self.column_changed.emit(ColumnChange::new(ColumnChangeKind::TitleChanged, col));
+                self.base.request_redraw();
+            }
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Declares the data type of column `col` (RW-6), returning whether it exists.
+    pub fn set_column_type(&mut self, col: usize, data_type: ColumnDataType) -> bool {
+        self.ensure_column_specs(self.column_count().max(self.header_columns.len()));
+        let Some(spec) = self.header_columns.get_mut(col) else {
+            return false;
+        };
+        if spec.data_type == data_type {
+            return true;
+        }
+        spec.data_type = data_type;
+        self.column_changed.emit(ColumnChange::new(ColumnChangeKind::TypeChanged, col));
+        self.base.request_redraw();
+        true
+    }
+
+    /// The declared data type of column `col` (RW-6).
+    pub fn column_type(&self, col: usize) -> Option<&ColumnDataType> {
+        self.header_columns.get(col).map(|spec| &spec.data_type)
+    }
+
+    /// Re-derives every cache and geometry a column-structure change invalidates.
+    fn finish_column_structure_change(&mut self) {
+        self.column_geometry_revision = self.column_geometry_revision.wrapping_add(1);
+        self.header_text_revision = self.header_text_revision.wrapping_add(1);
+        self.clear_cache();
+        self.invalidate_projection_cache();
+        self.scroll_column = self.scroll_column.min(self.column_count().saturating_sub(1));
+        self.base.request_layout();
+        self.base.request_redraw();
+    }
+}
+
+/// Shifts every key `>= at` in an index-keyed map one column right.
+fn shift_usize_map<V>(map: &mut HashMap<usize, V>, at: usize) {
+    if map.is_empty() {
+        return;
+    }
+    let mut shifted = HashMap::with_capacity(map.len());
+    for (key, value) in map.drain() {
+        shifted.insert(if key >= at { key + 1 } else { key }, value);
+    }
+    *map = shifted;
+}
+
+/// Shifts every key `> at` in an index-keyed map one column left and drops `at` itself.
+fn unshift_usize_map<V>(map: &mut HashMap<usize, V>, at: usize) {
+    if map.is_empty() {
+        return;
+    }
+    let mut shifted = HashMap::with_capacity(map.len());
+    for (key, value) in map.drain() {
+        if key == at {
+            continue;
+        }
+        shifted.insert(if key > at { key - 1 } else { key }, value);
+    }
+    *map = shifted;
+}

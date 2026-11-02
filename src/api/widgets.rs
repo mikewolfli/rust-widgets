@@ -112,7 +112,6 @@ pub use widget::AnimatedImageFormat;
 pub use widget::AppBar;
 pub use widget::Arc;
 #[cfg(full_widgets)]
-pub use widget::AudioVisualizer;
 #[cfg(widgets_unstripped)]
 pub use widget::AutoCompleteEdit;
 #[cfg(full_widgets)]
@@ -147,7 +146,6 @@ pub use widget::ButtonState;
 #[cfg(full_widgets)]
 pub use widget::Calendar;
 #[cfg(full_widgets)]
-pub use widget::CameraPreview;
 #[cfg(full_widgets)]
 pub use widget::Canvas;
 pub use widget::CapabilityAccessError;
@@ -200,7 +198,6 @@ pub use widget::CommandLink;
 #[cfg(full_widgets)]
 pub use widget::CommandPalette;
 #[cfg(full_widgets)]
-pub use widget::Compass;
 #[cfg(full_widgets)]
 pub use widget::CompletedMention;
 #[cfg(full_widgets)]
@@ -224,7 +221,6 @@ pub use widget::DataView;
 #[cfg(full_widgets)]
 pub use widget::DateEdit;
 #[cfg(full_widgets)]
-pub use widget::DateFormat;
 #[cfg(full_widgets)]
 pub use widget::DatePicker;
 #[cfg(full_widgets)]
@@ -234,9 +230,7 @@ pub use widget::DateTimeEdit;
 #[cfg(full_widgets)]
 pub use widget::DateTimePicker;
 #[cfg(full_widgets)]
-pub use widget::Dependency;
 #[cfg(full_widgets)]
-pub use widget::DependencyEditor;
 #[cfg(full_widgets)]
 pub use widget::DiagnosticMarker;
 #[cfg(full_widgets)]
@@ -244,13 +238,9 @@ pub use widget::Dial;
 #[cfg(full_widgets)]
 pub use widget::Dialog;
 #[cfg(full_widgets)]
-pub use widget::DiffFileList;
 #[cfg(full_widgets)]
-pub use widget::DiffKind;
 #[cfg(full_widgets)]
-pub use widget::DiffLine;
 #[cfg(full_widgets)]
-pub use widget::DiffViewer;
 #[cfg(full_widgets)]
 pub use widget::DirectoryDialog;
 #[cfg(widgets_unstripped)]
@@ -310,9 +300,7 @@ pub use widget::FreeformShapeWidget;
 #[cfg(full_widgets)]
 pub use widget::GalleryImage;
 #[cfg(full_widgets)]
-pub use widget::GanttTask;
 #[cfg(full_widgets)]
-pub use widget::GanttWidget;
 #[cfg(full_widgets)]
 pub use widget::Grid;
 #[cfg(full_widgets)]
@@ -361,15 +349,10 @@ pub use widget::InplaceEditor;
 #[cfg(full_widgets)]
 pub use widget::InputDialog;
 #[cfg(full_widgets)]
-pub use widget::KanbanBoard;
 #[cfg(full_widgets)]
-pub use widget::KanbanCard;
 #[cfg(full_widgets)]
-pub use widget::KanbanCardView;
 #[cfg(full_widgets)]
-pub use widget::KanbanColumn;
 #[cfg(full_widgets)]
-pub use widget::KanbanColumnHeader;
 #[cfg(full_widgets)]
 pub use widget::KeySequenceEdit;
 pub use widget::Keyboard;
@@ -387,11 +370,8 @@ pub use widget::ListModel;
 #[cfg(full_widgets)]
 pub use widget::ListView;
 #[cfg(full_widgets)]
-pub use widget::LottieWidget;
 #[cfg(full_widgets)]
-pub use widget::MapMarker;
 #[cfg(full_widgets)]
-pub use widget::MapView;
 #[cfg(full_widgets)]
 pub use widget::MarkdownEditor;
 #[cfg(full_widgets)]
@@ -411,7 +391,6 @@ pub use widget::MaterialSnackbar;
 #[cfg(widgets_unstripped)]
 pub use widget::MdiArea;
 #[cfg(full_widgets)]
-pub use widget::MediaPlayer;
 #[cfg(full_widgets)]
 pub use widget::Mention;
 #[cfg(full_widgets)]
@@ -521,22 +500,16 @@ pub use widget::RibbonItem;
 #[cfg(widgets_unstripped)]
 pub use widget::RichEdit;
 #[cfg(full_widgets)]
-pub use widget::RiveInput;
 #[cfg(full_widgets)]
-pub use widget::RiveInputValue;
 #[cfg(full_widgets)]
-pub use widget::RiveWidget;
 pub use widget::Roller;
 #[cfg(widgets_unstripped)]
 pub use widget::SafeArea;
 #[cfg(widgets_unstripped)]
 pub use widget::SafeAreaInsets;
 #[cfg(full_widgets)]
-pub use widget::ScaleBar;
 #[cfg(full_widgets)]
-pub use widget::ScaleBarStyle;
 #[cfg(full_widgets)]
-pub use widget::ScaleUnits;
 pub use widget::ScrollArea;
 pub use widget::ScrollBar;
 #[cfg(widgets_unstripped)]
@@ -613,26 +586,19 @@ pub use widget::TableWidget;
 #[cfg(widgets_unstripped)]
 pub use widget::TagInput;
 #[cfg(full_widgets)]
-pub use widget::TerminalView;
 pub use widget::TextArea;
 #[cfg(widgets_unstripped)]
 pub use widget::TextEdit;
 #[cfg(full_widgets)]
-pub use widget::TileKey;
 #[cfg(full_widgets)]
-pub use widget::TileLoadError;
 #[cfg(full_widgets)]
-pub use widget::TileLoader;
 #[cfg(full_widgets)]
-pub use widget::TileRequest;
 #[cfg(full_widgets)]
-pub use widget::TileViewport;
 #[cfg(full_widgets)]
 pub use widget::TimeEdit;
 #[cfg(full_widgets)]
 pub use widget::TimePicker;
 #[cfg(full_widgets)]
-pub use widget::TimelineAxis;
 #[cfg(full_widgets)]
 pub use widget::TimelineItem;
 #[cfg(full_widgets)]
@@ -672,7 +638,6 @@ pub use widget::UndoView;
 #[cfg(full_widgets)]
 pub use widget::VecListModel;
 #[cfg(full_widgets)]
-pub use widget::VideoPlayer;
 #[cfg(full_widgets)]
 pub use widget::VirtualList;
 #[cfg(full_widgets)]
@@ -693,9 +658,7 @@ pub use widget::WizardDialog;
 #[cfg(full_widgets)]
 pub use widget::WizardStep;
 #[cfg(full_widgets)]
-pub use widget::ZoomButton;
 #[cfg(full_widgets)]
-pub use widget::ZoomControl;
 pub use widget::BASE_PROPERTY_NAMES;
 #[cfg(full_widgets)]
 pub use widget::FAB;

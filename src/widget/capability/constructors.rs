@@ -48,6 +48,18 @@ fn label(geometry: Rect, text: &str, widget: Box<dyn Widget>) -> Box<dyn Widget>
     widget
 }
 
+/// Applies `text` as `widget`'s label through the name the control publishes.
+///
+/// # Why this is public
+///
+/// The `rust-widgets-suites` package builds the same constructors for the controls it owns, and
+/// the decision "which property carries a control's label" must stay in one place: a suite that
+/// re-implemented it would disagree with this file on the first control that publishes `title`
+/// instead of `text`.
+pub fn apply_control_label(widget: Box<dyn Widget>, text: &str) -> Box<dyn Widget> {
+    label(Rect::new(0, 0, 0, 0), text, widget)
+}
+
 /// Creates a push button. `text` becomes the button's label.
 pub fn create_button(geometry: Rect, text: &str) -> Box<dyn Widget> {
     Box::new(Button::new(text.to_string(), geometry))
@@ -408,24 +420,6 @@ pub fn create_code_editor(geometry: Rect, text: &str) -> Box<dyn Widget> {
 }
 
 #[cfg(full_widgets)]
-/// Creates a Gantt chart with no tasks. `text` is applied as the control's
-/// label.
-pub fn create_gantt_widget(geometry: Rect, text: &str) -> Box<dyn Widget> {
-    label(geometry, text, Box::new(GanttWidget::new(geometry)))
-}
-
-#[cfg(full_widgets)]
-/// Creates a terminal view with no output. `text` becomes the initial contents of
-/// the input line, not the transcript.
-pub fn create_terminal_view(geometry: Rect, text: &str) -> Box<dyn Widget> {
-    let mut terminal = TerminalView::new(geometry);
-    if !text.is_empty() {
-        terminal.set_input_line(text.to_string());
-    }
-    Box::new(terminal)
-}
-
-#[cfg(full_widgets)]
 /// Creates a snackbar in the dismissed state. When `text` is non-empty the
 /// snackbar is shown immediately with that message.
 pub fn create_snackbar(geometry: Rect, text: &str) -> Box<dyn Widget> {
@@ -434,20 +428,6 @@ pub fn create_snackbar(geometry: Rect, text: &str) -> Box<dyn Widget> {
         snackbar.show(text.to_string());
     }
     Box::new(snackbar)
-}
-
-#[cfg(full_widgets)]
-/// Creates a map view with no tiles or markers. `text` is applied as the
-/// control's label.
-pub fn create_map_view(geometry: Rect, text: &str) -> Box<dyn Widget> {
-    label(geometry, text, Box::new(MapView::new(geometry)))
-}
-
-#[cfg(full_widgets)]
-/// Creates a media player with no source loaded. `text` is applied as the
-/// control's label.
-pub fn create_media_player(geometry: Rect, text: &str) -> Box<dyn Widget> {
-    label(geometry, text, Box::new(MediaPlayer::new(geometry)))
 }
 
 #[cfg(full_widgets)]
@@ -524,13 +504,6 @@ pub fn create_command_palette(geometry: Rect, text: &str) -> Box<dyn Widget> {
 /// control's label.
 pub fn create_notification_center(geometry: Rect, text: &str) -> Box<dyn Widget> {
     label(geometry, text, Box::new(NotificationCenter::new(geometry)))
-}
-
-#[cfg(full_widgets)]
-/// Creates a diff viewer with both snapshots empty. `text` is applied as the
-/// control's label.
-pub fn create_diff_viewer(geometry: Rect, text: &str) -> Box<dyn Widget> {
-    label(geometry, text, Box::new(DiffViewer::new(geometry)))
 }
 
 #[cfg(full_widgets)]
@@ -756,15 +729,6 @@ pub fn create_heatmap(geometry: Rect, text: &str) -> Box<dyn Widget> {
     ];
     heatmap.set_data(rows, columns, values);
     label(geometry, text, Box::new(heatmap))
-}
-
-#[cfg(full_widgets)]
-/// Creates an empty kanban board. `text` is applied as the control's label.
-///
-/// No sample columns: a column title is the caller's workflow vocabulary, and a
-/// default like `"Column 1"` would have to be deleted before the board was usable.
-pub fn create_kanban_board(geometry: Rect, text: &str) -> Box<dyn Widget> {
-    label(geometry, text, Box::new(KanbanBoard::new(geometry)))
 }
 
 #[cfg(full_widgets)]
@@ -1153,49 +1117,6 @@ pub fn create_header_menu(geometry: Rect, text: &str) -> Box<dyn Widget> {
 /// the control's label; the lines themselves are added with `add_line`.
 pub fn create_chart_reference_line(geometry: Rect, text: &str) -> Box<dyn Widget> {
     label(geometry, text, Box::new(crate::widget::chart_widgets::ChartReferenceLine::new(geometry)))
-}
-
-#[cfg(full_widgets)]
-/// Creates a closed terminal find bar with no query (COMP-A2). `text` is applied as the control's
-/// label, not as the query.
-pub fn create_terminal_find_bar(geometry: Rect, text: &str) -> Box<dyn Widget> {
-    label(geometry, text, Box::new(crate::widget::special_widgets::TerminalFindBar::new(geometry)))
-}
-
-#[cfg(full_widgets)]
-/// Creates an empty map attribution overlay (COMP-A3). `text` is applied as the control's label.
-pub fn create_map_attribution(geometry: Rect, text: &str) -> Box<dyn Widget> {
-    label(
-        geometry,
-        text,
-        Box::new(crate::widget::special_widgets::MapAttributionOverlay::new(geometry)),
-    )
-}
-
-#[cfg(full_widgets)]
-/// Creates a gantt task column with no tasks (COMP-A4). `text` is applied as the control's label.
-pub fn create_gantt_task_grid(geometry: Rect, text: &str) -> Box<dyn Widget> {
-    label(
-        geometry,
-        text,
-        Box::new(crate::widget::chart_widgets::gantt_widget::GanttTaskGrid::new(geometry)),
-    )
-}
-
-#[cfg(full_widgets)]
-/// Creates a web history panel with no entries (COMP-A5). `text` is applied as the control's label.
-#[cfg(full_widgets)]
-/// Creates a media chapter list with no chapters (COMP-A6). `text` is applied as the control's
-/// label.
-pub fn create_chapter_list_panel(geometry: Rect, text: &str) -> Box<dyn Widget> {
-    label(geometry, text, Box::new(crate::widget::media_widgets::ChapterListPanel::new(geometry)))
-}
-
-#[cfg(full_widgets)]
-/// Creates an uncollapsed map overview with no map attached (COMP-A7). `text` is applied as the
-/// control's label.
-pub fn create_map_overview(geometry: Rect, text: &str) -> Box<dyn Widget> {
-    label(geometry, text, Box::new(crate::widget::special_widgets::MapOverviewPanel::new(geometry)))
 }
 
 #[cfg(full_widgets)]
@@ -1637,45 +1558,10 @@ pub fn create_bezier_curve_editor(geometry: Rect, text: &str) -> Box<dyn Widget>
 }
 
 #[cfg(full_widgets)]
-/// Creates a view for a Lottie animation with no animation loaded. `text` is
-/// applied as the control's label.
-pub fn create_lottie_widget(geometry: Rect, text: &str) -> Box<dyn Widget> {
-    label(geometry, text, Box::new(LottieWidget::new(geometry)))
-}
-
-#[cfg(full_widgets)]
-/// Creates a view for a Rive animation with no animation loaded. `text` is
-/// applied as the control's label.
-pub fn create_rive_widget(geometry: Rect, text: &str) -> Box<dyn Widget> {
-    label(geometry, text, Box::new(RiveWidget::new(geometry)))
-}
-
-#[cfg(full_widgets)]
-/// Creates a video player with no media loaded and playback stopped. `text` is
-/// applied as the control's label.
-pub fn create_video_player(geometry: Rect, text: &str) -> Box<dyn Widget> {
-    label(geometry, text, Box::new(VideoPlayer::new(geometry)))
-}
-
-#[cfg(full_widgets)]
 /// Creates an image gallery with no images. `text` is applied as the control's
 /// label.
 pub fn create_image_gallery(geometry: Rect, text: &str) -> Box<dyn Widget> {
     label(geometry, text, Box::new(ImageGallery::new(geometry)))
-}
-
-#[cfg(full_widgets)]
-/// Creates an audio visualiser with no audio source attached. `text` is applied
-/// as the control's label.
-pub fn create_audio_visualizer(geometry: Rect, text: &str) -> Box<dyn Widget> {
-    label(geometry, text, Box::new(AudioVisualizer::new(geometry)))
-}
-
-#[cfg(full_widgets)]
-/// Creates a live camera preview with no camera opened. `text` is applied as the
-/// control's label.
-pub fn create_camera_preview(geometry: Rect, text: &str) -> Box<dyn Widget> {
-    label(geometry, text, Box::new(CameraPreview::new(geometry)))
 }
 
 #[cfg(full_widgets)]
@@ -1703,62 +1589,6 @@ pub fn create_status_bar(geometry: Rect, text: &str) -> Box<dyn Widget> {
 /// control's label.
 pub fn create_property_grid(geometry: Rect, text: &str) -> Box<dyn Widget> {
     label(geometry, text, Box::new(PropertyGrid::new(geometry)))
-}
-
-#[cfg(full_widgets)]
-/// Creates an empty [`CandlestickChart`](crate::widget::chart_widgets::finance::candlestick_chart::CandlestickChart).
-/// `text` is applied as a label beside the control, following the convention the
-/// other chart constructors use.
-pub fn create_candlestick_chart(geometry: Rect, text: &str) -> Box<dyn Widget> {
-    let widget =
-        crate::widget::chart_widgets::finance::candlestick_chart::CandlestickChart::new(geometry);
-    label(geometry, text, Box::new(widget))
-}
-
-#[cfg(full_widgets)]
-/// Creates an empty [`VolumeChart`](crate::widget::chart_widgets::finance::volume_chart::VolumeChart).
-/// `text` is applied as a label beside the control, following the convention the
-/// other chart constructors use.
-pub fn create_volume_chart(geometry: Rect, text: &str) -> Box<dyn Widget> {
-    let widget = crate::widget::chart_widgets::finance::volume_chart::VolumeChart::new(geometry);
-    label(geometry, text, Box::new(widget))
-}
-
-#[cfg(full_widgets)]
-/// Creates an empty [`DepthChart`](crate::widget::chart_widgets::finance::depth_chart::DepthChart).
-/// `text` is applied as a label beside the control, following the convention the
-/// other chart constructors use.
-pub fn create_depth_chart(geometry: Rect, text: &str) -> Box<dyn Widget> {
-    let widget = crate::widget::chart_widgets::finance::depth_chart::DepthChart::new(geometry);
-    label(geometry, text, Box::new(widget))
-}
-
-#[cfg(full_widgets)]
-/// Creates an empty `OrderBookWidget`.
-/// `text` is applied as a label beside the control, following the convention the
-/// other chart constructors use.
-pub fn create_order_book(geometry: Rect, text: &str) -> Box<dyn Widget> {
-    let widget = crate::widget::chart_widgets::finance::order_book::OrderBookWidget::new(geometry);
-    label(geometry, text, Box::new(widget))
-}
-
-#[cfg(full_widgets)]
-/// Creates an empty [`QuoteBoard`](crate::widget::chart_widgets::finance::quote_board::QuoteBoard).
-/// `text` is applied as a label beside the control, following the convention the
-/// other chart constructors use.
-pub fn create_quote_board(geometry: Rect, text: &str) -> Box<dyn Widget> {
-    let widget = crate::widget::chart_widgets::finance::quote_board::QuoteBoard::new(geometry);
-    label(geometry, text, Box::new(widget))
-}
-
-#[cfg(full_widgets)]
-/// Creates an empty [`IndicatorChart`](crate::widget::chart_widgets::finance::indicator_chart::IndicatorChart).
-/// `text` is applied as a label beside the control, following the convention the
-/// other chart constructors use.
-pub fn create_indicator_chart(geometry: Rect, text: &str) -> Box<dyn Widget> {
-    let widget =
-        crate::widget::chart_widgets::finance::indicator_chart::IndicatorChart::new(geometry);
-    label(geometry, text, Box::new(widget))
 }
 
 // ── Layout family ───────────────────────────────────────────────────────────
@@ -2045,48 +1875,6 @@ pub fn create_toast_host(geometry: Rect, _text: &str) -> Box<dyn Widget> {
 }
 
 #[cfg(full_widgets)]
-/// Creates a tile loader with the default template (`COMP-13`).
-pub fn create_tile_loader(geometry: Rect, _text: &str) -> Box<dyn Widget> {
-    Box::new(crate::widget::special_widgets::map_view::TileLoader::new(geometry))
-}
-
-#[cfg(full_widgets)]
-/// Creates a map zoom strip at 1:1 (`COMP-13`).
-pub fn create_zoom_control(geometry: Rect, _text: &str) -> Box<dyn Widget> {
-    Box::new(crate::widget::special_widgets::map_view::ZoomControl::new(geometry))
-}
-
-#[cfg(full_widgets)]
-/// Creates a metric scale bar (`COMP-13`).
-pub fn create_scale_bar(geometry: Rect, _text: &str) -> Box<dyn Widget> {
-    Box::new(crate::widget::special_widgets::map_view::ScaleBar::new(geometry))
-}
-
-#[cfg(full_widgets)]
-/// Creates a clickable compass pointing north (`COMP-13`).
-pub fn create_compass(geometry: Rect, _text: &str) -> Box<dyn Widget> {
-    Box::new(crate::widget::special_widgets::map_view::Compass::new(geometry))
-}
-
-#[cfg(full_widgets)]
-/// Creates a timeline axis over `0 ..= 100` (`COMP-14`).
-pub fn create_timeline_axis(geometry: Rect, _text: &str) -> Box<dyn Widget> {
-    Box::new(crate::widget::chart_widgets::gantt_widget::TimelineAxis::new(geometry))
-}
-
-#[cfg(full_widgets)]
-/// Creates an empty dependency editor (`COMP-14`).
-pub fn create_dependency_editor(geometry: Rect, _text: &str) -> Box<dyn Widget> {
-    Box::new(crate::widget::chart_widgets::gantt_widget::DependencyEditor::new(geometry))
-}
-
-#[cfg(full_widgets)]
-/// Creates an empty diff file list (`COMP-15`).
-pub fn create_diff_file_list(geometry: Rect, _text: &str) -> Box<dyn Widget> {
-    Box::new(crate::widget::special_widgets::diff_viewer::DiffFileList::new(geometry))
-}
-
-#[cfg(full_widgets)]
 /// Creates an empty markdown outline panel (`COMP-16`).
 pub fn create_markdown_outline_panel(geometry: Rect, _text: &str) -> Box<dyn Widget> {
     Box::new(crate::widget::special_widgets::markdown_editor::MarkdownOutlinePanel::new(geometry))
@@ -2142,18 +1930,6 @@ pub fn create_playlist_panel(geometry: Rect, _text: &str) -> Box<dyn Widget> {
 /// Creates an empty shape canvas (`COMP-17`).
 pub fn create_shape_canvas(geometry: Rect, _text: &str) -> Box<dyn Widget> {
     Box::new(crate::widget::special_widgets::freeform_shape::ShapeCanvas::new(geometry))
-}
-
-#[cfg(full_widgets)]
-/// Creates a kanban card titled by `text` (`COMP-18`).
-pub fn create_kanban_card_view(geometry: Rect, text: &str) -> Box<dyn Widget> {
-    Box::new(crate::widget::chart_widgets::kanban_board::KanbanCardView::new(geometry, text))
-}
-
-#[cfg(full_widgets)]
-/// Creates a kanban column header titled by `text` (`COMP-18`).
-pub fn create_kanban_column_header(geometry: Rect, text: &str) -> Box<dyn Widget> {
-    Box::new(crate::widget::chart_widgets::kanban_board::KanbanColumnHeader::new(geometry, text))
 }
 
 #[cfg(full_widgets)]
@@ -2225,4 +2001,25 @@ pub fn create_calendar_mark_layer(geometry: Rect, _text: &str) -> Box<dyn Widget
 /// Creates an inactive drag-ghost layer (`COMP-29`).
 pub fn create_drag_ghost_layer(geometry: Rect, _text: &str) -> Box<dyn Widget> {
     Box::new(crate::widget::companions::DragGhostLayer::new(geometry))
+}
+
+#[cfg(full_widgets)]
+/// Creates a chart crosshair overlay (RW-77).
+///
+/// The crosshair borrows `WidgetKind::ChartTooltip` because this crate has no crosshair kind; the
+/// capability row's canonical name `chart_crosshair` is what makes it addressable.
+pub fn create_chart_crosshair(geometry: Rect, _text: &str) -> Box<dyn Widget> {
+    Box::new(crate::widget::chart_widgets::ChartCrosshair::new(geometry))
+}
+
+#[cfg(full_widgets)]
+/// Creates an empty picker drum column (RW-100).
+pub fn create_drum_column(geometry: Rect, _text: &str) -> Box<dyn Widget> {
+    Box::new(crate::widget::misc_widgets::DrumColumn::new(geometry))
+}
+
+#[cfg(full_widgets)]
+/// Creates an empty preset chip bar (RW-100).
+pub fn create_preset_chip_bar(geometry: Rect, _text: &str) -> Box<dyn Widget> {
+    Box::new(crate::widget::misc_widgets::PresetChipBar::new(geometry))
 }

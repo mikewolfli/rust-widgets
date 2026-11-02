@@ -441,8 +441,9 @@ impl Draw for MobileDatePicker {
 
         // The today marker is read once for the whole frame rather than once per column: the three
         // columns ask the same clock the same question, and a date rollover between two columns
-        // could otherwise mark two different days in one picture (MISC-01).
-        let today = chrono::Local::now().date_naive();
+        // could otherwise mark two different days in one picture (MISC-01). RW-56: the read goes
+        // through the shared date clock, so a snapshot fixture can pin the day.
+        let today = crate::widget::advanced_widgets::calendar::clock_today();
 
         for (col_idx, (sel_offset, items, _label)) in columns.iter().enumerate() {
             let col_x = drum_rect.x + (col_idx as u32 * col_width) as i32;
@@ -1208,5 +1209,18 @@ mod tests {
         picker.set_date(today.year(), today.month(), today.day());
         let svg = crate::widget::svg::render_to_svg(&mut picker);
         assert!(svg.contains("<circle"), "the today dot must be painted: {svg}");
+    }
+
+    /// RW-56: the dot follows the injected clock, not the machine's wall clock.
+    #[test]
+    fn the_today_marker_follows_the_pinned_clock() {
+        use chrono::Datelike;
+        let pinned = chrono::NaiveDate::from_ymd_opt(2031, 7, 9).expect("a valid date");
+        crate::widget::advanced_widgets::calendar::set_today_override(Some(pinned));
+        let mut picker = MobileDatePicker::new(Rect::new(0, 0, 300, 200));
+        picker.set_date(pinned.year(), pinned.month(), pinned.day());
+        let svg = crate::widget::svg::render_to_svg(&mut picker);
+        crate::widget::advanced_widgets::calendar::set_today_override(None);
+        assert!(svg.contains("<circle"), "a pinned 2031 day must still be marked as today: {svg}");
     }
 }

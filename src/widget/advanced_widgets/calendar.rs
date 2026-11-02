@@ -53,6 +53,105 @@ const ENGLISH_WEEKDAYS: [&str; 7] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "
 /// The default `date_format` pattern, rendered through the calendar's names layer.
 const DEFAULT_DATE_FORMAT: &str = "%B %Y";
 
+/// The clock a date control reads when it needs "today" (RW-56).
+///
+/// # Why an injected clock rather than a direct `Local::now()`
+///
+/// `Local::now()` is a function of the machine's wall clock, so anything derived from it is a
+/// function of the day the rendering ran. A committed snapshot with a "today" accent therefore
+/// changed at every midnight with no edit to explain it, and a cross-machine baseline could
+/// disagree on the first run of the next day. `Calendar` already kept the day in a field for this
+/// reason; the other date controls used to read the clock directly and now go through
+/// [`clock_today`].
+///
+/// The trait exists for a host that owns a simulated clock (a test harness, a time-travel preview),
+/// while [`SystemDateClock`] is the production implementation.
+pub trait DateClock: Send + Sync {
+    /// The day this clock calls today.
+    fn today(&self) -> chrono::NaiveDate;
+}
+
+/// The wall clock, the default [`DateClock`].
+#[derive(Debug, Default, Clone, Copy)]
+pub struct SystemDateClock;
+
+impl DateClock for SystemDateClock {
+    fn today(&self) -> chrono::NaiveDate {
+        chrono::Local::now().date_naive()
+    }
+}
+
+thread_local! {
+    /// The pinned "today" for the calling thread, or `None` to read the wall clock.
+    ///
+    /// Thread-local rather than process-wide: a snapshot fixture pins the day for the thread that
+    /// renders it, and a second test thread that never pins anything still sees the real clock.
+    /// A process-wide value would make one test's pin leak into every other test in the binary.
+    static TODAY_OVERRIDE: crate::compat::RefCell<Option<chrono::NaiveDate>> =
+        const { crate::compat::RefCell::new(None) };
+    /// An injected [`DateClock`] for the calling thread, or `None` to use [`SystemDateClock`].
+    ///
+    /// Checked after [`TODAY_OVERRIDE`], so a single-day pin wins over a whole clock. A simulating
+    /// host installs one here; a snapshot fixture usually pins a day instead.
+    static CLOCK_OVERRIDE: crate::compat::RefCell<Option<Box<dyn DateClock>>> =
+        const { crate::compat::RefCell::new(None) };
+}
+
+/// Pins the day every date control on this thread treats as "today" (RW-56).
+///
+/// `None` restores the wall clock. The pin is read at construction and by the "go to today"
+/// actions, so a snapshot fixture sets it **before** building the control.
+pub fn set_today_override(date: Option<chrono::NaiveDate>) {
+    TODAY_OVERRIDE.with(|slot| {
+        *slot.borrow_mut() = date;
+    });
+}
+
+/// The day pinned for this thread, if any (RW-56).
+///
+/// A control whose drawing code needs the answer per frame should call [`clock_today`] instead:
+/// this accessor is for a host that wants to know whether it pinned anything.
+pub fn today_override() -> Option<chrono::NaiveDate> {
+    TODAY_OVERRIDE.with(|slot| *slot.borrow())
+}
+
+/// Installs a [`DateClock`] for the calling thread, or restores the wall clock with `None` (RW-56).
+///
+/// # Which injection point to use
+///
+/// A single-day pin ([`set_today_override`]) is the snapshot-fixture answer: it changes only what
+/// "today" means and leaves every other clock read alone. A clock override is for a host that
+/// simulates time across a session (a time-travel preview, a deterministic replay). The pin is
+/// checked first, so a fixture can hold one day while a simulated clock keeps running underneath.
+pub fn set_clock_override(clock: Option<Box<dyn DateClock>>) {
+    CLOCK_OVERRIDE.with(|slot| {
+        *slot.borrow_mut() = clock;
+    });
+}
+
+/// The clock installed for this thread, if any (RW-56).
+///
+/// An `Option` of the trait object is not returned because the object is owned by the thread and
+/// a borrow across the caller's code would let a re-entrant read panic; this accessor answers the
+/// yes/no question a host needs, and [`clock_today`] performs the read under the borrow.
+pub fn has_clock_override() -> bool {
+    CLOCK_OVERRIDE.with(|slot| slot.borrow().is_some())
+}
+
+/// The day a date control should treat as today (RW-56).
+///
+/// The pinned override when one is installed, otherwise the wall clock. This is the single read
+/// every date control goes through, so no control can drift onto its own clock call. The name is
+/// deliberately not `today` so a control's own `today` field or method cannot shadow it at a call
+/// site.
+pub fn clock_today() -> chrono::NaiveDate {
+    if let Some(date) = today_override() {
+        return date;
+    }
+    let injected = CLOCK_OVERRIDE.with(|slot| slot.borrow().as_ref().map(|clock| clock.today()));
+    injected.unwrap_or_else(|| SystemDateClock.today())
+}
+
 /// The navigation title's cached text and the inputs it was built from.
 #[derive(Default)]
 struct MonthTitleCache {
@@ -313,7 +412,7 @@ struct CalendarMarkBinding {
 impl Calendar {
     /// Creates a calendar widget.
     pub fn new(geometry: Rect) -> Self {
-        let today = chrono::Local::now().date_naive();
+        let today = clock_today();
         Self {
             base: BaseWidget::new(WidgetKind::Calendar, geometry, "Calendar"),
             selected_date: today,
@@ -853,7 +952,7 @@ impl Calendar {
     /// called [`Calendar::set_today`], the accent cell would otherwise keep pointing at the pinned
     /// day.
     pub fn show_today(&mut self) {
-        let today = chrono::Local::now().date_naive();
+        let today = clock_today();
         self.today = today;
         self.show_page(today);
         self.set_selected_date(today);
@@ -2486,6 +2585,56 @@ mod tests {
         assert!(cal.is_navigation_bar_visible());
         assert!(cal.is_horizontal_header_visible());
         assert!(!cal.is_vertical_header_visible());
+    }
+
+    /// RW-56: a pinned clock makes the "today" cell deterministic across days.
+    #[test]
+    fn a_pinned_clock_makes_today_deterministic() {
+        let pinned = NaiveDate::from_ymd_opt(2036, 3, 4).expect("a valid date");
+        set_today_override(Some(pinned));
+        let cal = Calendar::new(Rect::new(0, 0, 300, 250));
+        assert_eq!(clock_today(), pinned);
+        assert_eq!(cal.today(), pinned, "the accent cell must follow the pinned day");
+        assert_eq!(cal.selected_date(), pinned);
+        set_today_override(None);
+        assert_eq!(today_override(), None);
+    }
+
+    /// RW-56: the "go to today" action reads the same clock, so a pinned fixture is not undone
+    /// by pressing the button.
+    #[test]
+    fn show_today_uses_the_pinned_clock() {
+        let pinned = NaiveDate::from_ymd_opt(2036, 3, 4).expect("a valid date");
+        set_today_override(Some(pinned));
+        let mut cal = Calendar::new(Rect::new(0, 0, 300, 250));
+        cal.set_selected_date(NaiveDate::from_ymd_opt(2024, 1, 2).expect("a valid date"));
+        cal.show_today();
+        assert_eq!(cal.today(), pinned);
+        assert_eq!(cal.selected_date(), pinned);
+        set_today_override(None);
+    }
+
+    /// RW-56: a whole simulated clock can be installed, and a single-day pin takes precedence.
+    #[test]
+    fn a_clock_trait_object_can_be_injected() {
+        struct Fixed(chrono::NaiveDate);
+        impl DateClock for Fixed {
+            fn today(&self) -> chrono::NaiveDate {
+                self.0
+            }
+        }
+        let simulated = NaiveDate::from_ymd_opt(2032, 5, 6).expect("a valid date");
+        set_clock_override(Some(Box::new(Fixed(simulated))));
+        assert!(has_clock_override());
+        assert_eq!(clock_today(), simulated);
+
+        let pinned = NaiveDate::from_ymd_opt(2032, 5, 7).expect("a valid date");
+        set_today_override(Some(pinned));
+        assert_eq!(clock_today(), pinned, "a single-day pin wins over the clock");
+
+        set_today_override(None);
+        set_clock_override(None);
+        assert!(!has_clock_override());
     }
 
     #[test]

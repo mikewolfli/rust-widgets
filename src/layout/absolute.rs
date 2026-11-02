@@ -3,7 +3,7 @@
 
 use super::{ChildInfo, Layout, LayoutContext};
 use crate::compat::{Any, Box, HashMap, Vec};
-use crate::core::{ObjectId, Rect, Size};
+use crate::core::{ObjectId, Point, Rect, Size};
 use crate::widget::Widget;
 /// A positioned child in an absolute layout, with optional size and anchor.
 ///
@@ -695,6 +695,92 @@ impl AbsoluteLayout {
             false
         }
     }
+
+    /// The entry for `id`, if this layout holds it.
+    fn entry_for(&self, id: ObjectId) -> Option<&AbsoluteEntry> {
+        self.children.iter().find(|entry| entry.widget_id == id)
+    }
+
+    /// The entry for `id` mutably, if this layout holds it.
+    fn entry_for_mut(&mut self, id: ObjectId) -> Option<&mut AbsoluteEntry> {
+        self.children.iter_mut().find(|entry| entry.widget_id == id)
+    }
+
+    /// The position recorded for `id`, if this layout holds it (RW-50).
+    ///
+    /// # Why an id-addressed read exists next to the index-addressed one
+    ///
+    /// [`Self::get_position`] takes an insertion index, which is the order the layout happens to
+    /// hold its children in. A host dragging one node knows the **control** it is dragging, not
+    /// where that control sits in this layout's vector, and converting between the two is both
+    /// error-prone and O(n).
+    pub fn position_of(&self, id: ObjectId) -> Option<&AbsolutePosition> {
+        self.entry_for(id).map(|entry| &entry.position)
+    }
+
+    /// Replaces the position of `id`, keeping its size constraint (RW-50).
+    ///
+    /// Returns `true` when the layout holds `id`. Use [`Self::set_position_for_point`] for the
+    /// common drag case, which changes the offset and keeps the child's size and anchor.
+    pub fn set_position_for(&mut self, id: ObjectId, position: AbsolutePosition) -> bool {
+        match self.entry_for_mut(id) {
+            Some(entry) => {
+                entry.position = position;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Moves `id` to `point`, keeping its recorded size, anchor, fill and margins (RW-50).
+    ///
+    /// # Why this does not build a fresh `AbsolutePosition`
+    ///
+    /// A drag changes **where** the child is, not how it is sized or anchored. Replacing the whole
+    /// position with `AbsolutePosition::new(x, y)` would drop an explicit `width`/`height` the
+    /// document declared, so the control would jump to its size hint on the first drag frame.
+    pub fn set_position_for_point(&mut self, id: ObjectId, point: Point) -> bool {
+        match self.entry_for_mut(id) {
+            Some(entry) => {
+                entry.position.x = point.x;
+                entry.position.y = point.y;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Places `id` at exactly `rect` (RW-50).
+    ///
+    /// This replaces the whole position — offset, explicit size, anchor, margins and `fill` — so
+    /// the resolved rectangle is the one given. A host that dropped a control on a canvas wants
+    /// "put it here, this big", not "put it here while a previous `fill` keeps overriding the
+    /// size". The size constraint is preserved, as with [`Self::set_position`].
+    pub fn set_rect_for(&mut self, id: ObjectId, rect: Rect) -> bool {
+        match self.entry_for_mut(id) {
+            Some(entry) => {
+                entry.position =
+                    AbsolutePosition::new(rect.x, rect.y).with_size(rect.width, rect.height);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// The rectangle `id` resolves to inside `parent_rect` (RW-50).
+    ///
+    /// Computed by the same [`AbsolutePosition::resolve`] the layout pass uses, so a host that
+    /// drags one node can preview its new rectangle without re-solving the whole tree.
+    pub fn rect_for(&self, id: ObjectId, parent_rect: Rect) -> Option<Rect> {
+        let entry = self.entry_for(id)?;
+        let child_size = entry.size_hint.unwrap_or(Size::new(0, 0));
+        let constrained = entry
+            .constraint
+            .as_ref()
+            .map(|constraint| constraint.apply(child_size))
+            .unwrap_or(child_size);
+        Some(entry.position.resolve(parent_rect.size(), constrained))
+    }
     /// Attaches or replaces the size constraint of the child at insertion index
     /// `index`.
     ///
@@ -933,6 +1019,36 @@ mod tests {
         });
         assert_eq!(rects.get(&1).map(|r| r.x), Some(10));
         assert_eq!(rects.get(&3).map(|r| r.x), Some(30));
+    }
+
+    /// RW-50: a host dragging one node addresses it by id, not by the layout's vector index.
+    #[test]
+    fn a_child_can_be_moved_by_id() {
+        let mut layout = AbsoluteLayout::new();
+        layout.add_child(Box::new(TestWidget::new(1, 20, 20)), AbsolutePosition::new(10, 10));
+        layout.add_child(Box::new(TestWidget::new(2, 30, 30)), AbsolutePosition::new(50, 50));
+
+        assert!(layout.set_position_for_point(2, Point::new(5, 7)));
+        let moved = layout.position_of(2).expect("id 2 is a child");
+        assert_eq!((moved.x, moved.y), (5, 7), "the offset moved");
+        assert_eq!(moved.width, None, "the drag must not invent an explicit size");
+        assert_eq!(
+            layout.rect_for(2, Rect::new(0, 0, 200, 200)),
+            Some(Rect::new(5, 7, 30, 30)),
+            "the resolved rect uses the child's own size hint"
+        );
+
+        // A rect-addressed write replaces the whole position, so `fill` cannot keep overriding it.
+        assert!(layout.set_rect_for(2, Rect::new(1, 2, 40, 50)));
+        let placed = layout.position_of(2).expect("id 2 is a child");
+        assert_eq!((placed.x, placed.y), (1, 2));
+        assert_eq!((placed.width, placed.height), (Some(40), Some(50)));
+
+        // An unknown id is reported rather than silently ignored.
+        assert!(!layout.set_position_for_point(999, Point::new(0, 0)));
+        assert!(layout.position_of(999).is_none());
+        assert!(layout.set_position_for(1, AbsolutePosition::fill()));
+        assert!(layout.position_of(1).is_some_and(|position| position.fill));
     }
 
     #[test]

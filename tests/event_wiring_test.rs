@@ -269,15 +269,19 @@ fn a_detached_binder_reports_nothing_wired() {
 
 /// A control that has not been converted reports zero rather than a partial wire.
 ///
-/// `ScaleBar` publishes no events, so there is nothing to wire; the count is how the caller sees
+/// `Line` publishes no events, so there is nothing to wire; the count is how the caller sees
 /// that rather than assuming the control was covered. (`Label` used to be the example, until it
-/// grew `link_activated`/`link_hovered` for B-03.)
+/// grew `link_activated`/`link_hovered` for B-03; `ScaleBar` was until the maps group moved to
+/// `rust-widgets-suites` in 3.3.0.)
 #[test]
 fn a_control_with_no_events_reports_zero() {
     let hub = Arc::new(CustomSignalHub::new());
-    let bar = rust_widgets::widget::ScaleBar::new(Rect::new(0, 0, 40, 20));
+    let line = rust_widgets::widget::Line::new(
+        rust_widgets::widget::LineOrientation::Horizontal,
+        Rect::new(0, 0, 40, 20),
+    );
     let mut binder = EventSignalBinder::new(hub);
-    assert_eq!(binder.forward_all(&bar), 0, "`scale_bar` publishes no events");
+    assert_eq!(binder.forward_all(&line), 0, "`line` publishes no events");
 }
 
 /// Real producer setters deliver the right event to the right subscriber, and nothing else.

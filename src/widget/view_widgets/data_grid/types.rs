@@ -163,11 +163,132 @@ impl EditTriggers {
     }
 }
 
+/// The data type a column holds (RW-6).
+///
+/// A column description used to carry presentation only (a title, a width and three gestures), so
+/// a host that wanted to edit a typed column had to keep its own parallel type table keyed by
+/// column index. The type is stored on [`ColumnSpec`] instead, which lets a header, a cell editor
+/// and a diagnostic all read the same description.
+///
+/// [`ColumnDataType::Auto`] is the default and means "whatever the model already shows", which is
+/// exactly the pre-existing behaviour for a column that never declared a type.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum ColumnDataType {
+    /// No declared type; the value is shown as the model spells it.
+    #[default]
+    Auto,
+    /// Free-form text.
+    Text,
+    /// A signed integral value.
+    Integer,
+    /// A floating-point value.
+    Number,
+    /// A boolean, spelled `true`/`false`.
+    Bool,
+    /// A calendar date.
+    Date,
+    /// A clock time.
+    Time,
+    /// A date and a clock time.
+    DateTime,
+    /// A `#RRGGBB` colour spelling.
+    Color,
+    /// A filesystem path.
+    File,
+    /// A host-defined type the crate does not interpret.
+    Other(String),
+}
+
+impl ColumnDataType {
+    /// The published token spelling used by [`ColumnSpec::to_token`].
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Auto => "auto",
+            Self::Text => "text",
+            Self::Integer => "integer",
+            Self::Number => "number",
+            Self::Bool => "bool",
+            Self::Date => "date",
+            Self::Time => "time",
+            Self::DateTime => "datetime",
+            Self::Color => "color",
+            Self::File => "file",
+            Self::Other(name) => name.as_str(),
+        }
+    }
+
+    /// Parses a published token; anything unrecognised becomes [`Self::Other`] rather than an
+    /// error, because a column type is descriptive metadata and an unknown spelling from a newer
+    /// writer must not make the whole token unparsable.
+    pub fn from_token(token: &str) -> Self {
+        match token.trim().to_ascii_lowercase().as_str() {
+            "" | "auto" | "any" => Self::Auto,
+            "text" | "string" => Self::Text,
+            "integer" | "int" => Self::Integer,
+            "number" | "float" | "decimal" => Self::Number,
+            "bool" | "boolean" => Self::Bool,
+            "date" => Self::Date,
+            "time" => Self::Time,
+            "datetime" | "date_time" | "timestamp" => Self::DateTime,
+            "color" | "colour" => Self::Color,
+            "file" | "path" => Self::File,
+            other => Self::Other(other.to_string()),
+        }
+    }
+}
+
+/// What a [`ColumnChange`] did to the column structure (RW-5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ColumnChangeKind {
+    /// A column was added at the reported index.
+    Inserted,
+    /// A column was removed from the reported index.
+    Removed,
+    /// The column's title changed; the index still names the same column.
+    TitleChanged,
+    /// The column's declared data type changed.
+    TypeChanged,
+}
+
+impl ColumnChangeKind {
+    /// The token spelling the wire publishes for this change kind (RW-5).
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Inserted => "inserted",
+            Self::Removed => "removed",
+            Self::TitleChanged => "title_changed",
+            Self::TypeChanged => "type_changed",
+        }
+    }
+}
+
+/// A structural change to a table's column list (RW-5).
+///
+/// One definition shared by every table implementation that owns columns, so a host that listens
+/// to a `TableWidget` and a `DataGrid` reads one payload type rather than two lookalikes
+/// (principle #54).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ColumnChange {
+    /// What happened.
+    pub kind: ColumnChangeKind,
+    /// The column the change is addressed at: the insertion point, the removed index, or the
+    /// index whose title/type changed.
+    pub index: usize,
+}
+
+impl ColumnChange {
+    /// A change of `kind` at `index`.
+    pub fn new(kind: ColumnChangeKind, index: usize) -> Self {
+        Self { kind, index }
+    }
+}
+
 /// One column as a header describes it.
 ///
 /// A header is shared by more than one table implementation, so this is deliberately the whole
-/// of a column's presentation: the title, its width, and the three capabilities a header row can
-/// offer. Nothing here refers to a cell's data, which is the table's own business.
+/// of a column's description: the title, its width, the three capabilities a header row can
+/// offer, and the declared data type. Nothing here refers to "the" cell value, which stays the
+/// table's own business.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ColumnSpec {
     /// Column title.
@@ -185,6 +306,8 @@ pub struct ColumnSpec {
     /// The default is [`HorizontalAlignment::Left`], the historical paint behaviour, so a
     /// column that never asks for an alignment keeps its original pixels.
     pub alignment: HorizontalAlignment,
+    /// The declared data type of the column's values (RW-6).
+    pub data_type: ColumnDataType,
 }
 
 impl ColumnSpec {
@@ -197,6 +320,7 @@ impl ColumnSpec {
             filterable: false,
             resizable: true,
             alignment: HorizontalAlignment::Left,
+            data_type: ColumnDataType::Auto,
         }
     }
 
@@ -224,26 +348,46 @@ impl ColumnSpec {
         self
     }
 
+    /// Declares the column's data type (RW-6).
+    pub fn with_type(mut self, data_type: ColumnDataType) -> Self {
+        self.data_type = data_type;
+        self
+    }
+
+    /// The column's declared data type (RW-6).
+    pub fn data_type(&self) -> &ColumnDataType {
+        &self.data_type
+    }
+
     /// The published property spelling:
-    /// `title|width|sortable|filterable|resizable|alignment`.
+    /// `title|width|sortable|filterable|resizable|alignment|type`.
     ///
-    /// The trailing alignment field was appended, so a token written by an older build (five
-    /// fields) still parses and means `Left`.
+    /// The trailing fields were appended one at a time, so a token written by an older build
+    /// (five fields without an alignment, or six without a type) still parses: a missing
+    /// alignment means `Left` and a missing type means [`ColumnDataType::Auto`].
     pub fn to_token(&self) -> String {
         format!(
-            "{}|{}|{}|{}|{}|{}",
+            "{}|{}|{}|{}|{}|{}|{}",
             self.title,
             self.width,
             u8::from(self.sortable),
             u8::from(self.filterable),
             u8::from(self.resizable),
-            alignment_token(self.alignment)
+            alignment_token(self.alignment),
+            self.data_type.as_str()
         )
     }
 
     /// Parses [`Self::to_token`]; flags are `0`/`1`.
+    ///
+    /// # Backward compatibility
+    ///
+    /// The split is capped at seven fields so the type field may not swallow anything, and each
+    /// trailing field is optional: the six-field form (no type) parses exactly as before, and the
+    /// five-field form (no alignment) keeps meaning `Left`. A title containing `|` was never
+    /// supported by this token and still is not.
     pub fn from_token(token: &str) -> Option<Self> {
-        let mut parts = token.splitn(6, '|');
+        let mut parts = token.splitn(7, '|');
         let title = parts.next()?.to_string();
         let width = parts.next()?.trim().parse::<u32>().ok()?.max(1);
         let flag = |text: Option<&str>| matches!(text.map(str::trim), Some("1" | "true"));
@@ -257,6 +401,7 @@ impl ColumnSpec {
                 .next()
                 .and_then(|text| alignment_from_token(text.trim()))
                 .unwrap_or(HorizontalAlignment::Left),
+            data_type: parts.next().map(ColumnDataType::from_token).unwrap_or_default(),
         })
     }
 }

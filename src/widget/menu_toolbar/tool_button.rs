@@ -262,6 +262,24 @@ impl ToolButton {
         self.base.request_redraw();
     }
 
+    /// The button's hover hint, or `""` when none was set (RW-3).
+    ///
+    /// The text lives in the shared [`BaseWidget`] tooltip slot, the same value the
+    /// `tooltip` property and [`Widget::tooltip`] answer, so the tooltip pipeline and a
+    /// typed caller cannot disagree about what the hint is.
+    pub fn tooltip(&self) -> &str {
+        self.base.tooltip()
+    }
+
+    /// Replaces the button's hover hint; an empty string clears it (RW-3).
+    ///
+    /// This is the typed spelling of the `tooltip` property, which
+    /// [`Widget::set_tooltip`] already drives. The button does not paint the hint itself:
+    /// the host-side tooltip pipeline presents it.
+    pub fn set_tooltip(&mut self, tooltip: impl Into<String>) {
+        self.base.set_tooltip(crate::compat::mini_string_from(tooltip.into()));
+    }
+
     /// Sets or clears the icon path and requests a redraw.
     ///
     /// The path is stored verbatim and decoded lazily by `Self::resolved_icon` on the first
@@ -1400,6 +1418,23 @@ mod tests {
         let mut btn = ToolButton::new("Old", rect());
         btn.set_text("New Label");
         assert_eq!(btn.text(), "New Label");
+    }
+
+    /// RW-3: the typed hint is the same slot the `tooltip` property and the widget
+    /// contract read, so the three spellings cannot disagree.
+    #[test]
+    fn tool_button_tooltip_round_trips_through_the_base_slot() {
+        let mut btn = ToolButton::new("Open", rect());
+        assert_eq!(btn.tooltip(), "");
+        btn.set_tooltip("Open a file");
+        assert_eq!(btn.tooltip(), "Open a file");
+        assert_eq!(Widget::tooltip(&btn), "Open a file");
+        assert_eq!(
+            WidgetProperties::get(&btn, "tooltip"),
+            Ok(CapabilityValue::String("Open a file".to_string()))
+        );
+        btn.set_tooltip("");
+        assert_eq!(btn.tooltip(), "", "an empty string clears the hint");
     }
 
     // ── 3. Setting/getting icon ──

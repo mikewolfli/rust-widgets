@@ -1015,8 +1015,6 @@ mod tests {
             "hero_animation",
             &crate::widget::media_widgets::hero_animation::HeroAnimation::new(r),
         );
-        check("lottie_widget", &crate::widget::media_widgets::lottie_widget::LottieWidget::new(r));
-        check("rive_widget", &crate::widget::media_widgets::rive_widget::RiveWidget::new(r));
         check("mini_canvas", &crate::widget::display_widgets::mini_canvas::MiniCanvas::new(r));
         check(
             "mobile_date_picker",
@@ -1024,10 +1022,6 @@ mod tests {
         );
         check("status_bar", &crate::widget::menu_toolbar::status_bar::StatusBar::new(r));
         check("tool_button", &crate::widget::menu_toolbar::tool_button::ToolButton::new("t", r));
-        check(
-            "terminal_view",
-            &crate::widget::special_widgets::terminal_view::TerminalView::new(r),
-        );
         check(
             "timeline_widget",
             &crate::widget::special_widgets::timeline_widget::TimelineWidget::new(r),
@@ -1048,45 +1042,6 @@ mod tests {
         // `CupertinoSwitch` publishes `toggled` and delegates everything to its inner `Switch`;
         // before the forward it accepted a subscription and never fired it.
         check("cupertino_switch", &crate::widget::cupertino::core::CupertinoSwitch::new(r));
-    }
-
-    /// A control sharing a `WidgetKind` with a larger control must not inherit its shortfall.
-    ///
-    /// # The defect this pins
-    ///
-    /// `WidgetKind` is not one-to-one with capability: `WidgetKind::VideoPlayer` backs both
-    /// `video_player` (18 published events) and `chapter_list_panel` (1). The wiring-outcome table
-    /// was keyed by kind alone and folded the two counts with `max` **independently**, so a
-    /// `ChapterListPanel` wired from an entry that already held `video_player`'s larger
-    /// `published` reported 18 unwired events that do not exist — precisely the false shortfall
-    /// this query exists to make impossible.
-    ///
-    /// The two controls must share **one binder** for the defect to appear: the table is
-    /// per-binder, so a fresh binder for each control would hide the cross-contamination
-    /// entirely. That is also what a real host looks like — one binder wires every control in a
-    /// window. The **larger** control goes first, which is the order that exposes it.
-    #[test]
-    fn a_control_on_a_shared_kind_reports_its_own_shortfall() {
-        let r = Rect::new(0, 0, 100, 40);
-        let hub = std::sync::Arc::new(crate::signal::hub::CustomSignalHub::new());
-        let mut binder = EventSignalBinder::new(hub);
-
-        let player = crate::widget::media_widgets::video_player::VideoPlayer::new(r);
-        assert_eq!(
-            binder.forward_all(&player),
-            18,
-            "`video_player` publishes eighteen events after `on_chapter_entered` (MW-002)"
-        );
-
-        let panel = crate::widget::media_widgets::chapter_list_panel::ChapterListPanel::new(r);
-        assert_eq!(
-            binder.unwired_events_for(&panel),
-            Some(1),
-            "the shortfall is this control's own single event, not `video_player`'s eighteen \
-             folded in through a shared `WidgetKind`"
-        );
-        // The larger sibling is still fully wired; neither answer may be read off the other.
-        assert_eq!(binder.unwired_events_for(&player), Some(0));
     }
 
     /// A reference that declares a different name than it was asked for must not wire.

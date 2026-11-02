@@ -60,6 +60,22 @@ pub struct TranslationFile {
     /// translation API.
     pub translations: HashMap<String, Translation>,
 }
+/// A language switch, or a request to re-resolve text in the current language.
+///
+/// # Why `previous` and `current` are both present
+///
+/// A retranslation (`previous == current`) and a real switch are deliberately the same event
+/// type: both mean "labels are stale; resolve them again". Keeping one event means a widget has
+/// one subscription instead of two paths that can drift, and the equality lets a listener report
+/// which kind it saw when that distinction matters.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LanguageChanged {
+    /// The language active before the event.
+    pub previous: String,
+    /// The language that is active now.
+    pub current: String,
+}
+
 /// Reload event notification
 ///
 /// Reports the outcome of an attempt to reload translation data at runtime, so

@@ -412,6 +412,20 @@ impl Gauge {
         }
     }
 
+    /// Scrubs the needle to `fraction`, clamped to `0.0..=1.0`.
+    ///
+    /// The displayed fraction is only consulted while easing is enabled, so a scrub switches
+    /// the display path on rather than writing a value the paint would ignore. A designer
+    /// timeline can place the needle at an exact frame; a non-finite value is ignored.
+    pub fn set_displayed_fraction(&mut self, fraction: f32) {
+        if !fraction.is_finite() {
+            return;
+        }
+        self.animate = true;
+        self.display.jump_to(fraction.clamp(0.0, 1.0));
+        self.base.request_redraw();
+    }
+
     /// Places the animation at the current reading without travelling.
     fn reset_display(&mut self) {
         let fraction = self.raw_fraction();
@@ -1082,5 +1096,20 @@ mod tests {
         gauge.handle_event(&Event::MousePress { pos: Point::new(2, 80), button: 1, modifiers: 0 });
         assert_eq!(hits.load(Ordering::SeqCst), 1, "the band click is reported");
         assert!(gauge.value() >= 0.0 && gauge.value() <= 50.0);
+    }
+
+    /// RW-72: the needle's easing progress can be scrubbed instead of only read.
+    #[test]
+    fn the_displayed_fraction_can_be_scrubbed() {
+        let mut gauge = Gauge::new(Rect::new(0, 0, 160, 160));
+        gauge.set_displayed_fraction(0.4);
+        assert!((gauge.displayed_fraction() - 0.4).abs() < f32::EPSILON);
+        assert!(gauge.is_animated(), "the display path is switched on by a scrub");
+        assert!(!gauge.is_animating(), "a scrub lands immediately");
+
+        gauge.set_displayed_fraction(2.0);
+        assert!((gauge.displayed_fraction() - 1.0).abs() < f32::EPSILON);
+        gauge.set_displayed_fraction(f32::NAN);
+        assert!((gauge.displayed_fraction() - 1.0).abs() < f32::EPSILON, "NaN is ignored");
     }
 }

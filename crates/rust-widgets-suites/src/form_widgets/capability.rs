@@ -38,6 +38,7 @@ pub const FORM_PROPERTIES: &[PropertySchema] = &[
     PropertySchema::new("show_buttons", K::Bool, true, true),
     PropertySchema::new("submit_label", K::String, true, true),
     PropertySchema::new("reset_label", K::String, true, true),
+    PropertySchema::new("cancel_label", K::String, true, true),
     PropertySchema::new("button_width", K::UInt, true, true),
     // Derived from the field list and the controls' values: readable, not writable, because a
     // write would be a second store for a fact the form already derives.
@@ -49,6 +50,9 @@ pub const FORM_PROPERTIES: &[PropertySchema] = &[
     PropertySchema::new("visible", K::Bool, true, true),
     PropertySchema::new("tooltip", K::String, true, true),
     PropertySchema::new("geometry", K::String, false, false),
+    // RW-35: the shared base contract publishes the per-widget role override, so the suite's
+    // own schema must list it too (the contract and the schema are compared one to one).
+    PropertySchema::new("a11y_role", K::String, true, true),
 ];
 
 /// `FormSet`'s published properties.
@@ -72,18 +76,23 @@ pub const FORM_SET_PROPERTIES: &[PropertySchema] = &[
     PropertySchema::new("visible", K::Bool, true, true),
     PropertySchema::new("tooltip", K::String, true, true),
     PropertySchema::new("geometry", K::String, false, false),
+    PropertySchema::new("a11y_role", K::String, true, true),
 ];
 
 /// `Form`'s published events.
 const FORM_EVENTS: &[EventSchema] = &[
     EventSchema::unit("submitted"),
     EventSchema::unit("reset"),
+    EventSchema::unit("cancel"),
     EventSchema::scalar("submit_failed", K::UInt),
     EventSchema::scalar("validity_changed", K::Bool),
     EventSchema::scalar("dirty_changed", K::Bool),
     EventSchema::scalar("field_added", K::String),
     EventSchema::scalar("field_removed", K::String),
     EventSchema::scalar("field_changed", K::String),
+    // `(key, valid)`: the key names the field and the boolean is the ticket's
+    // verdict, so the payload is `Mixed` like `FormSet::completed_changed`.
+    EventSchema { name: "field_validated", payload: Some(K::String), shape: Some(S::Mixed) },
 ];
 
 /// `FormSet`'s published events.
@@ -126,7 +135,7 @@ pub fn form_capability() -> WidgetCapability {
         aliases: &["form_panel", "form_layout"],
         properties: FORM_PROPERTIES,
         events: FORM_EVENTS,
-        commands: &["submit", "reset", "validate", "clear_errors"],
+        commands: &["submit", "reset", "cancel", "validate", "clear_errors"],
     }
 }
 
@@ -216,6 +225,7 @@ pub fn default_property_value(kind: &str, name: &str) -> Option<CapabilityValue>
         }
         ("form", "submit_label") => Some(CapabilityValue::String("Submit".to_string())),
         ("form", "reset_label") => Some(CapabilityValue::String("Reset".to_string())),
+        ("form", "cancel_label") => Some(CapabilityValue::String(String::new())),
         ("form", "button_width") => Some(CapabilityValue::UInt(72)),
         ("form", "field_count" | "error_count") => Some(CapabilityValue::UInt(0)),
         ("form", "valid") => Some(CapabilityValue::Bool(true)),

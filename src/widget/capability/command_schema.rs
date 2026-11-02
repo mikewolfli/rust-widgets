@@ -402,6 +402,42 @@ pub fn describe_command(name: &str, schema: &CommandSchema) -> String {
     }
 }
 
+/// Builds the manifest's command entry from a command schema.
+///
+/// Lives beside [`CommandSchema`] because it is a projection of that schema; the manifest module
+/// re-exports it so the existing public path is unchanged.
+pub fn designer_command_from(
+    name: &str,
+    schema: &CommandSchema,
+) -> super::designer_manifest::DesignerCommand {
+    use super::designer_manifest::DesignerCommand;
+    use CommandEffect;
+    use CommandSignature;
+    let (signature, parameter, kind, arity, element) = match schema.signature {
+        CommandSignature::PayloadFree => ("none", crate::compat::String::new(), None, None, None),
+        CommandSignature::OneValue { parameter, kind } => {
+            ("value", crate::compat::String::from(parameter), Some(kind), None, None)
+        }
+        CommandSignature::Composite { parameter, arity, element } => {
+            ("composite", crate::compat::String::from(parameter), None, arity, element)
+        }
+    };
+    let effect = match schema.effect {
+        CommandEffect::MutatesControl => "mutates-control",
+        CommandEffect::MutatesCollection => "mutates-collection",
+        CommandEffect::SideEffecting => "side-effecting",
+    };
+    DesignerCommand {
+        name: crate::compat::String::from(name),
+        signature,
+        parameter,
+        kind,
+        arity,
+        element,
+        effect,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

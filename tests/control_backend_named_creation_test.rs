@@ -97,11 +97,6 @@ fn creation_cases(backend: &CustomPaintControlBackend, parent: ObjectId) -> Vec<
         ("create_app_bar", backend.create_app_bar(parent, 0, 0, W, H), "app_bar"),
         ("create_arc", backend.create_arc(parent, 0, 0, W, H), "arc"),
         (
-            "create_audio_visualizer",
-            backend.create_audio_visualizer(parent, 0, 0, W, H),
-            "audio_visualizer",
-        ),
-        (
             "create_auto_complete_edit",
             backend.create_auto_complete_edit(parent, 0, 0, W, H),
             "auto_complete_edit",
@@ -128,16 +123,6 @@ fn creation_cases(backend: &CustomPaintControlBackend, parent: ObjectId) -> Vec<
         ("create_bottom_sheet", backend.create_bottom_sheet(parent, 0, 0, W, H), "bottom_sheet"),
         ("create_button", backend.create_button(parent, "t", 0, 0, W, H), "button"),
         ("create_calendar", backend.create_calendar(parent, 0, 0, W, H), "calendar"),
-        (
-            "create_camera_preview",
-            backend.create_camera_preview(parent, 0, 0, W, H),
-            "camera_preview",
-        ),
-        (
-            "create_candlestick_chart",
-            backend.create_candlestick_chart(parent, 0, 0, W, H),
-            "candlestick_chart",
-        ),
         ("create_canvas", backend.create_canvas(parent, 0, 0, W, H), "canvas"),
         ("create_carousel", backend.create_carousel(parent, 0, 0, W, H), "carousel"),
         ("create_cascader", backend.create_cascader(parent, 0, 0, W, H), "cascader"),
@@ -208,7 +193,6 @@ fn creation_cases(backend: &CustomPaintControlBackend, parent: ObjectId) -> Vec<
             backend.create_date_time_picker(parent, 0, 0, W, H),
             "date_time_edit",
         ),
-        ("create_depth_chart", backend.create_depth_chart(parent, 0, 0, W, H), "depth_chart"),
         ("create_dial", backend.create_dial(parent, 0, 0, W, H), "dial"),
         ("create_dialog", backend.create_dialog(parent, "t", 0, 0, W, H), "dialog"),
         (
@@ -267,16 +251,10 @@ fn creation_cases(backend: &CustomPaintControlBackend, parent: ObjectId) -> Vec<
         ("create_image_view", backend.create_image_view(parent, 0, 0, W, H), "image_view"),
         ("create_ime_preedit", backend.create_ime_preedit(parent, 0, 0, W, H), "ime_preedit"),
         (
-            "create_indicator_chart",
-            backend.create_indicator_chart(parent, 0, 0, W, H),
-            "indicator_chart",
-        ),
-        (
             "create_inplace_editor",
             backend.create_inplace_editor(parent, 0, 0, W, H),
             "inplace_editor",
         ),
-        ("create_kanban_board", backend.create_kanban_board(parent, 0, 0, W, H), "kanban_board"),
         ("create_keyboard", backend.create_keyboard(parent, 0, 0, W, H), "keyboard"),
         ("create_label", backend.create_label(parent, "t", 0, 0, W, H), "label"),
         ("create_lcd_number", backend.create_lcd_number(parent, 0, 0, W, H), "lcd_number"),
@@ -285,7 +263,6 @@ fn creation_cases(backend: &CustomPaintControlBackend, parent: ObjectId) -> Vec<
         ("create_line_edit", backend.create_line_edit(parent, "t", 0, 0, W, H), "line_edit"),
         ("create_list_box", backend.create_list_box(parent, 0, 0, W, H), "list_box"),
         ("create_list_view", backend.create_list_view(parent, 0, 0, W, H), "list_view"),
-        ("create_lottie_widget", backend.create_lottie_widget(parent, 0, 0, W, H), "lottie_widget"),
         ("create_masked_edit", backend.create_masked_edit(parent, 0, 0, W, H), "masked_edit"),
         (
             "create_masonry_layout",
@@ -341,7 +318,6 @@ fn creation_cases(backend: &CustomPaintControlBackend, parent: ObjectId) -> Vec<
             "navigation_stack",
         ),
         ("create_number_picker", backend.create_number_picker(parent, 0, 0, W, H), "number_picker"),
-        ("create_order_book", backend.create_order_book(parent, 0, 0, W, H), "order_book"),
         ("create_otp_input", backend.create_otp_input(parent, 0, 0, W, H), "otp_input"),
         ("create_pagination", backend.create_pagination(parent, 0, 0, W, H), "pagination"),
         ("create_panel", backend.create_panel(parent, 0, 0, W, H), "group_box"),
@@ -367,7 +343,6 @@ fn creation_cases(backend: &CustomPaintControlBackend, parent: ObjectId) -> Vec<
         ("create_property_grid", backend.create_property_grid(parent, 0, 0, W, H), "property_grid"),
         ("create_qr_code", backend.create_qr_code(parent, 0, 0, W, H), "qr_code"),
         ("create_query_builder", backend.create_query_builder(parent, 0, 0, W, H), "query_builder"),
-        ("create_quote_board", backend.create_quote_board(parent, 0, 0, W, H), "quote_board"),
         ("create_radar_chart", backend.create_radar_chart(parent, 0, 0, W, H), "radar_chart"),
         (
             "create_radio_button",
@@ -383,7 +358,6 @@ fn creation_cases(backend: &CustomPaintControlBackend, parent: ObjectId) -> Vec<
         ),
         ("create_ribbon_bar", backend.create_ribbon_bar(parent, 0, 0, W, H), "ribbon_bar"),
         ("create_rich_edit", backend.create_rich_edit(parent, "t", 0, 0, W, H), "rich_edit"),
-        ("create_rive_widget", backend.create_rive_widget(parent, 0, 0, W, H), "rive_widget"),
         ("create_roller", backend.create_roller(parent, 0, 0, W, H), "roller"),
         ("create_safe_area", backend.create_safe_area(parent, 0, 0, W, H), "safe_area"),
         ("create_scroll_area", backend.create_scroll_area(parent, 0, 0, W, H), "scroll_area"),
@@ -441,8 +415,6 @@ fn creation_cases(backend: &CustomPaintControlBackend, parent: ObjectId) -> Vec<
         ("create_tooltip", backend.create_tooltip(parent, 0, 0, W, H), "tooltip"),
         ("create_tree_view", backend.create_tree_view(parent, 0, 0, W, H), "tree_view"),
         ("create_undo_view", backend.create_undo_view(parent, 0, 0, W, H), "list_view"),
-        ("create_video_player", backend.create_video_player(parent, 0, 0, W, H), "video_player"),
-        ("create_volume_chart", backend.create_volume_chart(parent, 0, 0, W, H), "volume_chart"),
         ("create_wizard", backend.create_wizard(parent, "t", 0, 0, W, H), "wizard_dialog"),
         ("create_wizard_dialog", backend.create_wizard_dialog(parent, 0, 0, W, H), "wizard_dialog"),
     ]

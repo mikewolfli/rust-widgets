@@ -1,6 +1,6 @@
 [package]
 name = "rust-widgets-suites"
-version = "3.2.1"
+version = "3.3.0"
 edition = "2021"
 rust-version = "1.88"
 license = "MIT"
@@ -17,11 +17,45 @@ categories = ["gui"]
 # host opts in explicitly with the path dependency below.
 include = ["/src/**/*", "/README.md"]
 
+# The migrated sources keep the parent crate's custom `cfg` names (device profiles and the
+# allocation-minded profiles). They are declared here so the compiler does not warn about them;
+# none of them is ever set in this package, which is the same state a `desktop` build of the
+# parent has.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = [
+    "cfg(device_profile)",
+    "cfg(full_widgets)",
+    "cfg(widgets_unstripped)",
+    "cfg(alloc_frugal)",
+    "cfg(stripped_widgets)",
+    "cfg(feature, values(\"desktop\", \"mini\"))",
+] }
+
 [features]
-default = []
+default = ["form"]
+# The form group: validated forms and form sets.
+form = []
+# The finance group: candles, volume, depth, order book, quote board and indicators.
+finance = []
+# The project group: Gantt, timeline, dependencies and kanban.
+project = []
+# The maps group: map view, overview and attribution.
+maps = []
+# The media-playback group: video, lottie/rive animation, audio visualisation and transport.
+media-playback = []
+# Mirrors the parent's empty `touch` feature, so the migrated controls keep their
+# pinch-to-zoom arm gated exactly as before.
+touch = []
+# The devtools group: terminal view, diff viewer and diff file list.
+devtools = []
 
 [dependencies]
 # The dependency runs one way only: the parent cannot depend on this crate (Cargo rejects a
 # package cycle). The suite extends the parent's widget layer, so it takes the parent's default
 # (device) profile — the same shape `rust-widgets-webview` uses.
-rust_widgets = { version = "3.2.1", path = "../.." }
+rust_widgets = { version = "3.3.0", path = "../.." }
+# The migrated controls warn through `log` exactly as they did in the parent; the host decides
+# which logger, if any, is installed.
+log = "0.4"
+# The Lottie player parses its animation document directly.
+serde_json = "1.0"

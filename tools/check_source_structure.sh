@@ -104,7 +104,7 @@ TOO_LONG_PENDING = {
     "src/widget/special_widgets/diff_viewer.rs": "diff model vs row projection vs paint → `diff_viewer/{model,rows,paint}.rs`",
 
 
-    "src/widget/special_widgets/terminal/terminal_view.rs": "screen buffer/ANSI model vs row paint → `terminal_view/{model,paint}.rs`",
+    "src/platform/macos/canvas.rs": "legacy Cocoa canvas: window lifecycle delegate trampolines → `macos/canvas/lifecycle.rs`",
     "src/widget/view_widgets/grid_table.rs": "span layout vs selection vs paint → `grid_table/{layout,paint}.rs`",
     "src/widget/view_widgets/properties/properties_panel.rs": "property rows vs editors vs paint → `properties_panel/{rows,paint}.rs`",
     "src/widget/view_widgets/tree/tree_view.rs": "projection/index vs selection vs paint → `tree_view/{model,paint}.rs`",
@@ -113,14 +113,11 @@ TOO_LONG_PENDING = {
     "src/platform/linux/platform_impl.rs": "window/menu/dialog creation vs input vs surface/monitor → `linux/impl/{create,input,display}.rs`",
     "src/platform/windows/platform_impl.rs": "window/menu/dialog creation vs input vs display → `windows/impl/{create,input,display}.rs`",
     "src/style/css.rs": "selector model vs declaration parse vs cascade/lookup caches → `style/css/{selector,parse,cascade}.rs`",
-    "src/widget/capability/properties_other.in.rs": "an `include!`d table: one file per widget family, mirroring `properties_base.in.rs` / `properties_menu.in.rs`",
     "src/widget/chart_widgets/bar_chart.rs": "series model vs axes/plot paint vs legend/hover → `bar_chart/{model,paint}.rs`",
-    "src/widget/chart_widgets/gantt/gantt_widget.rs": "task model vs axis/row paint vs interaction → `gantt/{model,paint,events}.rs`",
     "src/widget/chart_widgets/line_chart.rs": "series model vs plot paint vs hover → `line_chart/{model,paint}.rs`",
     "src/widget/container_widgets/mdiarea.rs": "child-window model vs tile/cascade layout vs paint → `mdiarea/{model,layout,paint}.rs`",
     "src/widget/input_widgets/listbox.rs": "item model vs selection vs row paint → `listbox/{model,selection,paint}.rs`",
     "src/widget/input_widgets/rich_edit.rs": "document model vs format spans vs paint → `rich_edit/{model,formats,paint}.rs`",
-    "src/widget/media_widgets/video_player.rs": "playback state vs transport/controls chrome vs paint → `video_player/{model,controls,paint}.rs`",
     "src/widget/view_widgets/tree/tree_table.rs": "tree index vs column layout vs paint → `tree_table/{model,columns,paint}.rs`",
     # Measured 2026-10-29 (issue-20261028 implementation round). This file crossed the 2000-line
     # limit before that round started and had no row, so the gate was already red on it. It is

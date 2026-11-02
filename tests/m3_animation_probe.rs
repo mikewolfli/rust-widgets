@@ -241,47 +241,6 @@ fn probe_the_toast_family_and_map_animate_in_frames() {
              so its y cannot be the same on two frames of the rise"
         );
     }
-
-    {
-        // A map's grid follows the painted zoom.
-        //
-        // # Why the pane is 900 px wide
-        //
-        // The grid step is `40 * zoom`, and the lines are placed from the pane's own origin, so at a
-        // 320 px pane a step of 40 and a step of 80 put lines at the *same* x positions (0, 80,
-        // 160, 240) and the two frames are identical even though the reveal is working. The first
-        // version of this probe used the 320 px census geometry and reported a defect that was its
-        // own measurement — the control was correct. A wider pane makes the step audible in the
-        // drawing, which is what the assertion needs.
-        let geometry = Rect::new(0, 0, 900, 200);
-        let mut widget = factory.create("map_view", geometry, "x").expect("map_view");
-        {
-            use rust_widgets::widget::capability::coercion::widget_as_mut;
-            use rust_widgets::widget::special_widgets::MapView;
-            widget_as_mut::<MapView>(widget.as_mut()).expect("map").set_zoom(4.0);
-        }
-        assert!(widget.is_animating(), "changing zoom must owe frames");
-        let _ = widget.tick(16);
-        let first = render(widget.as_mut(), geometry);
-        let _ = widget.tick(16);
-        let middle = render(widget.as_mut(), geometry);
-        while widget.is_animating() {
-            let _ = widget.tick(16);
-        }
-        let settled = render(widget.as_mut(), geometry);
-        println!(
-            "map_view: first={} middle={} settled={}",
-            first.len(),
-            middle.len(),
-            settled.len()
-        );
-        assert_ne!(
-            first, middle,
-            "the painted projection must differ between frames of a zoom; identical pictures \
-             mean the stored target is being painted directly"
-        );
-        assert_ne!(first, settled, "and it must arrive somewhere different from where it started");
-    }
 }
 
 #[test]

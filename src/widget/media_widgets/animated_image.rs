@@ -13,6 +13,11 @@
 //! [`AnimatedImage::set_frame_provider`] so the control fetches frames on demand.
 //! The control deliberately exposes no byte-stream loader: a method that cannot
 //! decode would only advertise a capability it does not have.
+//!
+//! With the `image` capability the crate does ship an animation decoder, so
+//! [`AnimatedImage::load_file`] reads a GIF or animated WebP **file** through it. That is a
+//! path-based convenience over the same decoded-frame contract; it does not add a raw-byte
+//! entry point, and a build without `image-codecs` returns the decoder's own error.
 
 use crate::core::{Color, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
@@ -208,6 +213,46 @@ impl AnimatedImage {
         self.scale_cache = None;
         self.frame_delays.clear();
         self.base.request_redraw();
+        Ok(())
+    }
+
+    /// Loads a GIF or animated WebP file through the crate's animation decoder.
+    ///
+    /// Available with the `image` capability. The file is read, decoded frame by frame, and
+    /// installed through [`Self::load_frames`], so the control ends in the same eager-frame
+    /// state a host that decoded the container itself would produce. The file's loop count is
+    /// adopted (`0` keeps the widget's infinite-loop meaning); a static image becomes a
+    /// one-frame animation. Errors name the path and the decoder's reason.
+    #[cfg(feature = "image")]
+    pub fn load_file(&mut self, path: impl AsRef<std::path::Path>) -> Result<(), String> {
+        let path = path.as_ref();
+        let bytes = std::fs::read(path).map_err(|error| {
+            format!("animated image file '{}' could not be read: {error}", path.display())
+        })?;
+        let animation = crate::image::decode_animation(&bytes)
+            .map_err(|error| format!("animated image file '{}': {error}", path.display()))?;
+        let mut frames = Vec::with_capacity(animation.frames.len());
+        for (frame, delay) in animation.frames.into_iter().zip(animation.delays) {
+            let data = match frame.data.to_rgba8(frame.width, frame.height) {
+                crate::image::ImageData::Rgba8(pixels) => pixels,
+                _ => {
+                    return Err(format!(
+                        "animated image file '{}' decoded a frame that could not be converted to \
+                         RGBA8",
+                        path.display()
+                    ))
+                }
+            };
+            frames.push(AnimatedFrame {
+                data,
+                width: frame.width,
+                height: frame.height,
+                delay_ms: delay.as_millis().min(u128::from(u64::MAX)) as u64,
+            });
+        }
+        self.load_frames(frames)?;
+        self.loop_count =
+            animation.loop_count.map_or(0, |count| i32::try_from(count).unwrap_or(i32::MAX));
         Ok(())
     }
 
@@ -679,6 +724,8 @@ impl WidgetProperties for AnimatedImage {
                 .to_string(),
             )),
             "frame_cache_limit" => Ok(CapabilityValue::UInt(self.frame_cache_limit() as u64)),
+            // RW-83: the frame currently shown, so a designer can scrub the sequence.
+            "current_frame" => Ok(CapabilityValue::UInt(self.current_frame() as u64)),
             _ => base_property_get(self, name),
         }
     }
@@ -706,12 +753,22 @@ impl WidgetProperties for AnimatedImage {
                 self.set_frame_cache_limit(expect_usize(value)?);
                 Ok(())
             }
+            "current_frame" => {
+                self.set_current_frame(expect_usize(value)?);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["playing", "direction", "frame_cache_limit", BASE_PROPERTY_NAMES]
+        property_names_of![
+            "playing",
+            "direction",
+            "frame_cache_limit",
+            "current_frame",
+            BASE_PROPERTY_NAMES
+        ]
     }
 
     /// Runs the published playback commands.
@@ -1034,6 +1091,17 @@ mod tests {
     use super::*;
     use crate::core::Point;
     use std::sync::{Arc, Mutex};
+
+    /// RW-83: `current_frame` is writable through the property contract and reads back.
+    #[test]
+    fn current_frame_property_round_trips() {
+        use crate::widget::capability::WidgetProperties;
+        let mut image = AnimatedImage::new(Rect::new(0, 0, 40, 40));
+        image.load_frames(two_test_frames()).expect("two frames load");
+        image.set("current_frame", CapabilityValue::UInt(1)).expect("current_frame is writable");
+        assert_eq!(image.current_frame(), 1);
+        assert_eq!(image.get("current_frame"), Ok(CapabilityValue::UInt(1)));
+    }
 
     /// Two 2-frame sequences for playback/advance tests.
     fn two_test_frames() -> Vec<AnimatedFrame> {
@@ -1388,5 +1456,34 @@ mod tests {
         assert_eq!(dest.x, 50, "contain letterboxes the frame");
         let cover = fit_destination(rect, 100, 100, AnimatedImageFit::Cover);
         assert!(cover.width >= rect.width, "cover fills the width and crops the rest");
+    }
+
+    /// RW-84: the file convenience decodes a real GIF through the crate's animation decoder.
+    #[cfg(feature = "image")]
+    #[test]
+    fn load_file_decodes_a_gif_into_frames() {
+        // Encode through the crate's own GIF encoder so the fixture is a file the decoder
+        // is already tested against, rather than a hand-written byte sequence.
+        let image = crate::image::DecodedImage::new(
+            crate::image::ImageFormat::Rgba8,
+            crate::image::ImageData::Rgba8(vec![255, 0, 0, 255]),
+            1,
+            1,
+        );
+        let gif = crate::image::encode(&image, crate::image::ImageFormat::Gif)
+            .expect("the GIF encoder accepts a 1x1 RGBA image");
+        let path =
+            std::env::temp_dir().join(format!("rust_widgets_load_file_{}.gif", std::process::id()));
+        std::fs::write(&path, gif).expect("the temp file is writable");
+
+        let mut img = AnimatedImage::new(Rect::new(0, 0, 100, 100));
+        let result = img.load_file(&path);
+        let _ = std::fs::remove_file(&path);
+        result.expect("the decoder accepts the encoded GIF");
+
+        assert_eq!(img.frame_count(), 1);
+        assert_eq!(img.frames[0].width, 1);
+        assert_eq!(img.frames[0].height, 1);
+        assert_eq!(img.frames[0].data.len(), 4, "an RGBA frame is four bytes per pixel");
     }
 }

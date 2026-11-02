@@ -1637,3 +1637,79 @@ fn a_header_menu_filter_keeps_its_operator() {
     assert_eq!(rows.len(), 2, "greater than 2 keeps 3 and 4");
     assert_eq!(rows[0][0], Some("3".to_string()));
 }
+
+/// RW-6: the data type round-trips, and the token stays backward compatible.
+#[test]
+fn column_tokens_carry_a_type_and_still_parse_older_forms() {
+    let column = ColumnSpec::new("Count", 80)
+        .with_sortable(true)
+        .with_alignment(HorizontalAlignment::Right)
+        .with_type(ColumnDataType::Integer);
+    assert_eq!(column.data_type(), &ColumnDataType::Integer);
+    assert_eq!(column.to_token(), "Count|80|1|0|1|right|integer");
+    let parsed = ColumnSpec::from_token(&column.to_token()).expect("the new token parses");
+    assert_eq!(parsed, column);
+
+    // A six-field token written before the type existed keeps its meaning.
+    let legacy = ColumnSpec::from_token("Name|120|0|1|1|center").expect("a legacy token parses");
+    assert_eq!(legacy.title, "Name");
+    assert_eq!(legacy.width, 120);
+    assert!(legacy.filterable);
+    assert_eq!(legacy.alignment, HorizontalAlignment::Center);
+    assert_eq!(legacy.data_type, ColumnDataType::Auto, "a missing type means Auto");
+
+    // A five-field token (the oldest form) still parses with the defaults.
+    let oldest = ColumnSpec::from_token("Old|40|0|0|0").expect("the oldest token parses");
+    assert_eq!(oldest.alignment, HorizontalAlignment::Left);
+    assert_eq!(oldest.data_type, ColumnDataType::Auto);
+
+    // An unrecognised spelling is kept as a host-defined type rather than rejected.
+    assert_eq!(
+        ColumnDataType::from_token("durations"),
+        ColumnDataType::Other("durations".to_string())
+    );
+}
+
+/// RW-5: the grid's column description is edited without a full header replacement.
+#[test]
+fn column_description_insert_remove_and_rename() {
+    let mut grid = DataGrid::new(Rect::new(0, 0, 300, 200));
+    grid.set_data_source(Arc::new(StaticSource {
+        rows: 2,
+        cols: 3,
+        data: (0..2).map(|row| (0..3).map(|col| format!("{row}:{col}")).collect()).collect(),
+    }));
+    let header = header_with_titles(&["A", "B", "C"]);
+    grid.set_header(&header);
+
+    let seen = Arc::new(std::sync::Mutex::new(Vec::<(ColumnChangeKind, usize)>::new()));
+    let sink = Arc::clone(&seen);
+    grid.column_changed_signal().connect(move |change| {
+        sink.lock().expect("lock").push((change.kind, change.index));
+    });
+
+    assert_eq!(grid.column_specs().len(), 3);
+    let at = grid.insert_column(1, ColumnSpec::new("Inserted", 50));
+    assert_eq!(at, 1);
+    assert_eq!(grid.column_specs()[1].title, "Inserted");
+    assert_eq!(grid.column_specs()[2].title, "B", "the later specs shift right");
+
+    assert!(grid.set_column_title(2, "Beta"));
+    assert_eq!(grid.column_specs()[2].title, "Beta");
+    assert!(grid.set_column_type(2, ColumnDataType::Number));
+    assert_eq!(grid.column_type(2), Some(&ColumnDataType::Number));
+
+    let removed = grid.remove_column(0).expect("column 0 is described");
+    assert_eq!(removed.title, "A");
+    assert_eq!(grid.column_specs()[0].title, "Inserted");
+
+    assert_eq!(
+        *seen.lock().expect("lock"),
+        vec![
+            (ColumnChangeKind::Inserted, 1),
+            (ColumnChangeKind::TitleChanged, 2),
+            (ColumnChangeKind::TypeChanged, 2),
+            (ColumnChangeKind::Removed, 0),
+        ]
+    );
+}

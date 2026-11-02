@@ -136,6 +136,22 @@ impl Widget for CodeEditor {
         CodeEditor::tick(self, delta_ms)
     }
 
+    /// Reports the platform's synthesized menu request (the Menu key, or a
+    /// backend that delivers `Event::ContextMenu` instead of a secondary press).
+    ///
+    /// The signal is emitted whichever path the backend uses, which is what
+    /// makes the editor's two request sources (`MousePress` with the secondary
+    /// button and this hook) agree. Returning `true` says the editor handled the
+    /// request: it always announces it, and it opens its own menu when
+    /// [`CodeEditorConfig::built_in_context_menu`] is on.
+    fn context_menu_event(&mut self, pos: Point) -> bool {
+        self.context_menu_requested.emit(pos);
+        if self.config.built_in_context_menu {
+            self.open_context_menu(pos);
+        }
+        true
+    }
+
     fn is_animating(&self) -> bool {
         (self.is_editable() && self.focused)
             || self.smooth_scroll_target.is_some()
@@ -196,6 +212,11 @@ impl Widget for CodeEditor {
                     CapabilityValue::Bool(*v)
                 }))
             }
+            "context_menu_requested" => Some(EventSignalRef::mapped(
+                "context_menu_requested",
+                &self.context_menu_requested,
+                |v| CapabilityValue::String(format!("{},{}", v.x, v.y)),
+            )),
             "search_result" => {
                 Some(EventSignalRef::mapped("search_result", &self.search_result, |v| {
                     CapabilityValue::Tuple(alloc::vec![

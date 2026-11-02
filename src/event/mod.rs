@@ -49,7 +49,9 @@ pub use capture::PointerCaptureManager;
 pub use dnd::{DragItem, DragPayload, DragSession, DropEffect, DropTarget};
 pub use double_click::DoubleClickTracker;
 pub use event_queue::{EventQueue, EventSender};
+pub use focus::FocusInfo;
 pub use focus::FocusManager;
+pub use focus::FocusPolicy;
 pub use focus::FocusTraversalStrategy;
 pub use key_codes::{
     BACKSPACE, DELETE, DOWN, END, ENTER, ESCAPE, HOME, LEFT, LINE_FEED, PAGE_DOWN, PAGE_UP, RIGHT,
@@ -68,7 +70,7 @@ pub use timer::TimerPrecision;
 /// mean "secondary button".
 pub use types::mouse_button;
 pub use types::{Event, EventHandler, EventPriority, FocusReason, GestureClass, TouchId};
-pub use wheel::WheelScroll;
+pub use wheel::{WheelNotchAccumulator, WheelScroll, POINTS_PER_WHEEL_NOTCH};
 // Re-export queue utilities. `BlockingQueue` needs the mutex/condvar the alloc-frugal profile
 // does not compile, so it is exported only where it exists.
 #[cfg(not(alloc_frugal))]

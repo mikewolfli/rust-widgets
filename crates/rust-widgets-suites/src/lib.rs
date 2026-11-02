@@ -19,7 +19,7 @@
 //! The dependency runs one way — this package depends on `rust_widgets`, never the reverse — so a
 //! host installs the group into the **shared** factory, before the first control is created:
 //!
-//! ```ignore
+//! ```text
 //! // At startup, before anything builds a control or parses a document:
 //! rust_widgets::widget::register_shared_extension(rust_widgets_suites::install)
 //!     .expect("the shared table was not built yet");
@@ -40,7 +40,7 @@
 //! A host that wants its own table instead of the shared one can build it directly — the result is
 //! the same table with the same controls, just not the one the rest of the library reads:
 //!
-//! ```ignore
+//! ```text
 //! let factory = rust_widgets::widget::WidgetFactory::new_with_extensions(&[install])?;
 //! ```
 //!
@@ -59,7 +59,26 @@
 //! widget layer targets. It is not part of the `mini`/`embedded` stripped builds: those have no
 //! widget registry to mount a form's fields into.
 
+// The migrated groups use `alloc` directly (`alloc::format!`, `alloc::vec!`), which a `std` crate
+// does not put in the extern prelude.
+extern crate alloc;
+
 pub mod form_widgets;
+
+#[cfg(feature = "finance")]
+pub mod finance;
+
+#[cfg(feature = "maps")]
+pub mod maps;
+
+#[cfg(feature = "project")]
+pub mod project;
+
+#[cfg(feature = "devtools")]
+pub mod devtools;
+
+#[cfg(feature = "media-playback")]
+pub mod media_playback;
 
 use rust_widgets::widget::capability::types::RegistrationError;
 use rust_widgets::widget::capability::WidgetFactory;
@@ -70,6 +89,15 @@ pub use form_widgets::{
     FormLabelPosition, FormPage, FormSet, FormSetHeaderStyle,
 };
 
+#[cfg(feature = "finance")]
+pub use finance::{
+    candlestick_chart_capability, create_candlestick_chart, create_depth_chart,
+    create_indicator_chart, create_order_book, create_quote_board, create_volume_chart,
+    depth_chart_capability, indicator_chart_capability, order_book_capability,
+    quote_board_capability, volume_chart_capability, CandlestickChart, DepthChart, IndicatorChart,
+    OrderBookWidget, QuoteBoard, VolumeChart,
+};
+
 /// Installs the form group into `factory`.
 ///
 /// The per-group entry point, so a host that wants one group can install exactly that one.
@@ -77,12 +105,63 @@ pub fn install_form_group(factory: &mut WidgetFactory) -> Result<(), Registratio
     form_widgets::install(factory)
 }
 
-/// Installs every suite group into `factory`.
+/// Installs the finance group into `factory`.
 ///
-/// Future groups add one line here; the order is the registration order, and `try_register` makes a
-/// duplicate name an error rather than a silent last-writer-wins.
+/// The per-group entry point, so a host that wants one group can install exactly that one.
+#[cfg(feature = "finance")]
+pub fn install_finance_group(factory: &mut WidgetFactory) -> Result<(), RegistrationError> {
+    finance::install(factory)
+}
+
+/// Installs the maps group into `factory`.
+///
+/// The per-group entry point, so a host that wants one group can install exactly that one.
+#[cfg(feature = "maps")]
+pub fn install_maps_group(factory: &mut WidgetFactory) -> Result<(), RegistrationError> {
+    maps::install(factory)
+}
+
+/// Installs the project group into `factory`.
+///
+/// The per-group entry point, so a host that wants one group can install exactly that one.
+#[cfg(feature = "project")]
+pub fn install_project_group(factory: &mut WidgetFactory) -> Result<(), RegistrationError> {
+    project::install(factory)
+}
+
+/// Installs the devtools group into `factory`.
+///
+/// The per-group entry point, so a host that wants one group can install exactly that one.
+#[cfg(feature = "devtools")]
+pub fn install_devtools_group(factory: &mut WidgetFactory) -> Result<(), RegistrationError> {
+    devtools::install(factory)
+}
+
+/// Installs the media-playback group into `factory`.
+///
+/// The per-group entry point, so a host that wants one group can install exactly that one.
+#[cfg(feature = "media-playback")]
+pub fn install_media_playback_group(factory: &mut WidgetFactory) -> Result<(), RegistrationError> {
+    media_playback::install(factory)
+}
+
+/// Installs every enabled suite group into `factory`.
+///
+/// The order is the registration order, and `try_register` makes a duplicate name an error rather
+/// than a silent last-writer-wins. A group compiled out by its feature contributes no names.
 pub fn install(factory: &mut WidgetFactory) -> Result<(), RegistrationError> {
-    install_form_group(factory)
+    install_form_group(factory)?;
+    #[cfg(feature = "finance")]
+    install_finance_group(factory)?;
+    #[cfg(feature = "maps")]
+    install_maps_group(factory)?;
+    #[cfg(feature = "project")]
+    install_project_group(factory)?;
+    #[cfg(feature = "devtools")]
+    install_devtools_group(factory)?;
+    #[cfg(feature = "media-playback")]
+    install_media_playback_group(factory)?;
+    Ok(())
 }
 
 #[cfg(test)]

@@ -50,6 +50,10 @@ mod macros;
 mod traits;
 
 pub use binding::*;
+#[cfg(all(full_widgets, not(alloc_frugal)))]
+pub mod chart;
+#[cfg(all(full_widgets, not(alloc_frugal)))]
+pub use chart::*;
 pub use computed::*;
 pub use list::*;
 

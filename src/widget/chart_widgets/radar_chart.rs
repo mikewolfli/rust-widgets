@@ -753,6 +753,19 @@ impl WidgetProperties for RadarChart {
                     .map(|name| CapabilityValue::String(name.clone()))
                     .collect(),
             )),
+            // RW-71: the dimension labels and the sample matrix. The matrix is flattened row by
+            // row with `axis_count()` values per series, because the property API has no nested
+            // list; the stride is published as `axis_count` so a reader can split it back.
+            "axes" => Ok(CapabilityValue::Tuple(
+                self.axes().iter().map(|axis| CapabilityValue::String(axis.clone())).collect(),
+            )),
+            "series" => Ok(CapabilityValue::Tuple(
+                self.series()
+                    .iter()
+                    .flat_map(|series| series.iter())
+                    .map(|value| CapabilityValue::Float(*value))
+                    .collect(),
+            )),
             _ => base_property_get(self, name),
         }
     }
@@ -776,6 +789,44 @@ impl WidgetProperties for RadarChart {
                 self.set_series_names(names);
                 Ok(())
             }
+            "axes" => {
+                let axes = crate::widget::capability::coercion::expect_string_list(value)?;
+                if axes.is_empty() {
+                    // The fresh state has no axes, and clearing back to it is the honest
+                    // round-trip of the declared default. `set_axes` refuses fewer than three
+                    // because a polygon needs them, so the reset is applied here.
+                    self.axes.clear();
+                    self.hovered_axis = None;
+                    self.invalidate_projection();
+                    self.base.request_redraw();
+                    Ok(())
+                } else if self.set_axes(axes) {
+                    Ok(())
+                } else {
+                    // Fewer than three axes is not a radar chart; the control refuses the shape
+                    // rather than drawing a degenerate polygon.
+                    Err(CapabilityAccessError::OutOfRange)
+                }
+            }
+            "series" => {
+                let values = crate::widget::capability::coercion::expect_number_list(value)?;
+                let stride = self.axis_count();
+                let series = if stride == 0 {
+                    if values.is_empty() {
+                        Vec::new()
+                    } else {
+                        // No axes declared yet: one series is the only shape that can be read
+                        // back, and the caller can set `axes` first for the intended split.
+                        vec![values]
+                    }
+                } else if values.len() % stride == 0 {
+                    values.chunks(stride).map(|chunk| chunk.to_vec()).collect()
+                } else {
+                    return Err(CapabilityAccessError::TypeMismatch);
+                };
+                self.set_series(series);
+                Ok(())
+            }
             // `hovered_axis` is written through the pointer, not through the
             // property layer: a name that could be set to an arbitrary index would
             // claim a hover that is not happening.
@@ -789,6 +840,8 @@ impl WidgetProperties for RadarChart {
     fn property_names(&self) -> &'static [&'static str] {
         // Mirrors `RADAR_CHART_PROPERTIES`.
         property_names_of![
+            "axes",
+            "series",
             "axis_count",
             "series_count",
             "show_grid",
@@ -1408,6 +1461,45 @@ fn format_ring_value(value: f64) -> String {
 mod tests {
     use super::*;
     use crate::render::{PaintBackend, SoftwarePaintBackend};
+
+    /// RW-71: axes and the row-major series carrier round-trip.
+    #[test]
+    fn axes_and_series_round_trip() {
+        use crate::widget::capability::WidgetProperties;
+        let mut chart = RadarChart::new(Rect::new(0, 0, 320, 320));
+        chart
+            .set(
+                "axes",
+                CapabilityValue::Tuple(vec![
+                    CapabilityValue::String("a".into()),
+                    CapabilityValue::String("b".into()),
+                    CapabilityValue::String("c".into()),
+                ]),
+            )
+            .expect("three axes are accepted");
+        chart
+            .set(
+                "series",
+                CapabilityValue::Tuple(vec![
+                    CapabilityValue::Float(1.0),
+                    CapabilityValue::Float(2.0),
+                    CapabilityValue::Float(3.0),
+                    CapabilityValue::Float(4.0),
+                    CapabilityValue::Float(5.0),
+                    CapabilityValue::Float(6.0),
+                ]),
+            )
+            .expect("the flattened series are accepted");
+        assert_eq!(chart.series(), &[vec![1.0, 2.0, 3.0], vec![4.0, 5.0, 6.0]]);
+        let CapabilityValue::Tuple(flat) = chart.get("series").expect("readable") else {
+            panic!("series must be a tuple");
+        };
+        assert_eq!(flat.len(), 6);
+        // A length that is not a whole number of axes is refused.
+        assert!(chart
+            .set("series", CapabilityValue::Tuple(vec![CapabilityValue::Float(1.0)]),)
+            .is_err());
+    }
 
     fn chart() -> RadarChart {
         let mut chart = RadarChart::new(Rect::new(0, 0, 320, 320));

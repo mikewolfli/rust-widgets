@@ -1443,6 +1443,23 @@ pub struct CodeEditorConfig {
     pub accent_active_line_number: bool,
     /// Fade a newly folded or unfolded region in over ~150 ms.
     pub animate_folds: bool,
+    /// Open the editor's own context menu on a secondary click.
+    ///
+    /// On by default, which is the historical behaviour. A host that supplies its
+    /// own menu switches this off and subscribes to
+    /// [`CodeEditor::context_menu_requested`](super::CodeEditor::context_menu_requested)
+    /// instead; the signal is emitted either way.
+    pub built_in_context_menu: bool,
+    /// Tint lines that differ from the configured diff baseline.
+    ///
+    /// Off by default so the default paint path is unchanged. The baseline is
+    /// document text held by the host, not part of this configuration.
+    pub show_inline_diff: bool,
+    /// Draw host-supplied [`InlayHint`]s inline.
+    ///
+    /// On by default: the hint list is empty unless a host pushes one, so the
+    /// default rendering is unchanged.
+    pub show_inlay_hints: bool,
 }
 
 impl Default for CodeEditorConfig {
@@ -1482,6 +1499,9 @@ impl Default for CodeEditorConfig {
             round_severity_dots: false,
             accent_active_line_number: false,
             animate_folds: false,
+            built_in_context_menu: true,
+            show_inline_diff: false,
+            show_inlay_hints: true,
         }
     }
 }
@@ -1697,6 +1717,24 @@ impl CodeEditorConfig {
     /// Enables the fold reveal fade.
     pub fn animate_folds(mut self, animate: bool) -> Self {
         self.animate_folds = animate;
+        self
+    }
+
+    /// Opens (or suppresses) the editor's built-in context menu.
+    pub fn built_in_context_menu(mut self, built_in: bool) -> Self {
+        self.built_in_context_menu = built_in;
+        self
+    }
+
+    /// Tints lines that differ from the configured diff baseline.
+    pub fn show_inline_diff(mut self, show: bool) -> Self {
+        self.show_inline_diff = show;
+        self
+    }
+
+    /// Draws host-supplied inlay hints.
+    pub fn show_inlay_hints(mut self, show: bool) -> Self {
+        self.show_inlay_hints = show;
         self
     }
 

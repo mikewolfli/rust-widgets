@@ -42,18 +42,47 @@
 
 use crate::compat::{format, String, ToString};
 use crate::core::Rect;
-use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::types::{
+    CapabilityAccessError, CapabilityValue, PropertySchema, PropertyValueKind,
+};
 use crate::widget::widget_trait::Widget;
 
 /// The properties every control has through its [`crate::widget::BaseWidget`].
 ///
 /// Exposed as a constant so a control's `property_names()` can concatenate rather
 /// than retype them, and so tests and schema generation read one list.
-pub const BASE_PROPERTY_NAMES: &[&str] = &["enabled", "visible", "tooltip", "geometry"];
+///
+/// `a11y_role` is the designer-facing accessibility-role override (RW-35). It is a shared property
+/// rather than a per-control field: an override changes only the role a control reports to
+/// assistive technology, so every control that has a stable id — which is every control — can carry
+/// it. The value lives in the process-wide role registry, which is what the a11y tree reads.
+pub const BASE_PROPERTY_NAMES: &[&str] =
+    &["enabled", "visible", "tooltip", "geometry", "a11y_role"];
+
+/// The schema rows for the shared properties.
+///
+/// The four base rows are repeated in every control's own `*_PROPERTIES` table because that table
+/// is the control's declaration. `a11y_role` is not: it is one shared fact, and repeating it in ~190
+/// tables would be the drift rule #54 forbids. The factory and the manifest append any row here
+/// that a control's table does not already declare, so the property is discoverable without a
+/// second copy.
+pub const BASE_PROPERTY_SCHEMAS: &[PropertySchema] = &[
+    PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+    PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+    PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+    PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+    PropertySchema::new("a11y_role", PropertyValueKind::String, true, true),
+];
+
+/// The token a read reports when no explicit accessibility role is set.
+///
+/// Empty is distinct from `"unknown"`: empty means "no override, derive from the kind", while
+/// `"unknown"` is an explicit override that suppresses the derived role.
+pub const NO_A11Y_ROLE_OVERRIDE: &str = "";
 
 /// Reads a property shared by every control.
 ///
-/// A control calls this from the `_` arm of its own `get`, so the shared four are
+/// A control calls this from the `_` arm of its own `get`, so the shared set is
 /// implemented exactly once. Returns [`CapabilityAccessError::UnknownProperty`]
 /// when the name is not shared, which lets the caller propagate it unchanged.
 pub fn base_property_get(
@@ -65,6 +94,14 @@ pub fn base_property_get(
         "visible" => Ok(CapabilityValue::Bool(widget.is_visible())),
         "tooltip" => Ok(CapabilityValue::String(widget.tooltip().to_string())),
         "geometry" => Ok(geometry_to_value(widget.geometry())),
+        // RW-35: the explicit override, or the empty string when the role is derived from the
+        // control's kind. The registry is keyed by the widget's stable id, which is the same id the
+        // accessibility tree registers, so this reads the fact the tree will use.
+        "a11y_role" => Ok(CapabilityValue::String(
+            crate::platform::accessibility::widget_a11y_role(widget.id())
+                .map(|role| role.name().to_string())
+                .unwrap_or_else(|| NO_A11Y_ROLE_OVERRIDE.to_string()),
+        )),
         _ => Err(CapabilityAccessError::UnknownProperty),
     }
 }
@@ -107,6 +144,22 @@ pub fn base_property_set(
         // would silently fight the layout on the next pass. Callers that mean to
         // move a control use `widget::runtime::set_geometry`.
         "geometry" => Err(CapabilityAccessError::ReadOnlyProperty),
+        // RW-35: an empty string clears the override (the role goes back to the kind-derived
+        // answer); a recognised token installs one; an unrecognised token is refused rather than
+        // silently ignored, because a designer that offered it would otherwise appear to work.
+        "a11y_role" => match value {
+            CapabilityValue::String(token) if token.is_empty() => {
+                let _ = crate::platform::accessibility::clear_widget_a11y_role(widget.id());
+                Ok(())
+            }
+            CapabilityValue::String(token) => {
+                let role = crate::platform::accessibility::A11yRole::from_name(&token)
+                    .ok_or(CapabilityAccessError::OutOfRange)?;
+                let _ = crate::platform::accessibility::set_widget_a11y_role(widget.id(), role);
+                Ok(())
+            }
+            _ => Err(CapabilityAccessError::TypeMismatch),
+        },
         _ => Err(CapabilityAccessError::UnknownProperty),
     }
 }
@@ -127,14 +180,14 @@ pub fn geometry_to_value(geometry: Rect) -> CapabilityValue {
 /// A control implements this in its own file and forwards unmatched names to
 /// [`base_property_get`] / [`base_property_set`]. There is deliberately **no**
 /// blanket `impl<T: Widget> WidgetProperties for T`: it would overlap every
-/// concrete impl below (Rust coherence), which is why the shared four live in
+/// concrete impl below (Rust coherence), which is why the shared properties live in
 /// plain functions instead of a default method.
 ///
 /// # Where the name list comes from
 ///
 /// `property_names()` names the properties directly, through the
 /// [`crate::property_names_of`] macro, and appends [`BASE_PROPERTY_NAMES`] for the shared
-/// four.
+/// properties (`enabled`, `visible`, `tooltip`, `geometry`, `a11y_role`).
 ///
 /// # Why not derive them from the schema table
 ///
@@ -194,9 +247,9 @@ pub trait WidgetProperties {
     /// The single source for schema generation, documentation and tests, so a
     /// property cannot be readable yet absent from the published list.
     ///
-    /// # Why the shared four appear here too
+    /// # Why the shared properties appear here too
     ///
-    /// `enabled` / `visible` / `tooltip` / `geometry` are part of *this* control's
+    /// `enabled` / `visible` / `tooltip` / `geometry` / `a11y_role` are part of *this* control's
     /// published contract even though they are implemented once in
     /// [`base_property_get`]. A consumer that walks `property_names()` to build a
     /// property editor, a schema or a docs table must see them, and the pre-existing
@@ -358,7 +411,7 @@ pub trait WidgetProperties {
 /// `&str`. Naming the properties once here keeps the declaration `const` and
 /// allocation-free.
 ///
-/// The shared four are appended via `BASE_PROPERTY_NAMES`, which carries its own
+/// The shared properties are appended via `BASE_PROPERTY_NAMES`, which carries its own
 /// marks, so the macro accepts it as the last item:
 ///
 /// ```ignore
@@ -378,7 +431,7 @@ macro_rules! property_names_of {
         &[$($name),*]
     };
     ($($name:literal),* $(,)? BASE_PROPERTY_NAMES) => {
-        &[$($name,)* "enabled", "visible", "tooltip", "geometry"]
+        &[$($name,)* "enabled", "visible", "tooltip", "geometry", "a11y_role"]
     };
 }
 
@@ -674,6 +727,34 @@ mod tests {
 
         widget.set("tooltip", CapabilityValue::String("tip".into())).expect("writable");
         assert_eq!(widget.get("tooltip"), Ok(CapabilityValue::String("tip".into())));
+    }
+
+    /// RW-35: the shared accessibility-role override round-trips through the base contract.
+    #[test]
+    fn a11y_role_override_round_trips() {
+        use crate::platform::accessibility::{widget_a11y_role, A11yRole};
+
+        let mut widget = probe();
+        let id = widget.id();
+        assert_eq!(
+            widget.get("a11y_role"),
+            Ok(CapabilityValue::String(NO_A11Y_ROLE_OVERRIDE.into())),
+            "a fresh control has no override"
+        );
+        widget
+            .set("a11y_role", CapabilityValue::String("slider".into()))
+            .expect("a recognised role token is writable");
+        assert_eq!(widget.get("a11y_role"), Ok(CapabilityValue::String("slider".into())));
+        assert_eq!(widget_a11y_role(id), Some(A11yRole::Slider));
+
+        widget
+            .set("a11y_role", CapabilityValue::String(NO_A11Y_ROLE_OVERRIDE.into()))
+            .expect("an empty token clears the override");
+        assert_eq!(widget_a11y_role(id), None);
+        assert_eq!(
+            widget.set("a11y_role", CapabilityValue::String("not_a_role".into())),
+            Err(CapabilityAccessError::OutOfRange)
+        );
     }
 
     /// A wrong-typed write must be rejected rather than silently coerced.

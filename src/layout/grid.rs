@@ -101,6 +101,8 @@ struct GridAllocationKey {
     row_sizing: RowSizing,
     column_stretches: Vec<u32>,
     row_stretches: Vec<u32>,
+    column_fractions: Vec<Option<u32>>,
+    row_fractions: Vec<Option<u32>>,
     column_minimums: Vec<u32>,
     row_minimums: Vec<u32>,
     hint_column_floors: Option<Vec<u32>>,
@@ -199,6 +201,18 @@ pub struct GridLayout {
     margin: u32,
     column_stretches: Vec<u32>,
     row_stretches: Vec<u32>,
+    /// Per-column fractional weights (`fr`), or `None` for a stretch-sized column (RW-51).
+    ///
+    /// # Why a separate channel from `column_stretches`
+    ///
+    /// A stretch factor divides the *whole* available length; a fractional track divides only
+    /// what is **left** after the non-fractional tracks have taken their floor. That is the CSS
+    /// `1fr 1fr 100px` model, and it cannot be expressed by reweighting the stretch pass. The
+    /// default is `None` everywhere, so a grid that never calls [`Self::set_column_fraction`]
+    /// allocates exactly as it did before.
+    column_fractions: Vec<Option<u32>>,
+    /// Per-row fractional weights; see [`Self::column_fractions`].
+    row_fractions: Vec<Option<u32>>,
     /// Per-column minimum widths, applied as a floor to the computed column width.
     ///
     /// the reference toolkit's `grid layout::setColumnMinimumWidth` and wx's per-column minimum are the
@@ -257,6 +271,8 @@ impl GridLayout {
             margin,
             column_stretches: vec![1; safe_cols as usize],
             row_stretches: vec![1; safe_rows as usize],
+            column_fractions: vec![None; safe_cols as usize],
+            row_fractions: vec![None; safe_rows as usize],
             column_minimums: vec![0; safe_cols as usize],
             row_minimums: vec![0; safe_rows as usize],
             cell_alignments: HashMap::new(),
@@ -554,6 +570,8 @@ impl GridLayout {
         self.cols = new_cols;
         self.row_stretches.resize(new_rows as usize, 1);
         self.column_stretches.resize(new_cols as usize, 1);
+        self.row_fractions.resize(new_rows as usize, None);
+        self.column_fractions.resize(new_cols as usize, None);
         true
     }
 
@@ -799,6 +817,88 @@ impl GridLayout {
         &self.column_stretches
     }
 
+    /// Declares `col` as a fractional (`fr`) track with `parts` shares (RW-51).
+    ///
+    /// # What a fractional track means
+    ///
+    /// The non-fractional columns are first sized to their minimums (0 when none is declared),
+    /// and the length **left over** after those floors and the gaps is divided among the
+    /// fractional columns in proportion to `parts`. That is the CSS `1fr 2fr` model, and it is
+    /// why this is not expressible through [`Self::set_column_stretch_for_col`]: a stretch factor
+    /// divides the whole container, a fraction divides only the remainder.
+    ///
+    /// Returns `false` when `col` is not a column of this grid; nothing is changed in that case.
+    /// `parts == 0` is a legal zero-width track, not "unset" — use
+    /// [`Self::clear_column_fraction`] for that.
+    pub fn set_column_fraction(&mut self, col: u32, parts: u32) -> bool {
+        match self.column_fractions.get_mut(col as usize) {
+            Some(slot) => {
+                *slot = Some(parts);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Returns `col` to stretch sizing, removing its fractional weight (RW-51).
+    ///
+    /// Returns `false` when `col` is not a column of this grid.
+    pub fn clear_column_fraction(&mut self, col: u32) -> bool {
+        match self.column_fractions.get_mut(col as usize) {
+            Some(slot) => {
+                *slot = None;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// The fractional weight of `col`, or `None` when it is a stretch-sized column (RW-51).
+    pub fn column_fraction(&self, col: u32) -> Option<u32> {
+        self.column_fractions.get(col as usize).copied().flatten()
+    }
+
+    /// Whether any column is a fractional track (RW-51).
+    pub fn has_fractional_columns(&self) -> bool {
+        self.column_fractions.iter().any(Option::is_some)
+    }
+
+    /// Declares `row` as a fractional (`fr`) track with `parts` shares (RW-51).
+    ///
+    /// Fractional rows apply under [`RowSizing::Fill`]. [`RowSizing::Fixed`] is an explicit
+    /// statement that every row is one height, so a fraction is not consulted there; the setter
+    /// still records the weight, so switching back to `Fill` restores the intended shares.
+    pub fn set_row_fraction(&mut self, row: u32, parts: u32) -> bool {
+        match self.row_fractions.get_mut(row as usize) {
+            Some(slot) => {
+                *slot = Some(parts);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Returns `row` to stretch sizing, removing its fractional weight (RW-51).
+    pub fn clear_row_fraction(&mut self, row: u32) -> bool {
+        match self.row_fractions.get_mut(row as usize) {
+            Some(slot) => {
+                *slot = None;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// The fractional weight of `row`, or `None` when it is a stretch-sized row (RW-51).
+    pub fn row_fraction(&self, row: u32) -> Option<u32> {
+        self.row_fractions.get(row as usize).copied().flatten()
+    }
+
+    /// Whether any row is a fractional track (RW-51).
+    pub fn has_fractional_rows(&self) -> bool {
+        self.row_fractions.iter().any(Option::is_some)
+    }
+
     /// Returns the uniform row stretch factor (first row's value).
     pub fn row_stretch(&self) -> u32 {
         self.row_stretches.first().copied().unwrap_or(1)
@@ -878,6 +978,8 @@ impl GridLayout {
                     && cached.row_sizing == self.row_sizing
                     && cached.column_stretches == self.column_stretches
                     && cached.row_stretches == self.row_stretches
+                    && cached.column_fractions == self.column_fractions
+                    && cached.row_fractions == self.row_fractions
                     && cached.column_minimums == self.column_minimums
                     && cached.row_minimums == self.row_minimums
                     && cached.hint_column_floors.as_deref() == hint_floors.map(|(cols, _)| cols)
@@ -909,6 +1011,8 @@ impl GridLayout {
             row_sizing: self.row_sizing,
             column_stretches: self.column_stretches.clone(),
             row_stretches: self.row_stretches.clone(),
+            column_fractions: self.column_fractions.clone(),
+            row_fractions: self.row_fractions.clone(),
             column_minimums: self.column_minimums.clone(),
             row_minimums: self.row_minimums.clone(),
             hint_column_floors: hint_floors.map(|(cols, _)| cols.to_vec()),
@@ -947,6 +1051,34 @@ impl GridLayout {
             col_widths.push(cell_width);
             col_x_offsets.push(current_x);
             current_x += cell_width as i32 + spacing_x as i32;
+        }
+
+        // RW-51: a fractional track divides the space left after the non-fractional columns'
+        // floors and the gaps, not the whole container. When no column declares a fraction the
+        // block is skipped, so the stretch path above is exactly what it was.
+        if self.has_fractional_columns() {
+            let spacing_total = u64::from(spacing_x) * u64::from(self.cols.saturating_sub(1));
+            let mut fixed_total = 0u64;
+            for (col, fraction) in self.column_fractions.iter().enumerate().take(self.cols as usize)
+            {
+                if fraction.is_none() {
+                    // A stretch share is not a base size. In the fractional model a
+                    // non-fractional track is its floor (0 when none was declared), exactly as
+                    // a `100px` track in CSS takes 100px before `1fr` divides the rest.
+                    col_widths[col] = self.column_minimums[col];
+                    fixed_total += u64::from(self.column_minimums[col]);
+                }
+            }
+            let free = u64::from(available_width).saturating_sub(fixed_total + spacing_total);
+            let total_parts: u64 =
+                self.column_fractions.iter().flatten().map(|parts| u64::from(*parts)).sum();
+            for (col, fraction) in self.column_fractions.iter().enumerate().take(self.cols as usize)
+            {
+                let Some(parts) = *fraction else { continue };
+                // Every fraction is `0`: the tracks take no space, which is what `0fr` says.
+                col_widths[col] =
+                    (free * u64::from(parts)).checked_div(total_parts).unwrap_or(0) as u32;
+            }
         }
 
         // Apply the per-column floors after the stretch pass, so a minimum is not diluted by
@@ -997,13 +1129,47 @@ impl GridLayout {
             available_height,
         );
 
+        // RW-51: fractional rows, under `Fill` only (see `set_row_fraction`).
+        if self.row_sizing == RowSizing::Fill && self.has_fractional_rows() {
+            let spacing_total = u64::from(spacing_y) * u64::from(self.rows.saturating_sub(1));
+            let mut fixed_total = 0u64;
+            for (row, fraction) in self.row_fractions.iter().enumerate().take(self.rows as usize) {
+                if fraction.is_none() {
+                    row_heights[row] = self.row_minimums[row];
+                    fixed_total += u64::from(self.row_minimums[row]);
+                }
+            }
+            let free = u64::from(available_height).saturating_sub(fixed_total + spacing_total);
+            let total_parts: u64 =
+                self.row_fractions.iter().flatten().map(|parts| u64::from(*parts)).sum();
+            for (row, fraction) in self.row_fractions.iter().enumerate().take(self.rows as usize) {
+                let Some(parts) = *fraction else { continue };
+                row_heights[row] =
+                    (free * u64::from(parts)).checked_div(total_parts).unwrap_or(0) as u32;
+            }
+        }
+
         // Distribute the remainder width/height across columns/rows (biggest-bucket algorithm)
         let total_width: u32 = col_widths.iter().sum::<u32>() + spacing_x * (self.cols - 1);
         let remainder_w = available_width.saturating_sub(total_width);
         if remainder_w > 0 && !col_widths.is_empty() {
-            // Distribute remainder to columns with largest stretch first
+            // Distribute remainder to columns with largest stretch first, or — when the grid is
+            // fraction-driven — to the fractional tracks in proportion (RW-51). A non-fractional
+            // column must not absorb the rounding remainder of a fraction allocation.
             let mut indices: Vec<usize> = (0..self.cols as usize).collect();
-            indices.sort_by(|&a, &b| self.column_stretches[b].cmp(&self.column_stretches[a]));
+            if self.has_fractional_columns() {
+                indices.retain(|&col| self.column_fractions[col].is_some());
+                // An all-`0fr` row of tracks takes no space at all, so there is no bucket to
+                // hand the rounding remainder to; leaving it unused is what `0fr` means.
+                let total_parts: u64 =
+                    self.column_fractions.iter().flatten().map(|parts| u64::from(*parts)).sum();
+                if total_parts == 0 {
+                    indices.clear();
+                }
+                indices.sort_by(|&a, &b| self.column_fractions[b].cmp(&self.column_fractions[a]));
+            } else {
+                indices.sort_by(|&a, &b| self.column_stretches[b].cmp(&self.column_stretches[a]));
+            }
             let mut remaining = remainder_w;
             for (slot, &idx) in indices.iter().enumerate() {
                 // Divide by the number of buckets still to be served, not by the column index: with
@@ -1017,7 +1183,9 @@ impl GridLayout {
                 }
             }
             if remaining > 0 {
-                col_widths[indices[0]] += remaining;
+                if let Some(first) = indices.first() {
+                    col_widths[*first] += remaining;
+                }
             }
         }
 
@@ -1029,7 +1197,17 @@ impl GridLayout {
         // choice on every frame the container grew.
         if remainder_h > 0 && !row_heights.is_empty() && self.row_sizing == RowSizing::Fill {
             let mut indices: Vec<usize> = (0..self.rows as usize).collect();
-            indices.sort_by(|&a, &b| self.row_stretches[b].cmp(&self.row_stretches[a]));
+            if self.has_fractional_rows() {
+                indices.retain(|&row| self.row_fractions[row].is_some());
+                let total_parts: u64 =
+                    self.row_fractions.iter().flatten().map(|parts| u64::from(*parts)).sum();
+                if total_parts == 0 {
+                    indices.clear();
+                }
+                indices.sort_by(|&a, &b| self.row_fractions[b].cmp(&self.row_fractions[a]));
+            } else {
+                indices.sort_by(|&a, &b| self.row_stretches[b].cmp(&self.row_stretches[a]));
+            }
             let mut remaining = remainder_h;
             for (slot, &idx) in indices.iter().enumerate() {
                 // Same divisor rule as the column twin above: buckets still to be served,
@@ -1042,7 +1220,9 @@ impl GridLayout {
                 }
             }
             if remaining > 0 {
-                row_heights[indices[0]] += remaining;
+                if let Some(first) = indices.first() {
+                    row_heights[*first] += remaining;
+                }
             }
         }
 
@@ -2063,5 +2243,85 @@ mod tests {
             assert_eq!(grid.child_rect(id, rect), Some(expected), "id {id}");
         }
         assert_eq!(grid.child_rect(999, rect), None);
+    }
+
+    /// RW-51: without a fractional track the allocation is exactly the old equal split.
+    #[test]
+    fn a_grid_without_fractions_keeps_the_stretch_allocation() {
+        let mut grid = GridLayout::new(1, 2, 0, 0);
+        grid.set_widget(0, 0, 1);
+        grid.set_widget(0, 1, 2);
+        let out = placed(&grid, Rect::new(0, 0, 300, 20));
+        assert_eq!(rect_of(&out, 1).width, 150);
+        assert_eq!(rect_of(&out, 2).width, 150);
+        assert!(!grid.has_fractional_columns());
+    }
+
+    /// RW-51: `1fr 2fr` splits the leftover two-to-one.
+    #[test]
+    fn fractional_columns_divide_the_remainder_by_parts() {
+        let mut grid = GridLayout::new(1, 2, 0, 0);
+        grid.set_widget(0, 0, 1);
+        grid.set_widget(0, 1, 2);
+        assert!(grid.set_column_fraction(0, 1));
+        assert!(grid.set_column_fraction(1, 2));
+        assert_eq!(grid.column_fraction(0), Some(1));
+        assert_eq!(grid.column_fraction(1), Some(2));
+
+        let out = placed(&grid, Rect::new(0, 0, 300, 20));
+        assert_eq!(rect_of(&out, 1).width, 100, "1fr of 300 with 3 total parts");
+        assert_eq!(rect_of(&out, 2).width, 200);
+        assert_eq!(rect_of(&out, 2).x, 100, "the tracks stay contiguous");
+
+        // The cache must notice the track model changed.
+        assert!(grid.clear_column_fraction(1));
+        assert_eq!(grid.column_fraction(1), None);
+        assert!(!grid.set_column_fraction(5, 1), "out-of-range column is refused");
+    }
+
+    /// RW-51: a non-fractional track takes its floor first, and only the leftover is divided.
+    #[test]
+    fn a_fixed_track_takes_its_width_before_the_fraction() {
+        let mut grid = GridLayout::new(1, 2, 0, 0);
+        grid.set_widget(0, 0, 1);
+        grid.set_widget(0, 1, 2);
+        assert!(grid.set_column_minimum_width(0, 120));
+        assert!(grid.set_column_fraction(1, 1));
+
+        let out = placed(&grid, Rect::new(0, 0, 300, 20));
+        assert_eq!(rect_of(&out, 1).width, 120, "the fixed track keeps its floor");
+        assert_eq!(rect_of(&out, 2).width, 180, "the fr track takes the remainder");
+    }
+
+    /// RW-51: rows use the same fraction model under `Fill`.
+    #[test]
+    fn fractional_rows_divide_the_remainder_by_parts() {
+        let mut grid = GridLayout::new(2, 1, 0, 0);
+        grid.set_widget(0, 0, 1);
+        grid.set_widget(1, 0, 2);
+        assert!(grid.set_row_fraction(0, 1));
+        assert!(grid.set_row_fraction(1, 3));
+
+        let out = placed(&grid, Rect::new(0, 0, 20, 400));
+        assert_eq!(rect_of(&out, 1).height, 100);
+        assert_eq!(rect_of(&out, 2).height, 300);
+        assert_eq!(rect_of(&out, 2).y, 100);
+
+        assert!(grid.clear_row_fraction(0));
+        assert_eq!(grid.row_fraction(0), None);
+        assert!(!grid.set_row_fraction(9, 1), "out-of-range row is refused");
+    }
+
+    /// RW-51: `0fr` is a zero-width track, not "unset".
+    #[test]
+    fn a_zero_fraction_track_takes_no_space() {
+        let mut grid = GridLayout::new(1, 2, 0, 0);
+        grid.set_widget(0, 0, 1);
+        grid.set_widget(0, 1, 2);
+        assert!(grid.set_column_fraction(0, 0));
+        assert!(grid.set_column_fraction(1, 1));
+        let out = placed(&grid, Rect::new(0, 0, 300, 20));
+        assert_eq!(rect_of(&out, 1).width, 0);
+        assert_eq!(rect_of(&out, 2).width, 300);
     }
 }
