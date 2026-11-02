@@ -318,6 +318,25 @@ their window exactly as before. Evidence: `docs/plans/blue29.md` §7 (B29.07–B
   because their coverage comes from an anti-aliased shader, a stencil or a shadow layer rather than
   from a coverage mask. The CPU raster path therefore
   remains, as that fallback and as the byte reference the GPU tests compare against.
+- **A command stream can be handed to the host as a texture, with no readback.**
+  `WgpuRenderer::with_draw_commands_texture` draws exactly what the frame-returning entry points draw
+  and passes the target's view to a closure instead of copying the frame back and waiting for it. A
+  stream the dispatcher refuses is rasterised on the CPU and uploaded into the same texture, so the
+  caller sees one picture either way. It is the entry point for a host that consumes the frame on
+  the GPU. The measurement behind it lives in `benches/wgpu_bench.rs`, which also documents why
+  "draw it on the GPU" is not automatically faster for pixel-returning calls: at 720p a `clear` costs
+  the CPU rasteriser 0.29 ms and the GPU path 1.07 ms, and the difference is almost entirely the
+  round trip. The same harness shows where the GPU does win — an axis-aligned gradient (3.5×) and a
+  full-frame `Multiply` (11.2×).
+  Measured on a 1280×720 frame: a `clear` costs 25 µs to encode and submit and 266 µs including
+  completion, against 830 µs through the readback path; summed over the harness's eleven workloads,
+  texture delivery is 4.5× the dispatcher's chosen path and 12× the CPU rasteriser. A text-heavy
+  frame is the exception where completion makes the two paths equal, because the per-box coverage
+  uploads, not the readback, dominate it.
+- **The borrowed entry point reads the frame back once.** `render_draw_commands_cached_rgba8` used to
+  read the GPU frame into a fresh `Vec` and then copy it into the renderer's reusable buffer; the
+  readback now writes into that buffer directly. Measured at 720p, the borrowed call had been 10–30 %
+  slower than the owned one and is now level with it.
 - **The borrowed frame entry point draws what the owned one draws.** `render_draw_commands_cached_rgba8`
   used to rasterise on the CPU no matter what the dispatcher would have done, so one command stream
   could produce two different pictures — the GPU one from `render_draw_commands_rgba8` and the
