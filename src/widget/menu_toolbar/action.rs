@@ -859,7 +859,7 @@ impl WidgetProperties for Action {
                 Ok(())
             }
             "set_text" | "set_checkable" | "set_checked" => Err(CapabilityAccessError::OutOfRange),
-            _ => Err(CapabilityAccessError::UnknownCommand),
+            _ => self.default_command(name),
         }
     }
 }

@@ -631,7 +631,7 @@ impl WidgetProperties for OtpInput {
                 self.clear();
                 Ok(())
             }
-            _ => Err(CapabilityAccessError::UnknownCommand),
+            _ => self.default_command(name),
         }
     }
 }

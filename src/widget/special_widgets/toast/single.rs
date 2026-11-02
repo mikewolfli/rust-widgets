@@ -346,7 +346,7 @@ impl WidgetProperties for Toast {
                 Ok(())
             }
             "set_message" | "set_level" => Err(CapabilityAccessError::OutOfRange),
-            _ => Err(CapabilityAccessError::UnknownCommand),
+            _ => self.default_command(name),
         }
     }
 }

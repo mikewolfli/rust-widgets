@@ -1062,6 +1062,15 @@ impl Widget for PropertyGrid {
     fn base(&self) -> &BaseWidget {
         &self.base
     }
+    fn scrollable_rows(&self) -> Option<&dyn crate::widget::container_widgets::ScrollableRows> {
+        Some(self)
+    }
+    fn scrollable_rows_mut(
+        &mut self,
+    ) -> Option<&mut dyn crate::widget::container_widgets::ScrollableRows> {
+        Some(self)
+    }
+
     fn set_state_theme_hook(&mut self) {
         crate::style::reapply_active_theme_state(self);
     }
@@ -1217,7 +1226,13 @@ impl WidgetProperties for PropertyGrid {
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["properties", "property_count", "selected_index", BASE_PROPERTY_NAMES]
+        property_names_of![
+            "properties",
+            "scroll_row",
+            "property_count",
+            "selected_index",
+            BASE_PROPERTY_NAMES
+        ]
     }
 
     /// Runs one of the commands `property_grid` publishes.
@@ -1240,7 +1255,7 @@ impl WidgetProperties for PropertyGrid {
             // so the shared default reports that a payload is needed rather than
             // claiming the control has never heard of it.
             _ if name.starts_with("set_") => Err(CapabilityAccessError::OutOfRange),
-            _ => Err(CapabilityAccessError::UnknownCommand),
+            _ => self.default_command(name),
         }
     }
 }
@@ -1917,6 +1932,20 @@ fn shift_index_map<V>(map: &mut HashMap<usize, V>, at: usize, delta: isize) {
     }
     *map = shifted;
 }
+
+crate::impl_scrollable_rows!(
+    PropertyGrid,
+    row = |s| s.scroll_offset as usize,
+    set = |s, r| {
+        let next = r.min(s.max_scroll() as usize) as u32;
+        if next != s.scroll_offset {
+            s.scroll_offset = next;
+            s.base.request_redraw();
+        }
+    },
+    visible = |s| s.visible_row_count() as usize,
+    height = |_s| Some(ROW_HEIGHT)
+);
 
 #[cfg(test)]
 mod tests {

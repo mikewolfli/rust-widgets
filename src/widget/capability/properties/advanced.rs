@@ -21,7 +21,15 @@ pub(crate) fn tab_bar_capability() -> WidgetCapability {
         // Audit 20261026: `add_tab`, `remove_tab` stay unpublished — each takes a payload the bare
         // command channel cannot carry. `set_tabs` is the published form of a whole-strip write:
         // its rows travel through the `tabs` records property (B26.03).
-        commands: &["set_current_index", "set_closable", "set_movable", "set_tabs"],
+        commands: &[
+            "set_current_index",
+            "set_closable",
+            "set_movable",
+            "set_tabs",
+            "set_tab_max_width",
+            "set_tab_min_width",
+            "set_direction",
+        ],
     }
 }
 
@@ -36,7 +44,20 @@ pub(crate) fn calendar_capability() -> WidgetCapability {
         // Audit 20261026: `set_date_range` stays unpublished — the range is the writable
         // `minimum_date`/`maximum_date` pair, so a whole-range write is reachable through the
         // property route (principle #18).
-        commands: &["set_selected_date", "set_first_day_of_week", "show_today"],
+        commands: &[
+            "set_selected_date",
+            "set_first_day_of_week",
+            "show_today",
+            "set_date_format",
+            "set_grid_visible",
+            "set_horizontal_header_visible",
+            "set_navigation_bar_visible",
+            "set_selection_mode",
+            "set_show_week_numbers",
+            "set_vertical_header_visible",
+            "set_maximum_date",
+            "set_minimum_date",
+        ],
     }
 }
 
@@ -54,7 +75,15 @@ pub(crate) fn date_edit_capability() -> WidgetCapability {
         aliases: &["date_picker"],
         properties: DATE_EDIT_PROPERTIES,
         events: events_of!("date_edit"),
-        commands: &["set_date", "set_minimum_date", "set_maximum_date", "set_display_format"],
+        commands: &[
+            "set_date",
+            "set_minimum_date",
+            "set_maximum_date",
+            "set_display_format",
+            "set_calendar_first_day",
+            "set_calendar_popup",
+            "set_alignment",
+        ],
     }
 }
 
@@ -75,6 +104,8 @@ pub(crate) fn time_edit_capability() -> WidgetCapability {
             "set_maximum_time",
             "set_display_format",
             "set_clock_popup",
+            "set_time_format",
+            "set_alignment",
         ],
     }
 }
@@ -91,7 +122,14 @@ pub(crate) fn ribbon_bar_capability() -> WidgetCapability {
         // cannot carry; `tabs` is the published property and `set_tabs` its command form
         // (B26.03). `add_group`, `add_item`, `add_large_item` stay unpublished: they address a
         // position inside a tab/group nesting a flat property cannot express.
-        commands: &["clear", "set_tabs"],
+        commands: &[
+            "clear",
+            "set_tabs",
+            "set_current_tab",
+            "set_minimized",
+            "set_quick_access_overflow_menu",
+            "set_expanded",
+        ],
     }
 }
 
@@ -127,7 +165,7 @@ pub(crate) fn pie_menu_capability() -> WidgetCapability {
         // command channel cannot carry, and a whole-list write covers the same ground. `set_items`
         // is the published form of that write: its value travels through the `items` records
         // property (B26.03).
-        commands: &["set_radius", "set_current_index", "set_items"],
+        commands: &["set_radius", "set_current_index", "set_items", "set_inner_radius"],
     }
 }
 
@@ -141,7 +179,13 @@ pub(crate) fn date_time_edit_capability() -> WidgetCapability {
         aliases: &["datetimepicker", "date_time_picker"],
         properties: DATE_TIME_EDIT_PROPERTIES,
         events: events_of!("date_time_edit"),
-        commands: &["set_datetime", "set_display_format", "set_calendar_popup"],
+        commands: &[
+            "set_datetime",
+            "set_display_format",
+            "set_calendar_popup",
+            "set_calendar_first_day",
+            "set_alignment",
+        ],
     }
 }
 
@@ -160,7 +204,7 @@ pub(crate) fn key_sequence_editor_capability() -> WidgetCapability {
         aliases: &["key_sequence_edit"],
         properties: KEY_SEQUENCE_EDITOR_PROPERTIES,
         events: events_of!("key_sequence_editor"),
-        commands: &[],
+        commands: &["set_key_sequence"],
     }
 }
 
@@ -187,6 +231,8 @@ pub(crate) fn time_picker_capability() -> WidgetCapability {
             "set_maximum_time",
             "set_display_format",
             "set_clock_popup",
+            "set_time_format",
+            "set_alignment",
         ],
     }
 }

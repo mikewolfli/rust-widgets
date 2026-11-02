@@ -807,7 +807,7 @@ impl WidgetProperties for Switch {
                 Ok(())
             }
             "set_checked" => Err(CapabilityAccessError::OutOfRange),
-            _ => Err(CapabilityAccessError::UnknownCommand),
+            _ => self.default_command(name),
         }
     }
 }

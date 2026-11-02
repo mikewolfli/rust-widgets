@@ -1214,7 +1214,7 @@ impl WidgetProperties for ScrollBar {
             "set_range" | "set_value" | "set_steps" | "set_orientation" => {
                 Err(CapabilityAccessError::OutOfRange)
             }
-            _ => Err(CapabilityAccessError::UnknownCommand),
+            _ => self.default_command(name),
         }
     }
 }

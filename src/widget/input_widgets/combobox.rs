@@ -2425,7 +2425,7 @@ impl WidgetProperties for ComboBox {
                 Ok(())
             }
             "set_items" | "set_current_index" => Err(CapabilityAccessError::OutOfRange),
-            _ => Err(CapabilityAccessError::UnknownCommand),
+            _ => self.default_command(name),
         }
     }
 }

@@ -943,6 +943,15 @@ impl Widget for FontComboBox {
     fn base(&self) -> &BaseWidget {
         &self.base
     }
+    fn scrollable_rows(&self) -> Option<&dyn crate::widget::container_widgets::ScrollableRows> {
+        Some(self)
+    }
+    fn scrollable_rows_mut(
+        &mut self,
+    ) -> Option<&mut dyn crate::widget::container_widgets::ScrollableRows> {
+        Some(self)
+    }
+
     fn set_state_theme_hook(&mut self) {
         crate::style::reapply_active_theme_state(self);
     }
@@ -1150,6 +1159,7 @@ impl WidgetProperties for FontComboBox {
         property_names_of![
             "current_font_family",
             "item_count",
+            "scroll_row",
             "current_index",
             "editable",
             "alignment",
@@ -1184,7 +1194,7 @@ impl WidgetProperties for FontComboBox {
             "set_current_index" | "set_editable" | "set_max_visible_items" => {
                 Err(CapabilityAccessError::OutOfRange)
             }
-            _ => Err(CapabilityAccessError::UnknownCommand),
+            _ => self.default_command(name),
         }
     }
 }
@@ -1657,6 +1667,14 @@ impl Draw for FontComboBox {
         }
     }
 }
+
+crate::impl_scrollable_rows!(
+    FontComboBox,
+    row = |s| s.scroll_offset,
+    set = |s, r| s.set_scroll_offset(r),
+    visible = |s| (s.max_visible_items.max(1) as usize).min(s.visible_fonts.len()),
+    height = |s| Some(s.popup_row_height().max(1) as u32)
+);
 
 #[cfg(test)]
 mod tests {

@@ -1407,6 +1407,85 @@ fn a_published_set_command_takes_its_shape_from_the_control() {
     assert!(checked > 0, "no published setter, so this test proves nothing");
 }
 
+/// RW-44: every published `set_*` command reaches its property, and a round trip is stable.
+///
+/// # Why the table test alone is not enough
+///
+/// `a_published_set_command_takes_its_shape_from_the_control` proves the *declaration* agrees
+/// with the property table. It cannot prove the dispatcher answers: a control that overrides
+/// `command` without delegating the unhandled names refuses a name it publishes. The bare
+/// invocation must therefore answer `OutOfRange` ("supply a value") — the property route's own
+/// shape — and the value it asks for must actually be readable and writable.
+///
+/// The round trip writes the value the control just reported, so a control that clamps on write
+/// is not asked to accept something it never claimed. A write that changes the value on its own
+/// (a normaliser that is not idempotent) is a real defect in that property, which is why the
+/// comparison is `read → write(same) → read` and not "write a fabricated value".
+#[test]
+fn every_published_set_command_dispatches_to_its_property() {
+    let factory = WidgetFactory::new_with_defaults();
+    let mut checked = 0usize;
+    let mut failures: alloc::vec::Vec<(&'static str, &'static str, &'static str)> =
+        alloc::vec::Vec::new();
+
+    for capability in factory.capabilities() {
+        let Some(mut widget) =
+            factory.create(capability.canonical_name, Rect::new(0, 0, 96, 64), "")
+        else {
+            continue;
+        };
+        for command in capability.commands {
+            let Some(property) = command.strip_prefix("set_") else { continue };
+            checked += 1;
+            match factory.invoke_command(widget.as_mut(), command) {
+                // Payload-free by design: the command itself performed the change. Its effect is
+                // checked by the control's own tests; there is no property to round-trip.
+                Ok(()) => continue,
+                Err(CapabilityAccessError::OutOfRange) => {}
+                _ => {
+                    failures.push((
+                        capability.canonical_name,
+                        *command,
+                        "bare invocation did not reach the property route",
+                    ));
+                    continue;
+                }
+            }
+            let Ok(before) = factory.read_property(widget.as_ref(), property) else {
+                failures.push((
+                    capability.canonical_name,
+                    *command,
+                    "the property it names is not readable",
+                ));
+                continue;
+            };
+            if factory.write_property(widget.as_mut(), property, before.clone()).is_err() {
+                failures.push((
+                    capability.canonical_name,
+                    *command,
+                    "the value the control reported was refused on write",
+                ));
+                continue;
+            }
+            match factory.read_property(widget.as_ref(), property) {
+                Ok(after) if after == before => {}
+                _ => failures.push((
+                    capability.canonical_name,
+                    *command,
+                    "reading back after writing the reported value changed it",
+                )),
+            }
+        }
+    }
+
+    assert!(checked > 0, "no published setter, so this test proves nothing");
+    assert!(
+        failures.is_empty(),
+        "published set commands that are not real property writes \
+         (control, command, why): {failures:?}"
+    );
+}
+
 /// B26.03: every published command must have a derivable typed schema.
 ///
 /// # Why this test is the load-bearing half of B26.03

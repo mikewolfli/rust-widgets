@@ -636,7 +636,7 @@ impl WidgetProperties for ProgressCircle {
             "set_value" | "set_thickness" | "set_indeterminate" => {
                 Err(CapabilityAccessError::OutOfRange)
             }
-            _ => Err(CapabilityAccessError::UnknownCommand),
+            _ => self.default_command(name),
         }
     }
 }

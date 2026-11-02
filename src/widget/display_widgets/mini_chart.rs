@@ -690,7 +690,7 @@ impl WidgetProperties for MiniChart {
     fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
         match name {
             "set_chart_type" | "set_data" | "set_range" => Err(CapabilityAccessError::OutOfRange),
-            _ => Err(CapabilityAccessError::UnknownCommand),
+            _ => self.default_command(name),
         }
     }
 }

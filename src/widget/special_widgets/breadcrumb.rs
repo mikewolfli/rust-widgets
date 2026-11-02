@@ -825,7 +825,7 @@ impl WidgetProperties for Breadcrumb {
                 Ok(())
             }
             "push_segment" | "set_segments" => Err(CapabilityAccessError::OutOfRange),
-            _ => Err(CapabilityAccessError::UnknownCommand),
+            _ => self.default_command(name),
         }
     }
 }

@@ -864,7 +864,7 @@ impl WidgetProperties for RadarChart {
     fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
         match name {
             "add_series" | "set_axes" | "set_series" => Err(CapabilityAccessError::OutOfRange),
-            _ => Err(CapabilityAccessError::UnknownCommand),
+            _ => self.default_command(name),
         }
     }
 }

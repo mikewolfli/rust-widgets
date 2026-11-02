@@ -971,11 +971,18 @@ impl ListView {
     ///
     /// A count rather than a predicate, because a caller wants to know "how many rows are visible"
     /// as often as it wants "is row `i` visible", and deriving one from the other at each call site
-    /// is the shape this crate keeps deleting.
-    #[cfg(test)]
-    fn visible_row_count(&self) -> usize {
+    /// is the shape this crate keeps deleting. Published for the row-unit scroll contract (RW-58).
+    pub fn visible_row_count(&self) -> usize {
         let layout = self.list_layout();
         (layout.content.height / layout.row_height.max(1)) as usize
+    }
+
+    /// The row height the current view mode lays rows out with.
+    ///
+    /// Derived from [`Self::list_layout`] so the advertised height and the painted height cannot
+    /// disagree across the list/icon/details modes.
+    pub fn row_height(&self) -> u32 {
+        self.list_layout().row_height
     }
 
     /// How the items are laid out under the current [`ViewMode`].
@@ -1377,6 +1384,14 @@ impl Widget for ListView {
     fn base(&self) -> &BaseWidget {
         &self.base
     }
+    fn scrollable_rows(&self) -> Option<&dyn crate::widget::container_widgets::ScrollableRows> {
+        Some(self)
+    }
+    fn scrollable_rows_mut(
+        &mut self,
+    ) -> Option<&mut dyn crate::widget::container_widgets::ScrollableRows> {
+        Some(self)
+    }
     fn set_state_theme_hook(&mut self) {
         crate::style::reapply_active_theme_state(self);
     }
@@ -1533,6 +1548,7 @@ impl WidgetProperties for ListView {
         property_names_of![
             "has_model",
             "row_count",
+            "scroll_row",
             "focused_row",
             "selection_mode",
             "view_mode",
@@ -1557,7 +1573,7 @@ impl WidgetProperties for ListView {
                 self.clear_focused_row();
                 Ok(())
             }
-            _ => Err(CapabilityAccessError::UnknownCommand),
+            _ => self.default_command(name),
         }
     }
 }

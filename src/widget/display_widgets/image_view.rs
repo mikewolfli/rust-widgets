@@ -1331,7 +1331,7 @@ impl WidgetProperties for ImageView {
                 self.set_scaled(true);
                 Ok(())
             }
-            _ => Err(CapabilityAccessError::UnknownCommand),
+            _ => self.default_command(name),
         }
     }
 }

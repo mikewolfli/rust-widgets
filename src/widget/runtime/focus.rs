@@ -172,6 +172,41 @@ pub fn clear_focus() -> bool {
     true
 }
 
+/// Subscribes `slot` to a mounted control's **own** focus signal (RW-63).
+///
+/// `gained == true` observes [`crate::widget::BaseWidget::focus_gained`], `false` observes
+/// [`crate::widget::BaseWidget::focus_lost`]. Those are the signals the runtime's focus router
+/// drives through `handle_event` when it delivers `Event::FocusGained` / `Event::FocusLost`, and
+/// the same ones the JSON `on_focus` / `on_blur` triggers bind to. Subscribing here therefore
+/// adds no second copy of the focus state: there is one channel, and this is it.
+///
+/// The callback receives no payload because the base signal is payload-free. A caller that needs
+/// the reason a control gained focus reads the control's own recorded reason (it is stored by
+/// `BaseWidget` from the same event) rather than duplicating it into a second signal.
+///
+/// Returns `true` when the observer was installed. `false` means `id` is not mounted, so there
+/// is no signal to attach to; the slot is dropped rather than stored where it could never run.
+///
+/// The slot lives on the control's own signal, so it goes away with the control — the same
+/// lifetime the control's `clicked` / `closed` observers have.
+pub fn subscribe_focus<F>(id: ObjectId, gained: bool, slot: F) -> bool
+where
+    F: FnMut() + Send + Sync + 'static,
+{
+    let Some(signal) = read_widget(id, |widget| {
+        let base = widget.base();
+        if gained {
+            base.focus_gained.clone()
+        } else {
+            base.focus_lost.clone()
+        }
+    }) else {
+        return false;
+    };
+    signal.connect(slot);
+    true
+}
+
 /// Moves focus to the next focusable widget in tab order (wraps around).
 ///
 /// Returns the newly focused id. `forward == false` moves backwards (Shift-Tab).

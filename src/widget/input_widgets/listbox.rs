@@ -1342,6 +1342,16 @@ impl Widget for ListBox {
         &self.base
     }
 
+    fn scrollable_rows(&self) -> Option<&dyn crate::widget::container_widgets::ScrollableRows> {
+        Some(self)
+    }
+
+    fn scrollable_rows_mut(
+        &mut self,
+    ) -> Option<&mut dyn crate::widget::container_widgets::ScrollableRows> {
+        Some(self)
+    }
+
     /// Selects the row under the pointer, then asks the host for a menu about it.
     ///
     /// A right-click used to reach no signal at all for this control; adding the signal without
@@ -1622,6 +1632,7 @@ impl WidgetProperties for ListBox {
             "item_count",
             "selection_mode",
             "current_row",
+            "scroll_row",
             "item_height",
             "selected_count",
             "selected_indices",
@@ -1652,7 +1663,7 @@ impl WidgetProperties for ListBox {
             "add_item" | "remove_item" | "set_selection_mode" | "set_items" => {
                 Err(CapabilityAccessError::OutOfRange)
             }
-            _ => Err(CapabilityAccessError::UnknownCommand),
+            _ => self.default_command(name),
         }
     }
 }

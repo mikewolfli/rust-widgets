@@ -434,7 +434,7 @@ impl WidgetProperties for TextArea {
             "set_text" | "set_placeholder" | "set_read_only" => {
                 Err(CapabilityAccessError::OutOfRange)
             }
-            _ => Err(CapabilityAccessError::UnknownCommand),
+            _ => self.default_command(name),
         }
     }
 }

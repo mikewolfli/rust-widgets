@@ -461,7 +461,7 @@ impl WidgetProperties for Spinner {
             "set_active" | "set_speed" | "set_thickness" | "set_size_ratio" => {
                 Err(CapabilityAccessError::OutOfRange)
             }
-            _ => Err(CapabilityAccessError::UnknownCommand),
+            _ => self.default_command(name),
         }
     }
 }

@@ -829,6 +829,15 @@ impl Widget for NotificationCenter {
     fn base(&self) -> &BaseWidget {
         &self.base
     }
+    fn scrollable_rows(&self) -> Option<&dyn crate::widget::container_widgets::ScrollableRows> {
+        Some(self)
+    }
+    fn scrollable_rows_mut(
+        &mut self,
+    ) -> Option<&mut dyn crate::widget::container_widgets::ScrollableRows> {
+        Some(self)
+    }
+
     fn set_state_theme_hook(&mut self) {
         crate::style::reapply_active_theme_state(self);
     }
@@ -1014,6 +1023,7 @@ impl WidgetProperties for NotificationCenter {
     fn property_names(&self) -> &'static [&'static str] {
         property_names_of![
             "items",
+            "scroll_row",
             "item_count",
             "unread_count",
             "selected_index",
@@ -1053,7 +1063,7 @@ impl WidgetProperties for NotificationCenter {
             "push" | "set_read" | "select_index" | "set_items" => {
                 Err(CapabilityAccessError::OutOfRange)
             }
-            _ => Err(CapabilityAccessError::UnknownCommand),
+            _ => self.default_command(name),
         }
     }
 }
@@ -1349,6 +1359,17 @@ impl Draw for NotificationCenter {
         }
     }
 }
+
+crate::impl_scrollable_rows!(
+    NotificationCenter,
+    row = |s| s.scroll_offset,
+    set = |s, r| {
+        let delta = r as isize - s.scroll_offset as isize;
+        s.scroll_by(delta);
+    },
+    visible = |s| (s.geometry().height / s.row_height.max(1)) as usize,
+    height = |s| Some(s.row_height)
+);
 
 #[cfg(test)]
 mod tests {

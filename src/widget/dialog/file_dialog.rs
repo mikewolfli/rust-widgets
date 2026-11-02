@@ -1505,7 +1505,7 @@ impl WidgetProperties for FileDialog {
                 Ok(())
             }
             "set_mode" | "set_directory" => Err(CapabilityAccessError::OutOfRange),
-            _ => Err(CapabilityAccessError::UnknownCommand),
+            _ => self.default_command(name),
         }
     }
 }

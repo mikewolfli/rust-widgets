@@ -416,7 +416,7 @@ impl WidgetProperties for MiniCanvas {
             "fill_rect" | "draw_rect" | "draw_line" | "fill_circle" => {
                 Err(CapabilityAccessError::OutOfRange)
             }
-            _ => Err(CapabilityAccessError::UnknownCommand),
+            _ => self.default_command(name),
         }
     }
 }

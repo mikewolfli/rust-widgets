@@ -1128,6 +1128,14 @@ impl TreeView {
         self.scroll_row
     }
 
+    /// The height of one row in pixels.
+    ///
+    /// Tree rows are uniform (`TREE_ROW_HEIGHT`), so a caller restoring a scroll position can
+    /// convert between a pixel offset and a row index without guessing.
+    pub fn row_height(&self) -> u32 {
+        TREE_ROW_HEIGHT.max(1) as u32
+    }
+
     /// Sets the first visible row, clamped to the projection.
     pub fn set_scroll_row(&mut self, row: usize) {
         let lines = self.visible_row_count();
@@ -2096,6 +2104,14 @@ impl Widget for TreeView {
     fn base(&self) -> &BaseWidget {
         &self.base
     }
+    fn scrollable_rows(&self) -> Option<&dyn crate::widget::container_widgets::ScrollableRows> {
+        Some(self)
+    }
+    fn scrollable_rows_mut(
+        &mut self,
+    ) -> Option<&mut dyn crate::widget::container_widgets::ScrollableRows> {
+        Some(self)
+    }
     fn set_state_theme_hook(&mut self) {
         crate::style::reapply_active_theme_state(self);
     }
@@ -2415,6 +2431,7 @@ impl WidgetProperties for TreeView {
         property_names_of![
             "has_model",
             "node_count",
+            "scroll_row",
             "focused_node",
             "selected_node",
             "has_delegate",
@@ -2465,7 +2482,7 @@ impl WidgetProperties for TreeView {
                     Err(CapabilityAccessError::OutOfRange)
                 }
             }
-            _ => Err(CapabilityAccessError::UnknownCommand),
+            _ => self.default_command(name),
         }
     }
 }

@@ -18,7 +18,16 @@ pub(crate) fn list_view_capability() -> WidgetCapability {
         aliases: &[],
         properties: LIST_VIEW_PROPERTIES,
         events: events_of!("list_view"),
-        commands: &["clear_selection", "clear_focused_row"],
+        commands: &[
+            "clear_selection",
+            "clear_focused_row",
+            "set_icon_visible_in_list_mode",
+            "set_scroll_row",
+            "set_selection_mode",
+            "set_view_mode",
+            "set_alignment",
+            "set_focused_row",
+        ],
     }
 }
 
@@ -34,7 +43,19 @@ pub(crate) fn tree_view_capability() -> WidgetCapability {
         // command with no payload cannot name another row. The spellings are the ones the sibling
         // hierarchical control (`cascader`) already publishes, so a host sees one vocabulary for
         // "open the current branch" rather than one per control.
-        commands: &["clear_selection", "clear_focused_node", "expand", "collapse", "toggle"],
+        commands: &[
+            "clear_selection",
+            "clear_focused_node",
+            "expand",
+            "collapse",
+            "toggle",
+            "set_expansion_animated",
+            "set_fetch_timeout_ms",
+            "set_focused_node",
+            "set_lazy_loading",
+            "set_loading_indicator_visible",
+            "set_scroll_row",
+        ],
     }
 }
 
@@ -46,7 +67,15 @@ pub(crate) fn table_widget_capability() -> WidgetCapability {
         aliases: &[],
         properties: TABLE_WIDGET_PROPERTIES,
         events: events_of!("table_widget"),
-        commands: &["clear_selection", "clear_focused_row"],
+        commands: &[
+            "clear_selection",
+            "clear_focused_row",
+            "set_header_visible",
+            "set_scroll_row",
+            "set_selection_mode",
+            "set_edit_triggers",
+            "set_editable",
+        ],
     }
 }
 
@@ -75,7 +104,15 @@ pub(crate) fn table_capability() -> WidgetCapability {
         aliases: &[],
         properties: TABLE_WIDGET_PROPERTIES,
         events: events_of!("table"),
-        commands: &["clear_selection", "clear_focused_row"],
+        commands: &[
+            "clear_selection",
+            "clear_focused_row",
+            "set_header_visible",
+            "set_scroll_row",
+            "set_selection_mode",
+            "set_edit_triggers",
+            "set_editable",
+        ],
     }
 }
 
@@ -100,6 +137,12 @@ pub(crate) fn data_grid_capability() -> WidgetCapability {
             "set_column_width",
             "set_frozen_columns",
             "select_all",
+            "set_filters",
+            "set_section_resize_mode",
+            "set_selection_behavior",
+            "set_selection_mode",
+            "set_sort_indicator_visible",
+            "set_sort_specs",
         ],
     }
 }
@@ -116,7 +159,21 @@ pub(crate) fn tree_table_capability() -> WidgetCapability {
         // the same assignment (principle #18). `set_model` binds an `Arc<dyn ...>` model, which no
         // property value can carry; `expand_row`/`collapse_row` name a row and the table publishes
         // no expandable-row property, so all three stay unpublished.
-        commands: &["clear_model"],
+        commands: &[
+            "clear_model",
+            "set_case_sensitive",
+            "set_expands_on_double_click",
+            "set_fetch_timeout_ms",
+            "set_header_visible",
+            "set_lazy_loading",
+            "set_loading_indicator_visible",
+            "set_middle_click_expands",
+            "set_projection_strategy",
+            "set_row_height",
+            "set_scroll_row",
+            "set_sort_role",
+            "set_column_width",
+        ],
     }
 }
 
@@ -141,6 +198,8 @@ pub(crate) fn virtual_table_capability() -> WidgetCapability {
             "set_overscan_columns",
             "fetch_visible_window",
             "clear_selection",
+            "set_selection_mode",
+            "set_wheel_scroll_mode",
         ],
     }
 }
@@ -153,7 +212,14 @@ pub(crate) fn virtual_list_capability() -> WidgetCapability {
         aliases: &[],
         properties: VIRTUAL_LIST_PROPERTIES,
         events: events_of!("virtual_list"),
-        commands: &["clear_data_source", "fetch_visible_rows"],
+        commands: &[
+            "clear_data_source",
+            "fetch_visible_rows",
+            "set_overscan",
+            "set_row_height",
+            "set_scroll_row",
+            "set_selection_mode",
+        ],
     }
 }
 
@@ -187,7 +253,14 @@ pub(crate) fn data_view_capability() -> WidgetCapability {
         aliases: &[],
         properties: VIRTUAL_LIST_PROPERTIES,
         events: events_of!("data_view"),
-        commands: &["clear_data_source", "fetch_visible_rows"],
+        commands: &[
+            "clear_data_source",
+            "fetch_visible_rows",
+            "set_overscan",
+            "set_row_height",
+            "set_scroll_row",
+            "set_selection_mode",
+        ],
     }
 }
 
@@ -217,7 +290,7 @@ pub(crate) fn color_dialog_capability() -> WidgetCapability {
         // writable `hex_rgba` and `preset_index` properties, which are exactly the colour and the
         // preset a caller writes, so both names are reachable through the property route
         // (principle #18).
-        commands: &[],
+        commands: &["set_options_alpha", "set_show_screen_picker", "set_modal"],
     }
 }
 
@@ -233,7 +306,18 @@ pub(crate) fn otp_input_capability() -> WidgetCapability {
         aliases: &["otp"],
         properties: OTP_INPUT_PROPERTIES,
         events: events_of!("otp_input"),
-        commands: &["insert_char", "backspace", "paste", "clear"],
+        commands: &[
+            "insert_char",
+            "backspace",
+            "paste",
+            "clear",
+            "set_digits_only",
+            "set_length",
+            "set_masked",
+            "set_separator",
+            "set_read_only",
+            "set_value",
+        ],
     }
 }
 
@@ -248,7 +332,15 @@ pub(crate) fn banner_capability() -> WidgetCapability {
         // Audit 20261026: `set_actions` is published now that the `actions` StringList property is
         // its payload channel (B26.03). `show` stays published — it is payload-free and runs the
         // control's real `show`.
-        commands: &["dismiss", "show", "activate_action", "set_actions"],
+        commands: &[
+            "dismiss",
+            "show",
+            "activate_action",
+            "set_actions",
+            "set_dismissible",
+            "set_severity",
+            "set_text",
+        ],
     }
 }
 
@@ -260,7 +352,7 @@ pub(crate) fn toast_capability() -> WidgetCapability {
         aliases: &["notification", "toast_message"],
         properties: TOAST_PROPERTIES,
         events: events_of!("toast"),
-        commands: &["dismiss", "set_message", "set_level"],
+        commands: &["dismiss", "set_message", "set_level", "set_dismissible", "set_ttl_ms"],
     }
 }
 
@@ -277,7 +369,14 @@ pub(crate) fn splash_screen_capability() -> WidgetCapability {
         events: events_of!("splash_screen"),
         // `set_logo` carries its descriptor through the writable `logo` property, so the command
         // form is the payload-free half (B26.03).
-        commands: &["finish", "set_progress", "set_title", "set_logo"],
+        commands: &[
+            "finish",
+            "set_progress",
+            "set_title",
+            "set_logo",
+            "set_skippable",
+            "set_subtitle",
+        ],
     }
 }
 
@@ -289,7 +388,16 @@ pub(crate) fn pagination_capability() -> WidgetCapability {
         aliases: &["pager", "page_numbers"],
         properties: PAGINATION_PROPERTIES,
         events: events_of!("pagination"),
-        commands: &["next_page", "previous_page", "set_page", "set_total"],
+        commands: &[
+            "next_page",
+            "previous_page",
+            "set_page",
+            "set_total",
+            "set_page_size",
+            "set_show_nav_buttons",
+            "set_sibling_count",
+            "set_wheel_paging_enabled",
+        ],
     }
 }
 
@@ -304,7 +412,18 @@ pub(crate) fn number_picker_capability() -> WidgetCapability {
         // Audit 20261026: `set_range` stays unpublished — the range is the writable
         // `minimum`/`maximum` pair, so a whole-range write is reachable through the property route
         // (principle #18).
-        commands: &["scroll_rows", "set_value", "set_step"],
+        commands: &[
+            "scroll_rows",
+            "set_value",
+            "set_step",
+            "set_decimals",
+            "set_maximum",
+            "set_minimum",
+            "set_prefix",
+            "set_row_height",
+            "set_suffix",
+            "set_wrap",
+        ],
     }
 }
 
@@ -319,7 +438,17 @@ pub(crate) fn grid_table_capability() -> WidgetCapability {
         // Audit 20261026: `set_data_source` binds an `Arc<dyn IncrementalTableDataSource>` no
         // property value can carry; `toggle_sort_column` names a column and the table's sort state
         // is published as read-only derived names, so both stay unpublished (principle #18).
-        commands: &["clear_data_source", "set_scroll_row", "set_scroll_column", "clear_selection"],
+        commands: &[
+            "clear_data_source",
+            "set_scroll_row",
+            "set_scroll_column",
+            "clear_selection",
+            "set_auto_refresh",
+            "set_row_height",
+            "set_selection_mode",
+            "set_sort_role",
+            "set_sorting_enabled",
+        ],
     }
 }
 
@@ -334,7 +463,14 @@ pub(crate) fn image_view_capability() -> WidgetCapability {
         // control publishes only the view state (`scaled`, rotation, zoom, pan), with no property
         // that carries the image itself; the control's own `set_image` API is the write path
         // (principle #18).
-        commands: &["set_scaled"],
+        commands: &[
+            "set_scaled",
+            "set_flip_horizontal",
+            "set_flip_vertical",
+            "set_rotation",
+            "set_zoom_level",
+            "set_pan_offset",
+        ],
     }
 }
 
@@ -346,7 +482,7 @@ pub(crate) fn properties_panel_capability() -> WidgetCapability {
         aliases: &["property_panel"],
         properties: PROPERTIES_PANEL_PROPERTIES,
         events: events_of!("properties_panel"),
-        commands: &[],
+        commands: &["set_description_mode", "set_edit_trigger", "set_scroll_row"],
     }
 }
 
@@ -358,7 +494,15 @@ pub(crate) fn image_gallery_capability() -> WidgetCapability {
         aliases: &["gallery"],
         properties: IMAGE_GALLERY_PROPERTIES,
         events: events_of!("image_gallery"),
-        commands: &["set_current_index"],
+        commands: &[
+            "set_current_index",
+            "set_arrow_key_navigation_enabled",
+            "set_show_thumbnails",
+            "set_strip_offset",
+            "set_strip_scroll_enabled",
+            "set_thumbnail_size",
+            "set_wheel_mode",
+        ],
     }
 }
 
@@ -375,7 +519,7 @@ pub(crate) fn property_grid_capability() -> WidgetCapability {
         // is its payload channel (B26.03). `add_property` and `set_value` stay unpublished — their
         // payloads (a row, an index+value) have no property route of their own; a whole-list write
         // covers both.
-        commands: &["clear", "set_selected_index", "set_properties"],
+        commands: &["clear", "set_selected_index", "set_properties", "set_scroll_row"],
     }
 }
 

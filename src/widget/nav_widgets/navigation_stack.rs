@@ -666,7 +666,7 @@ impl WidgetProperties for NavigationStack {
             }
             "push" => Err(CapabilityAccessError::OutOfRange),
             _ if name.starts_with("set_") => Err(CapabilityAccessError::OutOfRange),
-            _ => Err(CapabilityAccessError::UnknownCommand),
+            _ => self.default_command(name),
         }
     }
 }

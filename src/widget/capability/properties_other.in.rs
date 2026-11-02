@@ -267,6 +267,8 @@ macro_rules! impl_properties_other {
                 true,
                 &crate::widget::special_widgets::timeline_widget::TIMELINE_ITEM_SCHEMA,
             ),
+            // RW-58: the first visible lane row, in rows.
+            PropertySchema::new("scroll_row", PropertyValueKind::UInt, true, true),
             PropertySchema::new("item_count", PropertyValueKind::UInt, true, false),
             PropertySchema::new("selected_index", PropertyValueKind::UInt, true, false),
             PropertySchema::new("viewport_start", PropertyValueKind::Int, true, true),
@@ -292,6 +294,8 @@ macro_rules! impl_properties_other {
                 true,
                 &crate::widget::special_widgets::command_palette::COMMAND_ENTRY_SCHEMA,
             ),
+            // RW-58: the first visible result row, in rows.
+            PropertySchema::new("scroll_row", PropertyValueKind::UInt, true, true),
             PropertySchema::new("query", PropertyValueKind::String, true, true),
             PropertySchema::new("entry_count", PropertyValueKind::UInt, true, false),
             PropertySchema::new("filtered_count", PropertyValueKind::UInt, true, false),
@@ -315,6 +319,8 @@ macro_rules! impl_properties_other {
                 true,
                 &crate::widget::special_widgets::notification_center::NOTIFICATION_ITEM_SCHEMA,
             ),
+            // RW-58: the first visible row, in rows.
+            PropertySchema::new("scroll_row", PropertyValueKind::UInt, true, true),
             PropertySchema::new("item_count", PropertyValueKind::UInt, true, false),
             PropertySchema::new("unread_count", PropertyValueKind::UInt, true, false),
             PropertySchema::new("selected_index", PropertyValueKind::UInt, true, false),
@@ -342,6 +348,8 @@ macro_rules! impl_properties_other {
         #[cfg(not(alloc_frugal))]
         pub(crate) const TOAST_STACK_PROPERTIES: &[PropertySchema] = &[
             PropertySchema::new("toast_count", PropertyValueKind::UInt, true, false),
+            // RW-58: the first visible toast row, in rows.
+            PropertySchema::new("scroll_row", PropertyValueKind::UInt, true, true),
             PropertySchema::new("selected_id", PropertyValueKind::String, true, false),
             PropertySchema::new("row_height", PropertyValueKind::UInt, true, true),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
@@ -434,6 +442,8 @@ macro_rules! impl_properties_other {
                 true,
                 &crate::widget::input_widgets::mention::MENTION_CANDIDATE_SCHEMA,
             ),
+            // RW-58: the first visible popup row, in rows.
+            PropertySchema::new("scroll_row", PropertyValueKind::UInt, true, true),
             // The text and the trigger are written directly; the counts are what the property layer
             // reports. Same convention as the other list-valued controls.
             PropertySchema::new("text", PropertyValueKind::String, true, true),
@@ -500,6 +510,8 @@ macro_rules! impl_properties_other {
                 true,
                 &crate::widget::view_widgets::query_builder::QUERY_ROW_SCHEMA,
             ),
+            // RW-58: the first visible row, in rows.
+            PropertySchema::new("scroll_row", PropertyValueKind::UInt, true, true),
             PropertySchema::new("row_count", PropertyValueKind::UInt, true, false),
             PropertySchema::new("incomplete_row_count", PropertyValueKind::UInt, true, false),
             PropertySchema::new("field_count", PropertyValueKind::UInt, true, false),
@@ -1241,6 +1253,8 @@ macro_rules! impl_properties_other {
         pub(crate) const MAC_SOURCE_LIST_PROPERTIES: &[PropertySchema] = &[
             PropertySchema::new("section_count", PropertyValueKind::UInt, true, false),
             PropertySchema::new("row_count", PropertyValueKind::UInt, true, false),
+            // RW-58: the first visible row, in rows.
+            PropertySchema::new("scroll_row", PropertyValueKind::UInt, true, true),
             PropertySchema::new("row_height", PropertyValueKind::UInt, true, false),
             PropertySchema::new("selected_row", PropertyValueKind::UInt, true, true),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
@@ -1313,7 +1327,6 @@ macro_rules! impl_properties_other {
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
         ];
-
 
         // ── Companion controls (COMP-01/05/07/08/09/10/12/13/14/15/16/17/18/19/20) ──
         //
@@ -1599,7 +1612,7 @@ macro_rules! impl_properties_other {
         /// Map overview (COMP-A7). The overview mirrors an attached map, so `map_view_attached`
         /// reports that connection rather than being a setting.
         #[cfg(not(alloc_frugal))]
-/// Find/replace strip beside an editor (`COMP-16`).
+        /// Find/replace strip beside an editor (`COMP-16`).
         #[cfg(not(alloc_frugal))]
         pub(crate) const FIND_BAR_PROPERTIES: &[PropertySchema] = &[
             PropertySchema::new("query", PropertyValueKind::String, true, true),
@@ -1674,6 +1687,8 @@ macro_rules! impl_properties_other {
                 true,
                 &crate::widget::companions::MENU_PANEL_ITEM_SCHEMA,
             ),
+            // RW-58: the first visible row, in rows.
+            PropertySchema::new("scroll_row", PropertyValueKind::UInt, true, true),
             PropertySchema::new("selected_index", PropertyValueKind::UInt, true, true),
             PropertySchema::new("highlighted_index", PropertyValueKind::UInt, true, true),
             PropertySchema::new("max_visible_rows", PropertyValueKind::UInt, true, true),
@@ -1755,6 +1770,8 @@ macro_rules! impl_properties_other {
                 true,
                 &crate::widget::companions::LAYER_ENTRY_SCHEMA,
             ),
+            // RW-58: the first visible row, in rows.
+            PropertySchema::new("scroll_row", PropertyValueKind::UInt, true, true),
             PropertySchema::new("entry_count", PropertyValueKind::UInt, true, false),
             PropertySchema::new("selected_layer", PropertyValueKind::UInt, true, false),
             PropertySchema::new("show_visibility_checkboxes", PropertyValueKind::Bool, true, true),
@@ -1778,6 +1795,8 @@ macro_rules! impl_properties_other {
                 true,
                 &crate::widget::companions::PLAYLIST_TRACK_SCHEMA,
             ),
+            // RW-58: the first visible row, in rows.
+            PropertySchema::new("scroll_row", PropertyValueKind::UInt, true, true),
             PropertySchema::new("track_count", PropertyValueKind::UInt, true, false),
             PropertySchema::new("current_index", PropertyValueKind::UInt, true, true),
             PropertySchema::new("show_track_numbers", PropertyValueKind::Bool, true, true),

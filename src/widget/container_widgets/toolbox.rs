@@ -995,6 +995,15 @@ impl Widget for ToolBox {
     fn base(&self) -> &BaseWidget {
         &self.base
     }
+    fn scrollable_rows(&self) -> Option<&dyn crate::widget::container_widgets::ScrollableRows> {
+        Some(self)
+    }
+    fn scrollable_rows_mut(
+        &mut self,
+    ) -> Option<&mut dyn crate::widget::container_widgets::ScrollableRows> {
+        Some(self)
+    }
+
     fn set_state_theme_hook(&mut self) {
         crate::style::reapply_active_theme_state(self);
     }
@@ -1158,6 +1167,7 @@ impl WidgetProperties for ToolBox {
         // Mirrors `TOOL_BOX_PROPERTIES`.
         property_names_of![
             "item_count",
+            "scroll_row",
             "current_index",
             "orientation",
             "mode",
@@ -1178,7 +1188,7 @@ impl WidgetProperties for ToolBox {
             // so the shared default reports that a payload is needed rather than
             // claiming the control has never heard of it.
             _ if name.starts_with("set_") => Err(CapabilityAccessError::OutOfRange),
-            _ => Err(CapabilityAccessError::UnknownCommand),
+            _ => self.default_command(name),
         }
     }
 }
@@ -1516,6 +1526,14 @@ impl Draw for ToolBox {
         }
     }
 }
+
+crate::impl_scrollable_rows!(
+    ToolBox,
+    row = |s| s.scroll_offset,
+    set = |s, r| s.set_scroll_offset(r),
+    visible = |s| (s.geometry().height.max(1) / s.item_extent().max(1)) as usize,
+    height = |s| Some(s.item_extent())
+);
 
 #[cfg(test)]
 mod tests {

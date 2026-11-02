@@ -311,7 +311,7 @@ impl WidgetProperties for Divider {
             "set_orientation" | "set_thickness" | "set_color" => {
                 Err(CapabilityAccessError::OutOfRange)
             }
-            _ => Err(CapabilityAccessError::UnknownCommand),
+            _ => self.default_command(name),
         }
     }
 }

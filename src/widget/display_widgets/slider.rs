@@ -1439,7 +1439,7 @@ impl WidgetProperties for Slider {
             "set_minimum" | "set_maximum" | "set_single_step" | "set_page_step"
             | "set_orientation" | "set_tick_position" | "set_tick_interval" | "set_tracking"
             | "set_track_click" => Err(CapabilityAccessError::OutOfRange),
-            _ => Err(CapabilityAccessError::UnknownCommand),
+            _ => self.default_command(name),
         }
     }
 }

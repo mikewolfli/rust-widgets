@@ -22,7 +22,7 @@ pub(crate) fn animated_image_capability() -> WidgetCapability {
         // `auto_complete_edit` for why a name that does not match its signal is a live-looking
         // subscription rather than a visible error.
         events: events_of!("animated_image"),
-        commands: &["set_playing"],
+        commands: &["set_playing", "set_current_frame", "set_frame_cache_limit", "set_direction"],
     }
 }
 

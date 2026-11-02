@@ -27,6 +27,9 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
+/// The height one painted row (category header or shortcut) occupies (RW-58).
+const SHORTCUT_ROW_HEIGHT: u32 = 22;
+
 /// Returns true when a key press is `expected` with exactly the host's primary
 /// accelerator.
 ///
@@ -441,7 +444,7 @@ impl ShortcutEditor {
         if pos.y < self.content_top() {
             return None;
         }
-        let row_height = 22i32;
+        let row_height = SHORTCUT_ROW_HEIGHT as i32;
         let grouped = self.grouped();
         let mut y = self.content_top();
         let mut skip = self.scroll_offset;
@@ -718,6 +721,14 @@ impl ShortcutEditor {
         self.shortcuts.len()
     }
 
+    /// Returns how many shortcut rows fit in the viewport (RW-58).
+    ///
+    /// Counts paint rows, including the category headers the draw pass emits, because
+    /// `scroll_offset` counts both kinds.
+    fn visible_row_count(&self) -> usize {
+        (self.geometry().height / SHORTCUT_ROW_HEIGHT).max(1) as usize
+    }
+
     /// Returns how many shortcuts match the current filter.
     ///
     /// Separate from the total because "the table is empty" and "the filter matched nothing" look the
@@ -771,6 +782,15 @@ impl Widget for ShortcutEditor {
     fn base(&self) -> &BaseWidget {
         &self.base
     }
+    fn scrollable_rows(&self) -> Option<&dyn crate::widget::container_widgets::ScrollableRows> {
+        Some(self)
+    }
+    fn scrollable_rows_mut(
+        &mut self,
+    ) -> Option<&mut dyn crate::widget::container_widgets::ScrollableRows> {
+        Some(self)
+    }
+
     fn set_state_theme_hook(&mut self) {
         crate::style::reapply_active_theme_state(self);
     }
@@ -876,6 +896,7 @@ impl WidgetProperties for ShortcutEditor {
         // Mirrors `SHORTCUT_EDITOR_PROPERTIES`.
         property_names_of![
             "filter_text",
+            "scroll_row",
             "shortcut_count",
             "visible_count",
             "category_count",
@@ -900,7 +921,7 @@ impl WidgetProperties for ShortcutEditor {
                 self.reset_all_shortcuts();
                 Ok(())
             }
-            _ => Err(CapabilityAccessError::UnknownCommand),
+            _ => self.default_command(name),
         }
     }
 }
@@ -1029,7 +1050,7 @@ impl Draw for ShortcutEditor {
         let cat_font = role_font(style, 12.0).with_bold(true);
         let name_font = role_font(style, 12.0);
         let key_font = role_font(style, 11.0);
-        let row_height = 22;
+        let row_height = SHORTCUT_ROW_HEIGHT as i32;
         // I-P67: formatted keys and conflict flags for the whole table, rebuilt only when the
         // table changes.
         let display = self.row_display();
@@ -1832,3 +1853,21 @@ mod tests {
         assert_eq!(keycode_to_name(0x5B, 0), "[");
     }
 }
+
+crate::impl_scrollable_rows!(
+    ShortcutEditor,
+    row = |s| s.scroll_offset,
+    set = |s, r| {
+        let total: usize = {
+            let grouped = s.grouped();
+            grouped.groups.iter().map(|(_, rows)| 1 + rows.len()).sum()
+        };
+        let next = r.min(total.saturating_sub(s.visible_row_count()));
+        if next != s.scroll_offset {
+            s.scroll_offset = next;
+            s.base.request_redraw();
+        }
+    },
+    visible = |s| s.visible_row_count(),
+    height = |_s| Some(SHORTCUT_ROW_HEIGHT)
+);

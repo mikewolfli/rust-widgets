@@ -847,7 +847,7 @@ impl WidgetProperties for Tooltip {
                 Ok(())
             }
             "set_text" => Err(CapabilityAccessError::OutOfRange),
-            _ => Err(CapabilityAccessError::UnknownCommand),
+            _ => self.default_command(name),
         }
     }
 }

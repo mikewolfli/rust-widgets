@@ -921,7 +921,7 @@ impl WidgetProperties for Dialog {
                 self.reject();
                 Ok(())
             }
-            _ => Err(CapabilityAccessError::UnknownCommand),
+            _ => self.default_command(name),
         }
     }
 }

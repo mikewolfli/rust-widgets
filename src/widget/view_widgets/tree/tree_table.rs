@@ -1478,6 +1478,14 @@ impl Widget for TreeTable {
     fn base(&self) -> &BaseWidget {
         &self.base
     }
+    fn scrollable_rows(&self) -> Option<&dyn crate::widget::container_widgets::ScrollableRows> {
+        Some(self)
+    }
+    fn scrollable_rows_mut(
+        &mut self,
+    ) -> Option<&mut dyn crate::widget::container_widgets::ScrollableRows> {
+        Some(self)
+    }
     fn set_state_theme_hook(&mut self) {
         crate::style::reapply_active_theme_state(self);
     }
@@ -1728,6 +1736,7 @@ impl WidgetProperties for TreeTable {
             "row_count",
             "column_count",
             "selected_row",
+            "scroll_row",
             "row_height",
             "column_width",
             "header_visible",
@@ -1757,7 +1766,7 @@ impl WidgetProperties for TreeTable {
             "set_model" | "expand_row" | "collapse_row" | "select_row" => {
                 Err(CapabilityAccessError::OutOfRange)
             }
-            _ => Err(CapabilityAccessError::UnknownCommand),
+            _ => self.default_command(name),
         }
     }
 }

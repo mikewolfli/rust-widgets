@@ -15,6 +15,9 @@ macro_rules! impl_properties_view {
         pub(crate) const LIST_VIEW_PROPERTIES: &[PropertySchema] = &[
             PropertySchema::new("has_model", PropertyValueKind::Bool, true, false),
             PropertySchema::new("row_count", PropertyValueKind::UInt, true, false),
+            // RW-58: the first visible row, in rows (not pixels). The generic property route
+            // answers it through the control's `ScrollableRows` implementation.
+            PropertySchema::new("scroll_row", PropertyValueKind::UInt, true, true),
             PropertySchema::new("focused_row", PropertyValueKind::UInt, true, true),
             PropertySchema::enumerated(
                 "selection_mode",
@@ -45,6 +48,8 @@ macro_rules! impl_properties_view {
         pub(crate) const TREE_VIEW_PROPERTIES: &[PropertySchema] = &[
             PropertySchema::new("has_model", PropertyValueKind::Bool, true, false),
             PropertySchema::new("node_count", PropertyValueKind::UInt, true, false),
+            // RW-58: the first visible projection row, in rows.
+            PropertySchema::new("scroll_row", PropertyValueKind::UInt, true, true),
             PropertySchema::new("focused_node", PropertyValueKind::UInt, true, true),
             PropertySchema::new("selected_node", PropertyValueKind::UInt, true, false),
             // Whether an in-place edit delegate is bound. Published so a designer can tell "this
@@ -70,6 +75,8 @@ macro_rules! impl_properties_view {
             PropertySchema::new("has_delegate", PropertyValueKind::Bool, true, false),
             PropertySchema::new("row_count", PropertyValueKind::UInt, true, false),
             PropertySchema::new("column_count", PropertyValueKind::UInt, true, false),
+            // RW-58: the first visible row, in rows.
+            PropertySchema::new("scroll_row", PropertyValueKind::UInt, true, true),
             // `none` is published here for the same reason it is on `LIST_VIEW_PROPERTIES`:
             // both controls share `SelectionMode`, so both must publish its whole vocabulary.
             PropertySchema::enumerated(
@@ -254,6 +261,8 @@ macro_rules! impl_properties_view {
             PropertySchema::new("row_count", PropertyValueKind::UInt, true, false),
             PropertySchema::new("column_count", PropertyValueKind::UInt, true, false),
             PropertySchema::new("selected_row", PropertyValueKind::UInt, true, true),
+            // RW-58: the first visible row, in rows.
+            PropertySchema::new("scroll_row", PropertyValueKind::UInt, true, true),
             PropertySchema::new("row_height", PropertyValueKind::UInt, true, true),
             PropertySchema::new("column_width", PropertyValueKind::UInt, true, true),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
@@ -340,6 +349,8 @@ macro_rules! impl_properties_view {
         #[cfg(not(alloc_frugal))]
         pub(crate) const PROPERTIES_PANEL_PROPERTIES: &[PropertySchema] = &[
             PropertySchema::new("property_count", PropertyValueKind::UInt, true, false),
+            // RW-58: the first visible row, in rows.
+            PropertySchema::new("scroll_row", PropertyValueKind::UInt, true, true),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
@@ -397,6 +408,8 @@ macro_rules! impl_properties_view {
                 true,
                 &crate::widget::view_widgets::property_grid::PROPERTY_ITEM_SCHEMA,
             ),
+            // RW-58: the first visible row, in rows.
+            PropertySchema::new("scroll_row", PropertyValueKind::UInt, true, true),
             PropertySchema::new("property_count", PropertyValueKind::UInt, true, false),
             PropertySchema::new("selected_index", PropertyValueKind::UInt, true, true),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),

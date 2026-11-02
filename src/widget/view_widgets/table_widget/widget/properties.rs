@@ -66,6 +66,7 @@ impl WidgetProperties for TableWidget {
             "has_delegate",
             "row_count",
             "column_count",
+            "scroll_row",
             "selection_mode",
             "header_visible",
             "editable",
@@ -85,7 +86,7 @@ impl WidgetProperties for TableWidget {
                 self.clear_focused_row();
                 Ok(())
             }
-            _ => Err(CapabilityAccessError::UnknownCommand),
+            _ => self.default_command(name),
         }
     }
 }

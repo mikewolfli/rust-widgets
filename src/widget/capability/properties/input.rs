@@ -49,7 +49,16 @@ pub(crate) fn progress_bar_capability() -> WidgetCapability {
         // Audit 20261026: `set_range` stays unpublished — the range is the writable
         // `minimum`/`maximum` pair, so a whole-range write is reachable through the property route
         // (principle #18).
-        commands: &["set_value", "set_orientation"],
+        commands: &[
+            "set_value",
+            "set_orientation",
+            "set_indeterminate",
+            "set_inverted_appearance",
+            "set_maximum",
+            "set_minimum",
+            "set_text_visible",
+            "set_direction",
+        ],
     }
 }
 
@@ -63,7 +72,17 @@ pub(crate) fn scroll_bar_capability() -> WidgetCapability {
         // Audit 20261026: `set_range` and `set_steps` stay unpublished — the range is the writable
         // `minimum`/`maximum` pair and the steps are the writable `single_step`/`page_step` pair,
         // so both writes are reachable through the property route (principle #18).
-        commands: &["set_value", "set_orientation"],
+        commands: &[
+            "set_value",
+            "set_orientation",
+            "set_idle_delay_ms",
+            "set_idle_opacity",
+            "set_maximum",
+            "set_minimum",
+            "set_page_step",
+            "set_single_step",
+            "set_direction",
+        ],
     }
 }
 
@@ -77,7 +96,16 @@ pub(crate) fn list_box_capability() -> WidgetCapability {
         // Audit 20261026: `add_item`, `remove_item` stay unpublished — each takes a payload the bare
         // command channel cannot carry. `set_items` is the published form of a whole-list write:
         // its value travels through the `items` StringList property (B26.03).
-        commands: &["clear", "clear_selection", "set_selection_mode", "set_items"],
+        commands: &[
+            "clear",
+            "clear_selection",
+            "set_selection_mode",
+            "set_items",
+            "set_current_row",
+            "set_scroll_row",
+            "set_alignment",
+            "set_item_height",
+        ],
     }
 }
 
@@ -91,7 +119,22 @@ pub(crate) fn spin_box_capability() -> WidgetCapability {
         // Audit 20261026: `set_range` stays unpublished — the range is the writable
         // `minimum`/`maximum` pair, so a whole-range write is reachable through the property route
         // (principle #18).
-        commands: &["set_value", "step_up", "step_down"],
+        commands: &[
+            "set_value",
+            "step_up",
+            "step_down",
+            "set_decimals",
+            "set_keyboard_tracking",
+            "set_maximum",
+            "set_minimum",
+            "set_prefix",
+            "set_single_step",
+            "set_suffix",
+            "set_alignment",
+            "set_direction",
+            "set_special_value_text",
+            "set_wrapping",
+        ],
     }
 }
 
@@ -102,7 +145,21 @@ pub(crate) fn combo_box_capability() -> WidgetCapability {
         aliases: &[],
         properties: COMBO_BOX_PROPERTIES,
         events: events_of!("combo_box"),
-        commands: &["set_items", "set_current_index", "clear"],
+        commands: &[
+            "set_items",
+            "set_current_index",
+            "clear",
+            "set_current_text",
+            "set_insert_policy",
+            "set_max_visible_items",
+            "set_minimum_contents_length",
+            "set_open",
+            "set_size_adjust_policy",
+            "set_alignment",
+            "set_direction",
+            "set_editable",
+            "set_placeholder_text",
+        ],
     }
 }
 
@@ -117,7 +174,16 @@ pub(crate) fn dial_capability() -> WidgetCapability {
         // Audit 20261026: `set_range` stays unpublished — the range is the writable
         // `minimum`/`maximum` pair, so a whole-range write is reachable through the property route
         // (principle #18).
-        commands: &["set_value", "set_wrapping"],
+        commands: &[
+            "set_value",
+            "set_wrapping",
+            "set_maximum",
+            "set_minimum",
+            "set_notch_target",
+            "set_notches_visible",
+            "set_page_step",
+            "set_single_step",
+        ],
     }
 }
 
@@ -147,6 +213,11 @@ pub(crate) fn font_combo_box_capability() -> WidgetCapability {
             "set_max_visible_items",
             "show_popup",
             "hide_popup",
+            "set_font_filters",
+            "set_sample_text",
+            "set_writing_system_filter",
+            "set_alignment",
+            "set_scroll_row",
         ],
     }
 }
@@ -158,7 +229,25 @@ pub(crate) fn line_edit_capability() -> WidgetCapability {
         aliases: &["text_input", "input"],
         properties: LINE_EDIT_PROPERTIES,
         events: events_of!("line_edit"),
-        commands: &["clear", "select_all"],
+        commands: &[
+            "clear",
+            "select_all",
+            "set_clear_button_enabled",
+            "set_drag_enabled",
+            "set_echo_mode",
+            "set_max_length",
+            "set_modified",
+            "set_password_echo_on_edit",
+            "set_prefix",
+            "set_suffix",
+            "set_alignment",
+            "set_cursor_position",
+            "set_placeholder_text",
+            "set_read_only",
+            "set_scroll_x",
+            "set_selection",
+            "set_text",
+        ],
     }
 }
 
@@ -174,7 +263,25 @@ pub(crate) fn password_edit_capability() -> WidgetCapability {
         aliases: &["password_input", "password_line_edit"],
         properties: LINE_EDIT_PROPERTIES,
         events: events_of!("line_edit"),
-        commands: &["clear", "select_all"],
+        commands: &[
+            "clear",
+            "select_all",
+            "set_clear_button_enabled",
+            "set_drag_enabled",
+            "set_echo_mode",
+            "set_max_length",
+            "set_modified",
+            "set_password_echo_on_edit",
+            "set_prefix",
+            "set_suffix",
+            "set_alignment",
+            "set_cursor_position",
+            "set_placeholder_text",
+            "set_read_only",
+            "set_scroll_x",
+            "set_selection",
+            "set_text",
+        ],
     }
 }
 
@@ -190,7 +297,25 @@ pub(crate) fn phone_input_capability() -> WidgetCapability {
         aliases: &["phone_edit", "telephone_input"],
         properties: LINE_EDIT_PROPERTIES,
         events: events_of!("line_edit"),
-        commands: &["clear", "select_all"],
+        commands: &[
+            "clear",
+            "select_all",
+            "set_clear_button_enabled",
+            "set_drag_enabled",
+            "set_echo_mode",
+            "set_max_length",
+            "set_modified",
+            "set_password_echo_on_edit",
+            "set_prefix",
+            "set_suffix",
+            "set_alignment",
+            "set_cursor_position",
+            "set_placeholder_text",
+            "set_read_only",
+            "set_scroll_x",
+            "set_selection",
+            "set_text",
+        ],
     }
 }
 
@@ -202,7 +327,25 @@ pub(crate) fn email_input_capability() -> WidgetCapability {
         aliases: &["email_edit", "email_field"],
         properties: LINE_EDIT_PROPERTIES,
         events: events_of!("line_edit"),
-        commands: &["clear", "select_all"],
+        commands: &[
+            "clear",
+            "select_all",
+            "set_clear_button_enabled",
+            "set_drag_enabled",
+            "set_echo_mode",
+            "set_max_length",
+            "set_modified",
+            "set_password_echo_on_edit",
+            "set_prefix",
+            "set_suffix",
+            "set_alignment",
+            "set_cursor_position",
+            "set_placeholder_text",
+            "set_read_only",
+            "set_scroll_x",
+            "set_selection",
+            "set_text",
+        ],
     }
 }
 
@@ -218,7 +361,15 @@ pub(crate) fn markdown_editor_capability() -> WidgetCapability {
         // property, so an appended line is a whole-document write; there is no separate line
         // buffer property (principle #18). `undo` stays published — its arm runs the control's
         // real undo stack.
-        commands: &["set_text", "toggle_preview_mode", "set_preview_mode", "undo"],
+        commands: &[
+            "set_text",
+            "toggle_preview_mode",
+            "set_preview_mode",
+            "undo",
+            "set_code_highlight",
+            "set_gfm_extensions",
+            "set_show_scrollbar",
+        ],
     }
 }
 
@@ -237,6 +388,7 @@ pub(crate) fn text_edit_capability() -> WidgetCapability {
             "set_max_length",
             "set_read_only",
             "set_line_wrap",
+            "set_alignment",
         ],
     }
 }
@@ -248,7 +400,14 @@ pub(crate) fn spinner_capability() -> WidgetCapability {
         aliases: &["spinner_widget", "loading_spinner"],
         properties: SPINNER_PROPERTIES,
         events: events_of!("spinner"),
-        commands: &["set_active", "set_speed", "set_thickness", "set_size_ratio"],
+        commands: &[
+            "set_active",
+            "set_speed",
+            "set_thickness",
+            "set_size_ratio",
+            "set_arc_color",
+            "set_track_color",
+        ],
     }
 }
 
@@ -273,7 +432,16 @@ pub(crate) fn dropdown_capability() -> WidgetCapability {
         // Audit 20261026: `set_items` is published again now that the `items` StringList property
         // is its payload channel (B26.03): the bare command reports that a value is missing, and
         // write_property("items", [...]) is where the list goes.
-        commands: &["set_selected_index", "set_expanded", "toggle", "set_items"],
+        commands: &[
+            "set_selected_index",
+            "set_expanded",
+            "toggle",
+            "set_items",
+            "set_placeholder",
+            "set_alignment",
+            "set_max_visible",
+            "set_scroll_offset",
+        ],
     }
 }
 
@@ -284,7 +452,17 @@ pub(crate) fn text_area_capability() -> WidgetCapability {
         aliases: &["multiline_edit"],
         properties: TEXT_AREA_PROPERTIES,
         events: events_of!("text_area"),
-        commands: &["set_text", "set_placeholder", "set_read_only", "insert", "delete_char"],
+        commands: &[
+            "set_text",
+            "set_placeholder",
+            "set_read_only",
+            "insert",
+            "delete_char",
+            "set_content_margin",
+            "set_max_block_count",
+            "set_max_length",
+            "set_soft_wrap",
+        ],
     }
 }
 
@@ -295,7 +473,7 @@ pub(crate) fn keyboard_capability() -> WidgetCapability {
         aliases: &["keyboard_widget", "virtual_keyboard"],
         properties: KEYBOARD_PROPERTIES,
         events: events_of!("keyboard"),
-        commands: &["set_layout", "set_lowercase", "toggle_shift"],
+        commands: &["set_layout", "set_lowercase", "toggle_shift", "set_press_animation"],
     }
 }
 
@@ -311,7 +489,13 @@ pub(crate) fn switch_capability() -> WidgetCapability {
         aliases: &["switch_widget", "toggle_switch"],
         properties: SWITCH_PROPERTIES,
         events: events_of!("switch"),
-        commands: &["set_checked", "toggle"],
+        commands: &[
+            "set_checked",
+            "toggle",
+            "set_on_track_color",
+            "set_switch_geometry",
+            "set_thumb_color",
+        ],
     }
 }
 
@@ -344,7 +528,7 @@ pub(crate) fn search_box_capability() -> WidgetCapability {
         aliases: &["search"],
         properties: SEARCH_BOX_PROPERTIES,
         events: events_of!("search_box"),
-        commands: &["set_text", "set_placeholder", "clear"],
+        commands: &["set_text", "set_placeholder", "clear", "set_alignment"],
     }
 }
 
@@ -360,7 +544,7 @@ pub(crate) fn tag_input_capability() -> WidgetCapability {
         // index the bare command channel cannot carry; the whole committed list is the writable
         // `items` records property, so the two are reachable as a whole-list write (principle
         // #18).
-        commands: &["set_placeholder"],
+        commands: &["set_placeholder", "set_multiline", "set_alignment"],
     }
 }
 
@@ -378,7 +562,15 @@ pub(crate) fn chip_input_capability() -> WidgetCapability {
         aliases: &[],
         properties: CHIP_INPUT_PROPERTIES,
         events: events_of!("chip_input"),
-        commands: &["commit", "clear"],
+        commands: &[
+            "commit",
+            "clear",
+            "set_allow_duplicates",
+            "set_placeholder",
+            "set_separator",
+            "set_max_count",
+            "set_text",
+        ],
     }
 }
 
@@ -402,7 +594,7 @@ pub(crate) fn inplace_editor_capability() -> WidgetCapability {
         aliases: &["inline_editor"],
         properties: INPLACE_EDITOR_PROPERTIES,
         events: events_of!("inplace_editor"),
-        commands: &["set_text", "start_editing", "finish_editing"],
+        commands: &["set_text", "start_editing", "finish_editing", "set_edit_triggers"],
     }
 }
 
@@ -426,7 +618,7 @@ pub(crate) fn masked_edit_capability() -> WidgetCapability {
         aliases: &["masked_input"],
         properties: MASKED_EDIT_PROPERTIES,
         events: events_of!("masked_edit"),
-        commands: &["set_text", "set_mask"],
+        commands: &["set_text", "set_mask", "set_alignment"],
     }
 }
 
@@ -443,7 +635,16 @@ pub(crate) fn auto_complete_edit_capability() -> WidgetCapability {
         // list and then subscribes on the hub — so a consumer got a live-looking subscription
         // that no code path could ever invoke.
         events: events_of!("auto_complete_edit"),
-        commands: &["set_text"],
+        commands: &[
+            "set_text",
+            "set_case_sensitive",
+            "set_close_policy",
+            "set_inline_completion",
+            "set_match_mode",
+            "set_placeholder",
+            "set_alignment",
+            "set_max_visible",
+        ],
     }
 }
 
@@ -455,7 +656,7 @@ pub(crate) fn multi_select_combo_box_capability() -> WidgetCapability {
         aliases: &["multi_combo"],
         properties: MULTI_SELECT_COMBO_BOX_PROPERTIES,
         events: events_of!("multi_select_combo_box"),
-        commands: &["set_expanded"],
+        commands: &["set_expanded", "set_placeholder", "set_alignment", "set_scroll_row"],
     }
 }
 
@@ -470,7 +671,19 @@ pub(crate) fn range_slider_capability() -> WidgetCapability {
         // Audit 20261026: `set_range` stays unpublished — the range is the writable
         // `min_value`/`max_value` pair, so a whole-range write is reachable through the property
         // route (principle #18).
-        commands: &["set_lower", "set_upper"],
+        commands: &[
+            "set_lower",
+            "set_upper",
+            "set_max_value",
+            "set_min_range",
+            "set_min_value",
+            "set_step",
+            "set_tick_interval",
+            "set_tick_labels",
+            "set_value_hint_enabled",
+            "set_direction",
+            "set_orientation",
+        ],
     }
 }
 
@@ -482,7 +695,7 @@ pub(crate) fn floating_label_capability() -> WidgetCapability {
         aliases: &["floating_input"],
         properties: FLOATING_LABEL_PROPERTIES,
         events: events_of!("floating_label"),
-        commands: &["set_text", "set_placeholder", "set_focused"],
+        commands: &["set_text", "set_placeholder", "set_focused", "set_label"],
     }
 }
 
@@ -506,7 +719,7 @@ pub(crate) fn cupertino_date_picker_capability() -> WidgetCapability {
         aliases: &["ios_date_picker"],
         properties: CUPERTINO_DATE_PICKER_PROPERTIES,
         events: events_of!("cupertino_date_picker"),
-        commands: &["set_selected_date"],
+        commands: &["set_selected_date", "set_minute_interval", "set_mode", "set_use_24_hour"],
     }
 }
 
@@ -518,7 +731,13 @@ pub(crate) fn editable_combo_box_capability() -> WidgetCapability {
         aliases: &["editable_combo"],
         properties: EDITABLE_COMBO_BOX_PROPERTIES,
         events: events_of!("editable_combo_box"),
-        commands: &["set_text"],
+        commands: &[
+            "set_text",
+            "set_max_visible_items",
+            "set_alignment",
+            "set_cursor_position",
+            "set_scroll_offset",
+        ],
     }
 }
 
@@ -532,7 +751,7 @@ pub(crate) fn rich_edit_capability() -> WidgetCapability {
         aliases: &["rich_text_editor"],
         properties: RICH_EDIT_PROPERTIES,
         events: events_of!("rich_edit"),
-        commands: &["set_text"],
+        commands: &["set_text", "set_line_wrap", "set_placeholder_text", "set_read_only"],
     }
 }
 
@@ -544,7 +763,7 @@ pub(crate) fn search_bar_capability() -> WidgetCapability {
         aliases: &["search_field"],
         properties: SEARCH_BAR_PROPERTIES,
         events: events_of!("search_bar"),
-        commands: &["set_text", "set_placeholder"],
+        commands: &["set_text", "set_placeholder", "set_alignment"],
     }
 }
 
@@ -556,6 +775,6 @@ pub(crate) fn shortcut_editor_capability() -> WidgetCapability {
         aliases: &["keyboard_shortcut_editor"],
         properties: SHORTCUT_EDITOR_PROPERTIES,
         events: events_of!("shortcut_editor"),
-        commands: &["set_filter_text"],
+        commands: &["set_filter_text", "set_scroll_row"],
     }
 }

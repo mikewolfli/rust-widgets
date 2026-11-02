@@ -1228,7 +1228,7 @@ impl WidgetProperties for AutoCompleteEdit {
     fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
         match name {
             "set_text" => Err(CapabilityAccessError::OutOfRange),
-            _ => Err(CapabilityAccessError::UnknownCommand),
+            _ => self.default_command(name),
         }
     }
 }

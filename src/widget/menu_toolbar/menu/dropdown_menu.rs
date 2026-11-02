@@ -1370,6 +1370,15 @@ impl Widget for DropdownMenu {
     fn base(&self) -> &BaseWidget {
         &self.base
     }
+    fn scrollable_rows(&self) -> Option<&dyn crate::widget::container_widgets::ScrollableRows> {
+        Some(self)
+    }
+    fn scrollable_rows_mut(
+        &mut self,
+    ) -> Option<&mut dyn crate::widget::container_widgets::ScrollableRows> {
+        Some(self)
+    }
+
     fn set_state_theme_hook(&mut self) {
         crate::style::reapply_active_theme_state(self);
     }
@@ -1522,6 +1531,7 @@ impl WidgetProperties for DropdownMenu {
     fn property_names(&self) -> &'static [&'static str] {
         property_names_of![
             "items",
+            "scroll_row",
             "item_count",
             "selected_index",
             "expanded",
@@ -1867,6 +1877,21 @@ impl EventHandler for DropdownMenu {
         }
     }
 }
+
+crate::impl_scrollable_rows!(
+    DropdownMenu,
+    row = |s| s.scroll_offset,
+    set = |s, r| {
+        let max = s.items.len().saturating_sub(s.max_visible_items());
+        let next = r.min(max);
+        if next != s.scroll_offset {
+            s.scroll_offset = next;
+            s.base.request_redraw();
+        }
+    },
+    visible = |s| s.max_visible_items().min(s.items.len()),
+    height = |_s| Some(ITEM_HEIGHT as u32)
+);
 
 #[cfg(test)]
 mod tests {

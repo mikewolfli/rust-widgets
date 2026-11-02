@@ -808,7 +808,7 @@ impl WidgetProperties for RangeSlider {
     fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
         match name {
             "set_lower" | "set_upper" | "set_range" => Err(CapabilityAccessError::OutOfRange),
-            _ => Err(CapabilityAccessError::UnknownCommand),
+            _ => self.default_command(name),
         }
     }
 }

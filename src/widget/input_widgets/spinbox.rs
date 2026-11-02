@@ -1921,7 +1921,7 @@ impl WidgetProperties for SpinBox {
                 Ok(())
             }
             "set_range" | "set_value" => Err(CapabilityAccessError::OutOfRange),
-            _ => Err(CapabilityAccessError::UnknownCommand),
+            _ => self.default_command(name),
         }
     }
 }

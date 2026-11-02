@@ -326,6 +326,23 @@ thread_local! {
     /// custom factories on one thread.
     static PROPERTY_INDICES: crate::compat::RefCell<HashMap<usize, PropertyIndex>> =
         crate::compat::RefCell::new(HashMap::new());
+
+    /// Command indexes, keyed by the address of the `&'static [&'static str]` command list.
+    ///
+    /// The same reasoning as [`PROPERTY_INDICES`]: a static, immutable list gets one index per
+    /// thread instead of one linear scan per invocation. RW-44 grew the lists to ~1200 published
+    /// instances, so this is the path a designer or command palette drives repeatedly.
+    static COMMAND_INDICES: crate::compat::RefCell<HashMap<usize, CommandIndex>> =
+        crate::compat::RefCell::new(HashMap::new());
+}
+
+/// Hash index over one capability's published command names.
+#[cfg(full_widgets)]
+struct CommandIndex {
+    len: usize,
+    /// Normalised-name hash -> the first published spelling with that name (the same entry a
+    /// linear `find` would return).
+    by_hash: HashMap<u64, usize>,
 }
 
 /// The hash [`same_key`] implies: separators ignored and the rest lower-cased.
@@ -403,9 +420,65 @@ fn find_property<'a>(capability: &'a WidgetCapability, name: &str) -> Option<&'a
     }
 }
 
+/// Finds a published command spelling by the same normalization rule `same_key` applies.
+///
+/// # Why this exists
+///
+/// `invoke_command` used to scan the control's whole command list on every call. The list is
+/// static and immutable, so one hash index per thread turns the lookup into a map probe. RW-44
+/// made the lists materially longer (~1200 published instances), and command dispatch is the path
+/// a designer or command palette drives repeatedly, so the scan is no longer a rounding error.
+#[cfg(full_widgets)]
+fn find_command(commands: &'static [&'static str], name: &str) -> Option<&'static str> {
+    if commands.is_empty() {
+        return None;
+    }
+    let key = commands.as_ptr() as usize;
+    let hash = normalized_hash(name);
+    let index = COMMAND_INDICES.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if cache.len() >= 256 {
+            cache.clear();
+        }
+        let entry = cache.entry(key).or_insert_with(|| {
+            let mut by_hash = HashMap::new();
+            for (index, command) in commands.iter().enumerate() {
+                by_hash.entry(normalized_hash(command)).or_insert(index);
+            }
+            CommandIndex { len: commands.len(), by_hash }
+        });
+        if entry.len != commands.len() {
+            let mut by_hash = HashMap::new();
+            for (index, command) in commands.iter().enumerate() {
+                by_hash.entry(normalized_hash(command)).or_insert(index);
+            }
+            *entry = CommandIndex { len: commands.len(), by_hash };
+        }
+        entry.by_hash.get(&hash).copied()
+    });
+
+    let candidate = index.and_then(|index| commands.get(index))?;
+    if same_key(candidate, name) {
+        Some(candidate)
+    } else {
+        // A hash collision reached another command: fall back to the exact linear rule.
+        commands.iter().copied().find(|command| same_key(command, name))
+    }
+}
+
 #[cfg(all(test, full_widgets))]
 mod property_lookup_tests {
     use super::*;
+
+    /// The command index must answer the same spelling `find` answered, including the hyphen form
+    /// `invoke_command` documents.
+    #[test]
+    fn command_index_matches_the_linear_rule() {
+        static COMMANDS: &[&str] = &["clear_selection", "set_value", "toggle"];
+        assert_eq!(find_command(COMMANDS, "clear-selection"), Some("clear_selection"));
+        assert_eq!(find_command(COMMANDS, "SET_VALUE"), Some("set_value"));
+        assert_eq!(find_command(COMMANDS, "no_such_command"), None);
+    }
 
     /// Every spelling `same_key` accepts must reach the same schema, and an unknown name must not.
     ///
@@ -1062,6 +1135,9 @@ pub use target_facts::{
 /// module walks no registry — it answers for a command given a control's property list, which the
 /// caller supplies.
 pub mod command_schema;
+
+/// RW-44: the setters a control exposes but deliberately does not publish as commands.
+pub(crate) mod programmatic_setters;
 pub use command_schema::{
     command_schema as command_schema_for, describe_command, described_verbs, effect_tokens,
     is_described_command, CommandEffect, CommandSchema, CommandSignature,
@@ -1782,13 +1858,10 @@ impl WidgetFactory {
         // both normalise. A caller using `"clear-selection"` must reach the same
         // command as one using `"clear_selection"`.
         // Resolve the caller's spelling to the **published** one and dispatch that. Passing the
-        // raw argument through (as this did) meant `"clear-selection"` passed validation and then
-        // reached the control as an unknown name, so a legitimate spelling produced the
-        // misleading `UnsupportedOnWidget` ("the control was expected to have it") instead of
-        // succeeding. The published spelling is what the control's own `command` matches on.
-        let Some(canonical) =
-            capability.commands.iter().copied().find(|name| same_key(name, command_name))
-        else {
+        // The published spelling is what the control's own `command` matches on. The lookup is
+        // the hash index `find_command` maintains, so it does not scale with the list length
+        // RW-44 grew.
+        let Some(canonical) = find_command(capability.commands, command_name) else {
             return Err(CapabilityAccessError::UnknownCommand);
         };
 

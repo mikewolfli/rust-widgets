@@ -1214,7 +1214,7 @@ impl WidgetProperties for ToggleButton {
                 Ok(())
             }
             "set_checked" | "set_text" => Err(CapabilityAccessError::OutOfRange),
-            _ => Err(CapabilityAccessError::UnknownCommand),
+            _ => self.default_command(name),
         }
     }
 }

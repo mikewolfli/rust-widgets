@@ -898,7 +898,7 @@ impl WidgetProperties for RadioButton {
     fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
         match name {
             "set_checked" | "set_group_id" => Err(CapabilityAccessError::OutOfRange),
-            _ => Err(CapabilityAccessError::UnknownCommand),
+            _ => self.default_command(name),
         }
     }
 }

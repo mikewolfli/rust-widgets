@@ -223,3 +223,37 @@ and absent on a build with no device profile.
 - **R1.5-R1.6**: macOS objc2 migration (macos_objc2/ preview exists)
 - **R3.1**: Test coverage expansion
 - **R9.4**: pipeline/containers.rs splitting
+
+## Restoring a scroll position (RW-58)
+
+A saved workspace stores either a pixel offset (`ScrollableSurface`) or a row index
+(`ScrollableRows`). Both are reachable from any widget handle — no downcast and no per-control
+branch:
+
+```rust
+use rust_widgets::app::{SurfaceHandle, WidgetHandle};
+
+enum SavedScroll {
+    Pixels { x: i32, y: i32 },
+    Rows { row: usize },
+}
+
+fn restore_scroll(handle: &SurfaceHandle, saved: SavedScroll) {
+    match saved {
+        // Pixel containers (ScrollArea, MdiArea) answer the ordinary property route.
+        SavedScroll::Pixels { x, y } => {
+            let _ = handle.set_scroll_position(x, y);
+        }
+        // Row containers (tables, lists, trees, list boxes) answer `scroll_row`.
+        SavedScroll::Rows { row } => {
+            let _ = handle.set_scroll_row(row);
+        }
+    }
+    // Read back what the control accepted: it clamps against its own content/row count.
+    let _accepted = (handle.scroll_position(), handle.scroll_row());
+}
+```
+
+`set_scroll_row` writes the `scroll_row` property; every row container answers it through its own
+`ScrollableRows` implementation, so the clamp and the unit stay in the control. A control that is
+not a row container refuses the write and `scroll_row()` answers `None` — distinct from row `0`.

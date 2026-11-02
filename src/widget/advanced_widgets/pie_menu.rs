@@ -1506,7 +1506,7 @@ impl WidgetProperties for PieMenu {
             "add_item" | "remove_item" | "set_radius" | "set_current_index" | "set_items" => {
                 Err(CapabilityAccessError::OutOfRange)
             }
-            _ => Err(CapabilityAccessError::UnknownCommand),
+            _ => self.default_command(name),
         }
     }
 }

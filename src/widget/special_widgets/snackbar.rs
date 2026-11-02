@@ -697,7 +697,7 @@ impl WidgetProperties for Snackbar {
                 Ok(())
             }
             "show" | "show_with_action" => Err(CapabilityAccessError::OutOfRange),
-            _ => Err(CapabilityAccessError::UnknownCommand),
+            _ => self.default_command(name),
         }
     }
 }

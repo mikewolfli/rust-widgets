@@ -574,7 +574,7 @@ impl WidgetProperties for LineEdit {
                 self.select_all();
                 Ok(())
             }
-            _ => Err(CapabilityAccessError::UnknownCommand),
+            _ => self.default_command(name),
         }
     }
 }

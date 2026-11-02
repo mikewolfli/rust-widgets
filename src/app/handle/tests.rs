@@ -905,6 +905,62 @@ fn a_handle_reads_the_widget_geometry_and_focus() {
     crate::widget::runtime::unregister(id);
 }
 
+/// RW-63: a handle observes the control's **own** focus signals, not a second state table.
+#[test]
+fn a_handle_observes_focus_gained_and_lost() {
+    use core::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    let id = crate::widget::runtime::register(Box::new(crate::widget::Button::new(
+        "focus probe".to_string(),
+        crate::core::Rect::new(0, 0, 80, 24),
+    )))
+    .expect("a button mounts");
+    let handle = ButtonHandle::from_raw(id);
+
+    let gained = Arc::new(AtomicUsize::new(0));
+    let lost = Arc::new(AtomicUsize::new(0));
+    assert!(handle.on_focus_gained({
+        let counter = Arc::clone(&gained);
+        move || {
+            counter.fetch_add(1, Ordering::SeqCst);
+        }
+    }));
+    assert!(handle.on_focus_lost({
+        let counter = Arc::clone(&lost);
+        move || {
+            counter.fetch_add(1, Ordering::SeqCst);
+        }
+    }));
+
+    // The observer sits on the control's own signal, so RW-45's count can see it — including on
+    // a kind like `Button` whose `event_signal_dyn` override answers only for its own arms.
+    #[cfg(full_widgets)]
+    assert_eq!(crate::signal::subscriber_count(id, "focus_gained"), Some(1));
+
+    assert!(crate::widget::runtime::focus_widget(id));
+    assert_eq!(gained.load(Ordering::SeqCst), 1, "gaining focus runs the observer once");
+    assert_eq!(lost.load(Ordering::SeqCst), 0);
+
+    // Focusing the control that already owns focus is not a change; the router refuses it.
+    assert!(!crate::widget::runtime::focus_widget(id));
+    assert_eq!(gained.load(Ordering::SeqCst), 1, "a repeated focus must not re-emit");
+
+    assert!(crate::widget::runtime::clear_focus());
+    assert_eq!(lost.load(Ordering::SeqCst), 1, "clearing focus runs the lost observer");
+
+    // An id that names no mounted control has no signal to attach to.
+    assert!(!ButtonHandle::from_raw(id + 10_000).on_focus_gained(|| {}));
+
+    // RW-63 uninstall closure: the slot lives on the control's own signal, so unmounting the
+    // control takes the slot with it. A late focus request must not reach the old observer.
+    crate::widget::runtime::unregister(id);
+    assert!(!crate::widget::runtime::focus_widget(id));
+    assert!(!crate::widget::runtime::clear_focus());
+    assert_eq!(gained.load(Ordering::SeqCst), 1, "a dropped control cannot emit focus again");
+    assert_eq!(lost.load(Ordering::SeqCst), 1, "the last clear already ran the lost observer");
+}
+
 /// RW-4: the tab handle forwards the typed tab APIs.
 #[cfg(widgets_unstripped)]
 #[test]

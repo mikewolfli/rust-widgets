@@ -559,7 +559,7 @@ impl WidgetProperties for Window {
                 Ok(())
             }
             "set_title" => Err(CapabilityAccessError::OutOfRange),
-            _ => Err(CapabilityAccessError::UnknownCommand),
+            _ => self.default_command(name),
         }
     }
 }

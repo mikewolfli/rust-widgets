@@ -473,7 +473,7 @@ impl WidgetProperties for PopupWindow {
     fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
         match name {
             "set_content_widget" => Err(CapabilityAccessError::OutOfRange),
-            _ => Err(CapabilityAccessError::UnknownCommand),
+            _ => self.default_command(name),
         }
     }
 }

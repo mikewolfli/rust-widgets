@@ -2087,7 +2087,7 @@ impl WidgetProperties for RibbonBar {
             // so the shared default reports that a payload is needed rather than
             // claiming the control has never heard of it.
             _ if name.starts_with("set_") => Err(CapabilityAccessError::OutOfRange),
-            _ => Err(CapabilityAccessError::UnknownCommand),
+            _ => self.default_command(name),
         }
     }
 }

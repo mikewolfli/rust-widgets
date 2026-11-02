@@ -882,7 +882,7 @@ impl WidgetProperties for CheckBox {
                 Ok(())
             }
             "set_checked" | "set_state" => Err(CapabilityAccessError::OutOfRange),
-            _ => Err(CapabilityAccessError::UnknownCommand),
+            _ => self.default_command(name),
         }
     }
 }

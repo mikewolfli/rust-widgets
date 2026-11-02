@@ -458,7 +458,7 @@ impl WidgetProperties for MaterialSnackbar {
                 Ok(())
             }
             "set_message" | "set_action_text" => Err(CapabilityAccessError::OutOfRange),
-            _ => Err(CapabilityAccessError::UnknownCommand),
+            _ => self.default_command(name),
         }
     }
 }

@@ -472,6 +472,15 @@ impl Widget for MenuPanel {
     fn base(&self) -> &BaseWidget {
         &self.base
     }
+    fn scrollable_rows(&self) -> Option<&dyn crate::widget::container_widgets::ScrollableRows> {
+        Some(self)
+    }
+    fn scrollable_rows_mut(
+        &mut self,
+    ) -> Option<&mut dyn crate::widget::container_widgets::ScrollableRows> {
+        Some(self)
+    }
+
     fn set_state_theme_hook(&mut self) {
         crate::style::reapply_active_theme_state(self);
     }
@@ -626,6 +635,7 @@ impl WidgetProperties for MenuPanel {
     fn property_names(&self) -> &'static [&'static str] {
         property_names_of![
             "items",
+            "scroll_row",
             "selected_index",
             "highlighted_index",
             "max_visible_rows",
@@ -634,6 +644,21 @@ impl WidgetProperties for MenuPanel {
         ]
     }
 }
+
+crate::impl_scrollable_rows!(
+    MenuPanel,
+    row = |s| s.scroll_offset,
+    set = |s, r| {
+        let max = s.items.len().saturating_sub(s.visible_rows());
+        let next = r.min(max);
+        if next != s.scroll_offset {
+            s.scroll_offset = next;
+            s.base.request_redraw();
+        }
+    },
+    visible = |s| s.visible_rows(),
+    height = |_s| Some(MENU_ROW_HEIGHT)
+);
 
 #[cfg(test)]
 mod tests {

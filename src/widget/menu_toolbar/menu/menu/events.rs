@@ -27,6 +27,15 @@ impl Widget for Menu {
     fn base(&self) -> &BaseWidget {
         &self.base
     }
+    fn scrollable_rows(&self) -> Option<&dyn crate::widget::container_widgets::ScrollableRows> {
+        Some(self)
+    }
+    fn scrollable_rows_mut(
+        &mut self,
+    ) -> Option<&mut dyn crate::widget::container_widgets::ScrollableRows> {
+        Some(self)
+    }
+
     fn set_state_theme_hook(&mut self) {
         // The cached heading line height is a function of the resolved font; a theme switch
         // can change the family/weight at the same size, so the cache is dropped with it.
@@ -244,6 +253,7 @@ impl WidgetProperties for Menu {
     fn property_names(&self) -> &'static [&'static str] {
         property_names_of![
             "items",
+            "scroll_row",
             "title",
             "item_count",
             "hovered_index",
@@ -280,7 +290,7 @@ impl WidgetProperties for Menu {
             // so the shared default reports that a payload is needed rather than
             // claiming the control has never heard of it.
             _ if name.starts_with("set_") => Err(CapabilityAccessError::OutOfRange),
-            _ => Err(CapabilityAccessError::UnknownCommand),
+            _ => self.default_command(name),
         }
     }
 }
@@ -510,3 +520,25 @@ impl EventHandler for Menu {
         }
     }
 }
+
+crate::impl_scrollable_rows!(
+    Menu,
+    row = |s| s.scroll_offset,
+    set = |s, r| {
+        let max = s.items.len().saturating_sub(Menu::visible_capacity());
+        let next = r.min(max);
+        if next != s.scroll_offset {
+            s.scroll_offset = next;
+            s.base.request_redraw();
+        }
+    },
+    visible = |s| {
+        let capacity = Menu::visible_capacity();
+        if capacity == usize::MAX {
+            s.items.len()
+        } else {
+            capacity.min(s.items.len())
+        }
+    },
+    height = |_s| None
+);

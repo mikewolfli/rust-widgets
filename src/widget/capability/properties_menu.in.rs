@@ -37,6 +37,8 @@ macro_rules! impl_properties_menu {
                 true,
                 &crate::widget::menu_toolbar::menu::MENU_ITEM_SCHEMA,
             ),
+            // RW-58: the first visible entry, in rows.
+            PropertySchema::new("scroll_row", PropertyValueKind::UInt, true, true),
             PropertySchema::new("title", PropertyValueKind::String, true, true),
             PropertySchema::new("item_count", PropertyValueKind::UInt, true, false),
             PropertySchema::new("hovered_index", PropertyValueKind::UInt, true, false),
@@ -104,6 +106,8 @@ macro_rules! impl_properties_menu {
                 false,
                 &crate::widget::menu_toolbar::dropdown_menu::DROPDOWN_ITEM_SCHEMA,
             ),
+            // RW-58: the first visible row, in rows.
+            PropertySchema::new("scroll_row", PropertyValueKind::UInt, true, true),
             PropertySchema::new("item_count", PropertyValueKind::UInt, true, false),
             PropertySchema::new("selected_index", PropertyValueKind::UInt, true, true),
             PropertySchema::new("expanded", PropertyValueKind::Bool, true, true),
@@ -126,6 +130,8 @@ macro_rules! impl_properties_menu {
                 false,
                 &crate::widget::menu_toolbar::menu_button::MENU_BUTTON_ITEM_SCHEMA,
             ),
+            // RW-58: the first visible row, in rows.
+            PropertySchema::new("scroll_row", PropertyValueKind::UInt, true, true),
             PropertySchema::new("item_count", PropertyValueKind::UInt, true, false),
             PropertySchema::new("expanded", PropertyValueKind::Bool, true, true),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),

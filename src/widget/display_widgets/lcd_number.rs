@@ -499,7 +499,7 @@ impl WidgetProperties for LCDNumber {
             "set_value" | "set_mode" | "set_segment_style" => {
                 Err(CapabilityAccessError::OutOfRange)
             }
-            _ => Err(CapabilityAccessError::UnknownCommand),
+            _ => self.default_command(name),
         }
     }
 }

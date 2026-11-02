@@ -1246,7 +1246,7 @@ impl WidgetProperties for Chip {
             "toggle_index" | "move_focus" | "set_items" | "set_focused_index" => {
                 Err(CapabilityAccessError::OutOfRange)
             }
-            _ => Err(CapabilityAccessError::UnknownCommand),
+            _ => self.default_command(name),
         }
     }
 }

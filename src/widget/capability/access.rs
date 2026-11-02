@@ -557,6 +557,8 @@ pub fn default_widget_property_default_value(
             "item_count" => CapabilityValue::UInt(0),
             "selection_mode" => CapabilityValue::String("single".to_string()),
             "current_row" => CapabilityValue::Null,
+            // RW-58: a fresh container is at its first row.
+            "scroll_row" => CapabilityValue::UInt(0),
             "item_height" => CapabilityValue::Float(20.0),
             "selected_count" => CapabilityValue::UInt(0),
             "selected_indices" => CapabilityValue::String(String::new()),
@@ -729,6 +731,8 @@ pub fn default_widget_property_default_value(
             _ => return None,
         },
         WidgetKind::FontComboBox => match property_name {
+            // RW-58: a fresh container is at its first row.
+            "scroll_row" => CapabilityValue::UInt(0),
             "current_font_family" => CapabilityValue::String("Arial".to_string()),
             "item_count" => CapabilityValue::Int(0),
             "current_index" => CapabilityValue::Int(-1),
@@ -752,6 +756,8 @@ pub fn default_widget_property_default_value(
             _ => return None,
         },
         WidgetKind::Toolbox => match property_name {
+            // RW-58: a fresh container is at its first row.
+            "scroll_row" => CapabilityValue::UInt(0),
             "mode" => CapabilityValue::String("exclusive".to_string()),
             "item_count" => CapabilityValue::UInt(0),
             "current_index" => CapabilityValue::UInt(0),
@@ -853,6 +859,7 @@ pub fn default_widget_property_default_value(
             "icon_visible_in_list_mode" => CapabilityValue::Bool(false),
             "has_model" => CapabilityValue::Bool(false),
             "row_count" => CapabilityValue::UInt(0),
+            "scroll_row" => CapabilityValue::UInt(0),
             "focused_row" => CapabilityValue::Null,
             "selection_mode" => CapabilityValue::String("single".to_string()),
             "view_mode" => CapabilityValue::String("list".to_string()),
@@ -889,6 +896,7 @@ pub fn default_widget_property_default_value(
             "expansion_animated" => CapabilityValue::Bool(false),
             "has_model" => CapabilityValue::Bool(false),
             "node_count" => CapabilityValue::UInt(0),
+            "scroll_row" => CapabilityValue::UInt(0),
             "focused_node" => CapabilityValue::Null,
             "selected_node" => CapabilityValue::Null,
             "has_delegate" => CapabilityValue::Bool(false),
@@ -911,6 +919,7 @@ pub fn default_widget_property_default_value(
             "row_count" => CapabilityValue::UInt(0),
             "column_count" => CapabilityValue::UInt(0),
             "selected_row" => CapabilityValue::Null,
+            "scroll_row" => CapabilityValue::UInt(0),
             "row_height" => CapabilityValue::UInt(20),
             "column_width" => CapabilityValue::UInt(140),
             "projection_state" => CapabilityValue::String("rows=0,selected=None".to_string()),
@@ -1065,6 +1074,8 @@ pub fn default_widget_property_default_value(
             _ => return None,
         },
         WidgetKind::Menu => match property_name {
+            // RW-58: a fresh container is at its first row.
+            "scroll_row" => CapabilityValue::UInt(0),
             // A fresh menu has no rows; the empty list of the declared schema is what a dropped
             // binding resets to (`Null` would be a value the property's schema refuses).
             "items" => CapabilityValue::Records(crate::widget::capability::RecordList::new(
@@ -1197,6 +1208,8 @@ pub fn default_widget_property_default_value(
             _ => return None,
         },
         WidgetKind::Chart => match property_name {
+            // RW-58: a fresh container is at its first row.
+            "scroll_row" => CapabilityValue::UInt(0),
             // RW-67: `ChartWidget`'s primary series is empty on a fresh chart. The other Chart-kind
             // capabilities do not declare `data`, so this answer is never reached for them.
             "data" => CapabilityValue::Tuple(crate::compat::Vec::new()),
@@ -1580,6 +1593,8 @@ pub fn default_widget_property_default_value(
             _ => return None,
         },
         WidgetKind::QueryBuilder => match property_name {
+            // RW-58: a fresh container is at its first row.
+            "scroll_row" => CapabilityValue::UInt(0),
             // A fresh builder has neither fields nor rows; the empty lists of the declared schemas
             // are what a dropped binding resets to.
             "fields" => CapabilityValue::Records(crate::widget::capability::RecordList::new(
@@ -1616,6 +1631,8 @@ pub fn default_widget_property_default_value(
             _ => return None,
         },
         WidgetKind::Mention => match property_name {
+            // RW-58: a fresh container is at its first row.
+            "scroll_row" => CapabilityValue::UInt(0),
             // A fresh control has no candidates; the empty list of the declared schema is what a
             // dropped binding resets to.
             "candidates" => CapabilityValue::Records(crate::widget::capability::RecordList::new(
@@ -1727,6 +1744,8 @@ pub fn default_widget_property_default_value(
             _ => return None,
         },
         WidgetKind::PopupWindow => match property_name {
+            // RW-58: a fresh container is at its first row.
+            "scroll_row" => CapabilityValue::UInt(0),
             "title" => CapabilityValue::String(String::new()),
             "has_content" => CapabilityValue::Bool(false),
             // A fresh popup is transient (`modal == false`), has no owner, and paints the
@@ -2082,6 +2101,8 @@ pub fn default_widget_property_default_value(
             _ => return None,
         },
         WidgetKind::DropdownMenu => match property_name {
+            // RW-58: a fresh container is at its first row.
+            "scroll_row" => CapabilityValue::UInt(0),
             // An empty list of the declared schema, not `Null`: a dropped binding resets through the
             // default, and `Null` is a value the property's own schema check refuses (B26.09).
             "items" => CapabilityValue::Records(crate::widget::capability::RecordList::new(
@@ -2102,6 +2123,8 @@ pub fn default_widget_property_default_value(
             _ => return None,
         },
         WidgetKind::MenuButton => match property_name {
+            // RW-58: a fresh container is at its first row.
+            "scroll_row" => CapabilityValue::UInt(0),
             "text" => CapabilityValue::String("Menu".to_string()),
             "icon_source" => CapabilityValue::Null,
             // An empty list of the declared schema, not `Null`: a dropped binding resets through the
@@ -2145,6 +2168,8 @@ pub fn default_widget_property_default_value(
             _ => return None,
         },
         WidgetKind::MultiSelectComboBox => match property_name {
+            // RW-58: a fresh container is at its first row.
+            "scroll_row" => CapabilityValue::UInt(0),
             "selected_count" => CapabilityValue::UInt(0),
             "expanded" => CapabilityValue::Bool(false),
             "alignment" => CapabilityValue::String("left".to_string()),
@@ -2214,6 +2239,8 @@ pub fn default_widget_property_default_value(
             _ => return None,
         },
         WidgetKind::PropertiesPanel => match property_name {
+            // RW-58: a fresh container is at its first row.
+            "scroll_row" => CapabilityValue::UInt(0),
             "description_mode" => CapabilityValue::String("tooltip".to_string()),
             "edit_trigger" => CapabilityValue::String("single_click".to_string()),
             "property_count" => CapabilityValue::UInt(0),
@@ -2297,6 +2324,8 @@ pub fn default_widget_property_default_value(
             _ => return None,
         },
         WidgetKind::ShortcutEditor => match property_name {
+            // RW-58: a fresh container is at its first row.
+            "scroll_row" => CapabilityValue::UInt(0),
             "filter_text" => CapabilityValue::String(String::new()),
             // A freshly constructed editor has an empty table, so every derived count is zero and the
             // empty-state flag is true. The control's own accessors are the authority; these mirror them.
@@ -2422,6 +2451,8 @@ pub fn default_widget_property_default_value(
 
         // ── New widgets (view / property) ───────────────────────────
         WidgetKind::PropertyGrid => match property_name {
+            // RW-58: a fresh container is at its first row.
+            "scroll_row" => CapabilityValue::UInt(0),
             // A fresh grid has no rows; the empty list of the declared schema is what a dropped
             // binding resets to.
             "properties" => CapabilityValue::Records(crate::widget::capability::RecordList::new(
@@ -2739,6 +2770,8 @@ pub fn default_widget_property_default_value(
             _ => return None,
         },
         WidgetKind::MenuPanel => match property_name {
+            // RW-58: a fresh container is at its first row.
+            "scroll_row" => CapabilityValue::UInt(0),
             // A fresh panel has no rows; the empty list is what a dropped binding resets to.
             "items" => CapabilityValue::Records(crate::widget::capability::RecordList::new(
                 &crate::widget::companions::MENU_PANEL_ITEM_SCHEMA,
@@ -2777,6 +2810,8 @@ pub fn default_widget_property_default_value(
             _ => return None,
         },
         WidgetKind::LayerPanel => match property_name {
+            // RW-58: a fresh container is at its first row.
+            "scroll_row" => CapabilityValue::UInt(0),
             // A fresh panel mirrors no layers; the empty list is what a dropped binding resets
             // to (`Null` would be a value the schema refuses).
             "entries" => CapabilityValue::Records(crate::widget::capability::RecordList::new(
@@ -2790,6 +2825,8 @@ pub fn default_widget_property_default_value(
             _ => return None,
         },
         WidgetKind::PlaylistPanel => match property_name {
+            // RW-58: a fresh container is at its first row.
+            "scroll_row" => CapabilityValue::UInt(0),
             // A fresh panel mirrors an empty queue; the empty list is what a dropped binding
             // resets to (`Null` would be a value the schema refuses).
             "tracks" => CapabilityValue::Records(crate::widget::capability::RecordList::new(

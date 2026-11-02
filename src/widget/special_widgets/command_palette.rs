@@ -1028,6 +1028,15 @@ impl Widget for CommandPalette {
     fn base(&self) -> &BaseWidget {
         &self.base
     }
+    fn scrollable_rows(&self) -> Option<&dyn crate::widget::container_widgets::ScrollableRows> {
+        Some(self)
+    }
+    fn scrollable_rows_mut(
+        &mut self,
+    ) -> Option<&mut dyn crate::widget::container_widgets::ScrollableRows> {
+        Some(self)
+    }
+
     fn set_state_theme_hook(&mut self) {
         crate::style::reapply_active_theme_state(self);
     }
@@ -1157,6 +1166,7 @@ impl WidgetProperties for CommandPalette {
     fn property_names(&self) -> &'static [&'static str] {
         property_names_of![
             "entries",
+            "scroll_row",
             "query",
             "entry_count",
             "filtered_count",
@@ -1192,7 +1202,7 @@ impl WidgetProperties for CommandPalette {
             }
             "move_highlight" => Err(CapabilityAccessError::OutOfRange),
             _ if name.starts_with("set_") => Err(CapabilityAccessError::OutOfRange),
-            _ => Err(CapabilityAccessError::UnknownCommand),
+            _ => self.default_command(name),
         }
     }
 }
@@ -1501,6 +1511,21 @@ impl Draw for CommandPalette {
         }
     }
 }
+
+crate::impl_scrollable_rows!(
+    CommandPalette,
+    row = |s| s.scroll_offset,
+    set = |s, r| {
+        let max = s.filtered_indices.len().saturating_sub(s.visible_rows());
+        let next = r.min(max);
+        if next != s.scroll_offset {
+            s.scroll_offset = next;
+            s.base.request_redraw();
+        }
+    },
+    visible = |s| s.visible_rows(),
+    height = |s| Some(s.row_height)
+);
 
 #[cfg(test)]
 mod tests {

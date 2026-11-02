@@ -18,7 +18,15 @@ pub(crate) fn action_capability() -> WidgetCapability {
         aliases: &["command_action"],
         properties: ACTION_PROPERTIES,
         events: events_of!("action"),
-        commands: &["set_text", "set_checkable", "set_checked", "trigger"],
+        commands: &[
+            "set_text",
+            "set_checkable",
+            "set_checked",
+            "trigger",
+            "set_command_id",
+            "set_shortcut",
+            "set_icon_text",
+        ],
     }
 }
 
@@ -39,7 +47,16 @@ pub(crate) fn menu_capability() -> WidgetCapability {
         // channel cannot carry. `set_items` is the published form of a whole-list write: its rows
         // travel through the `items` records property (B26.03). `add_separator` stays published —
         // its arm runs the control's zero-argument builder.
-        commands: &["clear", "add_separator", "set_items"],
+        commands: &[
+            "clear",
+            "add_separator",
+            "set_items",
+            "set_column_count",
+            "set_show_heading",
+            "set_title",
+            "set_direction",
+            "set_scroll_row",
+        ],
     }
 }
 
@@ -65,7 +82,16 @@ pub(crate) fn context_menu_capability() -> WidgetCapability {
         // channel cannot carry. `set_items` is the published form of a whole-list write: its rows
         // travel through the `items` records property (B26.03). `add_separator` stays published —
         // the arm is shared with `menu`.
-        commands: &["clear", "add_separator", "set_items"],
+        commands: &[
+            "clear",
+            "add_separator",
+            "set_items",
+            "set_column_count",
+            "set_show_heading",
+            "set_title",
+            "set_direction",
+            "set_scroll_row",
+        ],
     }
 }
 
@@ -96,7 +122,15 @@ pub(crate) fn tool_bar_capability() -> WidgetCapability {
         // command channel cannot carry. `set_items` is the published form of a whole-strip write:
         // its rows travel through the `items` records property (B26.03). `add_separator` stays
         // published — its arm runs the control's zero-argument builder.
-        commands: &["clear", "add_separator", "set_items"],
+        commands: &[
+            "clear",
+            "add_separator",
+            "set_items",
+            "set_floatable",
+            "set_icon_size",
+            "set_movable",
+            "set_orientation",
+        ],
     }
 }
 
@@ -110,7 +144,7 @@ pub(crate) fn dropdown_menu_capability() -> WidgetCapability {
         // The widget's signal is `item_selected`; `selected_changed` was never
         // an emitted name, so a subscriber wired by it never fired.
         events: events_of!("dropdown_menu"),
-        commands: &["set_selected_index", "set_expanded"],
+        commands: &["set_selected_index", "set_expanded", "set_alignment", "set_scroll_row"],
     }
 }
 
@@ -123,7 +157,7 @@ pub(crate) fn menu_button_capability() -> WidgetCapability {
         properties: MENU_BUTTON_PROPERTIES,
         // `item_triggered` is the real signal; `selected_changed` is not emitted.
         events: events_of!("menu_button"),
-        commands: &["set_text", "set_expanded"],
+        commands: &["set_text", "set_expanded", "set_scroll_row"],
     }
 }
 
@@ -135,7 +169,7 @@ pub(crate) fn tool_button_capability() -> WidgetCapability {
         aliases: &["toolbar_button"],
         properties: TOOL_BUTTON_PROPERTIES,
         events: events_of!("tool_button"),
-        commands: &["set_text", "set_checked"],
+        commands: &["set_text", "set_checked", "set_icon_tint"],
     }
 }
 

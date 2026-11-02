@@ -1039,7 +1039,7 @@ impl WidgetProperties for EmojiPicker {
             "choose" | "set_glyphs" | "set_categories" | "set_search" => {
                 Err(CapabilityAccessError::OutOfRange)
             }
-            _ => Err(CapabilityAccessError::UnknownCommand),
+            _ => self.default_command(name),
         }
     }
 }

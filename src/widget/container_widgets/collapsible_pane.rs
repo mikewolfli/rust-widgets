@@ -480,7 +480,7 @@ impl WidgetProperties for CollapsiblePane {
                 Ok(())
             }
             "set_title" | "set_collapsed" => Err(CapabilityAccessError::OutOfRange),
-            _ => Err(CapabilityAccessError::UnknownCommand),
+            _ => self.default_command(name),
         }
     }
 }

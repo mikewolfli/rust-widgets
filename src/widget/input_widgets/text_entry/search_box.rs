@@ -758,7 +758,7 @@ impl WidgetProperties for SearchBox {
                 Ok(())
             }
             "set_text" | "set_placeholder" => Err(CapabilityAccessError::OutOfRange),
-            _ => Err(CapabilityAccessError::UnknownCommand),
+            _ => self.default_command(name),
         }
     }
 }

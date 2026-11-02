@@ -286,13 +286,36 @@ pub trait WidgetHandle: Sized {
         crate::widget::runtime::geometry_of(self.raw_id())
     }
 
-    /// Whether this widget currently owns keyboard focus (RW-63).
-    ///
-    /// This is the read half only. The runtime exposes no per-widget focus subscription, so
-    /// there is no `on_focus_gained` / `on_focus_lost` hook here; a host observes the
-    /// `FocusGained` / `FocusLost` events through the normal event path instead.
+    /// Whether this widget currently owns keyboard focus (RW-63). The read half; subscribe with
+    /// [`Self::on_focus_gained`] / [`Self::on_focus_lost`].
     fn is_focused(&self) -> bool {
         crate::widget::runtime::has_focus(self.raw_id())
+    }
+
+    /// Observes this widget gaining keyboard focus (RW-63).
+    ///
+    /// Subscribes to the control's own [`BaseWidget::focus_gained`](crate::widget::BaseWidget::focus_gained)
+    /// signal — the same one the JSON `on_focus` trigger binds to — so there is no second focus
+    /// table. Returns `false` when the id is not mounted; the closure is dropped, not stored where
+    /// it could never run. The slot dies with the control (`unregister`/window teardown), not with
+    /// the handle, and carries no payload (the reason is recorded on the control).
+    ///
+    /// [`WindowHandle`](crate::app::WindowHandle) has an inherent `on_focus_gained` for window
+    /// activation, which shadows this default; use UFCS for the widget channel on a window id.
+    fn on_focus_gained<F>(&self, f: F) -> bool
+    where
+        F: FnMut() + Send + Sync + 'static,
+    {
+        register_focus_observer(self.raw_id(), true, f)
+    }
+
+    /// Observes this widget losing keyboard focus (RW-63); the counterpart of
+    /// [`Self::on_focus_gained`], on the control's own `focus_lost` signal.
+    fn on_focus_lost<F>(&self, f: F) -> bool
+    where
+        F: FnMut() + Send + Sync + 'static,
+    {
+        register_focus_observer(self.raw_id(), false, f)
     }
 
     /// Update the widget's text / label.
@@ -653,6 +676,28 @@ pub trait WidgetHandle: Sized {
         }
     }
 
+    /// Moves a row-scrolling container to `row` (RW-58) through its `scroll_row` property. The
+    /// control clamps, so [`Self::scroll_row`] reports the accepted value. `false` means the id is
+    /// not a mounted row container.
+    fn set_scroll_row(&self, row: usize) -> bool {
+        write_control_property(
+            self.raw_id(),
+            "scroll_row",
+            crate::widget::capability::CapabilityValue::UInt(row as u64),
+        )
+    }
+
+    /// Reads a row-scrolling container's first visible row (RW-58); `None` when the id is not a
+    /// mounted row container, which is distinct from row `0`.
+    fn scroll_row(&self) -> Option<usize> {
+        match read_control_property(self.raw_id(), "scroll_row") {
+            Some(crate::widget::capability::CapabilityValue::UInt(value)) => {
+                usize::try_from(value).ok()
+            }
+            _ => None,
+        }
+    }
+
     /// Register a callback for the "clicked" trigger.
     ///
     /// The closure is invoked whenever the widget receives a
@@ -732,6 +777,26 @@ pub trait WidgetHandle: Sized {
     fn on_close_cross_thread<F: FnMut() + Send + 'static>(&self, f: F) {
         register_close_callback_cross_thread(self.raw_id(), f);
     }
+}
+
+/// Installs a focus observer on the control's own base signal, recording a refusal.
+///
+/// `false` means the id is not mounted, so storing the closure would leave a handler nothing can
+/// emit; counting it keeps [`unwired_binding_count`] honest about unwired handlers.
+fn register_focus_observer<F>(id: ObjectId, gained: bool, f: F) -> bool
+where
+    F: FnMut() + Send + Sync + 'static,
+{
+    if crate::widget::runtime::subscribe_focus(id, gained, f) {
+        return true;
+    }
+    log::warn!(
+        "on_focus_{} ignored for id={id}: it is not a mounted control, so no focus event can \
+         reach the observer",
+        if gained { "gained" } else { "lost" }
+    );
+    record_unwired_binding(id);
+    false
 }
 
 // ── Global callback registry ──────────────────────────────────

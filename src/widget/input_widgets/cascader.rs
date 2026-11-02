@@ -1362,7 +1362,7 @@ impl WidgetProperties for Cascader {
                 // (B26.03); `set_options` has no property route (the tree is nested).
                 Err(CapabilityAccessError::OutOfRange)
             }
-            _ => Err(CapabilityAccessError::UnknownCommand),
+            _ => self.default_command(name),
         }
     }
 }

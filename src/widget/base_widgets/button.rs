@@ -2058,7 +2058,7 @@ impl WidgetProperties for Button {
                 self.emit_clicked();
                 Ok(())
             }
-            _ => Err(CapabilityAccessError::UnknownCommand),
+            _ => self.default_command(name),
         }
     }
 }

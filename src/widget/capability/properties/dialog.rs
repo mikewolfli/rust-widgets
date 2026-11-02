@@ -25,7 +25,7 @@ pub(crate) fn color_picker_capability() -> WidgetCapability {
         // Audit 20261026: `set_hex` and `apply_preset` stay unpublished — the writable `hex_rgba`
         // property is the colour write, and a preset is applied by writing that property to the
         // preset's value, so both are reachable through the property route (principle #18).
-        commands: &[],
+        commands: &["set_hue_degrees", "set_show_alpha"],
     }
 }
 
@@ -42,7 +42,18 @@ pub(crate) fn message_box_capability() -> WidgetCapability {
         // a real, drawn property of the control and was reachable from the JSON
         // loader but not from this command list, so a generic consumer could not
         // discover it.
-        commands: &["set_text", "set_title", "set_icon"],
+        commands: &[
+            "set_text",
+            "set_title",
+            "set_icon",
+            "set_check_box",
+            "set_check_box_checked",
+            "set_default_button",
+            "set_detailed_text",
+            "set_escape_button",
+            "set_informative_text",
+            "set_modal",
+        ],
     }
 }
 
@@ -54,7 +65,16 @@ pub(crate) fn file_dialog_capability() -> WidgetCapability {
         aliases: &[],
         properties: FILE_DIALOG_PROPERTIES,
         events: events_of!("file_dialog"),
-        commands: &["set_mode", "set_directory", "open"],
+        commands: &[
+            "set_mode",
+            "set_directory",
+            "open",
+            "set_default_suffix",
+            "set_label_text",
+            "set_title",
+            "set_view_mode",
+            "set_modal",
+        ],
     }
 }
 
@@ -69,7 +89,7 @@ pub(crate) fn font_dialog_capability() -> WidgetCapability {
         // Audit 20261026: `set_current_font` stays unpublished — the selected font is a `Font`
         // value and the dialog publishes no property that carries one (only the option bits); the
         // control's own `set_current_font` API is the write path (principle #18).
-        commands: &["accept", "reject"],
+        commands: &["accept", "reject", "set_strikethrough", "set_underline", "set_modal"],
     }
 }
 
@@ -81,7 +101,16 @@ pub(crate) fn input_dialog_capability() -> WidgetCapability {
         aliases: &[],
         properties: INPUT_DIALOG_PROPERTIES,
         events: events_of!("input_dialog"),
-        commands: &["set_mode", "set_text_value", "set_int_value", "set_double_value"],
+        commands: &[
+            "set_mode",
+            "set_text_value",
+            "set_int_value",
+            "set_double_value",
+            "set_dropdown_open",
+            "set_int_step",
+            "set_label_text",
+            "set_title",
+        ],
     }
 }
 
@@ -96,7 +125,17 @@ pub(crate) fn progress_dialog_capability() -> WidgetCapability {
         // Audit 20261026: `set_range` stays unpublished — the range is the writable
         // `minimum`/`maximum` pair, so a whole-range write is reachable through the property route
         // (principle #18).
-        commands: &["set_value", "set_title", "set_label_text"],
+        commands: &[
+            "set_value",
+            "set_title",
+            "set_label_text",
+            "set_accent_fill",
+            "set_auto_reset",
+            "set_maximum",
+            "set_minimum",
+            "set_minimum_duration",
+            "set_animated",
+        ],
     }
 }
 
@@ -110,7 +149,7 @@ pub(crate) fn popup_window_capability() -> WidgetCapability {
         events: events_of!("popup_window"),
         // Audit 20261026: `set_content_widget` stays unpublished — its payload is an `ObjectId` of
         // a mounted widget and no property value can carry a widget reference (principle #18).
-        commands: &[],
+        commands: &["set_floating_chrome", "set_title", "set_modal", "set_resizable"],
     }
 }
 
@@ -122,7 +161,7 @@ pub(crate) fn dialog_capability() -> WidgetCapability {
         aliases: &[],
         properties: DIALOG_PROPERTIES,
         events: events_of!("dialog"),
-        commands: &["accept", "reject"],
+        commands: &["accept", "reject", "set_closable", "set_title", "set_modal"],
     }
 }
 
@@ -151,7 +190,7 @@ pub(crate) fn wizard_dialog_capability() -> WidgetCapability {
         // it is no longer published, since an index needs a payload the command
         // channel cannot carry. `finish` runs the same path the Finish button
         // does: every step is marked completed and `finished` is emitted.
-        commands: &["next", "back", "finish"],
+        commands: &["next", "back", "finish", "set_title", "set_subtitle"],
     }
 }
 
@@ -175,7 +214,7 @@ pub(crate) fn tooltip_capability() -> WidgetCapability {
         aliases: &["tooltip_widget", "hover_tip"],
         properties: TOOLTIP_PROPERTIES,
         events: &[],
-        commands: &["set_text", "show", "hide"],
+        commands: &["set_text", "show", "hide", "set_shown", "set_wrap"],
     }
 }
 
@@ -190,7 +229,14 @@ pub(crate) fn popover_capability() -> WidgetCapability {
         // Audit 20261026: `set_text` stays unpublished — the popover's `text` property is
         // deliberately read-only (it mirrors the installed content widget), and the documented
         // write path is the control's own `set_content` (principle #18).
-        commands: &["set_visible"],
+        commands: &[
+            "set_visible",
+            "set_arrow_direction",
+            "set_shown",
+            "set_behavior",
+            "set_placeholder_text",
+            "set_translucent",
+        ],
     }
 }
 
@@ -202,7 +248,7 @@ pub(crate) fn modal_bottom_sheet_capability() -> WidgetCapability {
         aliases: &["modal_sheet"],
         properties: MODAL_BOTTOM_SHEET_PROPERTIES,
         events: events_of!("modal_bottom_sheet"),
-        commands: &["set_visible", "show", "dismiss"],
+        commands: &["set_visible", "show", "dismiss", "set_sheet_height", "set_animated"],
     }
 }
 
@@ -214,7 +260,15 @@ pub(crate) fn find_replace_dialog_capability() -> WidgetCapability {
         aliases: &["find_replace"],
         properties: FIND_REPLACE_DIALOG_PROPERTIES,
         events: events_of!("find_replace_dialog"),
-        commands: &["set_find_text", "set_replace_text", "set_match_case", "set_wrap_around"],
+        commands: &[
+            "set_find_text",
+            "set_replace_text",
+            "set_match_case",
+            "set_wrap_around",
+            "set_highlight_all",
+            "set_use_regex",
+            "set_whole_word",
+        ],
     }
 }
 
@@ -226,7 +280,18 @@ pub(crate) fn alert_dialog_capability() -> WidgetCapability {
         aliases: &["notice_dialog"],
         properties: ALERT_DIALOG_PROPERTIES,
         events: events_of!("alert_dialog"),
-        commands: &[],
+        commands: &[
+            "set_button_text",
+            "set_check_box",
+            "set_check_box_checked",
+            "set_default_button",
+            "set_detailed_text",
+            "set_informative_text",
+            "set_message",
+            "set_title",
+            "set_icon",
+            "set_modal",
+        ],
     }
 }
 
@@ -238,7 +303,19 @@ pub(crate) fn confirm_dialog_capability() -> WidgetCapability {
         aliases: &["confirmation_dialog"],
         properties: CONFIRM_DIALOG_PROPERTIES,
         events: events_of!("confirm_dialog"),
-        commands: &[],
+        commands: &[
+            "set_accept_text",
+            "set_check_box",
+            "set_check_box_checked",
+            "set_default_button",
+            "set_detailed_text",
+            "set_informative_text",
+            "set_message",
+            "set_reject_text",
+            "set_title",
+            "set_icon",
+            "set_modal",
+        ],
     }
 }
 
@@ -250,6 +327,18 @@ pub(crate) fn about_dialog_capability() -> WidgetCapability {
         aliases: &["about_box"],
         properties: ABOUT_DIALOG_PROPERTIES,
         events: events_of!("about_dialog"),
-        commands: &[],
+        commands: &[
+            "set_application_name",
+            "set_check_box",
+            "set_check_box_checked",
+            "set_default_button",
+            "set_detailed_text",
+            "set_informative_text",
+            "set_message",
+            "set_title",
+            "set_version",
+            "set_icon",
+            "set_modal",
+        ],
     }
 }

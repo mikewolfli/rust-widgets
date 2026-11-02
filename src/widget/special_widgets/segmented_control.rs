@@ -901,7 +901,7 @@ impl WidgetProperties for SegmentedControl {
     fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
         match name {
             "move_selection" | "set_items" => Err(CapabilityAccessError::OutOfRange),
-            _ => Err(CapabilityAccessError::UnknownCommand),
+            _ => self.default_command(name),
         }
     }
 }

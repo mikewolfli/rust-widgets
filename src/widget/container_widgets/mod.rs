@@ -71,7 +71,7 @@ pub use masonry_layout::{MasonryItem, MasonryLayout};
 pub use mdiarea::MdiArea;
 #[cfg(widgets_unstripped)]
 pub use safe_area::{SafeArea, SafeAreaInsets};
-pub use scroll_surface::ScrollableSurface;
+pub use scroll_surface::{ScrollableRows, ScrollableSurface};
 pub use scrollarea::ScrollArea;
 #[cfg(widgets_unstripped)]
 pub use splitter::Splitter;

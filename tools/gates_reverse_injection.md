@@ -501,3 +501,15 @@ than inventing an injection that was never run.
 
 > The helper was restored and the gate re-run green immediately after the capture. The injection
 > proves the FAIL arm is reachable; SKIP(host-limited) remains a separate, named outcome.
+
+## Round 14 (2026-11-02) — RW-44 / RW-58 censuses
+
+| gate | injected | reported |
+|---|---|---|
+| `check_setter_census.sh` | `tools/check_setter_census.py --inject=button.set_text` — pretends a classified setter is absent from `PROGRAMMATIC_ONLY_SETTERS` | `FAIL: injected unclassified setter button.set_text` (exit 1) |
+| `check_scrollable_census.sh` | `tools/check_scrollable_census.py --inject=tab_bar` — removes a named exclusion on paper | `FAIL: injected unclassified control tab_bar` (exit 1) |
+
+> Both injections are computed by the gate itself (the setter/control must currently be classified,
+> otherwise the injection is reported as proving nothing), and both were re-run green immediately
+> after the capture: `setter census: OK (controls=240, ledger=777, unclassified=0)` and
+> `scrollable census: candidates=48 rows=31 pixels=2 excluded=15 gaps=0` (after round 9 closed the row-unit gaps).

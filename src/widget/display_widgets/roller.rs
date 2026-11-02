@@ -561,7 +561,7 @@ impl WidgetProperties for Roller {
             "set_options" | "set_selected_index" | "set_visible_count" => {
                 Err(CapabilityAccessError::OutOfRange)
             }
-            _ => Err(CapabilityAccessError::UnknownCommand),
+            _ => self.default_command(name),
         }
     }
 }

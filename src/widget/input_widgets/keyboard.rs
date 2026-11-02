@@ -938,7 +938,7 @@ impl WidgetProperties for Keyboard {
                 Ok(())
             }
             "set_layout" | "set_lowercase" => Err(CapabilityAccessError::OutOfRange),
-            _ => Err(CapabilityAccessError::UnknownCommand),
+            _ => self.default_command(name),
         }
     }
 }

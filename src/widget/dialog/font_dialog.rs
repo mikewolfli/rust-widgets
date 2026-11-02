@@ -816,7 +816,7 @@ impl WidgetProperties for FontDialog {
                 Ok(())
             }
             "set_current_font" => Err(CapabilityAccessError::OutOfRange),
-            _ => Err(CapabilityAccessError::UnknownCommand),
+            _ => self.default_command(name),
         }
     }
 }

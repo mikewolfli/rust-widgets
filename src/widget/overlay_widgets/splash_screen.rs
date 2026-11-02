@@ -558,7 +558,7 @@ impl WidgetProperties for SplashScreen {
                 Ok(())
             }
             "set_progress" | "set_title" | "set_logo" => Err(CapabilityAccessError::OutOfRange),
-            _ => Err(CapabilityAccessError::UnknownCommand),
+            _ => self.default_command(name),
         }
     }
 }

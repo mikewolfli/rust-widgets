@@ -18,7 +18,7 @@ pub(crate) fn tag_capability() -> WidgetCapability {
         aliases: &["label_tag"],
         properties: TAG_PROPERTIES,
         events: events_of!("tag"),
-        commands: &[],
+        commands: &["set_closable", "set_tone", "set_icon", "set_selected", "set_text"],
     }
 }
 
@@ -30,7 +30,14 @@ pub(crate) fn clock_capability() -> WidgetCapability {
         aliases: &["analog_clock"],
         properties: CLOCK_PROPERTIES,
         events: events_of!("clock"),
-        commands: &[],
+        commands: &[
+            "set_display",
+            "set_hour",
+            "set_minute",
+            "set_second",
+            "set_show_seconds",
+            "set_time_source",
+        ],
     }
 }
 
@@ -42,7 +49,19 @@ pub(crate) fn gauge_capability() -> WidgetCapability {
         aliases: &["dial_gauge"],
         properties: GAUGE_PROPERTIES,
         events: events_of!("gauge"),
-        commands: &[],
+        commands: &[
+            "set_end_angle",
+            "set_maximum",
+            "set_minimum",
+            "set_needle_style",
+            "set_start_angle",
+            "set_thickness",
+            "set_tick_count",
+            "set_unit",
+            "set_unit_label",
+            "set_label",
+            "set_value",
+        ],
     }
 }
 
@@ -57,7 +76,7 @@ pub(crate) fn mac_segmented_control_capability() -> WidgetCapability {
         aliases: &[],
         properties: MAC_SEGMENTED_CONTROL_PROPERTIES,
         events: events_of!("mac_segmented_control"),
-        commands: &[],
+        commands: &["set_selected_index"],
     }
 }
 
@@ -70,7 +89,15 @@ pub(crate) fn mac_stepper_capability() -> WidgetCapability {
         aliases: &[],
         properties: MAC_STEPPER_PROPERTIES,
         events: events_of!("mac_stepper"),
-        commands: &[],
+        commands: &[
+            "set_maximum",
+            "set_minimum",
+            "set_repeat_delay_ms",
+            "set_repeat_interval_ms",
+            "set_step",
+            "set_value",
+            "set_wraps",
+        ],
     }
 }
 
@@ -83,7 +110,7 @@ pub(crate) fn mac_toolbar_capability() -> WidgetCapability {
         aliases: &[],
         properties: MAC_TOOLBAR_PROPERTIES,
         events: events_of!("mac_toolbar"),
-        commands: &[],
+        commands: &["set_icon_size", "set_selectable", "set_selected_index"],
     }
 }
 
@@ -96,7 +123,7 @@ pub(crate) fn mac_source_list_capability() -> WidgetCapability {
         aliases: &[],
         properties: MAC_SOURCE_LIST_PROPERTIES,
         events: events_of!("mac_source_list"),
-        commands: &[],
+        commands: &["set_selected_row", "set_scroll_row"],
     }
 }
 
@@ -109,7 +136,14 @@ pub(crate) fn mac_window_chrome_capability() -> WidgetCapability {
         aliases: &[],
         properties: MAC_WINDOW_CHROME_PROPERTIES,
         events: events_of!("mac_window_chrome"),
-        commands: &[],
+        commands: &[
+            "set_buttons_visible",
+            "set_document_edited",
+            "set_fullscreen",
+            "set_title",
+            "set_draggable",
+            "set_focused",
+        ],
     }
 }
 
@@ -127,7 +161,7 @@ pub(crate) fn swatch_capability() -> WidgetCapability {
         aliases: &["color_swatch", "colour_swatch"],
         properties: SWATCH_PROPERTIES,
         events: events_of!("swatch"),
-        commands: &[],
+        commands: &["set_cell_size", "set_colors", "set_selected_index", "set_columns"],
     }
 }
 
@@ -140,7 +174,7 @@ pub(crate) fn filter_row_capability() -> WidgetCapability {
         aliases: &["filter_bar"],
         properties: FILTER_ROW_PROPERTIES,
         events: events_of!("filter_row"),
-        commands: &[],
+        commands: &["set_live", "set_operator"],
     }
 }
 
@@ -153,7 +187,7 @@ pub(crate) fn legend_capability() -> WidgetCapability {
         aliases: &["chart_legend"],
         properties: LEGEND_PROPERTIES,
         events: events_of!("legend"),
-        commands: &[],
+        commands: &["set_position", "set_checkable", "set_orientation"],
     }
 }
 
@@ -166,7 +200,7 @@ pub(crate) fn chart_tooltip_capability() -> WidgetCapability {
         aliases: &["tooltip_bubble"],
         properties: CHART_TOOLTIP_PROPERTIES,
         events: events_of!("chart_tooltip"),
-        commands: &[],
+        commands: &["set_follow_pointer"],
     }
 }
 
@@ -179,7 +213,13 @@ pub(crate) fn tooltip_manager_capability() -> WidgetCapability {
         aliases: &["tooltip_pipeline"],
         properties: TOOLTIP_MANAGER_PROPERTIES,
         events: events_of!("tooltip_manager"),
-        commands: &[],
+        commands: &[
+            "set_delay_ms",
+            "set_duration_ms",
+            "set_enabled",
+            "set_follow_pointer",
+            "set_max_width",
+        ],
     }
 }
 
@@ -192,7 +232,7 @@ pub(crate) fn zoom_pan_controller_capability() -> WidgetCapability {
         aliases: &["zoom_pan"],
         properties: ZOOM_PAN_CONTROLLER_PROPERTIES,
         events: events_of!("zoom_pan_controller"),
-        commands: &[],
+        commands: &["set_zoom_level", "set_zoom_mode"],
     }
 }
 
@@ -205,7 +245,14 @@ pub(crate) fn toast_host_capability() -> WidgetCapability {
         aliases: &["toast_queue"],
         properties: TOAST_HOST_PROPERTIES,
         events: events_of!("toast_host"),
-        commands: &[],
+        commands: &[
+            "set_anchor",
+            "set_default_duration_ms",
+            "set_overflow_policy",
+            "set_stacking_direction",
+            "set_max_queued",
+            "set_max_visible",
+        ],
     }
 }
 
@@ -218,7 +265,7 @@ pub(crate) fn markdown_outline_panel_capability() -> WidgetCapability {
         aliases: &["markdown_outline"],
         properties: MARKDOWN_OUTLINE_PANEL_PROPERTIES,
         events: events_of!("markdown_outline_panel"),
-        commands: &[],
+        commands: &["set_width", "set_active_index"],
     }
 }
 
@@ -236,7 +283,13 @@ pub(crate) fn find_bar_capability() -> WidgetCapability {
         aliases: &[],
         properties: FIND_BAR_PROPERTIES,
         events: events_of!("find_bar"),
-        commands: &[],
+        commands: &[
+            "set_case_sensitive",
+            "set_replace_text",
+            "set_replace_visible",
+            "set_whole_word",
+            "set_query",
+        ],
     }
 }
 
@@ -249,7 +302,12 @@ pub(crate) fn menu_panel_capability() -> WidgetCapability {
         aliases: &[],
         properties: MENU_PANEL_PROPERTIES,
         events: events_of!("menu_panel"),
-        commands: &[],
+        commands: &[
+            "set_highlighted_index",
+            "set_selected_index",
+            "set_max_visible_rows",
+            "set_scroll_row",
+        ],
     }
 }
 
@@ -262,7 +320,7 @@ pub(crate) fn speed_dial_capability() -> WidgetCapability {
         aliases: &[],
         properties: SPEED_DIAL_PROPERTIES,
         events: events_of!("speed_dial"),
-        commands: &[],
+        commands: &["set_collapse_on_activate", "set_spacing", "set_direction", "set_expanded"],
     }
 }
 
@@ -275,7 +333,7 @@ pub(crate) fn swipe_actions_capability() -> WidgetCapability {
         aliases: &[],
         properties: SWIPE_ACTIONS_PROPERTIES,
         events: events_of!("swipe_actions"),
-        commands: &[],
+        commands: &["set_icon_side", "set_max_reveal_width", "set_offset"],
     }
 }
 
@@ -290,7 +348,7 @@ pub(crate) fn drawer_section_header_capability() -> WidgetCapability {
         // This heading emits no signals (`drawer_section_header:` in the census), so the list is
         // the empty literal rather than an `events_of!` lookup.
         events: &[],
-        commands: &[],
+        commands: &["set_uppercase", "set_inset", "set_label"],
     }
 }
 
@@ -306,7 +364,7 @@ pub(crate) fn layer_panel_capability() -> WidgetCapability {
         // `set_entries` names its payload through the `entries` records property (B26.03); the
         // selection / visibility / scroll verbs stay Rust-side because no property carries their
         // layer id.
-        commands: &["set_entries"],
+        commands: &["set_entries", "set_row_height", "set_scroll_row"],
     }
 }
 
@@ -322,7 +380,16 @@ pub(crate) fn playlist_panel_capability() -> WidgetCapability {
         // `set_tracks` names its payload through the `tracks` records property (B26.03);
         // `track_selected` is an event name rather than a command, and `set_filter` stays Rust-side
         // because the writable `filter` property is its document route.
-        commands: &["set_tracks"],
+        commands: &[
+            "set_tracks",
+            "set_current_index",
+            "set_row_height",
+            "set_show_now_playing_badge",
+            "set_show_track_numbers",
+            "set_title_from_source",
+            "set_filter",
+            "set_scroll_row",
+        ],
     }
 }
 
@@ -335,7 +402,7 @@ pub(crate) fn shape_canvas_capability() -> WidgetCapability {
         aliases: &["shape_board"],
         properties: SHAPE_CANVAS_PROPERTIES,
         events: events_of!("shape_canvas"),
-        commands: &[],
+        commands: &["set_grid_step", "set_snap_to_grid", "set_editable"],
     }
 }
 
@@ -348,7 +415,7 @@ pub(crate) fn range_preset_bar_capability() -> WidgetCapability {
         aliases: &["preset_bar"],
         properties: RANGE_PRESET_BAR_PROPERTIES,
         events: events_of!("range_preset_bar"),
-        commands: &[],
+        commands: &["set_compact", "set_orientation"],
     }
 }
 
@@ -361,7 +428,7 @@ pub(crate) fn grid_view_header_capability() -> WidgetCapability {
         aliases: &["table_header_bar"],
         properties: GRID_VIEW_HEADER_PROPERTIES,
         events: events_of!("grid_view_header"),
-        commands: &[],
+        commands: &["set_filter_icon_visible", "set_resize_mode", "set_sort_indicator_visible"],
     }
 }
 
@@ -380,7 +447,7 @@ pub(crate) fn line_number_gutter_capability() -> WidgetCapability {
         aliases: &[],
         properties: LINE_NUMBER_GUTTER_PROPERTIES,
         events: events_of!("line_number_gutter"),
-        commands: &[],
+        commands: &["set_current_line", "set_align"],
     }
 }
 
@@ -393,7 +460,14 @@ pub(crate) fn find_replace_bar_capability() -> WidgetCapability {
         aliases: &[],
         properties: FIND_REPLACE_BAR_PROPERTIES,
         events: events_of!("find_replace_bar"),
-        commands: &[],
+        commands: &[
+            "set_match_case",
+            "set_match_count",
+            "set_replace_visible",
+            "set_replacement",
+            "set_use_regex",
+            "set_query",
+        ],
     }
 }
 
@@ -406,7 +480,7 @@ pub(crate) fn list_state_host_capability() -> WidgetCapability {
         aliases: &[],
         properties: LIST_STATE_HOST_PROPERTIES,
         events: events_of!("list_state_host"),
-        commands: &[],
+        commands: &["set_loading_rows", "set_pull_progress", "set_state"],
     }
 }
 
@@ -419,7 +493,7 @@ pub(crate) fn summary_row_capability() -> WidgetCapability {
         aliases: &[],
         properties: SUMMARY_ROW_PROPERTIES,
         events: events_of!("summary_row"),
-        commands: &[],
+        commands: &["set_sticky"],
     }
 }
 
@@ -432,7 +506,7 @@ pub(crate) fn zoom_strip_capability() -> WidgetCapability {
         aliases: &[],
         properties: ZOOM_STRIP_PROPERTIES,
         events: events_of!("zoom_strip"),
-        commands: &[],
+        commands: &["set_fit_actions", "set_show_percentage", "set_step"],
     }
 }
 
@@ -462,7 +536,7 @@ pub(crate) fn chart_data_table_capability() -> WidgetCapability {
         aliases: &[],
         properties: CHART_DATA_TABLE_PROPERTIES,
         events: events_of!("chart_data_table"),
-        commands: &[],
+        commands: &["set_max_rows", "set_mode"],
     }
 }
 
@@ -475,7 +549,7 @@ pub(crate) fn calendar_mark_layer_capability() -> WidgetCapability {
         aliases: &[],
         properties: CALENDAR_MARK_LAYER_PROPERTIES,
         events: events_of!("calendar_mark_layer"),
-        commands: &[],
+        commands: &["set_max_per_cell", "set_month"],
     }
 }
 
@@ -488,6 +562,6 @@ pub(crate) fn drag_ghost_layer_capability() -> WidgetCapability {
         aliases: &[],
         properties: DRAG_GHOST_LAYER_PROPERTIES,
         events: events_of!("drag_ghost_layer"),
-        commands: &[],
+        commands: &["set_snap_back", "set_title", "set_opacity"],
     }
 }

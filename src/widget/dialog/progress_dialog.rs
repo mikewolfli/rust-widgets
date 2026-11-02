@@ -668,7 +668,7 @@ impl WidgetProperties for ProgressDialog {
             "set_value" | "set_range" | "set_title" | "set_label_text" => {
                 Err(CapabilityAccessError::OutOfRange)
             }
-            _ => Err(CapabilityAccessError::UnknownCommand),
+            _ => self.default_command(name),
         }
     }
 }

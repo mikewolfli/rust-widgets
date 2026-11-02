@@ -619,6 +619,32 @@ pub trait Widget: EventHandler + Any {
         None
     }
 
+    /// Returns this widget's row-unit scroll contract, when it has one (RW-58).
+    ///
+    /// The generic property route uses this to answer `scroll_row` for every row container
+    /// through one implementation instead of one `match` arm per control. A control that owns a
+    /// row index overrides this to return `Some(self)`; a control that does not scroll by rows
+    /// keeps the default and the property answers `UnknownProperty`, which is the honest answer
+    /// for a control with no such state.
+    ///
+    /// # Why a trait-object accessor rather than a per-control arm
+    ///
+    /// There are more than twenty row containers, and their own storage already differs (a
+    /// `usize`, an `i32` pixel offset with a row height, a computed visible window). Routing the
+    /// property through [`ScrollableRows`](crate::widget::container_widgets::ScrollableRows) keeps
+    /// the clamping and the unit in the control that owns them, and leaves one place —
+    /// `base_property_get` / `base_property_set` — that maps the property name to the trait.
+    fn scrollable_rows(&self) -> Option<&dyn crate::widget::container_widgets::ScrollableRows> {
+        None
+    }
+
+    /// Mutable counterpart to [`Widget::scrollable_rows`].
+    fn scrollable_rows_mut(
+        &mut self,
+    ) -> Option<&mut dyn crate::widget::container_widgets::ScrollableRows> {
+        None
+    }
+
     /// Returns this widget as an opt-in [`SaveState`](crate::widget::save_state::SaveState)
     /// participant, when it declares persistent state.
     ///
@@ -987,9 +1013,11 @@ pub trait Widget: EventHandler + Any {
     ///
     /// # The default is a trap, and it is now checked
     ///
-    /// This default returns `None` for every name. That is the honest answer for a control with no
-    /// events, but it is **indistinguishable** from a control that publishes events and forgot to
-    /// convert: in both cases `forward_all` wires nothing and a validated subscription never fires.
+    /// This default resolves only the two base facts (`focus_gained` / `focus_lost`, see
+    /// [`Self::base_event_signal`]) and `None` for every other name. That is the honest answer for
+    /// a control with no events, but it is **indistinguishable** from a control that publishes
+    /// events and forgot to convert: in both cases `forward_all` wires nothing and a validated
+    /// subscription never fires.
     ///
     /// Every control that publishes an event now overrides this — `tools/check_event_signal_dyn.sh`
     /// holds the two lists (the capability table and the arms) in agreement for each of them, and
@@ -1008,8 +1036,19 @@ pub trait Widget: EventHandler + Any {
     fn event_signal_dyn(&self, name: &str) -> Option<crate::signal::EventSignalRef> {
         // W-302: the two focus events are base facts, not per-control signals, so every control
         // resolves them from the base state without declaring an arm of its own.
-        // `BaseWidget::PUBLISHED_EVENTS` is the single list; a name outside it stays unresolved,
-        // which is the honest default for a control that has not published its own arms.
+        self.base_event_signal(name)
+    }
+
+    /// Resolves the two **base** events every control publishes, ignoring per-kind arms.
+    ///
+    /// [`BaseWidget::PUBLISHED_EVENTS`] is the single list of names a control answers for without
+    /// declaring a signal of its own. [`Self::event_signal_dyn`]'s default arm is this method, but
+    /// a control that overrides `event_signal_dyn` to enumerate its own arms answers `None` for
+    /// these names. Callers that need the base fact regardless of that override —
+    /// [`crate::signal::subscriber_count`] is one — ask here instead, so "is anything observing
+    /// this control's focus?" does not depend on whether the kind happened to override the
+    /// dynamic resolver.
+    fn base_event_signal(&self, name: &str) -> Option<crate::signal::EventSignalRef> {
         if !BaseWidget::PUBLISHED_EVENTS.contains(&name) {
             return None;
         }

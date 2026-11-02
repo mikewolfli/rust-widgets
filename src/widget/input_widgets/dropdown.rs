@@ -996,7 +996,7 @@ impl WidgetProperties for Dropdown {
             "set_items" | "set_selected_index" | "set_expanded" => {
                 Err(CapabilityAccessError::OutOfRange)
             }
-            _ => Err(CapabilityAccessError::UnknownCommand),
+            _ => self.default_command(name),
         }
     }
 }

@@ -455,6 +455,22 @@ impl GridTableWidget {
         self.base.request_redraw();
     }
 
+    /// The uniform row height in pixels.
+    ///
+    /// Published for the row-unit scroll contract (RW-58): a caller restoring a scroll position
+    /// needs the same row height the control paints with, not a copy kept elsewhere.
+    pub fn row_height(&self) -> u32 {
+        self.row_height
+    }
+
+    /// How many whole rows fit in the current viewport.
+    ///
+    /// The value `update_visibility` maintains from the last layout, so it is the count the paint
+    /// pass actually used.
+    pub fn visible_row_count(&self) -> usize {
+        self.visible_rows
+    }
+
     // -----------------------------------------------------------------------
     // Selection mode
     // -----------------------------------------------------------------------
@@ -1401,6 +1417,14 @@ impl Widget for GridTableWidget {
     fn base(&self) -> &BaseWidget {
         &self.base
     }
+    fn scrollable_rows(&self) -> Option<&dyn crate::widget::container_widgets::ScrollableRows> {
+        Some(self)
+    }
+    fn scrollable_rows_mut(
+        &mut self,
+    ) -> Option<&mut dyn crate::widget::container_widgets::ScrollableRows> {
+        Some(self)
+    }
     fn set_state_theme_hook(&mut self) {
         crate::style::reapply_active_theme_state(self);
     }
@@ -1599,7 +1623,7 @@ impl WidgetProperties for GridTableWidget {
             "toggle_sort_column" | "set_data_source" | "set_scroll_row" | "set_scroll_column" => {
                 Err(CapabilityAccessError::OutOfRange)
             }
-            _ => Err(CapabilityAccessError::UnknownCommand),
+            _ => self.default_command(name),
         }
     }
 }

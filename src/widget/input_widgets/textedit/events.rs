@@ -293,7 +293,7 @@ impl WidgetProperties for TextEdit {
             | "set_max_length"
             | "set_read_only"
             | "set_line_wrap" => Err(CapabilityAccessError::OutOfRange),
-            _ => Err(CapabilityAccessError::UnknownCommand),
+            _ => self.default_command(name),
         }
     }
 }

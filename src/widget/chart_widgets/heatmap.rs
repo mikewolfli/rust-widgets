@@ -1243,7 +1243,7 @@ impl WidgetProperties for Heatmap {
                 Ok(())
             }
             "set_data" | "set_cell" => Err(CapabilityAccessError::OutOfRange),
-            _ => Err(CapabilityAccessError::UnknownCommand),
+            _ => self.default_command(name),
         }
     }
 }

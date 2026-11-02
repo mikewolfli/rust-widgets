@@ -5,11 +5,14 @@ The canonical project changelog is maintained at [docs/reports/CHANGELOG.md](doc
 This root-level file exists for tools and release automation that expect `CHANGELOG.md` at repository root.
 When the two disagree, this file is the one that ships; `tools/check_changelog_sync.sh` keeps them identical.
 
-## 3.3.0 (2026-11-02) — the suite-split round
+## 4.0.0 (2026-11-02) — the rustage-alignment round
 
-**Minor**: the parent package's sources must fit crates.io's 10 MiB tarball ceiling, so five
-domain-specific widget groups moved to the optional `rust-widgets-suites` package. Their
-**public paths changed** — see *Migration* below. Nothing else in the parent changed behaviour.
+**Major**: this release is published **in coordination with the `rustage` refactor**. It also
+carries the **suite split**: five domain-specific widget groups moved to the optional
+`rust-widgets-suites` package, and their **public paths changed** (see *Migration*). The parent
+API keeps its existing signatures; two behaviour changes are observable to a host, which is why
+the version is major rather than minor. Downstream hosts moving to the refactored `rustage`
+should pin `4.0.0`.
 
 ### Packaging
 
@@ -46,6 +49,42 @@ domain-specific widget groups moved to the optional `rust-widgets-suites` packag
   migrated controls paint their surfaces and fitted text through the same helpers they did before,
   and a second copy would have drifted.
 
+### Command surface (RW-44)
+
+- **746 additional `set_*` commands are published.** Every setter backed by a writable scalar
+  property on a registered control is now reachable through the capability command table, so a
+  designer or command palette can bind it. The command count is now **1191 instances / 615
+  distinct names** across 240 registered controls.
+- **`PROGRAMMATIC_ONLY_SETTERS`** (`widget::capability::programmatic_setters`) records the 777
+  setters that stay outside the table, each with its exit class and reason (B programmatic only,
+  C scalar decomposition, D theme/style channel). `tools/check_setter_census.sh` holds the ledger
+  in agreement with the registry in both directions.
+- **Behaviour change:** `command` overrides now delegate unhandled names to `default_command`;
+  see *Migration* for the caller-visible difference.
+- Command lookup in `invoke_command` is now a per-thread hash index over the static command list
+  instead of a linear scan (collisions fall back to the exact linear rule).
+
+### Unified row scrolling (RW-58)
+
+- **New `ScrollableRows` trait** (`widget::container_widgets::scroll_surface`) with
+  `scroll_row` / `scroll_to_row` / `visible_row_count` / `row_height` / `ensure_row_visible`.
+  The unit is a **row index**; `row_height` answers `None` for variable-height containers
+  (`data_grid`, `table_widget`, theme-derived menu rows).
+- **31 registered row containers** implement it, plus the unregistered `SuggestionPopup`
+  companion. `ScrollArea` and `MdiArea` keep `ScrollableSurface` (pixels) unchanged.
+- **`scroll_row` is a property** on every row container, and `set_scroll_row` is published.
+  `WidgetHandle::scroll_row()` / `set_scroll_row(row)` restore any row container without a
+  downcast; pixel containers keep `scroll_position()` / `set_scroll_position()`.
+- `tools/check_scrollable_census.sh` reports 48 candidates / 31 rows / 2 pixels / 15 named
+  unit-based exclusions / 0 unclassified.
+
+### Focus subscription (RW-63)
+
+- **`WidgetHandle::on_focus_gained` / `on_focus_lost`** subscribe to the control's own
+  `BaseWidget` focus signals. No handle-side focus table; the subscription dies with the control.
+- `signal::subscriber_count(id, "focus_gained")` now answers on controls that override
+  `event_signal_dyn` (e.g. `Button`) by falling back to the base signal.
+
 ### Migration
 
 A host that uses a migrated control must depend on the suite package, enable the group and install
@@ -53,8 +92,8 @@ it before the first control is created or the first document is parsed:
 
 ```toml
 [dependencies]
-rust_widgets = "3.3.0"
-rust-widgets-suites = { version = "3.3.0", features = ["finance", "maps"] }
+rust_widgets = "4.0.0"
+rust-widgets-suites = { version = "4.0.0", features = ["finance", "maps"] }
 ```
 
 ```rust
@@ -72,6 +111,17 @@ and the C-ABI `create_*` construction methods for those controls are gone — th
 
 `demo/finance` is the worked example: it depends on the suite with `features = ["finance"]` and
 imports the controls from `rust_widgets_suites::finance`.
+
+**Command dispatch.** A control's `WidgetProperties::command` override now delegates names it
+does not handle to `default_command`. For a `set_foo` whose `foo` property exists, the answer used
+to be `UnknownCommand`; it is now `OutOfRange` ("supply a value"), which is what the property
+route actually needs. A caller that treated `UnknownCommand` as "this control has no such
+command" must treat `OutOfRange` as the same command with a payload route.
+
+### Validation
+
+- `cargo test --lib` 9920 passed; `cargo test --tests` and the suites' 931 lib tests pass;
+  both crates are clippy-clean at `-D warnings`; `mini` / `embedded` stripped builds pass.
 
 ## 3.2.1 (2026-11-01) — the consumer-seam round
 

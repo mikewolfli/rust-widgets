@@ -1319,7 +1319,7 @@ impl WidgetProperties for TagInput {
     fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
         match name {
             "add_tag" | "remove_tag" | "set_placeholder" => Err(CapabilityAccessError::OutOfRange),
-            _ => Err(CapabilityAccessError::UnknownCommand),
+            _ => self.default_command(name),
         }
     }
 }

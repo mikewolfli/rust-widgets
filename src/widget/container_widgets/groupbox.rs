@@ -881,7 +881,7 @@ impl WidgetProperties for GroupBox {
                 Ok(())
             }
             "set_title" | "set_checkable" | "set_checked" => Err(CapabilityAccessError::OutOfRange),
-            _ => Err(CapabilityAccessError::UnknownCommand),
+            _ => self.default_command(name),
         }
     }
 }

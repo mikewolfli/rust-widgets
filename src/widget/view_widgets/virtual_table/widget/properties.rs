@@ -158,7 +158,7 @@ impl WidgetProperties for VirtualTable {
             | "set_column_width"
             | "set_overscan_rows"
             | "set_overscan_columns" => Err(CapabilityAccessError::OutOfRange),
-            _ => Err(CapabilityAccessError::UnknownCommand),
+            _ => self.default_command(name),
         }
     }
 }

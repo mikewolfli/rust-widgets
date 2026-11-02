@@ -1126,7 +1126,7 @@ impl WidgetProperties for Carousel {
                 self.previous();
                 Ok(())
             }
-            _ => Err(CapabilityAccessError::UnknownCommand),
+            _ => self.default_command(name),
         }
     }
 }

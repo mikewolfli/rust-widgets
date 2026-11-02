@@ -15,6 +15,42 @@
 use rust_widgets::core::Rect;
 use rust_widgets::widget::capability::WidgetFactory;
 
+/// RW-63: the generic handle's focus subscription works on a control this crate owns.
+///
+/// The subscription is a default method on `WidgetHandle`, so it covers every control the parent
+/// runtime mounts — including the ones whose capability rows live here. This test is the smoke
+/// that the trait default is reachable across the crate boundary with a suite control.
+#[test]
+fn a_suite_control_observes_focus_through_the_generic_handle() {
+    use core::sync::atomic::{AtomicUsize, Ordering};
+    use rust_widgets::app::{SurfaceHandle, WidgetHandle};
+    use rust_widgets::widget::runtime;
+    use std::sync::Arc;
+
+    let factory = suite_factory();
+    let widget = factory
+        .create("form", Rect::new(0, 0, 320, 240), "Account")
+        .expect("the suite registers `form`");
+    let id = runtime::register(widget).expect("the form mounts");
+    let handle = SurfaceHandle::from_raw(id);
+
+    let gained = Arc::new(AtomicUsize::new(0));
+    assert!(handle.on_focus_gained({
+        let counter = Arc::clone(&gained);
+        move || {
+            counter.fetch_add(1, Ordering::SeqCst);
+        }
+    }));
+    assert!(runtime::focus_widget(id));
+    assert_eq!(
+        gained.load(Ordering::SeqCst),
+        1,
+        "the suite control's focus signal reaches the handle"
+    );
+
+    runtime::unregister(id);
+}
+
 /// Builds a factory with every enabled suite group installed.
 fn suite_factory() -> WidgetFactory {
     let mut factory = WidgetFactory::new_with_defaults();

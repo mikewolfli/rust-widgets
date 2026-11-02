@@ -246,7 +246,7 @@ impl WidgetProperties for CommandLink {
             "set_text" | "set_description" | "set_enabled" => {
                 Err(CapabilityAccessError::OutOfRange)
             }
-            _ => Err(CapabilityAccessError::UnknownCommand),
+            _ => self.default_command(name),
         }
     }
 }

@@ -382,6 +382,14 @@ impl Widget for MacSourceList {
     fn base(&self) -> &BaseWidget {
         &self.base
     }
+    fn scrollable_rows(&self) -> Option<&dyn crate::widget::container_widgets::ScrollableRows> {
+        Some(self)
+    }
+    fn scrollable_rows_mut(
+        &mut self,
+    ) -> Option<&mut dyn crate::widget::container_widgets::ScrollableRows> {
+        Some(self)
+    }
 
     fn set_state_theme_hook(&mut self) {
         crate::style::reapply_active_theme_state(self);
@@ -486,6 +494,7 @@ impl WidgetProperties for MacSourceList {
         property_names_of![
             "section_count",
             "row_count",
+            "scroll_row",
             "row_height",
             "selected_row",
             BASE_PROPERTY_NAMES
@@ -800,6 +809,17 @@ impl EventHandler for MacSourceList {
         }
     }
 }
+
+crate::impl_scrollable_rows!(
+    MacSourceList,
+    row = |s| s.scroll_offset.max(0) as usize / s.row_height.max(1) as usize,
+    set = |s, r| {
+        let pixel = r.saturating_mul(s.row_height as usize).min(i32::MAX as usize) as i32;
+        s.set_scroll_offset(pixel);
+    },
+    visible = |s| (s.geometry().height / s.row_height.max(1)) as usize,
+    height = |s| Some(s.row_height)
+);
 
 #[cfg(test)]
 mod tests {

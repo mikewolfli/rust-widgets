@@ -1379,7 +1379,7 @@ impl WidgetProperties for Canvas {
                 Ok(())
             }
             "set_zoom" | "set_center" => Err(CapabilityAccessError::OutOfRange),
-            _ => Err(CapabilityAccessError::UnknownCommand),
+            _ => self.default_command(name),
         }
     }
 }

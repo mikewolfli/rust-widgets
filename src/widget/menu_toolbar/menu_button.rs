@@ -1084,6 +1084,15 @@ impl Widget for MenuButton {
     fn base(&self) -> &BaseWidget {
         &self.base
     }
+    fn scrollable_rows(&self) -> Option<&dyn crate::widget::container_widgets::ScrollableRows> {
+        Some(self)
+    }
+    fn scrollable_rows_mut(
+        &mut self,
+    ) -> Option<&mut dyn crate::widget::container_widgets::ScrollableRows> {
+        Some(self)
+    }
+
     fn set_state_theme_hook(&mut self) {
         crate::style::reapply_active_theme_state(self);
     }
@@ -1259,6 +1268,7 @@ impl WidgetProperties for MenuButton {
             "text",
             "icon_source",
             "items",
+            "scroll_row",
             "item_count",
             "expanded",
             BASE_PROPERTY_NAMES
@@ -1565,6 +1575,21 @@ impl EventHandler for MenuButton {
         }
     }
 }
+
+crate::impl_scrollable_rows!(
+    MenuButton,
+    row = |s| s.scroll_offset,
+    set = |s, r| {
+        let max = s.menu_items.len().saturating_sub(s.max_visible_items());
+        let next = r.min(max);
+        if next != s.scroll_offset {
+            s.scroll_offset = next;
+            s.base.request_redraw();
+        }
+    },
+    visible = |s| s.max_visible_items().min(s.menu_items.len()),
+    height = |_s| None
+);
 
 #[cfg(test)]
 mod tests {

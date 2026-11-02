@@ -23,7 +23,23 @@ pub(crate) fn button_capability() -> WidgetCapability {
         aliases: &["pushbutton", "btn"],
         properties: BUTTON_PROPERTIES,
         events: events_of!("button"),
-        commands: &["click"],
+        commands: &[
+            "click",
+            "set_accepts_drops",
+            "set_auto_default",
+            "set_auto_exclusive",
+            "set_default",
+            "set_drag_enabled",
+            "set_icon_size",
+            "set_icon_tint",
+            "set_shortcut",
+            "set_auto_repeat",
+            "set_auto_repeat_delay",
+            "set_auto_repeat_interval",
+            "set_flat",
+            "set_pressed",
+            "set_text",
+        ],
     }
 }
 
@@ -34,7 +50,16 @@ pub(crate) fn label_capability() -> WidgetCapability {
         aliases: &["text_label"],
         properties: LABEL_PROPERTIES,
         events: events_of!("label"),
-        commands: &["set_text", "set_alignment"],
+        commands: &[
+            "set_text",
+            "set_alignment",
+            "set_open_external_links",
+            "set_scaled_contents",
+            "set_text_format",
+            "set_indent",
+            "set_margin",
+            "set_word_wrap",
+        ],
     }
 }
 
@@ -51,7 +76,17 @@ pub(crate) fn check_box_capability() -> WidgetCapability {
         aliases: &[],
         properties: CHECK_BOX_PROPERTIES,
         events: events_of!("check_box"),
-        commands: &["set_checked", "toggle", "set_state"],
+        commands: &[
+            "set_checked",
+            "toggle",
+            "set_state",
+            "set_auto_exclusive",
+            "set_tristate_enabled",
+            "set_auto_repeat",
+            "set_auto_repeat_delay",
+            "set_auto_repeat_interval",
+            "set_text",
+        ],
     }
 }
 
@@ -62,7 +97,15 @@ pub(crate) fn radio_button_capability() -> WidgetCapability {
         aliases: &[],
         properties: RADIO_BUTTON_PROPERTIES,
         events: events_of!("radio_button"),
-        commands: &["set_checked", "set_group_id"],
+        commands: &[
+            "set_checked",
+            "set_group_id",
+            "set_auto_exclusive",
+            "set_auto_repeat",
+            "set_auto_repeat_delay",
+            "set_auto_repeat_interval",
+            "set_text",
+        ],
     }
 }
 
@@ -75,7 +118,19 @@ pub(crate) fn toggle_button_capability() -> WidgetCapability {
         aliases: &["toggle"],
         properties: TOGGLE_BUTTON_PROPERTIES,
         events: events_of!("toggle_button"),
-        commands: &["set_checked", "toggle", "set_text"],
+        commands: &[
+            "set_checked",
+            "toggle",
+            "set_text",
+            "set_auto_exclusive",
+            "set_group_id",
+            "set_arrow_type",
+            "set_auto_raise",
+            "set_auto_repeat",
+            "set_auto_repeat_delay",
+            "set_auto_repeat_interval",
+            "set_popup_mode",
+        ],
     }
 }
 
@@ -86,6 +141,6 @@ pub(crate) fn line_capability() -> WidgetCapability {
         aliases: &["line_widget"],
         properties: LINE_PROPERTIES,
         events: &[],
-        commands: &["set_orientation"],
+        commands: &["set_orientation", "set_thickness", "set_color"],
     }
 }

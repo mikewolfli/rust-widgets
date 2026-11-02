@@ -14,10 +14,10 @@
 //!
 //! # Why the schema is derived, not hand-written
 //!
-//! The crate publishes **465** command instances (254 distinct names) across **247** controls. A
-//! hand-written table of 465 rows would be a second copy of a fact the dispatcher already encodes
-//! — and copies drift (principle #54/#101). Instead, the schema is *derived* from the two things
-//! that already decide how a command behaves:
+//! The crate publishes **1267** command instances (613 distinct names) across **240** registered
+//! controls. A hand-written table of 1267 rows would be a second copy of a fact the dispatcher
+//! already encodes — and copies drift (principle #54/#101). Instead, the schema is *derived* from
+//! the two things that already decide how a command behaves:
 //!
 //! 1. the `set_foo` convention, which [`WidgetProperties::command`] itself
 //!    (see `super::properties_trait::WidgetProperties::default_command`) resolves by looking

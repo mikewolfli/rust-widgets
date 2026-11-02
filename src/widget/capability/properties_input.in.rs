@@ -99,6 +99,9 @@ macro_rules! impl_properties_input {
                 &["none", "single", "multi", "extended"],
             ),
             PropertySchema::new("current_row", PropertyValueKind::UInt, true, true),
+            // RW-58: the first visible row, in rows. `scroll_offset` is the control's own
+            // spelling of the same fact; this property is the unit-explicit one.
+            PropertySchema::new("scroll_row", PropertyValueKind::UInt, true, true),
             PropertySchema::new("item_height", PropertyValueKind::Float, true, true),
             PropertySchema::new("selected_count", PropertyValueKind::UInt, true, false),
             // The selected rows as a comma-joined list of indices, in visual order.
@@ -251,6 +254,8 @@ macro_rules! impl_properties_input {
         pub(crate) const FONT_COMBO_BOX_PROPERTIES: &[PropertySchema] = &[
             PropertySchema::new("current_font_family", PropertyValueKind::String, true, false),
             PropertySchema::new("item_count", PropertyValueKind::Int, true, false),
+            // RW-58: the first visible popup row, in rows.
+            PropertySchema::new("scroll_row", PropertyValueKind::UInt, true, true),
             PropertySchema::new("current_index", PropertyValueKind::Int, true, true),
             PropertySchema::new("editable", PropertyValueKind::Bool, true, true),
             PropertySchema::enumerated("alignment", true, true, &["left", "centre", "right"]),
@@ -604,6 +609,8 @@ macro_rules! impl_properties_input {
         #[cfg(not(alloc_frugal))]
         pub(crate) const MULTI_SELECT_COMBO_BOX_PROPERTIES: &[PropertySchema] = &[
             PropertySchema::new("selected_count", PropertyValueKind::UInt, true, false),
+            // RW-58: the first visible popup row, in rows.
+            PropertySchema::new("scroll_row", PropertyValueKind::UInt, true, true),
             // I-104: the joined selection and the empty-state text are part of the contract now.
             PropertySchema::new("selected_items", PropertyValueKind::String, true, false),
             PropertySchema::new("placeholder", PropertyValueKind::String, true, true),
@@ -739,6 +746,8 @@ macro_rules! impl_properties_input {
         #[cfg(not(alloc_frugal))]
         pub(crate) const SHORTCUT_EDITOR_PROPERTIES: &[PropertySchema] = &[
             PropertySchema::new("filter_text", PropertyValueKind::String, true, true),
+            // RW-58: the first visible table row, in rows.
+            PropertySchema::new("scroll_row", PropertyValueKind::UInt, true, true),
             // `filter_text` is what the caller typed; these describe what it did. A consumer could set a
             // filter and had no way to ask how much of the table survived it.
             PropertySchema::new("shortcut_count", PropertyValueKind::UInt, true, false),

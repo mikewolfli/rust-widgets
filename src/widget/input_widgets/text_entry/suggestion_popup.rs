@@ -856,6 +856,14 @@ impl Widget for SuggestionPopup {
     fn base(&self) -> &BaseWidget {
         &self.base
     }
+    fn scrollable_rows(&self) -> Option<&dyn crate::widget::container_widgets::ScrollableRows> {
+        Some(self)
+    }
+    fn scrollable_rows_mut(
+        &mut self,
+    ) -> Option<&mut dyn crate::widget::container_widgets::ScrollableRows> {
+        Some(self)
+    }
     fn set_state_theme_hook(&mut self) {
         crate::style::reapply_active_theme_state(self);
     }
@@ -1236,3 +1244,11 @@ mod tests {
         assert!(!popup.is_shown());
     }
 }
+
+crate::impl_scrollable_rows!(
+    SuggestionPopup,
+    row = |s| s.scroll_offset(),
+    set = |s, r| s.set_scroll_offset(r),
+    visible = |s| s.window_rows(),
+    height = |s| Some(s.row_height())
+);

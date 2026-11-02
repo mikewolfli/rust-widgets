@@ -629,7 +629,7 @@ impl WidgetProperties for NumberPicker {
                 Ok(())
             }
             "set_value" | "set_range" | "set_step" => Err(CapabilityAccessError::OutOfRange),
-            _ => Err(CapabilityAccessError::UnknownCommand),
+            _ => self.default_command(name),
         }
     }
 }

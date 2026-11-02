@@ -580,6 +580,15 @@ impl Widget for PlaylistPanel {
     fn base(&self) -> &BaseWidget {
         &self.base
     }
+    fn scrollable_rows(&self) -> Option<&dyn crate::widget::container_widgets::ScrollableRows> {
+        Some(self)
+    }
+    fn scrollable_rows_mut(
+        &mut self,
+    ) -> Option<&mut dyn crate::widget::container_widgets::ScrollableRows> {
+        Some(self)
+    }
+
     fn set_state_theme_hook(&mut self) {
         crate::style::reapply_active_theme_state(self);
     }
@@ -730,6 +739,7 @@ impl WidgetProperties for PlaylistPanel {
     fn property_names(&self) -> &'static [&'static str] {
         property_names_of![
             "tracks",
+            "scroll_row",
             "track_count",
             "current_index",
             "show_track_numbers",
@@ -753,6 +763,21 @@ impl WidgetProperties for PlaylistPanel {
         }
     }
 }
+
+crate::impl_scrollable_rows!(
+    PlaylistPanel,
+    row = |s| s.scroll_offset,
+    set = |s, r| {
+        let max = s.tracks.len().saturating_sub(s.visible_rows());
+        let next = r.min(max);
+        if next != s.scroll_offset {
+            s.scroll_offset = next;
+            s.base.request_redraw();
+        }
+    },
+    visible = |s| s.visible_rows(),
+    height = |s| Some(s.row_height)
+);
 
 #[cfg(test)]
 mod tests {

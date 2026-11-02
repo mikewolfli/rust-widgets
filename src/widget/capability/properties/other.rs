@@ -17,7 +17,13 @@ pub(crate) fn window_capability() -> WidgetCapability {
         aliases: &["main_window"],
         properties: WINDOW_PROPERTIES,
         events: events_of!("window"),
-        commands: &["set_title", "close"],
+        commands: &[
+            "set_title",
+            "close",
+            "set_button_spacing",
+            "set_close_button_size",
+            "set_title_bar_height",
+        ],
     }
 }
 
@@ -29,7 +35,15 @@ pub(crate) fn lcd_number_capability() -> WidgetCapability {
         aliases: &[],
         properties: LCD_NUMBER_PROPERTIES,
         events: events_of!("lcd_number"),
-        commands: &["set_value", "set_mode", "set_segment_style"],
+        commands: &[
+            "set_value",
+            "set_mode",
+            "set_segment_style",
+            "set_max_value",
+            "set_min_value",
+            "set_num_digits",
+            "set_small_decimal_point",
+        ],
     }
 }
 
@@ -71,6 +85,8 @@ pub(crate) fn code_editor_capability() -> WidgetCapability {
             "unfold_all",
             "complete",
             "close_find",
+            "set_breakpoint_gutter",
+            "set_goto_bar_visible",
         ],
     }
 }
@@ -87,7 +103,7 @@ pub(crate) fn snackbar_capability() -> WidgetCapability {
         // and `visible` properties, and that pair is exactly what `show` assigns (principle #18).
         // `show_with_action` additionally takes an action label, and `action_label` is read-only,
         // so it has no complete property route and also stays unpublished.
-        commands: &["dismiss"],
+        commands: &["dismiss", "set_anchor", "set_max_queued"],
     }
 }
 
@@ -102,7 +118,7 @@ pub(crate) fn breadcrumb_capability() -> WidgetCapability {
         // Audit 20261026: `push_segment` stays unpublished — the whole trail is the writable
         // `segments` records property and `set_segments` is its published command form, so an
         // appended segment is a whole-trail write (principle #18).
-        commands: &["set_segments", "clear_segments"],
+        commands: &["set_segments", "clear_segments", "set_separator"],
     }
 }
 
@@ -114,7 +130,14 @@ pub(crate) fn signature_pad_capability() -> WidgetCapability {
         aliases: &["signature"],
         properties: SIGNATURE_PAD_PROPERTIES,
         events: events_of!("signature_pad"),
-        commands: &["undo"],
+        commands: &[
+            "undo",
+            "set_min_point_distance",
+            "set_min_point_interval_ms",
+            "set_pressure_affects_width",
+            "set_stroke_color",
+            "set_stroke_width",
+        ],
     }
 }
 
@@ -126,7 +149,13 @@ pub(crate) fn drop_zone_capability() -> WidgetCapability {
         aliases: &["drop_target"],
         properties: DROP_ZONE_PROPERTIES,
         events: events_of!("drop_zone"),
-        commands: &[],
+        commands: &[
+            "set_accepted_type",
+            "set_hover_style",
+            "set_multi_file",
+            "set_show_count_badge",
+            "set_state",
+        ],
     }
 }
 
@@ -149,7 +178,14 @@ pub(crate) fn timeline_widget_capability() -> WidgetCapability {
         // a `viewport` property — the two bounds are the writable `viewport_start` /
         // `viewport_end` properties, which is the honest route. `select_index` names a position
         // with no property route.
-        commands: &["zoom", "set_items"],
+        commands: &[
+            "zoom",
+            "set_items",
+            "set_lane_mode",
+            "set_row_height",
+            "set_show_time_labels",
+            "set_scroll_row",
+        ],
     }
 }
 
@@ -163,7 +199,15 @@ pub(crate) fn command_palette_capability() -> WidgetCapability {
         events: events_of!("command_palette"),
         // set_entries now carries its list through the `entries` records property (B26.03);
         // move_highlight takes a signed delta with no property route, so it stays unpublished.
-        commands: &["set_query", "clear_query", "activate_highlighted", "set_entries"],
+        commands: &[
+            "set_query",
+            "clear_query",
+            "activate_highlighted",
+            "set_entries",
+            "set_group_by_category",
+            "set_row_height",
+            "set_scroll_row",
+        ],
     }
 }
 
@@ -179,7 +223,16 @@ pub(crate) fn notification_center_capability() -> WidgetCapability {
         // an id+flag, neither of which the bare command channel can carry; the `items` records
         // property is that payload channel (B26.03), and `set_items` is its published command
         // form. `select_index` names a position with no property route.
-        commands: &["clear", "mark_all_read", "activate_selected", "set_items"],
+        commands: &[
+            "clear",
+            "mark_all_read",
+            "activate_selected",
+            "set_items",
+            "set_level_filter",
+            "set_row_height",
+            "set_max_items",
+            "set_scroll_row",
+        ],
     }
 }
 
@@ -203,7 +256,7 @@ pub(crate) fn markdown_toolbar_capability() -> WidgetCapability {
         // The action list is the writable `actions` StringList, so `set_actions` is a property
         // write. `execute` takes the token itself and has no property carrier, so it stays a
         // Rust-side entry point (principle #18).
-        commands: &[],
+        commands: &["set_icon_side", "set_show_labels"],
     }
 }
 
@@ -219,7 +272,15 @@ pub(crate) fn toast_stack_capability() -> WidgetCapability {
         // stack owns and the stack publishes neither an item list nor a writable selection
         // (`toast_count` / `selected_id` are read-only); the control's own API is the write path
         // (principle #18).
-        commands: &["clear", "activate_selected", "dismiss_selected"],
+        commands: &[
+            "clear",
+            "activate_selected",
+            "dismiss_selected",
+            "set_anchor",
+            "set_stacking_direction",
+            "set_max_visible",
+            "set_scroll_row",
+        ],
     }
 }
 
@@ -235,7 +296,17 @@ pub(crate) fn split_button_capability() -> WidgetCapability {
         // channel cannot carry. `set_actions` is the published form of a whole-list write: its
         // rows travel through the `actions` records property (B26.03). `trigger_primary` stays
         // published — its arm runs the control's real primary trigger.
-        commands: &["open_menu", "close_menu", "trigger_primary", "set_actions"],
+        commands: &[
+            "open_menu",
+            "close_menu",
+            "trigger_primary",
+            "set_actions",
+            "set_max_menu_height",
+            "set_menu_scroll",
+            "set_row_height",
+            "set_popup_direction",
+            "set_text",
+        ],
     }
 }
 
@@ -254,7 +325,7 @@ pub(crate) fn segmented_control_capability() -> WidgetCapability {
         // command reports that a value is what is missing, and write_property("items", ...) is
         // where the list actually goes. move_selection takes a signed delta and has no property
         // route, so it stays unpublished.
-        commands: &["set_items"],
+        commands: &["set_items", "set_min_segment_width", "set_size_to_fit", "set_multi_select"],
     }
 }
 
@@ -275,7 +346,7 @@ pub(crate) fn chip_capability() -> WidgetCapability {
         // (an index, a signed delta) the bare command channel cannot carry; a selection toggle is
         // expressed by writing the whole `items` list with `selected` flipped, and the keyboard
         // focus by writing `focused_index`, whose `set_focused_index` command form is published.
-        commands: &["set_items", "set_focused_index"],
+        commands: &["set_items", "set_focused_index", "set_multi_select"],
     }
 }
 
@@ -291,7 +362,7 @@ pub(crate) fn grid_capability() -> WidgetCapability {
         // exists on `Grid`, so they named actions nobody could obtain. Removed
         // rather than left as a promise with no implementation (principle #18);
         // the cell-click path is covered by the `cell_clicked` event.
-        commands: &["set_rows", "set_columns", "set_spacing", "set_line_color"],
+        commands: &["set_rows", "set_columns", "set_spacing", "set_line_color", "set_page"],
     }
 }
 
@@ -300,7 +371,7 @@ pub(crate) fn freeform_shape_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::FreeformShape,
         canonical_name: "freeform_shape",
-        commands: &["set_fill_rgba", "set_stroke_rgba", "set_stroke_width"],
+        commands: &["set_fill_rgba", "set_stroke_rgba", "set_stroke_width", "set_movable"],
         aliases: &[],
         properties: FREEFORM_SHAPE_PROPERTIES,
         events: events_of!("freeform_shape"),
@@ -317,7 +388,17 @@ pub(crate) fn arc_capability() -> WidgetCapability {
         // Audit 20261026: `set_range` stays unpublished — the range is the writable
         // `minimum`/`maximum` pair, so a whole-range write is reachable through the property route
         // (principle #18).
-        commands: &["set_value"],
+        commands: &[
+            "set_value",
+            "set_indeterminate",
+            "set_maximum",
+            "set_minimum",
+            "set_rounded",
+            "set_show_value",
+            "set_start_angle",
+            "set_sweep_angle",
+            "set_thickness",
+        ],
     }
 }
 
@@ -334,7 +415,14 @@ pub(crate) fn meter_capability() -> WidgetCapability {
         // `minimum`/`maximum` pair, so a whole-range write is reachable through the property route
         // (principle #18).
         // command arm stays as a defensive refusal.
-        commands: &["set_value"],
+        commands: &[
+            "set_value",
+            "set_maximum",
+            "set_minimum",
+            "set_show_tick_labels",
+            "set_tick_count",
+            "set_unit",
+        ],
     }
 }
 
@@ -354,7 +442,7 @@ pub(crate) fn radar_chart_capability() -> WidgetCapability {
         // a numeric sample list and an axis carries a label list, and the chart publishes only the
         // writable `series_names` StringList plus derived counts; the sample matrix has no property
         // carrier (principle #18).
-        commands: &[],
+        commands: &["set_show_axis_labels", "set_show_grid", "set_show_legend"],
     }
 }
 
@@ -378,7 +466,15 @@ pub(crate) fn heatmap_capability() -> WidgetCapability {
         // grid with no property carrier (a `NumberList` is flat), and `set_cell` names a position
         // while the published cell properties are the scale and viewport, not a cell value
         // (principle #18).
-        commands: &["clear"],
+        commands: &[
+            "clear",
+            "set_scale_maximum",
+            "set_scale_minimum",
+            "set_show_labels",
+            "set_viewport_columns",
+            "set_viewport_rows",
+            "set_show_legend",
+        ],
     }
 }
 
@@ -400,7 +496,16 @@ pub(crate) fn mention_capability() -> WidgetCapability {
         // property is writable, so the earlier note that claimed it was withdrawn was wrong;
         // `complete` stays published — its arm completes the highlighted candidate and refuses
         // when nothing is highlighted.
-        commands: &["set_trigger", "open_popup", "complete", "set_candidates"],
+        commands: &[
+            "set_trigger",
+            "open_popup",
+            "complete",
+            "set_candidates",
+            "set_row_height",
+            "set_max_visible",
+            "set_text",
+            "set_scroll_row",
+        ],
     }
 }
 
@@ -419,7 +524,13 @@ pub(crate) fn emoji_picker_capability() -> WidgetCapability {
         // Audit 20261026: `set_glyphs` and `set_categories` are published again now that the
         // `glyphs` records and `categories` StringList properties are their payload channels
         // (B26.03). `choose` takes a glyph id and has no property route, so it stays unpublished.
-        commands: &["set_search", "set_glyphs", "set_categories"],
+        commands: &[
+            "set_search",
+            "set_glyphs",
+            "set_categories",
+            "set_active_tab",
+            "set_recent_capacity",
+        ],
     }
 }
 
@@ -441,7 +552,16 @@ pub(crate) fn query_builder_capability() -> WidgetCapability {
         // unpublished — their payloads are a field index and a row index, and a whole-list write
         // covers both. `toggle_conjunction` stays published — its arm runs the control's real
         // toggle.
-        commands: &["toggle_conjunction", "set_fields", "set_rows"],
+        commands: &[
+            "toggle_conjunction",
+            "set_fields",
+            "set_rows",
+            "set_active_row",
+            "set_commit_delay_ms",
+            "set_conjunction",
+            "set_live_update",
+            "set_scroll_row",
+        ],
     }
 }
 
@@ -461,7 +581,15 @@ pub(crate) fn cascader_capability() -> WidgetCapability {
         // NumberList property is its payload channel (B26.03). `set_options` stays unpublished:
         // an option carries `children`, and a record field cannot carry a nested record list, so
         // the tree has no property route.
-        commands: &["expand", "collapse", "set_selected_path"],
+        commands: &[
+            "expand",
+            "collapse",
+            "set_selected_path",
+            "set_filterable",
+            "set_placeholder",
+            "set_separator",
+            "set_max_visible",
+        ],
     }
 }
 
@@ -475,7 +603,7 @@ pub(crate) fn mini_chart_capability() -> WidgetCapability {
         // Audit 20261026: `set_data` is published now that the `data` records property is its
         // payload channel (B26.03). `set_range` stays unpublished: its name resolves to no
         // property — the two bounds travel through the writable `min_value` / `max_value` scalars.
-        commands: &["set_chart_type", "set_data"],
+        commands: &["set_chart_type", "set_data", "set_hover_enabled"],
     }
 }
 
@@ -507,7 +635,14 @@ pub(crate) fn canvas_capability() -> WidgetCapability {
         // command-recording drawing surface that replays `RenderCommand`s, not a pan/zoom view;
         // its published state is the queued-command count, so neither name has a property carrier
         // here (principle #18).
-        commands: &["clear"],
+        commands: &[
+            "clear",
+            "set_anti_alias",
+            "set_grid_step",
+            "set_snap_to_grid",
+            "set_zoom_step",
+            "set_show_grid",
+        ],
     }
 }
 
@@ -519,7 +654,7 @@ pub(crate) fn chart_capability() -> WidgetCapability {
         aliases: &["chart_widget", "chart_surface"],
         properties: CHART_PROPERTIES,
         events: events_of!("chart"),
-        commands: &[],
+        commands: &["set_chart_type"],
     }
 }
 
@@ -531,7 +666,7 @@ pub(crate) fn badge_capability() -> WidgetCapability {
         aliases: &["badge_widget", "notification_badge"],
         properties: BADGE_PROPERTIES,
         events: events_of!("badge"),
-        commands: &["set_text", "set_count"],
+        commands: &["set_text", "set_count", "set_dot_mode", "set_level"],
     }
 }
 
@@ -543,7 +678,7 @@ pub(crate) fn skeleton_loader_capability() -> WidgetCapability {
         aliases: &["skeleton", "shimmer"],
         properties: SKELETON_LOADER_PROPERTIES,
         events: &[],
-        commands: &["set_active"],
+        commands: &["set_active", "set_shape", "set_text_line_rows"],
     }
 }
 
@@ -579,7 +714,7 @@ pub(crate) fn navigation_drawer_capability() -> WidgetCapability {
         aliases: &["nav_drawer", "drawer"],
         properties: NAVIGATION_DRAWER_PROPERTIES,
         events: events_of!("navigation_drawer"),
-        commands: &["set_open", "set_width"],
+        commands: &["set_open", "set_width", "set_section_separator_visible"],
     }
 }
 
@@ -593,7 +728,7 @@ pub(crate) fn app_bar_capability() -> WidgetCapability {
         // The widget emits both of these (`app_bar.rs`); advertising an empty
         // list made a by-name subscriber unable to discover them.
         events: events_of!("app_bar"),
-        commands: &["set_title"],
+        commands: &["set_title", "set_direction"],
     }
 }
 
@@ -605,7 +740,7 @@ pub(crate) fn mobile_date_picker_capability() -> WidgetCapability {
         aliases: &[],
         properties: MOBILE_DATE_PICKER_PROPERTIES,
         events: events_of!("mobile_date_picker"),
-        commands: &["set_selected_date"],
+        commands: &["set_selected_date", "set_year_span"],
     }
 }
 
@@ -617,7 +752,7 @@ pub(crate) fn divider_capability() -> WidgetCapability {
         aliases: &["divider_widget", "separator"],
         properties: DIVIDER_PROPERTIES,
         events: &[],
-        commands: &["set_orientation", "set_thickness"],
+        commands: &["set_orientation", "set_thickness", "set_color", "set_line_style"],
     }
 }
 
@@ -629,7 +764,7 @@ pub(crate) fn rating_capability() -> WidgetCapability {
         aliases: &["rating_widget", "star_rating"],
         properties: RATING_PROPERTIES,
         events: events_of!("rating"),
-        commands: &["set_value", "set_max"],
+        commands: &["set_value", "set_max", "set_allow_half_step", "set_star_size"],
     }
 }
 
@@ -641,7 +776,15 @@ pub(crate) fn avatar_capability() -> WidgetCapability {
         aliases: &["avatar_widget", "user_avatar"],
         properties: AVATAR_PROPERTIES,
         events: events_of!("avatar"),
-        commands: &["set_initials", "set_image_source"],
+        commands: &[
+            "set_initials",
+            "set_image_source",
+            "set_ring_color",
+            "set_ring_width",
+            "set_square",
+            "set_badge",
+            "set_size",
+        ],
     }
 }
 
@@ -653,7 +796,7 @@ pub(crate) fn empty_state_capability() -> WidgetCapability {
         aliases: &["empty_placeholder"],
         properties: EMPTY_STATE_PROPERTIES,
         events: events_of!("empty_state"),
-        commands: &["set_message", "set_description"],
+        commands: &["set_message", "set_description", "set_secondary_action_text"],
     }
 }
 
@@ -677,7 +820,7 @@ pub(crate) fn color_well_capability() -> WidgetCapability {
         aliases: &[],
         properties: COLOR_WELL_PROPERTIES,
         events: events_of!("color_well"),
-        commands: &["set_color"],
+        commands: &["set_color", "set_show_border"],
     }
 }
 
@@ -689,7 +832,15 @@ pub(crate) fn qr_code_capability() -> WidgetCapability {
         aliases: &["qr"],
         properties: QR_CODE_PROPERTIES,
         events: &[],
-        commands: &["set_data", "set_size"],
+        commands: &[
+            "set_data",
+            "set_size",
+            "set_ec_level",
+            "set_foreground_color",
+            "set_logo_size_modules",
+            "set_quiet_zone",
+            "set_background_color",
+        ],
     }
 }
 
@@ -701,7 +852,7 @@ pub(crate) fn material_snackbar_capability() -> WidgetCapability {
         aliases: &[],
         properties: MATERIAL_SNACKBAR_PROPERTIES,
         events: events_of!("material_snackbar"),
-        commands: &["show", "dismiss", "set_message", "set_action_text"],
+        commands: &["show", "dismiss", "set_message", "set_action_text", "set_duration_ms"],
     }
 }
 
@@ -713,7 +864,13 @@ pub(crate) fn adaptive_scaffold_capability() -> WidgetCapability {
         aliases: &["scaffold"],
         properties: ADAPTIVE_SCAFFOLD_PROPERTIES,
         events: events_of!("adaptive_scaffold"),
-        commands: &["set_title"],
+        commands: &[
+            "set_title",
+            "set_badge_style",
+            "set_drawer_animated",
+            "set_scrim_opacity",
+            "set_page_transition",
+        ],
     }
 }
 
@@ -725,7 +882,12 @@ pub(crate) fn segmented_button_capability() -> WidgetCapability {
         aliases: &["segmented_btn"],
         properties: SEGMENTED_BUTTON_PROPERTIES,
         events: events_of!("segmented_button"),
-        commands: &["set_selected_index"],
+        commands: &[
+            "set_selected_index",
+            "set_allows_multiple",
+            "set_group_id",
+            "set_selected_indices",
+        ],
     }
 }
 
@@ -743,7 +905,7 @@ pub(crate) fn navigation_stack_capability() -> WidgetCapability {
         // value can carry a widget reference; the control's own `push` API is the write path
         // (principle #18).
         // command arm stays as a defensive refusal.
-        commands: &["pop", "set_current_page"],
+        commands: &["pop", "set_current_page", "set_back_visible"],
     }
 }
 
@@ -755,7 +917,15 @@ pub(crate) fn progress_circle_capability() -> WidgetCapability {
         aliases: &["circular_progress"],
         properties: PROGRESS_CIRCLE_PROPERTIES,
         events: events_of!("progress_circle"),
-        commands: &["set_value", "set_thickness", "set_indeterminate"],
+        commands: &[
+            "set_value",
+            "set_thickness",
+            "set_indeterminate",
+            "set_center_text_format",
+            "set_diameter",
+            "set_progress_color",
+            "set_show_center_text",
+        ],
     }
 }
 
@@ -767,7 +937,7 @@ pub(crate) fn icon_capability() -> WidgetCapability {
         aliases: &["icon_widget", "icon_display"],
         properties: ICON_PROPERTIES,
         events: &[],
-        commands: &["set_icon_name", "set_size"],
+        commands: &["set_icon_name", "set_size", "set_icon_flip", "set_icon_rotation", "set_color"],
     }
 }
 
@@ -791,7 +961,7 @@ pub(crate) fn cupertino_navigation_bar_capability() -> WidgetCapability {
         aliases: &["cupertinonavbar", "ios_nav_bar"],
         properties: CUPERTINO_NAVIGATION_BAR_PROPERTIES,
         events: events_of!("cupertino_navigation_bar"),
-        commands: &["set_title", "set_large_title"],
+        commands: &["set_title", "set_large_title", "set_collapse_offset", "set_prompt"],
     }
 }
 
@@ -815,7 +985,13 @@ pub(crate) fn date_range_picker_capability() -> WidgetCapability {
         aliases: &["range_picker"],
         properties: DATE_RANGE_PICKER_PROPERTIES,
         events: events_of!("date_range_picker"),
-        commands: &["set_start_date", "set_end_date"],
+        commands: &[
+            "set_start_date",
+            "set_end_date",
+            "set_double_month",
+            "set_max_nights",
+            "set_min_nights",
+        ],
     }
 }
 
@@ -839,7 +1015,7 @@ pub(crate) fn tab_view_capability() -> WidgetCapability {
         aliases: &["page_tab_view"],
         properties: TAB_VIEW_PROPERTIES,
         events: events_of!("tab_view"),
-        commands: &["set_selected_index"],
+        commands: &["set_selected_index", "set_keyboard_navigation_enabled"],
     }
 }
 
@@ -875,7 +1051,14 @@ pub(crate) fn sparkline_capability() -> WidgetCapability {
         aliases: &["sparkline_chart"],
         properties: SPARKLINE_PROPERTIES,
         events: events_of!("sparkline"),
-        commands: &["set_stroke_width"],
+        commands: &[
+            "set_stroke_width",
+            "set_capacity",
+            "set_fill",
+            "set_show_end_value",
+            "set_show_last_marker",
+            "set_show_points",
+        ],
     }
 }
 
@@ -938,7 +1121,7 @@ pub(crate) fn grid_status_bar_capability() -> WidgetCapability {
         aliases: &["table_status_bar"],
         properties: GRID_STATUS_BAR_PROPERTIES,
         events: events_of!("grid_status_bar"),
-        commands: &["set_text"],
+        commands: &["set_text", "set_filter_active"],
     }
 }
 
@@ -967,7 +1150,12 @@ pub(crate) fn drop_down_popup_host_capability() -> WidgetCapability {
         aliases: &[],
         properties: DROP_DOWN_POPUP_HOST_PROPERTIES,
         events: events_of!("drop_down_popup_host"),
-        commands: &[],
+        commands: &[
+            "set_highlighted_index",
+            "set_max_visible_rows",
+            "set_placement",
+            "set_scroll_offset",
+        ],
     }
 }
 
@@ -980,7 +1168,7 @@ pub(crate) fn command_palette_host_capability() -> WidgetCapability {
         aliases: &[],
         properties: COMMAND_PALETTE_HOST_PROPERTIES,
         events: events_of!("command_palette_host"),
-        commands: &[],
+        commands: &["set_selected_index", "set_filter"],
     }
 }
 
@@ -993,7 +1181,7 @@ pub(crate) fn header_menu_capability() -> WidgetCapability {
         aliases: &[],
         properties: HEADER_MENU_PROPERTIES,
         events: events_of!("header_menu"),
-        commands: &[],
+        commands: &["set_filter_text", "set_filterable", "set_sort_state", "set_sortable"],
     }
 }
 
@@ -1010,7 +1198,7 @@ pub(crate) fn chart_reference_line_capability() -> WidgetCapability {
         aliases: &[],
         properties: CHART_REFERENCE_LINE_PROPERTIES,
         events: events_of!("chart_reference_line"),
-        commands: &[],
+        commands: &["set_label_visible"],
     }
 }
 
@@ -1028,7 +1216,7 @@ pub(crate) fn chart_crosshair_capability() -> WidgetCapability {
         aliases: &["crosshair"],
         properties: CHART_CROSSHAIR_PROPERTIES,
         events: events_of!("chart_crosshair"),
-        commands: &[],
+        commands: &["set_follow_pointer", "set_snap_to_data_point"],
     }
 }
 
@@ -1042,7 +1230,7 @@ pub(crate) fn drum_column_capability() -> WidgetCapability {
         aliases: &[],
         properties: DRUM_COLUMN_PROPERTIES,
         events: events_of!("drum_column"),
-        commands: &["set_selected_index"],
+        commands: &["set_selected_index", "set_loop_wrap", "set_row_height"],
     }
 }
 
@@ -1055,6 +1243,12 @@ pub(crate) fn preset_chip_bar_capability() -> WidgetCapability {
         aliases: &[],
         properties: PRESET_CHIP_BAR_PROPERTIES,
         events: events_of!("preset_chip_bar"),
-        commands: &["set_selected_preset"],
+        commands: &[
+            "set_selected_preset",
+            "set_chip_height",
+            "set_chip_padding",
+            "set_spacing",
+            "set_orientation",
+        ],
     }
 }

@@ -893,6 +893,13 @@ pub fn subscriber_count(widget_id: crate::core::ObjectId, event_name: &str) -> O
         crate::widget::runtime::read_widget(widget_id, |widget| {
             widget
                 .event_signal_dyn(event_name)
+                // A control that overrides `event_signal_dyn` answers only for the names it
+                // declares. The two base focus events are published for **every** control
+                // (`BaseWidget::PUBLISHED_EVENTS`), so ask the base directly before reporting
+                // "not published" — otherwise a focus observer installed through
+                // `WidgetHandle::on_focus_gained` would be invisible here on exactly the kinds
+                // that enumerate their own arms.
+                .or_else(|| widget.base_event_signal(event_name))
                 .filter(|reference| reference.name() == event_name)
                 .map(|reference| reference.slot_count())
         })

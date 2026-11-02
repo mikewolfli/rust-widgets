@@ -66,6 +66,8 @@ macro_rules! impl_properties_container {
         #[cfg(not(alloc_frugal))]
         pub(crate) const TOOL_BOX_PROPERTIES: &[PropertySchema] = &[
             PropertySchema::new("item_count", PropertyValueKind::UInt, true, false),
+            // RW-58: the first visible tab row, in rows.
+            PropertySchema::new("scroll_row", PropertyValueKind::UInt, true, true),
             PropertySchema::new("current_index", PropertyValueKind::UInt, true, true),
             PropertySchema::enumerated("orientation", true, true, &["horizontal", "vertical"]),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),

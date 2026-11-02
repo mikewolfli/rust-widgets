@@ -1176,7 +1176,7 @@ impl WidgetProperties for WizardDialog {
                 Ok(())
             }
             "set_current_step" => Err(CapabilityAccessError::OutOfRange),
-            _ => Err(CapabilityAccessError::UnknownCommand),
+            _ => self.default_command(name),
         }
     }
 }

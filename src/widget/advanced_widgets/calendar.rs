@@ -1874,7 +1874,7 @@ impl WidgetProperties for Calendar {
             "set_selected_date" | "set_date_range" | "set_first_day_of_week" => {
                 Err(CapabilityAccessError::OutOfRange)
             }
-            _ => Err(CapabilityAccessError::UnknownCommand),
+            _ => self.default_command(name),
         }
     }
 }

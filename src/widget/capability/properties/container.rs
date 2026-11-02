@@ -17,7 +17,7 @@ pub(crate) fn group_box_capability() -> WidgetCapability {
         aliases: &[],
         properties: GROUP_BOX_PROPERTIES,
         events: events_of!("group_box"),
-        commands: &["set_title", "set_checkable", "set_checked", "toggle"],
+        commands: &["set_title", "set_checkable", "set_checked", "toggle", "set_alignment"],
     }
 }
 
@@ -45,7 +45,7 @@ pub(crate) fn panel_capability() -> WidgetCapability {
         aliases: &[],
         properties: GROUP_BOX_PROPERTIES,
         events: events_of!("panel"),
-        commands: &["set_title", "set_checkable", "set_checked", "toggle"],
+        commands: &["set_title", "set_checkable", "set_checked", "toggle", "set_alignment"],
     }
 }
 
@@ -57,7 +57,15 @@ pub(crate) fn frame_capability() -> WidgetCapability {
         aliases: &["frame_widget"],
         properties: FRAME_PROPERTIES,
         events: &[],
-        commands: &["set_frame_shape", "set_frame_shadow", "set_line_width"],
+        commands: &[
+            "set_frame_shape",
+            "set_frame_shadow",
+            "set_line_width",
+            "set_contents_margins",
+            "set_frame_width",
+            "set_mid_line_width",
+            "set_theme_bevel",
+        ],
     }
 }
 
@@ -85,7 +93,7 @@ pub(crate) fn tool_box_capability() -> WidgetCapability {
         // `ObjectId` of the page widget it shows, and no property value can carry a widget
         // reference; `item_count`/`current_index` report the list's shape instead (principle
         // #18).
-        commands: &["set_current_index", "set_orientation"],
+        commands: &["set_current_index", "set_orientation", "set_mode", "set_scroll_row"],
     }
 }
 
@@ -138,6 +146,7 @@ pub(crate) fn tab_widget_capability() -> WidgetCapability {
             "set_movable",
             "set_tab_position",
             "set_tab_shape",
+            "set_document_mode",
         ],
     }
 }
@@ -180,7 +189,7 @@ pub(crate) fn dock_widget_capability() -> WidgetCapability {
         // Audit 20261026: `set_features`, `set_allowed_areas` stay unpublished — each assigns a
         // bit-flag set (`DockFeatures` / `DockAreas`) and the control publishes no property that
         // carries one; the control's own setters are the write path (principle #18).
-        commands: &["set_title", "set_floating"],
+        commands: &["set_title", "set_floating", "set_docked"],
     }
 }
 
@@ -203,7 +212,7 @@ pub(crate) fn dock_area_capability() -> WidgetCapability {
         aliases: &["dock_host"],
         properties: DOCK_WIDGET_PROPERTIES,
         events: events_of!("dock_area"),
-        commands: &[],
+        commands: &["set_docked", "set_floating", "set_title"],
     }
 }
 
@@ -244,7 +253,7 @@ pub(crate) fn masonry_layout_capability() -> WidgetCapability {
         aliases: &["waterfall_layout"],
         properties: MASONRY_LAYOUT_PROPERTIES,
         events: events_of!("masonry_layout"),
-        commands: &["set_column_count"],
+        commands: &["set_column_count", "set_item_spacing"],
     }
 }
 
@@ -268,7 +277,13 @@ pub(crate) fn carousel_capability() -> WidgetCapability {
         aliases: &["carousel_widget", "swipe_view"],
         properties: CAROUSEL_PROPERTIES,
         events: events_of!("carousel"),
-        commands: &["next", "previous"],
+        commands: &[
+            "next",
+            "previous",
+            "set_indicator_position",
+            "set_indicator_style",
+            "set_loop",
+        ],
     }
 }
 
@@ -280,7 +295,7 @@ pub(crate) fn spacer_capability() -> WidgetCapability {
         aliases: &["flexible_space"],
         properties: SPACER_PROPERTIES,
         events: &[],
-        commands: &[],
+        commands: &["set_base_size", "set_flex", "set_paint_hint"],
     }
 }
 
@@ -292,7 +307,7 @@ pub(crate) fn center_capability() -> WidgetCapability {
         aliases: &["centre", "center_widget"],
         properties: CENTER_PROPERTIES,
         events: &[],
-        commands: &[],
+        commands: &["set_height_factor", "set_width_factor"],
     }
 }
 
@@ -304,7 +319,7 @@ pub(crate) fn align_capability() -> WidgetCapability {
         aliases: &["alignment_widget"],
         properties: ALIGN_PROPERTIES,
         events: &[],
-        commands: &[],
+        commands: &["set_alignment"],
     }
 }
 
@@ -340,7 +355,7 @@ pub(crate) fn expanded_capability() -> WidgetCapability {
         aliases: &["expand"],
         properties: EXPANDED_PROPERTIES,
         events: &[],
-        commands: &[],
+        commands: &["set_flex"],
     }
 }
 
@@ -352,7 +367,7 @@ pub(crate) fn flexible_capability() -> WidgetCapability {
         aliases: &["flex_child"],
         properties: FLEXIBLE_PROPERTIES,
         events: &[],
-        commands: &[],
+        commands: &["set_flex", "set_fit"],
     }
 }
 
@@ -376,7 +391,7 @@ pub(crate) fn aspect_ratio_capability() -> WidgetCapability {
         aliases: &["ratio_box"],
         properties: ASPECT_RATIO_PROPERTIES,
         events: &[],
-        commands: &[],
+        commands: &["set_ratio", "set_respect_parent"],
     }
 }
 
@@ -388,7 +403,7 @@ pub(crate) fn flex_capability() -> WidgetCapability {
         aliases: &["flex_box"],
         properties: FLEX_PROPERTIES,
         events: events_of!("flex"),
-        commands: &[],
+        commands: &["set_gap", "set_direction", "set_wrap"],
     }
 }
 
@@ -400,7 +415,7 @@ pub(crate) fn flow_layout_capability() -> WidgetCapability {
         aliases: &["flow"],
         properties: FLOW_LAYOUT_PROPERTIES,
         events: events_of!("flow_layout"),
-        commands: &[],
+        commands: &["set_spacing", "set_alignment", "set_direction", "set_padding"],
     }
 }
 
@@ -412,7 +427,13 @@ pub(crate) fn wrap_layout_capability() -> WidgetCapability {
         aliases: &["wrap"],
         properties: WRAP_LAYOUT_PROPERTIES,
         events: events_of!("wrap_layout"),
-        commands: &[],
+        commands: &[
+            "set_run_spacing",
+            "set_spacing",
+            "set_alignment",
+            "set_direction",
+            "set_padding",
+        ],
     }
 }
 
@@ -445,7 +466,7 @@ pub(crate) fn accordion_capability() -> WidgetCapability {
         aliases: &["collapsible_list"],
         properties: ACCORDION_PROPERTIES,
         events: events_of!("accordion"),
-        commands: &[],
+        commands: &["set_single_expand"],
     }
 }
 

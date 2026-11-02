@@ -35,6 +35,9 @@ use std::cell::Ref;
 use std::cell::RefCell;
 use std::collections::HashSet;
 
+/// The height one popup row is painted at (RW-58 publishes it as the row unit).
+const MULTI_SELECT_ROW_HEIGHT: u32 = 28;
+
 /// Space between the indicator's leading edge and the end of the summary's box.
 ///
 /// Half the field's own horizontal padding, so the gap between the summary and the indicator
@@ -604,6 +607,15 @@ impl Widget for MultiSelectComboBox {
     fn base(&self) -> &BaseWidget {
         &self.base
     }
+    fn scrollable_rows(&self) -> Option<&dyn crate::widget::container_widgets::ScrollableRows> {
+        Some(self)
+    }
+    fn scrollable_rows_mut(
+        &mut self,
+    ) -> Option<&mut dyn crate::widget::container_widgets::ScrollableRows> {
+        Some(self)
+    }
+
     fn set_state_theme_hook(&mut self) {
         crate::style::reapply_active_theme_state(self);
     }
@@ -723,6 +735,7 @@ impl WidgetProperties for MultiSelectComboBox {
     fn property_names(&self) -> &'static [&'static str] {
         property_names_of![
             "selected_count",
+            "scroll_row",
             "selected_items",
             "expanded",
             "placeholder",
@@ -738,7 +751,7 @@ impl WidgetProperties for MultiSelectComboBox {
     fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
         match name {
             "set_expanded" => Err(CapabilityAccessError::OutOfRange),
-            _ => Err(CapabilityAccessError::UnknownCommand),
+            _ => self.default_command(name),
         }
     }
 }
@@ -866,7 +879,7 @@ impl Draw for MultiSelectComboBox {
         }
 
         let drop_down_y = rect.y + rect.height as i32;
-        let item_height = 28u32;
+        let item_height = MULTI_SELECT_ROW_HEIGHT;
         let (first, last) = self.visible_range();
         let drop_down_height = item_height * (last - first) as u32;
         let drop_rect = Rect::new(rect.x, drop_down_y, rect.width, drop_down_height);
@@ -1115,6 +1128,17 @@ impl EventHandler for MultiSelectComboBox {
         }
     }
 }
+
+crate::impl_scrollable_rows!(
+    MultiSelectComboBox,
+    row = |s| s.scroll_offset,
+    set = |s, r| s.set_scroll_offset(r),
+    visible = |s| {
+        let (start, end) = s.visible_range();
+        end.saturating_sub(start)
+    },
+    height = |_s| Some(MULTI_SELECT_ROW_HEIGHT)
+);
 
 #[cfg(test)]
 mod tests {

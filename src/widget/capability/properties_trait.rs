@@ -102,6 +102,13 @@ pub fn base_property_get(
                 .map(|role| role.name().to_string())
                 .unwrap_or_else(|| NO_A11Y_ROLE_OVERRIDE.to_string()),
         )),
+        // RW-58: the row-unit scroll contract is answered once here for every container that
+        // opts in through `Widget::scrollable_rows`. A control without row state answers
+        // `UnknownProperty`, exactly as it would for any other name it does not publish.
+        "scroll_row" => widget
+            .scrollable_rows()
+            .map(|rows| CapabilityValue::UInt(rows.scroll_row() as u64))
+            .ok_or(CapabilityAccessError::UnknownProperty),
         _ => Err(CapabilityAccessError::UnknownProperty),
     }
 }
@@ -156,6 +163,18 @@ pub fn base_property_set(
                 let role = crate::platform::accessibility::A11yRole::from_name(&token)
                     .ok_or(CapabilityAccessError::OutOfRange)?;
                 let _ = crate::platform::accessibility::set_widget_a11y_role(widget.id(), role);
+                Ok(())
+            }
+            _ => Err(CapabilityAccessError::TypeMismatch),
+        },
+        // RW-58: writing `scroll_row` goes through the control's own row clamps, so the
+        // accepted value — not the requested one — is what a read reports afterwards.
+        "scroll_row" => match value {
+            CapabilityValue::UInt(row) => {
+                let Some(rows) = widget.scrollable_rows_mut() else {
+                    return Err(CapabilityAccessError::UnknownProperty);
+                };
+                rows.scroll_to_row(usize::try_from(row).unwrap_or(usize::MAX));
                 Ok(())
             }
             _ => Err(CapabilityAccessError::TypeMismatch),

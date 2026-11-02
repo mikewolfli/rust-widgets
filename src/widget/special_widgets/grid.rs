@@ -1353,7 +1353,7 @@ impl WidgetProperties for GridWidget {
             // `selected_cell` property is the value-carrying spelling.
             "select_cell" => Err(CapabilityAccessError::OutOfRange),
             _ if name.starts_with("set_") => Err(CapabilityAccessError::OutOfRange),
-            _ => Err(CapabilityAccessError::UnknownCommand),
+            _ => self.default_command(name),
         }
     }
 }
