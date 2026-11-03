@@ -36,6 +36,7 @@ use rust_widgets::render::RenderContext;
 use rust_widgets::widget::capability::properties_trait::{base_property_get, base_property_set};
 use rust_widgets::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use rust_widgets::widget::capability::WidgetProperties;
+use rust_widgets::widget::companions::ZoomStrip;
 use rust_widgets::widget::metrics::role_font;
 use rust_widgets::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use rust_widgets::{impl_widget_property_hooks, property_names_of};
@@ -165,6 +166,8 @@ pub struct IndicatorChart {
     pub bar_hovered: rust_widgets::signal::Signal1<usize>,
     /// Emitted with the visible `[start, end)` bar range after every view change.
     pub view_changed: rust_widgets::signal::Signal1<(usize, usize)>,
+    /// The attached zoom strip, when one is paired (RW-106).
+    zoom_strip: Option<super::chart_companions::ZoomStripBinding>,
 }
 
 impl IndicatorChart {
@@ -185,6 +188,7 @@ impl IndicatorChart {
             bar_clicked: rust_widgets::signal::Signal1::new(),
             bar_hovered: rust_widgets::signal::Signal1::new(),
             view_changed: rust_widgets::signal::Signal1::new(),
+            zoom_strip: None,
         }
     }
 
@@ -262,6 +266,54 @@ impl IndicatorChart {
     /// Restores the full series view.
     pub fn reset_view(&mut self) {
         self.set_view_range(None);
+    }
+
+    // ── Companion pairing (RW-106) ──
+
+    /// Follows `strip` as this pane's zoom control.
+    ///
+    /// The indicator pane has one computed value set and no per-line visibility, so it pairs with
+    /// a `ZoomStrip` only. A `ChartDataTable` would offer row toggles this control cannot honour.
+    pub fn attach_zoom_strip(&mut self, strip: &mut ZoomStrip) {
+        let factor = super::chart_companions::zoom_factor(self.series.len(), self.view_range());
+        self.zoom_strip = Some(super::chart_companions::ZoomStripBinding::attach(
+            strip,
+            self.base.redraw_requested_signal().clone(),
+            factor,
+        ));
+        self.base.request_redraw();
+    }
+
+    /// Stops following the attached strip; the last applied view stays.
+    pub fn detach_zoom_strip(&mut self) {
+        if self.zoom_strip.take().is_some() {
+            self.base.request_redraw();
+        }
+    }
+
+    /// Whether a [`ZoomStrip`] is attached.
+    pub fn is_zoom_strip_attached(&self) -> bool {
+        self.zoom_strip.is_some()
+    }
+
+    /// Applies the strip's requests and mirrors the pane's view back.
+    pub fn poll_zoom_strip(&mut self) -> bool {
+        let total = self.series.len();
+        let view = self.view_range();
+        let mut next = view;
+        let mut record = |range: Option<(usize, usize)>| {
+            next = range;
+        };
+        let changed = super::chart_companions::poll_zoom_strip(
+            &mut self.zoom_strip,
+            total,
+            view,
+            &mut record,
+        );
+        if next != view {
+            self.set_view_range(next);
+        }
+        changed
     }
 
     fn clamped_view(&self, range: Option<(usize, usize)>) -> Option<(usize, usize)> {
@@ -805,6 +857,8 @@ impl Widget for IndicatorChart {
 impl rust_widgets::event::EventHandler for IndicatorChart {
     fn handle_event(&mut self, event: &rust_widgets::event::Event) {
         use rust_widgets::event::Event;
+        // A strip click shows on this frame: the request queue is drained before routing.
+        self.poll_zoom_strip();
         match event {
             Event::MouseMove { pos } | Event::PointerMove { pos, .. } => {
                 let area = self.plot_area();
@@ -861,6 +915,8 @@ impl rust_widgets::event::EventHandler for IndicatorChart {
 
 impl Draw for IndicatorChart {
     fn draw(&mut self, context: &mut RenderContext) {
+        // A strip click shows on this frame: the request queue is drained before painting.
+        self.poll_zoom_strip();
         let area = self.plot_area();
         if area.rect.width == 0 || area.rect.height == 0 {
             return;
@@ -1059,12 +1115,14 @@ impl WidgetProperties for IndicatorChart {
     /// answer, not a fix: the `commands` list still advertises an action this control
     /// cannot take, and reconciling it is a registry decision. The `set_*` write names
     /// carry their values.
+    /// Runs one of the commands `indicator_chart` publishes.
+    ///
+    /// Every published name is a value-carrying `set_*`; the convention checks the name against
+    /// this control's own property list before answering
+    /// [`CapabilityAccessError::OutOfRange`], so a `set_*` name the control does not publish
+    /// stays `UnknownCommand` instead of pretending to need a payload.
     fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
-        match name {
-            "add_overlay" => Err(CapabilityAccessError::UnsupportedOnWidget),
-            _ if name.starts_with("set_") => Err(CapabilityAccessError::OutOfRange),
-            _ => Err(CapabilityAccessError::UnknownCommand),
-        }
+        self.default_command(name)
     }
 }
 

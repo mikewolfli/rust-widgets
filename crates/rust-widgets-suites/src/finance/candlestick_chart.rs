@@ -44,6 +44,7 @@ use rust_widgets::signal::Signal1;
 use rust_widgets::widget::capability::properties_trait::{base_property_get, base_property_set};
 use rust_widgets::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use rust_widgets::widget::capability::WidgetProperties;
+use rust_widgets::widget::companions::{ChartDataTable, ChartSeriesSnapshot, ZoomStrip};
 use rust_widgets::widget::metrics::role_font;
 use rust_widgets::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use rust_widgets::{impl_widget_property_hooks, property_names_of};
@@ -200,6 +201,10 @@ pub struct CandlestickChart {
     pub bar_unhovered: Signal1<usize>,
     /// Emitted with the visible `[start, end)` bar range after every view change.
     pub view_changed: Signal1<(usize, usize)>,
+    /// The attached data table, when one is paired (RW-106).
+    data_table: Option<super::chart_companions::ChartDataTableBinding>,
+    /// The attached zoom strip, when one is paired (RW-106).
+    zoom_strip: Option<super::chart_companions::ZoomStripBinding>,
 }
 
 impl CandlestickChart {
@@ -226,6 +231,8 @@ impl CandlestickChart {
             bar_hovered: Signal1::new(),
             bar_unhovered: Signal1::new(),
             view_changed: Signal1::new(),
+            data_table: None,
+            zoom_strip: None,
         }
     }
 
@@ -637,6 +644,148 @@ impl CandlestickChart {
             Some((start, end)) => (start.min(self.series.len()), end.min(self.series.len())),
             None => (0, self.series.len()),
         }
+    }
+
+    // ── Companion pairing (RW-106) ──
+
+    /// Follows `table` as this pane's data table.
+    ///
+    /// The table shows the close series plus one row per overlay. Row 0 is the price series and
+    /// cannot be hidden — the pane has no "bars hidden" state — so a toggle on it is refused and
+    /// the table's checklist is re-synced to the truth rather than left claiming a hide that did
+    /// not happen. Every other row toggles its overlay through [`Self::set_overlay_visible`].
+    pub fn attach_chart_data_table(&mut self, table: &mut ChartDataTable) {
+        let snapshot = self.chart_data_snapshot();
+        self.data_table = Some(super::chart_companions::ChartDataTableBinding::attach(
+            table,
+            self.base.redraw_requested_signal().clone(),
+            snapshot,
+        ));
+        self.base.request_redraw();
+    }
+
+    /// Stops following the attached data table; its last snapshot stays.
+    pub fn detach_chart_data_table(&mut self) {
+        if self.data_table.take().is_some() {
+            self.base.request_redraw();
+        }
+    }
+
+    /// Whether a [`ChartDataTable`] is attached.
+    pub fn is_chart_data_table_attached(&self) -> bool {
+        self.data_table.is_some()
+    }
+
+    /// Applies the table's toggles and pushes a changed snapshot.
+    ///
+    /// Called from `draw` and `handle_event`, so a table edit is visible on the next frame. An
+    /// unchanged pane, an idle table and no attachment all return `false`.
+    pub fn poll_chart_data_table(&mut self) -> bool {
+        if self.data_table.is_none() {
+            return false;
+        }
+        let toggles = match self.data_table.as_ref() {
+            Some(binding) => binding.take_toggles(),
+            None => return false,
+        };
+        let mut changed = false;
+        let mut resync = false;
+        for index in toggles {
+            if index == 0 {
+                // The base price series has no visibility flag; re-syncing the table is the
+                // honest answer, and the row snaps back rather than staying unchecked.
+                resync = true;
+                continue;
+            }
+            let overlay = index - 1;
+            let visible = self.overlay_visible.get(overlay).copied().unwrap_or(false);
+            changed |= self.set_overlay_visible(overlay, !visible);
+        }
+        let snapshot = self.chart_data_snapshot();
+        if let Some(binding) = self.data_table.as_mut() {
+            changed |= binding.push(snapshot, resync);
+            changed |= resync;
+        }
+        changed
+    }
+
+    /// Follows `strip` as this pane's zoom control.
+    ///
+    /// A requested level becomes a bar window centred on the current view; Fit restores every
+    /// bar. The readout follows the pane's own view, so a host that zooms in itself stays in
+    /// step. The control has no vertical zoom, so the level applies to the bar axis only.
+    pub fn attach_zoom_strip(&mut self, strip: &mut ZoomStrip) {
+        let factor = super::chart_companions::zoom_factor(self.series.len(), self.view_range());
+        self.zoom_strip = Some(super::chart_companions::ZoomStripBinding::attach(
+            strip,
+            self.base.redraw_requested_signal().clone(),
+            factor,
+        ));
+        self.base.request_redraw();
+    }
+
+    /// Stops following the attached strip; the last applied view stays.
+    pub fn detach_zoom_strip(&mut self) {
+        if self.zoom_strip.take().is_some() {
+            self.base.request_redraw();
+        }
+    }
+
+    /// Whether a [`ZoomStrip`] is attached.
+    pub fn is_zoom_strip_attached(&self) -> bool {
+        self.zoom_strip.is_some()
+    }
+
+    /// Applies the strip's requests and mirrors the pane's view back.
+    pub fn poll_zoom_strip(&mut self) -> bool {
+        let total = self.series.len();
+        let view = self.view_range();
+        let mut next = view;
+        let mut apply = |range: Option<(usize, usize)>| {
+            next = range;
+        };
+        let changed =
+            super::chart_companions::poll_zoom_strip(&mut self.zoom_strip, total, view, &mut apply);
+        if next != view {
+            self.set_view_range(next);
+        }
+        changed
+    }
+
+    /// The pane's series as a data-table snapshot: closes first, then one entry per overlay.
+    fn chart_data_snapshot(&self) -> ChartSeriesSnapshot {
+        let mut series = Vec::with_capacity(self.overlay_values.len() + 1);
+        let mut visible = Vec::with_capacity(self.overlay_values.len() + 1);
+        series.push((
+            alloc::string::String::from("Close"),
+            self.closes.iter().enumerate().map(|(index, value)| (index as f64, *value)).collect(),
+        ));
+        visible.push(0);
+        let legend = self.overlay_legend_entries();
+        for (index, cached) in self.overlay_values.iter().enumerate() {
+            let label = legend
+                .get(index)
+                .map(|entry| entry.0.clone())
+                .unwrap_or_else(|| alloc::format!("Overlay {}", index + 1));
+            let points = match cached {
+                CachedOverlay::Single(values) => values.clone(),
+                // A band's first line is its representative value; the visibility toggle
+                // applies to the whole overlay.
+                CachedOverlay::Triple(first, _, _) => first.clone(),
+            };
+            series.push((
+                label,
+                points
+                    .into_iter()
+                    .enumerate()
+                    .map(|(point, value)| (point as f64, value))
+                    .collect(),
+            ));
+            if self.overlay_visible.get(index).copied().unwrap_or(false) {
+                visible.push(index + 1);
+            }
+        }
+        (series, visible)
     }
 
     /// The bar under the pointer.
@@ -1456,6 +1605,10 @@ impl EventHandler for CandlestickChart {
     /// not broken by this control having a richer one.
     fn handle_event(&mut self, event: &rust_widgets::event::Event) {
         use rust_widgets::event::Event;
+        // A companion edit shows on this frame: the queues are drained before the event is
+        // routed, exactly as the parent's charts do.
+        self.poll_chart_data_table();
+        self.poll_zoom_strip();
         if !self.base.is_enabled() {
             return;
         }
@@ -1534,6 +1687,9 @@ impl Draw for CandlestickChart {
     /// The order is the reading order: price first, derived lines over it, and the levels
     /// and crosshair last so an annotation is never hidden by the data it annotates.
     fn draw(&mut self, context: &mut RenderContext) {
+        // A companion edit shows on this frame: both queues are drained before painting.
+        self.poll_chart_data_table();
+        self.poll_zoom_strip();
         let area = self.plot_area();
         if area.rect.width == 0 || area.rect.height == 0 {
             return;
@@ -1678,8 +1834,9 @@ impl WidgetProperties for CandlestickChart {
                 self.add_overlay(Overlay::moving_average(20));
                 Ok(())
             }
-            "set_series" => Err(CapabilityAccessError::OutOfRange),
-            _ => Err(CapabilityAccessError::UnknownCommand),
+            // Every other published name is `set_*`, whose value arrives through the property
+            // route; the convention answers `OutOfRange` for a bare invocation.
+            _ => self.default_command(name),
         }
     }
 }

@@ -22,7 +22,9 @@
 use alloc::vec::Vec;
 
 use crate::finance::layout::{panel_colors, PanelColors, PlotArea};
-use crate::finance::types::{BookLevel, OrderBook};
+use crate::finance::types::{
+    book_levels_from_records, book_levels_to_records, BookLevel, OrderBook,
+};
 use crate::finance::volume_chart::draw_empty_pane;
 use rust_widgets::core::{Color, HorizontalAlignment, Point, Rect};
 use rust_widgets::render::RenderContext;
@@ -731,6 +733,10 @@ impl Draw for DepthChart {
 impl WidgetProperties for DepthChart {
     fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
         match name {
+            // RW-106: the curve is derived from these two ladders, so they are what a document
+            // writes; the read half reports exactly what was written.
+            "bids" => Ok(CapabilityValue::Records(book_levels_to_records(self.book.bids()))),
+            "asks" => Ok(CapabilityValue::Records(book_levels_to_records(self.book.asks()))),
             "depth" => Ok(CapabilityValue::UInt(self.depth as u64)),
             "bid_color" => Ok(CapabilityValue::Color(self.bid_color)),
             "ask_color" => Ok(CapabilityValue::Color(self.ask_color)),
@@ -740,6 +746,26 @@ impl WidgetProperties for DepthChart {
 
     fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
         match name {
+            "bids" => {
+                let CapabilityValue::Records(list) = value else {
+                    return Err(CapabilityAccessError::TypeMismatch);
+                };
+                let levels = book_levels_from_records(&list, "bids")?;
+                let mut book = self.book.clone();
+                book.set_bids(levels);
+                self.set_book(book);
+                Ok(())
+            }
+            "asks" => {
+                let CapabilityValue::Records(list) = value else {
+                    return Err(CapabilityAccessError::TypeMismatch);
+                };
+                let levels = book_levels_from_records(&list, "asks")?;
+                let mut book = self.book.clone();
+                book.set_asks(levels);
+                self.set_book(book);
+                Ok(())
+            }
             "depth" => {
                 let CapabilityValue::UInt(depth) = value else {
                     return Err(CapabilityAccessError::TypeMismatch);
@@ -764,25 +790,16 @@ impl WidgetProperties for DepthChart {
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["depth", "bid_color", "ask_color", BASE_PROPERTY_NAMES]
+        property_names_of!["bids", "asks", "depth", "bid_color", "ask_color", BASE_PROPERTY_NAMES]
     }
 
     /// Runs one of the commands `depth_chart` publishes.
     ///
-    /// The pane has no overlay model — it draws the book it was given and nothing
-    /// else — so `add_overlay`, which the capability list shares with the other panes
-    /// in this module, is answered as
-    /// [`CapabilityAccessError::UnsupportedOnWidget`]: the name is real and this
-    /// control cannot perform it. That is an honest answer, not a fix: the
-    /// `commands` list still advertises an action this control cannot take, and
-    /// reconciling it is a registry decision. `set_series` / `set_depth` carry their
-    /// values.
+    /// Both published names are value-carrying `set_*` commands, so the convention answers
+    /// [`CapabilityAccessError::OutOfRange`] for a bare invocation and the caller writes the
+    /// property instead. There is no payload-free verb on this control.
     fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
-        match name {
-            "add_overlay" => Err(CapabilityAccessError::UnsupportedOnWidget),
-            "set_series" | "set_depth" => Err(CapabilityAccessError::OutOfRange),
-            _ => Err(CapabilityAccessError::UnknownCommand),
-        }
+        self.default_command(name)
     }
 }
 

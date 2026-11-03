@@ -23,6 +23,7 @@ use super::depth_chart::DepthChart;
 use super::indicator_chart::IndicatorChart;
 use super::order_book::OrderBookWidget;
 use super::quote_board::{QuoteBoard, QUOTE_RECORD_SCHEMA};
+use super::types::BOOK_LEVEL_RECORD_SCHEMA;
 use super::volume_chart::VolumeChart;
 
 /// `CandlestickChart`'s published properties.
@@ -60,6 +61,10 @@ pub const DEPTH_CHART_PROPERTIES: &[PropertySchema] = &[
     PropertySchema::new("tooltip", K::String, true, true),
     PropertySchema::new("geometry", K::String, false, false),
     PropertySchema::new("depth", K::UInt, true, true),
+    // RW-106: the depth curve is derived from the two ladders, so the ladders are what a design
+    // document writes. Empty lists produce the empty pane the control already draws.
+    PropertySchema::records("bids", true, true, &BOOK_LEVEL_RECORD_SCHEMA),
+    PropertySchema::records("asks", true, true, &BOOK_LEVEL_RECORD_SCHEMA),
     // Declared `Color`, matching what `DepthChart::set` accepts: it destructures
     // `CapabilityValue::Color` and answers `TypeMismatch` for anything else, so a
     // `String` declaration would make the property unwritable through the ABI —
@@ -76,6 +81,9 @@ pub const ORDER_BOOK_PROPERTIES: &[PropertySchema] = &[
     PropertySchema::new("geometry", K::String, false, false),
     PropertySchema::new("depth", K::UInt, true, true),
     PropertySchema::new("decimals", K::UInt, true, true),
+    // RW-106: the two ladders, writable as record lists (see `BOOK_LEVEL_RECORD_SCHEMA`).
+    PropertySchema::records("bids", true, true, &BOOK_LEVEL_RECORD_SCHEMA),
+    PropertySchema::records("asks", true, true, &BOOK_LEVEL_RECORD_SCHEMA),
     // Read-only: `OrderBookWidget::set` destructures the value and then refuses the
     // write. The spread band is a display decision the control owns, so there is
     // nothing for a caller to assign.
@@ -219,7 +227,13 @@ pub fn candlestick_chart_capability() -> WidgetCapability {
         aliases: &["candlestick", "kline", "k_line", "k_line_chart", "ohlc_chart"],
         properties: CANDLESTICK_CHART_PROPERTIES,
         events: CANDLESTICK_CHART_EVENTS,
-        commands: &["set_series", "add_overlay"],
+        commands: &[
+            "set_series",
+            "set_overlay_count",
+            "set_show_price_levels",
+            "set_show_overlay_legend",
+            "add_overlay",
+        ],
     }
 }
 
@@ -231,9 +245,9 @@ pub fn volume_chart_capability() -> WidgetCapability {
         aliases: &["volume", "volume_histogram", "volume_bars"],
         properties: VOLUME_CHART_PROPERTIES,
         events: VOLUME_CHART_EVENTS,
-        // `add_overlay` is only implemented by `CandlestickChart`; naming it here
+        // RW-106: `add_overlay` is only implemented by `CandlestickChart`; naming it here
         // would promise an action that cannot be obtained (principle #18).
-        commands: &["set_series"],
+        commands: &["set_series", "set_color_mode", "set_headroom"],
     }
 }
 
@@ -245,10 +259,8 @@ pub fn depth_chart_capability() -> WidgetCapability {
         aliases: &["market_depth", "depth_graph", "liquidity_chart"],
         properties: DEPTH_CHART_PROPERTIES,
         events: DEPTH_CHART_EVENTS,
-        // `set_series` stays unpublished: a depth series is a nested price/volume list
-        // with no property carrier; the published names are the display knobs the view
-        // does carry (principle #18).
-        commands: &[],
+        // RW-106: the two ladder setters carry their values through the property route.
+        commands: &["set_bids", "set_asks"],
     }
 }
 
@@ -260,10 +272,9 @@ pub fn order_book_capability() -> WidgetCapability {
         aliases: &["book_ladder", "market_depth_ladder"],
         properties: ORDER_BOOK_PROPERTIES,
         events: ORDER_BOOK_EVENTS,
-        // `set_series` stays unpublished: an order book is a nested price/size list
-        // with no property carrier; the published names are the display knobs the view
-        // does carry (principle #18).
-        commands: &[],
+        // RW-106: the two ladder setters carry their values through the property route, exactly
+        // as every other data-bearing control publishes its `set_*` names.
+        commands: &["set_bids", "set_asks", "set_depth", "set_decimals"],
     }
 }
 
@@ -275,10 +286,10 @@ pub fn quote_board_capability() -> WidgetCapability {
         aliases: &["quotes", "watchlist", "quote_table", "market_watch"],
         properties: QUOTE_BOARD_PROPERTIES,
         events: QUOTE_BOARD_EVENTS,
-        // `set_series` stays unpublished: a quote board is a row list with no property
-        // carrier; the published names are the sort and display controls it does carry
-        // (principle #18).
-        commands: &[],
+        // RW-106: `set_quotes` is the full-list write RW-79's property already carries. An
+        // incremental add/remove needs a composite payload, which the command vocabulary cannot
+        // express yet; the property route is the whole data surface this build can publish.
+        commands: &["set_quotes"],
     }
 }
 
@@ -290,7 +301,7 @@ pub fn indicator_chart_capability() -> WidgetCapability {
         aliases: &["indicator", "technical_indicator", "oscillator", "macd_chart"],
         properties: INDICATOR_CHART_PROPERTIES,
         events: INDICATOR_CHART_EVENTS,
-        commands: &["set_series"],
+        commands: &["set_series", "set_mode", "set_period", "set_show_reference_levels"],
     }
 }
 
@@ -361,6 +372,11 @@ pub fn default_property_value(kind: &str, name: &str) -> Option<CapabilityValue>
         ("volume_chart", "color_mode") => Some(CapabilityValue::String("direction".to_string())),
         ("volume_chart", "headroom") => Some(CapabilityValue::Float(0.92)),
         ("depth_chart", "depth") => Some(CapabilityValue::UInt(0)),
+        // RW-106: a fresh pane has neither ladder; the empty list of the declared schema is
+        // what a dropped binding resets to.
+        ("depth_chart", "bids" | "asks") => Some(CapabilityValue::Records(
+            rust_widgets::widget::capability::RecordList::new(&BOOK_LEVEL_RECORD_SCHEMA),
+        )),
         ("depth_chart", "bid_color") => {
             Some(CapabilityValue::Color(rust_widgets::core::Color::rgb(38, 166, 91)))
         }
@@ -370,6 +386,9 @@ pub fn default_property_value(kind: &str, name: &str) -> Option<CapabilityValue>
         ("order_book", "depth") => Some(CapabilityValue::UInt(5)),
         ("order_book", "decimals") => Some(CapabilityValue::Null),
         ("order_book", "show_spread") => Some(CapabilityValue::Bool(true)),
+        ("order_book", "bids" | "asks") => Some(CapabilityValue::Records(
+            rust_widgets::widget::capability::RecordList::new(&BOOK_LEVEL_RECORD_SCHEMA),
+        )),
         ("quote_board", "sort") => Some(CapabilityValue::String("none".to_string())),
         ("quote_board", "selected_index") => Some(CapabilityValue::Null),
         ("quote_board", "row_height") => Some(CapabilityValue::UInt(22)),

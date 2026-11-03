@@ -21,7 +21,7 @@ use rust_widgets::widget::{Widget, WidgetKind};
 
 use crate::webview::find_bar::WebFindBar;
 use crate::webview::web_engine::WebEngineView;
-use crate::webview::web_history_panel::WebHistoryPanel;
+use crate::webview::web_history_panel::{WebHistoryPanel, HISTORY_RECORD_SCHEMA};
 
 pub(super) const WEB_VIEW_PROPERTIES: &[PropertySchema] = &[
     PropertySchema::new("url", PropertyValueKind::String, true, true),
@@ -55,6 +55,9 @@ pub(super) const WEB_HISTORY_PANEL_PROPERTIES: &[PropertySchema] = &[
     PropertySchema::new("group_by_day", PropertyValueKind::Bool, true, true),
     PropertySchema::new("row_height", PropertyValueKind::UInt, true, true),
     PropertySchema::new("filter_prefix", PropertyValueKind::String, true, true),
+    // RW-106: the rows, so a design document can carry sample history. `visible_count` stays the
+    // derived (filtered, capped) count.
+    PropertySchema::records("entries", true, true, &HISTORY_RECORD_SCHEMA),
     PropertySchema::new("visible_count", PropertyValueKind::UInt, true, false),
     PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
     PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
@@ -168,7 +171,8 @@ pub fn web_history_panel_capability() -> WidgetCapability {
         aliases: &[],
         properties: WEB_HISTORY_PANEL_PROPERTIES,
         events: WEB_HISTORY_PANEL_EVENTS,
-        commands: &[],
+        // RW-106: the full-list write plus the panel's own clear operation.
+        commands: &["set_entries", "clear"],
     }
 }
 
@@ -196,7 +200,25 @@ pub fn install(factory: &mut WidgetFactory) -> Result<(), RegistrationError> {
         (web_history_panel_capability(), create_web_history_panel),
     ];
     for (capability, ctor) in rows {
+        let name = capability.canonical_name;
         factory.try_register(capability, ctor)?;
+        // Only the history panel has a row the parent's kind-level table cannot answer.
+        if name == "web_history_panel" {
+            let _ = factory.register_property_defaults(name, web_history_panel_defaults);
+        }
     }
     Ok(())
+}
+
+/// The `web_history_panel` defaults the shared kind table does not know (RW-106).
+///
+/// A `None` answer falls through to that table, so the base and derived rows keep their existing
+/// defaults; only `entries` is declared here, because it belongs to this control alone.
+fn web_history_panel_defaults(name: &str) -> Option<CapabilityValue> {
+    match name {
+        "entries" => Some(CapabilityValue::Records(
+            rust_widgets::widget::capability::RecordList::new(&HISTORY_RECORD_SCHEMA),
+        )),
+        _ => None,
+    }
 }

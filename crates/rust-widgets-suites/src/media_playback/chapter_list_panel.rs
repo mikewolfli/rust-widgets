@@ -22,13 +22,74 @@ use rust_widgets::event::{Event, EventHandler};
 use rust_widgets::impl_draw_bridge;
 use rust_widgets::render::RenderContext;
 use rust_widgets::signal::{ConnectionScope, GenericSignal, Signal1};
-use rust_widgets::widget::capability::coercion::{expect_bool, expect_u32};
+use rust_widgets::widget::capability::coercion::{
+    expect_bool, expect_f64, expect_string, expect_u32,
+};
 use rust_widgets::widget::capability::properties_trait::{base_property_get, base_property_set};
-use rust_widgets::widget::capability::types::{CapabilityAccessError, CapabilityValue};
-use rust_widgets::widget::capability::WidgetProperties;
+use rust_widgets::widget::capability::types::{
+    CapabilityAccessError, CapabilityValue, PropertyValueKind,
+};
+use rust_widgets::widget::capability::{
+    RecordField, RecordList, RecordSchema, RecordValue, WidgetProperties,
+};
 use rust_widgets::widget::metrics::effective_font;
 use rust_widgets::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use rust_widgets::{impl_widget_property_hooks, property_names_of};
+
+/// RW-106: the chapter rows as records, so a design document can carry the list (the count alone
+/// could not be written).
+///
+/// Chapter titles may repeat — a film can have two "Intro" chapters at different offsets — so the
+/// schema allows duplicate and empty identities and uses the title as the identity only for
+/// lookups.
+pub const CHAPTER_RECORD_SCHEMA: RecordSchema = RecordSchema {
+    id_field: "title",
+    ids_unique: false,
+    ids_required: false,
+    fields: &[
+        RecordField::required("title", PropertyValueKind::String),
+        RecordField::required("start_seconds", PropertyValueKind::Float),
+    ],
+};
+
+/// One chapter as a record, in the schema's field order.
+fn chapter_record(chapter: &VideoChapter) -> RecordValue {
+    RecordValue::new()
+        .with("title", CapabilityValue::String(chapter.title.clone()))
+        .with("start_seconds", CapabilityValue::Float(chapter.start_seconds))
+}
+
+/// The records a chapter list reports.
+fn chapters_to_records(chapters: &[VideoChapter]) -> RecordList {
+    RecordList::from_items(&CHAPTER_RECORD_SCHEMA, chapters.iter().map(chapter_record).collect())
+}
+
+/// Parses the chapter records, refusing a list that does not match the schema.
+fn chapters_from_records(list: &RecordList) -> Result<Vec<VideoChapter>, CapabilityAccessError> {
+    list.validate_against(&CHAPTER_RECORD_SCHEMA).map_err(|violation| {
+        CapabilityAccessError::ConstraintViolation {
+            property: rust_widgets::compat::String::from("chapters"),
+            reason: rust_widgets::compat::format!("{violation}"),
+        }
+    })?;
+    let mut chapters = Vec::with_capacity(list.items().len());
+    for record in list.items() {
+        let title = record
+            .get("title")
+            .cloned()
+            .map(expect_string)
+            .transpose()?
+            .ok_or(CapabilityAccessError::TypeMismatch)?;
+        let start_seconds = record
+            .get("start_seconds")
+            .cloned()
+            .map(expect_f64)
+            .transpose()?
+            .ok_or(CapabilityAccessError::TypeMismatch)?;
+        chapters.push(VideoChapter::new(title, start_seconds));
+    }
+    Ok(chapters)
+}
 
 /// Width reserved for a chapter thumbnail when thumbnails are shown.
 const CHAPTER_THUMBNAIL_WIDTH: u32 = 48;
@@ -467,7 +528,10 @@ impl WidgetProperties for ChapterListPanel {
             "row_height" => Ok(CapabilityValue::UInt(u64::from(self.row_height))),
             "active_highlight" => Ok(CapabilityValue::Bool(self.active_highlight)),
             "show_thumbnails" => Ok(CapabilityValue::Bool(self.show_thumbnails)),
-            "chapters" => Ok(CapabilityValue::UInt(self.chapters.len() as u64)),
+            // RW-106: the list itself, and the count under its own name. `chapters` used to be
+            // the count, which left no writable carrier for the rows.
+            "chapters" => Ok(CapabilityValue::Records(chapters_to_records(&self.chapters))),
+            "chapter_count" => Ok(CapabilityValue::UInt(self.chapters.len() as u64)),
             "position_ms" => Ok(CapabilityValue::UInt(self.position_ms)),
             _ => base_property_get(self, name),
         }
@@ -487,7 +551,17 @@ impl WidgetProperties for ChapterListPanel {
                 self.set_show_thumbnails(expect_bool(value)?);
                 Ok(())
             }
-            "chapters" | "position_ms" => Err(CapabilityAccessError::ReadOnlyProperty),
+            // RW-106: replaces the list through the control's own setter, so layout, selection
+            // and the attached player's seek queue all follow the same path a Rust caller uses.
+            "chapters" => {
+                let CapabilityValue::Records(list) = value else {
+                    return Err(CapabilityAccessError::TypeMismatch);
+                };
+                let chapters = chapters_from_records(&list)?;
+                self.set_chapters(chapters);
+                Ok(())
+            }
+            "chapter_count" | "position_ms" => Err(CapabilityAccessError::ReadOnlyProperty),
             _ => base_property_set(self, name, value),
         }
     }
@@ -498,9 +572,18 @@ impl WidgetProperties for ChapterListPanel {
             "active_highlight",
             "show_thumbnails",
             "chapters",
+            "chapter_count",
             "position_ms",
             BASE_PROPERTY_NAMES
         ]
+    }
+
+    /// Runs one of the commands `chapter_list_panel` publishes.
+    ///
+    /// `set_chapters` carries its value through the property route, so a bare invocation is
+    /// [`CapabilityAccessError::OutOfRange`] and the caller writes the property instead.
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        self.default_command(name)
     }
 }
 

@@ -19,7 +19,7 @@ use rust_widgets::widget::{Widget, WidgetKind};
 
 use crate::media_playback::audio_visualizer::AudioVisualizer;
 use crate::media_playback::camera_preview::CameraPreview;
-use crate::media_playback::chapter_list_panel::ChapterListPanel;
+use crate::media_playback::chapter_list_panel::{ChapterListPanel, CHAPTER_RECORD_SCHEMA};
 use crate::media_playback::lottie_widget::LottieWidget;
 use crate::media_playback::media_player::media_player::MediaPlayer;
 use crate::media_playback::media_player::media_scrubber::MediaScrubber;
@@ -62,6 +62,9 @@ pub const LOTTIE_WIDGET_PROPERTIES: &[PropertySchema] = &[
     PropertySchema::new("loops_completed", PropertyValueKind::Int, true, false),
     PropertySchema::enumerated("direction", true, true, &["forward", "reverse"]),
     PropertySchema::new("speed", PropertyValueKind::Float, true, true),
+    // RW-106: the Lottie JSON document itself. Written through `load_json`, read back from
+    // `json_data`, so a design document references the animation it shows.
+    PropertySchema::new("source", PropertyValueKind::String, true, true),
 ];
 
 pub const RIVE_WIDGET_PROPERTIES: &[PropertySchema] = &[
@@ -73,6 +76,11 @@ pub const RIVE_WIDGET_PROPERTIES: &[PropertySchema] = &[
     PropertySchema::new("loop_count", PropertyValueKind::Int, true, true),
     PropertySchema::new("loops_completed", PropertyValueKind::Int, true, false),
     PropertySchema::new("state", PropertyValueKind::String, true, false),
+    // RW-106: the `.riv` document the host resolves, plus the progress setter the control already
+    // has (`set_progress`). The path is stored as a label, exactly as `video_player.source` is:
+    // the control does not open files behind the host's back.
+    PropertySchema::new("source", PropertyValueKind::String, true, true),
+    PropertySchema::new("progress", PropertyValueKind::Float, true, true),
 ];
 
 pub const AUDIO_VISUALIZER_PROPERTIES: &[PropertySchema] = &[
@@ -105,7 +113,10 @@ pub const CHAPTER_LIST_PANEL_PROPERTIES: &[PropertySchema] = &[
     PropertySchema::new("row_height", PropertyValueKind::UInt, true, true),
     PropertySchema::new("active_highlight", PropertyValueKind::Bool, true, true),
     PropertySchema::new("show_thumbnails", PropertyValueKind::Bool, true, true),
-    PropertySchema::new("chapters", PropertyValueKind::UInt, true, false),
+    // RW-106: the rows themselves, writable; the count is published under its own name so the
+    // two facts stop sharing one property (`chapters` used to be the read-only count).
+    PropertySchema::records("chapters", true, true, &CHAPTER_RECORD_SCHEMA),
+    PropertySchema::new("chapter_count", PropertyValueKind::UInt, true, false),
     PropertySchema::new("position_ms", PropertyValueKind::UInt, true, false),
     PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
     PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
@@ -285,7 +296,7 @@ pub fn lottie_widget_capability() -> WidgetCapability {
         properties: LOTTIE_WIDGET_PROPERTIES,
         // `animation_finished` is the emitted signal; the published name was `finished`.
         events: LOTTIE_WIDGET_EVENTS,
-        commands: &["set_playing"],
+        commands: &["set_playing", "set_source", "play", "pause", "stop"],
     }
 }
 
@@ -297,7 +308,7 @@ pub fn rive_widget_capability() -> WidgetCapability {
         properties: RIVE_WIDGET_PROPERTIES,
         // `animation_finished` is the emitted signal; the published name was `finished`.
         events: RIVE_WIDGET_EVENTS,
-        commands: &["set_is_playing"],
+        commands: &["set_is_playing", "set_source", "set_progress"],
     }
 }
 
@@ -333,7 +344,9 @@ pub fn chapter_list_panel_capability() -> WidgetCapability {
         aliases: &[],
         properties: CHAPTER_LIST_PANEL_PROPERTIES,
         events: CHAPTER_LIST_PANEL_EVENTS,
-        commands: &[],
+        // RW-106: the full-list write; add/remove need a composite payload the command vocabulary
+        // cannot express yet.
+        commands: &["set_chapters"],
     }
 }
 
@@ -364,7 +377,15 @@ pub fn media_transport_bar_capability() -> WidgetCapability {
         aliases: &[],
         properties: MEDIA_TRANSPORT_BAR_PROPERTIES,
         events: MEDIA_TRANSPORT_BAR_EVENTS,
-        commands: &[],
+        // RW-106: the value-carrying setters route through the properties, and the three
+        // payload-free requests mirror the bar's own buttons.
+        commands: &[
+            "set_playing",
+            "set_volume",
+            "previous_track",
+            "next_track",
+            "toggle_fullscreen",
+        ],
     }
 }
 
@@ -540,7 +561,16 @@ pub fn default_property_value(kind: &str, name: &str) -> Option<CapabilityValue>
         ("chapter_list_panel", "row_height") => Some(CapabilityValue::UInt(32)),
         ("chapter_list_panel", "active_highlight") => Some(CapabilityValue::Bool(true)),
         ("chapter_list_panel", "show_thumbnails") => Some(CapabilityValue::Bool(false)),
-        ("chapter_list_panel", "chapters" | "position_ms") => Some(CapabilityValue::UInt(0)),
+        ("chapter_list_panel", "chapter_count" | "position_ms") => Some(CapabilityValue::UInt(0)),
+        // RW-106: a fresh panel has no chapters; the empty list of the declared schema.
+        ("chapter_list_panel", "chapters") => Some(CapabilityValue::Records(
+            rust_widgets::widget::capability::RecordList::new(&CHAPTER_RECORD_SCHEMA),
+        )),
+        // RW-106: nothing loaded yet, at frame/loop zero. The parent's kind-level table does not
+        // know these rows (they are this control's own), so they are declared here.
+        ("lottie_widget", "source") => Some(CapabilityValue::String(String::new())),
+        ("rive_widget", "source") => Some(CapabilityValue::String(String::new())),
+        ("rive_widget", "progress") => Some(CapabilityValue::Float(0.0)),
         _ => None,
     }
 }

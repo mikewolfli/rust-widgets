@@ -26,7 +26,9 @@ use alloc::vec::Vec;
 use core::fmt::Write as _;
 
 use crate::finance::layout::PlotArea;
-use crate::finance::types::{BookLevel, OrderBook};
+use crate::finance::types::{
+    book_levels_from_records, book_levels_to_records, BookLevel, OrderBook,
+};
 use crate::finance::volume_chart::draw_empty_pane;
 use rust_widgets::core::{Color, HorizontalAlignment, Point, Rect};
 use rust_widgets::render::RenderContext;
@@ -1107,6 +1109,9 @@ impl Draw for OrderBookWidget {
 impl WidgetProperties for OrderBookWidget {
     fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
         match name {
+            // RW-106: the two ladders as record lists, so a design document can carry a book.
+            "bids" => Ok(CapabilityValue::Records(book_levels_to_records(self.book.bids()))),
+            "asks" => Ok(CapabilityValue::Records(book_levels_to_records(self.book.asks()))),
             "depth" => Ok(CapabilityValue::UInt(self.depth as u64)),
             "decimals" => match self.decimals {
                 Some(decimals) => Ok(CapabilityValue::UInt(decimals as u64)),
@@ -1121,6 +1126,29 @@ impl WidgetProperties for OrderBookWidget {
 
     fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
         match name {
+            // RW-106: writing a ladder replaces that side and keeps the other, so a document can
+            // set the two sides independently. `set_book` re-sorts, re-flashes and re-validates,
+            // exactly as it does for a host that built the book itself.
+            "bids" => {
+                let CapabilityValue::Records(list) = value else {
+                    return Err(CapabilityAccessError::TypeMismatch);
+                };
+                let levels = book_levels_from_records(&list, "bids")?;
+                let mut book = self.book.clone();
+                book.set_bids(levels);
+                self.set_book(book);
+                Ok(())
+            }
+            "asks" => {
+                let CapabilityValue::Records(list) = value else {
+                    return Err(CapabilityAccessError::TypeMismatch);
+                };
+                let levels = book_levels_from_records(&list, "asks")?;
+                let mut book = self.book.clone();
+                book.set_asks(levels);
+                self.set_book(book);
+                Ok(())
+            }
             "depth" => {
                 let CapabilityValue::UInt(depth) = value else {
                     return Err(CapabilityAccessError::TypeMismatch);
@@ -1159,25 +1187,17 @@ impl WidgetProperties for OrderBookWidget {
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["depth", "decimals", "show_spread", BASE_PROPERTY_NAMES]
+        property_names_of!["bids", "asks", "depth", "decimals", "show_spread", BASE_PROPERTY_NAMES]
     }
 
     /// Runs one of the commands `order_book` publishes.
     ///
-    /// A ladder is a table of levels, not a plotted series, so it has no overlay
-    /// model; `add_overlay` is published for the whole finance group and is answered
-    /// as [`CapabilityAccessError::UnsupportedOnWidget`] — the name is real and this
-    /// control cannot perform it. That refusal is an honest answer, not a fix: the
-    /// `commands` list still advertises an action this control cannot take, and
-    /// reconciling it is a registry decision. `set_series` / `set_depth` /
-    /// `set_decimals` carry their values and are refused as
-    /// [`CapabilityAccessError::OutOfRange`].
+    /// Every published name is a `set_*` command that carries a value, so the convention answers
+    /// [`CapabilityAccessError::OutOfRange`] for a bare invocation — the caller writes the
+    /// property instead. There is no payload-free verb on this control, so the default is the
+    /// whole implementation.
     fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
-        match name {
-            "add_overlay" => Err(CapabilityAccessError::UnsupportedOnWidget),
-            "set_series" | "set_depth" | "set_decimals" => Err(CapabilityAccessError::OutOfRange),
-            _ => Err(CapabilityAccessError::UnknownCommand),
-        }
+        self.default_command(name)
     }
 }
 

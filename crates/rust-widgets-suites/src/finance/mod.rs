@@ -26,9 +26,31 @@
 //! so gating it on the full widget set would be a gate with no purpose. A caller on a
 //! reduced profile that computes an indicator and draws it through its own path should
 //! not have to reimplement the arithmetic to do so.
+//!
+//! # Companion pairing: what attaches where (RW-106)
+//!
+//! The parent crate’s `ChartDataTable` and `ZoomStrip` are paired through the same public
+//! queues and signals its own charts use, but a finance pane is a different type, so the
+//! pairing is implemented per pane. It is offered only where the companion’s protocol has a
+//! real meaning:
+//!
+//! | Control | `ChartDataTable` | `ZoomStrip` |
+//! |---|---|---|
+//! | `candlestick_chart` | yes — close series plus one row per overlay; a row toggle hides that overlay | yes — the bar window |
+//! | `volume_chart` | no — one series and no per-series visibility | yes — the bar window |
+//! | `indicator_chart` | no — computed lines have no visibility flags | yes — the bar window |
+//! | `depth_chart` | no — the curve is not a series list | no — no view range |
+//! | `order_book` | no — the ladder is a table of levels, not a series | no — no view range |
+//! | `quote_board` | no — rows, not series | no — no view range |
+//!
+//! Attaching a data table to a control that cannot hide a row would give the table a toggle
+//! that changes nothing — the “reported success for something that did not happen” the suite’s
+//! contracts forbid. Those controls expose their rows as writable record properties instead
+//! (`bids` / `asks`, `levels`, `quotes`), which is the design-time surface they can honour.
 
 pub mod candlestick_chart;
 mod capability;
+mod chart_companions;
 pub mod depth_chart;
 pub mod indicator_chart;
 pub mod indicators;

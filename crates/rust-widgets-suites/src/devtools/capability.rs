@@ -257,6 +257,10 @@ pub fn default_property_value(kind: &str, name: &str) -> Option<CapabilityValue>
         ("terminal_view", "ansi_palette") => Some(CapabilityValue::Null),
         ("terminal_find_bar", "query") => Some(CapabilityValue::String(String::new())),
         ("terminal_find_bar", "case_sensitive" | "use_regex") => Some(CapabilityValue::Bool(false)),
+        // `TerminalFindBar::new` starts with wrapping on and the bar closed; without these two
+        // rows the whole manifest failed to export (RW-105).
+        ("terminal_find_bar", "wrap_search") => Some(CapabilityValue::Bool(true)),
+        ("terminal_find_bar", "visible") => Some(CapabilityValue::Bool(false)),
         ("terminal_find_bar", "match_count") => Some(CapabilityValue::UInt(0)),
         ("diff_viewer", "left_text" | "right_text") => Some(CapabilityValue::String(String::new())),
         ("diff_viewer", "line_count" | "change_count" | "selected_index") => {

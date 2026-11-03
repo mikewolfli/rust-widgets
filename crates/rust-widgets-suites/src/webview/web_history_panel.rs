@@ -29,16 +29,83 @@ use rust_widgets::property_names_of;
 use rust_widgets::render::RenderContext;
 use rust_widgets::signal::Signal1;
 use rust_widgets::widget::capability::coercion::{
-    expect_bool, expect_string, expect_u32_saturating, expect_usize,
+    expect_bool, expect_i64, expect_string, expect_u32_saturating, expect_usize,
 };
 use rust_widgets::widget::capability::properties_trait::{base_property_get, base_property_set};
-use rust_widgets::widget::capability::types::{CapabilityAccessError, CapabilityValue};
-use rust_widgets::widget::capability::WidgetProperties;
+use rust_widgets::widget::capability::types::{
+    CapabilityAccessError, CapabilityValue, PropertyValueKind,
+};
+use rust_widgets::widget::capability::{
+    RecordField, RecordList, RecordSchema, RecordValue, WidgetProperties,
+};
 use rust_widgets::widget::metrics::{dimensions, role_font, ControlMetrics};
 use rust_widgets::widget::{BaseWidget, Draw, Widget, WidgetKind};
 
 /// Height of one history row when the host does not choose one, in logical pixels.
 const DEFAULT_ROW_HEIGHT: u32 = 44;
+
+/// RW-106: the history rows as records, so a design document can carry example history.
+///
+/// A URL can appear twice with different visit times, so the identity is not enforced as unique;
+/// the title is required because a row with no title would paint an empty band.
+pub const HISTORY_RECORD_SCHEMA: RecordSchema = RecordSchema {
+    id_field: "url",
+    ids_unique: false,
+    ids_required: false,
+    fields: &[
+        RecordField::required("url", PropertyValueKind::String),
+        RecordField::required("title", PropertyValueKind::String),
+        RecordField::optional("visited_ms", PropertyValueKind::Int),
+    ],
+};
+
+/// One history row as a record, in the schema's field order.
+fn history_record(record: &WebHistoryRecord) -> RecordValue {
+    let value = RecordValue::new()
+        .with("url", CapabilityValue::String(record.entry.url.clone()))
+        .with("title", CapabilityValue::String(record.entry.title.clone()));
+    match record.visited_ms {
+        Some(visited_ms) => value.with("visited_ms", CapabilityValue::Int(visited_ms)),
+        None => value,
+    }
+}
+
+/// The records a history panel reports.
+fn history_to_records(records: &[WebHistoryRecord]) -> RecordList {
+    RecordList::from_items(&HISTORY_RECORD_SCHEMA, records.iter().map(history_record).collect())
+}
+
+/// Parses the history records, refusing a list that does not match the schema.
+fn history_from_records(list: &RecordList) -> Result<Vec<WebHistoryRecord>, CapabilityAccessError> {
+    list.validate_against(&HISTORY_RECORD_SCHEMA).map_err(|violation| {
+        CapabilityAccessError::ConstraintViolation {
+            property: String::from("entries"),
+            reason: format!("{violation}"),
+        }
+    })?;
+    let mut records = Vec::with_capacity(list.items().len());
+    for record in list.items() {
+        let url = record
+            .get("url")
+            .cloned()
+            .map(expect_string)
+            .transpose()?
+            .ok_or(CapabilityAccessError::TypeMismatch)?;
+        let title = record
+            .get("title")
+            .cloned()
+            .map(expect_string)
+            .transpose()?
+            .ok_or(CapabilityAccessError::TypeMismatch)?;
+        let visited_ms = record.get("visited_ms").cloned().map(expect_i64).transpose()?;
+        let entry = HistoryEntry { url, title, scroll_pos: 0.0 };
+        records.push(match visited_ms {
+            Some(visited_ms) => WebHistoryRecord::visited_at(entry, visited_ms),
+            None => WebHistoryRecord::new(entry),
+        });
+    }
+    Ok(records)
+}
 
 /// Height of a day-group header, in logical pixels.
 const GROUP_HEADER_HEIGHT: u32 = 24;
@@ -413,6 +480,8 @@ impl Widget for WebHistoryPanel {
 impl WidgetProperties for WebHistoryPanel {
     fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
         match name {
+            // RW-106: the rows themselves; `visible_count` stays the derived count.
+            "entries" => Ok(CapabilityValue::Records(history_to_records(&self.records))),
             "max_entries" => Ok(CapabilityValue::UInt(self.max_entries() as u64)),
             "show_timestamps" => Ok(CapabilityValue::Bool(self.show_timestamps())),
             "group_by_day" => Ok(CapabilityValue::Bool(self.group_by_day())),
@@ -425,6 +494,14 @@ impl WidgetProperties for WebHistoryPanel {
 
     fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
         match name {
+            "entries" => {
+                let CapabilityValue::Records(list) = value else {
+                    return Err(CapabilityAccessError::TypeMismatch);
+                };
+                let records = history_from_records(&list)?;
+                self.set_records(&records);
+                Ok(())
+            }
             "max_entries" => {
                 self.set_max_entries(expect_usize(value)?);
                 Ok(())
@@ -453,6 +530,7 @@ impl WidgetProperties for WebHistoryPanel {
 
     fn property_names(&self) -> &'static [&'static str] {
         property_names_of![
+            "entries",
             "max_entries",
             "show_timestamps",
             "group_by_day",
@@ -461,6 +539,20 @@ impl WidgetProperties for WebHistoryPanel {
             "visible_count",
             BASE_PROPERTY_NAMES
         ]
+    }
+
+    /// Runs the commands `web_history_panel` publishes (RW-106).
+    ///
+    /// `set_entries` carries its value through the property route; `clear` names the panel's own
+    /// method, which empties both the records and the filter in one redraw.
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "clear" => {
+                self.clear();
+                Ok(())
+            }
+            _ => self.default_command(name),
+        }
     }
 }
 

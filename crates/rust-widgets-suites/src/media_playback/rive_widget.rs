@@ -40,7 +40,7 @@ use rust_widgets::impl_widget_property_hooks;
 use rust_widgets::property_names_of;
 use rust_widgets::render::RenderContext;
 use rust_widgets::signal::{GenericSignal, Signal1};
-use rust_widgets::widget::capability::coercion::expect_bool;
+use rust_widgets::widget::capability::coercion::{expect_bool, expect_f32, expect_string};
 use rust_widgets::widget::capability::properties_trait::{base_property_get, base_property_set};
 use rust_widgets::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use rust_widgets::widget::capability::WidgetProperties;
@@ -1280,6 +1280,12 @@ pub struct RiveWidget {
     base: BaseWidget,
     /// Name of the currently loaded animation.
     animation_name: String,
+    /// The document reference a design document set (RW-106).
+    ///
+    /// Stored as a label rather than resolved: like `video_player.source`, opening a file is the
+    /// host's decision, so a property write must not read the filesystem. A host that wants to
+    /// load it calls [`Self::load_animation`] with the value it reads back from this property.
+    source: String,
     /// Whether the animation is currently playing.
     is_playing: bool,
     /// State machine inputs.
@@ -1331,6 +1337,7 @@ impl RiveWidget {
         Self {
             base: BaseWidget::new(WidgetKind::RiveWidget, geometry, "RiveWidget"),
             animation_name: String::new(),
+            source: String::new(),
             is_playing: false,
             state_machine_inputs: Vec::new(),
             loop_count: 0,
@@ -1747,7 +1754,13 @@ impl RiveWidget {
         if !progress.is_finite() {
             return;
         }
-        self.set_input("progress", RiveInputValue::Number(progress.clamp(0.0, 1.0)));
+        let progress = progress.clamp(0.0, 1.0);
+        // RW-106: the playhead is moved now, not only on the next `tick`. A property write that
+        // reads back its old value tells a designer the write did nothing.
+        self.animation_progress = progress;
+        self.progress_key = u32::MAX;
+        self.base.request_redraw();
+        self.set_input("progress", RiveInputValue::Number(progress));
     }
 
     /// Advances the animation state by the given number of milliseconds using the frame rate and
@@ -1998,6 +2011,9 @@ impl WidgetProperties for RiveWidget {
             "loop_count" => Ok(CapabilityValue::Int(self.loop_count() as i64)),
             "loops_completed" => Ok(CapabilityValue::Int(self.loops_completed() as i64)),
             "state" => Ok(CapabilityValue::String(self.state().as_str().to_string())),
+            // RW-106: the document reference and the scrubbed playhead.
+            "source" => Ok(CapabilityValue::String(self.source.clone())),
+            "progress" => Ok(CapabilityValue::Float(f64::from(self.animation_progress()))),
             _ => base_property_get(self, name),
         }
     }
@@ -2022,6 +2038,15 @@ impl WidgetProperties for RiveWidget {
                 Ok(())
             }
             "loops_completed" | "state" => Err(CapabilityAccessError::ReadOnlyProperty),
+            "source" => {
+                self.source = expect_string(value)?;
+                self.base.request_redraw();
+                Ok(())
+            }
+            "progress" => {
+                self.set_progress(expect_f32(value)?);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
@@ -2032,6 +2057,8 @@ impl WidgetProperties for RiveWidget {
             "loop_count",
             "loops_completed",
             "state",
+            "source",
+            "progress",
             BASE_PROPERTY_NAMES
         ]
     }

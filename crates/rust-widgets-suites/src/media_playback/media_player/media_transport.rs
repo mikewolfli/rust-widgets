@@ -429,6 +429,25 @@ impl MediaTransportBar {
         self.base.request_redraw();
     }
 
+    /// Emits the previous-track request (RW-106).
+    ///
+    /// This is the signal the previous button emits, exposed as an operation so a design
+    /// document can request it without simulating a press. The bar changes no state: the player
+    /// it is attached to decides what "previous" means.
+    pub fn request_previous_track(&mut self) {
+        self.previous_track_requested.emit();
+    }
+
+    /// Emits the next-track request (RW-106), the signal the next button emits.
+    pub fn request_next_track(&mut self) {
+        self.next_track_requested.emit();
+    }
+
+    /// Emits the fullscreen request (RW-106), the signal the fullscreen button emits.
+    pub fn request_fullscreen(&mut self) {
+        self.fullscreen_requested.emit();
+    }
+
     /// Whether the bar believes playback is active.
     pub fn is_playing(&self) -> bool {
         self.current_playing()
@@ -699,6 +718,29 @@ impl WidgetProperties for MediaTransportBar {
             "show_timecode",
             BASE_PROPERTY_NAMES
         ]
+    }
+
+    /// Runs the commands `media_transport_bar` publishes (RW-106).
+    ///
+    /// The three payload-free names emit exactly the signals the bar's own buttons emit, so a
+    /// wire and a click cannot describe different requests. `set_playing` / `set_volume` carry
+    /// their values through the property route and are answered by the convention.
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "previous_track" => {
+                self.request_previous_track();
+                Ok(())
+            }
+            "next_track" => {
+                self.request_next_track();
+                Ok(())
+            }
+            "toggle_fullscreen" => {
+                self.request_fullscreen();
+                Ok(())
+            }
+            _ => self.default_command(name),
+        }
     }
 }
 
@@ -1035,5 +1077,49 @@ mod tests {
         assert!((player.volume() - 0.25).abs() < f32::EPSILON);
 
         assert_eq!(player.apply_pending_transport_requests(), 0, "the queue is drained");
+    }
+
+    /// RW-106: the three request operations emit exactly the signals the buttons emit.
+    ///
+    /// Publishing a command that quietly did nothing would be the "reported success for
+    /// something that did not happen" this suite's contracts forbid, so the operations are
+    /// asserted through their signals rather than by their `Ok(())`.
+    #[test]
+    fn the_request_operations_emit_the_button_signals() {
+        use rust_widgets::signal::ConnectionScope;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let mut bar = MediaTransportBar::new(Rect::new(0, 0, 320, 40));
+        let scope = ConnectionScope::new();
+
+        let previous = Arc::new(AtomicUsize::new(0));
+        let next = Arc::new(AtomicUsize::new(0));
+        let fullscreen = Arc::new(AtomicUsize::new(0));
+        {
+            let counter = Arc::clone(&previous);
+            bar.previous_track_requested.connect_scoped(&scope, move || {
+                counter.fetch_add(1, Ordering::SeqCst);
+            });
+        }
+        {
+            let counter = Arc::clone(&next);
+            bar.next_track_requested.connect_scoped(&scope, move || {
+                counter.fetch_add(1, Ordering::SeqCst);
+            });
+        }
+        {
+            let counter = Arc::clone(&fullscreen);
+            bar.fullscreen_requested.connect_scoped(&scope, move || {
+                counter.fetch_add(1, Ordering::SeqCst);
+            });
+        }
+
+        bar.request_previous_track();
+        bar.request_next_track();
+        bar.request_fullscreen();
+        assert_eq!(previous.load(Ordering::SeqCst), 1);
+        assert_eq!(next.load(Ordering::SeqCst), 1);
+        assert_eq!(fullscreen.load(Ordering::SeqCst), 1);
     }
 }

@@ -419,6 +419,12 @@ pub fn default_property_value(kind: &str, name: &str) -> Option<CapabilityValue>
             _ => None,
         },
         "gantt_task_grid" => match name {
+            // The constructor's initial values (`GanttTaskGrid::new`): 24-pixel rows, a
+            // 12-pixel indent step and a visible header (RW-105). The two counts stay zero
+            // because a fresh grid has no columns or tasks beyond its one header band.
+            "row_height" => Some(CapabilityValue::UInt(24)),
+            "indent_step" => Some(CapabilityValue::UInt(12)),
+            "header_visible" => Some(CapabilityValue::Bool(true)),
             "columns" | "tasks" => Some(CapabilityValue::UInt(0)),
             _ => None,
         },

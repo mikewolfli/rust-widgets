@@ -2229,6 +2229,11 @@ impl WidgetProperties for LottieWidget {
                 .to_string(),
             )),
             "speed" => Ok(CapabilityValue::Float(self.speed() as f64)),
+            // RW-106: the document reference, read back from the parsed source so a design
+            // document round-trips the animation it shows.
+            "source" => {
+                Ok(CapabilityValue::String(self.json_data().unwrap_or_default().to_string()))
+            }
             // RW-83: the frame currently shown, so a designer can scrub the animation.
             "current_frame" => Ok(CapabilityValue::UInt(u64::from(self.current_frame()))),
             _ => base_property_get(self, name),
@@ -2278,6 +2283,25 @@ impl WidgetProperties for LottieWidget {
                 Ok(())
             }
             "loops_completed" => Err(CapabilityAccessError::ReadOnlyProperty),
+            // RW-106: written through the same parser the host uses, so an invalid document is
+            // refused instead of being stored as a string the renderer cannot show.
+            "source" => {
+                let document = expect_string(value)?;
+                if document.is_empty() {
+                    return Err(CapabilityAccessError::ConstraintViolation {
+                        property: rust_widgets::compat::String::from("source"),
+                        reason: rust_widgets::compat::String::from(
+                            "a Lottie source is the animation document and may not be empty",
+                        ),
+                    });
+                }
+                self.load_json(&document).map_err(|reason| {
+                    CapabilityAccessError::ConstraintViolation {
+                        property: rust_widgets::compat::String::from("source"),
+                        reason,
+                    }
+                })
+            }
             _ => base_property_set(self, name, value),
         }
     }
@@ -2290,24 +2314,19 @@ impl WidgetProperties for LottieWidget {
             "direction",
             "speed",
             "current_frame",
+            "source",
             BASE_PROPERTY_NAMES
         ]
     }
 
     /// Runs the published playback commands.
     ///
-    /// `set_playing` names no property: playback is exposed as the read-only
-    /// `playing`, and starting it is the control's own [`Self::play`]. The default
-    /// `set_foo` convention would have reported the command unknown for a control
-    /// that implements it, and the property route a `set_playing` spelling implies
-    /// does not exist. The payload-free `play`/`pause`/`stop` verbs are accepted here
-    /// because they name the real methods directly.
+    /// `play` / `pause` / `stop` name the control's own methods. Every `set_*` name carries its
+    /// value through the property route, so the convention answers
+    /// [`CapabilityAccessError::OutOfRange`] for a bare invocation — including `set_playing`,
+    /// whose property is the writable `playing`.
     fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
         match name {
-            "set_playing" => {
-                self.play();
-                Ok(())
-            }
             "play" => {
                 self.play();
                 Ok(())
@@ -3599,5 +3618,26 @@ mod tests {
         let second = rust_widgets::widget::svg::render_to_svg(&mut lottie);
         assert_eq!(first, second, "a cached outline must paint the same picture");
         assert!(first.starts_with("<svg"));
+    }
+
+    /// RW-106: the `source` property is the document itself — it parses on write and reads back
+    /// the text that was loaded, and an invalid document is refused rather than stored.
+    #[test]
+    fn the_source_property_loads_and_round_trips_the_document() {
+        use rust_widgets::widget::capability::WidgetProperties;
+        let mut lottie = LottieWidget::new(Rect::new(0, 0, 100, 100));
+        let json = make_lottie_json(10.0, 0.0, 30.0);
+        lottie
+            .set("source", CapabilityValue::String(json.clone()))
+            .expect("a valid Lottie document is writable");
+        assert_eq!(lottie.get("source"), Ok(CapabilityValue::String(json)));
+        assert!(
+            lottie.set("source", CapabilityValue::String("{ not lottie".into())).is_err(),
+            "an invalid document must be refused, not stored"
+        );
+        assert!(
+            lottie.set("source", CapabilityValue::String(String::new())).is_err(),
+            "the document may not be emptied through this property"
+        );
     }
 }

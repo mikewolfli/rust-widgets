@@ -1575,12 +1575,12 @@ impl WidgetProperties for QuoteBoard {
     /// fix: the `commands` list still advertises an action this control cannot take,
     /// and reconciling it is a registry decision. `set_series` carries the quote set
     /// and is refused as [`CapabilityAccessError::OutOfRange`].
+    /// Runs one of the commands `quote_board` publishes.
+    ///
+    /// `set_quotes` carries its value through the property route, so a bare invocation is
+    /// [`CapabilityAccessError::OutOfRange`] and the caller writes the property instead.
     fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
-        match name {
-            "add_overlay" => Err(CapabilityAccessError::UnsupportedOnWidget),
-            "set_series" => Err(CapabilityAccessError::OutOfRange),
-            _ => Err(CapabilityAccessError::UnknownCommand),
-        }
+        self.default_command(name)
     }
 }
 

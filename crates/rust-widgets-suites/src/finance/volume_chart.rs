@@ -30,6 +30,7 @@ use rust_widgets::signal::Signal1;
 use rust_widgets::widget::capability::properties_trait::{base_property_get, base_property_set};
 use rust_widgets::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use rust_widgets::widget::capability::WidgetProperties;
+use rust_widgets::widget::companions::ZoomStrip;
 use rust_widgets::widget::metrics::role_font;
 use rust_widgets::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use rust_widgets::{impl_widget_property_hooks, property_names_of};
@@ -83,6 +84,8 @@ pub struct VolumeChart {
     view: Option<(usize, usize)>,
     /// Emitted with the visible `[start, end)` bar range after every view change.
     pub view_changed: Signal1<(usize, usize)>,
+    /// The attached zoom strip, when one is paired (RW-106).
+    zoom_strip: Option<super::chart_companions::ZoomStripBinding>,
     /// Emitted with the bar index when a volume bar is clicked.
     pub bar_clicked: Signal1<usize>,
     /// Emitted with the bar index as the pointer moves across bars.
@@ -100,6 +103,7 @@ impl VolumeChart {
             hovered_index: None,
             view: None,
             view_changed: Signal1::new(),
+            zoom_strip: None,
             bar_clicked: Signal1::new(),
             bar_hovered: Signal1::new(),
         }
@@ -175,6 +179,55 @@ impl VolumeChart {
     /// Restores the full series view.
     pub fn reset_view(&mut self) {
         self.set_view_range(None);
+    }
+
+    // ── Companion pairing (RW-106) ──
+
+    /// Follows `strip` as this pane's zoom control.
+    ///
+    /// The volume pane has one series and no per-series visibility, so it pairs with a
+    /// `ZoomStrip` only: a `ChartDataTable` would offer row toggles this control cannot honour,
+    /// which is the "success for something that did not happen" its contract forbids.
+    pub fn attach_zoom_strip(&mut self, strip: &mut ZoomStrip) {
+        let factor = super::chart_companions::zoom_factor(self.series.len(), self.view_range());
+        self.zoom_strip = Some(super::chart_companions::ZoomStripBinding::attach(
+            strip,
+            self.base.redraw_requested_signal().clone(),
+            factor,
+        ));
+        self.base.request_redraw();
+    }
+
+    /// Stops following the attached strip; the last applied view stays.
+    pub fn detach_zoom_strip(&mut self) {
+        if self.zoom_strip.take().is_some() {
+            self.base.request_redraw();
+        }
+    }
+
+    /// Whether a [`ZoomStrip`] is attached.
+    pub fn is_zoom_strip_attached(&self) -> bool {
+        self.zoom_strip.is_some()
+    }
+
+    /// Applies the strip's requests and mirrors the pane's view back.
+    pub fn poll_zoom_strip(&mut self) -> bool {
+        let total = self.series.len();
+        let view = self.view_range();
+        let mut next = view;
+        let mut record = |range: Option<(usize, usize)>| {
+            next = range;
+        };
+        let changed = super::chart_companions::poll_zoom_strip(
+            &mut self.zoom_strip,
+            total,
+            view,
+            &mut record,
+        );
+        if next != view {
+            self.set_view_range(next);
+        }
+        changed
     }
 
     fn clamped_view(&self, range: Option<(usize, usize)>) -> Option<(usize, usize)> {
@@ -370,6 +423,8 @@ impl Widget for VolumeChart {
 impl EventHandler for VolumeChart {
     fn handle_event(&mut self, event: &rust_widgets::event::Event) {
         use rust_widgets::event::Event;
+        // A strip click shows on this frame: the request queue is drained before routing.
+        self.poll_zoom_strip();
         if !self.base.is_enabled() {
             return;
         }
@@ -431,6 +486,8 @@ impl EventHandler for VolumeChart {
 
 impl Draw for VolumeChart {
     fn draw(&mut self, context: &mut RenderContext) {
+        // A strip click shows on this frame: the request queue is drained before painting.
+        self.poll_zoom_strip();
         let area = self.plot_area();
         if area.rect.width == 0 || area.rect.height == 0 {
             return;
@@ -730,14 +787,13 @@ impl WidgetProperties for VolumeChart {
     /// arm can resolve without contradicting the task's "do not change `commands`"
     /// constraint. The `set_series` / `set_color_mode` / `set_headroom` write names
     /// carry their values and are refused as [`CapabilityAccessError::OutOfRange`].
+    /// Runs one of the commands `volume_chart` publishes.
+    ///
+    /// Every published name is a value-carrying `set_*`, so the convention answers
+    /// [`CapabilityAccessError::OutOfRange`] for a bare invocation and the caller writes the
+    /// property instead.
     fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
-        match name {
-            "add_overlay" => Err(CapabilityAccessError::UnsupportedOnWidget),
-            "set_series" | "set_color_mode" | "set_headroom" => {
-                Err(CapabilityAccessError::OutOfRange)
-            }
-            _ => Err(CapabilityAccessError::UnknownCommand),
-        }
+        self.default_command(name)
     }
 }
 

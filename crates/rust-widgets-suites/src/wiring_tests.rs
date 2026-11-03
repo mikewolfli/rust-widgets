@@ -109,3 +109,181 @@ fn every_published_suite_event_resolves_on_its_control() {
     #[cfg(feature = "media-playback")]
     assert_group(&mut factory, "media-playback", crate::media_playback::published_event_names());
 }
+
+/// RW-105: every control the suites register must export a designer manifest.
+///
+/// `designer_manifest` answers `IncompleteDefaults` when one advertised property has no default.
+/// That failure is invisible to the control's own tests — the control builds and behaves — but it
+/// makes the whole row unreadable to a designer, which is how `gantt_task_grid`, `map_overview`,
+/// `map_attribution` and `terminal_find_bar` were registered and yet absent from the host's
+/// catalog. This walks every published name of every enabled group, so a control that is
+/// registered without defaults cannot land again.
+#[test]
+fn every_registered_suite_control_exports_a_designer_manifest() {
+    use rust_widgets::widget::capability::designer_manifest;
+
+    let factory = suite_factory();
+    let mut groups: Vec<(&'static str, Vec<&'static str>)> =
+        vec![("form", vec!["form", "form_set"])];
+
+    #[cfg(feature = "webview")]
+    // The web group has no `published_property_names`; its event table lists the same three
+    // canonical controls, and every one of them publishes at least one event.
+    groups.push((
+        "webview",
+        crate::webview::published_event_names().into_iter().map(|(name, _)| name).collect(),
+    ));
+    #[cfg(feature = "finance")]
+    groups.push((
+        "finance",
+        crate::finance::published_property_names().into_iter().map(|(name, _)| name).collect(),
+    ));
+    #[cfg(feature = "maps")]
+    groups.push((
+        "maps",
+        crate::maps::published_property_names().into_iter().map(|(name, _)| name).collect(),
+    ));
+    #[cfg(feature = "project")]
+    groups.push((
+        "project",
+        crate::project::published_property_names().into_iter().map(|(name, _)| name).collect(),
+    ));
+    #[cfg(feature = "devtools")]
+    groups.push((
+        "devtools",
+        crate::devtools::published_property_names().into_iter().map(|(name, _)| name).collect(),
+    ));
+    #[cfg(feature = "media-playback")]
+    groups.push((
+        "media-playback",
+        crate::media_playback::published_property_names()
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect(),
+    ));
+
+    let mut checked = 0usize;
+    for (group, controls) in groups {
+        for control in controls {
+            checked += 1;
+            match designer_manifest(&factory, control) {
+                Ok(manifest) => {
+                    assert_eq!(
+                        manifest.control, control,
+                        "{group}: the manifest must describe the control that was asked for"
+                    );
+                    let capability = factory
+                        .capability(control)
+                        .expect("a manifest exists only for a registered control");
+                    for command in capability.commands {
+                        assert!(
+                            manifest.commands.iter().any(|entry| entry.name == *command),
+                            "{group}: `{control}` publishes `{command}` but the manifest cannot \
+                             describe it, so a designer would never offer it"
+                        );
+                    }
+                }
+                Err(error) => panic!(
+                    "{group}: `{control}` is registered but its designer manifest is \
+                     unreadable: {error}"
+                ),
+            }
+        }
+    }
+    assert!(checked > 0, "no suite control was checked, so this test proves nothing");
+}
+
+/// RW-106: the data-bearing suite controls have a writable carrier and a published command.
+///
+/// Each of these controls could be created but not filled from a design document: a count was
+/// published where the rows were needed, or the only data entry point was a Rust method. This
+/// walks the published surface — `write_property` then `read_property` — and checks the command
+/// list names the same write, so a designer can reach it.
+#[test]
+fn the_design_time_data_carriers_round_trip() {
+    use rust_widgets::widget::capability::types::{CapabilityAccessError, CapabilityValue as V};
+    use rust_widgets::widget::capability::{RecordList, RecordValue};
+
+    use crate::finance::types::BOOK_LEVEL_RECORD_SCHEMA;
+    use crate::media_playback::chapter_list_panel::CHAPTER_RECORD_SCHEMA;
+    use crate::webview::web_history_panel::HISTORY_RECORD_SCHEMA;
+
+    let factory = suite_factory();
+    let rect = Rect::new(0, 0, 320, 180);
+
+    // The two ladders of `order_book` / `depth_chart`.
+    let ladder = RecordList::from_items(
+        &BOOK_LEVEL_RECORD_SCHEMA,
+        vec![RecordValue::new().with("price", V::Float(100.5)).with("quantity", V::Float(3.0))],
+    );
+    for control in ["order_book", "depth_chart"] {
+        let mut widget = factory.create(control, rect, "").expect("the suite registers it");
+        factory
+            .write_property(widget.as_mut(), "bids", V::Records(ladder.clone()))
+            .expect("bids is writable");
+        let V::Records(read) = factory.read_property(widget.as_ref(), "bids").expect("readable")
+        else {
+            panic!("{control}: bids must read back as records")
+        };
+        assert_eq!(read.items().len(), 1, "{control}: the written level must survive");
+        assert_eq!(read.items()[0].get("price"), Some(&V::Float(100.5)));
+        assert!(
+            matches!(
+                factory.invoke_command(widget.as_mut(), "set_bids"),
+                Err(CapabilityAccessError::OutOfRange)
+            ),
+            "{control}: set_bids must be published and reported as value-carrying"
+        );
+    }
+
+    // `chapter_list_panel`: the rows, with the count under its own name.
+    let mut chapters = factory.create("chapter_list_panel", rect, "").expect("registered");
+    let rows = RecordList::from_items(
+        &CHAPTER_RECORD_SCHEMA,
+        vec![
+            RecordValue::new()
+                .with("title", V::String("Intro".into()))
+                .with("start_seconds", V::Float(0.0)),
+            RecordValue::new()
+                .with("title", V::String("Middle".into()))
+                .with("start_seconds", V::Float(42.5)),
+        ],
+    );
+    factory
+        .write_property(chapters.as_mut(), "chapters", V::Records(rows))
+        .expect("chapters is writable");
+    assert_eq!(
+        factory.read_property(chapters.as_ref(), "chapter_count"),
+        Ok(V::UInt(2)),
+        "the count must follow the written rows"
+    );
+
+    // `web_history_panel`: sample history, and the `clear` command.
+    let mut history = factory.create("web_history_panel", rect, "").expect("registered");
+    let entries = RecordList::from_items(
+        &HISTORY_RECORD_SCHEMA,
+        vec![RecordValue::new()
+            .with("url", V::String("https://example.com/".into()))
+            .with("title", V::String("Example".into()))
+            .with("visited_ms", V::Int(1_700_000_000_000))],
+    );
+    factory
+        .write_property(history.as_mut(), "entries", V::Records(entries))
+        .expect("entries is writable");
+    assert_eq!(factory.read_property(history.as_ref(), "visible_count"), Ok(V::UInt(1)));
+    factory.invoke_command(history.as_mut(), "clear").expect("clear is published");
+    let V::Records(cleared) = factory.read_property(history.as_ref(), "entries").expect("readable")
+    else {
+        panic!("entries must read back as records")
+    };
+    assert!(cleared.items().is_empty(), "clear must empty the rows");
+
+    // `rive_widget`: the document reference and the scrubbed playhead.
+    let mut rive = factory.create("rive_widget", rect, "").expect("registered");
+    factory
+        .write_property(rive.as_mut(), "source", V::String("intro.riv".into()))
+        .expect("source is writable");
+    assert_eq!(factory.read_property(rive.as_ref(), "source"), Ok(V::String("intro.riv".into())));
+    factory.write_property(rive.as_mut(), "progress", V::Float(0.5)).expect("progress is writable");
+    assert_eq!(factory.read_property(rive.as_ref(), "progress"), Ok(V::Float(0.5)));
+}

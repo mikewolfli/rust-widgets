@@ -329,6 +329,23 @@ pub fn default_property_value(kind: &str, name: &str) -> Option<CapabilityValue>
             "zoom_step" => Some(CapabilityValue::Float(1.1)),
             _ => None,
         },
+        "map_overview" => match name {
+            // The constructor's initial values: a quarter of the extent, expanded, and no map
+            // attached yet. RW-105: the three rows had no branch, so the whole manifest failed
+            // to export and the designer could not see the control at all.
+            "viewport_ratio" => Some(CapabilityValue::Float(0.25)),
+            "collapsed" | "map_view_attached" => Some(CapabilityValue::Bool(false)),
+            _ => None,
+        },
+        "map_attribution" => match name {
+            // A fresh overlay is empty, anchored top-left, and painted at `160/255` opacity —
+            // the values `MapAttributionOverlay::new` sets (RW-105).
+            "entry_count" => Some(CapabilityValue::UInt(0)),
+            "corner" => Some(CapabilityValue::String("top_left".to_string())),
+            "background_opacity" => Some(CapabilityValue::UInt(160)),
+            "font_scale" => Some(CapabilityValue::Float(1.0)),
+            _ => None,
+        },
         "tile_loader" => match name {
             "url_template" => Some(CapabilityValue::String("tiles/{z}/{x}/{y}.png".to_string())),
             "min_zoom" => Some(CapabilityValue::UInt(0)),

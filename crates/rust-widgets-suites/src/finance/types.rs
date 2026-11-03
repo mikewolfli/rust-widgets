@@ -26,6 +26,11 @@
 use alloc::string::String;
 use alloc::vec::Vec;
 
+use rust_widgets::widget::capability::types::{
+    CapabilityAccessError, CapabilityValue, PropertyValueKind,
+};
+use rust_widgets::widget::capability::{RecordField, RecordList, RecordSchema, RecordValue};
+
 /// One OHLCV bar: the unit every financial chart is built from.
 ///
 /// The five fields are the standard set. `open`, `high`, `low` and `close` are prices;
@@ -615,6 +620,68 @@ impl PriceLine {
     pub fn new(price: f64, kind: PriceLevelKind) -> Self {
         Self { price, kind }
     }
+}
+
+/// The record schema the `bids` / `asks` properties of `order_book` and `depth_chart` use
+/// (RW-106).
+///
+/// A ladder is a list of price/size pairs. The property vocabulary has no pair-list kind, so the
+/// two numbers travel as a record. Identity is not enforced: `RecordList` reads an item's id from
+/// a **string** field, and this schema's key is the price, which is a float — the price is still
+/// named as the id field so a reader knows what identifies a row, but uniqueness and non-emptiness
+/// stay off rather than being checked against an empty string.
+pub const BOOK_LEVEL_RECORD_SCHEMA: RecordSchema = RecordSchema {
+    id_field: "price",
+    ids_unique: false,
+    ids_required: false,
+    fields: &[
+        RecordField::required("price", PropertyValueKind::Float),
+        RecordField::required("quantity", PropertyValueKind::Float),
+    ],
+};
+
+/// One ladder level as a record, in the schema's field order.
+pub fn book_level_record(level: &BookLevel) -> RecordValue {
+    RecordValue::new()
+        .with("price", CapabilityValue::Float(level.price))
+        .with("quantity", CapabilityValue::Float(level.quantity))
+}
+
+/// The records a ladder property reports.
+pub fn book_levels_to_records(levels: &[BookLevel]) -> RecordList {
+    RecordList::from_items(
+        &BOOK_LEVEL_RECORD_SCHEMA,
+        levels.iter().map(book_level_record).collect(),
+    )
+}
+
+/// Parses a ladder property value, refusing a list that does not match the schema.
+///
+/// The list is validated against the same schema the read side reports, so a write can only
+/// express what a read can describe (principle #96).
+pub fn book_levels_from_records(
+    list: &RecordList,
+    property: &'static str,
+) -> Result<Vec<BookLevel>, CapabilityAccessError> {
+    list.validate_against(&BOOK_LEVEL_RECORD_SCHEMA).map_err(|violation| {
+        CapabilityAccessError::ConstraintViolation {
+            property: String::from(property),
+            reason: alloc::format!("{violation}"),
+        }
+    })?;
+    let mut levels = Vec::with_capacity(list.items().len());
+    for record in list.items() {
+        let number = |field: &str| -> Result<f64, CapabilityAccessError> {
+            match record.get(field) {
+                Some(value) => {
+                    rust_widgets::widget::capability::coercion::expect_f64(value.clone())
+                }
+                None => Err(CapabilityAccessError::TypeMismatch),
+            }
+        };
+        levels.push(BookLevel::new(number("price")?, number("quantity")?));
+    }
+    Ok(levels)
 }
 
 /// Test fixtures shared by the financial control tests.
