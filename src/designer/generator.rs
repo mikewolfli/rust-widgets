@@ -36,7 +36,7 @@
 //! |---|---|---|
 //! | d-1 | Availability must be asked per target, not kept in a list | [`availability`] asks the factory; an unavailable control is **reported**, never generated |
 //! | d-2 | CSS is resolved at generation time, inlined as property assignments | [`is_style_only_property`] records CSS-only names; the generated file contains no `apply_css` |
-//! | d-3 | Layout is solved at generation time into constant coordinates | `plan_geometry` runs the real `crate::layout` engine and emits literals |
+//! | d-3 | Layout is solved at generation time | `plan_geometry` runs the real `crate::layout` engine; the stripped target writes the rects as literals and the default target reports that its product does not carry them (RW-111) |
 //! | d-4 | Capacity is checked at generation time | [`GenerationReport::capacity_overflow`] against the target's child capacity |
 //!
 //! # What this module is *not*
@@ -266,6 +266,15 @@ pub struct NodeAnchor {
     /// The document's `"id"` attribute for this node, when it declared one.
     ///
     /// The design-time identity, and the value a host's node-to-source map is usually keyed on.
+    ///
+    /// # Stable interface
+    ///
+    /// Read from the document's own `"id"` attribute (see `json::project::collect_preorder`),
+    /// **never** derived from the generated key: a host may key its source map on this value and
+    /// expect the generated `.key(…)` spelling to be irrelevant. Empty attributes (an absent `id`,
+    /// or `""`) are reported as `None`, so "no identity declared" is never confused with an empty
+    /// one. Requested as a stable interface by upstream feedback `feedback-20261103.md` RW-108;
+    /// the same fact is pinned by `generator::tests`, which maps `id = "go"` to key `n_1_0`.
     pub id: Option<String>,
     /// The control name as the document spelled it.
     pub widget: String,
@@ -283,6 +292,31 @@ pub struct NodeAnchor {
     pub key_offset: usize,
     /// Byte length of the key text as written (escapes counted as written).
     pub key_length: usize,
+}
+
+/// One node's solved rectangle in generation-time coordinates (RW-116).
+///
+/// # Why this is published
+///
+/// `plan_geometry` solves with the real layout engine, but the result used to stay inside the
+/// generator: a host that wanted to bind its canvas to the document had to re-implement the solve,
+/// and the two would drift. This is that result, read-only and keyed on both the tree path and the
+/// document's own `id`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NodeRect {
+    /// The tree path this node occupies (`[]` = root).
+    pub path: Vec<usize>,
+    /// The document's `"id"` attribute, when it declared one — the same value
+    /// [`NodeAnchor::id`] carries, so the two side channels agree about identity.
+    pub id: Option<String>,
+    /// Left edge, in logical pixels, relative to the generated root.
+    pub x: i32,
+    /// Top edge, in logical pixels, relative to the generated root.
+    pub y: i32,
+    /// Solved width in logical pixels.
+    pub width: u32,
+    /// Solved height in logical pixels.
+    pub height: u32,
 }
 
 /// What one generation run produced and what it could not.
@@ -343,6 +377,26 @@ pub struct GenerationReport {
     /// compiles, so the issues are attached to the report rather than appended to
     /// [`Self::unsupported`] (which means "absent from the generated file").
     pub layout_issues: Vec<crate::json::LayoutIssue>,
+    /// Targets that solved the document's layout but do not write the coordinates into the file
+    /// (RW-111).
+    ///
+    /// The default product is a `view::Node` tree, and `view::Node` has no geometry field: the
+    /// runtime layout places the controls. The solve still runs, because its diagnostics and the
+    /// stripped target's constants come from it — but the generated file must not claim to carry
+    /// coordinates it does not contain. One entry per such target, path-empty because the gap is
+    /// the product's, not a node's.
+    pub layout_geometry_gaps: Vec<GenerationGap>,
+    /// Every node's solved rectangle, in pre-order (RW-116).
+    ///
+    /// The generation-time solve (`plan_geometry`) always ran; this is its result, so a host's canvas,
+    /// hit test and design-time navigation can consume the same rectangles the generated source is
+    /// built from instead of re-solving the document. Side-channel data, like
+    /// [`Self::node_anchors`]: nothing here is written into the generated file.
+    ///
+    /// The list includes the root (path `[]`). A rect solved against the request's client size, so
+    /// a host that changes the window width must re-run generation (or call the same solve) to see
+    /// the coordinates change.
+    pub node_rects: Vec<NodeRect>,
 }
 
 /// An anchor whose offset is relative to the body buffer it was recorded in.
@@ -603,6 +657,14 @@ pub fn generate(request: &GenerationRequest) -> Result<GeneratedSource, String> 
     collect_layout_diagnostics(&project, &mut report);
 
     let geometry = plan_geometry(request, &project, &mut report);
+    // RW-116: publish the solve. The root is included, so a host can place every node from one list.
+    report.node_rects = project
+        .walk()
+        .map(|node| {
+            let (x, y, width, height) = geometry.rect_for(&node.path, node.path.len());
+            NodeRect { path: node.path.clone(), id: node.id.clone(), x, y, width, height }
+        })
+        .collect();
     let mut anchors: Vec<PendingAnchor> = Vec::new();
     let body = match request.target {
         TargetProfile::Default => {
@@ -1938,6 +2000,44 @@ fn placeholder_id(node: &ProjectNode) -> crate::core::ObjectId {
     id
 }
 
+/// The size constraints a node declares, as the solve's [`Hints`](crate::layout::Hints) (RW-109).
+///
+/// An absent bound is the unconstrained end of the range (`0` for min/pref, `u32::MAX` for max),
+/// which is exactly what `Hints::default()` means — so a node with no `min_*`/`pref_*`/`max_*`
+/// attributes contributes the same hint the previous `update`-based solve used.
+fn child_hints(node: &ProjectNode) -> crate::layout::Hints {
+    let axis = |min: &str, pref: &str, max: &str| {
+        let read = |key: &str| {
+            node.property(key)
+                .and_then(|value| value.as_u64())
+                .map(|raw| u32::try_from(raw).unwrap_or(u32::MAX))
+        };
+        crate::layout::AxisHints::new(
+            read(min).unwrap_or(0),
+            read(pref).unwrap_or(0),
+            read(max).unwrap_or(u32::MAX),
+        )
+    };
+    crate::layout::Hints {
+        width: axis("min_width", "pref_width", "max_width"),
+        height: axis("min_height", "pref_height", "max_height"),
+    }
+}
+
+/// The per-child margins a node declares (RW-109); zero when absent.
+///
+/// Read through the same helper the runtime loader uses, so a document's `margin` cannot mean one
+/// thing in the generated source and another when the same document is interpreted.
+fn child_margin(node: &ProjectNode) -> crate::style::EdgeOffsets {
+    node.property("margin").and_then(crate::json::insets_from_value).unwrap_or_default()
+}
+
+/// One child's entry on the layout's hint channel (RW-109).
+fn child_info(node: &ProjectNode, id: crate::core::ObjectId) -> crate::layout::ChildInfo {
+    crate::layout::ChildInfo::new(id, child_hints(node))
+        .with_params(crate::layout::LayoutParams::new().with_margins(child_margin(node)))
+}
+
 /// The layout attributes a node declares, for the generation-time solve.
 ///
 /// # What is carried and why
@@ -2242,7 +2342,7 @@ fn plan_geometry(
     };
 
     let mut engine = crate::json::create_layout_from_kind(&kind);
-    let mut solved: Vec<crate::core::Rect> = Vec::new();
+    let mut solved: Vec<(crate::core::ObjectId, crate::core::Rect)> = Vec::new();
     let border_layout = matches!(kind, crate::json::DeclarativeLayoutKind::Border { .. });
 
     // # The layout engine needs the children before it can place them
@@ -2253,6 +2353,11 @@ fn plan_geometry(
     // whole arrangement is solved once. Adding them with a zero rect would place every child at
     // zero size — the failure mode `apply_panel_layout` documents for a panel created as 0x0.
     let container_rect = crate::core::Rect::new(root.0, root.1, root.2, root.3);
+    // RW-109: the per-node constraints and margins travel on the hint channel, so the solve that
+    // produced these rectangles is the same one a mounted layout runs — not a second, constraint-
+    // less pass. A node that declares nothing contributes `Hints::default()` (unconstrained) and
+    // zero margins, which is byte-identical to the previous `update` call.
+    let mut infos: Vec<crate::layout::ChildInfo> = Vec::with_capacity(container_children.len());
     for child in &container_children {
         if let Some(node) = project.node(child) {
             // The id is a placeholder: the solver only needs identity to report a rect per slot, and
@@ -2268,6 +2373,7 @@ fn plan_geometry(
                         child_extent(node),
                         child_stretch(node),
                     );
+                    infos.push(child_info(node, placeholder));
                     continue;
                 }
             }
@@ -2297,19 +2403,46 @@ fn plan_geometry(
                     );
                 }
             }
+            infos.push(child_info(node, placeholder));
         }
     }
-    engine.update(container_rect, &mut |_id, rect| {
-        solved.push(rect);
-    });
+    engine.arrange(container_rect, &infos, &mut |id, rect| solved.push((id, rect)));
 
-    report.resolved_at_generation.push(format!(
-        "the document's layout was solved into constant coordinates against {}x{}",
-        request.width, request.height
-    ));
+    // RW-111: the solve runs for both targets, but only the stripped product writes the rects as
+    // constants. Saying "solved into constant coordinates" for the default product made the file
+    // header claim something the file does not contain.
+    if matches!(request.target, TargetProfile::Default) {
+        report.layout_geometry_gaps.push(GenerationGap {
+            path: Vec::new(),
+            widget: project.root_widget.clone(),
+            reason: format!(
+                "this product does not carry the solved coordinates: `view::Node` has no geometry \
+                 field, so the runtime layout places the controls (the solve against {}x{} is used \
+                 for diagnostics; the stripped target writes the rects as constants)",
+                request.width, request.height
+            ),
+        });
+        report.resolved_at_generation.push(format!(
+            "the document's layout was solved for diagnosis against {}x{}; the coordinates are not \
+             written into this target's file",
+            request.width, request.height
+        ));
+    } else {
+        report.resolved_at_generation.push(format!(
+            "the document's layout was solved into constant coordinates against {}x{}",
+            request.width, request.height
+        ));
+    }
 
-    for (index, node) in container_children.iter().enumerate() {
-        match solved.get(index) {
+    for node in &container_children {
+        // Paired by id rather than by report order: a border layout reports its regions in its
+        // own order, so a positional pair would silently attach one child's rect to another.
+        let solved_rect = project
+            .node(node)
+            .map(placeholder_id)
+            .and_then(|id| solved.iter().find(|(solved_id, _)| *solved_id == id))
+            .map(|(_, rect)| *rect);
+        match solved_rect {
             Some(rect) => rects.push((node.clone(), (rect.x, rect.y, rect.width, rect.height))),
             None => report.unsupported.push(GenerationGap {
                 path: node.clone(),
@@ -2672,6 +2805,14 @@ fn assemble(
         source.push_str("//\n// OVER CAPACITY — the target would drop these children silently:\n");
         for gap in &report.capacity_overflow {
             let _ = writeln!(source, "//   - path {:?} `{}`: {}", gap.path, gap.widget, gap.reason);
+        }
+    }
+    // RW-111: the header must state what the product does *not* carry. A reader who saw only the
+    // "resolved at generation time" list would look for coordinates that this target never writes.
+    if !report.layout_geometry_gaps.is_empty() {
+        source.push_str("//\n// NOT CARRIED — solved but absent from this file:\n");
+        for gap in &report.layout_geometry_gaps {
+            let _ = writeln!(source, "//   - `{}`: {}", gap.widget, gap.reason);
         }
     }
 
@@ -3037,6 +3178,149 @@ mod tests {
         }
     }
 
+    /// RW-109: a child's size constraints reach the generation-time solve.
+    ///
+    /// The document states a `max_width` and a `min_width`; the solved rectangles must respect
+    /// them. The document's constraints are **not** the runtime loader's input (that path reads the
+    /// mounted widget's own hint), so this is deliberately a generation-side assertion — the
+    /// reason the report records `resolved_at_generation` in the first place.
+    #[test]
+    fn per_node_size_constraints_reach_the_generation_solve() {
+        const DOCUMENT: &str = r#"{
+          "window": {
+            "id": "root",
+            "width": 300,
+            "height": 120,
+            "layout": {
+              "type": "hbox",
+              "children": [
+                { "label": { "id": "a", "text": "A", "max_width": 20 } },
+                { "label": { "id": "b", "text": "B", "min_width": 150 } },
+                { "label": { "id": "c", "text": "C" } }
+              ]
+            }
+          }
+        }"#;
+
+        let request = GenerationRequest {
+            json: String::from(DOCUMENT),
+            target: TargetProfile::Stripped,
+            width: 300,
+            height: 120,
+            function_name: String::from("build_constrained"),
+        };
+        let project = JsonProject::parse(&request.json).expect("the document parses");
+        let mut report = GenerationReport::default();
+        collect_layout_diagnostics(&project, &mut report);
+        let planned = plan_geometry(&request, &project, &mut report);
+
+        let width_of = |path: &[usize]| planned.rect_for(path, path.len()).2;
+        assert!(width_of(&[0]) <= 20, "max_width caps the box, got {}", width_of(&[0]));
+        assert!(width_of(&[1]) >= 150, "min_width floors the box, got {}", width_of(&[1]));
+        assert!(
+            report.layout_issues.is_empty(),
+            "the constraints are honoured, so there is nothing to report: {:?}",
+            report.layout_issues
+        );
+        assert!(
+            report.resolved_at_generation.iter().any(|line| line.contains("solved")),
+            "the solve must be recorded"
+        );
+    }
+
+    /// RW-111: only the stripped product writes the solved coordinates; the default product's
+    /// header must say it does not carry them instead of claiming it does.
+    #[test]
+    fn only_the_stripped_product_claims_solved_coordinates() {
+        const DOCUMENT: &str = r#"{
+          "window": {
+            "id": "root",
+            "width": 320,
+            "height": 240,
+            "layout": {
+              "type": "vbox",
+              "spacing": 8,
+              "margin": 4,
+              "children": [ { "label": { "id": "hello", "text": "Hello" } } ]
+            }
+          }
+        }"#;
+        let request = |target| GenerationRequest {
+            json: String::from(DOCUMENT),
+            target,
+            width: 320,
+            height: 240,
+            function_name: String::from("build_document"),
+        };
+
+        let stripped = generate(&request(TargetProfile::Stripped)).expect("stripped generates");
+        assert!(
+            stripped.source.contains("Rect::new(4, 4, 312,"),
+            "the stripped product carries the solved rect: {}",
+            stripped.report.summary()
+        );
+        assert!(stripped.report.layout_geometry_gaps.is_empty());
+        assert!(stripped.source.contains("solved into constant coordinates"));
+
+        let default = generate(&request(TargetProfile::Default)).expect("default generates");
+        assert_eq!(default.report.layout_geometry_gaps.len(), 1, "one product-level gap");
+        assert!(
+            default.source.contains("NOT CARRIED"),
+            "the header must state what this product does not carry"
+        );
+        assert!(
+            !default.source.contains("solved into constant coordinates"),
+            "the default product does not carry the rects"
+        );
+    }
+
+    /// RW-116: the report publishes the solved rect per node, keyed on the document's id, and the
+    /// stripped product writes the same numbers as constants.
+    #[test]
+    fn the_report_publishes_the_solved_node_rects() {
+        const DOCUMENT: &str = r#"{
+          "window": {
+            "id": "root",
+            "width": 320,
+            "height": 240,
+            "layout": {
+              "type": "vbox",
+              "spacing": 8,
+              "margin": 4,
+              "children": [ { "label": { "id": "hello", "text": "Hello" } } ]
+            }
+          }
+        }"#;
+        let generated = generate(&GenerationRequest {
+            json: String::from(DOCUMENT),
+            target: TargetProfile::Stripped,
+            width: 320,
+            height: 240,
+            function_name: String::from("build_rects"),
+        })
+        .expect("the document generates");
+
+        assert_eq!(generated.report.node_rects.len(), 2, "the root and its child");
+        let root = &generated.report.node_rects[0];
+        assert!(root.path.is_empty(), "the first entry is the root");
+        assert_eq!((root.x, root.y, root.width, root.height), (0, 0, 320, 240));
+
+        let hello = generated
+            .report
+            .node_rects
+            .iter()
+            .find(|rect| rect.id.as_deref() == Some("hello"))
+            .expect("the child is keyed on its document id");
+        assert!(hello.width > 0 && hello.height > 0, "a placed node is never zero-sized");
+        assert!(
+            generated.source.contains(&format!(
+                "Rect::new({}, {}, {}, {})",
+                hello.x, hello.y, hello.width, hello.height
+            )),
+            "the stripped product writes the same rect the report publishes"
+        );
+    }
+
     /// The same agreement, for the fixed-track `border` layout.
     ///
     /// A border layout gives a child's `region`/`extent` a meaning that `Layout::add_widget`
@@ -3210,7 +3494,15 @@ mod tests {
                 .find(|(path, _)| path == child)
                 .unwrap_or_else(|| panic!("no planned rect for {child:?}"))
                 .1;
-            let ui_rect = ui[index].1;
+            // Paired by the runtime id, not by list position: a grid reports its cells in cell
+            // order, which is not declaration order for a document that declares cells out of
+            // sequence.
+            let runtime_id = index as u64 + 1;
+            let ui_rect = ui
+                .iter()
+                .find(|(id, _)| *id == runtime_id)
+                .map(|(_, rect)| *rect)
+                .unwrap_or_else(|| panic!("the runtime reported no rect for child {index}"));
             assert_eq!(
                 planned_rect,
                 (ui_rect.x, ui_rect.y, ui_rect.width, ui_rect.height),
@@ -3971,7 +4263,8 @@ mod tests {
                 let root = generated.anchor_for_path(&[]).expect("the root is emitted");
                 assert_eq!(root.key, "root", "the emitted key is path-shaped");
                 assert_eq!(root.id.as_deref(), Some("root"));
-                // The document's `id` maps to the node even though the emitted key is path-shaped.
+                // RW-108: the document's `id` maps to the node even though the emitted key is
+                // path-shaped, which is the contract a host's source map relies on.
                 let button = generated.anchor_for_id("go").expect("the button has an anchor");
                 assert_eq!(button.key, "n_1_0");
                 assert_eq!(button.kind, "button");

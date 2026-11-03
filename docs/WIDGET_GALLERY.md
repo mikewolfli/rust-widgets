@@ -15,6 +15,8 @@ registry rather than a second copy of it, so it cannot drift; this path is kept 
 existing links still resolve.
 
 - Full gallery: [`control.md`](../control.md)
+- Presentation-only controls (no events / no commands, with reasons):
+  [`docs/PRESENTATION_ONLY_CONTROLS.md`](PRESENTATION_ONLY_CONTROLS.md)
 - Snapshot assets: `snapshots/svg/`
 - Regenerate: `cargo run --example export_control_svgs`, then
   `python3 tools/generate_control_index.py`

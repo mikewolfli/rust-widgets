@@ -115,7 +115,10 @@ impl ZoomStrip {
     /// [`Self::sync_zoom_updates`], which the paint and event paths call. A mirrored level updates
     /// the readout without emitting [`Self::zoom_requested`]: it reports where the chart already
     /// is, not a new user request, so a wheel zoom mirrored back cannot bounce.
-    pub(crate) fn accept_zoom_updates(&mut self, source: Arc<Mutex<Option<f32>>>) {
+    ///
+    /// Public so a chart implemented outside this crate can mirror its view into the strip
+    /// (RW-106), rather than owning a `&mut` to the strip.
+    pub fn accept_zoom_updates(&mut self, source: Arc<Mutex<Option<f32>>>) {
         self.pending_zoom = Some(source);
         self.base.request_redraw();
     }

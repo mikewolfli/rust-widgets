@@ -24,24 +24,25 @@
 
 ## 安装
 
-> **4.0.0** 是配合 **rustage** 重构的配套版本：扩展后的命令表、统一行滚动与逐控件焦点订阅
-> 按 `rustage` 的目标对齐。现有函数签名保持不变；两处可观察行为变化见
-> [4.0.0 changelog](CHANGELOG.md)。
+> **4.0.1** 是当前版本：在 **4.0.0**（配合 **rustage** 重构的配套版本）之上的上游反馈修复版。
+> 修复 Windows `WM_ACTIVATE` 构建、公开已求解布局几何、新增每节点尺寸约束，并补齐
+> `feedback-20261103.md` 中登记的设计器/manifest 缺口。现有 4.0.0 函数签名保持不变；
+> 详见 [changelog](CHANGELOG.md)。
 
 ```toml
 [dependencies]
-rust_widgets = "4.0.0"
+rust_widgets = "4.0.1"
 ```
 
 **必须且只能选择一个设备配置**。它们互斥：`mini` 与 `embedded` 会把 crate 的一部分*编译掉*，
 与 `desktop` 叠加不是“取最小公共集”，而是一个无法工作的构建。
 
 ```toml
-rust_widgets = { version = "4.0.0", features = ["desktop"] }                       # 默认
-rust_widgets = { version = "4.0.0", default-features = false, features = ["tablet"] }
-rust_widgets = { version = "4.0.0", default-features = false, features = ["mobile"] }
-rust_widgets = { version = "4.0.0", default-features = false, features = ["embedded"] }
-rust_widgets = { version = "4.0.0", default-features = false, features = ["mini"] }
+rust_widgets = { version = "4.0.1", features = ["desktop"] }                       # 默认
+rust_widgets = { version = "4.0.1", default-features = false, features = ["tablet"] }
+rust_widgets = { version = "4.0.1", default-features = false, features = ["mobile"] }
+rust_widgets = { version = "4.0.1", default-features = false, features = ["embedded"] }
+rust_widgets = { version = "4.0.1", default-features = false, features = ["mini"] }
 ```
 
 | 配置 | 适用场景 |

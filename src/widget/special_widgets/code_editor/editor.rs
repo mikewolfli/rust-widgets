@@ -556,12 +556,24 @@ pub struct CodeEditor {
     pub(crate) inlay_hints: Vec<InlayHint>,
     /// Host-supplied line affordances, sorted by line.
     pub(crate) code_lenses: Vec<CodeLens>,
+    /// Whether the paint pass draws [`Self::code_lenses`] (RW-115).
+    ///
+    /// A visibility switch, not a data operation: hiding lenses leaves the host's data in place, so
+    /// toggling them back is not a re-push.
+    pub(crate) code_lenses_enabled: bool,
     /// The active snippet expansion, when one is running.
     snippet_session: Option<SnippetSession>,
     /// Caret positions recorded by `push_navigation_position`, oldest first.
     navigation_history: Vec<TextPosition>,
     /// Position inside [`Self::navigation_history`] of the current entry.
     navigation_index: usize,
+    /// Selections saved before each structural expansion, for `shrink_selection` (RW-114).
+    ///
+    /// Each entry is the `(anchor, head)` pair an [`Self::expand_selection`] replaced. The stack is
+    /// cleared whenever the document changes: a saved position addresses text that no longer
+    /// exists after an edit, an undo or a replacement, and restoring it would put the caret on an
+    /// invented offset.
+    structural_selection_history: Vec<(TextPosition, TextPosition)>,
     /// Lines carrying a breakpoint.
     pub(crate) breakpoints: Vec<usize>,
     /// Whether the gutter reserves a column for breakpoint marks.
@@ -795,9 +807,11 @@ impl CodeEditor {
             diff_baseline_lines: Vec::new(),
             inlay_hints: Vec::new(),
             code_lenses: Vec::new(),
+            code_lenses_enabled: true,
             snippet_session: None,
             navigation_history: Vec::new(),
             navigation_index: 0,
+            structural_selection_history: Vec::new(),
             breakpoints: Vec::new(),
             breakpoint_gutter: false,
             goto_bar_visible: false,
@@ -951,6 +965,72 @@ impl CodeEditor {
     /// Returns the active configuration.
     pub fn config(&self) -> &CodeEditorConfig {
         &self.config
+    }
+
+    /// Replaces the editor's configuration at runtime (RW-112).
+    ///
+    /// A host that toggles the minimap, wrapping or line numbers used to have to rebuild the
+    /// control, losing its undo history and selection. The fields are copied into the live
+    /// configuration instead; the undo limit is forwarded to the document because that is where the
+    /// history bound lives, and one full-surface damage rectangle is recorded so the next frame
+    /// repaints what the change altered.
+    ///
+    /// The configuration is validated exactly as [`Self::with_config`] validates it, so a value
+    /// that could not be constructed cannot be installed later either.
+    pub fn set_config(&mut self, config: CodeEditorConfig) -> Result<(), &'static str> {
+        config.validate()?;
+        let undo_limit = config.undo_stack_limit;
+        self.config = config;
+        self.document.set_history_limit(undo_limit);
+        self.mark_display_damage();
+        Ok(())
+    }
+
+    /// Shows or hides the gutter line numbers at runtime (RW-112).
+    pub fn set_show_line_numbers(&mut self, show: bool) {
+        if self.config.show_line_numbers == show {
+            return;
+        }
+        self.config.show_line_numbers = show;
+        self.mark_display_damage();
+    }
+
+    /// Shows or hides the minimap at runtime (RW-112).
+    pub fn set_show_minimap(&mut self, show: bool) {
+        if self.config.show_minimap == show {
+            return;
+        }
+        self.config.show_minimap = show;
+        self.mark_display_damage();
+    }
+
+    /// Turns soft wrapping on or off at runtime (RW-112).
+    pub fn set_word_wrap(&mut self, wrap: bool) {
+        if self.config.word_wrap == wrap {
+            return;
+        }
+        self.config.word_wrap = wrap;
+        self.mark_display_damage();
+    }
+
+    /// Shows or hides the whitespace dots and tab arrows at runtime (RW-112).
+    pub fn set_show_whitespace(&mut self, show: bool) {
+        if self.config.show_whitespace == show {
+            return;
+        }
+        self.config.show_whitespace = show;
+        self.mark_display_damage();
+    }
+
+    /// Records the whole surface as damaged and asks for a frame.
+    ///
+    /// A display setting changes what every row paints (a gutter appears, lines re-wrap), so the
+    /// partial caret-blink rectangle is the wrong channel: the whole box is the smallest honest
+    /// damage.
+    fn mark_display_damage(&mut self) {
+        let full = self.base.geometry();
+        *self.damage.borrow_mut() = Some(full);
+        self.base.request_redraw();
     }
 
     /// Returns `true` when the editor rejects mutations.
@@ -1923,5 +2003,42 @@ mod gutter_binding_tests {
         assert!(editor.poll_line_number_gutter(), "the click is applied");
         assert_eq!(editor.cursor().0, 3, "a gutter line is one-based; goto_line is zero-based");
         assert!(!editor.poll_line_number_gutter(), "the click is drained once");
+    }
+
+    /// RW-112: the four display settings flip on an open editor, and the change damages the
+    /// whole surface so the next frame repaints it.
+    #[test]
+    fn display_settings_change_at_runtime() {
+        let mut editor =
+            CodeEditor::with_config(Rect::new(0, 0, 420, 300), CodeEditorConfig::default())
+                .expect("the default configuration is valid");
+        let _ = editor.take_damage_rect();
+
+        editor.set_show_line_numbers(false);
+        assert!(!editor.config().show_line_numbers);
+        assert_eq!(
+            editor.take_damage_rect(),
+            Some(editor.geometry()),
+            "a display toggle damages the whole surface"
+        );
+
+        editor.set_show_minimap(true);
+        assert!(editor.config().show_minimap);
+        editor.set_word_wrap(true);
+        assert!(editor.config().word_wrap);
+        editor.set_show_whitespace(true);
+        assert!(editor.config().show_whitespace);
+
+        // The undo history survives the change: the rebuild was what this replaced.
+        editor.insert("hello");
+        editor.set_show_line_numbers(true);
+        editor.undo();
+        assert!(editor.text().is_empty(), "the history is still there");
+
+        // A configuration that could not be constructed cannot be installed later.
+        let mut bad = CodeEditorConfig::default();
+        bad.tab_width = 0;
+        assert!(editor.set_config(bad).is_err());
+        assert!(editor.config().tab_width > 0, "a refused config leaves the old one in place");
     }
 }

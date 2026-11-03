@@ -35,7 +35,13 @@ const DEFAULT_MAX_ROWS: usize = 100;
 /// The visible list travels with the data because [`ChartDataTable::set_from_series`] seeds every
 /// series visible; a chart that hides a series must not see its row reappear on the next data
 /// change.
-pub(crate) type ChartSeriesSnapshot = (Vec<(String, Vec<(f64, f64)>)>, Vec<usize>);
+/// The series snapshot a chart publishes to a [`ChartDataTable`] (COMP-A8): each series' name and
+/// its `(x, y)` points, plus the indices of the series currently visible.
+///
+/// Public because a control outside this crate that owns its own series — the finance suite's
+/// K-line pane is one — pairs itself with a table through [`ChartDataTable::accept_series_updates`],
+/// and a parameter type it cannot name would make that entry point unusable (RW-106).
+pub type ChartSeriesSnapshot = (Vec<(String, Vec<(f64, f64)>)>, Vec<usize>);
 
 /// How much of the table a host is looking at.
 ///
@@ -155,10 +161,10 @@ impl ChartDataTable {
     /// [`Self::sync_series_updates`], which the paint and event paths call, so a host only has to
     /// attach the pair once. A new queue replaces the previous pairing; the current rows stay
     /// until the next snapshot arrives.
-    pub(crate) fn accept_series_updates(
-        &mut self,
-        source: Arc<Mutex<Option<ChartSeriesSnapshot>>>,
-    ) {
+    ///
+    /// Public so a chart implemented outside this crate can pair itself with the table through the
+    /// same queue the built-in charts use (RW-106), rather than owning a `&mut` to the table.
+    pub fn accept_series_updates(&mut self, source: Arc<Mutex<Option<ChartSeriesSnapshot>>>) {
         self.pending_series = Some(source);
         self.base.request_redraw();
     }

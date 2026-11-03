@@ -14,6 +14,7 @@ use crate::layout::{
     AspectRatioLayout, BorderLayout, BorderRegion, BoxLayout, CenterLayout, FormLayout, GridLayout,
     KeyboardAwareLayout, Layout, SplitterLayout, StackLayout,
 };
+use crate::style::EdgeOffsets;
 
 // ── Layout kind enum ─────────────────────────────────────────
 
@@ -478,6 +479,59 @@ pub struct ChildLayoutAttrs {
     pub region: Option<BorderRegion>,
     /// For border layouts: the fixed major-axis extent of an edge track.
     pub extent: Option<u32>,
+    /// The child's minimum width, fed to the solve as `Hints.width.min` (RW-109).
+    pub min_width: Option<u32>,
+    /// The child's minimum height, fed to the solve as `Hints.height.min` (RW-109).
+    pub min_height: Option<u32>,
+    /// The child's preferred width, fed to the solve as `Hints.width.pref` (RW-109).
+    pub pref_width: Option<u32>,
+    /// The child's preferred height, fed to the solve as `Hints.height.pref` (RW-109).
+    pub pref_height: Option<u32>,
+    /// The child's maximum width, fed to the solve as `Hints.width.max` (RW-109).
+    pub max_width: Option<u32>,
+    /// The child's maximum height, fed to the solve as `Hints.height.max` (RW-109).
+    pub max_height: Option<u32>,
+    /// The child's own margins, consumed by the `flex` layout (RW-109).
+    pub margin: Option<EdgeOffsets>,
+    /// The child's overflow policy. Parsed so a document can state it and be diagnosed; this
+    /// build has no per-node overflow carrier, so it is reported as a dropped field.
+    pub overflow: Option<ChildOverflow>,
+}
+
+/// A child's declared overflow policy (RW-109).
+///
+/// Declared and parsed even though nothing consumes it: a document that names a policy this
+/// build cannot apply must be diagnosed rather than ignored, and the reader needs a type to
+/// report "you asked for clip".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChildOverflow {
+    /// Paint outside the child's box is clipped.
+    Clip,
+    /// Paint outside the child's box is visible.
+    Visible,
+    /// The child's content scrolls.
+    Scroll,
+}
+
+impl ChildOverflow {
+    /// The stable token this policy travels as.
+    pub const fn token(self) -> &'static str {
+        match self {
+            Self::Clip => "clip",
+            Self::Visible => "visible",
+            Self::Scroll => "scroll",
+        }
+    }
+
+    /// The inverse of [`Self::token`].
+    pub const fn from_token(token: &str) -> Option<Self> {
+        match token.as_bytes() {
+            b"clip" => Some(Self::Clip),
+            b"visible" => Some(Self::Visible),
+            b"scroll" => Some(Self::Scroll),
+            _ => None,
+        }
+    }
 }
 
 impl ChildLayoutAttrs {
@@ -524,7 +578,58 @@ impl ChildLayoutAttrs {
                 .and_then(|o| o.get("extent"))
                 .and_then(|v| v.as_u64())
                 .map(|v| u32::try_from(v).unwrap_or(u32::MAX)),
+            min_width: json_optional_u32(obj, "min_width"),
+            min_height: json_optional_u32(obj, "min_height"),
+            pref_width: json_optional_u32(obj, "pref_width"),
+            pref_height: json_optional_u32(obj, "pref_height"),
+            max_width: json_optional_u32(obj, "max_width"),
+            max_height: json_optional_u32(obj, "max_height"),
+            margin: obj.and_then(|o| o.get("margin")).and_then(insets_from_value),
+            overflow: obj
+                .and_then(|o| o.get("overflow"))
+                .and_then(|v| v.as_str())
+                .and_then(ChildOverflow::from_token),
         }
+    }
+}
+
+/// One optional non-negative integer child attribute, clamped like the other counts.
+fn json_optional_u32(obj: Option<&serde_json::Map<String, Value>>, key: &str) -> Option<u32> {
+    obj.and_then(|o| o.get(key))
+        .and_then(|v| v.as_u64())
+        .map(|v| u32::try_from(v).unwrap_or(u32::MAX))
+}
+
+/// A four-value inset: one uniform integer, `[vertical, horizontal]`, or
+/// `[top, right, bottom, left]`.
+///
+/// Any other length is `None` rather than silently reinterpreted: a three-value list is a typo,
+/// and reading it as "top, right, bottom with zero left" would hide it.
+pub fn insets_from_value(value: &Value) -> Option<EdgeOffsets> {
+    let none = |v: u32| EdgeOffsets { top: v, right: v, bottom: v, left: v };
+    if let Some(uniform) = value.as_u64() {
+        return Some(none(u32::try_from(uniform).unwrap_or(u32::MAX)));
+    }
+    let parts: Option<crate::compat::Vec<u32>> = value.as_array().map(|items| {
+        items
+            .iter()
+            .map(|item| {
+                item.as_u64().map(|raw| u32::try_from(raw).unwrap_or(u32::MAX)).unwrap_or(0)
+            })
+            .collect()
+    });
+    match parts.as_deref() {
+        Some([uniform]) => Some(none(*uniform)),
+        Some([vertical, horizontal]) => Some(EdgeOffsets {
+            top: *vertical,
+            right: *horizontal,
+            bottom: *vertical,
+            left: *horizontal,
+        }),
+        Some([top, right, bottom, left]) => {
+            Some(EdgeOffsets { top: *top, right: *right, bottom: *bottom, left: *left })
+        }
+        _ => None,
     }
 }
 

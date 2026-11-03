@@ -149,6 +149,15 @@ pub(crate) static PROGRAMMATIC_ONLY_SETTERS: &[ProgrammaticSetter] = &[
     ProgrammaticSetter { name: "set_chip_radius", reason: "B: scalar state with no property carrier yet (A-class backlog)" },
     ProgrammaticSetter { name: "set_chords", reason: "B: scalar state with no property carrier yet (A-class backlog)" },
     ProgrammaticSetter { name: "set_clipboard_has_text", reason: "B: scalar state with no property carrier yet (A-class backlog)" },
+    // RW-112/113/115: runtime display and navigation entry points on `CodeEditor`. They are
+    // programmatic because the editor's property table does not carry a display-flag scalar yet;
+    // the values live in `CodeEditorConfig`, which a design document cannot address as one value.
+    ProgrammaticSetter { name: "set_code_lenses_enabled", reason: "B: display flag with no property carrier yet (A-class backlog); the data stays in `code_lenses`" },
+    ProgrammaticSetter { name: "set_config", reason: "B: replaces the whole `CodeEditorConfig`; its fields are not addressable as one property value" },
+    ProgrammaticSetter { name: "set_goto_text", reason: "B: navigation input for the goto bar, not persistent control state" },
+    ProgrammaticSetter { name: "set_show_line_numbers", reason: "B: display flag with no property carrier yet (A-class backlog)" },
+    ProgrammaticSetter { name: "set_show_minimap", reason: "B: display flag with no property carrier yet (A-class backlog)" },
+    ProgrammaticSetter { name: "set_show_whitespace", reason: "B: display flag with no property carrier yet (A-class backlog)" },
     ProgrammaticSetter { name: "set_closable", reason: "B: scalar state with no property carrier yet (A-class backlog)" },
     ProgrammaticSetter { name: "set_cluster_columns", reason: "B: scalar state with no property carrier yet (A-class backlog)" },
     ProgrammaticSetter { name: "set_cluster_rows", reason: "B: scalar state with no property carrier yet (A-class backlog)" },

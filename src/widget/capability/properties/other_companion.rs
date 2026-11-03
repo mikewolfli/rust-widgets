@@ -519,7 +519,10 @@ pub(crate) fn axis_picker_capability() -> WidgetCapability {
         aliases: &[],
         properties: AXIS_PICKER_PROPERTIES,
         events: events_of!("axis_picker"),
-        commands: &[],
+        // RW-104: the picker's data path was property-only. Publishing the `set_*` names makes the
+        // three writable lists reachable from the designer's method surface, exactly as the same
+        // names are on every other data-bearing control.
+        commands: &["set_series_names", "set_assignments", "set_edges"],
     }
 }
 

@@ -53,8 +53,45 @@ impl CodeEditor {
         let Some((start, end)) = chosen else {
             return false;
         };
+        self.remember_structural_selection();
         self.apply_structural_selection(start, end);
         true
+    }
+
+    /// Restores the selection the last [`Self::expand_selection`] replaced (RW-114).
+    ///
+    /// Repeated calls walk back out of the expansions in reverse order, ending at the original
+    /// caret. The history is cleared by every document change (see
+    /// [`Self::structural_selection_history`]), so a stale position is never restored. Returns
+    /// `false` when there is nothing to undo, leaving the selection untouched.
+    pub fn shrink_selection(&mut self) -> bool {
+        let Some((anchor, head)) = self.structural_selection_history.pop() else {
+            return false;
+        };
+        self.extra_cursors.clear();
+        self.cursor =
+            Cursor { head: self.clamp_position(head), anchor: self.clamp_position(anchor) };
+        self.goal.active = false;
+        self.ensure_caret_visible();
+        self.emit_cursor_and_selection();
+        self.base.request_redraw();
+        true
+    }
+
+    /// Records the current selection before an expansion replaces it.
+    ///
+    /// A repeated identical push is skipped, so re-running the command after a refused expansion
+    /// does not fill the stack with copies of one selection.
+    fn remember_structural_selection(&mut self) {
+        let selection = (self.cursor.anchor, self.cursor.head);
+        if self.structural_selection_history.last().copied() == Some(selection) {
+            return;
+        }
+        self.structural_selection_history.push(selection);
+        if self.structural_selection_history.len() > MAX_STRUCTURAL_SELECTION_HISTORY {
+            let excess = self.structural_selection_history.len() - MAX_STRUCTURAL_SELECTION_HISTORY;
+            self.structural_selection_history.drain(0..excess);
+        }
     }
 
     /// Records the caret as a navigation position.
@@ -247,6 +284,12 @@ impl CodeEditor {
 /// The bound is a memory guarantee, not a policy: a host that navigates a million
 /// times keeps the most recent positions rather than growing without limit.
 pub const MAX_NAVIGATION_HISTORY: usize = 128;
+
+/// Upper bound on the structural-selection history (RW-114).
+///
+/// An expansion stack is at most the document's nesting depth; the bound only keeps a pathological
+/// document from growing the editor's memory without limit.
+pub const MAX_STRUCTURAL_SELECTION_HISTORY: usize = 64;
 
 fn is_opening_bracket(ch: char) -> bool {
     matches!(ch, '(' | '[' | '{')

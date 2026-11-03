@@ -88,20 +88,74 @@ impl CodeEditor {
         }
     }
 
+    /// Fills the goto bar's input with `text` (RW-113).
+    ///
+    /// Opens the bar when it is closed, so a host can turn "the problem is on line 42" into one
+    /// call instead of two. The entry is parsed by [`Self::commit_goto`], so a pre-filled value and
+    /// a typed one cannot disagree about what `42:7` means.
+    pub fn set_goto_text(&mut self, text: impl Into<String>) {
+        if !self.goto_bar_visible {
+            self.open_goto_bar();
+        }
+        self.find.query = text.into();
+        self.goto_mode = true;
+        self.base.request_redraw();
+    }
+
+    /// Jumps to `line`/`column` (both one-based) in one call (RW-113).
+    ///
+    /// The value is handed to [`Self::commit_goto`] as the bar's entry, which is the shared parsing
+    /// path. A position outside the document returns `false` and leaves the caret where it was.
+    pub fn goto_to(&mut self, line: usize, column: usize) -> bool {
+        if line == 0 || column == 0 || line > self.line_count() {
+            return false;
+        }
+        self.set_goto_text(format!("{line}:{column}"));
+        self.commit_goto()
+    }
+
+    /// Parses a goto entry: `LINE` or `LINE:COLUMN`, both one-based.
+    ///
+    /// Returns `None` for anything else (a non-number, a zero, a trailing colon), which is the
+    /// "invalid input" answer both entry points share.
+    fn parse_goto_entry(text: &str) -> Option<(usize, Option<usize>)> {
+        let text = text.trim();
+        let (line, column) = match text.split_once(':') {
+            Some((line, column)) => {
+                let line = line.trim().parse::<usize>().ok()?;
+                let column = column.trim().parse::<usize>().ok()?;
+                (line, Some(column))
+            }
+            None => (text.parse::<usize>().ok()?, None),
+        };
+        if line == 0 || column == Some(0) {
+            return None;
+        }
+        Some((line, column))
+    }
+
     /// Jumps to the line number currently typed into the goto bar.
     ///
-    /// Line numbers are one-based, as every editor and compiler reports them.
-    /// A non-numeric or zero entry closes the bar without moving the caret rather
-    /// than jumping to an invented line.
+    /// Line numbers are one-based, as every editor and compiler reports them. A
+    /// non-numeric or zero entry closes the bar without moving the caret rather
+    /// than jumping to an invented line. `LINE:COLUMN` also places the caret on
+    /// the column (RW-113); a line past the end is refused without moving.
     pub fn commit_goto(&mut self) -> bool {
-        let query = self.find.query.trim().to_string();
-        let line = query.parse::<usize>().ok();
-        let moved = match line {
-            Some(line) if line > 0 => {
+        let entry = self.find.query.clone();
+        let moved = match Self::parse_goto_entry(&entry) {
+            Some((line, None)) => {
                 self.goto_line(line - 1);
                 true
             }
-            _ => false,
+            Some((line, Some(column))) => {
+                if line > self.line_count() {
+                    false
+                } else {
+                    self.set_cursor(line - 1, column - 1, false);
+                    true
+                }
+            }
+            None => false,
         };
         self.close_goto_bar();
         moved

@@ -346,16 +346,32 @@ struct CommandIndex {
 }
 
 /// The hash [`same_key`] implies: separators ignored and the rest lower-cased.
+///
+/// An ASCII fast path (the only spelling the property/command tables use) folds one byte per
+/// character instead of walking `char::to_lowercase` and its four-byte payload. Index build and
+/// lookup call this same function, so a change here cannot make the two disagree.
 #[cfg(full_widgets)]
 fn normalized_hash(name: &str) -> u64 {
     const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
     const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
     let mut hash = FNV_OFFSET;
+    let fold = |byte: u8, hash: &mut u64| {
+        *hash ^= u64::from(byte);
+        *hash = hash.wrapping_mul(FNV_PRIME);
+    };
+    if name.is_ascii() {
+        for byte in name.bytes() {
+            if matches!(byte, b'_' | b'-' | b' ') {
+                continue;
+            }
+            fold(byte.to_ascii_lowercase(), &mut hash);
+        }
+        return hash;
+    }
     for ch in name.chars().filter(|ch| !matches!(*ch, '_' | '-' | ' ')).flat_map(char::to_lowercase)
     {
         for byte in (ch as u32).to_le_bytes() {
-            hash ^= u64::from(byte);
-            hash = hash.wrapping_mul(FNV_PRIME);
+            fold(byte, &mut hash);
         }
     }
     hash
@@ -1106,14 +1122,16 @@ pub(crate) use properties::*;
 /// there is no capability table to walk in a stripped profile — so the re-export here is split the
 /// same way rather than gating the module and losing the vocabulary with it.
 pub mod designer_manifest;
+mod designer_manifest_writer;
 #[cfg(full_widgets)]
 pub use designer_manifest::{
     all_capability_manifests_json, capability_manifest_json, designer_manifest,
 };
 pub use designer_manifest::{
-    events_of_manifest, manifest_to_json, shape_from_token, shape_token, value_kind_from_token,
-    value_kind_token, DesignerEvent, DesignerManifest, DesignerProperty, ManifestExportError,
-    ManifestParseError,
+    companion_hosts, events_of_manifest, manifest_to_json, shape_from_token, shape_token,
+    value_kind_from_token, value_kind_token, DesignerCommand, DesignerConstraint, DesignerEvent,
+    DesignerManifest, DesignerProperty, ManifestExportError, ManifestParseError,
+    MANIFEST_MIN_PROTOCOL_VERSION, MANIFEST_PROTOCOL_VERSION,
 };
 
 /// What a capability statement is *about*: the build profile, the target triple, and how

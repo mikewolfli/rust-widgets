@@ -1027,7 +1027,10 @@ pub(crate) fn swipe_to_dismiss_capability() -> WidgetCapability {
         aliases: &["swipe_dismiss"],
         properties: SWIPE_TO_DISMISS_PROPERTIES,
         events: events_of!("swipe_to_dismiss"),
-        commands: &[],
+        // RW-104: the row's two programmatic operations were reachable only as Rust methods, so a
+        // design document could insert the control but never trigger or undo a departure. The
+        // gesture stays the primary path; these make the same two facts available as commands.
+        commands: &["dismiss", "reset_swipe"],
     }
 }
 

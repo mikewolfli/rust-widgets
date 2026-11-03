@@ -231,6 +231,8 @@ static VERB_CLASSES: &[VerbClass] = &[
     verb("click", PayloadFree, CommandEffect::MutatesControl),
     verb("complete", PayloadFree, CommandEffect::MutatesControl),
     verb("dismiss", PayloadFree, CommandEffect::MutatesControl),
+    // RW-104: undoing a departure resets only the control's own swipe state.
+    verb("reset_swipe", PayloadFree, CommandEffect::MutatesControl),
     verb("finish", PayloadFree, CommandEffect::MutatesControl),
     verb("finish_editing", PayloadFree, CommandEffect::MutatesControl),
     verb("start_editing", PayloadFree, CommandEffect::MutatesControl),
@@ -240,6 +242,17 @@ static VERB_CLASSES: &[VerbClass] = &[
     verb("trigger_primary", PayloadFree, CommandEffect::MutatesControl),
     verb("undo", PayloadFree, CommandEffect::MutatesControl),
     verb("redo", PayloadFree, CommandEffect::MutatesControl),
+    // RW-106: forms and several input groups publish `reset`; it restores the control's own
+    // initial state and touches nothing outside it.
+    verb("reset", PayloadFree, CommandEffect::MutatesControl),
+    verb("reset_all", PayloadFree, CommandEffect::MutatesControl),
+    // Validation writes the control's own error/validity state; a form set drives its bound
+    // forms through their own command channel, so nothing outside the control family changes.
+    verb("validate", PayloadFree, CommandEffect::MutatesControl),
+    verb("validate_all", PayloadFree, CommandEffect::MutatesControl),
+    verb("clear_errors", PayloadFree, CommandEffect::MutatesControl),
+    verb("mark_completed", PayloadFree, CommandEffect::MutatesControl),
+    verb("cancel", PayloadFree, CommandEffect::MutatesControl),
     verb("show_today", PayloadFree, CommandEffect::MutatesControl),
     // ── Visibility / open-close ──
     verb("hide", PayloadFree, CommandEffect::MutatesControl),
@@ -255,6 +268,11 @@ static VERB_CLASSES: &[VerbClass] = &[
     verb("play", PayloadFree, CommandEffect::MutatesControl),
     verb("pause", PayloadFree, CommandEffect::MutatesControl),
     verb("stop", PayloadFree, CommandEffect::MutatesControl),
+    // RW-106: the transport bar's two track requests and its fullscreen toggle. All three emit
+    // the same signal the corresponding button does; the bar itself changes no state.
+    verb("previous_track", PayloadFree, CommandEffect::SideEffecting),
+    verb("next_track", PayloadFree, CommandEffect::SideEffecting),
+    verb("toggle_fullscreen", PayloadFree, CommandEffect::SideEffecting),
     // ── Text editing ──
     verb("backspace", PayloadFree, CommandEffect::MutatesControl),
     verb("close_find", PayloadFree, CommandEffect::MutatesControl),
@@ -406,9 +424,15 @@ pub fn describe_command(name: &str, schema: &CommandSchema) -> String {
 ///
 /// Lives beside [`CommandSchema`] because it is a projection of that schema; the manifest module
 /// re-exports it so the existing public path is unchanged.
+///
+/// `properties` is the control's own property list, read only to copy an enum parameter's tokens:
+/// `set_alignment` writes the `alignment` property, so its legal values are exactly what that
+/// property publishes. Deriving them from the same table rather than repeating them here is what
+/// keeps a command's picker from drifting away from its property's (RW-103, principle #101).
 pub fn designer_command_from(
     name: &str,
     schema: &CommandSchema,
+    properties: &[super::types::PropertySchema],
 ) -> super::designer_manifest::DesignerCommand {
     use super::designer_manifest::DesignerCommand;
     use CommandEffect;
@@ -427,11 +451,25 @@ pub fn designer_command_from(
         CommandEffect::MutatesCollection => "mutates-collection",
         CommandEffect::SideEffecting => "side-effecting",
     };
+    let tokens = match (kind, schema.signature) {
+        (
+            Some(super::types::PropertyValueKind::Enum),
+            CommandSignature::OneValue { parameter, .. },
+        ) => properties
+            .iter()
+            .find(|property| property.name == parameter)
+            .map(|property| {
+                property.accepted_tokens.iter().map(|token| String::from(*token)).collect()
+            })
+            .unwrap_or_default(),
+        _ => Vec::new(),
+    };
     DesignerCommand {
         name: crate::compat::String::from(name),
         signature,
         parameter,
         kind,
+        tokens,
         arity,
         element,
         effect,

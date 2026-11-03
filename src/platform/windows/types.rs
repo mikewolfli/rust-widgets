@@ -537,7 +537,10 @@ pub(crate) unsafe extern "system" fn wnd_proc(
         #[cfg(widgets_unstripped)]
         WM_ACTIVATE => {
             if let Some(window_id) = window_widget_for(hwnd) {
-                let active = (wparam & 0xFFFF) as u32 != WA_INACTIVE;
+                // Both sides must have the same type: `WA_INACTIVE` is a `u16` constant from
+                // `windows-sys`, while `WPARAM` is pointer-sized. Narrowing the low word to
+                // `u16` keeps the comparison well typed on every Windows target.
+                let active = (wparam & 0xFFFF) as u16 != WA_INACTIVE;
                 crate::platform::window_control::notify_window_focus(window_id, active);
             }
             DefWindowProcW(hwnd, msg, wparam, lparam)

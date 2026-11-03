@@ -578,6 +578,25 @@ impl WidgetProperties for SwipeToDismiss {
     fn property_names(&self) -> &'static [&'static str] {
         property_names_of!["is_dismissed", BASE_PROPERTY_NAMES]
     }
+
+    /// RW-104: the two operations a design document can drive.
+    ///
+    /// They delegate to the control's own methods rather than toggling fields, so a wire and a
+    /// host call produce the same signal, the same animation target and the same redraw request.
+    /// Every other name falls through to the `set_*` convention.
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "dismiss" => {
+                self.dismiss();
+                Ok(())
+            }
+            "reset_swipe" => {
+                self.reset_swipe();
+                Ok(())
+            }
+            _ => self.default_command(name),
+        }
+    }
 }
 
 impl Draw for SwipeToDismiss {

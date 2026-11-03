@@ -69,8 +69,8 @@ pub use artifact::{
 pub use generator::{
     availability, constructor_type_name, generate, is_style_only_property, is_wire_key,
     shared_wire_rule_count, Availability, GeneratedSource, GenerationGap, GenerationGapReason,
-    GenerationReport, GenerationRequest, NodeAnchor, TargetProfile, DEFAULT_CHILD_CAPACITY,
-    MINI_CHILD_CAPACITY,
+    GenerationReport, GenerationRequest, NodeAnchor, NodeRect, TargetProfile,
+    DEFAULT_CHILD_CAPACITY, MINI_CHILD_CAPACITY,
 };
 
 // ── Undo integration (DSG-010) ───────────────────────────────

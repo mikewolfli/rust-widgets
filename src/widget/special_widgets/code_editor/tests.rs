@@ -1001,6 +1001,68 @@ fn goto_bar_commits_a_one_based_line_number() {
     assert!(!editor.goto_bar_visible());
 }
 
+/// RW-113: a host can pre-fill the goto bar and jump to a line/column in one call.
+#[test]
+fn goto_bar_accepts_a_prefilled_line_and_column() {
+    let mut editor = editor();
+    editor.set_text("one\ntwo\nthree");
+
+    editor.set_goto_text("3:2");
+    assert!(editor.goto_bar_visible(), "pre-filling opens the bar");
+    assert!(editor.commit_goto());
+    assert_eq!(editor.cursor(), (2, 1), "line 3 column 2, both one-based");
+
+    assert!(editor.goto_to(2, 2), "the one-call form shares the parser");
+    assert_eq!(editor.cursor(), (1, 1));
+
+    editor.set_goto_text("nope");
+    assert!(!editor.commit_goto(), "a non-numeric entry is refused");
+    assert_eq!(editor.cursor(), (1, 1), "a refused entry leaves the caret alone");
+
+    assert!(!editor.goto_to(0, 1), "line 0 does not exist");
+    assert!(!editor.goto_to(99, 1), "a line past the end is refused");
+    assert_eq!(editor.cursor(), (1, 1));
+}
+
+/// RW-114: structural selection expands and then shrinks back through the same positions.
+#[test]
+fn structural_selection_shrinks_back_through_its_history() {
+    use crate::widget::special_widgets::code_editor::syntax::StructuralKind;
+
+    let mut editor = editor();
+    editor.set_text("let value = (1 + 2);");
+    // The caret sits on the `1` inside the brackets.
+    editor.set_caret(TextPosition::new(0, 13), false);
+    let original = editor.cursor();
+
+    assert!(editor.expand_selection(StructuralKind::Word), "the number is a word");
+    let word = editor.cursor();
+    assert_ne!(word, original);
+    assert!(editor.expand_selection(StructuralKind::Bracket), "the enclosing pair");
+    let pair = editor.cursor();
+    assert_ne!(pair, word);
+
+    assert!(editor.shrink_selection());
+    assert_eq!(editor.cursor(), word, "one step back is the word");
+    assert!(editor.shrink_selection());
+    assert_eq!(editor.cursor(), original, "two steps back is the original caret");
+    assert!(!editor.shrink_selection(), "an empty history refuses");
+    assert_eq!(editor.cursor(), original);
+}
+
+/// RW-114: an edit invalidates the saved selections rather than restoring stale positions.
+#[test]
+fn an_edit_clears_the_structural_selection_history() {
+    use crate::widget::special_widgets::code_editor::syntax::StructuralKind;
+
+    let mut editor = editor();
+    editor.set_text("alpha beta");
+    editor.set_caret(TextPosition::new(0, 2), false);
+    assert!(editor.expand_selection(StructuralKind::Word));
+    editor.insert("x");
+    assert!(!editor.shrink_selection(), "the pre-edit selection is gone");
+}
+
 #[test]
 fn zoom_methods_emit_a_signal_and_clamp() {
     let mut editor = editor();

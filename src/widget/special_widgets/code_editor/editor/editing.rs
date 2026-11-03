@@ -1217,6 +1217,8 @@ impl CodeEditor {
             self.read_only_spans.clear();
         }
         self.restore_history_text();
+        // RW-114: the restored text is a different revision; saved selections are stale.
+        self.structural_selection_history.clear();
         true
     }
 
@@ -1233,6 +1235,8 @@ impl CodeEditor {
             self.read_only_spans.clear();
         }
         self.restore_history_text();
+        // RW-114: same reason as undo.
+        self.structural_selection_history.clear();
         true
     }
 

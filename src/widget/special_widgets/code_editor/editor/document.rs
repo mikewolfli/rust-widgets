@@ -490,6 +490,8 @@ impl CodeEditor {
         if self.text() == next && !raw.contains('\r') {
             return;
         }
+        // RW-114: every saved structural selection addresses text that is about to disappear.
+        self.structural_selection_history.clear();
         self.active_typing = None;
         let before = self.text();
         if !self.restoring_history {
@@ -698,6 +700,9 @@ impl CodeEditor {
         if !self.is_range_editable(start, end) {
             return;
         }
+        // RW-114: this is the code editor's only edit path, so a saved structural selection is
+        // stale from here on. Clearing it centrally keeps every edit entry point covered.
+        self.structural_selection_history.clear();
         // Capture the text being replaced **before** the splice runs. Slicing the
         // post-edit buffer with a pre-edit offset would record whatever now sits
         // there, so undo would restore the edit instead of the original — which is
@@ -733,6 +738,8 @@ impl CodeEditor {
         if before == after {
             return;
         }
+        // RW-114: a saved structural selection addresses the pre-edit text.
+        self.structural_selection_history.clear();
         // A caller that rebuilt the text by hand has no offset to report, so the
         // range is recovered by diffing the two texts. The replaced text comes from
         // `before` directly: the range is in pre-edit coordinates, so slicing the

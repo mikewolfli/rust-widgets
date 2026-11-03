@@ -57,6 +57,15 @@ if [ "${1:-}" = "--cross" ]; then
     # here so the class, not the one line, is covered.
     run_cell "embedded@windows" "x86_64-pc-windows-msvc" "embedded" "compiles the sized profile on Windows (core prelude)"
     run_cell "mini@windows" "x86_64-pc-windows-msvc" "mini" "compiles the smallest profile on Windows (core prelude)"
+    # Upstream feedback `feedback-20261103.md` RW-101: `WM_ACTIVATE` lives in the
+    # `widgets_unstripped` half of the Windows backend, and neither cell above compiles that half —
+    # the stripped profiles do not, and the `desktop@windows` cell's feature list names no device
+    # profile. A `u16`/`u32` mismatch in `(wparam & 0xFFFF) as u32 != WA_INACTIVE` therefore
+    # survived every Windows cell here. `tablet` is a non-stripped profile **and** pulls no C audio
+    # dependency, so it builds without the Windows SDK headers `cargo check` lacks on a non-Windows
+    # host, while still compiling the unstripped branches (the full `desktop` profile needs
+    # `minimp3-sys`, whose headers only `cargo xwin` supplies).
+    run_cell "tablet@windows" "x86_64-pc-windows-msvc" "tablet" "compiles the unstripped widget tree on Windows"
     run_cell "desktop@linux-gnu" "x86_64-unknown-linux-gnu" "wayland-native" "compiles the Wayland path"
     run_cell "ios@ios" "aarch64-apple-ios" "ios-uikit-ffi,mobile,controls-custom,controls-native,serde,serde_json" "compiles the UIKit path"
     run_cell "android@android" "x86_64-linux-android" "android-jni,jni,mobile,controls-custom,controls-native,serde,serde_json" "compiles the JNI path"

@@ -414,7 +414,7 @@ pub use api::{
     clear_registered_icons, create_dialog, create_grid_widget, create_splitter, create_tab_widget,
     icon_registry, is_registered_icon, read_widget_property_by_id, register_icon,
     register_icon_on_grid, registered_icon, registered_icon_count, try_register_icon,
-    try_register_icon_on_grid, write_widget_property_by_id, AutoCompleteEdit, Badge, Carousel,
+    try_register_icon_on_grid, write_widget_property_by_id, Badge, Carousel,
     CarouselIndicatorPosition, CarouselIndicatorStyle, CarouselPage, CollapsiblePane, ColorHistory,
     ColorWell, CommandLink, Divider, DockPanel, DockWidget, EditableComboBox, EmptyState,
     FloatingLabel, FontComboBox, FontPreview, Icon, IconRegistrationError, ImePreedit,
@@ -425,6 +425,15 @@ pub use api::{
     TagInput, TextEdit, ToggleButton, ToggleButtonState, ToolBox, Toolbox, WidgetAndDraw,
     WidgetFactory, MAX_REGISTERED_ICONS,
 };
+
+// RW-101 fallout: `AutoCompleteEdit` is a `full_widgets` item in `api`, while the block above is
+// gated on `widgets_unstripped`. A build with the widget tree but no device profile (the
+// `wayland-native` / `windows,controls-*` / `wasm` cells of the profile matrix) satisfies the
+// latter and not the former, so listing the type in that block made those cells fail to compile
+// with `no AutoCompleteEdit in api`. The export keeps its real gate instead.
+#[cfg(full_widgets)]
+#[cfg(widgets_unstripped)]
+pub use api::AutoCompleteEdit;
 
 #[cfg(full_widgets)]
 pub use widget::{

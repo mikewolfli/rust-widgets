@@ -72,6 +72,24 @@ impl CodeEditor {
         self.base.request_redraw();
     }
 
+    /// Whether the paint pass draws code lenses (RW-115).
+    pub fn code_lenses_enabled(&self) -> bool {
+        self.code_lenses_enabled
+    }
+
+    /// Shows or hides code lenses without discarding them (RW-115).
+    ///
+    /// Hiding used to mean calling [`Self::set_code_lenses`] with an empty list, which destroyed the
+    /// host's data: showing them again required re-deriving every lens. This switch changes the
+    /// paint only, exactly as [`Self::set_inlay_hints_enabled`] does for hints.
+    pub fn set_code_lenses_enabled(&mut self, enabled: bool) {
+        if self.code_lenses_enabled == enabled {
+            return;
+        }
+        self.code_lenses_enabled = enabled;
+        self.base.request_redraw();
+    }
+
     // ── Bookmarks ───────────────────────────────────────────────────────────
 
     /// Replaces the bookmarked lines, clamping to the document.

@@ -5,6 +5,74 @@ The canonical project changelog is maintained at [docs/reports/CHANGELOG.md](doc
 This root-level file exists for tools and release automation that expect `CHANGELOG.md` at repository root.
 When the two disagree, this file is the one that ships; `tools/check_changelog_sync.sh` keeps them identical.
 
+## 4.0.1 (2026-11-03) — upstream feedback round (RW-101…RW-116)
+
+Fixes and additive API from `docs/issues/feedback-20261103.md`. The manifest **protocol** changes
+6 → 8, which is the version a manifest consumer checks.
+
+### Fixed
+
+- **RW-101** — Windows `WM_ACTIVATE`: `(wparam & 0xFFFF)` is narrowed to `u16` before comparing with
+  `WA_INACTIVE`, so the shared Windows backend compiles on every profile. The profile matrix now has a
+  `tablet@windows` cell: the stripped cells never compiled the `widgets_unstripped` half where the
+  branch lives, and the existing Windows desktop cell named no device profile.
+- **RW-105** — `map_overview`, `map_attribution`, `gantt_task_grid` and `terminal_find_bar` declare their
+  property defaults, so their designer manifests export instead of answering `IncompleteDefaults`.
+- **RW-106** — design-time data surfaces: `order_book`/`depth_chart` `bids`/`asks` records,
+  `chapter_list_panel` `chapters` records, `lottie_widget.source` and `rive_widget`
+  `source`/`progress`, `web_history_panel.entries`, plus property-route commands for them and for
+  `quote_board`/`media_transport_bar`.
+- **RW-109** — per-node `min_width`/`min_height`/`pref_width`/`pref_height`/`max_width`/`max_height`,
+  `margin` and `overflow` child attributes; the generation solve now runs through the layout hint
+  channel (`ChildInfo`), so the constraints reach the coordinates. `overflow` has no runtime carrier in
+  this build and is reported as a dropped field rather than silently ignored.
+- **RW-111** — the default product no longer claims to carry solved coordinates: its header says it does
+  not, and `GenerationReport.layout_geometry_gaps` records the product-level fact. The stripped product
+  is unchanged.
+- **RW-112 / RW-113 / RW-114 / RW-115** — `CodeEditor::set_config` and the four display toggles;
+  `set_goto_text`/`goto_to` (`LINE[:COLUMN]`); `shrink_selection` with an edit-cleared history;
+  `code_lenses_enabled`/`set_code_lenses_enabled`.
+- **Command tables** — seven published verbs were missing from the schema table (`reset`, `cancel`,
+  `validate`, `validate_all`, `clear_errors`, `mark_completed`, `reset_all`), so manifests silently
+  dropped them. Added, along with `previous_track`, `next_track`, `toggle_fullscreen`, `reset_swipe`.
+- **Profiles** — `AutoCompleteEdit` was re-exported under a `widgets_unstripped` gate while the `api`
+  module gates it on `full_widgets`; builds with the widget tree but no device profile (Wayland-only,
+  the Windows controls set, HarmonyOS, wasm) failed to compile. It now keeps its real gate.
+
+### Added
+
+- **RW-102** — `DesignerCommand` and `DesignerConstraint` are re-exported from `widget::capability`
+  (with `MANIFEST_PROTOCOL_VERSION` / `MANIFEST_MIN_PROTOCOL_VERSION`).
+- **RW-103** — `DesignerCommand.tokens: Vec<String>` for an enum parameter, copied from the property the
+  command writes. Manifest protocol **7**.
+- **RW-107** — `DesignerManifest.companion_of: Vec<String>` and `companion_hosts(control)`, naming the
+  control(s) a companion is built for. Manifest protocol **8**.
+- **RW-116** — `GenerationReport.node_rects: Vec<NodeRect>` (`path`, `id`, `x`, `y`, `width`, `height`),
+  the generation-time solve keyed on the document's `id`, so a host canvas does not re-solve the layout.
+- **RW-104** — `swipe_to_dismiss` publishes `dismiss`/`reset_swipe`; `axis_picker` publishes
+  `set_series_names`/`set_assignments`/`set_edges`.
+- **Companion pairing** — `ChartDataTable::accept_series_updates` / `ZoomStrip::accept_zoom_updates` and
+  the `ChartSeriesSnapshot` alias are public, so a chart implemented outside the parent crate can pair
+  itself with the same queues the built-in charts use. Finance: `candlestick_chart` pairs with both
+  companions; `volume_chart`/`indicator_chart` pair with the zoom strip.
+- **Performance** — the property/command lookup hash and `same_key` take an ASCII fast path (the only
+  spelling the tables use), removing the `char` iterator and `to_lowercase` machinery from the inner
+  loop of `read_property` / `write_property` / `invoke_command`.
+
+### Migration
+
+- Manifest protocol is now **8**. A reader that refuses unknown keys must update; a reader that accepts
+  protocol ≤ its own maximum sees `commands[].tokens` and `companion_of` as new keys.
+- `chapter_list_panel` renames its read-only count property from `chapters` to `chapter_count`, because
+  `chapters` is now the writable record list. A document that read `chapters` as a count must read
+  `chapter_count`.
+- `command_schema::designer_command_from` takes the control's property slice as a third argument (it
+  derives an enum parameter's tokens from it).
+- The default generated product's header now states that it does not carry the solved coordinates
+  (it never did); use the stripped target for constant rects, or read `GenerationReport.node_rects`.
+- Coarse per-node `margin` is applied by the `flex` layout only; the other kinds report it as a dropped
+  field, as does `overflow` everywhere.
+
 ## 4.0.0 (2026-11-02) — the rustage-alignment round
 
 **Major**: this release is published **in coordination with the `rustage` refactor**. It also

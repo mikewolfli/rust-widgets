@@ -382,7 +382,10 @@ impl CodeEditor {
         }
         // Lenses describe the whole line, so they are drawn once, on its first
         // visual row, after the line's last glyph.
-        if segment_start == 0 && self.code_lenses.iter().any(|lens| lens.line == line) {
+        if segment_start == 0
+            && self.code_lenses_enabled
+            && self.code_lenses.iter().any(|lens| lens.line == line)
+        {
             let mut label = String::new();
             for lens in self.code_lenses.iter().filter(|lens| lens.line == line) {
                 if lens.label.is_empty() {

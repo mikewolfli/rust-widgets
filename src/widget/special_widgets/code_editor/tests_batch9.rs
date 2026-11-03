@@ -208,6 +208,26 @@ fn inlay_hints_and_code_lenses_round_trip_and_render() {
     assert_eq!(without_lens + 1, without_hints, "the lens is painted");
 }
 
+/// RW-115: hiding code lenses keeps their data and only changes the paint.
+#[test]
+fn code_lenses_can_be_hidden_without_losing_them() {
+    let mut editor = make();
+    editor.set_text("let answer = 42;");
+    editor.set_code_lenses(vec![CodeLens::new(0, "2 references", "references")]);
+    assert!(editor.code_lenses_enabled());
+    let visible_runs = text_ink_boxes(&render_to_svg(&mut editor)).len();
+
+    editor.set_code_lenses_enabled(false);
+    assert!(!editor.code_lenses_enabled());
+    assert_eq!(editor.code_lenses().len(), 1, "the data is not dropped");
+    let hidden_runs = text_ink_boxes(&render_to_svg(&mut editor)).len();
+    assert_eq!(hidden_runs + 1, visible_runs, "the lens text is not painted");
+
+    editor.set_code_lenses_enabled(true);
+    let shown_runs = text_ink_boxes(&render_to_svg(&mut editor)).len();
+    assert_eq!(shown_runs, visible_runs, "the same data comes back");
+}
+
 // ── RW-22: bookmark lifecycle ───────────────────────────────────────────────
 
 #[test]

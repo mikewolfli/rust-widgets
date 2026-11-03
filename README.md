@@ -32,14 +32,14 @@ services at all.
 
 ## Install
 
-> **4.0.0** is the companion release for the **rustage** refactor: the expanded command table,
-> unified row scrolling and per-control focus subscription are the API surface `rustage` targets.
-> Existing signatures are preserved; the two observable behaviour changes are listed in the
-> [4.0.0 changelog](CHANGELOG.md).
+> **4.0.1** is the current release: the upstream-feedback patch on top of **4.0.0**, the companion
+> release for the **rustage** refactor. It fixes the Windows `WM_ACTIVATE` build, exports the solved
+> layout geometry, adds per-node size constraints, and closes the designer/manifest gaps reported in
+> `feedback-20261103.md`. Existing 4.0.0 signatures are preserved; see the [changelog](CHANGELOG.md).
 
 ```toml
 [dependencies]
-rust_widgets = "4.0.0"
+rust_widgets = "4.0.1"
 ```
 
 Choose **exactly one** device profile. They are mutually exclusive: `mini` and `embedded` compile
@@ -47,11 +47,11 @@ parts of the crate *out*, so pairing one with `desktop` is not a lowest common d
 a build that cannot work.
 
 ```toml
-rust_widgets = { version = "4.0.0", features = ["desktop"] }                       # default
-rust_widgets = { version = "4.0.0", default-features = false, features = ["tablet"] }
-rust_widgets = { version = "4.0.0", default-features = false, features = ["mobile"] }
-rust_widgets = { version = "4.0.0", default-features = false, features = ["embedded"] }
-rust_widgets = { version = "4.0.0", default-features = false, features = ["mini"] }
+rust_widgets = { version = "4.0.1", features = ["desktop"] }                       # default
+rust_widgets = { version = "4.0.1", default-features = false, features = ["tablet"] }
+rust_widgets = { version = "4.0.1", default-features = false, features = ["mobile"] }
+rust_widgets = { version = "4.0.1", default-features = false, features = ["embedded"] }
+rust_widgets = { version = "4.0.1", default-features = false, features = ["mini"] }
 ```
 
 | Profile | Intended for |

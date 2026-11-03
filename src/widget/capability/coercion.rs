@@ -1047,6 +1047,17 @@ pub fn same_key(left: &str, right: &str) -> bool {
     if left == right {
         return true;
     }
+    // ASCII fast path: the property and command tables are ASCII by construction, and comparing
+    // bytes sidesteps the `char` iterator and `to_lowercase` machinery on the per-lookup hot path.
+    // `to_ascii_lowercase` agrees with `char::to_lowercase` for every ASCII byte.
+    if left.is_ascii() && right.is_ascii() {
+        fn ascii_stream(text: &str) -> impl Iterator<Item = u8> + '_ {
+            text.bytes()
+                .filter(|byte| !matches!(byte, b'_' | b'-' | b' '))
+                .map(|byte| byte.to_ascii_lowercase())
+        }
+        return ascii_stream(left).eq(ascii_stream(right));
+    }
     fn stream(text: &str) -> impl Iterator<Item = char> + '_ {
         text.chars().filter(|ch| !matches!(*ch, '_' | '-' | ' ')).flat_map(char::to_lowercase)
     }

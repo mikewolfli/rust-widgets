@@ -101,7 +101,7 @@ pub use crate::widget::view_widgets::grid_find_bar::GridFindBar;
 pub use crate::widget::view_widgets::thumbnail_cache::ThumbnailCache;
 pub use axis_picker::{AxisEdge, AxisPicker, AxisSpec};
 pub use calendar_mark_layer::{CalendarMark, CalendarMarkLayer, CalendarMarkShape};
-pub use chart_data_table::{ChartDataMode, ChartDataTable};
+pub use chart_data_table::{ChartDataMode, ChartDataTable, ChartSeriesSnapshot};
 pub use chart_tooltip::{ChartTooltip, TooltipLine};
 pub use command_palette_host::{
     CommandPaletteHost, PaletteEntryRef, PaletteSource, PALETTE_ENTRY_SCHEMA,

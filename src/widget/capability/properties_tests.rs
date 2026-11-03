@@ -1703,3 +1703,75 @@ fn the_published_group_route_keeps_radio_members_exclusive() {
     );
     assert_eq!(factory.read_property(second.as_ref(), "checked"), Ok(CapabilityValue::Bool(true)));
 }
+
+/// RW-104: the controls that intentionally publish no events, and no commands.
+///
+/// # Why this is a pinned list and not a comment
+///
+/// A spacer or a divider has nothing to announce and nothing to invoke; that is a legitimate
+/// shape. The defect is letting "no events" be an *omission* — a new control that lands with an
+/// empty list would look exactly like an intentional one. `swipe_to_dismiss` and `axis_picker`
+/// were in this position: both had programmatic operations that no design document could call.
+/// RW-104 published those operations, and this test makes the remaining set a decision that must
+/// be edited deliberately: a control that gains or loses a list changes the expectation here,
+/// and the assertion message says which.
+///
+/// The names are canonical factory names, sorted, exactly as the designer manifest reports them.
+#[test]
+fn presentation_only_controls_are_the_declared_set() {
+    let factory = WidgetFactory::new_with_defaults();
+
+    let mut without_events: alloc::vec::Vec<&'static str> = alloc::vec::Vec::new();
+    let mut without_commands: alloc::vec::Vec<&'static str> = alloc::vec::Vec::new();
+    for capability in factory.capabilities() {
+        if capability.events.is_empty() {
+            without_events.push(capability.canonical_name);
+        }
+        if capability.commands.is_empty() {
+            without_commands.push(capability.canonical_name);
+        }
+    }
+    without_events.sort_unstable();
+    without_commands.sort_unstable();
+
+    // Presentation-only by design: these paint a value or allocate space and never change it, so
+    // there is no state transition to announce and no operation to invoke.
+    let expected_without_events = [
+        "align",
+        "aspect_ratio",
+        "center",
+        "divider",
+        "drawer_section_header",
+        "expanded",
+        "flexible",
+        "font_preview",
+        "frame",
+        "group_avatar",
+        "icon",
+        "ime_preedit",
+        "intrinsic_width",
+        "line",
+        "padding",
+        "qr_code",
+        "safe_area",
+        "sized_box",
+        "skeleton_loader",
+        "spacer",
+        "tooltip",
+    ];
+    // Presentation-only controls whose interaction is a gesture the control owns rather than a
+    // method a document could call: a history list, an avatar, a fixed-size box, a padding box.
+    let expected_without_commands =
+        ["color_history", "group_avatar", "intrinsic_width", "padding", "sized_box"];
+
+    assert_eq!(
+        without_events, expected_without_events,
+        "the set of controls that publish no events changed; classify the difference as \
+         presentation-only (add it here with a reason) or publish the missing event"
+    );
+    assert_eq!(
+        without_commands, expected_without_commands,
+        "the set of controls that publish no commands changed; classify the difference as \
+         presentation-only (add it here with a reason) or publish the missing command"
+    );
+}

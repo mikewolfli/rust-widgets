@@ -46,6 +46,11 @@ pub enum ParamKind {
     Float,
     /// A JSON boolean (`true` / `false`).
     Bool,
+    /// A four-value inset (`[top, right, bottom, left]`, a shorthand pair, or one uniform
+    /// integer).
+    Inset,
+    /// An overflow token (`"clip"`, `"visible"`, `"scroll"`).
+    Overflow,
 }
 
 impl ParamKind {
@@ -58,6 +63,8 @@ impl ParamKind {
             Self::Region => "region",
             Self::Float => "float",
             Self::Bool => "bool",
+            Self::Inset => "inset",
+            Self::Overflow => "overflow",
         }
     }
 }
@@ -256,8 +263,18 @@ pub static LAYOUT_KIND_SCHEMAS: &[LayoutKindSchema] = &[
 /// A layout document nests its children in the kind object, and a child may carry its own placement
 /// object (`{"stretch": 2, "col": 1}`). Those keys are read by
 /// [`ChildLayoutAttrs::from_value`](crate::json::ChildLayoutAttrs::from_value) and were, like the
-/// kind's own parameters, undiscoverable: a designer's child panel had to hard-code the five names
+/// kind's own parameters, undiscoverable: a designer's child panel had to hard-code the names
 /// and could not tell which of them a given layout uses (the grid keys mean nothing to an `hbox`).
+///
+/// # Size constraints (RW-109)
+///
+/// `min_*` / `pref_*` / `max_*` are the per-node form of [`Hints`](crate::layout::Hints); the
+/// generation-time solve reads them through `ChildInfo`. `margin` is a four-value inset
+/// (`[top, right, bottom, left]`, `[vertical, horizontal]`, or one integer) and reaches the solve as
+/// `ChildInfo::params.margins` — which only `FlexLayout` consumes, so the other kinds report it as
+/// dropped. `overflow` is declared and validated, and reported as dropped: this build has no
+/// per-node overflow carrier, and saying so is better than accepting a clipping request that
+/// nothing clips.
 ///
 /// `honoured` is the honest answer *per key* rather than per kind: `stretch` is read by every kind
 /// that distributes space, while `col`/`row`/`col_span`/`row_span` are only meaningful to
@@ -271,6 +288,20 @@ pub static CHILD_ATTR_SCHEMA: &[LayoutParam] = &[
     param("row_span", ParamKind::UInt, false, false),
     param("region", ParamKind::Region, false, false),
     param("extent", ParamKind::UInt, false, false),
+    // RW-109: per-node size constraints, fed to the generation-time solve as `Hints`.
+    // `min`/`pref`/`max` are read by every hint-aware layout (box, flex, grid, border, form, flow).
+    param("min_width", ParamKind::UInt, false, true),
+    param("min_height", ParamKind::UInt, false, true),
+    param("pref_width", ParamKind::UInt, false, true),
+    param("pref_height", ParamKind::UInt, false, true),
+    param("max_width", ParamKind::UInt, false, true),
+    param("max_height", ParamKind::UInt, false, true),
+    // Per-child margins reach the solve through `ChildInfo::params.margins`, which only
+    // `FlexLayout` consumes; `child_attrs_honoured_by` reports the other kinds' negatives.
+    param("margin", ParamKind::Inset, false, true),
+    // There is no per-node overflow carrier in this build: the field is declared so a document
+    // that states it can be diagnosed rather than silently ignored (see `honoured`).
+    param("overflow", ParamKind::Overflow, false, false),
 ];
 
 /// The child-placement keys a layout **kind** actually honours.
@@ -281,12 +312,17 @@ pub fn child_attrs_honoured_by(type_token: &str) -> Vec<&'static str> {
     let grid =
         matches!(type_token, "grid" | "Grid" | "uniform_grid" | "uniformGrid" | "uniform-grid");
     let border = matches!(type_token, "border" | "Border");
+    // Per-child margins are a `FlexLayout` feature: it is the only solver that reads
+    // `ChildInfo::params.margins`. Reporting them as honoured under a box would let a document
+    // set a margin the box never subtracts.
+    let flex = matches!(type_token, "flex" | "Flex");
     CHILD_ATTR_SCHEMA
         .iter()
         .filter(|attr| {
-            attr.honoured
+            (attr.honoured && (attr.key != "margin" || flex))
                 || (grid && matches!(attr.key, "col" | "row" | "col_span" | "row_span"))
                 || (border && matches!(attr.key, "region" | "extent"))
+                || (flex && attr.key == "margin")
         })
         .map(|attr| attr.key)
         .collect()
@@ -316,7 +352,13 @@ pub fn validate_child_attrs(
                 path: path.to_vec(),
                 diagnostic: LayoutDiagnostic::DroppedField {
                     key: key.clone(),
-                    reason: "the enclosing layout kind places its children itself",
+                    reason: if attr.key == "overflow" {
+                        "this build has no per-node overflow carrier"
+                    } else if attr.key == "margin" {
+                        "only the `flex` layout consumes per-child margins"
+                    } else {
+                        "the enclosing layout kind places its children itself"
+                    },
                 },
             }),
             Some(attr) => {
@@ -515,6 +557,16 @@ fn value_matches_kind(value: &str, kind: ParamKind) -> bool {
                 && body.bytes().all(|byte| byte.is_ascii_digit() || byte == b'.')
         }
         ParamKind::Bool => value == "true" || value == "false",
+        // A scalar text reaches this only for a document that spelled a four-value inset as a
+        // list: `[top, right, bottom, left]`, `[vertical, horizontal]`, or one uniform integer.
+        ParamKind::Inset => {
+            !value.trim().is_empty()
+                && value.split(',').all(|part| {
+                    let part = part.trim();
+                    !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit())
+                })
+        }
+        ParamKind::Overflow => matches!(value, "clip" | "visible" | "scroll"),
     }
 }
 
@@ -602,6 +654,37 @@ mod tests {
         assert!(issues[0].describe().contains("not applied"));
     }
 
+    /// RW-109: the child size constraints are honoured, and the two fields this build cannot
+    /// apply are diagnosed with a reason instead of being silently dropped.
+    #[test]
+    fn child_size_constraints_are_declared_and_classified() {
+        let mut attrs = HashMap::new();
+        attrs.insert(String::from("min_width"), String::from("120"));
+        attrs.insert(String::from("margin"), String::from("4, 8, 4, 8"));
+        attrs.insert(String::from("overflow"), String::from("clip"));
+
+        let honoured = child_attrs_honoured_by("hbox");
+        assert!(honoured.contains(&"min_width"), "a box honours the size hints: {honoured:?}");
+        assert!(!honoured.contains(&"margin"), "only flex consumes per-child margins");
+        assert!(!honoured.contains(&"overflow"));
+
+        let issues = validate_child_attrs(&attrs, "hbox", &[0]);
+        assert_eq!(issues.len(), 2, "margin and overflow are dropped: {issues:?}");
+        let reasons: Vec<&str> = issues
+            .iter()
+            .filter_map(|issue| match &issue.diagnostic {
+                LayoutDiagnostic::DroppedField { reason, .. } => Some(*reason),
+                _ => None,
+            })
+            .collect();
+        assert!(reasons.iter().any(|reason| reason.contains("flex")));
+        assert!(reasons.iter().any(|reason| reason.contains("overflow")));
+
+        // Under `flex` the margin is consumed, so only the overflow remains.
+        let flex_issues = validate_child_attrs(&attrs, "flex", &[0]);
+        assert_eq!(flex_issues.len(), 1, "{flex_issues:?}");
+    }
+
     /// A wrong-typed value is reported with the expected kind.
     #[test]
     fn a_wrong_kind_is_reported() {
@@ -641,6 +724,7 @@ mod tests {
             let json = match attr.key {
                 "stretch" => serde_json::json!({ "stretch": 7 }),
                 "region" => serde_json::json!({ "region": "north" }),
+                "overflow" => serde_json::json!({ "overflow": "clip" }),
                 key => serde_json::json!({ key: 3 }),
             };
             let attrs = ChildLayoutAttrs::from_value(&json);
@@ -652,6 +736,17 @@ mod tests {
                 "row_span" => attrs.row_span == Some(3),
                 "region" => attrs.region == Some(crate::layout::BorderRegion::North),
                 "extent" => attrs.extent == Some(3),
+                "min_width" => attrs.min_width == Some(3),
+                "min_height" => attrs.min_height == Some(3),
+                "pref_width" => attrs.pref_width == Some(3),
+                "pref_height" => attrs.pref_height == Some(3),
+                "max_width" => attrs.max_width == Some(3),
+                "max_height" => attrs.max_height == Some(3),
+                "margin" => {
+                    attrs.margin
+                        == Some(crate::style::EdgeOffsets { top: 3, right: 3, bottom: 3, left: 3 })
+                }
+                "overflow" => attrs.overflow == Some(crate::json::ChildOverflow::Clip),
                 other => panic!("`{other}` is declared by the schema but this test cannot read it"),
             };
             assert!(read, "the schema declares `{}` but the parser did not read it", attr.key);
@@ -664,7 +759,10 @@ mod tests {
         let grid = child_attrs_honoured_by("grid");
         assert!(grid.contains(&"col_span"), "{grid:?}");
         let hbox = child_attrs_honoured_by("hbox");
-        assert_eq!(hbox, vec!["stretch"], "a box layout places its children itself: {hbox:?}");
+        assert!(hbox.contains(&"stretch"), "{hbox:?}");
+        assert!(hbox.contains(&"min_width") && hbox.contains(&"max_height"), "{hbox:?}");
+        assert!(!hbox.contains(&"col_span"), "a box layout places its children itself: {hbox:?}");
+        assert!(!hbox.contains(&"margin"), "only flex consumes per-child margins: {hbox:?}");
 
         let mut child = HashMap::new();
         child.insert(String::from("col"), String::from("1"));
