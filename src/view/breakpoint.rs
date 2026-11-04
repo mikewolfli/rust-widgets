@@ -92,6 +92,32 @@ impl Breakpoint {
     pub fn current() -> Self {
         CURRENT.try_with(|cell| cell.get()).unwrap_or(Breakpoint::Expanded)
     }
+
+    /// The stable token this tier travels as in a declarative document.
+    ///
+    /// The JSON front end's per-node `"breakpoints"` list uses these three spellings. Keeping the
+    /// token here rather than in the parser means a saved document and the tier it names cannot
+    /// drift.
+    pub const fn token(self) -> &'static str {
+        match self {
+            Breakpoint::Compact => "compact",
+            Breakpoint::Medium => "medium",
+            Breakpoint::Expanded => "expanded",
+        }
+    }
+
+    /// The tier a token names, or `None` when the token is not one of [`Self::token`]'s.
+    ///
+    /// The inverse of [`Self::token`], so a document reader reports an unknown tier instead of
+    /// guessing (rule #12).
+    pub fn from_token(token: &str) -> Option<Self> {
+        match token {
+            "compact" => Some(Breakpoint::Compact),
+            "medium" => Some(Breakpoint::Medium),
+            "expanded" => Some(Breakpoint::Expanded),
+            _ => None,
+        }
+    }
 }
 
 impl Default for Breakpoint {

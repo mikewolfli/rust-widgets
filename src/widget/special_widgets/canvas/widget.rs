@@ -17,8 +17,8 @@
 mod ext;
 
 pub use ext::{
-    CanvasDropEvent, CanvasDropHandler, CanvasImage, CanvasTag, CanvasTransform, GridSpace,
-    GuideAxis,
+    CanvasDropEvent, CanvasDropHandler, CanvasImage, CanvasRulerTick, CanvasTag, CanvasTransform,
+    GridSpace, GuideAxis,
 };
 
 use crate::compat::Arc;
@@ -152,6 +152,8 @@ pub struct Canvas {
     grid_space: GridSpace,
     /// Whether the ruler strips are painted along the top and left edges (RW-32).
     rulers_visible: bool,
+    /// The model-unit spacing between ruler ticks, or `0` to follow `grid_step` (RW-124).
+    ruler_unit: u32,
     /// Alignment guides, in model coordinates (RW-32).
     guides: Vec<(GuideAxis, i32)>,
     /// Host-requested cursor shape, or `None` for the drawing-surface default (RW-33).
@@ -215,6 +217,7 @@ impl Canvas {
             suppress_overlay: false,
             grid_space: GridSpace::Screen,
             rulers_visible: false,
+            ruler_unit: 0,
             guides: Vec::new(),
             cursor_icon_override: None,
             pan_enabled: false,
@@ -1295,6 +1298,15 @@ impl WidgetProperties for Canvas {
             "show_grid" => Ok(CapabilityValue::Bool(self.show_grid())),
             "grid_step" => Ok(CapabilityValue::UInt(self.grid_step() as u64)),
             "snap_to_grid" => Ok(CapabilityValue::Bool(self.snap_to_grid())),
+            "grid_space" => Ok(CapabilityValue::String(
+                match self.grid_space() {
+                    GridSpace::Screen => "screen",
+                    GridSpace::Model => "model",
+                }
+                .into(),
+            )),
+            "rulers_visible" => Ok(CapabilityValue::Bool(self.rulers_visible())),
+            "ruler_unit" => Ok(CapabilityValue::UInt(self.ruler_unit() as u64)),
             "zoom_range" => {
                 let (min, max) = self.zoom_range();
                 Ok(CapabilityValue::Tuple(crate::compat::Vec::from([
@@ -1329,6 +1341,25 @@ impl WidgetProperties for Canvas {
                 self.set_snap_to_grid(crate::widget::capability::coercion::expect_bool(value)?);
                 Ok(())
             }
+            "grid_space" => {
+                let token = crate::widget::capability::coercion::expect_string(value)?;
+                let space = match token.as_str() {
+                    "screen" => GridSpace::Screen,
+                    "model" => GridSpace::Model,
+                    _ => return Err(CapabilityAccessError::OutOfRange),
+                };
+                self.set_grid_space(space);
+                Ok(())
+            }
+            "rulers_visible" => {
+                self.set_rulers_visible(crate::widget::capability::coercion::expect_bool(value)?);
+                Ok(())
+            }
+            "ruler_unit" => {
+                let unit = crate::widget::capability::coercion::expect_u32(value)?;
+                self.set_ruler_unit(unit);
+                Ok(())
+            }
             "zoom_range" => {
                 let bounds = crate::widget::capability::coercion::expect_number_list(value)?;
                 if bounds.len() != 2 {
@@ -1360,6 +1391,9 @@ impl WidgetProperties for Canvas {
             "show_grid",
             "grid_step",
             "snap_to_grid",
+            "grid_space",
+            "rulers_visible",
+            "ruler_unit",
             "zoom_range",
             "zoom_step",
             BASE_PROPERTY_NAMES
@@ -1419,32 +1453,17 @@ impl Draw for Canvas {
         if self.show_grid && rect.width > 0 && rect.height > 0 {
             let step = self.grid_step.max(1);
             let grid_color = border.with_alpha(96);
-            // The grid is a fixed background: it only changes with the geometry, the step or the
-            // resolved colours. Wrapping it in a cached layer means a still canvas re-uses the
-            // previous frame's pixels instead of re-issuing every line (SP-P54).
+            // The grid is a fixed background: it only changes with the geometry, the step, the
+            // resolved colours or — in model space — the transform. Wrapping it in a cached layer
+            // means a still canvas re-uses the previous frame's pixels instead of re-issuing every
+            // line (SP-P54).
             let key = self.grid_cache_key
                 ^ color_key(background)
                 ^ color_key(border)
-                ^ ((step as u64) << 48);
+                ^ ((step as u64) << 48)
+                ^ self.grid_placement_key();
             context.push_layer_group(rect, None, 1.0, Some(key));
-            let mut x = rect.x;
-            while x <= rect.x + rect.width as i32 {
-                context.draw_line(
-                    Point::new(x, rect.y),
-                    Point::new(x, rect.y + rect.height as i32),
-                    grid_color,
-                );
-                x += step as i32;
-            }
-            let mut y = rect.y;
-            while y <= rect.y + rect.height as i32 {
-                context.draw_line(
-                    Point::new(rect.x, y),
-                    Point::new(rect.x + rect.width as i32, y),
-                    grid_color,
-                );
-                y += step as i32;
-            }
+            self.draw_grid_lines(context, rect, grid_color);
             context.pop_layer();
         }
         // Replay every visible layer in painting order, each inside its own render-cached
@@ -2508,6 +2527,7 @@ mod tests {
         canvas.set_snap_to_grid(true);
         canvas.set_grid_space(GridSpace::Model);
         canvas.set_rulers_visible(true);
+        canvas.set_ruler_unit(100);
         canvas.set_pan_enabled(true);
         canvas.draw_guide(GuideAxis::Vertical, 12);
 
@@ -2520,12 +2540,39 @@ mod tests {
         assert!(restored.snap_to_grid());
         assert_eq!(restored.grid_space(), GridSpace::Model);
         assert!(restored.rulers_visible());
+        assert_eq!(restored.ruler_unit(), 100);
         assert!(restored.is_pan_enabled());
         assert_eq!(restored.guides(), canvas.guides());
-        assert_eq!(SaveState::state_version(&canvas), 1);
+        assert_eq!(SaveState::state_version(&canvas), 2);
 
         let before = restored.transform();
         assert!(!SaveState::restore_state(&mut restored, &[1, 2, 3]), "a short blob is refused");
         assert_eq!(restored.transform(), before, "a refused blob changes nothing");
+    }
+
+    /// RW-124: a model-space ruler names design units and maps them through the transform, so a
+    /// zoomed canvas keeps ticks on the design origin instead of a surface lattice.
+    #[test]
+    fn model_space_ruler_ticks_follow_the_transform() {
+        let mut canvas = Canvas::new(Rect::new(0, 0, 200, 100));
+        canvas.set_grid_space(GridSpace::Model);
+        canvas.set_ruler_unit(50);
+        canvas.set_transform(CanvasTransform { scale: 2.0, offset: Point::new(10, 0) });
+
+        let ticks = canvas.ruler_ticks();
+        let vertical: Vec<_> =
+            ticks.iter().filter(|tick| tick.axis == GuideAxis::Vertical).collect();
+        assert!(
+            vertical.iter().any(|tick| tick.model == 0 && tick.surface == 10),
+            "the design origin must land at the transform's offset: {vertical:?}"
+        );
+        assert!(
+            vertical.iter().any(|tick| tick.model == 50 && tick.surface == 110),
+            "50 design units at 2x must be 100 surface pixels from the origin: {vertical:?}"
+        );
+        assert!(
+            vertical.iter().all(|tick| tick.label == tick.model.to_string()),
+            "a model-space label names the design coordinate: {vertical:?}"
+        );
     }
 }

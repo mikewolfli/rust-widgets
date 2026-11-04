@@ -1668,7 +1668,7 @@ impl Draw for MapView {
     }
 }
 
-// The four companions live in a sibling module file so this one stays under the
+// The four companions live in a sibling module folder so this one stays under the
 // 2000-line production limit (principle #9). Re-exporting keeps their public
 // path unchanged: `map_view::TileLoader` and friends still resolve.
 pub use super::map_view_companions::{

@@ -221,12 +221,19 @@ pub struct MessageBox {
     icon: MessageBoxIcon,
     buttons: Vec<StandardButton>,
     default_button: Option<StandardButton>,
-    /// Cached translated labels, keyed by the button set (G-P09).
+    /// Host-supplied labels that replace a standard button's translated text (RW-123).
+    ///
+    /// A host with its own locale bundle can name the exact strings this dialog draws without
+    /// the library embedding every language or abandoning [`StandardButton`].
+    button_texts: Vec<(StandardButton, String)>,
+    /// The label cache's invalidation key for [`Self::button_texts`].
+    button_text_revision: u64,
+    /// Cached translated labels, keyed by the button set and the label overrides (G-P09).
     ///
     /// The draw path, `intrinsic_size` and the press hit test all need the same translated
     /// strings; translating them once per button-set change instead of once per call keeps
     /// the catalogue lookup off every frame.
-    label_cache: RefCell<Option<(Vec<StandardButton>, Rc<Vec<String>>)>>,
+    label_cache: RefCell<Option<MessageBoxLabelCache>>,
     /// The button Escape activates; `None` keeps the Cancel/No/Close fallback chain.
     escape_button: Option<StandardButton>,
     /// The action button under the pointer, for hover feedback.
@@ -286,6 +293,13 @@ pub struct MessageBox {
     /// The action button the keyboard focus ring is on.
     focus: Option<usize>,
 }
+
+/// The cached action-row labels: the button set, its override revision, and the strings.
+///
+/// Named because the tuple is written twice (the field and the refresh) and the bare form trips
+/// `clippy::type_complexity` (the same reason `CanvasHitCache` is a type).
+type MessageBoxLabelCache = (Vec<StandardButton>, u64, Rc<Vec<String>>);
+
 impl MessageBox {
     /// Creates an empty message box with no title or text, no icon, a single OK
     /// button as both the only and the default button, and modal mode enabled.
@@ -304,6 +318,8 @@ impl MessageBox {
             icon: MessageBoxIcon::NoIcon,
             buttons: vec![StandardButton::Ok],
             default_button: Some(StandardButton::Ok),
+            button_texts: Vec::new(),
+            button_text_revision: 0,
             label_cache: RefCell::new(None),
             escape_button: None,
             hovered: None,
@@ -553,6 +569,54 @@ impl MessageBox {
     pub fn set_buttons(&mut self, buttons: Vec<StandardButton>) {
         self.buttons = buttons;
         self.base.request_redraw();
+    }
+
+    /// Replaces the text drawn for `button`, keeping the standard button's identity (RW-123).
+    ///
+    /// This is the localisation door for a host whose language bundle is not the library's: the
+    /// dialog keeps using [`StandardButton`] (and therefore its accept/reject classification,
+    /// default-button and Escape rules), while the visible label comes from the host. An empty
+    /// string is drawn as an empty label; use [`Self::clear_button_text`] to return to the
+    /// translated standard text.
+    pub fn set_button_text(&mut self, button: StandardButton, text: impl Into<String>) {
+        let text = text.into();
+        if let Some(entry) = self.button_texts.iter_mut().find(|(known, _)| *known == button) {
+            if entry.1 == text {
+                return;
+            }
+            entry.1 = text;
+        } else {
+            self.button_texts.push((button, text));
+        }
+        self.button_text_revision = self.button_text_revision.wrapping_add(1);
+        self.base.request_redraw();
+    }
+
+    /// Removes a host-supplied label, returning the button to its translated standard text.
+    pub fn clear_button_text(&mut self, button: StandardButton) {
+        let before = self.button_texts.len();
+        self.button_texts.retain(|(known, _)| *known != button);
+        if self.button_texts.len() != before {
+            self.button_text_revision = self.button_text_revision.wrapping_add(1);
+            self.base.request_redraw();
+        }
+    }
+
+    /// The text the action row draws for `button`, translated or host-supplied.
+    ///
+    /// `None` when the button is not part of the current button set, so a caller cannot read a
+    /// label the dialog is not drawing.
+    pub fn button_text(&self, button: StandardButton) -> Option<String> {
+        if !self.buttons.contains(&button) {
+            return None;
+        }
+        Some(
+            self.button_texts
+                .iter()
+                .find(|(known, _)| *known == button)
+                .map(|(_, text)| text.clone())
+                .unwrap_or_else(|| button.translated_label()),
+        )
     }
     /// Sets which button Enter activates and requests a redraw.
     ///
@@ -1062,15 +1126,25 @@ impl MessageBox {
     /// is the background and the measured row is the content.
     /// The translated action labels, served from a cache keyed by the button set.
     fn labels(&self) -> Rc<Vec<String>> {
-        if let Some((buttons, labels)) = self.label_cache.borrow().as_ref() {
-            if *buttons == self.buttons {
+        if let Some((buttons, revision, labels)) = self.label_cache.borrow().as_ref() {
+            if *buttons == self.buttons && *revision == self.button_text_revision {
                 return Rc::clone(labels);
             }
         }
         let labels = Rc::new(
-            self.buttons.iter().map(|button| button.translated_label()).collect::<Vec<_>>(),
+            self.buttons
+                .iter()
+                .map(|button| {
+                    self.button_texts
+                        .iter()
+                        .find(|(candidate, _)| candidate == button)
+                        .map(|(_, text)| text.clone())
+                        .unwrap_or_else(|| button.translated_label())
+                })
+                .collect::<Vec<_>>(),
         );
-        *self.label_cache.borrow_mut() = Some((self.buttons.clone(), Rc::clone(&labels)));
+        *self.label_cache.borrow_mut() =
+            Some((self.buttons.clone(), self.button_text_revision, Rc::clone(&labels)));
         labels
     }
 
@@ -2754,5 +2828,44 @@ mod tests {
         // The ring is on Cancel now, so Enter activates it rather than the default.
         dialog.handle_event(&Event::key_press(key_codes::ENTER, 0));
         assert_eq!(*seen.lock().expect("lock"), vec![StandardButton::Cancel]);
+    }
+
+    /// RW-123: a host may localise the standard buttons without abandoning their identity, so
+    /// accept/reject, default-button and Escape rules keep working.
+    #[test]
+    fn a_host_can_supply_button_text_and_restore_the_standard_label() {
+        let mut dialog = MessageBox::new(Rect::new(0, 0, 360, 180));
+        dialog.set_buttons(vec![
+            StandardButton::Save,
+            StandardButton::Discard,
+            StandardButton::Cancel,
+        ]);
+        dialog.set_button_text(StandardButton::Save, "保存全部");
+        dialog.set_button_text(StandardButton::Discard, "放弃并退出");
+
+        assert_eq!(dialog.button_text(StandardButton::Save).as_deref(), Some("保存全部"));
+        assert_eq!(dialog.labels()[0], "保存全部");
+        assert_eq!(dialog.labels()[1], "放弃并退出");
+        assert_eq!(
+            dialog.labels()[2],
+            StandardButton::Cancel.translated_label(),
+            "an unoverridden button keeps the standard translated text"
+        );
+
+        // The identity is unchanged: the localised Save still accepts.
+        let seen = Arc::new(Mutex::new(Vec::<StandardButton>::new()));
+        let sink = Arc::clone(&seen);
+        dialog.accepted.connect(move || {
+            sink.lock().expect("lock").push(StandardButton::Save);
+        });
+        dialog.set_default_button(StandardButton::Save);
+        dialog.handle_event(&Event::key_press(key_codes::ENTER, 0));
+        assert_eq!(*seen.lock().expect("lock"), vec![StandardButton::Save]);
+
+        dialog.clear_button_text(StandardButton::Save);
+        assert_eq!(
+            dialog.button_text(StandardButton::Save),
+            Some(StandardButton::Save.translated_label())
+        );
     }
 }

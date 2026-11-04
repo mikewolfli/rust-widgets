@@ -321,7 +321,11 @@ const RULER_THICKNESS: i32 = 18;
 const RULER_TICK_MIN_SPACING: i32 = 8;
 
 /// Version tag of the blob produced by [`Canvas::save_state`].
-const CANVAS_STATE_VERSION: u8 = 1;
+///
+/// Version 2 added the ruler unit (RW-124). A blob written by version 1 has no byte for it and is
+/// refused rather than half-read, because guessing "grid step" for a document that chose another
+/// unit would change the ticks the host draws.
+const CANVAS_STATE_VERSION: u8 = 2;
 
 impl SaveState for Canvas {
     fn state_version(&self) -> u16 {
@@ -368,6 +372,55 @@ impl DropTarget for Canvas {
     /// decision, so the preview is the surface rectangle rather than an invented cell.
     fn preview_rect(&self, payload: &DragPayload, _pos: Point) -> Option<Rect> {
         self.can_accept(payload).then(|| self.base.geometry())
+    }
+}
+
+/// One ruler tick in surface pixels with the model coordinate its label names (RW-124).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CanvasRulerTick {
+    /// Which ruler the tick belongs to: `Vertical` is the top strip (a vertical tick line),
+    /// `Horizontal` is the left strip.
+    pub axis: GuideAxis,
+    /// Where the tick lands in the control's own pixels.
+    pub surface: i32,
+    /// The design coordinate the label should name.
+    pub model: i32,
+    /// `model` rendered as text, so a host need not format it itself.
+    pub label: String,
+}
+
+/// Pushes model-space ticks that fall inside the visible range.
+///
+/// `step` is a positive model distance. Positions are mapped through `to_surface`; a tick whose
+/// mapped pixel repeats the previous one is skipped, which keeps a low zoom from emitting dozens
+/// of labels on one pixel.
+fn push_model_ticks(
+    out: &mut Vec<(i32, i32)>,
+    first_model: i32,
+    last_model: i32,
+    step: i32,
+    to_surface: impl Fn(i32) -> i32,
+) {
+    if step <= 0 {
+        return;
+    }
+    let (min, max) = if first_model <= last_model {
+        (first_model, last_model)
+    } else {
+        (last_model, first_model)
+    };
+    let mut model = min.div_euclid(step) * step;
+    let mut previous_surface: Option<i32> = None;
+    while model <= max {
+        let surface = to_surface(model);
+        if previous_surface != Some(surface) {
+            out.push((surface, model));
+            previous_surface = Some(surface);
+        }
+        model = match model.checked_add(step) {
+            Some(next) => next,
+            None => break,
+        };
     }
 }
 
@@ -481,6 +534,187 @@ impl Canvas {
         self.rulers_visible
     }
 
+    /// The model-unit spacing between ruler ticks (RW-124).
+    ///
+    /// `0` means "follow the grid step", which is the pre-existing behaviour.
+    pub fn ruler_unit(&self) -> u32 {
+        self.ruler_unit
+    }
+
+    /// Sets the model-unit spacing between ruler ticks (RW-124).
+    ///
+    /// With [`GridSpace::Model`] this is the distance between labels in the design's own units, so
+    /// a 16-unit grid can carry a 100-unit ruler without the host re-deriving tick positions.
+    /// `0` restores the grid-step default. The redraw is requested only when the value changes.
+    pub fn set_ruler_unit(&mut self, unit: u32) {
+        if self.ruler_unit == unit {
+            return;
+        }
+        self.ruler_unit = unit;
+        self.base.request_redraw();
+    }
+
+    /// The ruler ticks for the current geometry, in surface coordinates with model labels (RW-124).
+    ///
+    /// A host that draws its own ruler labels calls this instead of re-deriving the spacing: the
+    /// returned `surface` is where the tick lands in the control's own pixels, and `model` is the
+    /// design coordinate the label should name. Ticks are returned for both axes, top (`Vertical`
+    /// guide axis, a vertical tick line) and left (`Horizontal`).
+    ///
+    /// In [`GridSpace::Screen`] the unit is a surface distance and the label is the model
+    /// coordinate the transform maps that pixel back to. In [`GridSpace::Model`] the unit is a
+    /// model distance, so the ticks stay on the same design coordinates at every zoom.
+    pub fn ruler_ticks(&self) -> Vec<CanvasRulerTick> {
+        let rect = self.base.geometry();
+        let unit = self.effective_ruler_unit();
+        let (xs, ys) = self.axis_ticks(rect, unit);
+        let mut ticks = Vec::with_capacity(xs.len() + ys.len());
+        for (surface, model) in xs {
+            ticks.push(CanvasRulerTick {
+                axis: GuideAxis::Vertical,
+                surface,
+                model,
+                label: crate::compat::format!("{model}"),
+            });
+        }
+        for (surface, model) in ys {
+            ticks.push(CanvasRulerTick {
+                axis: GuideAxis::Horizontal,
+                surface,
+                model,
+                label: crate::compat::format!("{model}"),
+            });
+        }
+        ticks
+    }
+
+    /// The unit a ruler tick interval uses, in the space [`Self::grid_space`] names.
+    fn effective_ruler_unit(&self) -> i32 {
+        let unit = if self.ruler_unit == 0 { self.grid_step } else { self.ruler_unit };
+        unit.max(1) as i32
+    }
+
+    /// The surface positions and model labels on both axes.
+    fn axis_ticks(&self, rect: Rect, unit: i32) -> (Vec<(i32, i32)>, Vec<(i32, i32)>) {
+        let mut xs = Vec::new();
+        let mut ys = Vec::new();
+        if rect.width == 0 || rect.height == 0 || unit <= 0 {
+            return (xs, ys);
+        }
+        match self.grid_space {
+            GridSpace::Model => {
+                let scale = if self.transform.scale.is_finite() && self.transform.scale > 0.0 {
+                    self.transform.scale
+                } else {
+                    1.0
+                };
+                // At a low zoom one model unit may be a fraction of a pixel; keep at least
+                // `RULER_TICK_MIN_SPACING` surface pixels between labelled ticks.
+                let min_model = ((RULER_TICK_MIN_SPACING as f32) / scale).ceil() as i32;
+                let step = unit.max(min_model).max(1);
+                let left = self.transform.inverse_point(Point::new(rect.x, 0)).x;
+                let right =
+                    self.transform.inverse_point(Point::new(rect.x + rect.width as i32, 0)).x;
+                push_model_ticks(&mut xs, left, right, step, |x| {
+                    self.transform.point(Point::new(x, 0)).x
+                });
+                let top = self.transform.inverse_point(Point::new(0, rect.y)).y;
+                let bottom =
+                    self.transform.inverse_point(Point::new(0, rect.y + rect.height as i32)).y;
+                push_model_ticks(&mut ys, top, bottom, step, |y| {
+                    self.transform.point(Point::new(0, y)).y
+                });
+            }
+            GridSpace::Screen => {
+                let step = unit.max(RULER_TICK_MIN_SPACING).max(1);
+                let mut x = rect.x.div_euclid(step) * step;
+                while x <= rect.x + rect.width as i32 {
+                    let model = self.transform.inverse_point(Point::new(x, 0)).x;
+                    xs.push((x, model));
+                    x += step;
+                }
+                let mut y = rect.y.div_euclid(step) * step;
+                while y <= rect.y + rect.height as i32 {
+                    let model = self.transform.inverse_point(Point::new(0, y)).y;
+                    ys.push((y, model));
+                    y += step;
+                }
+            }
+        }
+        (xs, ys)
+    }
+
+    /// Draws the background grid on the surface (SP-P54).
+    ///
+    /// In model space the lines are the multiples of `grid_step` **design units**, mapped through
+    /// the transform, so a zoomed or panned canvas shows the design grid at the design origin
+    /// rather than a pixel lattice anchored to the control's corner (RW-124). Screen space keeps
+    /// the historical pixel lattice.
+    pub(super) fn draw_grid_lines(&self, context: &mut RenderContext, rect: Rect, color: Color) {
+        let unit = self.grid_step.max(1) as i32;
+        let (xs, ys) = match self.grid_space {
+            GridSpace::Model => {
+                let mut xs = Vec::new();
+                let mut ys = Vec::new();
+                let left = self.transform.inverse_point(Point::new(rect.x, 0)).x;
+                let right =
+                    self.transform.inverse_point(Point::new(rect.x + rect.width as i32, 0)).x;
+                push_model_ticks(&mut xs, left, right, unit, |x| {
+                    self.transform.point(Point::new(x, 0)).x
+                });
+                let top = self.transform.inverse_point(Point::new(0, rect.y)).y;
+                let bottom =
+                    self.transform.inverse_point(Point::new(0, rect.y + rect.height as i32)).y;
+                push_model_ticks(&mut ys, top, bottom, unit, |y| {
+                    self.transform.point(Point::new(0, y)).y
+                });
+                (xs, ys)
+            }
+            GridSpace::Screen => {
+                let mut xs = Vec::new();
+                let mut x = rect.x;
+                while x <= rect.x + rect.width as i32 {
+                    xs.push((x, x));
+                    x += unit;
+                }
+                let mut ys = Vec::new();
+                let mut y = rect.y;
+                while y <= rect.y + rect.height as i32 {
+                    ys.push((y, y));
+                    y += unit;
+                }
+                (xs, ys)
+            }
+        };
+        for (surface, _) in xs {
+            context.draw_line(
+                Point::new(surface, rect.y),
+                Point::new(surface, rect.y + rect.height as i32),
+                color,
+            );
+        }
+        for (surface, _) in ys {
+            context.draw_line(
+                Point::new(rect.x, surface),
+                Point::new(rect.x + rect.width as i32, surface),
+                color,
+            );
+        }
+    }
+
+    /// A cache key that changes when a model-space grid's placement changes (RW-124).
+    ///
+    /// A screen-space grid depends only on the step; a model-space one also depends on the
+    /// transform, and a cached layer without it would keep a grid the pan has moved.
+    pub(super) fn grid_placement_key(&self) -> u64 {
+        if self.grid_space != GridSpace::Model {
+            return 0;
+        }
+        (self.transform.scale.to_bits() as u64).rotate_left(21)
+            ^ (self.transform.offset.x as u32 as u64).rotate_left(9)
+            ^ (self.transform.offset.y as u32 as u64)
+    }
+
     /// Shows or hides the ruler strips along the top and left edges.
     pub fn set_rulers_visible(&mut self, visible: bool) {
         if self.rulers_visible == visible {
@@ -567,7 +801,7 @@ impl Canvas {
         }
     }
 
-    /// Paints the top and left ruler strips with ticks spaced by the grid step.
+    /// Paints the top and left ruler strips with ticks spaced by the ruler unit.
     fn draw_rulers(&self, context: &mut RenderContext, rect: Rect) {
         if rect.width == 0 || rect.height == 0 {
             return;
@@ -584,24 +818,24 @@ impl Canvas {
             rect: Rect::new(rect.x, rect.y, side_width.max(0) as u32, rect.height),
             color: band,
         });
-        let step = (self.grid_step.max(1) as i32).max(RULER_TICK_MIN_SPACING);
-        let mut x = rect.x + step;
-        while x < rect.x + rect.width as i32 {
+        // The ticks come from the same derivation `ruler_ticks` exposes, so a host that draws
+        // labels from that list and the control that paints the ticks cannot disagree about
+        // where a label belongs (RW-124).
+        let unit = self.effective_ruler_unit();
+        let (xs, ys) = self.axis_ticks(rect, unit);
+        for (x, _) in xs {
             context.draw_line(
                 Point::new(x, rect.y + thickness - 6),
                 Point::new(x, rect.y + thickness),
                 tick,
             );
-            x += step;
         }
-        let mut y = rect.y + step;
-        while y < rect.y + rect.height as i32 {
+        for (y, _) in ys {
             context.draw_line(
                 Point::new(rect.x + side_width - 6, y),
                 Point::new(rect.x + side_width, y),
                 tick,
             );
-            y += step;
         }
     }
 
@@ -706,7 +940,7 @@ impl Canvas {
     /// pan switch. The drawing commands belong to the host's document and are deliberately left
     /// out, exactly as the canvas's own layer model is not a persistence format.
     pub fn save_state(&self) -> Vec<u8> {
-        let mut state = Vec::with_capacity(32 + self.guides.len() * 5);
+        let mut state = Vec::with_capacity(36 + self.guides.len() * 5);
         state.push(CANVAS_STATE_VERSION);
         state.extend_from_slice(&self.transform.scale.to_le_bytes());
         state.extend_from_slice(&self.transform.offset.x.to_le_bytes());
@@ -721,6 +955,7 @@ impl Canvas {
         flags |= u8::from(self.pan_enabled) << 6;
         state.push(flags);
         state.extend_from_slice(&self.grid_step.to_le_bytes());
+        state.extend_from_slice(&self.ruler_unit.to_le_bytes());
         state.extend_from_slice(&self.zoom_min.to_le_bytes());
         state.extend_from_slice(&self.zoom_max.to_le_bytes());
         state.extend_from_slice(&self.zoom_step.to_le_bytes());
@@ -741,7 +976,7 @@ impl Canvas {
     /// Returns `false` and leaves the canvas untouched when the blob is truncated, carries a
     /// different version, or contains an invalid transform/zoom range.
     pub fn restore_state(&mut self, state: &[u8]) -> bool {
-        if state.len() < 32 || state[0] != CANVAS_STATE_VERSION {
+        if state.len() < 36 || state[0] != CANVAS_STATE_VERSION {
             return false;
         }
         let scale = f32::from_le_bytes([state[1], state[2], state[3], state[4]]);
@@ -749,11 +984,12 @@ impl Canvas {
         let offset_y = i32::from_le_bytes([state[9], state[10], state[11], state[12]]);
         let flags = state[13];
         let grid_step = u32::from_le_bytes([state[14], state[15], state[16], state[17]]);
-        let zoom_min = f32::from_le_bytes([state[18], state[19], state[20], state[21]]);
-        let zoom_max = f32::from_le_bytes([state[22], state[23], state[24], state[25]]);
-        let zoom_step = f32::from_le_bytes([state[26], state[27], state[28], state[29]]);
-        let guide_count = u16::from_le_bytes([state[30], state[31]]) as usize;
-        if state.len() != 32 + guide_count * 5 {
+        let ruler_unit = u32::from_le_bytes([state[18], state[19], state[20], state[21]]);
+        let zoom_min = f32::from_le_bytes([state[22], state[23], state[24], state[25]]);
+        let zoom_max = f32::from_le_bytes([state[26], state[27], state[28], state[29]]);
+        let zoom_step = f32::from_le_bytes([state[30], state[31], state[32], state[33]]);
+        let guide_count = u16::from_le_bytes([state[34], state[35]]) as usize;
+        if state.len() != 36 + guide_count * 5 {
             return false;
         }
         if !scale.is_finite()
@@ -768,7 +1004,7 @@ impl Canvas {
             return false;
         }
         let mut guides = Vec::with_capacity(guide_count);
-        let mut cursor = 32usize;
+        let mut cursor = 36usize;
         for _ in 0..guide_count {
             let axis = match state[cursor] {
                 0 => GuideAxis::Horizontal,
@@ -796,6 +1032,7 @@ impl Canvas {
         self.pan_enabled = flags & 0b0100_0000 != 0;
         self.panning = false;
         self.grid_step = grid_step.max(1);
+        self.ruler_unit = ruler_unit;
         self.zoom_min = zoom_min;
         self.zoom_max = zoom_max;
         self.zoom_step = zoom_step;

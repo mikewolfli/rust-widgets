@@ -1277,6 +1277,9 @@ pub fn default_widget_property_default_value(
             "show_grid" => CapabilityValue::Bool(false),
             "grid_step" => CapabilityValue::UInt(20),
             "snap_to_grid" => CapabilityValue::Bool(false),
+            "grid_space" => CapabilityValue::String("screen".to_string()),
+            "rulers_visible" => CapabilityValue::Bool(false),
+            "ruler_unit" => CapabilityValue::UInt(0),
             // The control stores these as `f32`, so the declared default is the same value
             // rounded through `f32`: a write of the default must read back byte-for-byte.
             "zoom_range" => CapabilityValue::Tuple(crate::compat::Vec::from([

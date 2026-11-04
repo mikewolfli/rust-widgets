@@ -17,7 +17,7 @@
 //! and re-exports (principle #8).
 
 mod capability;
-/// The Gantt family: the chart control and the two companions it ships with.
+/// The Gantt family: the chart control and the three companions it ships with.
 pub mod gantt;
 /// Kanban board and the card/column controls it composes.
 pub mod kanban_board;

@@ -1775,3 +1775,40 @@ fn presentation_only_controls_are_the_declared_set() {
          presentation-only (add it here with a reason) or publish the missing command"
     );
 }
+
+/// RW-122: the `text` a person can edit is marked as user input in the capability table, and the
+/// text of a control that only displays a value is not. A preview uses this flag to tell a
+/// declaration write from a value a person changed.
+#[test]
+fn editable_text_properties_are_marked_as_user_input() {
+    let factory = WidgetFactory::shared();
+    for control in [
+        "line_edit",
+        "password_edit",
+        "phone_input",
+        "email_input",
+        "text_edit",
+        "text_area",
+        "markdown_editor",
+        "search_box",
+        "inplace_editor",
+        "masked_edit",
+        "auto_complete_edit",
+        "editable_combo_box",
+        "rich_edit",
+        "search_bar",
+        "code_editor",
+        "chip_input",
+        "floating_label",
+    ] {
+        let schema = factory
+            .property_schema(control, "text")
+            .unwrap_or_else(|error| panic!("{control} must publish `text`: {error:?}"));
+        assert!(schema.user_input, "{control}.text is user input");
+    }
+    for control in ["label", "button", "list_box", "message_box"] {
+        if let Ok(schema) = factory.property_schema(control, "text") {
+            assert!(!schema.user_input, "{control}.text is displayed, not typed");
+        }
+    }
+}

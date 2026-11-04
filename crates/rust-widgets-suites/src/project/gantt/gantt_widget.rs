@@ -2358,7 +2358,8 @@ impl Draw for GanttWidget {
     }
 }
 
-// The two companions live in the sibling `gantt_companions` module so this file
+// The three companion controls live in the sibling `gantt_companions` module folder so this
+// file
 // stays under the 2000-line production limit (principle #9). Aliasing the sibling
 // keeps both their historical module path (`gantt_widget::companions`) and their
 // re-exported names (`gantt_widget::TimelineAxis` and friends) unchanged.

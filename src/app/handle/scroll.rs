@@ -166,5 +166,91 @@ impl ScrollAreaHandle {
 }
 
 // ═══════════════════════════════════════════════════════════════
+// Row selection – generic read/write pair (RW-122)
+// ═══════════════════════════════════════════════════════════════
+
+/// Writes a row container's selection through the property it publishes.
+///
+/// # Why a generic entry and not one property name
+///
+/// Row containers already publish their selection under three names (`current_row` on a list box,
+/// `current_index` on tab-like containers, `selected_index` on tables and trees). This reads the
+/// control's own capability table and writes the property it actually has, with the carrier its
+/// declared kind asks for — a fourth spelling in the handle layer would be a parallel
+/// implementation of the same fact (principle #101).
+///
+/// Only a control that also publishes `scroll_row` participates, so a tab widget's
+/// `current_index` is not mistaken for a data row and a spin box's value is not a selection.
+///
+/// `false` means "this control has no writable selected-row property", which is distinct from a
+/// refused write: the latter is logged by the property funnel.
+pub(crate) fn write_selection_row(id: ObjectId, row: usize) -> bool {
+    let Some((name, kind)) = selection_row_property(id) else {
+        return false;
+    };
+    match selection_row_carrier(kind, row) {
+        Some(value) => write_control_property(id, name, value),
+        None => false,
+    }
+}
+
+/// Reads a row container's selected row, whichever selected-row property it publishes.
+pub(crate) fn read_selection_row(id: ObjectId) -> Option<usize> {
+    let (name, _) = selection_row_property(id)?;
+    match read_control_property(id, name) {
+        Some(crate::widget::capability::CapabilityValue::UInt(value)) => {
+            usize::try_from(value).ok()
+        }
+        Some(crate::widget::capability::CapabilityValue::Int(value)) => usize::try_from(value).ok(),
+        Some(crate::widget::capability::CapabilityValue::Float(value)) if value >= 0.0 => {
+            Some(value.round() as usize)
+        }
+        _ => None,
+    }
+}
+
+/// The property name (and declared kind) a row container publishes its selection under.
+///
+/// The candidates are ordered from most specific to most general. A control that publishes both
+/// `current_row` and `selected_index` (a list box) answers with `current_row`, which is its
+/// authoritative selection; a table answers with `selected_index`.
+fn selection_row_property(
+    id: ObjectId,
+) -> Option<(&'static str, crate::widget::capability::PropertyValueKind)> {
+    crate::widget::runtime::with_widget(id, |widget| {
+        let factory = crate::widget::capability::WidgetFactory::shared();
+        let capability = factory.capability_for_kind_instance(widget)?;
+        let publishes = |name: &str| {
+            capability.properties.iter().any(|schema| schema.name == name && schema.readable)
+        };
+        if !publishes("scroll_row") {
+            return None;
+        }
+        ["current_row", "selected_index", "current_index"].into_iter().find_map(|name| {
+            capability
+                .properties
+                .iter()
+                .find(|schema| schema.name == name && schema.readable && schema.writable)
+                .map(|schema| (name, schema.value_kind))
+        })
+    })
+    .flatten()
+}
+
+/// Builds the value a selected-row property's declared kind accepts.
+fn selection_row_carrier(
+    kind: crate::widget::capability::PropertyValueKind,
+    row: usize,
+) -> Option<crate::widget::capability::CapabilityValue> {
+    use crate::widget::capability::PropertyValueKind as K;
+    match kind {
+        K::UInt => u64::try_from(row).ok().map(crate::widget::capability::CapabilityValue::UInt),
+        K::Int => i64::try_from(row).ok().map(crate::widget::capability::CapabilityValue::Int),
+        K::Float | K::Number => Some(crate::widget::capability::CapabilityValue::Float(row as f64)),
+        _ => None,
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════
 // TabWidgetHandle – content operations
 // ═══════════════════════════════════════════════════════════════

@@ -121,6 +121,49 @@ fn set_text_get_text_roundtrip() {
     assert_eq!(editor.text(), "hello world");
 }
 
+/// RW-120: `set_text` is a user-level replacement, so undo returns to the previous text.
+#[test]
+fn set_text_is_undoable() {
+    let mut editor = editor();
+    editor.set_text("first");
+    editor.set_text("second");
+    assert!(editor.can_undo());
+    assert!(editor.undo());
+    assert_eq!(editor.text(), "first");
+}
+
+/// RW-120: loading a document pushes no checkpoint and clears the previous document's history,
+/// so the first Ctrl+Z cannot empty the buffer the host just opened.
+#[test]
+fn load_document_is_not_undoable_and_clears_stale_history() {
+    let mut editor = editor();
+    editor.set_text("before");
+    editor.set_text("user edit");
+    assert!(editor.can_undo());
+
+    editor.load_document("loaded");
+    assert_eq!(editor.text(), "loaded");
+    assert!(!editor.can_undo(), "a load must not be a checkpoint");
+    assert!(!editor.undo(), "undo must not restore the previous document");
+    assert_eq!(editor.text(), "loaded");
+}
+
+/// RW-121: an already-created view can join a shared document without being rebuilt.
+#[test]
+fn link_document_joins_an_existing_shared_document() {
+    let mut editor = editor();
+    let mut document = CodeEditorDocument::new("shared");
+    editor.link_document(&document);
+    assert_eq!(editor.text(), "shared");
+
+    document.set_text("edited elsewhere");
+    assert_eq!(
+        editor.text(),
+        "edited elsewhere",
+        "the view reads the same buffer the document handle edited"
+    );
+}
+
 #[test]
 fn append_line_grows_document_and_moves_caret() {
     let mut editor = editor();

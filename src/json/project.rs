@@ -65,6 +65,12 @@ pub struct ProjectNode {
     pub marker_declarations: Vec<(String, Value)>,
     /// Child indices, in document order.
     pub children: Vec<usize>,
+    /// How many of [`Self::children`] came from the node's direct `children` array.
+    ///
+    /// The rest came from `layout.children` and are the members its layout places. The count is
+    /// taken from **accepted** children, so an entry the parser rejected cannot shift a direct
+    /// child into the layout (RW-117). A node with no `layout` has this equal to the child count.
+    pub direct_children: usize,
     /// The registry command this node references, when it declares `action_id`.
     ///
     /// A menu/toolbar node uses this instead of repeating text and flags: the command lives in the
@@ -471,6 +477,7 @@ fn collect_preorder(
             .filter_map(|(key, _)| obj.get(*key).map(|v| (String::from(*key), v.clone())))
             .collect(),
         children: Vec::new(),
+        direct_children: 0,
         action_id: obj.get("action_id").and_then(Value::as_str).map(String::from),
     });
 
@@ -485,14 +492,14 @@ fn collect_preorder(
     //
     // The loader reads both, so a generator that read only one would generate a different tree from
     // the one the running program shows — the disagreement T-24 exists to detect.
-    let mut child_arrays: Vec<&Value> = Vec::new();
+    let mut child_arrays: Vec<(&Value, bool)> = Vec::new();
     if let Some(direct) = obj.get("children") {
-        child_arrays.push(direct);
+        child_arrays.push((direct, true));
     }
     if let Some(layout_children) =
         obj.get("layout").and_then(|l| l.as_object()).and_then(|l| l.get("children"))
     {
-        child_arrays.push(layout_children);
+        child_arrays.push((layout_children, false));
     }
 
     // A single running index across both child sources. `children` and `layout.children` are two
@@ -502,7 +509,8 @@ fn collect_preorder(
     // place of the layout child. Enumerating the accepted children in one pass keeps every child's
     // path globally unique and stable for a given document.
     let mut child_index = 0usize;
-    for child_array in child_arrays {
+    let mut direct_children = 0usize;
+    for (child_array, direct) in child_arrays {
         let Some(child_values) = child_array.as_array() else {
             continue;
         };
@@ -519,10 +527,14 @@ fn collect_preorder(
             collect_preorder(&child_widget.to_lowercase(), child_body, path, depth + 1, nodes)?;
             path.pop();
             children.push(before);
+            if direct {
+                direct_children += 1;
+            }
             child_index += 1;
         }
     }
     nodes[own_index].children = children;
+    nodes[own_index].direct_children = direct_children;
     Ok(())
 }
 

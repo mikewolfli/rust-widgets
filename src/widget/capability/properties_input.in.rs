@@ -272,7 +272,7 @@ macro_rules! impl_properties_input {
         ];
 
         pub(crate) const LINE_EDIT_PROPERTIES: &[PropertySchema] = &[
-            PropertySchema::new("text", PropertyValueKind::String, true, true),
+            PropertySchema::new("text", PropertyValueKind::String, true, true).user_input(),
             PropertySchema::new("placeholder_text", PropertyValueKind::String, true, true),
             PropertySchema::new("max_length", PropertyValueKind::UInt, true, true),
             PropertySchema::new("read_only", PropertyValueKind::Bool, true, true),
@@ -330,7 +330,7 @@ macro_rules! impl_properties_input {
             // `set_max_length` / `set_read_only` / `set_line_wrap`. They were
             // declared `false, false`, which made the property route refuse
             // names the control publishes.
-            PropertySchema::new("text", PropertyValueKind::String, true, true),
+            PropertySchema::new("text", PropertyValueKind::String, true, true).user_input(),
             PropertySchema::new("placeholder_text", PropertyValueKind::String, true, true),
             PropertySchema::new("max_length", PropertyValueKind::UInt, true, true),
             PropertySchema::new("read_only", PropertyValueKind::Bool, true, true),
@@ -401,7 +401,7 @@ macro_rules! impl_properties_input {
         ];
 
         pub(crate) const TEXT_AREA_PROPERTIES: &[PropertySchema] = &[
-            PropertySchema::new("text", PropertyValueKind::String, true, true),
+            PropertySchema::new("text", PropertyValueKind::String, true, true).user_input(),
             PropertySchema::new("placeholder", PropertyValueKind::String, true, true),
             PropertySchema::new("read_only", PropertyValueKind::Bool, true, true),
             // The selected range as the `"start,end"` pair (API-03).
@@ -440,7 +440,7 @@ macro_rules! impl_properties_input {
         // reversible assignment; `cursor_line` is not, because the editor owns
         // where the caret sits in response to edits.
         pub(crate) const MARKDOWN_EDITOR_PROPERTIES: &[PropertySchema] = &[
-            PropertySchema::new("text", PropertyValueKind::String, true, true),
+            PropertySchema::new("text", PropertyValueKind::String, true, true).user_input(),
             PropertySchema::new("preview_mode", PropertyValueKind::Bool, true, true),
             PropertySchema::new("line_count", PropertyValueKind::UInt, true, false),
             PropertySchema::new("word_count", PropertyValueKind::UInt, true, false),
@@ -476,7 +476,7 @@ macro_rules! impl_properties_input {
 
         #[cfg(not(alloc_frugal))]
         pub(crate) const SEARCH_BOX_PROPERTIES: &[PropertySchema] = &[
-            PropertySchema::new("text", PropertyValueKind::String, true, true),
+            PropertySchema::new("text", PropertyValueKind::String, true, true).user_input(),
             PropertySchema::new("placeholder", PropertyValueKind::String, true, true),
             // The value's horizontal alignment. Only the three horizontal tokens are accepted: the
             // value is centred vertically in the field band by the field's own layout, so a
@@ -508,7 +508,7 @@ macro_rules! impl_properties_input {
         pub(crate) const CHIP_INPUT_PROPERTIES: &[PropertySchema] = &[
             PropertySchema::new("items", PropertyValueKind::Records, true, true),
             PropertySchema::new("item_count", PropertyValueKind::UInt, true, false),
-            PropertySchema::new("text", PropertyValueKind::String, true, true),
+            PropertySchema::new("text", PropertyValueKind::String, true, true).user_input(),
             PropertySchema::new("placeholder", PropertyValueKind::String, true, true),
             PropertySchema::new("separator", PropertyValueKind::String, true, true),
             PropertySchema::new("max_count", PropertyValueKind::UInt, true, true),
@@ -531,7 +531,7 @@ macro_rules! impl_properties_input {
 
         #[cfg(not(alloc_frugal))]
         pub(crate) const INPLACE_EDITOR_PROPERTIES: &[PropertySchema] = &[
-            PropertySchema::new("text", PropertyValueKind::String, true, true),
+            PropertySchema::new("text", PropertyValueKind::String, true, true).user_input(),
             PropertySchema::new("editing", PropertyValueKind::Bool, true, true),
             // A comma-joined set of trigger names (`double_click`, `single_click`, `f2`, or
             // `none`), so it is free text rather than a single-choice enum.
@@ -555,7 +555,7 @@ macro_rules! impl_properties_input {
 
         #[cfg(not(alloc_frugal))]
         pub(crate) const MASKED_EDIT_PROPERTIES: &[PropertySchema] = &[
-            PropertySchema::new("text", PropertyValueKind::String, true, true),
+            PropertySchema::new("text", PropertyValueKind::String, true, true).user_input(),
             PropertySchema::new("mask", PropertyValueKind::String, true, true),
             // The field's content horizontal alignment. Only the three horizontal tokens are accepted:
             // the characters are centred vertically in the field band by the field's own layout, so a
@@ -569,7 +569,7 @@ macro_rules! impl_properties_input {
 
         #[cfg(not(alloc_frugal))]
         pub(crate) const AUTO_COMPLETE_EDIT_PROPERTIES: &[PropertySchema] = &[
-            PropertySchema::new("text", PropertyValueKind::String, true, true),
+            PropertySchema::new("text", PropertyValueKind::String, true, true).user_input(),
             // I-04: the empty-state text the field paints.
             PropertySchema::new("placeholder", PropertyValueKind::String, true, true),
             // The count describes the list; these describe the control. A consumer that could only read
@@ -648,7 +648,7 @@ macro_rules! impl_properties_input {
 
         #[cfg(not(alloc_frugal))]
         pub(crate) const FLOATING_LABEL_PROPERTIES: &[PropertySchema] = &[
-            PropertySchema::new("text", PropertyValueKind::String, true, true),
+            PropertySchema::new("text", PropertyValueKind::String, true, true).user_input(),
             // The caption that floats above the field, distinct from `text` (the content
             // the user types). Declared because the control answers it; the schema and the
             // contract disagreeing about which properties exist is itself the defect this
@@ -701,7 +701,7 @@ macro_rules! impl_properties_input {
 
         #[cfg(not(alloc_frugal))]
         pub(crate) const EDITABLE_COMBO_BOX_PROPERTIES: &[PropertySchema] = &[
-            PropertySchema::new("text", PropertyValueKind::String, true, true),
+            PropertySchema::new("text", PropertyValueKind::String, true, true).user_input(),
             PropertySchema::new("item_count", PropertyValueKind::UInt, true, false),
             // The field's caret, the popup's row cap (nullable) and its scroll position.
             PropertySchema::new("cursor_position", PropertyValueKind::UInt, true, true),
@@ -716,7 +716,7 @@ macro_rules! impl_properties_input {
 
         #[cfg(not(alloc_frugal))]
         pub(crate) const RICH_EDIT_PROPERTIES: &[PropertySchema] = &[
-            PropertySchema::new("text", PropertyValueKind::String, true, true),
+            PropertySchema::new("text", PropertyValueKind::String, true, true).user_input(),
             PropertySchema::new("line_count", PropertyValueKind::UInt, true, false),
             PropertySchema::new("read_only", PropertyValueKind::Bool, true, true),
             // Soft wrapping and the empty-state copy. Both are opt-in: the defaults keep the
@@ -731,7 +731,7 @@ macro_rules! impl_properties_input {
 
         #[cfg(not(alloc_frugal))]
         pub(crate) const SEARCH_BAR_PROPERTIES: &[PropertySchema] = &[
-            PropertySchema::new("text", PropertyValueKind::String, true, true),
+            PropertySchema::new("text", PropertyValueKind::String, true, true).user_input(),
             PropertySchema::new("placeholder", PropertyValueKind::String, true, true),
             // The value's horizontal alignment. Only the three horizontal tokens are accepted: the
             // value is centred vertically in the field band by the field's own layout, so a

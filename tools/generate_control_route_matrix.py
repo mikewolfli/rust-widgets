@@ -302,6 +302,23 @@ def parse_trait_methods(trait_rs: pathlib.Path) -> Set[str]:
     return set(fn_create_re.findall(text))
 
 
+def parse_suite_kinds(suites_src: pathlib.Path) -> Set[str]:
+    """Widget kinds whose capability row is owned by `rust-widgets-suites`.
+
+    Reads only the suites' `capability.rs` files: those are the registration rows, so a
+    parent kind mentioned in another file's prose cannot be mistaken for a suite control.
+    A shared kind (`Chart`, `Canvas`, `TextEdit`, …) is still not treated as suite-owned by
+    itself — `main` subtracts every kind the parent can actually construct, so the parent
+    control that shares the kind keeps its own grade.
+    """
+    if not suites_src.exists():
+        return set()
+    kinds: Set[str] = set()
+    for path in sorted(suites_src.rglob("capability.rs")):
+        kinds.update(kind_use_re.findall(path.read_text(encoding="utf-8")))
+    return kinds
+
+
 def classify_native_grade(method: str, delegate: Optional[str]) -> str:
     if not method:
         return "Placeholder"
@@ -461,7 +478,15 @@ def main() -> int:
     parser.add_argument(
         "--trait",
         default="src/control_backend/trait_def/trait_def",
-        help="Path to ControlBackend trait source file",
+        help="Trait definition file or directory",
+    )
+    parser.add_argument(
+        "--suites",
+        default="crates/rust-widgets-suites/src",
+        help=(
+            "Suite package sources: its `capability.rs` rows decide which kinds are "
+            "implemented outside this crate (ExternalSuite, not Placeholder)"
+        ),
     )
     parser.add_argument(
         "--fail-on-placeholder",
@@ -480,6 +505,7 @@ def main() -> int:
     native_file = pathlib.Path(args.native)
     custom_file = pathlib.Path(args.custom)
     trait_file = pathlib.Path(args.trait)
+    suites_src = pathlib.Path(args.suites)
     output_file = pathlib.Path(args.output)
 
     kinds = parse_widget_kinds(kind_file)
@@ -487,6 +513,7 @@ def main() -> int:
     native_methods, native_delegates = parse_native_delegates(native_file)
     custom_methods = parse_custom_methods(custom_file)
     trait_methods = parse_trait_methods(trait_file)
+    suite_kinds = parse_suite_kinds(suites_src)
 
     missing = sorted(kind for kind in kinds if kind not in preference_map)
 
@@ -495,7 +522,17 @@ def main() -> int:
     # this crate's custom backend. The parent cannot name those constructors (it must not depend
     # on a package that depends on it), so a missing custom arm here is by construction, not an
     # unimplemented control. They are reported as `ExternalSuite` instead of `Placeholder`.
-    external_suite_kinds = {"Form", "FormSet"}
+    #
+    # The set is derived, not hardcoded: every kind named by a suite `capability.rs` row counts,
+    # minus the ones the parent can *actually* construct. That subtraction is what keeps a shared
+    # kind (`Chart`, `Canvas`, `TextEdit`, …) graded as the parent control it names rather than
+    # being exempted by a suite control that reuses it.
+    external_suite_kinds = {
+        kind
+        for kind in suite_kinds
+        if kind_to_create_method(kind) not in native_methods
+        and kind_to_create_method(kind) not in custom_methods
+    }
 
     for kind in sorted(kinds):
         expected_method = kind_to_create_method(kind)

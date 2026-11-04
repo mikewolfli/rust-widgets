@@ -49,7 +49,7 @@ macro_rules! impl_properties_other {
                 true,
                 &crate::widget::special_widgets::code_editor::DIAGNOSTIC_MARKER_SCHEMA,
             ),
-            PropertySchema::new("text", PropertyValueKind::String, true, true),
+            PropertySchema::new("text", PropertyValueKind::String, true, true).user_input(),
             PropertySchema::new("line_count", PropertyValueKind::UInt, true, false),
             // The caret is writable state: a document may place it, and each component's
             // setter supplies the other live one to the control's own `set_cursor`.
@@ -672,6 +672,9 @@ macro_rules! impl_properties_other {
             PropertySchema::new("show_grid", PropertyValueKind::Bool, true, true),
             PropertySchema::new("grid_step", PropertyValueKind::UInt, true, true),
             PropertySchema::new("snap_to_grid", PropertyValueKind::Bool, true, true),
+            PropertySchema::enumerated("grid_space", true, true, &["screen", "model"]),
+            PropertySchema::new("rulers_visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("ruler_unit", PropertyValueKind::UInt, true, true),
             PropertySchema::new("zoom_range", PropertyValueKind::NumberList, true, true),
             PropertySchema::new("zoom_step", PropertyValueKind::Float, true, true),
         ];

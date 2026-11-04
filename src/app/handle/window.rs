@@ -918,6 +918,55 @@ impl MessageBoxHandle {
     pub fn set_title(&self, title: &str) {
         crate::set_widget_text(self.id, title);
     }
+
+    /// Replaces the text drawn for one standard button (RW-123).
+    ///
+    /// Returns `false` when the id is not a mounted message box, so a host with a stale id gets
+    /// an honest negative rather than a silent no-op.
+    pub fn set_button_text(
+        &self,
+        button: crate::widget::dialog::message_box::StandardButton,
+        text: &str,
+    ) -> bool {
+        crate::widget::runtime::with_widget_mut(self.id, |widget| {
+            crate::widget::capability::coercion::widget_as_mut::<crate::widget::dialog::MessageBox>(
+                widget,
+            )
+            .map(|dialog| dialog.set_button_text(button, text))
+        })
+        .flatten()
+        .is_some()
+    }
+
+    /// Removes a host-supplied label, returning the button to its translated standard text.
+    pub fn clear_button_text(
+        &self,
+        button: crate::widget::dialog::message_box::StandardButton,
+    ) -> bool {
+        crate::widget::runtime::with_widget_mut(self.id, |widget| {
+            crate::widget::capability::coercion::widget_as_mut::<crate::widget::dialog::MessageBox>(
+                widget,
+            )
+            .map(|dialog| dialog.clear_button_text(button))
+        })
+        .flatten()
+        .is_some()
+    }
+
+    /// The text the dialog draws for `button`, or `None` when the id is not a mounted message box
+    /// or the button is not in its current set.
+    pub fn button_text(
+        &self,
+        button: crate::widget::dialog::message_box::StandardButton,
+    ) -> Option<String> {
+        crate::widget::runtime::with_widget(self.id, |widget| {
+            crate::widget::capability::coercion::widget_as::<crate::widget::dialog::MessageBox>(
+                widget,
+            )
+            .and_then(|dialog| dialog.button_text(button))
+        })
+        .flatten()
+    }
 }
 
 impl WidgetHandle for MessageBoxHandle {

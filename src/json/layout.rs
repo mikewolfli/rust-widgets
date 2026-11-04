@@ -7,9 +7,9 @@
 
 use serde_json::Value;
 
-use crate::core::Orientation;
 #[cfg(test)]
 use crate::core::Rect;
+use crate::core::{ObjectId, Orientation};
 use crate::layout::{
     AspectRatioLayout, BorderLayout, BorderRegion, BoxLayout, CenterLayout, FormLayout, GridLayout,
     KeyboardAwareLayout, Layout, SplitterLayout, StackLayout,
@@ -462,6 +462,7 @@ pub fn create_layout_from_kind(kind: &DeclarativeLayoutKind) -> Box<dyn Layout> 
 /// Every field is optional in the JSON sense; see
 /// [`ChildLayoutAttrs::from_value`] for the defaults applied when a key is
 /// absent.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChildLayoutAttrs {
     /// Stretch factor (0 = default).
     ///
@@ -590,6 +591,48 @@ impl ChildLayoutAttrs {
                 .and_then(|v| v.as_str())
                 .and_then(ChildOverflow::from_token),
         }
+    }
+}
+
+/// Places `child_id` in the cell or region its declared attributes name.
+///
+/// This is the one implementation of "a child's `col`/`row`/`region` means a placement": the
+/// interpreted JSON loader and the incremental view session both call it, so a document cannot be
+/// previewed with one placement rule and generated with another (principle #101).
+///
+/// A layout that does not understand the declared placement is reported and the child is left to
+/// the parent's own rule, which is what the loader has always done.
+pub(crate) fn apply_child_layout_placement(
+    child_id: ObjectId,
+    attrs: &ChildLayoutAttrs,
+    child_type: &str,
+    parent_id: ObjectId,
+) {
+    if let Some(region) = attrs.region {
+        if !place_widget_in_region_layout(child_id, region, attrs.extent.unwrap_or(0), parent_id) {
+            log::warn!(
+                "JSON layout: '{child_type}' declares region '{}' but its parent has no \
+                 border layout; the child was placed by the parent's own rule instead",
+                region.token()
+            );
+        }
+        return;
+    }
+    if attrs.col.is_none() && attrs.row.is_none() {
+        return;
+    }
+    let placement = ChildPlacement {
+        col: attrs.col.unwrap_or(0),
+        row: attrs.row.unwrap_or(0),
+        col_span: attrs.col_span.unwrap_or(1),
+        row_span: attrs.row_span.unwrap_or(1),
+    };
+    if !place_widget_in_layout(child_id, placement, parent_id) {
+        log::warn!(
+            "JSON layout: '{child_type}' declares col/row placement but its parent has no \
+             cell-based layout (only 'grid' and 'uniform_grid' have cells); the child was \
+             placed by the parent's own rule instead"
+        );
     }
 }
 

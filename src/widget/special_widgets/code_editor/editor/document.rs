@@ -295,6 +295,17 @@ impl CodeEditor {
         editor
     }
 
+    /// Re-points an **already mounted** view at `document` (RW-121).
+    ///
+    /// Same contract as [`CodeEditor::with_document`]: view state (caret, selection, scroll,
+    /// folds, extra cursors) is reset, and the editor's configured undo limit is applied to every
+    /// buffer's history because the limit belongs to the shared document. The difference is that
+    /// this works on a control a host created by name or mounted through the widget factory — a
+    /// host no longer has to rebuild the control, losing its state, to join a shared document.
+    pub fn link_document(&mut self, document: &CodeEditorDocument) {
+        self.adopt_document(document.clone());
+    }
+
     /// Re-points this editor at `document`, discarding its current view state.
     ///
     /// Used by [`CodeEditor::with_document`]. Every buffer gets a fresh snapshot slot keyed by
@@ -484,6 +495,13 @@ impl CodeEditor {
     ///
     /// A `\r\n` document is stored with `\n` line endings; the original
     /// terminator is reported by [`CodeEditor::line_ending`].
+    ///
+    /// # Loading a document is not an edit
+    ///
+    /// This entry is for a **user-level replacement**: the previous text stays on the undo stack,
+    /// so Ctrl+Z returns to it. A host that loads a file into the control wants
+    /// [`CodeEditor::load_document`] instead — an undo of a load would empty the buffer the host
+    /// just opened.
     pub fn set_text(&mut self, text: impl Into<String>) {
         let raw = text.into();
         let next = normalize_line_endings(raw.clone());
@@ -538,6 +556,24 @@ impl CodeEditor {
         self.emit_cursor_and_selection();
         self.base.request_layout();
         self.base.request_redraw();
+    }
+
+    /// Loads a document without making the load itself undoable (RW-120).
+    ///
+    /// A host that opens a file, switches tabs or restores a session calls this instead of
+    /// [`CodeEditor::set_text`]. The text is replaced exactly as `set_text` does — including the
+    /// same `text_changed` / `text_change` signals and revision bump — but no checkpoint is pushed
+    /// and the previous document's history is cleared, because undoing a load would restore text
+    /// the host never edited.
+    ///
+    /// A user-level replacement (a command that replaced the selection, a paste of a whole file)
+    /// stays on [`CodeEditor::set_text`], where undo returns to the previous text.
+    pub fn load_document(&mut self, text: impl Into<String>) {
+        let previous = self.restoring_history;
+        self.restoring_history = true;
+        self.set_text(text);
+        self.restoring_history = previous;
+        self.clear_history();
     }
 
     /// Appends one line, preserving the existing document.

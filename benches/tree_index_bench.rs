@@ -10,18 +10,18 @@
 //! directions are measured: `key_of` is the reverse lookup that used to be a linear scan (C-2),
 //! and `id_at` is the forward lookup the update path takes per patch.
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(declarative_view, not(target_arch = "wasm32")))]
 use criterion::{criterion_group, criterion_main, Criterion};
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(declarative_view, not(target_arch = "wasm32")))]
 use rust_widgets::core::ObjectId;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(declarative_view, not(target_arch = "wasm32")))]
 use rust_widgets::view::TreeIndexBuilder;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(declarative_view, not(target_arch = "wasm32")))]
 use std::hint::black_box;
 
 /// Builds a flat index of `count` siblings below one root, which is the widest shape a designer
 /// panel produces (a long outline) and the worst case for a per-patch path lookup.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(declarative_view, not(target_arch = "wasm32")))]
 fn build_index(count: usize) -> rust_widgets::view::TreeIndex<ObjectId> {
     let mut builder = TreeIndexBuilder::<ObjectId>::new().generation(1);
     for index in 0..count {
@@ -32,7 +32,7 @@ fn build_index(count: usize) -> rust_widgets::view::TreeIndex<ObjectId> {
     builder.build()
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(declarative_view, not(target_arch = "wasm32")))]
 fn bench_tree_index_build(c: &mut Criterion) {
     for count in [2_000usize, 10_000] {
         c.bench_function(&format!("tree_index_build_{count}"), |b| {
@@ -41,7 +41,7 @@ fn bench_tree_index_build(c: &mut Criterion) {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(declarative_view, not(target_arch = "wasm32")))]
 fn bench_tree_index_lookup(c: &mut Criterion) {
     let index = build_index(10_000);
     let mid = 5_000 as ObjectId;
@@ -53,12 +53,12 @@ fn bench_tree_index_lookup(c: &mut Criterion) {
     });
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(declarative_view, not(target_arch = "wasm32")))]
 criterion_group!(benches, bench_tree_index_build, bench_tree_index_lookup);
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(declarative_view, not(target_arch = "wasm32")))]
 criterion_main!(benches);
 
 /// A bench target needs a `main` in every configuration; `criterion_main!` supplies it only where
 /// the host-only dependency compiles.
-#[cfg(target_arch = "wasm32")]
+#[cfg(any(not(declarative_view), target_arch = "wasm32"))]
 fn main() {}

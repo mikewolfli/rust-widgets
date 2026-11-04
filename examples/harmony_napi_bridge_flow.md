@@ -2,6 +2,39 @@
 
 Use this guide to wire ArkUI/NAPI callbacks into `rust_widgets` with a predictable event flow.
 
+## Build prerequisite: the C ABI needs a device profile
+
+The `bindings` module — and therefore every `rw_*` symbol — is compiled only when a device profile
+is active:
+
+```text
+bindings = all(any(feature = "desktop", feature = "jni", feature = "mobile-api"), not(alloc_frugal))
+```
+
+`harmony` on its own does **not** satisfy that gate. A library built with only the Harmony features
+exports the 13 `rw_harmony_*` bridge symbols and none of `rw_init`, `rw_create_window`,
+`rw_create_button` or `rw_mount_surface`. `-shared` linking still succeeds because undefined
+symbols are legal in a shared object, so the failure surfaces later, when the HAP loads.
+
+Build with `desktop` (or `jni` / `mobile-api`) explicitly:
+
+```sh
+cargo build --release --target aarch64-unknown-linux-ohos \
+  --no-default-features \
+  --features "harmony xcomponent touch i18n controls-native desktop-runtime runtime-fonts desktop"
+```
+
+`--no-default-features` matters: `default = ["desktop"]`, so omitting it would not prove the
+Harmony features stand on their own. Verify the export set before packaging:
+
+```sh
+nm -D --defined-only target/aarch64-unknown-linux-ohos/release/librust_widgets.so | grep ' rw_'
+```
+
+The host scaffold calls `rw_init`, `rw_create_window`, `rw_create_*` and `rw_mount_surface`, so a
+build that reports only `rw_harmony_*` is missing the profile. Linking the HAP with
+`-Wl,--no-undefined` turns that into a link-time error instead of a runtime one.
+
 ## Step 1: Initialize and Create Widgets
 
 Run this sequence in your app startup:

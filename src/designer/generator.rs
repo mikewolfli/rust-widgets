@@ -1182,6 +1182,21 @@ fn emit_node(
 
     report.nodes_emitted += 1;
 
+    // RW-117: the interpreted path selects this node by `breakpoints`; the generated tree has no
+    // per-node tier carrier, so the node is emitted in every tier. Report the difference rather
+    // than let the generated program silently disagree with the preview (principle #12/#13).
+    if node.property("breakpoints").is_some() {
+        report.unsupported.push(GenerationGap {
+            path: path.to_vec(),
+            widget: node.widget.clone(),
+            reason: format!(
+                "`breakpoints` on {} is not emitted: the generated tree has no per-node tier \
+                 selection, so this node appears in every breakpoint tier",
+                node_label(path, &node.widget)
+            ),
+        });
+    }
+
     let mut line = format!("Node::new({})", quote(&node.widget));
     push_fmt(&mut line, format_args!(".key({})", quote(&node.key)));
 
@@ -2993,6 +3008,7 @@ mod tests {
             wire_declaration: None,
             marker_declarations: crate::compat::vec![],
             children: crate::compat::vec![],
+            direct_children: 0,
             action_id: None,
         };
 

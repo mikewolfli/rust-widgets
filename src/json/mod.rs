@@ -183,8 +183,8 @@ pub(crate) use properties::to_capability_value;
 pub(crate) use properties::to_capability_value_with_record_schema;
 #[cfg(declarative_view)]
 pub use view_session::{
-    create_control_from_factory, json_to_view_tree, JsonViewDrop, JsonViewRunReport,
-    JsonViewSession, JsonViewTree,
+    create_control_from_factory, json_to_view_tree, JsonViewDrop, JsonViewLayout,
+    JsonViewLayoutChild, JsonViewRunReport, JsonViewSession, JsonViewTree, JsonViewportApply,
 };
 
 pub(crate) use schema_factory::schema_factory;

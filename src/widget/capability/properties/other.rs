@@ -639,9 +639,12 @@ pub(crate) fn canvas_capability() -> WidgetCapability {
             "clear",
             "set_anti_alias",
             "set_grid_step",
+            "set_grid_space",
             "set_snap_to_grid",
-            "set_zoom_step",
             "set_show_grid",
+            "set_rulers_visible",
+            "set_ruler_unit",
+            "set_zoom_step",
         ],
     }
 }

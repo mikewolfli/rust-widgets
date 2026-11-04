@@ -32,8 +32,7 @@ use crate::core::{Color, ObjectId, Rect};
 use crate::json::properties::ApplyOutcome;
 use crate::json::{
     add_spacer_to_layout, add_widget_to_layout, apply_layout, create_layout_from_kind,
-    parse_layout_kind, place_widget_in_layout, place_widget_in_region_layout, store_layout,
-    BoundJsonLayout, ChildLayoutAttrs, ChildPlacement,
+    parse_layout_kind, store_layout, BoundJsonLayout, ChildLayoutAttrs,
 };
 use crate::layout::inspector::LayoutInspector;
 use crate::style::ElementRef;
@@ -90,6 +89,18 @@ impl JsonLoader {
     /// parsed document through `crate::view::ViewEngine` and patches only what changed. This
     /// full-mount path remains the one that applies every loader-owned key (geometry, spacing,
     /// colours, construction-time switches).
+    ///
+    /// # Breakpoint tiers (RW-117)
+    ///
+    /// A node may declare `"breakpoints": ["compact", "medium", "expanded"]`; the loader honours
+    /// the tier in force through `crate::view::Breakpoint::current`, the same fact the incremental
+    /// session and `Node::breakpoint` read. A host that loads at a known window size wraps this call:
+    ///
+    /// ```text
+    /// with_breakpoint(Breakpoint::of(size), || JsonLoader::load(json))
+    /// ```
+    ///
+    /// Without a wrapper the tier is `Expanded`, the honest "no viewport reported" answer.
     ///
     /// # Errors
     ///
@@ -607,37 +618,7 @@ impl JsonLoader {
         child_type: &str,
         parent_id: ObjectId,
     ) {
-        if let Some(region) = attrs.region {
-            if !place_widget_in_region_layout(
-                child_id,
-                region,
-                attrs.extent.unwrap_or(0),
-                parent_id,
-            ) {
-                log::warn!(
-                    "JSON layout: '{child_type}' declares region '{}' but its parent has no \
-                     border layout; the child was placed by the parent's own rule instead",
-                    region.token()
-                );
-            }
-            return;
-        }
-        if attrs.col.is_none() && attrs.row.is_none() {
-            return;
-        }
-        let placement = ChildPlacement {
-            col: attrs.col.unwrap_or(0),
-            row: attrs.row.unwrap_or(0),
-            col_span: attrs.col_span.unwrap_or(1),
-            row_span: attrs.row_span.unwrap_or(1),
-        };
-        if !place_widget_in_layout(child_id, placement, parent_id) {
-            log::warn!(
-                "JSON layout: '{child_type}' declares col/row placement but its parent has no \
-                 cell-based layout (only 'grid' and 'uniform_grid' have cells); the child was \
-                 placed by the parent's own rule instead"
-            );
-        }
+        crate::json::layout::apply_child_layout_placement(child_id, attrs, child_type, parent_id);
     }
 
     /// Whether `widget_type` publishes `event_name`.
@@ -686,6 +667,13 @@ impl JsonLoader {
         let obj = value
             .as_object()
             .ok_or_else(|| format!("'{widget_type}' value must be a JSON object"))?;
+
+        // RW-117: a node's `breakpoints` list selects whether it exists in the tier currently in
+        // force. Checked before the spacer/layout branches so an excluded pseudo-node creates no
+        // layout entry either.
+        if !breakpoints_include(obj, widget_type, parent_id.is_none())? {
+            return Ok(0);
+        }
 
         // The node's name, lowercased once per node rather than once per test against it.
         // Three comparisons below ask "is this a button/label/window", and each used to spell
@@ -1661,6 +1649,9 @@ pub fn is_loader_owned_key(key: &str) -> bool {
         // machinery: arrays and sub-objects that describe the widget's content
         // rather than a scalar state property.
         | "children" | "layout" | "items" | "stretch"
+        // Per-node breakpoint visibility (RW-117), consumed by `instantiate_node` before the
+        // control is created. It is structure rather than a property of any control.
+        | "breakpoints"
         // Per-child cell placement, consumed by `apply_child_placement` (which forwards
         // them to a layout that has cells). They belong here rather than being left out:
         // they name no scalar property on any control, so the name-driven pass would
@@ -1688,6 +1679,73 @@ pub fn is_loader_owned_key(key: &str) -> bool {
         // can never be missing here and be reported as an unknown property.
         | "events"
     ) || crate::json::is_marker_key(key)
+}
+
+/// Whether a node's `breakpoints` list includes the tier currently in force (RW-117).
+///
+/// Absent list = every tier. A malformed list is reported and treated as absent (removing a node
+/// because its tier spelling was mistyped would be a silent edit). An unknown tier token is named
+/// and ignored. A root excluded by its own list is an error: a document with no root is not a
+/// preview, it is a contradiction.
+fn breakpoints_include(
+    obj: &serde_json::Map<String, Value>,
+    widget_type: &str,
+    is_root: bool,
+) -> Result<bool, String> {
+    let Some(value) = obj.get("breakpoints") else {
+        return Ok(true);
+    };
+    let Some(tiers) = value.as_array() else {
+        log::warn!(
+            "JSON layout: `breakpoints` on '{widget_type}' must be an array of tier names \
+             (compact, medium, expanded); the node was kept in every tier"
+        );
+        return Ok(true);
+    };
+    let current = current_breakpoint_token();
+    let mut included = false;
+    for entry in tiers {
+        let Some(token) = entry.as_str() else {
+            log::warn!(
+                "JSON layout: a `breakpoints` entry on '{widget_type}' is not a string; it was \
+                 ignored"
+            );
+            continue;
+        };
+        match token {
+            "compact" | "medium" | "expanded" => {
+                if token == current {
+                    included = true;
+                }
+            }
+            other => log::warn!(
+                "JSON layout: `{other}` on '{widget_type}' is not a breakpoint tier (expected \
+                 compact, medium or expanded); it was ignored"
+            ),
+        }
+    }
+    if !included && is_root {
+        return Err(format!(
+            "the root '{widget_type}' is excluded by its `breakpoints` list; the tier in force is \
+             '{current}'"
+        ));
+    }
+    Ok(included)
+}
+
+/// The tier token in force for the current load.
+///
+/// Under the declarative layer this is the same thread-local fact `Node::breakpoint` reads. A
+/// build without that layer has no viewport channel, so the honest answer is the widest tier —
+/// the same default `Breakpoint::current` uses.
+#[cfg(declarative_view)]
+fn current_breakpoint_token() -> &'static str {
+    crate::view::Breakpoint::current().token()
+}
+
+#[cfg(not(declarative_view))]
+fn current_breakpoint_token() -> &'static str {
+    "expanded"
 }
 
 /// Apply a `#RRGGBB`-style colour key when it is present and parses.
@@ -2208,6 +2266,37 @@ pub fn load_layout_from_str(json_str: &str) -> Result<BoundJsonLayout, String> {
 mod tests {
     use super::*;
     use crate::core::Orientation;
+    use crate::json::{place_widget_in_layout, place_widget_in_region_layout, ChildPlacement};
+
+    /// RW-117: the full-mount loader honours the same `breakpoints` list the incremental preview
+    /// does, so an app and its designer preview cannot render different trees for one document.
+    #[cfg(declarative_view)]
+    #[test]
+    fn breakpoints_select_nodes_on_the_load_path_too() {
+        let json = r#"{
+          "window": {
+            "id": "w",
+            "title": "Tiers",
+            "width": 320,
+            "height": 240,
+            "layout": { "type": "vbox", "children": [
+              { "label": { "id": "wide", "text": "Wide", "breakpoints": ["expanded"] } },
+              { "label": { "id": "narrow", "text": "Narrow", "breakpoints": ["compact"] } }
+            ] }
+          }
+        }"#;
+        let compact = crate::view::with_breakpoint(crate::view::Breakpoint::Compact, || {
+            JsonLoader::load(json).expect("the document loads")
+        });
+        assert!(compact.id("wide").is_none(), "the expanded-only node is absent");
+        assert!(compact.id("narrow").is_some());
+
+        let expanded = crate::view::with_breakpoint(crate::view::Breakpoint::Expanded, || {
+            JsonLoader::load(json).expect("the document loads")
+        });
+        assert!(expanded.id("wide").is_some());
+        assert!(expanded.id("narrow").is_none());
+    }
 
     /// `lowered` is the loader's one answer to "compare this declared name against a lowercase
     /// literal". The borrow is the point: a document that spells its controls the documented way

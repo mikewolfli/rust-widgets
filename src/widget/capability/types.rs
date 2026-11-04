@@ -711,6 +711,15 @@ pub struct PropertySchema {
     ///
     /// [`WidgetFactory::write_property`]: crate::widget::capability::WidgetFactory::write_property
     pub constraints: &'static [Constraint],
+    /// Whether the value is produced by a person typing into the control (RW-122).
+    ///
+    /// A preview needs this to tell "the control displays the document's value" from "a person
+    /// changed this value since the document was loaded". Comparing the displayed text against
+    /// the document cannot answer that for a control whose document never mentioned `text`, and
+    /// it cannot tell a genuine `text_changed` from a declaration write. This flag names the
+    /// property whose value is user input; the event side stays the same, so a host that wants
+    /// "only edits by a person" still checks the flag before trusting a change signal.
+    pub user_input: bool,
     /// The record schema for a [`PropertyValueKind::Records`] property, `None` for every other kind
     /// (BLUE26 B26.09).
     ///
@@ -748,6 +757,7 @@ impl PropertySchema {
             accepted_tokens: &[],
             constraints: &[],
             record_schema: None,
+            user_input: false,
         }
     }
 
@@ -772,6 +782,7 @@ impl PropertySchema {
             accepted_tokens,
             constraints: &[],
             record_schema: None,
+            user_input: false,
         }
     }
 
@@ -797,6 +808,7 @@ impl PropertySchema {
             accepted_tokens: &[],
             constraints: &[],
             record_schema: Some(schema),
+            user_input: false,
         }
     }
 
@@ -820,6 +832,14 @@ impl PropertySchema {
     /// per-control `*_PROPERTIES` tables are.
     pub const fn constrained(self, constraints: &'static [Constraint]) -> Self {
         Self { constraints, ..self }
+    }
+
+    /// Marks this property as one a person types into (RW-122).
+    ///
+    /// Chainable and `const` for the same reason as [`Self::constrained`]: the property tables
+    /// are `static` slices, and only the handful of editable-text entries need the flag.
+    pub const fn user_input(self) -> Self {
+        Self { user_input: true, ..self }
     }
 
     /// The accepted spellings, or an empty slice for a non-enum property.

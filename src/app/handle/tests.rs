@@ -1021,3 +1021,59 @@ fn the_tool_bar_handle_reaches_the_item_apis() {
     remove_callbacks(id);
     crate::widget::runtime::unregister(id);
 }
+
+/// RW-122: a row container's selection has a generic read/write pair, so a preview can capture and
+/// restore it the same way it does `scroll_row`.
+#[test]
+fn selection_row_round_trips_on_a_row_container() {
+    let mut list = crate::widget::ListBox::new(crate::core::Rect::new(0, 0, 120, 90));
+    list.add_items(alloc::vec![String::from("a"), String::from("b"), String::from("c")]);
+    let id = crate::widget::runtime::register(Box::new(list)).expect("a list box mounts");
+    let handle = SurfaceHandle::from_raw(id);
+
+    assert_eq!(handle.selection_row(), None, "a fresh list has no selected row");
+    assert!(handle.set_selection_row(1));
+    assert_eq!(handle.selection_row(), Some(1));
+
+    // A control with no selected-row property answers the honest negative rather than 0/false
+    // success.
+    let button = crate::widget::runtime::register(Box::new(crate::widget::Button::new(
+        String::from("probe"),
+        crate::core::Rect::new(0, 0, 80, 24),
+    )))
+    .expect("a button mounts");
+    let button_handle = SurfaceHandle::from_raw(button);
+    assert_eq!(button_handle.selection_row(), None);
+    assert!(!button_handle.set_selection_row(0));
+
+    crate::widget::runtime::unregister(button);
+    remove_callbacks(id);
+    crate::widget::runtime::unregister(id);
+}
+
+/// RW-123: the typed message-box handle reaches the host label overrides, so a host does not have
+/// to downcast the control itself.
+#[test]
+fn the_message_box_handle_reaches_button_text_overrides() {
+    use crate::widget::dialog::message_box::StandardButton;
+
+    let mut box_widget =
+        crate::widget::dialog::MessageBox::new(crate::core::Rect::new(0, 0, 360, 180));
+    box_widget.set_buttons(alloc::vec![StandardButton::Save]);
+    let id = crate::widget::runtime::register(Box::new(box_widget)).expect("a message box mounts");
+    let handle = MessageBoxHandle::from_raw(id);
+
+    assert_eq!(
+        handle.button_text(StandardButton::Save),
+        Some(StandardButton::Save.translated_label())
+    );
+    assert!(handle.set_button_text(StandardButton::Save, "保存"));
+    assert_eq!(handle.button_text(StandardButton::Save).as_deref(), Some("保存"));
+    assert!(handle.clear_button_text(StandardButton::Save));
+    assert_eq!(
+        handle.button_text(StandardButton::Save),
+        Some(StandardButton::Save.translated_label())
+    );
+
+    crate::widget::runtime::unregister(id);
+}
