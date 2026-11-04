@@ -1219,8 +1219,13 @@ impl RegionBuckets {
 
     /// Starts a new traversal on an existing bucket set, retaining its pooled groups (G-03) and
     /// arena capacity (G-802).
-    fn reset(&mut self, regions: Vec<Rect>) {
-        self.regions = regions;
+    fn reset(&mut self, regions: &[Rect], offset: (i32, i32)) {
+        // Translated in place: the caller used to build a second `Vec` per bucketed frame, only for
+        // this method to drop it on assignment.
+        self.regions.clear();
+        self.regions.extend(regions.iter().map(|region| {
+            Rect::new(region.x + offset.0, region.y + offset.1, region.width, region.height)
+        }));
         self.recycle_groups();
         self.path_arena.clear();
         self.contour_arena.clear();
@@ -1530,21 +1535,10 @@ impl<'a> RenderContext<'a> {
     /// Regions are in the caller's coordinate space and are translated by the context's current
     /// offset, exactly like a clip or a primitive.
     pub fn begin_region_buckets(&mut self, regions: &[Rect]) {
-        let translated = regions
-            .iter()
-            .map(|region| {
-                Rect::new(
-                    region.x + self.offset_x,
-                    region.y + self.offset_y,
-                    region.width,
-                    region.height,
-                )
-            })
-            .collect();
         // Reuse the bucket set when one exists so its free-group pool carries over to this
         // traversal; a nested traversal still replaces the in-progress one (G-03).
         let buckets = self.buckets.get_or_insert_with(|| RegionBuckets::new(Vec::new()));
-        buckets.reset(translated);
+        buckets.reset(regions, (self.offset_x, self.offset_y));
         self.last_region_passes = 0;
     }
 

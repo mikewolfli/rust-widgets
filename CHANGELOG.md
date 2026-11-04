@@ -5,6 +5,71 @@ The canonical project changelog is maintained at [docs/reports/CHANGELOG.md](doc
 This root-level file exists for tools and release automation that expect `CHANGELOG.md` at repository root.
 When the two disagree, this file is the one that ships; `tools/check_changelog_sync.sh` keeps them identical.
 
+## 4.1.0 (2026-11-04) — the closed-loop round (issue-20261104, 63/63)
+
+Every item in `docs/issues/issue-20261104.md` is closed: the resize chain, the per-event costs, the
+container content model, the handle layer, and the GPU subsystem's disposal. The detailed record is
+`docs/log/log-20261104-2.md` §17–§18.
+
+### Fixed
+
+- **Resize actually re-lays out.** A JSON/declarative window replays its root layout on resize, the
+  two layout registries now recurse into each other, nine layouts honour `LayoutContext`, and the
+  reactive/view path follows the viewport inside one tier. `layout`/`declarative` gained a pooled
+  child-geometry scratch, so a resize chain reuses its buffers instead of allocating per level.
+- **Event-path costs.** Group selection repaints only its members, drag hit-testing descends the
+  tree instead of scanning every mounted control, the pointer dispatch memo survives repaints that
+  did not move anything, pointer events no longer clone a `DragPayload` per move, and tooltip
+  hover forwarding stops cloning its manager set.
+- **Window capability surface.** `WindowOptions`/`WindowHandle` gained `max_size`, `transparent`,
+  `always_on_top`, `preferred_theme`, `content_protected` and `App::windows`/`active_window`;
+  `remove_callbacks` now also clears key handlers, close handlers and window positions, and
+  focus/moved subscriptions are torn down with the rest.
+- **Container content model, JSON side.** `adaptive_scaffold` slots and pages, `mdi_area`
+  sub-windows, `navigation_stack` pages, `carousel` pages, the app bar's own bottom strip, the 16
+  container families and the `menu`/`menu_bar`/`tool_bar`/`status_bar`/`ribbon` entry model are all
+  declarable. Each id-slot container places and shows the declared child and lets the tree painter
+  draw it, so a declared page is interactive rather than just present.
+- **Modal hiding.** All four "hide this control" spellings now release the modal layer at the
+  backend, so a hidden modal can no longer keep input blocked.
+- **Clipboard writes.** `APP-012` is published where the write succeeds, so the crate root, the
+  C ABI and `ClipboardManager` share one event source.
+- **Windows/macOS/wasm/GTK frame paths.** Windows invalidates the damaged rectangle instead of the
+  whole window, Linux converts only the damaged row band, the GTK heartbeat drops to the idle
+  interval when nothing animates, the CoreVideo callback skips frames that owe none, the wasm
+  target drives frames from `requestAnimationFrame`, and a Windows canvas child honours `WM_SIZE`.
+
+### Performance
+
+- **Present path.** `bridge_render_commands_into` + an expansion scratch + a reused draw-command
+  buffer remove the per-frame allocations of the GPU command path; the recorder is reused across
+  frames, and its measurement delegate no longer allocates two full-frame RGBA buffers per frame
+  (≈16 MB/frame at 1080p); the packer's side tables and clip stack live in `PackTables`; the blit
+  bind group and the target view are cached per size.
+- **Draw paths.** Rich-text lines, tree rows, range-slider tick labels, a docked panel's vertical
+  title, path fills and damage compaction no longer allocate per row/command/frame; the layer
+  eviction ring is reconciled only when a layer was actually dropped; 23 pure-read handle getters
+  use the registry's read-only path.
+- **Text change signals.** `Signal1::emit_lazy` builds a payload only when somebody is subscribed,
+  so a text control with no `text_changed` handler no longer clones its value per keystroke.
+- **Verified negative, therefore deleted.** A hand-rolled staging ring was measured against
+  `Queue::write_buffer` (macOS/Metal): its encode+submit is 2.5–5× cheaper, but the per-frame slot
+  remap costs 350–830 µs, so it is 2–149% *slower*. `GpuStagingBufferPool`, `GpuUploadBatcher` and
+  their statistics are gone; the measurement stays in `src/gpu/upload_path_tests.rs`.
+
+### Removed
+
+- `src/gpu/buffer_pool.rs` (1075 lines: staging pool, upload batcher, allocation/statistics types).
+- `src/app/wiring.rs`, `src/settings.rs`, `compat::MiniArena`, `App::poll_event`/`poll_triggered`/
+  `run_async`, `open_path`/`save_path`/`select_directory`, and the image cache's zero-caller decode
+  entry family.
+
+### Verification
+
+`cargo test` — 10097 passed, 0 failed; `cargo test --lib --features "gpu-wgpu,raw-window-handle,3d"`
+— 9835 passed; `cargo check`/`clippy` on default, `gpu-wgpu`, `mini`, `embedded` and `tablet` — 0
+warnings, 0 errors; `cargo fmt` clean; 26 repository gates re-run and passing.
+
 ## 4.0.1 (2026-11-03) — upstream feedback round (RW-101…RW-116)
 
 Fixes and additive API from `docs/issues/feedback-20261103.md`. The manifest **protocol** changes

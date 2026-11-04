@@ -6,17 +6,14 @@
 //!
 //! # Reachability
 //!
-//! **State:** Reserved public API, plus one GPU fallback chain that is wired for
-//! tests only. The consumer state is per type, not uniform:
+//! **State:** Reserved public API, and nothing more.
 //!
-//! * `BufferPool` — **intended** as the GPU staging-buffer fallback, but the chain
-//!   has no production fill point today. `GpuStagingBufferPool` holds an
-//!   `Option<crate::memory::BufferPool>` as its `fallback_pool` field
-//!   (`src/gpu/buffer_pool.rs`) and consults it on overflow-path allocations, but
-//!   the field can only be populated by `GpuStagingBufferPool::with_fallback_pool`
-//!   and `integration::create_fallback_pool`, and both of those are called from
-//!   tests only (verified by grep). No production constructor installs a pool, so
-//!   the overflow path currently finds `None`.
+//! * `BufferPool` — a reusable byte-buffer pool. It has **no** production attach point: the GPU
+//!   upload path this module was reserved for (`GpuStagingBufferPool`) was deleted in
+//!   issue-20261104 RD-04, because `wgpu`'s own `Queue::write_buffer`/`write_texture` already stage
+//!   and coalesce uploads — a second ring would have added a copy and a second upload path.
+//!   `BufferPool` remains a public utility a host can use directly, and the modules below are
+//!   exercised by their own tests.
 //! * `ObjectPool` / `SharedPool` / `StringPool` / `VecPool` / `PoolManager` —
 //!   **public API retained, no in-repo production consumer**. They are exercised
 //!   by this module's own tests and documented in the cookbook, but nothing
@@ -25,14 +22,11 @@
 //!   `src/lib.rs:1` is not a production call. An earlier note here claimed both;
 //!   neither was true, and neither is restated as if it were.
 //!
-//! # Fallback wiring status (G-215)
+//! # Fallback wiring status (G-215, restated once RD-04 closed)
 //!
-//! The `BufferPool` fallback chain is kept as the intended integration point, not
-//! described as a live dependency: **the chain is test-wired only, and its
-//! production attach point waits on the host upload-ring implementation**
-//! (G-211/G-212). That GPU path should consume this chain when it is wired rather
-//! than introducing a second buffer source; until then, an over-budget upload has
-//! no fallback buffer and fails the allocation.
+//! There is no GPU fallback chain left to wire: the staging pool that would have consulted a
+//! `BufferPool` on overflow was removed together with its allocator. An upload over budget is a
+//! `wgpu` decision, not this module's, so nothing here claims a wiring that does not exist.
 
 mod pool;
 pub use pool::*;

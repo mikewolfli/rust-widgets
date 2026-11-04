@@ -492,7 +492,7 @@ fn instanced_run_matches_the_software_reference() {
     ] {
         assert_eq!(
             pixel(&gpu, 18, x, y),
-            pixel(&software, 18, x, y),
+            pixel(software, 18, x, y),
             "pixel ({x}, {y}) must match the software reference"
         );
         assert_eq!(
@@ -699,7 +699,7 @@ fn the_gpu_mesh_pipeline_draws_a_cube_through_a_depth_attachment() {
         )
         .expect("the mesh pipeline runs");
     assert_eq!(pixels.len(), 64 * 64 * 4);
-    let painted = pixels.chunks_exact(4).filter(|pixel| pixel[3] > 0).count();
+    let painted = pixels.as_chunks::<4>().0.iter().filter(|pixel| pixel[3] > 0).count();
     assert!(painted > 100, "the cube must cover part of the target, got {painted} pixels");
 }
 
@@ -2433,12 +2433,15 @@ fn wait_idle_leaves_the_pending_frame_ready_to_read_back() {
 ///
 /// # Why this is a live-path test and not a unit test of the manager
 ///
-/// The manager, its staging pool and its performance monitor were fully implemented and fully
+/// The manager and its performance monitor were fully implemented and fully
 /// unreachable: nothing in the crate ever constructed one, so every number they compute was a
 /// number nothing asked for. The wiring makes the *renderer* their owner and brackets each frame
-/// with `begin_frame`/`end_frame`, and this asserts the three facts that make the wiring real —
-/// the manager's adapter answer is the renderer's own (one selection path, not two), its staging
-/// pool exists on this device, and drawing a frame publishes a performance sample.
+/// with `begin_frame`/`end_frame`, and this asserts the facts that make the wiring real —
+/// the manager's adapter answer is the renderer's own (one selection path, not two) and drawing a
+/// frame publishes a performance sample.
+///
+/// The staging pool this test used to assert on is gone: `wgpu` stages uploads itself, so a second
+/// ring could only add a copy (see `gpu/mod.rs`).
 #[test]
 fn the_renderer_drives_the_adaptive_manager_it_owns() {
     let Some(renderer) = renderer() else { return };
@@ -2451,10 +2454,6 @@ fn the_renderer_drives_the_adaptive_manager_it_owns() {
             "the manager must answer with the adapter the renderer selected, not a second opinion"
         );
     }
-    assert!(
-        renderer.gpu_buffer_pool_stats().is_some(),
-        "the staging pool is built for this device"
-    );
     assert!(
         matches!(
             renderer.gpu_operation_mode(),

@@ -67,6 +67,7 @@
 
 use crate::core::{Color, HorizontalAlignment, Orientation, Point, Rect, ScrollPhysics, Size};
 use crate::event::{Event, EventHandler};
+use crate::object::ObjectId;
 use crate::render::RenderContext;
 use crate::signal::Signal1;
 use crate::widget::capability::coercion::{expect_bool, expect_string, expect_u32, expect_usize};
@@ -89,69 +90,7 @@ use std::cell::RefCell;
 // the flick rule reads.
 use std::time::Instant;
 
-/// A page's content: a control that can be drawn into the carousel's content area.
-///
-/// This trait exists because [`Draw`] is not dyn-compatible — a `Box<dyn Widget>`
-/// cannot be drawn through it. The blanket implementation below means any type that
-/// is both a [`Widget`] and [`Draw`] qualifies, so a caller mounts a control with
-/// `Box::new(my_widget)` and nothing else.
-///
-/// It is declared here, on the control that actually consumes it, rather than in a
-/// shared module: the only thing that draws through it is the carousel's page slot,
-/// so a second declaration site would be a second thing to keep in step for no
-/// benefit (BLUE18 rule #28).
-pub trait WidgetAndDraw: Widget {
-    /// Draw this widget using the provided render context.
-    fn draw_widget(&mut self, context: &mut RenderContext);
-}
-
-impl<T: Widget + Draw> WidgetAndDraw for T {
-    fn draw_widget(&mut self, context: &mut RenderContext) {
-        self.draw(context);
-    }
-}
-
-/// Data for a single carousel page built from a title and a background color.
-///
-/// This is the lightweight spelling of a page: a caller that only wants a colored
-/// slide with a caption uses [`Carousel::add_page`]. A caller that wants a real
-/// control inside uses [`Carousel::set_page_content`] instead, and the two can be
-/// mixed — a page's slot is either a title card or a mounted widget.
-pub struct CarouselPage {
-    /// Display title shown centered on the page.
-    pub title: String,
-    /// Background color of the page.
-    pub color: Color,
-    /// Optional child control drawn inside this page's content area.
-    ///
-    /// `None` means "draw the title card", which is what `add_page` produces.
-    content: Option<Box<dyn WidgetAndDraw>>,
-}
-
-impl CarouselPage {
-    /// Creates a title-only page.
-    pub fn new(title: impl Into<String>, color: Color) -> Self {
-        Self { title: title.into(), color, content: None }
-    }
-
-    /// Returns whether this page has a mounted child control.
-    pub fn has_content(&self) -> bool {
-        self.content.is_some()
-    }
-
-    /// Borrows the page's child control, if one was set.
-    pub fn content(&self) -> Option<&dyn WidgetAndDraw> {
-        self.content.as_deref().map(|content| content as &dyn WidgetAndDraw)
-    }
-
-    /// Mutably borrows the page's child control, if one was set.
-    pub fn content_mut(&mut self) -> Option<&mut dyn WidgetAndDraw> {
-        match self.content.as_deref_mut() {
-            Some(content) => Some(content),
-            None => None,
-        }
-    }
-}
+pub use super::carousel_page::{CarouselPage, WidgetAndDraw};
 
 /// Where the page indicator sits inside the control's own rectangle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -517,6 +456,21 @@ impl Carousel {
         }
     }
 
+    /// Fills the page at `index` with a control the runtime already mounted (DM-11).
+    ///
+    /// The carousel places the child and the tree painter draws it, so a page declared in a JSON
+    /// document behaves like a hand-built one. Returns `false` for an out-of-range index.
+    pub fn set_page_content_id(&mut self, index: usize, content: Option<ObjectId>) -> bool {
+        match self.pages.get_mut(index) {
+            Some(page) => {
+                page.set_content_id(content);
+                self.base.request_redraw();
+                true
+            }
+            None => false,
+        }
+    }
+
     /// Removes the page at `index`, returning it when the index was valid.
     ///
     /// The current index follows the page it pointed at: removing an *earlier* page
@@ -751,6 +705,56 @@ impl Carousel {
         page.title = title;
         self.base.request_redraw();
         true
+    }
+
+    /// Sets page `index`'s background colour (DM-11).
+    ///
+    /// The colour is the caller's page identity rather than chrome, so it is data: a document that
+    /// declares `background` on the page's child sets it through here. Returns `false` for an
+    /// out-of-range index.
+    pub fn set_page_color(&mut self, index: usize, color: Color) -> bool {
+        let Some(page) = self.pages.get_mut(index) else {
+            return false;
+        };
+        if page.color == color {
+            return true;
+        }
+        page.color = color;
+        self.base.request_redraw();
+        true
+    }
+
+    /// Hides every declared page child this frame will not paint (DM-11).
+    ///
+    /// The painted set is the same one [`Self::draw`]'s branches use: the slide's two pages, the
+    /// drag's current page and revealed neighbour, or the current page alone. A visibility write
+    /// is skipped when the page is already in the right state, so a still carousel costs one
+    /// registry read per declared page and no repaint.
+    fn hide_unpainted_id_pages(&self) {
+        if self.pages.iter().all(|page| page.content_id().is_none()) {
+            return;
+        }
+        let (first, second) = if let Some(slide) = self.slide {
+            (slide.from, Some(slide.to))
+        } else {
+            let offset = match self.drag {
+                DragState::Swiping { offset, .. } => offset,
+                _ => self.settle_offset.round() as i32,
+            };
+            (self.current_index, self.neighbour_for_offset(offset))
+        };
+        for (index, page) in self.pages.iter().enumerate() {
+            let Some(id) = page.content_id() else { continue };
+            let painted = index == first || Some(index) == second;
+            if painted {
+                continue;
+            }
+            let visible = crate::widget::runtime::read_widget(id, |widget| widget.is_visible())
+                .unwrap_or(false);
+            if visible {
+                crate::set_widget_visible(id, false);
+            }
+        }
     }
 
     /// The area a page's content occupies: the control's rectangle minus the
@@ -1170,6 +1174,11 @@ impl Draw for Carousel {
         let rect = self.geometry();
         let is_enabled = self.base.is_enabled();
         let page_count = self.pages.len();
+        // A page whose child the runtime owns is painted by the tree painter, which draws every
+        // mounted page child regardless of which page is current. Only the pages this frame paints
+        // may be visible, so the rest are hidden here — before any branch can return — and
+        // `draw_page` shows the ones it actually paints.
+        self.hide_unpainted_id_pages();
         // One theme read for the whole frame (C-P01): the panel, the marks and the
         // empty-state interior all derive from this snapshot, and `draw_page` /
         // `draw_indicator` receive it instead of taking their own manager lock.
@@ -1547,6 +1556,16 @@ impl Carousel {
         context.fill_rounded_rect(page_rect, 8, bg_color);
 
         if has_content {
+            // A page whose child the runtime owns is placed, not drawn: the tree painter walks
+            // this carousel's children after it, so drawing it here would paint it twice.
+            if let Some(page) = self.pages.get(index) {
+                if let Some(id) = page.content_id() {
+                    crate::widget::runtime::set_geometry(id, page_rect);
+                    crate::set_widget_visible(id, true);
+                    crate::set_widget_enabled(id, is_enabled);
+                    return;
+                }
+            }
             // Lay the child out to the page rectangle before drawing, so a page
             // swapped in by a swipe is positioned by the same rule as the visible
             // one rather than keeping whatever geometry it last had.

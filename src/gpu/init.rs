@@ -55,7 +55,6 @@ pub fn subsystem_summary() -> String {
     if cfg!(feature = "wgpu") {
         summary.push_str("automatic\n");
         summary.push_str("  - WGPU backend: enabled\n");
-        summary.push_str("  - Buffer pools: hardware-adaptive\n");
         summary.push_str("  - Performance monitoring: enabled\n");
     } else {
         summary.push_str("software fallback\n");

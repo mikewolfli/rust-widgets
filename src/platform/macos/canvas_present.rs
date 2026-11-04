@@ -10,6 +10,12 @@
 //!
 //! Both entry points run from `drawRect:`, i.e. on the AppKit main thread, with a live `NSView`.
 
+// The `cocoa` 0.24 bindings are deprecated in favour of `objc2`, and every deprecated item this
+// module names is one of them. This is the **legacy** macOS presentation path, kept beside
+// `platform/macos_objc2` by design (see `docs/plans/platform_optional_backends.md`); rewriting
+// these calls against objc2 would duplicate that backend (principle #101). Scoped to this module.
+#![allow(deprecated)]
+
 use cocoa::base::{id, nil, NO, YES};
 use objc::runtime::Class;
 use objc::{msg_send, sel, sel_impl};
@@ -139,33 +145,36 @@ pub(super) fn present_through_target(
     // disagree about what the frame is.
     if intent == FramePresentation::Smooth {
         let size = crate::core::Size::new(width, height);
-        let mut recorder = present::GpuPaintBackend::new(size, 1.0);
-        let painted = if is_window_canvas {
-            crate::widget::runtime::paint_tree_into(
-                intent_key,
-                size,
-                crate::core::Color::WHITE,
-                &mut recorder,
-            )
-        } else {
-            crate::widget::runtime::paint_widget_into(
-                intent_key,
-                size,
-                crate::core::Color::WHITE,
-                &mut recorder,
-            )
-        };
-        if painted
-            && present::present_recorded_commands(
-                intent_key,
-                handle,
-                display,
-                recorder.commands(),
-                (width, height),
-                1.0,
-                recorder.clear_color(),
-            ) == WindowPresentOutcome::Presented
-        {
+        // One recorder per thread, reused across frames (RD-02). `begin_frame` inside the painter
+        // clears the previous stream, so nothing of the old frame reaches this one.
+        let presented = present::with_gpu_paint_backend(size, 1.0, |recorder| {
+            let painted = if is_window_canvas {
+                crate::widget::runtime::paint_tree_into(
+                    intent_key,
+                    size,
+                    crate::core::Color::WHITE,
+                    recorder,
+                )
+            } else {
+                crate::widget::runtime::paint_widget_into(
+                    intent_key,
+                    size,
+                    crate::core::Color::WHITE,
+                    recorder,
+                )
+            };
+            painted
+                && present::present_recorded_commands(
+                    intent_key,
+                    handle,
+                    display,
+                    recorder.commands(),
+                    (width, height),
+                    1.0,
+                    recorder.clear_color(),
+                ) == WindowPresentOutcome::Presented
+        });
+        if presented {
             present::note_frame_shown(intent_key, frame, quality);
             return true;
         }

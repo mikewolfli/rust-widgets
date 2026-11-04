@@ -45,7 +45,7 @@ let mut set = factory.create("form_set", Rect::new(0, 0, 480, 360), "").unwrap()
 Enable the web group (and its optional real engine or HTTP client) in a host's `Cargo.toml`:
 
 ```toml
-rust-widgets-suites = { version = "4.0.1", path = "../rust-widgets/crates/rust-widgets-suites", features = ["webview"] }
+rust-widgets-suites = { version = "4.1.0", path = "../rust-widgets/crates/rust-widgets-suites", features = ["webview"] }
 # or, for the real implementations:
 # features = ["js-engine", "web-http"]
 ```

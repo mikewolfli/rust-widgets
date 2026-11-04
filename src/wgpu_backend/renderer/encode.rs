@@ -17,30 +17,10 @@ use super::frame::WgpuRenderer;
 use super::pass::StepRecorder;
 use super::resources::{
     padded_row_bytes, readback_frame_bytes, rgba_buffer_len, BlendKind, BlendRun, DrawStep,
-    RenderCache, ShadowDraw,
+    RenderCache,
 };
 use super::shadow::pack_blurred_shadow;
-use super::uploads::{GradientDraw, ImageDraw, PathDraw, RadialDraw, ShapeDraw, TextDraw};
-
-/// Packs a row-major [`crate::render::math3d::Mat4`] as the column-major bytes WGSL expects.
-///
-/// WGSL's `mat4x4f` uniform layout is column-major, while the maths module stores rows to
-/// match the affine matrix's natural reading order. Transposing here is what keeps the two
-/// conventions from being silently swapped — the failure mode would be a transposed transform
-/// that still compiles and still draws *something*.
-#[cfg(feature = "3d")]
-#[allow(clippy::needless_range_loop)] // row and column index the source row-major matrix.
-fn mvp_column_major_bytes(m: &crate::render::math3d::Mat4) -> [u8; 64] {
-    let mut bytes = [0u8; 64];
-    for column in 0..4 {
-        for row in 0..4 {
-            let value = m.m[row * 4 + column];
-            let start = (column * 4 + row) * 4;
-            bytes[start..start + 4].copy_from_slice(&value.to_le_bytes());
-        }
-    }
-    bytes
-}
+use super::uploads::PathDraw;
 
 /// Bytes of one instanced quad record: two `vec4f` corner pairs and one `vec4f` colour.
 ///
@@ -174,6 +154,26 @@ pub(crate) fn pack_instanced_quads(
         }
     }
     Ok(())
+}
+
+/// Packs a row-major [`crate::render::math3d::Mat4`] as the column-major bytes WGSL expects.
+///
+/// WGSL's `mat4x4f` uniform layout is column-major, while the maths module stores rows to
+/// match the affine matrix's natural reading order. Transposing here is what keeps the two
+/// conventions from being silently swapped — the failure mode would be a transposed transform
+/// that still compiles and still draws *something*.
+#[cfg(feature = "3d")]
+#[allow(clippy::needless_range_loop)] // row and column index the source row-major matrix.
+pub(super) fn mvp_column_major_bytes(m: &crate::render::math3d::Mat4) -> [u8; 64] {
+    let mut bytes = [0u8; 64];
+    for column in 0..4 {
+        for row in 0..4 {
+            let value = m.m[row * 4 + column];
+            let start = (column * 4 + row) * 4;
+            bytes[start..start + 4].copy_from_slice(&value.to_le_bytes());
+        }
+    }
+    bytes
 }
 
 impl WgpuRenderer {
@@ -600,134 +600,6 @@ impl WgpuRenderer {
         self.read_back_owned(&readback.buffer, width, height, expected_len)
     }
 
-    /// Renders an indexed triangle mesh through the depth-tested `3d` pipeline.
-    ///
-    /// `model` places the mesh, `camera` supplies the projection and `viewport` selects the part of
-    /// the `width × height` target the camera looks through. The composition is
-    /// `model × view-projection × viewport-matrix`, the same one
-    /// [`crate::render::mesh3d::project_mesh`] uses, so the GPU and software pictures describe the
-    /// same geometry.
-    ///
-    /// The pass clears colour to transparent and depth to `1.0`, then runs one indexed draw with a
-    /// `Depth32Float` attachment compared by `Less`. No triangle is culled: the depth test decides
-    /// visibility, matching the documented software policy. The target is read back and returned as
-    /// tightly packed RGBA8.
-    ///
-    /// An empty mesh or an empty viewport returns a transparent frame rather than an error, so a
-    /// caller may drop a mesh without special-casing the render call.
-    #[cfg(feature = "3d")]
-    pub fn render_mesh_3d_gpu(
-        &self,
-        width: u32,
-        height: u32,
-        mesh: &crate::render::mesh3d::Mesh3D,
-        model: &crate::render::math3d::Mat4,
-        camera: &crate::render::mesh3d::Camera,
-        viewport: crate::core::Rect,
-    ) -> Result<Vec<u8>, String> {
-        let expected_len = rgba_buffer_len(width, height)?;
-        if mesh.triangle_count() == 0 || viewport.width == 0 || viewport.height == 0 {
-            return Ok(vec![0u8; expected_len]);
-        }
-
-        let aspect = viewport.width as f32 / viewport.height as f32;
-        let mvp = model.then(&camera.view_projection(aspect)).then(
-            &crate::render::mesh3d::viewport_matrix(
-                viewport,
-                crate::core::Size::new(width, height),
-            ),
-        );
-        let mvp_bytes = mvp_column_major_bytes(&mvp);
-        let index_count = mesh.indices().len() as u32;
-        if index_count == 0 {
-            return Ok(vec![0u8; expected_len]);
-        }
-
-        let mut cache = self.cache.borrow_mut();
-        // Pack straight into the reused scratch buffers so a mesh frame allocates nothing on
-        // the CPU side (G-216). The strides, the shader's attribute offsets and these writers
-        // must agree exactly; a mismatch is a pipeline validation error rather than a silent
-        // misread.
-        let (vertex_len, index_len) = {
-            let pack = &mut cache.pack;
-            pack.mesh_vertices.clear();
-            pack.mesh_indices.clear();
-            for vertex in mesh.vertices() {
-                for value in [vertex.position.x, vertex.position.y, vertex.position.z, 1.0] {
-                    pack.mesh_vertices.extend_from_slice(&value.to_le_bytes());
-                }
-                for channel in [vertex.color.r, vertex.color.g, vertex.color.b, vertex.color.a] {
-                    pack.mesh_vertices.extend_from_slice(&((channel as f32) / 255.0).to_le_bytes());
-                }
-            }
-            for index in mesh.indices() {
-                pack.mesh_indices.extend_from_slice(&index.to_le_bytes());
-            }
-            (pack.mesh_vertices.len(), pack.mesh_indices.len())
-        };
-        cache.ensure_target(&self.device, width, height);
-        cache.ensure_depth_target(&self.device, width, height);
-        cache.ensure_vertices(&self.device, vertex_len as u64);
-        cache.ensure_mesh_indices(&self.device, index_len as u64);
-        cache.ensure_mesh_uniform(&self.device, &self.transformed_bind_group_layout);
-        let RenderCache {
-            target, depth_target, vertices, mesh_indices, mesh_uniform, pack, ..
-        } = &mut *cache;
-        let target = target.as_ref().ok_or_else(|| "render target missing".to_string())?;
-        let depth = depth_target.as_ref().ok_or_else(|| "depth target missing".to_string())?;
-        let vertices = vertices.as_ref().ok_or_else(|| "vertex buffer missing".to_string())?;
-        let indices = mesh_indices.as_ref().ok_or_else(|| "index buffer missing".to_string())?;
-        let uniform = mesh_uniform.as_ref().ok_or_else(|| "mvp uniform missing".to_string())?;
-
-        self.queue.write_buffer(&uniform.buffer, 0, &mvp_bytes);
-        if !pack.mesh_vertices.is_empty() {
-            self.queue.write_buffer(&vertices.buffer, 0, &pack.mesh_vertices);
-        }
-        if !pack.mesh_indices.is_empty() {
-            self.queue.write_buffer(&indices.buffer, 0, &pack.mesh_indices);
-        }
-
-        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("gpu_mesh_encoder"),
-        });
-        {
-            let mut rp = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("gpu_mesh_pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &target.view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: &depth.view,
-                    depth_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(1.0),
-                        store: wgpu::StoreOp::Store,
-                    }),
-                    stencil_ops: None,
-                }),
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
-            rp.set_pipeline(&self.mesh_pipeline);
-            rp.set_bind_group(0, &uniform.bind_group, &[]);
-            rp.set_vertex_buffer(0, vertices.buffer.slice(..vertex_len as u64));
-            rp.set_index_buffer(
-                indices.buffer.slice(..index_len as u64),
-                wgpu::IndexFormat::Uint32,
-            );
-            rp.draw_indexed(0..index_count, 0, 0..1);
-        }
-        drop(cache);
-        self.queue.submit(Some(encoder.finish()));
-        self.read_target(width, height, expected_len, "gpu_mesh_readback")
-    }
-
     /// Render stroked (outlined) rectangles using the GPU pipeline.
     /// Each stroke rect is decomposed into 4 thin filled rectangles
     /// (top, bottom, left, right edges) and rendered via the existing FillRect pipeline.
@@ -1093,15 +965,11 @@ impl WgpuRenderer {
         //
         // The image table is not part of the pack scratch because its entries own GPU handles;
         // it lives for the whole call so the pass can bind each one.
-        let mut image_draws: Vec<ImageDraw> = Vec::new();
-        let mut text_draws: Vec<TextDraw> = Vec::new();
-        let mut shape_draws: Vec<ShapeDraw> = Vec::new();
-        let mut radial_draws: Vec<RadialDraw> = Vec::new();
-        let mut gradient_draws: Vec<GradientDraw> = Vec::new();
-        let mut path_draws: Vec<PathDraw> = Vec::new();
-        let mut shadow_draws: Vec<ShadowDraw> = Vec::new();
-        // One entry per `DrawStep::BlurRegion`, filled while the plan is packed.
-        let mut frame_blur_specs: Vec<(PixelRect, u32)> = Vec::new();
+        // The frame's side tables are the packer's own, cleared rather than reallocated (RD-02).
+        // Binding them by reference keeps every use below reading the same name it always did; the
+        // borrow lives only inside the packing block, because the target/vertex setup below needs
+        // `cache` mutably too.
+        cache.tables.reset();
         let (
             instance_len,
             circle_vertex_len,
@@ -1111,7 +979,18 @@ impl WgpuRenderer {
             circle_uniform_len,
             plan_len,
         ) = {
-            let pack = &mut cache.pack;
+            // One destructure rather than two field borrows: `cache` is a `RefMut`, so every field
+            // access goes through one `DerefMut` and the compiler cannot split it by field name.
+            let RenderCache { pack, tables, .. } = &mut *cache;
+            let image_draws = &mut tables.image_draws;
+            let text_draws = &mut tables.text_draws;
+            let shape_draws = &mut tables.shape_draws;
+            let radial_draws = &mut tables.radial_draws;
+            let gradient_draws = &mut tables.gradient_draws;
+            let path_draws = &mut tables.path_draws;
+            let shadow_draws = &mut tables.shadow_draws;
+            // One entry per `DrawStep::BlurRegion`, filled while the plan is packed.
+            let frame_blur_specs = &mut tables.frame_blur_specs;
             pack.instances.clear();
             pack.circle_vertices.clear();
             pack.path_vertices.clear();
@@ -1120,6 +999,7 @@ impl WgpuRenderer {
             pack.uniform.resize(stride * clear_count, 0);
             pack.circle_uniforms.resize(stride * 2 * circle_count, 0);
             pack.plan.clear();
+            pack.clip_stack.clear();
             let mut clear_slot = 0usize;
             let mut circle_index = 0usize;
             let mut run_start = 0usize;
@@ -1131,7 +1011,8 @@ impl WgpuRenderer {
             // The running clip is stream state, exactly as it is for the CPU rasteriser: a push
             // intersects the visible region and a pop restores the previous one. Rectangle draws
             // consume it by narrowing their geometry; circles and images consume it as a scissor.
-            let mut clip_stack: Vec<PixelRect> = Vec::new();
+            // The stack lives in the pack scratch: cleared above, capacity kept across frames.
+            let clip_stack = &mut pack.clip_stack;
             let mut current_clip: Option<PixelRect> = None;
             for command in commands {
                 if let WgpuDrawCommand::SetBlendMode { mode } = command {
@@ -1828,7 +1709,16 @@ impl WgpuRenderer {
             &self.device,
             (instance_len + circle_vertex_len + path_vertex_len + shadow_vertex_len) as u64,
         );
-        let shadow_specs: Vec<PixelRect> = shadow_draws.iter().map(|draw| draw.layer).collect();
+        {
+            // Scoped so the mutable borrow of the table ends before `ensure_shadow_targets` takes
+            // the cache again.
+            let tables = &mut cache.tables;
+            tables.shadow_specs.clear();
+            tables.shadow_specs.extend(tables.shadow_draws.iter().map(|draw| draw.layer));
+        }
+        // Moved out for the call and put straight back: `ensure_shadow_targets` takes `&mut self`,
+        // so it cannot also borrow a field of `self` as an argument. The move is a pointer copy.
+        let shadow_specs = core::mem::take(&mut cache.tables.shadow_specs);
         cache.ensure_shadow_targets(
             &self.device,
             &self.blur_bind_group_layout,
@@ -1836,15 +1726,20 @@ impl WgpuRenderer {
             &self.transformed_bind_group_layout,
             &shadow_specs,
         );
-        let frame_blur_count = frame_blur_specs.len();
+        cache.tables.shadow_specs = shadow_specs;
+        let frame_blur_count = cache.tables.frame_blur_specs.len();
         if frame_blur_count > 0 {
+            let frame_blur_specs = core::mem::take(&mut cache.tables.frame_blur_specs);
             cache.ensure_frame_blur_targets(
                 &self.device,
                 &self.blur_bind_group_layout,
                 &frame_blur_specs,
             );
+            cache.tables.frame_blur_specs = frame_blur_specs;
             if let Some(targets) = cache.frame_blur.as_ref() {
-                for (target, (_, radius)) in targets.targets.iter().zip(&frame_blur_specs) {
+                for (target, (_, radius)) in
+                    targets.targets.iter().zip(cache.tables.frame_blur_specs.iter())
+                {
                     let widths = super::resources::frame_blur_pass_widths(*radius);
                     // One chunk of two passes per box width: horizontal then vertical. Zipping the
                     // chunks with the widths is what keeps the pass count and the width list from
@@ -1886,8 +1781,16 @@ impl WgpuRenderer {
             blend,
             frame_blur,
             pack,
+            tables,
             ..
         } = &mut *cache;
+        let image_draws = &tables.image_draws;
+        let text_draws = &tables.text_draws;
+        let shape_draws = &tables.shape_draws;
+        let radial_draws = &tables.radial_draws;
+        let gradient_draws = &tables.gradient_draws;
+        let path_draws = &tables.path_draws;
+        let shadow_draws = &tables.shadow_draws;
         let uniform = uniform.as_ref().expect("the colour arena was just ensured");
         let target = target.as_ref().expect("the target was just ensured");
         let stencil = stencil.as_ref().expect("the stencil target was just ensured");
@@ -1915,7 +1818,7 @@ impl WgpuRenderer {
             self.queue.write_buffer(&vertices.buffer, shadow_vertex_offset, &pack.shadow_instances);
         }
         let shadow_targets = shadow.as_mut().expect("the shadow layers were just ensured");
-        self.write_shadow_layer_inputs(&shadow_draws, &mut shadow_targets.layers);
+        self.write_shadow_layer_inputs(shadow_draws, &mut shadow_targets.layers);
 
         let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("gpu_draw_commands_encoder"),
@@ -1923,7 +1826,7 @@ impl WgpuRenderer {
         // Every blurred shadow is rendered first, so the frame's pass only sees finished layers.
         self.encode_shadow_layers(
             &mut encoder,
-            &shadow_draws,
+            shadow_draws,
             &shadow_targets.layers,
             &vertices.buffer,
             shadow_vertex_offset,
@@ -1939,12 +1842,12 @@ impl WgpuRenderer {
             circle_arena: &circle_arena.bind_group,
             circle_vertex_offset,
             path_vertex_offset,
-            image_draws: &image_draws,
-            text_draws: &text_draws,
-            shape_draws: &shape_draws,
-            radial_draws: &radial_draws,
-            gradient_draws: &gradient_draws,
-            path_draws: &path_draws,
+            image_draws,
+            text_draws,
+            shape_draws,
+            radial_draws,
+            gradient_draws,
+            path_draws,
             shadow_layers: &shadow_targets.layers,
             text_pipeline: &self.text_pipeline,
         };
@@ -1979,6 +1882,10 @@ impl WgpuRenderer {
         );
 
         self.queue.submit(Some(encoder.finish()));
+        // Release the draw handles this frame owned now that the pass is submitted, and keep the
+        // tables' capacity for the next frame (RD-02). Their previous per-call form dropped the same
+        // handles at this exact point.
+        cache.tables.release_gpu_owned();
         Ok(())
     }
 }

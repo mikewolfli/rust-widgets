@@ -542,9 +542,11 @@ impl PaintBackend for SoftwarePaintBackend {
         contours: &[(usize, usize)],
         color: Color,
     ) {
-        if let Ok(path) = crate::render::CompoundPath::new(points.to_vec(), contours.to_vec()) {
-            self.surface.fill_path_non_zero(&path, color);
-        }
+        // Draws straight from the caller's slices: building a `CompoundPath` copied both vectors
+        // on every touched region of every frame, for geometry the scan converter only reads. The
+        // borrowed kernel validates the contour ranges itself, so an invalid path still paints
+        // nothing instead of panicking.
+        let _ = self.surface.fill_path_non_zero_borrowed(points, contours, color, 0, 0);
     }
     /// Fills `rect` with `gradient` without owning a copy of it.
     ///

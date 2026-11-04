@@ -79,6 +79,15 @@ pub struct FramePresenter {
     /// command renderer's target texture without rebuilding the pipeline.
     blit_layout: wgpu::BindGroupLayout,
     blit_sampler: wgpu::Sampler,
+    /// The blit bind group that samples the command renderer's target, with the size it was built
+    /// for.
+    ///
+    /// Built once and reused while the encoded size is unchanged: the group only names the
+    /// renderer's target view, the sampler and the uniform, and all three stay the same across
+    /// frames. A fresh `wgpu::BindGroup` per presented frame was a GPU-side descriptor allocation
+    /// on every frame of the `Smooth` path (RD-02). Cleared by [`Self::resize`], which is the one
+    /// place the layout, sampler and uniform can change.
+    blit_target_group: Option<((u32, u32), wgpu::BindGroup)>,
     /// What the adapter reported, needed to build the command renderer on this device.
     adapter_info: wgpu::AdapterInfo,
     /// The command-stream renderer, created on first use (see `present_commands`).
@@ -221,6 +230,7 @@ impl FramePresenter {
             _blit_uniform: blit_uniform,
             blit_layout,
             blit_sampler,
+            blit_target_group: None,
             adapter_info,
             renderer: None,
             renderer_error: None,
@@ -344,6 +354,8 @@ impl FramePresenter {
                 self._blit_uniform = uniform;
                 self.blit_layout = layout;
                 self.blit_sampler = sampler;
+                // The cached group names the old layout, sampler and uniform.
+                self.blit_target_group = None;
                 self.damage.mark_full();
                 self.health.on_present_status(PresentationStatus::Reconfigured);
                 PresentationStatus::Reconfigured
@@ -474,29 +486,40 @@ impl FramePresenter {
             self.stats.frames_skipped += 1;
             return Ok(PresentationStatus::Skipped);
         };
-        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("rw_present_smooth_bind_group"),
-            layout: &self.blit_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&encoded),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&self.blit_sampler),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: self._blit_uniform.as_entire_binding(),
-                },
-            ],
-        });
+        // The group names the renderer's target view, which changes only when the encoded size
+        // does (`ensure_target` recreates the texture then). Reusing it removes one
+        // `wgpu::BindGroup` allocation per presented frame (RD-02).
+        let size_key = (width, height);
+        if self.blit_target_group.as_ref().map(|(key, _)| *key) != Some(size_key) {
+            let group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("rw_present_smooth_bind_group"),
+                layout: &self.blit_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&encoded),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(&self.blit_sampler),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: self._blit_uniform.as_entire_binding(),
+                    },
+                ],
+            });
+            self.blit_target_group = Some((size_key, group));
+        }
+        let Some((_, bind_group)) = self.blit_target_group.as_ref() else {
+            self.stats.frames_skipped += 1;
+            return Ok(PresentationStatus::Skipped);
+        };
         let view = surface_texture.texture.create_view(&wgpu::TextureViewDescriptor::default());
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("rw_present") });
-        self.encode_blit(&mut encoder, &view, &bind_group);
+        self.encode_blit(&mut encoder, &view, bind_group);
         // A command stream redraws the frame whole, so nothing is left pending for the next one.
         self.damage.clear();
         self.finish_frame(encoder, surface_texture, capture)

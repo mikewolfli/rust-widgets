@@ -508,7 +508,7 @@ impl RichEdit {
         }
         self.selection = None;
         self.first_visible_line = 0;
-        self.text_changed.emit(self.text.clone());
+        self.text_changed.emit_lazy(|| self.text.clone());
         self.cursor_position_changed.emit(self.text.len());
         self.base.request_redraw();
     }
@@ -560,7 +560,7 @@ impl RichEdit {
                 self.typing_run = mergeable.then_some(run);
             }
         }
-        self.text_changed.emit(self.text.clone());
+        self.text_changed.emit_lazy(|| self.text.clone());
         self.scroll_caret_into_view();
         self.base.request_redraw();
     }
@@ -1089,7 +1089,7 @@ impl RichEdit {
         let caret = self.extend_caret.min(self.text.len());
         self.selection = Some((caret, caret));
         self.restoring_history = false;
-        self.text_changed.emit(self.text.clone());
+        self.text_changed.emit_lazy(|| self.text.clone());
         self.cursor_position_changed.emit(caret);
         // I-P57: keep the viewport on the caret after a history replay instead of jumping to the
         // document's first line.
@@ -1802,25 +1802,22 @@ impl RichEdit {
         let runs = self.format_runs();
         let line_end = line_start + line.len();
         let first = runs.partition_point(|(_, end, _)| *end <= line_start);
-        let mut pieces: Vec<(usize, usize, CharFormat)> = Vec::new();
+
+        let mut pen_x = origin_x;
+        // The runs are walked in place: collecting them into a `Vec` built one allocation per
+        // painted line, and cloning each `CharFormat` cloned the run's family `String` on top of
+        // that (a styled document paid both on every frame).
         for (start, end, format) in runs.iter().skip(first) {
             if *start >= line_end {
                 break;
             }
             let start = (*start).max(line_start) - line_start;
             let end = (*end).min(line_end) - line_start;
-            if start < end {
-                pieces.push((start, end, format.clone()));
-            }
-        }
-
-        let mut pen_x = origin_x;
-        for (start, end, format) in pieces {
             if start >= end {
                 continue;
             }
             let mut face = font.clone();
-            if let Some(family) = format.font_family.clone() {
+            if let Some(family) = format.font_family.as_deref() {
                 face = face.with_family(family);
             }
             if let Some(size) = format.font_size {

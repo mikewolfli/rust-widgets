@@ -47,6 +47,7 @@ use crate::widget::container_widgets::linear_layouts::{
     Flex, FlexItemSpec, FlowLayout, WrapLayout,
 };
 use crate::widget::container_widgets::Accordion;
+use crate::widget::container_widgets::Carousel;
 use crate::widget::container_widgets::MasonryLayout;
 use crate::widget::dialog::wizard::WizardDialog;
 use crate::widget::menu_toolbar::action::Action;
@@ -411,6 +412,62 @@ fn route_container_content(
             }
         }
 
+        // A carousel declares its pages under `pages`, each entry naming a page index and the
+        // mounted child that fills it (DM-11's last container). The page's title and colour come
+        // from the child's own declaration, the same derivation the masonry cards use: the slot
+        // is layout data, and inventing a schema for it would be a second source of truth.
+        "carousel" => {
+            for (position, page) in as_array(obj.get("pages")).iter().enumerate() {
+                let Some(entry) = page.as_object() else { continue };
+                let index = entry
+                    .get("index")
+                    .and_then(|v| v.as_u64())
+                    .map(|v| v as usize)
+                    .unwrap_or(position);
+                let Some((child_type, child_val)) =
+                    entry.iter().find(|(key, _)| key.as_str() != "index")
+                else {
+                    continue;
+                };
+                let id = JsonLoader::instantiate_node(
+                    child_type,
+                    child_val,
+                    Some(widget_id),
+                    registry,
+                    binding,
+                    depth + 1,
+                    resolver,
+                    ancestors,
+                )?;
+                if id == 0 {
+                    continue;
+                }
+                let node = child_val.as_object();
+                // The page's title and colour come from the child's own declaration, the same
+                // derivation the masonry cards use: a page's slot is layout data, and inventing a
+                // second schema for it would be a second source of truth.
+                let title = node
+                    .and_then(|node| node.get("text").and_then(|v| v.as_str()))
+                    .or_else(|| node.and_then(|n| n.get("title").and_then(|v| v.as_str())))
+                    .unwrap_or("")
+                    .to_string();
+                let color = node
+                    .and_then(|node| node.get("background").and_then(|v| v.as_str()))
+                    .and_then(Color::parse_hex)
+                    .unwrap_or(Color::TRANSPARENT);
+                with_container::<Carousel>(widget_id, |carousel| {
+                    // Pages are positional: a document may name page 2 before page 1, so the
+                    // carousel grows to the named index before the child is bound.
+                    while carousel.page_count() <= index {
+                        carousel.add_page("", Color::TRANSPARENT);
+                    }
+                    carousel.set_page_title(index, &title);
+                    carousel.set_page_color(index, color);
+                    carousel.set_page_content_id(index, Some(id));
+                });
+            }
+        }
+
         // A tool box declares its items under `items`; the node is the item's page.
         "tool_box" => {
             let items = node_array(obj, "items");
@@ -514,8 +571,13 @@ fn route_container_content(
                                 scaffold.set_snackbar_id(Some(id));
                             });
                         }
-                        // `bottom` addresses the app bar's own bottom slot, which is a
-                        // `Box`-owned control on `AppBar` and has no id entry.
+                        // The app bar's own bottom strip (DM-11). It used to be the one slot with
+                        // no id entry; it now places a declared child like every other slot.
+                        "bottom" => {
+                            with_container::<AdaptiveScaffold>(widget_id, |scaffold| {
+                                scaffold.set_app_bar_bottom_id(Some(id));
+                            });
+                        }
                         other => {
                             log::warn!(
                                 "JSON layout: 'adaptive_scaffold' has no content slot named \
@@ -5023,7 +5085,8 @@ mod tests {
             {"adaptive_scaffold": {"id": "route-scaffold", "title": "Home", "width": 400, "height": 600,
                 "children": [
                     {"label": {"id": "route-body", "text": "body", "slot": "body"}},
-                    {"button": {"id": "route-fab", "text": "+", "slot": "fab"}}
+                    {"button": {"id": "route-fab", "text": "+", "slot": "fab"}},
+                    {"label": {"id": "route-appbar-bottom", "text": "strip", "slot": "bottom"}}
                 ],
                 "pages": [
                     {"index": 1, "label": {"id": "route-nav-page", "text": "second"}}
@@ -5042,6 +5105,10 @@ mod tests {
             {"masonry_layout": {"id": "route-masonry", "width": 300, "height": 400, "children": [
                 {"button": {"id": "route-card-0", "text": "first card", "height": 90}},
                 {"button": {"id": "route-card-1", "text": "second card"}}
+            ]}},
+            {"carousel": {"id": "route-carousel", "width": 300, "height": 200, "pages": [
+                {"index": 0, "label": {"id": "route-carousel-page-0", "text": "first slide"}},
+                {"index": 1, "label": {"id": "route-carousel-page-1", "text": "second slide"}}
             ]}},
             {"flow_layout": {"id": "route-flow", "width": 300, "height": 200, "children": [
                 {"button": {"id": "route-flow-0", "text": "a", "width": 80, "height": 30}},
@@ -5108,7 +5175,7 @@ mod tests {
         let scaffold = layout.id("route-scaffold").expect("the scaffold is mounted");
         let slots = crate::widget::runtime::with_widget(scaffold, |widget| {
             crate::widget::capability::coercion::widget_as::<AdaptiveScaffold>(widget)
-                .map(|s| (s.body_id(), s.nav_body_id(1)))
+                .map(|s| (s.body_id(), s.nav_body_id(1), s.app_bar_bottom_id()))
         })
         .flatten()
         .expect("the scaffold is an AdaptiveScaffold");
@@ -5121,6 +5188,11 @@ mod tests {
             slots.1,
             layout.id("route-nav-page"),
             "a declared page is bound to the destination its `index` names"
+        );
+        assert_eq!(
+            slots.2,
+            layout.id("route-appbar-bottom"),
+            "a child with `slot: bottom` fills the app bar's own bottom strip"
         );
 
         let tab_view = layout.id("route-tabview").expect("the tab view is mounted");
@@ -5181,6 +5253,24 @@ mod tests {
         assert_eq!(cards[0].1, 90, "the card height is the child's declared height");
         assert_eq!(cards[1].1, DEFAULT_DECLARED_CARD_HEIGHT, "and the default when absent");
         assert_eq!(cards[0].2, layout.id("route-card-0"), "the card carries the mounted child");
+
+        let carousel = layout.id("route-carousel").expect("the carousel is mounted");
+        let slides = crate::widget::runtime::read_widget(carousel, |widget| {
+            crate::widget::capability::coercion::widget_as::<Carousel>(widget).map(|c| {
+                (
+                    c.page_count(),
+                    c.page_title(0).map(str::to_string),
+                    c.pages()[0].content_id(),
+                    c.pages()[1].content_id(),
+                )
+            })
+        })
+        .flatten()
+        .expect("the carousel is a Carousel");
+        assert_eq!(slides.0, 2, "each declared page became a page");
+        assert_eq!(slides.1.as_deref(), Some("first slide"), "the title comes from the child");
+        assert_eq!(slides.2, layout.id("route-carousel-page-0"));
+        assert_eq!(slides.3, layout.id("route-carousel-page-1"));
 
         let flow = layout.id("route-flow").expect("the flow layout is mounted");
         let items = crate::widget::runtime::with_widget(flow, |widget| {

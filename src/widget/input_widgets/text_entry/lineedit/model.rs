@@ -757,7 +757,7 @@ impl LineEdit {
         self.ensure_caret_visible();
         self.notify_caret_change(before_cursor, before_selection);
         self.refresh_edit_capabilities();
-        self.text_changed.emit(self.text.clone());
+        self.text_changed.emit_lazy(|| self.text.clone());
         self.base.request_redraw();
         true
     }
@@ -802,7 +802,7 @@ impl LineEdit {
         self.ensure_caret_visible();
         self.notify_caret_change(before_cursor, before_selection);
         self.refresh_edit_capabilities();
-        self.text_changed.emit(self.text.clone());
+        self.text_changed.emit_lazy(|| self.text.clone());
         self.base.request_redraw();
     }
     /// Returns placeholder text.
@@ -856,7 +856,7 @@ impl LineEdit {
                 *self.history_target.borrow_mut() = self.text.clone();
                 self.undo_stack.clear();
                 self.refresh_edit_capabilities();
-                self.text_changed.emit(self.text.clone());
+                self.text_changed.emit_lazy(|| self.text.clone());
             }
         }
         self.base.request_redraw();

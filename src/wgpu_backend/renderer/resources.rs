@@ -363,6 +363,11 @@ pub(crate) struct PackScratch {
     pub(crate) blend_runs: Vec<BlendRun>,
     /// The command-stream dispatcher's draw order (G-218).
     pub(crate) plan: Vec<DrawStep>,
+    /// The clip rectangles still open while the stream is packed.
+    ///
+    /// Stream state, not per-command data: it is cleared where `plan` is and keeps its capacity,
+    /// so a frame with nested clips does not allocate a fresh stack on every encode.
+    pub(crate) clip_stack: Vec<PixelRect>,
     /// Mesh vertices, 32 bytes per vertex (`3d`).
     #[cfg(feature = "3d")]
     pub(crate) mesh_vertices: Vec<u8>,
@@ -443,6 +448,8 @@ pub(crate) struct RenderCache {
     pub(crate) circle_uniforms: Option<CircleUniformArena>,
     /// CPU-side packing buffers refilled each call instead of reallocated (G-216).
     pub(crate) pack: PackScratch,
+    /// The command-stream packer's per-frame side tables, refilled each call (RD-02).
+    pub(crate) tables: super::pack_tables::PackTables,
     /// The `Depth32Float` attachment for mesh draws.
     #[cfg(feature = "3d")]
     pub(crate) depth_target: Option<DepthTarget>,

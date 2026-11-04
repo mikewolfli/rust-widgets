@@ -382,6 +382,20 @@ impl AdaptiveScaffold {
         self.base.request_redraw();
     }
 
+    /// Fills the AppBar's bottom slot with an already-mounted control (issue-20261104 DM-11).
+    ///
+    /// The app bar's bottom slot was the last content position a document could not reach: every
+    /// other slot on this control has an id setter, and this one only had the owning `Box` one.
+    pub fn set_app_bar_bottom_id(&mut self, widget: Option<ObjectId>) {
+        self.app_bar.set_bottom_id(widget);
+        self.base.request_redraw();
+    }
+
+    /// The AppBar's bottom slot when a declaration filled it (DM-11).
+    pub fn app_bar_bottom_id(&self) -> Option<ObjectId> {
+        self.app_bar.bottom_id()
+    }
+
     /// Returns the AppBar's bottom slot.
     pub fn bottom_widget(&self) -> Option<&dyn Widget> {
         self.app_bar.bottom_widget()

@@ -127,14 +127,17 @@ STRAY="$(printf '%s\n' "$BUS_CALLS_CODE" \
 STRAY_CODE="$(printf '%s\n' "$STRAY" | while IFS= read -r line; do
     [ -z "$line" ] && continue
     f="${line%%:*}"; rest="${line#*:}"; ln="${rest%%:*}"
-    # A child test module (`<dir>/tests.rs`, `<dir>/<name>_tests.rs`) is the test double's home
-    # (principle #9): it drove the bus on purpose before the split and still does, but it is
-    # dedented out of its `mod tests` wrapper, so the marker search below cannot see it.
-    case "$f" in
-        */tests.rs|*_tests.rs) continue ;;
-    esac
-    # Find the enclosing module boundary above this line; if the nearest
-    # `mod tests` starts before it and the file ends with it, it is a test.
+    # A child test module (a tests.rs or a *_tests.rs file beside its subject) is the home of the
+    # test double (principle #9): it drove the bus on purpose before the split and still does, but
+    # it is dedented out of its mod tests wrapper, so the marker search below cannot see it.
+    #
+    # Written as a suffix test rather than a `case`, because bash 3.2 (the shell macOS ships)
+    # cannot parse a `case` that lives inside a command substitution.
+    if [ "${f%tests.rs}" != "$f" ] || [ "${f%_tests.rs}" != "$f" ]; then
+        continue
+    fi
+    # Find the enclosing module boundary above this line; if the nearest mod tests starts before
+    # it and the file ends with it, it is a test.
     mod_line="$(awk -v target="$ln" '/mod tests/{m=NR} NR==target{print m+0}' "$f")"
     if [ "${mod_line:-0}" -eq 0 ]; then
         printf '%s\n' "$line"

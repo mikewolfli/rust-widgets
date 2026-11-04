@@ -1382,7 +1382,7 @@ impl ComboBox {
                     self.editor.set_text(self.items[idx].clone(), false);
                     self.editor_revision = self.editor_revision.wrapping_add(1);
                 }
-                self.current_text_changed.emit(self.items[idx].clone());
+                self.current_text_changed.emit_lazy(|| self.items[idx].clone());
                 self.current_index_changed.emit(Some(idx));
             } else {
                 return;
@@ -1540,7 +1540,7 @@ impl ComboBox {
             self.current_index_changed.emit(index);
         }
         self.refresh_completions();
-        self.current_text_changed.emit(self.current_text());
+        self.current_text_changed.emit_lazy(|| self.current_text());
     }
 
     /// Commits the editable value on Enter or focus loss, honouring the insert policy (I-06).
@@ -1650,7 +1650,7 @@ impl ComboBox {
         self.invalidate_item_caches();
         self.refresh_completions();
         if self.current_index == Some(index) {
-            self.current_text_changed.emit(self.items[index].clone());
+            self.current_text_changed.emit_lazy(|| self.items[index].clone());
         }
         self.base.request_redraw();
     }

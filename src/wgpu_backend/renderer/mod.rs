@@ -13,6 +13,9 @@ mod effects;
 mod encode;
 mod encode_blur;
 mod frame;
+#[cfg(feature = "3d")]
+mod mesh_encode;
+mod pack_tables;
 mod pass;
 mod policy;
 pub(crate) mod resources;

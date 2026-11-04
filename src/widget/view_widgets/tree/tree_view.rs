@@ -2702,11 +2702,13 @@ impl Draw for TreeView {
                 // The node's icon sits between the disclosure gutter and the label (RW-10). The
                 // node's own token wins, otherwise the model's `node_icon` answers, so a model
                 // that already describes shape through `node` and one that only answers by index
-                // both reach this one paint path.
-                let icon_name: Option<String> =
-                    node.icon.clone().or_else(|| model.node_icon(model_index).map(str::to_string));
+                // both reach this one paint path. Borrowed rather than owned: this runs per
+                // visible row per frame, and copying the token allocated twice (the clone plus the
+                // `to_string` of the model's answer).
+                let icon_name: Option<&str> =
+                    node.icon.as_deref().or_else(|| model.node_icon(model_index));
                 let mut icon_allowance = 0i32;
-                if let Some(name) = icon_name.as_deref() {
+                if let Some(name) = icon_name {
                     let side = (TREE_ROW_HEIGHT - 6).clamp(1, 20) as u32;
                     let icon_rect = Rect::new(
                         row.x + indent,

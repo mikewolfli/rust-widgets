@@ -17,8 +17,9 @@
 //! **Integration condition:** wire it into an image/glyph upload path only when
 //! that path exists and asks for atlas packing (principle #51 — no speculative
 //! integration). **Deletion condition:** if it is still unused by the next
-//! major release, delete it together with its tests, exactly as
-//! `GpuStagingBufferPool` documents for itself (principle #49).
+//! major release, delete it together with its tests, as was done for the
+//! staging pool (issue-20261104 RD-04) once nothing allocated from it
+//! (principle #49).
 use crate::compat::{HashMap, Vec};
 use crate::core::Size;
 

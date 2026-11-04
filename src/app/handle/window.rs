@@ -1017,7 +1017,7 @@ impl MessageBoxHandle {
         &self,
         button: crate::widget::dialog::message_box::StandardButton,
     ) -> Option<String> {
-        crate::widget::runtime::with_widget(self.id, |widget| {
+        crate::widget::runtime::read_widget(self.id, |widget| {
             crate::widget::capability::coercion::widget_as::<crate::widget::dialog::MessageBox>(
                 widget,
             )

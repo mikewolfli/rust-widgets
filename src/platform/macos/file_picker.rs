@@ -1,6 +1,13 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
 // SPDX-License-Identifier: MIT
 
+// The `cocoa` 0.24 bindings are deprecated in favour of `objc2`, and every deprecated item this
+// module names comes from them. That is a deliberate state, not drift: this is the **legacy**
+// macOS backend, kept beside `platform/macos_objc2` so a host can choose either (see
+// `docs/plans/platform_optional_backends.md`). Migrating these call sites one by one would
+// recreate the objc2 backend a second time (principle #101), so the deprecation notices are
+// silenced for this module only — never crate-wide, where they still guard new code.
+#![allow(deprecated)]
 use super::super::{PathFilter, PathPickerError, PathPurpose};
 use cocoa::base::{id, nil, BOOL, NO, YES};
 // `NSAutoreleasePool` is the trait that provides `autorelease()`: without it the call below does

@@ -3212,11 +3212,11 @@ dependencies = [
 
 [[package]]
 name = "rust-widgets-font"
-version = "4.0.1"
+version = "4.1.0"
 
 [[package]]
 name = "rust_widgets"
-version = "4.0.1"
+version = "4.1.0"
 dependencies = [
  "aes",
  "cbc",

@@ -9,7 +9,7 @@
 //
 // `ffi-napi@4.0.3` cannot be compiled against Node 18+ headers: its own `src/ffi.cc` stores the
 // const-env `get-uv-event-loop` pointer in a non-const slot, so `npm install` fails on 18/20/22/24
-// (the maintained-looking fork `@lwahonen/ffi-napi@4.0.12` fails identically; overriding
+// (the maintained-looking fork `@lwahonen/ffi-napi@4.1.02` fails identically; overriding
 // `node-addon-api` does not help, measured). koffi ships prebuilt binaries, so it installs on every
 // supported Node with no compiler at all.
 // ---------------------------------------------------------------------------

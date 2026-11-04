@@ -330,11 +330,6 @@ impl WgpuRenderer {
         self.gpu.performance_stats()
     }
 
-    /// The staging pool's current accounting — the ring the manager advances once per frame.
-    pub fn gpu_buffer_pool_stats(&self) -> Option<crate::gpu::GpuBufferPoolStats> {
-        self.gpu.buffer_pool_stats()
-    }
-
     /// Construction-time advisories (degraded backend tier, browser-forced integrated GPU).
     pub fn gpu_warnings(&self) -> Vec<String> {
         self.gpu.warnings()
@@ -366,11 +361,10 @@ impl WgpuRenderer {
     /// with a single full-screen pass — no readback, and the same device throughout.
     #[cfg(feature = "raw-window-handle")]
     pub(crate) fn encoded_target_view(&self) -> Option<wgpu::TextureView> {
+        // The cache already holds this target's view: creating a second one per presented frame was
+        // a `wgpu::TextureView` allocation for a descriptor identical to the cached one (RD-02).
         let cache = self.cache.borrow();
-        cache
-            .target
-            .as_ref()
-            .map(|target| target.texture.create_view(&wgpu::TextureViewDescriptor::default()))
+        cache.target.as_ref().map(|target| target.view.clone())
     }
 
     /// Blocks until every submission already handed to the device has completed.

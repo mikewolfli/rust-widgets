@@ -23,6 +23,13 @@
 //! missing `widget::runtime`, which is a worse outcome than simply not offering
 //! the capability.
 
+// The `cocoa` 0.24 bindings are deprecated in favour of `objc2`, and every deprecated item this
+// module names comes from them. That is a deliberate state, not drift: this is the **legacy**
+// macOS backend, kept beside `platform/macos_objc2` so a host can choose either (see
+// `docs/plans/platform_optional_backends.md`). Migrating these call sites one by one would
+// recreate the objc2 backend a second time (principle #101), so the deprecation notices are
+// silenced for this module only — never crate-wide, where they still guard new code.
+#![allow(deprecated)]
 #![cfg(all(target_os = "macos", feature = "cocoa-legacy", widgets_unstripped))]
 
 use super::cg;
@@ -1958,8 +1965,9 @@ extern "C" fn drain_triggers_impl(_this: &Object, _cmd: Sel, timer: id) {
     let delta = crate::platform::frame_wait::presented_delta_ms(deadline);
     let outcome = crate::drive_frame(delta);
     // Tell the display link whether this frame owed another one; an idle window's callback then
-    // skips its present-time bookkeeping and its wake (PL-04).
-    super::display_link::note_frame_demand(outcome.needs_another_frame);
+    // skips its present-time bookkeeping and its wake (PL-04). The demand flag lives in the shared
+    // module, which the cocoa backend shares with the objc2 one.
+    crate::platform::display_link::note_frame_demand(outcome.needs_another_frame);
     if outcome.needs_another_frame {
         if let Some(deadline) = deadline {
             retarget_heartbeat(timer, deadline);

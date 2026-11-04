@@ -149,8 +149,8 @@ mod renderer;
 pub mod shaders;
 mod types;
 pub use bridge::{
-    bridge_non_zero_fill_commands, bridge_render_commands, ramp_is_smooth,
-    scaled_image_drift_is_bounded, BridgeGap,
+    bridge_non_zero_fill_commands, bridge_render_commands, bridge_render_commands_into,
+    ramp_is_smooth, scaled_image_drift_is_bounded, BridgeGap,
 };
 pub use commands::WgpuDrawCommand;
 /// The CPU parity rasteriser for a command stream, exposed crate-wide so a bridged family's test can

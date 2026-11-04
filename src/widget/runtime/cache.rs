@@ -251,13 +251,21 @@ pub(crate) fn invalidate_widget_layers_in(id: ObjectId, rect: Rect) {
             }
         }
         // The submitting control is addressed directly; ancestors are caught by the scan below.
+        let before = layers.len();
         layers.remove(&id);
         layers.retain(|_, layer| !layer.rect.intersects(&rect));
         // The eviction ring must keep exactly one entry per resident layer. Leaving the dropped
         // ids behind lets the ring outgrow the map; because the store path only evicts while the
         // *map* is full, those stale entries are then never popped and the ring grows without
         // bound (ENG-A1).
-        retain_resident_layer_order(&layers);
+        //
+        // Only when something was actually dropped: this runs on every damage submission that
+        // overlaps a layer, and keeping the ring in sync is a `contains_key` probe per resident
+        // entry (up to `MAX_CACHED_WIDGET_LAYERS`). Nothing dropped means the ring is already
+        // exact.
+        if layers.len() != before {
+            retain_resident_layer_order(&layers);
+        }
     });
 }
 

@@ -284,7 +284,7 @@ impl AutoCompleteEdit {
         }
         self.filter_suggestions();
         if changed {
-            self.text_changed.emit(self.text.clone());
+            self.text_changed.emit_lazy(|| self.text.clone());
         }
         self.base.request_redraw();
     }
@@ -495,7 +495,7 @@ impl AutoCompleteEdit {
         self.restoring_history = false;
         self.text_revision = self.text_revision.wrapping_add(1);
         self.filter_suggestions();
-        self.text_changed.emit(self.text.clone());
+        self.text_changed.emit_lazy(|| self.text.clone());
         self.base.request_redraw();
     }
 

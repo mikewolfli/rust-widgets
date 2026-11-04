@@ -916,6 +916,10 @@ impl Draw for RangeSlider {
             if let Some(interval) = self.tick_interval {
                 let span = self.max_value - self.min_value;
                 let count = ((span / interval).floor() as usize).min(64);
+                // One label buffer for the whole tick strip: `format!` inside the loop allocated a
+                // fresh `String` per tick, which is up to 65 allocations on every frame a
+                // labelled slider was visible.
+                let mut tick_label = String::with_capacity(8);
                 for index in 0..=count {
                     let value = self.min_value + interval * index as f64;
                     let x = self.value_to_pixel(value, &rect);
@@ -925,9 +929,14 @@ impl Draw for RangeSlider {
                         muted,
                     );
                     if self.tick_labels {
+                        tick_label.clear();
+                        let _ = core::fmt::Write::write_fmt(
+                            &mut tick_label,
+                            format_args!("{value:.0}"),
+                        );
                         context.draw_text(
                             Point::new(x, track_y + track_thickness as i32 + 8),
-                            &format!("{value:.0}"),
+                            &tick_label,
                             font,
                             muted,
                             HorizontalAlignment::Center,

@@ -11,6 +11,13 @@
 //! is (PLAT-13). The old forwarding alias was removed once a repository-wide search showed it had
 //! no caller (P-302), so this name is now the only path to these bindings.
 
+// The `cocoa` 0.24 bindings are deprecated in favour of `objc2`, and every deprecated item this
+// module names is one of them. This is the production clipboard bridge for the **legacy** macOS
+// backend, kept beside the objc2 one by design (see `docs/plans/platform_optional_backends.md`).
+// Rewriting these calls against objc2 would duplicate that backend (principle #101), so the
+// notices are silenced for this module only — never crate-wide.
+#![allow(deprecated)]
+
 /// The CF_HTML wire format used by the Windows clipboard's `HTML Format`.
 ///
 /// Kept as a platform-independent module (gated to compile on Windows and under

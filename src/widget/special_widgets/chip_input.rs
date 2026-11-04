@@ -123,7 +123,7 @@ impl ChipInput {
         }
         self.text = text;
         self.cursor = self.text.chars().count();
-        self.text_changed.emit(self.text.clone());
+        self.text_changed.emit_lazy(|| self.text.clone());
         self.base.request_redraw();
     }
 
@@ -253,7 +253,7 @@ impl ChipInput {
         chars.splice(at..at, text.chars());
         self.text = chars.into_iter().collect();
         self.cursor = at + text.chars().count();
-        self.text_changed.emit(self.text.clone());
+        self.text_changed.emit_lazy(|| self.text.clone());
         self.base.request_redraw();
     }
 
@@ -270,7 +270,7 @@ impl ChipInput {
         chars.remove(self.cursor - 1);
         self.cursor -= 1;
         self.text = chars.into_iter().collect();
-        self.text_changed.emit(self.text.clone());
+        self.text_changed.emit_lazy(|| self.text.clone());
         self.base.request_redraw();
     }
 

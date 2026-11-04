@@ -215,7 +215,7 @@ impl SearchBox {
             // selection is meaningless.
             self.cursor = self.text.len();
             self.selection_anchor = None;
-            self.text_changed.emit(text);
+            self.text_changed.emit_lazy(|| text);
             self.base.request_redraw();
         }
     }
@@ -443,7 +443,7 @@ impl SearchBox {
             self.cursor.min(self.text.len()),
         );
         self.selection_anchor = None;
-        self.text_changed.emit(self.text.clone());
+        self.text_changed.emit_lazy(|| self.text.clone());
         self.base.request_redraw();
     }
 
@@ -492,7 +492,7 @@ impl SearchBox {
             "Edit text",
             "search_box_text",
         )));
-        self.text_changed.emit(self.text.clone());
+        self.text_changed.emit_lazy(|| self.text.clone());
         self.base.request_redraw();
     }
 
@@ -510,7 +510,7 @@ impl SearchBox {
             "Edit text",
             "search_box_text",
         )));
-        self.text_changed.emit(self.text.clone());
+        self.text_changed.emit_lazy(|| self.text.clone());
     }
 
     /// Copies the selected text to the platform clipboard (I-110).

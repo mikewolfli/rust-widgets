@@ -67,4 +67,7 @@ pub use sink::{
 #[cfg(feature = "gpu-wgpu")]
 mod smooth;
 #[cfg(feature = "gpu-wgpu")]
-pub use smooth::{census, census_report, classify, CommandClass, FrameCensus, GpuPaintBackend};
+pub use smooth::{
+    census, census_report, classify, with_gpu_paint_backend, CommandClass, FrameCensus,
+    GpuPaintBackend,
+};

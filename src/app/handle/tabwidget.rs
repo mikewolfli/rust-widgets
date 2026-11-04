@@ -56,7 +56,7 @@ impl TabWidgetHandle {
 
     /// Returns the number of tabs, or `0` when the id is not a tab widget.
     pub fn tab_count(&self) -> usize {
-        crate::widget::runtime::with_widget(self.raw_id(), |widget| {
+        crate::widget::runtime::read_widget(self.raw_id(), |widget| {
             crate::widget::capability::coercion::widget_as::<crate::widget::TabWidget>(widget)
                 .map(|tabs| tabs.count())
                 .unwrap_or(0)
@@ -66,7 +66,7 @@ impl TabWidgetHandle {
 
     /// Returns the selected tab index, or `None` when the id is not a tab widget.
     pub fn current_index(&self) -> Option<usize> {
-        crate::widget::runtime::with_widget(self.raw_id(), |widget| {
+        crate::widget::runtime::read_widget(self.raw_id(), |widget| {
             crate::widget::capability::coercion::widget_as::<crate::widget::TabWidget>(widget)
                 .and_then(|tabs| tabs.selected_index())
         })
@@ -102,7 +102,7 @@ impl TabWidgetHandle {
     /// rather than the active one (feedback C-9). `None` over the content page, past the last tab,
     /// or for an id that is not a mounted tab widget.
     pub fn tab_index_at(&self, pos: Point) -> Option<usize> {
-        crate::widget::runtime::with_widget(self.raw_id(), |widget| {
+        crate::widget::runtime::read_widget(self.raw_id(), |widget| {
             crate::widget::capability::coercion::widget_as::<crate::widget::TabWidget>(widget)
                 .and_then(|tabs| tabs.tab_index_at(pos))
         })
@@ -328,7 +328,7 @@ impl TabWidgetHandle {
     /// `None` when the id is not a mounted tab widget. The blob is the control's own format;
     /// pass it back to [`Self::restore_state`].
     pub fn save_state(&self) -> Option<crate::compat::Vec<u8>> {
-        crate::widget::runtime::with_widget(self.raw_id(), |widget| {
+        crate::widget::runtime::read_widget(self.raw_id(), |widget| {
             crate::widget::capability::coercion::widget_as::<crate::widget::TabWidget>(widget)
                 .map(|tabs| tabs.save_state())
         })

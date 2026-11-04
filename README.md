@@ -32,14 +32,16 @@ services at all.
 
 ## Install
 
-> **4.0.1** is the current release: the upstream-feedback patch on top of **4.0.0**, the companion
-> release for the **rustage** refactor. It fixes the Windows `WM_ACTIVATE` build, exports the solved
-> layout geometry, adds per-node size constraints, and closes the designer/manifest gaps reported in
-> `feedback-20261103.md`. Existing 4.0.0 signatures are preserved; see the [changelog](CHANGELOG.md).
+> **4.1.0** is the current release: the closed-loop round over **4.0.1** (itself the upstream-feedback
+> patch on **4.0.0**, the companion release for the **rustage** refactor). It closes every item in
+> `docs/issues/issue-20261104.md` — the resize chain, the per-event and per-frame costs, the container
+> content model on the JSON side, the window/handle capability surface — and removes the upload
+> infrastructure that measurement showed to be slower than `wgpu`'s own path. Existing signatures are
+> preserved; see the [changelog](CHANGELOG.md).
 
 ```toml
 [dependencies]
-rust_widgets = "4.0.1"
+rust_widgets = "4.1.0"
 ```
 
 Choose **exactly one** device profile. They are mutually exclusive: `mini` and `embedded` compile
@@ -47,11 +49,11 @@ parts of the crate *out*, so pairing one with `desktop` is not a lowest common d
 a build that cannot work.
 
 ```toml
-rust_widgets = { version = "4.0.1", features = ["desktop"] }                       # default
-rust_widgets = { version = "4.0.1", default-features = false, features = ["tablet"] }
-rust_widgets = { version = "4.0.1", default-features = false, features = ["mobile"] }
-rust_widgets = { version = "4.0.1", default-features = false, features = ["embedded"] }
-rust_widgets = { version = "4.0.1", default-features = false, features = ["mini"] }
+rust_widgets = { version = "4.1.0", features = ["desktop"] }                       # default
+rust_widgets = { version = "4.1.0", default-features = false, features = ["tablet"] }
+rust_widgets = { version = "4.1.0", default-features = false, features = ["mobile"] }
+rust_widgets = { version = "4.1.0", default-features = false, features = ["embedded"] }
+rust_widgets = { version = "4.1.0", default-features = false, features = ["mini"] }
 ```
 
 | Profile | Intended for |

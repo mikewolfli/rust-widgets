@@ -5,13 +5,18 @@
 //!
 //! This module provides a unified interface for GPU management that:
 //! - Automatically selects the best available GPU (discrete > integrated > CPU)
-//! - Configures buffer pools based on hardware capabilities
 //! - Monitors performance and adjusts quality dynamically
 //! - Detects performance traps and provides user guidance
 //!
-//! This integrates with the existing memory pool system in `crate::memory`.
+//! # Buffer pools are not part of this module (issue-20261104 RD-04, closed)
+//!
+//! `GpuStagingBufferPool` and `GpuUploadBatcher` were published but never allocated from: this
+//! crate uploads through `wgpu`'s `Queue::write_buffer`/`write_texture`, which already stage into a
+//! reusable belt and coalesce a batch into one write. Serving those uploads from a second ring would
+//! have **added** a copy and a second upload path (principle #101), so the honest resolution of
+//! RD-04's own deletion condition is the one taken: the pool, its allocator, its fallback chain and
+//! the batcher are gone, and this manager measures the device rather than pretending to budget it.
 use super::adapter::{AdapterInfo, AdapterSelectionStrategy, AdapterSelector};
-use super::buffer_pool::{GpuBufferPoolStats, GpuStagingBufferPool};
 use super::performance::{
     AdaptivePerformanceMonitor, PerformanceStats, PerformanceTrap, PerformanceTrapDetector,
 };
@@ -122,8 +127,6 @@ impl GpuQualityTracker {
 /// serialisation and the wider contention window it created, without changing
 /// what any accessor observes.
 struct GpuManagerState {
-    /// Staging buffer pool (GPU-specific)
-    buffer_pool: GpuStagingBufferPool,
     /// Performance monitor
     performance_monitor: AdaptivePerformanceMonitor,
     /// Quality tracker
@@ -216,7 +219,6 @@ impl GpuManager {
         } else {
             GpuOperationMode::Hardware
         };
-        let buffer_pool = GpuStagingBufferPool::for_gpu_type(adapter_info.device_type);
         let performance_monitor =
             AdaptivePerformanceMonitor::for_device_type(adapter_info.device_type);
         let gpu_capability = GpuCapability {
@@ -259,7 +261,6 @@ impl GpuManager {
             mode,
             is_browser,
             state: Mutex::new(GpuManagerState {
-                buffer_pool,
                 performance_monitor,
                 quality_tracker,
                 trap_detector,
@@ -292,7 +293,6 @@ impl GpuManager {
     pub fn begin_frame(&self) {
         let mut state = lock(&self.state);
         state.performance_monitor.begin_frame();
-        state.buffer_pool.next_frame();
     }
 
     /// Ends the current frame and updates performance monitoring
@@ -362,11 +362,6 @@ impl GpuManager {
         lock(&self.state).quality_tracker.set_quality_level(level);
     }
 
-    /// Returns buffer pool statistics
-    pub fn buffer_pool_stats(&self) -> Option<GpuBufferPoolStats> {
-        Some(lock(&self.state).buffer_pool.memory_stats())
-    }
-
     /// Returns performance statistics
     pub fn performance_stats(&self) -> Option<PerformanceStats> {
         Some(lock(&self.state).performance_monitor.stats())
@@ -430,7 +425,6 @@ impl GpuManager {
         let state = lock(&self.state);
         let quality = state.quality_tracker.quality_level();
         let stats = state.performance_monitor.stats();
-        let pool_stats = state.buffer_pool.memory_stats();
         drop(state);
 
         let mut summary = String::new();
@@ -440,8 +434,6 @@ impl GpuManager {
         summary.push_str(&format!("Quality: {quality:?}\n"));
         summary.push_str(&format!("FPS: {:.1}\n", stats.current_fps));
         summary.push_str(&format!("Stability: {:.0}%\n", stats.stability * 100.0));
-        let utilization = pool_stats.used_size as f32 / pool_stats.total_size as f32 * 100.0;
-        summary.push_str(&format!("Buffer Pool: {utilization:.0}%\n"));
         summary
     }
 }
@@ -621,9 +613,9 @@ mod tests {
     ///
     /// # Why this test exists (issue-20261104 RD-04)
     ///
-    /// `GpuManager`, its staging pool and its performance monitor had no production instantiation:
-    /// every entry point was documented, tested in isolation, and fed by nothing. The live renderer
-    /// now builds one with [`GpuManager::from_adapter_info`] and brackets each frame with
+    /// `GpuManager` and its performance monitor had no production instantiation: every entry point
+    /// was documented, tested in isolation, and fed by nothing. The live renderer now builds one
+    /// with [`GpuManager::from_adapter_info`] and brackets each frame with
     /// `begin_frame`/`end_frame`, so this pins the three facts that wiring depends on — the
     /// constructor is synchronous (the renderer calls it from inside its own async constructor and
     /// must not nest an executor), the mode follows the device type, and a frame bracket produces a
@@ -636,12 +628,7 @@ mod tests {
 
         assert!(manager.is_software(), "the CPU fallback reports software mode");
         assert!(!manager.is_hardware());
-        assert!(
-            manager.buffer_pool_stats().is_some(),
-            "the staging pool is constructed, not left as `None`"
-        );
 
-        let frame_before = manager.buffer_pool_stats().expect("stats").current_frame;
         manager.begin_frame();
         let sample = manager.end_frame().expect("a bracketed frame produces a sample");
         assert!(
@@ -651,12 +638,6 @@ mod tests {
         assert!(
             manager.performance_stats().is_some(),
             "the sample is published, which is what the renderer's accessors read"
-        );
-        let frame_after = manager.buffer_pool_stats().expect("stats").current_frame;
-        assert_eq!(
-            frame_after,
-            frame_before + 1,
-            "`begin_frame` advances the staging pool's ring cursor"
         );
     }
 

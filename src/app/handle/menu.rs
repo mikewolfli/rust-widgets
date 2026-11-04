@@ -155,7 +155,7 @@ impl MenuBarHandle {
     /// [`WindowHandle::new_menu`] adds one entry, so this is also the check that a menu
     /// really reached the bar instead of only creating a popup widget.
     pub fn entry_count(&self) -> usize {
-        crate::widget::runtime::with_widget(self.raw_id(), |widget| {
+        crate::widget::runtime::read_widget(self.raw_id(), |widget| {
             (widget as &dyn core::any::Any)
                 .downcast_ref::<crate::widget::menu_toolbar::menu_bar::MenuBar>()
                 .map(|bar| bar.entries().len())
@@ -170,7 +170,7 @@ impl MenuBarHandle {
     /// clicked** rather than at a guessed offset. `None` for an out-of-range index or an
     /// id that is not a menu bar.
     pub fn entry_rect(&self, index: usize) -> Option<Rect> {
-        crate::widget::runtime::with_widget(self.raw_id(), |widget| {
+        crate::widget::runtime::read_widget(self.raw_id(), |widget| {
             (widget as &dyn core::any::Any)
                 .downcast_ref::<crate::widget::menu_toolbar::menu_bar::MenuBar>()
                 .and_then(|bar| bar.entry_rect(index))
@@ -221,7 +221,7 @@ impl MenuHandle {
 
     /// Number of entries, separators included.
     pub fn item_count(&self) -> usize {
-        crate::widget::runtime::with_widget(self.raw_id(), |widget| {
+        crate::widget::runtime::read_widget(self.raw_id(), |widget| {
             (widget as &dyn core::any::Any)
                 .downcast_ref::<crate::widget::menu_toolbar::menu::Menu>()
                 .map(|menu| menu.items().len())
@@ -255,7 +255,7 @@ impl MenuHandle {
     /// This is what positions a nested menu ([`MenuHandle::new_submenu`]) under the branch row the
     /// user activated. `None` for an out-of-range row or a menu that is not mounted.
     pub fn row_rect(&self, index: usize) -> Option<Rect> {
-        crate::widget::runtime::with_widget(self.raw_id(), |widget| {
+        crate::widget::runtime::read_widget(self.raw_id(), |widget| {
             (widget as &dyn core::any::Any)
                 .downcast_ref::<crate::widget::menu_toolbar::menu::Menu>()
                 .and_then(|menu| menu.row_rect(index))
@@ -298,7 +298,7 @@ impl ToolBarHandle {
 
     /// The number of action items, or `0` when the id is not a live tool bar (RW-63).
     pub fn item_count(&self) -> usize {
-        crate::widget::runtime::with_widget(self.raw_id(), |widget| {
+        crate::widget::runtime::read_widget(self.raw_id(), |widget| {
             (widget as &dyn core::any::Any)
                 .downcast_ref::<crate::widget::menu_toolbar::tool_bar::ToolBar>()
                 .map(|bar| bar.items().len())
@@ -357,7 +357,7 @@ impl ToolBarHandle {
 
     /// Whether item `index` is enabled, or `None` for an unknown index (RW-63).
     pub fn item_enabled(&self, index: usize) -> Option<bool> {
-        crate::widget::runtime::with_widget(self.raw_id(), |widget| {
+        crate::widget::runtime::read_widget(self.raw_id(), |widget| {
             (widget as &dyn core::any::Any)
                 .downcast_ref::<crate::widget::menu_toolbar::tool_bar::ToolBar>()
                 .and_then(|bar| bar.item_enabled(index))
@@ -380,7 +380,7 @@ impl ToolBarHandle {
 
     /// Whether item `index` is checked, or `None` for an unknown index (RW-63).
     pub fn item_checked(&self, index: usize) -> Option<bool> {
-        crate::widget::runtime::with_widget(self.raw_id(), |widget| {
+        crate::widget::runtime::read_widget(self.raw_id(), |widget| {
             (widget as &dyn core::any::Any)
                 .downcast_ref::<crate::widget::menu_toolbar::tool_bar::ToolBar>()
                 .and_then(|bar| bar.item_checked(index))

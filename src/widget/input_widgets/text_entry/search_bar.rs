@@ -296,7 +296,7 @@ impl SearchBar {
             }
             self.cursor = self.text.len();
             self.selection_anchor = None;
-            self.text_changed.emit(new_text);
+            self.text_changed.emit_lazy(|| new_text);
             self.base.request_redraw();
         }
     }
@@ -321,7 +321,7 @@ impl SearchBar {
             "Edit text",
             "search_bar_text",
         )));
-        self.text_changed.emit(self.text.clone());
+        self.text_changed.emit_lazy(|| self.text.clone());
         self.base.request_redraw();
     }
 
@@ -609,7 +609,7 @@ impl SearchBar {
         self.restoring_history = false;
         self.cursor = self.text.len();
         self.selection_anchor = None;
-        self.text_changed.emit(self.text.clone());
+        self.text_changed.emit_lazy(|| self.text.clone());
         self.base.request_redraw();
     }
 

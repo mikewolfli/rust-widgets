@@ -5,7 +5,7 @@ edition = "2021"
 
 [dependencies]
 rust_widgets = { path = "../..", features = ["runtime-fonts"] }
-# The finance controls live in the suite package (4.0.1): they are domain-specific, so the
+# The finance controls live in the suite package (4.1.0): they are domain-specific, so the
 # parent crate no longer carries them. The `finance` feature selects this group.
 rust-widgets-suites = { path = "../../crates/rust-widgets-suites", features = ["finance"] }
 preview-common = { path = "../preview_common" }

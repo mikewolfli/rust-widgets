@@ -1402,8 +1402,12 @@ impl DockWidget {
         // One `char` per line: a multi-byte character is a single glyph, and the budget is
         // applied on character boundaries by the shared primitive.
         let title = self.vertical_title(band.height, step);
+        // One buffer for the whole run: `ch.to_string()` allocated a `String` per glyph, i.e. one
+        // allocation per row of a docked panel's title on every frame (WG-08).
+        let mut glyph = String::with_capacity(4);
         for ch in title.chars() {
-            let glyph = ch.to_string();
+            glyph.clear();
+            glyph.push(ch);
             // Centred across the strip by the glyph's own measured width, so a narrow `i` and a wide
             // `W` share the same column rather than all starting at the left edge.
             let width = context.measure_text(&glyph, font).width;

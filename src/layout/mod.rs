@@ -44,8 +44,10 @@ pub mod report;
 /// Reusable resize-chain buffers (issue-20261104 LY-07).
 ///
 /// The alloc-frugal profiles have no widget runtime to apply geometries to and a fixed-capacity
-/// `Vec`, so there is nothing for a pool of buffers to serve there.
-#[cfg(not(alloc_frugal))]
+/// `Vec`, so there is nothing for a pool of buffers to serve there. Its only consumers are the
+/// window/panel resize chain in `crate::app::handle`, which is `full_widgets`; a profile without
+/// that chain (the embedded one) has nothing to pool for either.
+#[cfg(all(full_widgets, not(alloc_frugal)))]
 pub(crate) mod scratch;
 /// Divisible panes with draggable handles; see
 /// `crate::widget::Splitter` for the widget front end.

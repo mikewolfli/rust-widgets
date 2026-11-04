@@ -37,9 +37,12 @@ impl ClipboardManager {
         String::new()
     }
     /// Set plain text into the system/process clipboard via an explicit platform.
-    /// Kept for tests and any `&dyn Platform` caller; the manager's own `set_text` now routes
-    /// through the crate-root entry so the APP-012 publish runs (XC-02).
-    #[cfg_attr(not(alloc_frugal), allow(dead_code))]
+    ///
+    /// Test-only: the manager's own `set_text` routes through the crate-root entry so the APP-012
+    /// publish runs (XC-02), and no production caller names a platform directly. It was previously
+    /// kept with a `dead_code` allowance, which silenced the compiler under one profile and left the
+    /// warning in the other; being honest about the consumer is what removes both.
+    #[cfg(test)]
     pub(crate) fn set_text_with(platform: &dyn Platform, text: &str) -> bool {
         platform.set_clipboard_text(text)
     }

@@ -276,7 +276,7 @@ impl ListBoxHandle {
     /// `None` outside the rows or for an id that is not a mounted list box. This is what a
     /// context-menu handler calls to learn which row the user right-clicked.
     pub fn row_at(&self, point: Point) -> Option<usize> {
-        crate::widget::runtime::with_widget(self.raw_id(), |widget| {
+        crate::widget::runtime::read_widget(self.raw_id(), |widget| {
             (widget as &dyn core::any::Any)
                 .downcast_ref::<crate::widget::input_widgets::listbox::ListBox>()
                 .and_then(|list| list.item_index_at(point))
@@ -873,7 +873,7 @@ impl RadioButtonHandle {
 impl GridWidgetHandle {
     /// Returns the row count, or `None` when the id is not a grid widget.
     pub fn rows(&self) -> Option<u32> {
-        crate::widget::runtime::with_widget(self.raw_id(), |widget| {
+        crate::widget::runtime::read_widget(self.raw_id(), |widget| {
             crate::widget::capability::coercion::widget_as::<crate::widget::GridWidget>(widget)
                 .map(|grid| grid.rows())
         })
@@ -882,7 +882,7 @@ impl GridWidgetHandle {
 
     /// Returns the column count, or `None` when the id is not a grid widget.
     pub fn columns(&self) -> Option<u32> {
-        crate::widget::runtime::with_widget(self.raw_id(), |widget| {
+        crate::widget::runtime::read_widget(self.raw_id(), |widget| {
             crate::widget::capability::coercion::widget_as::<crate::widget::GridWidget>(widget)
                 .map(|grid| grid.columns())
         })
@@ -891,7 +891,7 @@ impl GridWidgetHandle {
 
     /// Returns the inter-cell spacing, or `None` when the id is not a grid widget.
     pub fn spacing(&self) -> Option<u32> {
-        crate::widget::runtime::with_widget(self.raw_id(), |widget| {
+        crate::widget::runtime::read_widget(self.raw_id(), |widget| {
             crate::widget::capability::coercion::widget_as::<crate::widget::GridWidget>(widget)
                 .map(|grid| grid.spacing())
         })
@@ -965,7 +965,7 @@ impl SplitterHandle {
 
     /// Returns the pane count, or `0` when the id is not a splitter.
     pub fn pane_count(&self) -> usize {
-        crate::widget::runtime::with_widget(self.raw_id(), |widget| {
+        crate::widget::runtime::read_widget(self.raw_id(), |widget| {
             crate::widget::capability::coercion::widget_as::<crate::widget::Splitter>(widget)
                 .map(|splitter| splitter.pane_count())
                 .unwrap_or(0)
@@ -975,7 +975,7 @@ impl SplitterHandle {
 
     /// Returns the splitter orientation, or `None` when the id is not a splitter.
     pub fn orientation(&self) -> Option<Orientation> {
-        crate::widget::runtime::with_widget(self.raw_id(), |widget| {
+        crate::widget::runtime::read_widget(self.raw_id(), |widget| {
             crate::widget::capability::coercion::widget_as::<crate::widget::Splitter>(widget)
                 .map(|splitter| splitter.orientation())
         })
@@ -1013,7 +1013,7 @@ impl SplitterHandle {
     /// Returns one pane's relative ratio, or `None` when the index is out of range or the id
     /// is not a splitter.
     pub fn ratio(&self, index: usize) -> Option<f32> {
-        crate::widget::runtime::with_widget(self.raw_id(), |widget| {
+        crate::widget::runtime::read_widget(self.raw_id(), |widget| {
             crate::widget::capability::coercion::widget_as::<crate::widget::Splitter>(widget)
                 .and_then(|splitter| splitter.ratio(index))
         })
@@ -1072,7 +1072,7 @@ impl DialogHandle {
 
     /// Returns the dialog's content child, or `None` when it has none / is not a dialog.
     pub fn content_widget(&self) -> Option<ObjectId> {
-        crate::widget::runtime::with_widget(self.raw_id(), |widget| {
+        crate::widget::runtime::read_widget(self.raw_id(), |widget| {
             crate::widget::capability::coercion::widget_as::<crate::widget::dialog::Dialog>(widget)
                 .and_then(|dialog| dialog.content_widget())
         })
@@ -1129,7 +1129,7 @@ impl DialogHandle {
 
     /// Returns the rectangle the content child is placed in.
     pub fn content_rect(&self) -> Option<Rect> {
-        crate::widget::runtime::with_widget(self.raw_id(), |widget| {
+        crate::widget::runtime::read_widget(self.raw_id(), |widget| {
             crate::widget::capability::coercion::widget_as::<crate::widget::dialog::Dialog>(widget)
                 .map(|dialog| dialog.content_rect())
         })

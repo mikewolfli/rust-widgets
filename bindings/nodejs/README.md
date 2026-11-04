@@ -35,7 +35,7 @@ Two things were measured before switching, and each rules out a cheaper fix:
   `node-addon-api@^3`; raising it to `^8.9.2` does fix the `napi_finalize` half of the problem, but
   `node-gyp --build-from-source` still stops at the `get_uv_event_loop_fn` conversion above, because
   that conversion is in `ffi-napi`'s own translation unit.
-* **There is no maintained drop-in fork.** `@lwahonen/ffi-napi@4.0.12` (published 2023-03) fails with
+* **There is no maintained drop-in fork.** `@lwahonen/ffi-napi@4.1.02` (published 2023-03) fails with
   the identical error, so no npm `overrides` / alias entry can make Node 18+ work.
 
 The port was bounded: the declarations were already a **single data table** (`name: [returns, [args]]`)

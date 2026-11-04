@@ -579,6 +579,10 @@ fn variant_name(command: &RenderCommand) -> &'static str {
 /// `measure_text` / `shape_text` must give the same answers the software path gives, or the
 /// recorded frame's geometry would differ from the frame it is replacing. They are forwarded to an
 /// owned [`crate::render::SoftwarePaintBackend`] instead of being reimplemented (principle #101).
+///
+/// That delegate is created with a **zero-sized** target, deliberately: it exists to shape and
+/// measure, and a delegate built at the frame size allocated (and zeroed) two full RGBA buffers per
+/// recorder — 16 MB per frame on a 1080p window, for pixels the recorder never touches (RD-02).
 pub struct GpuPaintBackend {
     commands: Vec<RenderCommand>,
     clear: Color,
@@ -595,7 +599,7 @@ impl GpuPaintBackend {
             clear: Color::TRANSPARENT,
             size,
             dpi_scale,
-            measurement: crate::render::SoftwarePaintBackend::new(size, dpi_scale),
+            measurement: crate::render::SoftwarePaintBackend::new(Size::new(0, 0), dpi_scale),
         }
     }
 
@@ -642,8 +646,9 @@ impl PaintBackend for GpuPaintBackend {
     }
 
     fn set_size(&mut self, size: Size) {
+        // Only the reported size changes: the measurement delegate has no target to resize (see
+        // `GpuPaintBackend`), and resizing it was the per-frame allocation this avoids.
         self.size = size;
-        self.measurement.set_size(size);
     }
 
     fn dpi_scale(&self) -> f32 {
@@ -665,11 +670,46 @@ impl PaintBackend for GpuPaintBackend {
 
     fn frame_rgba(&self) -> &[u8] {
         // A recorder has no pixels: `Smooth` delivers commands, and a caller that needs a frame
-        // after recording must ask the software backend for one (the `Exact` fallback). Returning
-        // the measurement backend's (empty) buffer keeps the contract total without pretending
-        // this backend drew anything.
+        // after recording must ask the software backend for one (the `Exact` fallback). Its
+        // delegate's target is zero-sized, so the buffer it reports is empty — the honest answer
+        // for a backend that drew nothing, without the frame-sized allocation (RD-02).
         self.measurement.frame_rgba()
     }
+}
+
+thread_local! {
+    /// The recorder the `Smooth` path paints through, reused across frames (RD-02).
+    ///
+    /// A recorder built per present paid for a fresh command vector (and, before the zero-sized
+    /// delegate above, two full RGBA buffers) on every frame that was already going to record the
+    /// same three or four hundred commands.
+    static RECORDER: core::cell::RefCell<Option<GpuPaintBackend>> =
+        const { core::cell::RefCell::new(None) };
+}
+
+/// Runs `body` with a recorder sized for `size` at `dpi_scale`, reusing this thread's previous one.
+///
+/// Both `Smooth` call sites (the cocoa canvas and the objc2 backend) paint on the thread that owns
+/// the window, so one slot per thread is the right granularity: a host presenting two windows in
+/// turn keeps one recorder, and `set_size`/`set_dpi_scale` make the reuse correct across a resize.
+///
+/// `begin_frame` (called by the tree painter) clears the recorded stream, so `body` never sees the
+/// previous frame's commands. A re-entrant call falls back to a local recorder rather than
+/// panicking on the borrow.
+pub fn with_gpu_paint_backend<R>(
+    size: Size,
+    dpi_scale: f32,
+    body: impl FnOnce(&mut GpuPaintBackend) -> R,
+) -> R {
+    RECORDER.with(|slot| match slot.try_borrow_mut() {
+        Ok(mut slot) => {
+            let recorder = slot.get_or_insert_with(|| GpuPaintBackend::new(size, dpi_scale));
+            recorder.set_size(size);
+            recorder.set_dpi_scale(dpi_scale);
+            body(recorder)
+        }
+        Err(_) => body(&mut GpuPaintBackend::new(size, dpi_scale)),
+    })
 }
 
 /// One line per class, for a gate or a log.
@@ -799,10 +839,27 @@ mod tests {
             "the delegate measured the run; a recorder that returned zeros would lay every label \
              out at zero width"
         );
-        // The recorder drew nothing, so its pixel buffer is the delegate's (never-drawn) one,
-        // not a buffer of the recorder's own.
-        let delegate = crate::render::SoftwarePaintBackend::new(Size::new(64, 32), 1.0);
-        assert_eq!(backend.frame_rgba().len(), delegate.frame_rgba().len());
+        // The recorder drew nothing, so it owns no pixels: its delegate is a shaper with a
+        // zero-sized target rather than a second frame-sized surface (RD-02).
+        assert!(
+            backend.frame_rgba().is_empty(),
+            "a recorder must not carry a frame-sized buffer it never draws into"
+        );
+    }
+
+    #[test]
+    fn a_recorder_reused_for_a_larger_frame_reports_the_new_size() {
+        // `with_gpu_paint_backend` reuses this thread's recorder across presents, so a window
+        // resize has to be reflected without rebuilding anything.
+        let mut backend = GpuPaintBackend::new(Size::new(8, 8), 12.0);
+        assert_eq!(backend.size(), Size::new(8, 8));
+        backend.set_size(Size::new(20, 12));
+        assert_eq!(backend.size(), Size::new(20, 12));
+        assert_eq!(backend.dpi_scale(), 12.0);
+        backend.set_dpi_scale(2.0);
+        assert_eq!(backend.dpi_scale(), 2.0);
+        let font = crate::core::Font::default();
+        assert!(backend.measure_text("hello", &font).width > 0);
     }
 
     /// The audit and the bridge must agree: a command classified `Mapped` has to convert, and one

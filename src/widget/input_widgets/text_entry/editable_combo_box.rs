@@ -291,7 +291,7 @@ impl EditableComboBox {
                 "editable_combo_text",
             )));
         }
-        self.text_changed.emit(self.text.clone());
+        self.text_changed.emit_lazy(|| self.text.clone());
         self.sync_popup();
         self.base.request_redraw();
     }
@@ -610,7 +610,7 @@ impl EditableComboBox {
         if index < self.items.len() && self.selected_index != Some(index) {
             self.selected_index = Some(index);
             self.text = self.items[index].clone();
-            self.text_changed.emit(self.text.clone());
+            self.text_changed.emit_lazy(|| self.text.clone());
             self.item_selected.emit(index);
             self.expanded = false;
             self.sync_popup();

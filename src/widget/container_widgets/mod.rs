@@ -7,6 +7,11 @@
 pub mod accordion;
 #[cfg(widgets_unstripped)]
 pub mod carousel;
+/// The carousel's page model: one page's content slot and the trait it is drawn through.
+///
+/// Gated with `carousel`, its only consumer.
+#[cfg(widgets_unstripped)]
+pub mod carousel_page;
 #[cfg(widgets_unstripped)]
 pub mod collapsible_pane;
 #[cfg(widgets_unstripped)]

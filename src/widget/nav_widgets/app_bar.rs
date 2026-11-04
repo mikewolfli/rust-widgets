@@ -23,6 +23,7 @@
 use crate::compat::{Rc, RefCell};
 use crate::core::{Color, HorizontalAlignment, Point, Rect, TextDirection};
 use crate::event::{Event, EventHandler};
+use crate::object::ObjectId;
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
 use crate::widget::capability::coercion::{
@@ -162,6 +163,13 @@ pub struct AppBar {
     /// the main bar keeps [`APP_BAR_MIN_HEIGHT`]. A bar with no bottom slot paints exactly the
     /// band it always did.
     bottom: Option<Box<dyn Widget>>,
+    /// The bottom slot's child when a declaration filled it (issue-20261104 DM-11).
+    ///
+    /// A declared child is owned by the runtime, so the bar can only place it: geometry and
+    /// visibility are written here and the tree painter draws it, exactly as
+    /// [`AdaptiveScaffold`](super::AdaptiveScaffold)'s id slots do. An id slot wins over a `Box`
+    /// slot for the same band, because two bottoms in one band would paint over each other.
+    bottom_id: Option<ObjectId>,
     /// Which affordance a primary-button press armed, if any.
     ///
     /// The press only arms the bar; the signal is emitted on the release, so one click
@@ -193,6 +201,7 @@ impl AppBar {
             action_boxes_cache: RefCell::new(None),
             leading_pressed: GenericSignal::new(),
             bottom: None,
+            bottom_id: None,
             pressed: None,
         }
     }
@@ -342,6 +351,33 @@ impl AppBar {
         self.bottom.as_deref()
     }
 
+    /// Fills the bottom slot with a control the runtime already mounted (DM-11).
+    ///
+    /// The bar places the child and the tree painter draws it, so a declared bottom slot behaves
+    /// like a declared body page. Passing `None` returns the slot to whatever the `Box` entry
+    /// holds, which is what makes the two spellings composable. The replaced child is unlinked and
+    /// hidden, exactly as `AdaptiveScaffold::adopt_id_slot` does for its own slots: the slot owns
+    /// both the geometry and the link while it holds the id.
+    pub fn set_bottom_id(&mut self, widget: Option<ObjectId>) {
+        if self.bottom_id == widget {
+            return;
+        }
+        if let Some(previous) = self.bottom_id {
+            self.base.remove_child_linked(previous);
+            crate::set_widget_visible(previous, false);
+        }
+        if let Some(next) = widget {
+            self.base.add_child_linked(next);
+        }
+        self.bottom_id = widget;
+        self.base.request_redraw();
+    }
+
+    /// The bottom slot's declared child, when it was filled by [`Self::set_bottom_id`].
+    pub fn bottom_id(&self) -> Option<ObjectId> {
+        self.bottom_id
+    }
+
     /// The height a host should give this bar so its bottom slot is fully visible.
     pub fn preferred_height(&self) -> u32 {
         APP_BAR_MIN_HEIGHT + self.subtitle_height() + self.bottom_height()
@@ -358,10 +394,16 @@ impl AppBar {
 
     /// The height of the bottom slot's band, zero when there is no slot.
     fn bottom_height(&self) -> u32 {
-        let Some(bottom) = self.bottom.as_deref() else {
+        let wanted = if let Some(widget) = self.bottom.as_deref() {
+            widget.size_hint().height
+        } else if let Some(id) = self.bottom_id {
+            // A declared child lives in the registry, so its hint is one lookup away. The slot is
+            // placed from this height on every frame; caching it would go stale the moment the
+            // control's own text or font changed.
+            crate::widget::runtime::read_widget(id, |widget| widget.size_hint().height).unwrap_or(0)
+        } else {
             return 0;
         };
-        let wanted = bottom.size_hint().height;
         let room = self.geometry().height.saturating_sub(APP_BAR_MIN_HEIGHT);
         wanted.min(room)
     }
@@ -967,7 +1009,22 @@ impl Draw for AppBar {
         }
 
         // ── Nested bottom slot ──
-        if self.bottom.is_some() {
+        //
+        // A declared child is placed here and painted by the tree painter, which walks this bar's
+        // children after it; drawing it here as well would paint it twice.
+        if let Some(id) = self.bottom_id {
+            let band_height = self.bottom_height();
+            if band_height > 0 {
+                let band = Rect::new(
+                    full_rect.x,
+                    full_rect.y + full_rect.height as i32 - band_height as i32,
+                    full_rect.width,
+                    band_height,
+                );
+                crate::widget::runtime::set_geometry(id, band);
+                crate::set_widget_visible(id, true);
+            }
+        } else if self.bottom.is_some() {
             let band_height = self.bottom_height();
             if band_height > 0 {
                 let band = Rect::new(

@@ -73,22 +73,109 @@ pub fn bridge_render_commands(
     target: (u32, u32),
     opaque_background: bool,
 ) -> Result<Vec<WgpuDrawCommand>, BridgeGap> {
-    // Four families are compound: a stroked arc is a sequence of centred lines, a filled arc is
+    let mut out = Vec::with_capacity(commands.len());
+    bridge_render_commands_into(&mut out, commands, text_scale, target, opaque_background, None)?;
+    Ok(out)
+}
+
+/// [`bridge_render_commands`] into a buffer the caller keeps across frames (RD-02).
+///
+/// The `Smooth` present path converts a stream once per presented frame, and the stream is nearly
+/// the same as the previous frame's. Handing back a fresh `Vec` there was one heap allocation plus
+/// a full regrow per frame; `out` is reused instead, exactly as the reference rasteriser reuses its
+/// own buffers.
+///
+/// `out` is **cleared** first and cleared again on failure, so a caller can never present a
+/// partially converted stream: a `BridgeGap` means the whole frame belongs to the reference
+/// rasteriser.
+///
+/// `prefix_clear` is the frame-wide background the recorder began with. It becomes the stream's
+/// first command. Pushing it before the conversion is what avoids the `Vec::insert(0, …)` shift of
+/// the whole stream the caller used to perform afterwards.
+pub fn bridge_render_commands_into(
+    out: &mut Vec<WgpuDrawCommand>,
+    commands: &[RenderCommand],
+    text_scale: f32,
+    target: (u32, u32),
+    opaque_background: bool,
+    prefix_clear: Option<Rgba8>,
+) -> Result<(), BridgeGap> {
+    out.clear();
+    if let Some(color) = prefix_clear {
+        out.push(WgpuDrawCommand::Clear { color });
+    }
+    // Four families are compound: a stroked arc is a sequence of centered lines, a filled arc is
     // the triangle fan the reference fills, a dashed polyline is the same dash kernel's segment
     // list, and a decorated label is the glyph run plus its rules. Expanding them before the
     // one-command-per-entry conversion keeps the rest of the table unchanged; `origins` maps an
     // expanded index back to the caller's command, so a `BridgeGap` still names the command the
     // caller passed.
-    let expanded;
+    let result = if commands.iter().any(is_compound_command) {
+        EXPANSION.with(|scratch| {
+            let mut scratch = scratch.borrow_mut();
+            let scratch = &mut *scratch;
+            scratch.commands.clear();
+            scratch.origins.clear();
+            expand_compound_commands(
+                commands,
+                text_scale,
+                &mut scratch.commands,
+                &mut scratch.origins,
+            );
+            convert_commands(
+                out,
+                &scratch.commands,
+                Some(&scratch.origins),
+                text_scale,
+                target,
+                opaque_background,
+            )
+        })
+    } else {
+        convert_commands(out, commands, None, text_scale, target, opaque_background)
+    };
+    if result.is_err() {
+        out.clear();
+    }
+    result
+}
+
+/// The expanded stream plus the caller's command index every expanded entry came from.
+#[derive(Default)]
+struct ExpansionScratch {
+    commands: Vec<RenderCommand>,
+    origins: Vec<usize>,
+}
+
+impl ExpansionScratch {
+    /// An empty scratch set. `const` so the thread-local below needs no lazy initialiser.
+    const fn new() -> Self {
+        Self { commands: Vec::new(), origins: Vec::new() }
+    }
+}
+
+thread_local! {
+    /// Reused by [`bridge_render_commands_into`] (RD-02): one stroked path or arc makes the whole
+    /// stream go through expansion, and two freshly allocated vectors per frame is exactly the
+    /// cost this buffer removes.
+    static EXPANSION: core::cell::RefCell<ExpansionScratch> =
+        const { core::cell::RefCell::new(ExpansionScratch::new()) };
+}
+
+/// Converts an already-expanded stream, one command per arm.
+///
+/// Split from [`bridge_render_commands_into`] so the scratch borrow is released before the caller
+/// inspects a failure, and so the non-compound path pays nothing for the expansion machinery.
+fn convert_commands(
+    out: &mut Vec<WgpuDrawCommand>,
+    commands: &[RenderCommand],
+    origins: Option<&[usize]>,
+    text_scale: f32,
+    target: (u32, u32),
+    opaque_background: bool,
+) -> Result<(), BridgeGap> {
     // Plain layers still open. A pop is only faithful while it closes one of its own.
     let mut layers = 0usize;
-    let (commands, origins): (&[RenderCommand], Option<&[usize]>) =
-        if commands.iter().any(is_compound_command) {
-            expanded = expand_compound_commands(commands, text_scale);
-            (&expanded.0, Some(&expanded.1))
-        } else {
-            (commands, None)
-        };
     // One command per arm, except the three families whose faithful form is a body **plus** a blur:
     // those push two entries, which is why this is a loop rather than a `map`.
     let mut one = |command: &RenderCommand, index: usize| -> Result<WgpuDrawCommand, BridgeGap> {
@@ -434,7 +521,6 @@ pub fn bridge_render_commands(
             other => Err(BridgeGap { index, variant: command_variant_name(other) }),
         }
     };
-    let mut out = Vec::with_capacity(commands.len());
     for (expanded_index, command) in commands.iter().enumerate() {
         let index = origins.map_or(expanded_index, |map| map[expanded_index]);
         match command {
@@ -494,7 +580,7 @@ pub fn bridge_render_commands(
             other => out.push(one(other, index)?),
         }
     }
-    Ok(out)
+    Ok(())
 }
 
 /// Whether `command`'s faithful GPU form is more than one command.
@@ -518,16 +604,17 @@ fn is_compound_command(command: &RenderCommand) -> bool {
 
 /// Expands the commands whose faithful GPU form is more than one command.
 ///
-/// Returns the expanded stream and, for every entry in it, the index of the caller's command that
-/// produced it. A zero-sweep arc expands to nothing (the reference draws nothing) and therefore has
-/// no entry; an index that never appears cannot be the first gap, which is the correct answer for a
-/// command that draws nothing.
+/// Writes the expanded stream into `expanded` and, for every entry in it, the index of the caller's
+/// command that produced it into `origins`. Both buffers are cleared by the caller and keep their
+/// capacity across frames (RD-02). A zero-sweep arc expands to nothing (the reference draws
+/// nothing) and therefore has no entry; an index that never appears cannot be the first gap, which
+/// is the correct answer for a command that draws nothing.
 fn expand_compound_commands(
     commands: &[RenderCommand],
     text_scale: f32,
-) -> (Vec<RenderCommand>, Vec<usize>) {
-    let mut expanded = Vec::with_capacity(commands.len());
-    let mut origins = Vec::with_capacity(commands.len());
+    expanded: &mut Vec<RenderCommand>,
+    origins: &mut Vec<usize>,
+) {
     for (index, command) in commands.iter().enumerate() {
         let before = expanded.len();
         match command {
@@ -539,7 +626,7 @@ fn expand_compound_commands(
                 color,
                 filled: false,
             } => {
-                push_arc_lines(*center, *radius, *start_angle, *end_angle, *color, &mut expanded);
+                push_arc_lines(*center, *radius, *start_angle, *end_angle, *color, expanded);
             }
             RenderCommand::DrawArc {
                 center,
@@ -549,7 +636,7 @@ fn expand_compound_commands(
                 color,
                 filled: true,
             } => {
-                push_filled_arc(*center, *radius, *start_angle, *end_angle, *color, &mut expanded);
+                push_filled_arc(*center, *radius, *start_angle, *end_angle, *color, expanded);
             }
             RenderCommand::DrawPath { points, closed, color, filled: false, width } => {
                 // `SoftwareSurface::draw_path` strokes one segment per edge with its centred
@@ -632,7 +719,7 @@ fn expand_compound_commands(
                     *alignment,
                     *decoration,
                     text_scale,
-                    &mut expanded,
+                    expanded,
                 );
             }
             _ => expanded.push(command.clone()),
@@ -641,7 +728,6 @@ fn expand_compound_commands(
             origins.push(index);
         }
     }
-    (expanded, origins)
 }
 
 /// Appends the reference's decoration rules for a label.
@@ -936,7 +1022,7 @@ fn ramp_bytes_of(lut: &[crate::core::Color; 256]) -> crate::compat::Arc<[u8]> {
     thread_local! {
         static RAMP_CACHE: core::cell::RefCell<
             VecDeque<([crate::core::Color; 256], crate::compat::Arc<[u8]>)>,
-        > = core::cell::RefCell::new(VecDeque::new());
+        > = const { core::cell::RefCell::new(VecDeque::new()) };
     }
     RAMP_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();

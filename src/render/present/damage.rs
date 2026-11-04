@@ -126,17 +126,23 @@ impl PresentDamage {
         }
         if self.bands.len() > 1 {
             self.bands.sort_unstable_by_key(|band| band.y);
-            let mut merged: Vec<DamageBand> = Vec::with_capacity(self.bands.len());
-            for band in self.bands.drain(..) {
-                match merged.last_mut() {
-                    Some(current) if band.y <= current.end() => {
-                        let end = current.end().max(band.end());
-                        current.height = end - current.y;
-                    }
-                    _ => merged.push(band),
+            // Compacted in place: merging only ever shortens the list, so the write index stays at
+            // or behind the read index and never overwrites a band that has not been read yet. A
+            // second `Vec` here was one allocation (and one dropped buffer) per presented frame
+            // with two or more damaged bands.
+            let mut write = 1usize;
+            for read in 1..self.bands.len() {
+                let band = self.bands[read];
+                let current = &mut self.bands[write - 1];
+                if band.y <= current.end() {
+                    let end = current.end().max(band.end());
+                    current.height = end - current.y;
+                } else {
+                    self.bands[write] = band;
+                    write += 1;
                 }
             }
-            self.bands = merged;
+            self.bands.truncate(write);
         }
         if self.bands.len() > MAX_PRESENT_BANDS {
             self.mark_full();

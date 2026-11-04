@@ -160,7 +160,7 @@ impl FloatingLabel {
     /// value they keep; that is the one clone an edit has to pay.
     fn commit_text_change(&mut self) {
         self.update_label_state();
-        self.text_changed.emit(self.text.clone());
+        self.text_changed.emit_lazy(|| self.text.clone());
         self.base.request_redraw();
     }
 

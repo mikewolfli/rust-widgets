@@ -795,6 +795,29 @@ impl<T: Clone + Send + 'static> Signal<T> {
         self.emit_inner(EmitValue::Borrowed(&value));
     }
 
+    /// Emits the value `build` produces, and builds nothing when nobody is listening.
+    ///
+    /// # Why this exists
+    ///
+    /// `emit(self.text.clone())` clones the payload **before** the signal can answer "is anyone
+    /// connected", so a control with no subscriber still pays for a payload it will drop. For the
+    /// text-change family that payload is the value (up to a whole document), paid on every
+    /// keystroke.
+    ///
+    /// With no slot connected `emit` iterates an empty map and stores nothing, so skipping the
+    /// build is **observably identical**: no callback runs, no state is written, and the paused
+    /// case is the same early return.
+    ///
+    /// # Cost
+    ///
+    /// One `slot_count()` read, which is the same short read lock `emit` takes anyway.
+    pub fn emit_lazy(&self, build: impl FnOnce() -> T) {
+        if self.slot_count() == 0 {
+            return;
+        }
+        self.emit(build());
+    }
+
     /// The emit pass: snapshot the slot list, then invoke each slot in priority order.
     fn emit_inner(&self, mut value: EmitValue<'_, T>) {
         // Whole-signal pause: a batch load can silence a `changed` signal without disconnecting it

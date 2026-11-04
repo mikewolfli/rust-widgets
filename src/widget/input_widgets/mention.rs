@@ -403,7 +403,7 @@ impl Mention {
         self.selection_anchor = None;
         self.dirty_from = 0;
         self.refresh();
-        self.text_changed.emit(self.text.clone());
+        self.text_changed.emit_lazy(|| self.text.clone());
         self.base.request_redraw();
     }
 
@@ -515,7 +515,7 @@ impl Mention {
         self.record_edit(before);
         self.dirty_from = insert_at;
         self.refresh();
-        self.text_changed.emit(self.text.clone());
+        self.text_changed.emit_lazy(|| self.text.clone());
         self.base.request_redraw();
     }
 
@@ -562,7 +562,7 @@ impl Mention {
         self.text_revision = self.text_revision.wrapping_add(1);
         self.dirty_from = 0;
         self.refresh();
-        self.text_changed.emit(self.text.clone());
+        self.text_changed.emit_lazy(|| self.text.clone());
         self.base.request_redraw();
     }
 
@@ -607,7 +607,7 @@ impl Mention {
         self.record_edit(before);
         self.dirty_from = start;
         self.refresh();
-        self.text_changed.emit(self.text.clone());
+        self.text_changed.emit_lazy(|| self.text.clone());
         self.base.request_redraw();
         true
     }
@@ -627,7 +627,7 @@ impl Mention {
         self.record_edit(before);
         self.dirty_from = previous;
         self.refresh();
-        self.text_changed.emit(self.text.clone());
+        self.text_changed.emit_lazy(|| self.text.clone());
         self.base.request_redraw();
         true
     }
@@ -700,7 +700,7 @@ impl Mention {
         self.filtered.clear();
         self.highlighted = None;
         self.rebuild_completed_from(start);
-        self.text_changed.emit(self.text.clone());
+        self.text_changed.emit_lazy(|| self.text.clone());
         self.mention_inserted.emit(candidate_id.clone());
         self.popup_toggled.emit(false);
         self.base.request_redraw();

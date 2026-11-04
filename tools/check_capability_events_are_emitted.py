@@ -312,7 +312,11 @@ def collect_struct_emits() -> dict[str, set[str]]:
             # A `.emit(..)` may be written on its own line after a long receiver chain
             # (`self.replace_requested\n    .emit(..)`), so whitespace before the dot is part of
             # the call rather than evidence that no call exists.
-            for call in re.finditer(r"(\w+)\s*\.\s*(?:emit|emit_at)\(", body):
+            #
+            # `.emit_lazy(..)` counts: it is the same emission, with the payload built only when a
+            # subscriber exists (`Signal1::emit_lazy`). A gate that only knew `.emit(` would force
+            # every text-change signal back to cloning its payload for nobody.
+            for call in re.finditer(r"(\w+)\s*\.\s*(?:emit|emit_at|emit_lazy)\(", body):
                 emits.setdefault(struct, set()).add(call.group(1))
     return emits
 

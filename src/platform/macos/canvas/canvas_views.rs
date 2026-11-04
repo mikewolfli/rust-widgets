@@ -16,6 +16,13 @@
 //! Split out of `canvas.rs` so that file stays within the production-line limit
 //! (principle #9); the behaviour is unchanged.
 
+// The `cocoa` 0.24 bindings are deprecated in favour of `objc2`, and every deprecated item this
+// module names comes from them. That is a deliberate state, not drift: this is the **legacy**
+// macOS backend, kept beside `platform/macos_objc2` so a host can choose either (see
+// `docs/plans/platform_optional_backends.md`). Migrating these call sites one by one would
+// recreate the objc2 backend a second time (principle #101), so the deprecation notices are
+// silenced for this module only — never crate-wide, where they still guard new code.
+#![allow(deprecated)]
 use super::{objc_getAssociatedObject, objc_setAssociatedObject, OBJC_ASSOCIATION_ASSIGN};
 use crate::core::ObjectId;
 use cocoa::base::{id, nil};

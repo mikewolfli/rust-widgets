@@ -318,7 +318,7 @@ impl MaskedEdit {
                 "masked_edit_text",
             )));
         }
-        self.text_changed.emit(self.raw_text.clone());
+        self.text_changed.emit_lazy(|| self.raw_text.clone());
         self.base.request_redraw();
     }
 
@@ -612,7 +612,7 @@ impl MaskedEdit {
                 self.update_display_text();
                 // Move cursor past this input
                 self.cursor_pos = seg_idx + 1;
-                self.text_changed.emit(self.raw_text.clone());
+                self.text_changed.emit_lazy(|| self.raw_text.clone());
                 self.base.request_redraw();
             } else {
                 // The character reached a cell whose class refuses it; the mask drops it, and the
@@ -705,7 +705,7 @@ impl MaskedEdit {
             self.raw_text.replace_range(start..end, "");
             self.update_display_text();
             self.cursor_pos = self.segment_before_raw_index(raw_idx - 1);
-            self.text_changed.emit(self.raw_text.clone());
+            self.text_changed.emit_lazy(|| self.raw_text.clone());
             self.push_typed_history(before);
             self.base.request_redraw();
         }
@@ -723,7 +723,7 @@ impl MaskedEdit {
             let end = byte_index_of_char(&self.raw_text, raw_idx + 1);
             self.raw_text.replace_range(start..end, "");
             self.update_display_text();
-            self.text_changed.emit(self.raw_text.clone());
+            self.text_changed.emit_lazy(|| self.raw_text.clone());
             self.push_typed_history(before);
             self.base.request_redraw();
         }
@@ -767,7 +767,7 @@ impl MaskedEdit {
         // character", and after the removal that is exactly the first position the run vacated.
         self.cursor_pos = self.segment_before_raw_index(raw_start);
         self.selection_anchor = None;
-        self.text_changed.emit(self.raw_text.clone());
+        self.text_changed.emit_lazy(|| self.raw_text.clone());
         self.push_typed_history(before);
         self.base.request_redraw();
         true

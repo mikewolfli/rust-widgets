@@ -337,8 +337,26 @@ pub fn smooth_commands(
     target: (u32, u32),
     background: crate::core::Color,
 ) -> Result<Vec<crate::wgpu_backend::WgpuDrawCommand>, SmoothGap> {
+    let mut drawn = Vec::with_capacity(commands.len() + 1);
+    smooth_commands_into(&mut drawn, commands, text_scale, target, background)?;
+    Ok(drawn)
+}
+
+/// [`smooth_commands`] into a buffer the caller keeps across frames (RD-02).
+///
+/// The present path calls this once per frame; `out` is cleared and refilled rather than
+/// reallocated, and the frame's background fill is emitted as the stream's first command instead
+/// of being inserted afterwards (which shifted the whole stream).
+pub(crate) fn smooth_commands_into(
+    out: &mut Vec<crate::wgpu_backend::WgpuDrawCommand>,
+    commands: &[crate::render::RenderCommand],
+    text_scale: f32,
+    target: (u32, u32),
+    background: crate::core::Color,
+) -> Result<(), SmoothGap> {
     let audit = super::census(commands);
     if !audit.can_draw_on_gpu() {
+        out.clear();
         return Err(SmoothGap {
             reason: format!(
                 "{} command(s) force the CPU ({})",
@@ -347,27 +365,45 @@ pub fn smooth_commands(
             ),
         });
     }
-    let mut drawn = crate::wgpu_backend::bridge_render_commands(
+    // The whole-frame background the recorder was given. A command stream starts from nothing,
+    // whereas the reference backend starts from this fill.
+    let clear = crate::wgpu_backend::Rgba8 {
+        r: background.r,
+        g: background.g,
+        b: background.b,
+        a: background.a,
+    };
+    if let Err(gap) = crate::wgpu_backend::bridge_render_commands_into(
+        out,
         commands,
         text_scale,
         target,
         background.a == 255,
-    )
-    .map_err(|gap| SmoothGap { reason: gap.to_string() })?;
-    // The whole-frame background the recorder was given. A command stream starts from nothing,
-    // whereas the reference backend starts from this fill.
-    drawn.insert(
-        0,
-        crate::wgpu_backend::WgpuDrawCommand::Clear {
-            color: crate::wgpu_backend::Rgba8 {
-                r: background.r,
-                g: background.g,
-                b: background.b,
-                a: background.a,
-            },
-        },
-    );
-    Ok(drawn)
+        Some(clear),
+    ) {
+        return Err(SmoothGap { reason: gap.to_string() });
+    }
+    Ok(())
+}
+
+thread_local! {
+    /// The bridged stream of the `Smooth` path, reused across frames (RD-02). It reaches the
+    /// frame's command count on the first present and never regrows afterwards.
+    static DRAWN_COMMANDS: core::cell::RefCell<Vec<crate::wgpu_backend::WgpuDrawCommand>> =
+        const { core::cell::RefCell::new(Vec::new()) };
+}
+
+/// Runs `body` with this thread's reusable stream buffer.
+///
+/// Falls back to a scratch buffer when the slot is already borrowed: a re-entrant present would
+/// otherwise panic, and correctness does not depend on the buffer being the pooled one.
+fn with_drawn_commands<R>(
+    body: impl FnOnce(&mut Vec<crate::wgpu_backend::WgpuDrawCommand>) -> R,
+) -> R {
+    DRAWN_COMMANDS.with(|slot| match slot.try_borrow_mut() {
+        Ok(mut slot) => body(&mut slot),
+        Err(_) => body(&mut Vec::new()),
+    })
 }
 
 /// Presents a frame the canvas **recorded** instead of rasterised (the `Smooth` intent).
@@ -388,48 +424,57 @@ pub fn present_recorded_commands(
     scale: f32,
     background: crate::core::Color,
 ) -> WindowPresentOutcome {
-    let drawn = match smooth_commands(commands, scale, size, background) {
-        Ok(drawn) => drawn,
-        Err(gap) => {
+    let quality = RenderQuality::Antialiased;
+    // The stream is bridged into this thread's reusable buffer (RD-02) and presented before the
+    // borrow ends: `present_commands` only reads it, so nothing outlives the frame.
+    let outcome = with_drawn_commands(|drawn| {
+        if let Err(gap) = smooth_commands_into(drawn, commands, scale, size, background) {
             note_smooth_fallback(window, &gap.reason);
             return record_outcome(window, WindowPresentOutcome::Skipped);
         }
-    };
-    let quality = RenderQuality::Antialiased;
-    let outcome =
-        with_presenter(window, window_handle, display_handle, size, scale, quality, |presenter| {
-            if presenter.resize(size, scale) == PresentationStatus::Stopped {
-                return WindowPresentOutcome::Skipped;
-            }
-            match presenter.present_commands(&drawn) {
-                Ok(PresentationStatus::Presented) => {
-                    PRESENTED_COMMANDS.with(|counts| {
-                        *counts.borrow_mut().entry(window).or_insert(0) += 1;
-                    });
-                    clear_smooth_fallback(window);
-                    clear_refusal(window);
-                    WindowPresentOutcome::Presented
+        let outcome = with_presenter(
+            window,
+            window_handle,
+            display_handle,
+            size,
+            scale,
+            quality,
+            |presenter| {
+                if presenter.resize(size, scale) == PresentationStatus::Stopped {
+                    return WindowPresentOutcome::Skipped;
                 }
-                Ok(status) => {
-                    let reason = presenter
-                        .last_failure()
-                        .map(|failure| failure.label())
-                        .unwrap_or_else(|| status.label());
-                    note_refusal(window, reason)
+                match presenter.present_commands(drawn) {
+                    Ok(PresentationStatus::Presented) => {
+                        PRESENTED_COMMANDS.with(|counts| {
+                            *counts.borrow_mut().entry(window).or_insert(0) += 1;
+                        });
+                        clear_smooth_fallback(window);
+                        clear_refusal(window);
+                        WindowPresentOutcome::Presented
+                    }
+                    Ok(status) => {
+                        let reason = presenter
+                            .last_failure()
+                            .map(|failure| failure.label())
+                            .unwrap_or_else(|| status.label());
+                        note_refusal(window, reason)
+                    }
+                    Err(error) => {
+                        log::warn!(
+                            "[present] window {window}: the command stream was rejected ({error}); \
+                             the canvas paints this frame byte-exactly"
+                        );
+                        WindowPresentOutcome::Skipped
+                    }
                 }
-                Err(error) => {
-                    log::warn!(
-                        "[present] window {window}: the command stream was rejected ({error}); \
-                         the canvas paints this frame byte-exactly"
-                    );
-                    WindowPresentOutcome::Skipped
-                }
-            }
-        });
-    match outcome {
-        Some(outcome) => record_outcome(window, outcome),
-        None => record_outcome(window, WindowPresentOutcome::Unavailable),
-    }
+            },
+        );
+        match outcome {
+            Some(outcome) => record_outcome(window, outcome),
+            None => record_outcome(window, WindowPresentOutcome::Unavailable),
+        }
+    });
+    outcome
 }
 
 /// Runs `body` with `window`'s target, creating it on first use.
@@ -621,12 +666,24 @@ mod tests {
 
         // A command with no faithful GPU form is enough: the whole frame goes back to the
         // reference rasteriser, and the reason names the class rather than saying "unsupported".
-        let mut with_blur = drawable.to_vec();
-        with_blur.push(RenderCommand::Blur { radius: 2 });
-        let gap = super::smooth_commands(&with_blur, 1.0, (32, 24), crate::core::Color::WHITE)
-            .expect_err("blur forces the CPU");
+        //
+        // `Blur` used to be this test's subject and is bridged now (`classify` reports it as
+        // `MappedWithDivergence`), so the subject is a rounded clip — still unbridged, and still a
+        // command a real frame produces (a rounded container clip).
+        let mut with_rounded_clip = drawable.to_vec();
+        with_rounded_clip.push(RenderCommand::PushClipRoundedRect {
+            x: 0,
+            y: 0,
+            width: 8,
+            height: 8,
+            radii: [2; 4],
+        });
+        let gap =
+            super::smooth_commands(&with_rounded_clip, 1.0, (32, 24), crate::core::Color::WHITE)
+                .expect_err("a rounded clip forces the CPU");
         assert!(
-            gap.reason.contains("1 command(s) force the CPU") && gap.reason.contains("Blur"),
+            gap.reason.contains("1 command(s) force the CPU")
+                && gap.reason.contains("PushClipRoundedRect"),
             "the reason must count and name what stopped the frame: {}",
             gap.reason
         );

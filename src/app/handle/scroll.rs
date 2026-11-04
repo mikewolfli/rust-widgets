@@ -139,7 +139,7 @@ impl ScrollAreaHandle {
 
     /// Returns the scroll area's content child, if any.
     pub fn content_widget(&self) -> Option<ObjectId> {
-        crate::widget::runtime::with_widget(self.raw_id(), |widget| {
+        crate::widget::runtime::read_widget(self.raw_id(), |widget| {
             crate::widget::capability::coercion::widget_as::<crate::widget::ScrollArea>(widget)
                 .and_then(|area| area.widget())
         })
@@ -217,7 +217,7 @@ pub(crate) fn read_selection_row(id: ObjectId) -> Option<usize> {
 fn selection_row_property(
     id: ObjectId,
 ) -> Option<(&'static str, crate::widget::capability::PropertyValueKind)> {
-    crate::widget::runtime::with_widget(id, |widget| {
+    crate::widget::runtime::read_widget(id, |widget| {
         let factory = crate::widget::capability::WidgetFactory::shared();
         let capability = factory.capability_for_kind_instance(widget)?;
         let publishes = |name: &str| {

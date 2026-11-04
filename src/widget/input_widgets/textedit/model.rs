@@ -930,7 +930,7 @@ impl TextEdit {
             removed,
             inserted,
         )));
-        self.text_changed.emit(self.text.clone());
+        self.text_changed.emit_lazy(|| self.text.clone());
         self.notify_caret_change();
     }
 
@@ -998,7 +998,7 @@ impl TextEdit {
         self.cursor = self.text.len();
         self.selection_anchor = None;
         self.first_visible_row = 0;
-        self.text_changed.emit(self.text.clone());
+        self.text_changed.emit_lazy(|| self.text.clone());
         self.notify_caret_change();
         self.base.request_redraw();
     }
@@ -1613,7 +1613,7 @@ impl TextEdit {
         self.cursor = self.text.len();
         self.selection_anchor = None;
         self.restoring_history = false;
-        self.text_changed.emit(self.text.clone());
+        self.text_changed.emit_lazy(|| self.text.clone());
         self.notify_caret_change();
         self.base.request_redraw();
     }

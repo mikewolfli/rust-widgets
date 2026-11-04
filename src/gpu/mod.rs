@@ -3,16 +3,13 @@
 
 //! Hardware-adaptive GPU management module.
 //!
-//! This module provides automatic GPU adapter selection, hardware-specific
-//! buffer pool configuration, and performance monitoring with dynamic
-//! quality adjustment.
+//! This module provides automatic GPU adapter selection, hardware-derived quality budgets, and
+//! performance monitoring with dynamic quality adjustment.
 //!
 //! # Features
 //!
 //! - **Automatic GPU Detection**: Automatically selects the best available GPU
 //!   (discrete > integrated > CPU) with fallback chain
-//! - **Hardware-Adaptive Buffer Pools**: Configures buffer pool parameters
-//!   based on detected GPU type
 //! - **Performance Monitoring**: Monitors frame times and adjusts quality
 //!   dynamically based on hardware capabilities
 //! - **Performance Trap Detection**: Detects performance issues and provides
@@ -38,17 +35,17 @@
 //! capability report) and `src/wgpu_backend/renderer/build.rs` (`gpu_manager`, RD-04): the live
 //! `WgpuRenderer` owns one [`GpuManager`] per device, built from the adapter facts `wgpu` already
 //! reported, and brackets every offscreen frame with `begin_frame`/`end_frame`. Its operation mode,
-//! staging-pool accounting, performance samples, trap recommendations and quality advice are read
-//! through the renderer's own accessors (`gpu_adapter_info`, `gpu_performance_stats`, ...).
+//! performance samples, trap recommendations and quality advice are read through the renderer's own
+//! accessors (`gpu_adapter_info`, `gpu_performance_stats`, ...).
 //!
-//! # What is *not* on the live path, and why
+//! # Removed: the staging pool and upload batcher (RD-04, closed)
 //!
-//! `GpuStagingBufferPool`'s **ring cursor** is advanced every frame by `GpuManager::begin_frame`,
-//! but its region allocator has no in-crate caller: `wgpu`'s `queue.write_buffer`/`write_texture`
-//! perform their own staging, so routing this crate's uploads through a second ring would double
-//! buffer every upload rather than remove a copy. The allocator therefore stays the host-facing
-//! surface it is documented as, and its deletion condition (next major, if no host allocates
-//! through it) is unchanged.
+//! `GpuStagingBufferPool` advanced a ring cursor every frame while owning no GPU buffer, and
+//! `GpuUploadBatcher` merged uploads that this crate never hands it. Both are deleted rather than
+//! described as host-facing surface: `wgpu`'s `Queue::write_buffer`/`write_texture` already stage
+//! into a reusable belt and coalesce a batch into one write, so routing uploads through a second ring
+//! would add a copy and a second implementation of one concept (principle #101). A pool nobody
+//! allocates from is not a feature — that was the pool's own stated deletion condition.
 //!
 //! # Relationship to `crate::performance` (G-214)
 //!
@@ -74,10 +71,12 @@ pub mod adapter;
 /// that feature inherit no GPU path at all, so there is nothing to select.
 #[cfg(feature = "gpu")]
 pub mod backend_ladder;
-pub mod buffer_pool;
 pub mod manager;
 pub mod performance;
 pub mod texture_atlas;
+/// Measures whether a hand-rolled staging ring beats `Queue::write_buffer` (RD-04 evidence).
+#[cfg(all(test, feature = "gpu-wgpu"))]
+mod upload_path_tests;
 // Re-export main types
 pub use adapter::{
     AdapterInfo, AdapterSelectionError, AdapterSelectionStrategy, AdapterSelector, GpuAdapter,
@@ -89,11 +88,6 @@ pub use backend_ladder::{
     select_adapter_with_gl_fallback, shared_selection, GpuBackendSelection, GpuBackendTier,
     BACKEND_LADDER,
 };
-pub use buffer_pool::{
-    GpuBufferAllocation, GpuBufferPoolStats, GpuMemoryProfile, GpuStagingBufferPool,
-    GpuUploadBatcher, MappingStrategy, StagingBufferPoolConfig,
-};
-pub use init::{init, init_with_strategy, is_gpu_available, subsystem_summary};
 pub use manager::{
     GpuManager, GpuManagerAction, GpuManagerBuilder, GpuManagerError, GpuOperationMode,
 };
