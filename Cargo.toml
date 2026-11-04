@@ -163,17 +163,17 @@ desktop = [
     "touch",
     "i18n",
     "chart",
-    "print",
-    "pdf",
     "a11y",
-    "quality-management",
     "advanced-widgets",
     "controls-native",
     "controls-custom",
     "image",
-    "video",
-    "audio",
-    "pdf-encryption",
+    # `print`, `pdf`, `pdf-encryption`, `video` and `audio` are **not** in the default
+    # profile: they have no in-repo production consumer and together compile ~16k lines plus
+    # minimp3_fixed, jpeg-decoder and the AES/SHA/CBC stack. The same NOTE above applies:
+    #   cargo build --features "desktop,print,pdf,pdf-encryption,video,audio"
+    # The snapshot export path does not render through any of the five, so this changes no
+    # exported picture.
     # The real text and icon payloads. A desktop host has the bytes and wants the quality, so the
     # vector faces and the Material Symbols outlines ship *in the profile* rather than in `default`.
     # This is what makes `--features desktop` and the manifest's `default` render the same picture —
@@ -268,7 +268,6 @@ mini = [
     "dep:heapless",
     "dep:hashbrown",
     "dep:spin",
-    "dep:bumpalo",
 ]
 
 
@@ -384,7 +383,7 @@ linux-wayland = [
 ]
 linux-a11y = ["dep:zbus", "dep:pollster"]
 # XDG desktop portal appearance settings for the Wayland backend (B28.04).
-wayland-portal = ["dep:zbus"]
+wayland-portal = ["dep:zbus", "dep:pollster"]
 android = ["dep:jni"]
 # Explicit `jni` feature name so `--features jni` (documented by
 # `src/bindings/java_jni.rs`) and `cfg(feature = "jni")` work; mirrors the
@@ -837,7 +836,7 @@ serde_json = { version = "1.0", optional = true }
 # read-only adapter, not part of the widget contract.
 raw-window-handle = { version = "0.6", optional = true }
 crossbeam-channel = { version = "0.5", optional = true }
-font8x8 = "0.2.7"
+font8x8 = "0.3.1"
 # Grid-column width of a character (East Asian Wide/Fullwidth = 2, combining = 0).
 # The code editor lays text on a fixed-pitch grid; without this table a CJK glyph
 # advanced two cells while the layout assumed one, so every following token was
@@ -860,13 +859,13 @@ rustybuzz = { version = "0.20.1", optional = true }
 # glyph failed to outline without this feature, because its per-glyph tuple count exceeded
 # the stack limit. The feature pulls `std`, which this dependency already uses by default.
 ttf-parser = { version = "0.25.1", optional = true, features = ["gvar-alloc"] }
-pollster = { version = "0.4", optional = true }
+pollster = { version = "1.0", optional = true }
 chrono = { version = "0.4", optional = true }
-notify = { version = "7.0", optional = true }
-dirs = { version = "6.0", optional = true }
+notify = { version = "8.2", optional = true }
+dirs = { version = "7.0", optional = true }
 log = "0.4"
 minimp3_fixed = { version = "0.5", optional = true }
-miniz_oxide = { version = "0.8", optional = true }
+miniz_oxide = { version = "0.9", optional = true }
 # NOTE: AVIF uses the pure-Rust `avif` codec (ravif), not `avif-native`.
 # `avif-native` pulls in `dav1d-sys`, a system C library that requires a
 # pkg-config cross sysroot. That made every cross target (Android/iOS/wasm)
@@ -879,9 +878,9 @@ image-codecs = { package = "image", version = "0.25.10", optional = true, defaul
     "avif",
     "ico",
 ] }
-resvg = { version = "0.48.1", optional = true }
+resvg = { version = "0.49.0", optional = true }
 jpeg-decoder = { version = "0.3", optional = true }
-symphonia = { version = "0.5", default-features = false, features = [
+symphonia = { version = "0.6", default-features = false, features = [
     "flac",
     "vorbis",
     "aac",
@@ -890,18 +889,18 @@ symphonia = { version = "0.5", default-features = false, features = [
 
 
 # Audio/video codecs
-aes = { version = "0.8", optional = true }
-sha2 = { version = "0.10", optional = true }
-cbc = { version = "0.1", optional = true }
+aes = { version = "0.9", optional = true }
+sha2 = { version = "0.11", optional = true }
+cbc = { version = "0.2", optional = true }
 # A real OS CSPRNG for PDF salt/IV material. `EncryptionAlgorithm`'s salt and IV were derived from a
 # time-seeded LCG, which is predictable and defeats the purpose of a salt. `getrandom` is the
 # cross-platform way to read the OS entropy source; on wasm32 it needs the `wasm_js` feature, which
 # is declared in the `[target.'cfg(target_arch = "wasm32")'.dependencies]` section for the same
 # reason the `js`/`wasm_js` features are pinned there.
-getrandom = { version = "0.3", optional = true }
+getrandom = { version = "0.4", optional = true }
 # Note: On Linux, requires `libasound2-dev` package for ALSA backend.
 # On macOS, uses CoreAudio; on Windows, uses WASAPI.
-cpal = { version = "0.15", optional = true }
+cpal = { version = "0.18", optional = true }
 
 wgpu = { version = "30.0.1", optional = true }
 
@@ -939,14 +938,14 @@ web-sys = { version = "0.3", features = [
     "DomRectReadOnly",
 ], optional = true }
 
-jni = { version = "0.21", features = ["invocation"], optional = true }
+jni = { version = "0.22", features = ["invocation"], optional = true }
 
-heapless = { version = "0.8", optional = true }
-hashbrown = { version = "0.15", optional = true, default-features = false, features = [
+heapless = { version = "0.9", optional = true }
+hashbrown = { version = "0.17", optional = true, default-features = false, features = [
     "alloc",
 ] }
-spin = { version = "0.9", optional = true }
-bumpalo = { version = "3.17", optional = true, default-features = false }
+spin = { version = "0.12", optional = true }
+
 
 [target.'cfg(windows)'.dependencies]
 winapi = { version = "0.3", features = [
@@ -1002,7 +1001,7 @@ objc2-app-kit = { version = "0.3", optional = true }
 objc2-core-graphics = { version = "0.3", optional = true }
 objc2-core-foundation = { version = "0.3", optional = true }
 objc2-core-text = { version = "0.3", optional = true }
-cocoa = { version = "0.25", optional = true }
+cocoa = { version = "0.27", optional = true }
 # Backs `Platform::total_memory_mb` in `src/platform/darwin_probes.rs`
 # (`sysconf(_SC_PHYS_PAGES)`). Not optional: the probe is always compiled on this
 # target, and an optional dep behind no feature is a compile error waiting to happen.
@@ -1023,7 +1022,7 @@ libc = "0.2"
 # `cfg(unix_desktop)` and has to spell the same predicate out. The two are locked together by
 # `tools/check_bsd_cross.sh` (which type-checks the GTK/Wayland path on FreeBSD and NetBSD).
 [target.'cfg(all(target_family = "unix", not(target_arch = "wasm32"), not(target_env = "ohos"), not(any(target_os = "macos", target_os = "ios", target_os = "tvos", target_os = "visionos", target_os = "watchos", target_os = "android", target_os = "redox"))))'.dependencies]
-gtk = { version = "0.18", optional = true }
+gtk = { version = "0.19", optional = true }
 # Used by the Wayland backend to poll() the compositor socket in the native
 # event loop (the crate is already in the dependency graph transitively).
 libc = { version = "0.2", optional = true }
@@ -1034,7 +1033,7 @@ wayland-protocols = { version = "0.32", features = [
     "client",
 ], optional = true }
 wayland-cursor = { version = "0.31", optional = true }
-zbus = { version = "5", optional = true }
+zbus = { version = "6", optional = true }
 
 # `webkit2gtk` was a dependency here, gated by the `webkit-engine` feature. Both were
 # removed by BLUE20 layer 5 (ruling W1, 2026-09-21): the wrapper never displayed a page,
@@ -1065,17 +1064,21 @@ zbus = { version = "5", optional = true }
 # and paints the library's control tree into its pixel buffer. `std` is required for the
 # window type; the `sdl`/`unifont` defaults are not used and are kept off.
 [target.'cfg(target_os = "redox")'.dependencies]
-orbclient = { version = "0.4.3", default-features = false, features = ["std"] }
+orbclient = { version = "0.4.6", default-features = false, features = ["std"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
+# `getrandom` 0.2 is the version `boa_engine -> rand 0.8 -> rand_core 0.6` depends on, and
+# its browser backend is the feature named `js` (0.3 renamed it to `wasm_js`). The alias must
+# therefore name 0.2: pointing it at 0.4 asked for a feature that version does not have, which
+# is a resolution error on every target (principle #43: the feature name belongs to the
+# version that declares it).
 getrandom02 = { package = "getrandom", version = "0.2", features = ["js"] }
-# `pdf-encryption` derives its salt/IV from `getrandom` (0.3), whose browser backend is opt-in
+# `pdf-encryption` derives its salt/IV from `getrandom` 0.4, whose browser backend is opt-in
 # (`wasm_js`). On `wasm32-unknown-unknown` the feature must be on or the crate refuses to build.
 # This is the **same package** as the optional `getrandom` in `[dependencies]`, so it cannot take a
-# distinct name (cargo rejects one package under two names in a single graph — the earlier
-# `getrandom03` pin collided for exactly that reason); re-declaring it here non-optionally attaches
-# the feature on this target only, which is the constraint.
-getrandom = { version = "0.3", features = ["wasm_js"] }
+# distinct name (cargo rejects one package under two names in a single graph); re-declaring it
+# here non-optionally attaches the feature on this target only, which is the constraint.
+getrandom = { version = "0.4", features = ["wasm_js"] }
 
 [dev-dependencies]
 # NOTE: criterion (benchmark harness), tempfile (filesystem tests) and proptest
@@ -1086,8 +1089,8 @@ getrandom = { version = "0.3", features = ["wasm_js"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 criterion = "0.8.2"
-tempfile = "3.14"
-proptest = "1.6"
+tempfile = "3.27"
+proptest = "1.12"
 
 [package.metadata.docs.rs]
 features = ["full", "touch", "holographic", "projection"]

@@ -7,7 +7,7 @@
 //! # What problem this solves
 //!
 //! Every asset entry point in this crate is keyed by a **filesystem path**
-//! (`image::cache::cached_from_path`, the image/audio widgets' `*_source` properties). A path is a
+//! (the image/audio widgets' `*_source` properties, read through the decode cache's file layer). A path is a
 //! *location*, and a location is the one thing that differs between the two places an asset is used:
 //!
 //! * at run time it is a file beside the executable, under the source tree, or wherever the host put
@@ -18,6 +18,16 @@
 //! moment it is packaged. What survives both is a **logical identity** — `"icons/save.png"`,
 //! `"audio/click.wav"` — that each deployment resolves its own way. This module is that identity and
 //! the seam that resolves it; the *policy* (where the bytes come from) stays with the host, which is
+//! why this module is pure data and traits.
+//!
+//! # Reachability
+//!
+//! **State:** Reserved: `ResourceId`/`ResourceResolver`/`EmbeddedSource`/`ResourceSource` have no
+//! in-repo production caller. They are the seam a host adopts to keep one asset identity across a
+//! source-tree run and a packaged build.
+//!
+//! **Removal condition:** delete this module if `image::cache` and the icon resolver still key on
+//! filesystem paths at the next major release without adopting `ResourceId` (XC-06).
 //! the only layer that knows how the application was packaged.
 //!
 //! # What stays in the host
@@ -31,8 +41,8 @@
 //! [`Image::from_bytes`](crate::image::Image::from_bytes) and the content-keyed decode layer already
 //! take bytes rather than a path, so an embedded asset and a file that happens to hold the same
 //! bytes share one decoded entry. What was missing was only the *name* the two deployments agree on
-//! — every existing entry point ([`image::cache::cached_from_path`](crate::image::cache::cached_from_path),
-//! the image widgets' `*_source` properties) is keyed by a filesystem path, which is a location and
+//! — every existing entry point (the image widgets' `*_source` properties, resolved through the
+//! decode cache's file layer) is keyed by a filesystem path, which is a location and
 //! therefore the one thing that differs between a run-time load and a static package.
 //!
 //! # Why the id is not a path

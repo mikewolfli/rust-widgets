@@ -195,11 +195,22 @@ impl GpuManager {
             AdapterInfo::cpu_fallback()
         };
 
-        Self::from_adapter_info(adapter_info).await
+        Self::from_adapter_info(adapter_info)
     }
 
-    /// Creates a GPU manager from adapter info
-    pub async fn from_adapter_info(adapter_info: AdapterInfo) -> Result<Self, GpuManagerError> {
+    /// Creates a GPU manager from adapter facts someone else already selected.
+    ///
+    /// # Why this is not `async`
+    ///
+    /// It was `async` with no await point in its body — an `async` keyword that bought nothing and
+    /// cost a caller the ability to construct a manager from a synchronous context (the `wgpu`
+    /// renderer holds its device already and must not nest a second executor to build the manager
+    /// for it). [`Self::new`] and [`Self::with_strategy`] stay `async` because *selection* really
+    /// does await an adapter.
+    ///
+    /// This is the entry the live renderer uses: it takes the adapter facts `wgpu` reported for
+    /// the device it created, so no second adapter-selection pass runs (issue-20261104 RD-04).
+    pub fn from_adapter_info(adapter_info: AdapterInfo) -> Result<Self, GpuManagerError> {
         let mode = if adapter_info.device_type.is_cpu() {
             GpuOperationMode::Software
         } else {
@@ -605,6 +616,50 @@ mod tests {
         let msg = action.message();
         assert!(msg.contains("CPU"));
     }
+    /// A manager built from adapter facts is drivable without an executor, and its frame hooks do
+    /// real work.
+    ///
+    /// # Why this test exists (issue-20261104 RD-04)
+    ///
+    /// `GpuManager`, its staging pool and its performance monitor had no production instantiation:
+    /// every entry point was documented, tested in isolation, and fed by nothing. The live renderer
+    /// now builds one with [`GpuManager::from_adapter_info`] and brackets each frame with
+    /// `begin_frame`/`end_frame`, so this pins the three facts that wiring depends on — the
+    /// constructor is synchronous (the renderer calls it from inside its own async constructor and
+    /// must not nest an executor), the mode follows the device type, and a frame bracket produces a
+    /// real sample instead of `None`.
+    #[test]
+    fn a_manager_built_from_adapter_facts_is_frame_driven() {
+        let mut facts = AdapterInfo::cpu_fallback();
+        facts.name = "unit-test adapter".to_string();
+        let manager = GpuManager::from_adapter_info(facts).expect("a manager needs no adapter");
+
+        assert!(manager.is_software(), "the CPU fallback reports software mode");
+        assert!(!manager.is_hardware());
+        assert!(
+            manager.buffer_pool_stats().is_some(),
+            "the staging pool is constructed, not left as `None`"
+        );
+
+        let frame_before = manager.buffer_pool_stats().expect("stats").current_frame;
+        manager.begin_frame();
+        let sample = manager.end_frame().expect("a bracketed frame produces a sample");
+        assert!(
+            sample.average_frame_time > std::time::Duration::ZERO,
+            "the bracket measured a real duration"
+        );
+        assert!(
+            manager.performance_stats().is_some(),
+            "the sample is published, which is what the renderer's accessors read"
+        );
+        let frame_after = manager.buffer_pool_stats().expect("stats").current_frame;
+        assert_eq!(
+            frame_after,
+            frame_before + 1,
+            "`begin_frame` advances the staging pool's ring cursor"
+        );
+    }
+
     #[test]
     fn test_operation_mode() {
         assert!(matches!(GpuOperationMode::Hardware, GpuOperationMode::Hardware));

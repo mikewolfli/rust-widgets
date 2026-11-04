@@ -39,7 +39,7 @@ use crate::platform::clipboard::{ClipboardContent, RichClipboardBackend};
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::cell::RefCell;
 use std::rc::Rc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 /// How long a clipboard read may wait for the selection's owner.
 ///
@@ -57,25 +57,26 @@ const CLIPBOARD_WAIT: Duration = Duration::from_millis(16);
 /// the answer is simply not observed by this call.
 fn wait_for<T>(slot: &Rc<RefCell<Option<T>>>) -> Option<T> {
     let context = gtk::glib::MainContext::default();
-    let deadline = Instant::now() + CLIPBOARD_WAIT;
-    loop {
+    // A one-shot source at the deadline is what ends the wait. The loop below blocks in a single
+    // `context.iteration(true)` instead of pumping with a 1 ms sleep: the previous form spun the
+    // GTK main thread at 1 ms granularity for the whole budget and re-dispatched unrelated GTK
+    // events every millisecond (PL-08).
+    let finished = Rc::new(std::cell::Cell::new(false));
+    let finished_in_source = Rc::clone(&finished);
+    let source_id = gtk::glib::timeout_add_local(CLIPBOARD_WAIT, move || {
+        finished_in_source.set(true);
+        gtk::glib::ControlFlow::Break
+    });
+    while !finished.get() {
         if let Some(value) = slot.borrow_mut().take() {
+            source_id.remove();
             return Some(value);
         }
-        if Instant::now() >= deadline {
-            return None;
-        }
-        while context.pending() {
-            let _ = context.iteration(false);
-            if slot.borrow().is_some() {
-                break;
-            }
-        }
-        if slot.borrow().is_some() {
-            continue;
-        }
-        std::thread::sleep(Duration::from_millis(1));
+        // Blocks until an event arrives or the deadline source above fires.
+        let _ = context.iteration(true);
     }
+    // The deadline expired: the answer may still have landed in the same iteration.
+    slot.borrow_mut().take()
 }
 
 /// The MIME type a plain-text payload is published under.

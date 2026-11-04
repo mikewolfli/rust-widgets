@@ -40,6 +40,22 @@ use crate::widget::{
     Button, CheckBox, ComboBox, GroupBox, Label, LineEdit, ListBox, ProgressBar, RadioButton,
     ScrollArea, ScrollBar, Slider, SpinBox, Switch, Widget,
 };
+// Container / menu content routing (issue-20261104 DM-06/07/08/11/12). These are the
+// concrete types whose own content methods `route_container_content` calls; the list lives
+// here rather than in each arm so the routing table reads as data.
+use crate::widget::container_widgets::linear_layouts::{
+    Flex, FlexItemSpec, FlowLayout, WrapLayout,
+};
+use crate::widget::container_widgets::Accordion;
+use crate::widget::container_widgets::MasonryLayout;
+use crate::widget::dialog::wizard::WizardDialog;
+use crate::widget::menu_toolbar::action::Action;
+use crate::widget::menu_toolbar::menu::Menu;
+use crate::widget::{
+    AdaptiveScaffold, BottomSheet, CollapsiblePane, Dialog, DockWidget, Frame, MdiArea, MenuBar,
+    ModalBottomSheet, NavigationStack, PopupWindow, SafeArea, Splitter, StackedWidget, StatusBar,
+    TabView, ToolBar, ToolBox,
+};
 #[cfg(not(alloc_frugal))]
 use crate::widget::{
     ColorDialog, FileDialog, FontDialog, GridWidget, ListView, MessageBox, TabWidget, TextEdit,
@@ -76,6 +92,658 @@ enum DeclaredWire {
 /// A loader that parses JSON layout strings and instantiates widget trees.
 pub struct JsonLoader;
 
+/// Routes a container node's declared children into that container's own content model.
+///
+/// # Why this exists (issue-20261104 DM-06/07/08/11/12)
+///
+/// The generic child path mounts a declared node under its parent and applies layout
+/// placement. A container that keeps its content in a **side table** — a page list, a pane
+/// list, a slot — was then left with that table empty: a `StackedWidget` painted every page
+/// on top of the others, a `ScrollArea` had no viewport child, a `DockArea` had nothing to
+/// arrange, and a `MenuBar` had no menus. The mount itself is correct; only the routing was
+/// missing.
+///
+/// Every entry point used here is the control's **own existing method**, and every one of
+/// them takes the `ObjectId` the mount already assigned. Nothing about ownership moves: the
+/// runtime registry stays the single owner of the widget, and the tree painter still reaches
+/// every child. That is the property `CapabilityValue` cannot express — it has no
+/// control-reference variant (`capability/types.rs`) — which is why routing is a loader
+/// concern rather than a property.
+///
+/// # Keys
+///
+/// A single-slot container takes its **first** declared child as content. Multi-slot
+/// containers read a dedicated array (`pages`, `sections`, `panes`, `docks`, `items`,
+/// `menus`, `actions`) whose entries are nodes in the same `{ "<type>": { … } }` shape as
+/// `children`. Every one of these keys is registered in [`is_loader_owned_key`], so the
+/// name-driven property pass does not report them as ignored.
+#[allow(clippy::too_many_arguments)]
+fn route_container_content(
+    widget_id: ObjectId,
+    widget_type: &str,
+    obj: &serde_json::Map<String, Value>,
+    child_ids: &[ObjectId],
+    registry: &mut crate::index::WidgetRegistry,
+    binding: &mut BoundJsonLayout,
+    depth: u32,
+    resolver: Option<&dyn crate::widget::icon_source::IconResourceResolver>,
+    ancestors: &[ElementRef<'_>],
+) -> Result<(), String> {
+    // Fold aliases onto the canonical name, so a document spelling `scrollarea`,
+    // `tab_view` or `wizard` routes exactly like the canonical spelling. The designer's
+    // generator already relies on this one answer per control.
+    //
+    // Guarded first: a leaf node has neither children nor a content key, and answering that
+    // without allocating the canonical name keeps the loader's per-node cost where it was.
+    let has_routing_key = !child_ids.is_empty()
+        || obj.contains_key("pages")
+        || obj.contains_key("sections")
+        || obj.contains_key("panes")
+        || obj.contains_key("menus")
+        || obj.contains_key("actions")
+        || obj.contains_key("items");
+    if !has_routing_key {
+        return Ok(());
+    }
+    let canonical = crate::widget::capability::WidgetFactory::shared().canonical_name(widget_type);
+    let first = child_ids.iter().copied().find(|id| *id != 0);
+
+    match canonical.as_str() {
+        // ── Single-slot containers ─────────────────────────────────────────
+        //
+        // `ScrollArea::set_widget`, `CollapsiblePane::set_content`,
+        // `SafeArea::set_content`, `DockWidget::set_widget` and the dialog family's
+        // `set_content_widget` all link the id, place it in the slot rectangle and keep
+        // its visibility in step. They are idempotent, so the mount's existing child
+        // entry is not duplicated (see `BaseWidget::add_child_linked`).
+        "scroll_area" => {
+            with_container::<ScrollArea>(widget_id, |area| {
+                area.set_widget(first);
+            });
+        }
+        "collapsible_pane" => {
+            with_container::<CollapsiblePane>(widget_id, |pane| {
+                if let Some(id) = first {
+                    pane.set_content(id);
+                }
+            });
+        }
+        "safe_area" => {
+            with_container::<SafeArea>(widget_id, |area| {
+                area.set_content(first);
+            });
+        }
+        "dock_widget" | "dock_area" => {
+            with_container::<DockWidget>(widget_id, |dock| {
+                dock.set_widget(first);
+            });
+        }
+        "frame" => {
+            with_container::<Frame>(widget_id, |frame| {
+                frame.set_widget(first);
+            });
+        }
+        "dialog" => {
+            with_container::<Dialog>(widget_id, |dialog| {
+                dialog.set_content_widget(first);
+            });
+        }
+        "bottom_sheet" => {
+            with_container::<BottomSheet>(widget_id, |sheet| {
+                sheet.set_content_widget(first);
+            });
+        }
+        "popup_window" => {
+            with_container::<PopupWindow>(widget_id, |popup| {
+                popup.set_content_widget(first);
+            });
+        }
+        "modal_bottom_sheet" => {
+            with_container::<ModalBottomSheet>(widget_id, |sheet| {
+                sheet.set_content_id(first);
+            });
+        }
+        // `TabView` draws one page at a time and draws each page itself, so its content has
+        // to be a tab entry rather than a plain child.
+        "tab_view" => {
+            if let Some(children) = obj.get("children").and_then(|v| v.as_array()) {
+                for (position, child_value) in children.iter().enumerate() {
+                    let Some(id) = child_ids.get(position).copied().filter(|id| *id != 0) else {
+                        continue;
+                    };
+                    let Some((child_type, child_val)) =
+                        child_value.as_object().and_then(|wrapper| wrapper.iter().next())
+                    else {
+                        continue;
+                    };
+                    let title = child_val
+                        .get("title")
+                        .and_then(|v| v.as_str())
+                        .or_else(|| child_val.get("text").and_then(|v| v.as_str()))
+                        .or_else(|| child_val.get("id").and_then(|v| v.as_str()))
+                        .unwrap_or(child_type)
+                        .to_string();
+                    with_container::<TabView>(widget_id, |view| {
+                        view.add_tab_id(title, Some(id), None::<alloc::string::String>);
+                    });
+                }
+            }
+        }
+
+        // ── Multi-slot containers ─────────────────────────────────────────
+        //
+        // `StackedWidget::add_widget` is the exact shape the plan asks for: the children
+        // are the pages, in document order, and the control hides every page but the
+        // selected one. `current_index` is applied by the property pass afterwards, which
+        // is why nothing is written here.
+        "stacked_widget" => {
+            with_container::<StackedWidget>(widget_id, |stack| {
+                for id in child_ids.iter().copied().filter(|id| *id != 0) {
+                    stack.add_widget(id);
+                }
+            });
+        }
+
+        // A splitter's panes are declared under `panes`, each carrying its own `stretch`.
+        "splitter" => {
+            let panes = node_array(obj, "panes");
+            if !panes.is_empty() {
+                for (child_type, child_val) in panes {
+                    let id = JsonLoader::instantiate_node(
+                        child_type,
+                        child_val,
+                        Some(widget_id),
+                        registry,
+                        binding,
+                        depth + 1,
+                        resolver,
+                        ancestors,
+                    )?;
+                    if id == 0 {
+                        continue;
+                    }
+                    let stretch =
+                        child_val.as_object().and_then(|m| json_u32_at(m, "stretch")).unwrap_or(1);
+                    with_container::<Splitter>(widget_id, |splitter| {
+                        splitter.add_pane(id, stretch);
+                    });
+                }
+            }
+        }
+
+        // An accordion's sections are declared under `sections`; each entry is one node
+        // whose `text`/`title` names the section and whose `id` is the section identity.
+        "accordion" => {
+            let sections = node_array(obj, "sections");
+            for (child_type, child_val) in sections {
+                let id = JsonLoader::instantiate_node(
+                    child_type,
+                    child_val,
+                    Some(widget_id),
+                    registry,
+                    binding,
+                    depth + 1,
+                    resolver,
+                    ancestors,
+                )?;
+                if id == 0 {
+                    continue;
+                }
+                let section_id = child_val
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string)
+                    .unwrap_or_else(|| alloc::format!("section_{id}"));
+                let title = child_val
+                    .get("title")
+                    .and_then(|v| v.as_str())
+                    .or_else(|| child_val.get("text").and_then(|v| v.as_str()))
+                    .unwrap_or(child_type)
+                    .to_string();
+                let body = child_val.get("body").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                with_container::<Accordion>(widget_id, |accordion| {
+                    accordion.add_section(&section_id, &title, &body);
+                    accordion.set_section_widget(&section_id, Some(id));
+                });
+            }
+        }
+
+        // A wizard's steps are declared under `pages`; the page widget is bound to the
+        // step the control just created.
+        "wizard_dialog" => {
+            let pages = node_array(obj, "pages");
+            for (child_type, child_val) in pages {
+                let id = JsonLoader::instantiate_node(
+                    child_type,
+                    child_val,
+                    Some(widget_id),
+                    registry,
+                    binding,
+                    depth + 1,
+                    resolver,
+                    ancestors,
+                )?;
+                if id == 0 {
+                    continue;
+                }
+                let title = child_val
+                    .get("title")
+                    .and_then(|v| v.as_str())
+                    .or_else(|| child_val.get("text").and_then(|v| v.as_str()))
+                    .unwrap_or(child_type)
+                    .to_string();
+                let optional = child_val.get("optional").and_then(|v| v.as_bool()).unwrap_or(false);
+                with_container::<WizardDialog>(widget_id, |wizard| {
+                    let index = wizard.add_page(title, optional);
+                    wizard.set_page(index, Some(id));
+                });
+            }
+        }
+
+        // `dock_area` has no multi-dock arm here: its capability row resolves to
+        // `create_dock_area`, which builds a **`DockWidget`** (a single panel), because
+        // `DockArea` is a layout owner rather than a `Widget` and has no mounted instance a
+        // document could address. The single-slot arm above therefore serves both names, and
+        // a multi-dock host still has to be described in Rust.
+
+        // A navigation stack's `children` are its history: the first child is the root, each
+        // later one is pushed on top of it. Only the topmost page is visible.
+        "navigation_stack" => {
+            with_container::<NavigationStack>(widget_id, |stack| {
+                for id in child_ids.iter().copied().filter(|id| *id != 0) {
+                    stack.push_id(id);
+                }
+            });
+        }
+
+        // The three linear containers address their children through an item list, so a plain
+        // tree child would be arranged by nothing. See `FlexItemHost`.
+        "flex" => {
+            if let Some(children) = obj.get("children").and_then(|v| v.as_array()) {
+                route_flex_children::<Flex>(widget_id, children, child_ids);
+            }
+        }
+        "flow_layout" => {
+            if let Some(children) = obj.get("children").and_then(|v| v.as_array()) {
+                route_flex_children::<FlowLayout>(widget_id, children, child_ids);
+            }
+        }
+        "wrap_layout" => {
+            if let Some(children) = obj.get("children").and_then(|v| v.as_array()) {
+                route_flex_children::<WrapLayout>(widget_id, children, child_ids);
+            }
+        }
+        // A masonry card is its own row of data: label, height and face colour. The label falls
+        // back through the same chain the tab and accordion arms use, the height is the child's
+        // declared `height`, and the face colour is its declared `background` — a declared card is
+        // a mounted control, so an absent `background` leaves the face transparent rather than
+        // inventing a colour the document did not ask for.
+        "masonry_layout" => {
+            if let Some(children) = obj.get("children").and_then(|v| v.as_array()) {
+                for (position, child_value) in children.iter().enumerate() {
+                    let Some(id) = child_ids.get(position).copied().filter(|id| *id != 0) else {
+                        continue;
+                    };
+                    let Some((child_type, child_val)) =
+                        child_value.as_object().and_then(|wrapper| wrapper.iter().next())
+                    else {
+                        continue;
+                    };
+                    let Some(node) = child_val.as_object() else { continue };
+                    let label = node
+                        .get("text")
+                        .and_then(|v| v.as_str())
+                        .or_else(|| node.get("title").and_then(|v| v.as_str()))
+                        .or_else(|| node.get("id").and_then(|v| v.as_str()))
+                        .unwrap_or(child_type)
+                        .to_string();
+                    let height =
+                        json_u32_at(node, "height").unwrap_or(DEFAULT_DECLARED_CARD_HEIGHT);
+                    let face = node
+                        .get("background")
+                        .and_then(|v| v.as_str())
+                        .and_then(Color::parse_hex)
+                        .unwrap_or(Color::TRANSPARENT);
+                    with_container::<MasonryLayout>(widget_id, |masonry| {
+                        masonry.add_item_with_widget(&label, height, face, Some(id));
+                    });
+                }
+            }
+        }
+
+        // A tool box declares its items under `items`; the node is the item's page.
+        "tool_box" => {
+            let items = node_array(obj, "items");
+            for (child_type, child_val) in items {
+                let id = JsonLoader::instantiate_node(
+                    child_type,
+                    child_val,
+                    Some(widget_id),
+                    registry,
+                    binding,
+                    depth + 1,
+                    resolver,
+                    ancestors,
+                )?;
+                if id == 0 {
+                    continue;
+                }
+                let text = child_val
+                    .get("text")
+                    .and_then(|v| v.as_str())
+                    .or_else(|| child_val.get("title").and_then(|v| v.as_str()))
+                    .unwrap_or(child_type)
+                    .to_string();
+                with_container::<ToolBox>(widget_id, |toolbox| {
+                    toolbox.add_item(text, Some(id));
+                });
+            }
+        }
+
+        // ── Remaining containers whose content is its `children` ──────────
+        //
+        // `MdiArea::add_sub_window` takes the geometry the child declared, because a
+        // sub-window is a rectangle inside the MDI client area. `StatusBar::add_widget_id`
+        // takes the declared `stretch`, matching the splitter's rule.
+        "mdi_area" => {
+            // The children were mounted by the generic child path, so they are paired with
+            // `child_ids` by position rather than instantiated a second time.
+            if let Some(children) = obj.get("children").and_then(|v| v.as_array()) {
+                for (position, child_value) in children.iter().enumerate() {
+                    let Some(id) = child_ids.get(position).copied().filter(|id| *id != 0) else {
+                        continue;
+                    };
+                    let geometry = child_value
+                        .as_object()
+                        .and_then(|m| m.values().next())
+                        .and_then(|v| v.as_object())
+                        .map(json_geometry)
+                        .unwrap_or_else(|| json_geometry(obj));
+                    with_container::<MdiArea>(widget_id, |area| {
+                        area.add_sub_window(id, geometry);
+                    });
+                }
+            }
+        }
+        "adaptive_scaffold" => {
+            // A declared child fills the slot its `slot` key names (DM-06), and a declared
+            // page fills a bottom-navigation destination (DM-08).
+            if let Some(children) = obj.get("children").and_then(|v| v.as_array()) {
+                for (position, child_value) in children.iter().enumerate() {
+                    let Some(id) = child_ids.get(position).copied().filter(|id| *id != 0) else {
+                        continue;
+                    };
+                    // `slot` is a key on the child's own node object — the same object that
+                    // carries `id`/`text`/`width` — not on the one-key wrapper around it.
+                    let Some(slot) = child_value
+                        .as_object()
+                        .and_then(|wrapper| wrapper.values().next())
+                        .and_then(|node| node.get("slot"))
+                        .and_then(|v| v.as_str())
+                    else {
+                        continue;
+                    };
+                    match lowered(slot).as_ref() {
+                        "body" => {
+                            with_container::<AdaptiveScaffold>(widget_id, |scaffold| {
+                                scaffold.set_body_id(Some(id));
+                            });
+                        }
+                        "fab" => {
+                            with_container::<AdaptiveScaffold>(widget_id, |scaffold| {
+                                scaffold.set_fab_id(Some(id));
+                            });
+                        }
+                        "drawer" => {
+                            with_container::<AdaptiveScaffold>(widget_id, |scaffold| {
+                                scaffold.set_drawer_id(Some(id));
+                            });
+                        }
+                        "end_drawer" | "enddrawer" => {
+                            with_container::<AdaptiveScaffold>(widget_id, |scaffold| {
+                                scaffold.set_end_drawer_id(Some(id));
+                            });
+                        }
+                        "bottom_sheet" | "bottomsheet" => {
+                            with_container::<AdaptiveScaffold>(widget_id, |scaffold| {
+                                scaffold.set_bottom_sheet_id(Some(id));
+                            });
+                        }
+                        "snackbar" => {
+                            with_container::<AdaptiveScaffold>(widget_id, |scaffold| {
+                                scaffold.set_snackbar_id(Some(id));
+                            });
+                        }
+                        // `bottom` addresses the app bar's own bottom slot, which is a
+                        // `Box`-owned control on `AppBar` and has no id entry.
+                        other => {
+                            log::warn!(
+                                "JSON layout: 'adaptive_scaffold' has no content slot named \
+                                 '{other}'; the child stays a plain tree child"
+                            );
+                        }
+                    }
+                }
+            }
+            for (position, page) in as_array(obj.get("pages")).iter().enumerate() {
+                let Some(entry) = page.as_object() else { continue };
+                let index = entry
+                    .get("index")
+                    .and_then(|v| v.as_u64())
+                    .map(|v| v as usize)
+                    .unwrap_or(position);
+                let Some((child_type, child_val)) =
+                    entry.iter().find(|(name, _)| name.as_str() != "index")
+                else {
+                    continue;
+                };
+                let id = JsonLoader::instantiate_node(
+                    child_type,
+                    child_val,
+                    Some(widget_id),
+                    registry,
+                    binding,
+                    depth + 1,
+                    resolver,
+                    ancestors,
+                )?;
+                if id == 0 {
+                    continue;
+                }
+                with_container::<AdaptiveScaffold>(widget_id, |scaffold| {
+                    scaffold.set_nav_body_id(index, Some(id));
+                });
+            }
+        }
+        "status_bar" => {
+            with_container::<StatusBar>(widget_id, |bar| {
+                for id in child_ids.iter().copied().filter(|id| *id != 0) {
+                    bar.add_widget_id(id, 1);
+                }
+            });
+        }
+
+        // ── Menu / toolbar families (DM-12) ───────────────────────────────
+        //
+        // A menu bar's top-level entries are declared under `menus`, each with a title and
+        // an `items` array whose fields are the ones `Action`/`MenuEntry` already carry.
+        "menu_bar" => {
+            for menu_value in as_array(obj.get("menus")) {
+                let Some(menu_obj) = menu_value.as_object() else { continue };
+                let title = menu_obj
+                    .get("title")
+                    .and_then(|v| v.as_str())
+                    .or_else(|| menu_obj.get("text").and_then(|v| v.as_str()))
+                    .unwrap_or("")
+                    .to_string();
+                let entries = as_array(menu_obj.get("items"));
+                let mut menu = Menu::new(title.clone(), json_geometry(obj));
+                for entry in entries {
+                    if entry.get("separator").and_then(|v| v.as_bool()) == Some(true) {
+                        menu.add_separator();
+                        continue;
+                    }
+                    let text = entry.get("text").and_then(|v| v.as_str()).unwrap_or("");
+                    match entry.get("shortcut").and_then(|v| v.as_str()) {
+                        Some(shortcut) => {
+                            menu.add_action_with_shortcut(text, shortcut);
+                        }
+                        None => {
+                            menu.add_action(text);
+                        }
+                    }
+                }
+                with_container::<MenuBar>(widget_id, |bar| {
+                    let index = bar.add_menu(title);
+                    bar.attach_menu(index, menu);
+                });
+            }
+        }
+        "tool_bar" => {
+            let geometry = json_geometry(obj);
+            for action_value in as_array(obj.get("actions")) {
+                let Some(action_obj) = action_value.as_object() else { continue };
+                let separator = action_obj.get("separator").and_then(|v| v.as_bool()) == Some(true);
+                let action = if separator {
+                    Action::separator(geometry)
+                } else {
+                    let text = action_obj.get("text").and_then(|v| v.as_str()).unwrap_or("");
+                    let mut action = Action::new(text, geometry);
+                    if let Some(shortcut) = action_obj.get("shortcut").and_then(|v| v.as_str()) {
+                        action.set_shortcut(shortcut);
+                    }
+                    if let Some(checkable) = action_obj.get("checkable").and_then(|v| v.as_bool()) {
+                        action.set_checkable(checkable);
+                    }
+                    if let Some(checked) = action_obj.get("checked").and_then(|v| v.as_bool()) {
+                        action.set_checked(checked);
+                    }
+                    action
+                };
+                with_container::<ToolBar>(widget_id, |bar| {
+                    bar.add_action_ref(&action);
+                });
+            }
+        }
+
+        _ => {}
+    }
+    Ok(())
+}
+
+/// The linear containers that hold [`FlexItemSpec`] items.
+///
+/// `flex`, `flow_layout` and `wrap_layout` each own a *list* of items — the solver addresses them by
+/// index, and a real child is attached through [`FlexItemSpec::with_widget`]. They have three
+/// separate `add_item` methods and no common trait, so this names the one operation routing needs
+/// rather than repeating the item-construction code three times (issue-20261104 DM-11 ⑯).
+trait FlexItemHost: Widget + 'static {
+    /// Appends `item`, linking the child it carries when it has one.
+    fn add_flex_item(&mut self, item: FlexItemSpec);
+}
+
+impl FlexItemHost for Flex {
+    fn add_flex_item(&mut self, item: FlexItemSpec) {
+        self.add_item(item);
+    }
+}
+
+impl FlexItemHost for FlowLayout {
+    fn add_flex_item(&mut self, item: FlexItemSpec) {
+        self.add_item(item);
+    }
+}
+
+impl FlexItemHost for WrapLayout {
+    fn add_flex_item(&mut self, item: FlexItemSpec) {
+        self.add_item(item);
+    }
+}
+
+/// Routes a declared child list into a linear container's item list.
+///
+/// Each child becomes one item whose label is the child's text/title/id and whose extent is the
+/// child's own declared `width`/`height` — the same numbers the generic child path already used as
+/// its starting geometry, so the item and the control agree about the size before the first solve.
+fn route_flex_children<T: FlexItemHost>(
+    widget_id: ObjectId,
+    children: &[Value],
+    child_ids: &[ObjectId],
+) {
+    for (position, child_value) in children.iter().enumerate() {
+        let Some(id) = child_ids.get(position).copied().filter(|id| *id != 0) else { continue };
+        let Some((child_type, child_val)) =
+            child_value.as_object().and_then(|wrapper| wrapper.iter().next())
+        else {
+            continue;
+        };
+        let Some(node) = child_val.as_object() else { continue };
+        let label = node
+            .get("text")
+            .and_then(|v| v.as_str())
+            .or_else(|| node.get("title").and_then(|v| v.as_str()))
+            .or_else(|| node.get("id").and_then(|v| v.as_str()))
+            .unwrap_or(child_type);
+        let size = crate::core::Size::new(
+            json_u32_at(node, "width").unwrap_or(100),
+            json_u32_at(node, "height").unwrap_or(100),
+        );
+        let item = FlexItemSpec::new(label, size).with_widget(id);
+        with_container::<T>(widget_id, |host| host.add_flex_item(item));
+    }
+}
+
+/// The height a declared masonry card gets when its node does not say.
+///
+/// A card is a layout row, not a control, so it has no published `height` property to fall back on.
+/// This is the loader's own default, named so a reader can find it and so a document that omits the
+/// key gets the same card every time.
+const DEFAULT_DECLARED_CARD_HEIGHT: u32 = 120;
+
+/// Runs `f` on the mounted control at `widget_id` when it is a `T`.
+///
+/// Answers whether the control was the expected type. A miss is not an error: the document
+/// named a control the routed arm did not expect, and the name-driven property pass has
+/// already had its say. Returning the answer keeps the callers honest about the distinction
+/// between "routed" and "skipped" without logging the same mismatch twice.
+fn with_container<T: Widget + 'static>(widget_id: ObjectId, f: impl FnOnce(&mut T)) -> bool {
+    let mut applied = false;
+    crate::widget::runtime::with_widget_mut(widget_id, |widget| {
+        if let Some(typed) = crate::widget::capability::coercion::widget_as_mut::<T>(widget) {
+            f(typed);
+            applied = true;
+        }
+    });
+    applied
+}
+
+/// The `{ "<type>": { … } }` nodes of a declared array, in document order.
+///
+/// The same shape `children` uses, so a container's dedicated key (`pages`, `sections`,
+/// `panes`, `docks`, `items`) reads like the generic one and the loader has a single
+/// definition of "a node". A malformed entry is skipped rather than aborting the load: the
+/// rest of the document is still constructible.
+fn node_array<'a>(
+    obj: &'a serde_json::Map<String, Value>,
+    key: &str,
+) -> alloc::vec::Vec<(&'a str, &'a Value)> {
+    let mut nodes = alloc::vec::Vec::new();
+    for value in as_array(obj.get(key)) {
+        let Some(entry) = value.as_object() else { continue };
+        if entry.len() != 1 {
+            continue;
+        }
+        if let Some((name, node)) = entry.iter().next() {
+            nodes.push((name.as_str(), node));
+        }
+    }
+    nodes
+}
+
+/// The array at `value`, or an empty slice when it is absent or not an array.
+fn as_array(value: Option<&Value>) -> &[Value] {
+    value.and_then(|value| value.as_array()).map(|v| v.as_slice()).unwrap_or(&[])
+}
 impl JsonLoader {
     /// Parse a JSON layout string and instantiate the widget tree.
     ///
@@ -844,18 +1512,22 @@ impl JsonLoader {
         let kind = crate::widget::runtime::with_widget(widget_id, |live| live.kind())
             .unwrap_or(crate::index::WidgetKind::Panel);
 
-        let label = if id_str.is_empty() {
-            format!("{widget_type}_{widget_id}")
-        } else {
-            id_str.to_string()
-        };
-
-        registry.register(crate::index::WidgetEntry {
-            id: widget_id,
-            kind,
-            parent: parent_id,
-            label,
-        });
+        // The index exists only for the layout inspector's diagnostic report, which is opt-in
+        // (`LayoutInspector::is_enabled` defaults to false). Accumulating an entry per node on
+        // every JSON load was work no reader could observe (XC-05).
+        if LayoutInspector::is_enabled() {
+            let label = if id_str.is_empty() {
+                format!("{widget_type}_{widget_id}")
+            } else {
+                id_str.to_string()
+            };
+            registry.register(crate::index::WidgetEntry {
+                id: widget_id,
+                kind,
+                parent: parent_id,
+                label,
+            });
+        }
 
         if !id_str.is_empty() {
             binding.register(id_str, widget_id);
@@ -916,15 +1588,21 @@ impl JsonLoader {
         //     into the wrong position.
         Self::bind_declared_events(widget_id, widget_type, obj);
 
+        // The ids the mount assigned, in document order. The generic child path below only
+        // mounts and places a child; a container that keeps its content in a side table
+        // (a page list, a pane list, a slot) needs these ids afterwards. See
+        // [`route_container_content`].
+        let mut child_ids: alloc::vec::Vec<ObjectId> = alloc::vec::Vec::new();
+        // A `tabwidget`'s children are its **pages**, not a stack of siblings. A document
+        // that nests panels under a tab widget means "one page each", and the container's
+        // whole contract is that exactly one of them is visible. Without this branch the
+        // loader merely mounted each child with the tab widget as parent: the tab strip had
+        // no tabs and every page painted at its declared rectangle, so the control looked
+        // like one panel holding all of its sub-panels at once.
+        let tab_widget_children = widget_type.eq_ignore_ascii_case("tabwidget");
+
         // Handle children (for container widgets)
         if let Some(children) = obj.get("children").and_then(|v| v.as_array()) {
-            // A `tabwidget`'s children are its **pages**, not a stack of siblings. A document
-            // that nests panels under a tab widget means "one page each", and the container's
-            // whole contract is that exactly one of them is visible. Without this branch the
-            // loader merely mounted each child with the tab widget as parent: the tab strip had
-            // no tabs and every page painted at its declared rectangle, so the control looked
-            // like one panel holding all of its sub-panels at once.
-            let tab_widget_children = widget_type.eq_ignore_ascii_case("tabwidget");
             for child_value in children {
                 if let Some(child_obj) = child_value.as_object() {
                     if child_obj.len() == 1 {
@@ -939,6 +1617,10 @@ impl JsonLoader {
                             resolver,
                             &child_ancestors,
                         )?;
+                        // Pushed even when the node was skipped (a `breakpoints` exclusion
+                        // returns 0), so `child_ids` stays index-aligned with the document's
+                        // `children` array. The slot-routed arms pair the two by position.
+                        child_ids.push(child_id);
                         if tab_widget_children && child_id != 0 {
                             let title = child_val
                                 .get("title")
@@ -973,6 +1655,24 @@ impl JsonLoader {
                     });
                 }
             }
+        }
+
+        // Route the container's declared content into its own side table (issue-20261104
+        // DM-06/07/08/11/12). This runs **outside** the `children` branch above because the
+        // families that need it do not all use `children`: the menu and tool bar declare
+        // `menus`/`actions`, and the wizard, accordion and splitter use their own keys.
+        if !tab_widget_children {
+            route_container_content(
+                widget_id,
+                widget_type,
+                obj,
+                &child_ids,
+                registry,
+                binding,
+                depth,
+                resolver,
+                &child_ancestors,
+            )?;
         }
 
         // Handle layout inline
@@ -1649,6 +2349,13 @@ pub fn is_loader_owned_key(key: &str) -> bool {
         // machinery: arrays and sub-objects that describe the widget's content
         // rather than a scalar state property.
         | "children" | "layout" | "items" | "stretch"
+        // Container content routing (issue-20261104 DM-06/07/08/11/12). These name the
+        // side table a container keeps its content in — pages of a stack or wizard,
+        // sections of an accordion, panes of a splitter, docks of a dock host, slots of
+        // an adaptive scaffold, and the menu/tool-bar entry arrays. `route_container_content`
+        // consumes them through the controls' own methods; none is a scalar property, so
+        // the name-driven pass must not report them as ignored.
+        | "pages" | "sections" | "panes" | "menus" | "actions" | "slot"
         // Per-node breakpoint visibility (RW-117), consumed by `instantiate_node` before the
         // control is created. It is structure rather than a property of any control.
         | "breakpoints"
@@ -4281,5 +4988,206 @@ mod tests {
 
         crate::json::clear_global_handlers();
         crate::widget::runtime::unregister(button);
+    }
+
+    /// A container's declared children must reach the container's own content model.
+    ///
+    /// # Why this test exists (issue-20261104 DM-11)
+    ///
+    /// The generic child path mounts a node and applies layout placement, which is all a
+    /// plain container needs. A container that keeps its content in a side table — a page
+    /// list, a pane list, a slot — was left with that table empty, so a JSON document could
+    /// construct the control but never fill it: a stacked widget painted every page on top of
+    /// the others, and a scroll area had no viewport child. This walks the four families the
+    /// loader now routes (stacked pages, single-slot content, accordion sections, and the
+    /// menu/tool-bar entries) and asserts the side table is populated.
+    #[test]
+    fn declared_children_reach_the_container_content_model() {
+        let json = r#"{"window": {"id": "route-window", "width": 640, "height": 480, "children": [
+            {"stacked_widget": {"id": "route-stack", "width": 200, "height": 100, "children": [
+                {"label": {"id": "route-page-0", "text": "first"}},
+                {"label": {"id": "route-page-1", "text": "second"}}
+            ]}},
+            {"scroll_area": {"id": "route-scroll", "width": 200, "height": 100, "children": [
+                {"label": {"id": "route-scroll-content", "text": "content"}}
+            ]}},
+            {"accordion": {"id": "route-accordion", "width": 200, "height": 100, "sections": [
+                {"label": {"id": "route-section-body", "title": "One"}}
+            ]}},
+            {"menu_bar": {"id": "route-menubar", "width": 400, "height": 24, "menus": [
+                {"title": "File", "items": [{"text": "Open", "shortcut": "Ctrl+O"}, {"separator": true}]}
+            ]}},
+            {"tool_bar": {"id": "route-toolbar", "width": 400, "height": 32, "actions": [
+                {"text": "Run"}, {"separator": true}
+            ]}},
+            {"adaptive_scaffold": {"id": "route-scaffold", "title": "Home", "width": 400, "height": 600,
+                "children": [
+                    {"label": {"id": "route-body", "text": "body", "slot": "body"}},
+                    {"button": {"id": "route-fab", "text": "+", "slot": "fab"}}
+                ],
+                "pages": [
+                    {"index": 1, "label": {"id": "route-nav-page", "text": "second"}}
+                ]
+            }},
+            {"tab_view": {"id": "route-tabview", "width": 300, "height": 200, "children": [
+                {"label": {"id": "route-tabview-page", "text": "page"}}
+            ]}},
+            {"modal_bottom_sheet": {"id": "route-sheet", "width": 300, "height": 200, "children": [
+                {"label": {"id": "route-sheet-content", "text": "content"}}
+            ]}},
+            {"navigation_stack": {"id": "route-navstack", "width": 300, "height": 400, "children": [
+                {"label": {"id": "route-nav-root", "text": "root"}},
+                {"label": {"id": "route-nav-top", "text": "top"}}
+            ]}},
+            {"masonry_layout": {"id": "route-masonry", "width": 300, "height": 400, "children": [
+                {"button": {"id": "route-card-0", "text": "first card", "height": 90}},
+                {"button": {"id": "route-card-1", "text": "second card"}}
+            ]}},
+            {"flow_layout": {"id": "route-flow", "width": 300, "height": 200, "children": [
+                {"button": {"id": "route-flow-0", "text": "a", "width": 80, "height": 30}},
+                {"button": {"id": "route-flow-1", "text": "b", "width": 80, "height": 30}}
+            ]}}
+        ]}}"#;
+        let layout = JsonLoader::load(json).expect("the document loads");
+
+        let stack = layout.id("route-stack").expect("the stack is mounted");
+        let pages = crate::widget::runtime::with_widget(stack, |widget| {
+            crate::widget::capability::coercion::widget_as::<StackedWidget>(widget)
+                .map(|s| (s.count(), s.widget(0), s.widget(1)))
+        })
+        .flatten()
+        .expect("the stack is a StackedWidget");
+        assert_eq!(pages.0, 2, "both declared children are pages, not just tree children");
+        assert_eq!(pages.1, layout.id("route-page-0"), "pages keep document order");
+        assert_eq!(pages.2, layout.id("route-page-1"));
+        assert_eq!(
+            crate::widget::read_widget_property_by_id(stack, "current_index").ok(),
+            Some(crate::widget::capability::types::CapabilityValue::UInt(0)),
+            "the first page is selected"
+        );
+
+        let scroll = layout.id("route-scroll").expect("the scroll area is mounted");
+        let content = crate::widget::runtime::with_widget(scroll, |widget| {
+            crate::widget::capability::coercion::widget_as::<ScrollArea>(widget)
+                .and_then(|s| s.widget())
+        })
+        .flatten();
+        assert_eq!(
+            content,
+            layout.id("route-scroll-content"),
+            "the first declared child becomes the scrolling content"
+        );
+
+        let accordion = layout.id("route-accordion").expect("the accordion is mounted");
+        let section = crate::widget::runtime::with_widget(accordion, |widget| {
+            crate::widget::capability::coercion::widget_as::<Accordion>(widget)
+                .and_then(|a| a.sections().first().map(|s| s.title().to_string()))
+        })
+        .flatten();
+        assert_eq!(section.as_deref(), Some("One"), "the declared section exists");
+
+        let menubar = layout.id("route-menubar").expect("the menu bar is mounted");
+        let menus = crate::widget::runtime::with_widget(menubar, |widget| {
+            crate::widget::capability::coercion::widget_as::<MenuBar>(widget).map(|bar| {
+                (bar.entries().len(), bar.attached_menu(0).map(|menu| menu.items().len()))
+            })
+        })
+        .flatten()
+        .expect("the menu bar is a MenuBar");
+        assert_eq!(menus.0, 1, "the declared menu became a top-level entry");
+        assert_eq!(menus.1, Some(2), "its declared items were attached, separator included");
+
+        let toolbar = layout.id("route-toolbar").expect("the tool bar is mounted");
+        let actions = crate::widget::runtime::with_widget(toolbar, |widget| {
+            crate::widget::capability::coercion::widget_as::<ToolBar>(widget)
+                .map(|bar| bar.items().len())
+        })
+        .flatten();
+        assert_eq!(actions, Some(2), "the declared actions were added");
+
+        let scaffold = layout.id("route-scaffold").expect("the scaffold is mounted");
+        let slots = crate::widget::runtime::with_widget(scaffold, |widget| {
+            crate::widget::capability::coercion::widget_as::<AdaptiveScaffold>(widget)
+                .map(|s| (s.body_id(), s.nav_body_id(1)))
+        })
+        .flatten()
+        .expect("the scaffold is an AdaptiveScaffold");
+        assert_eq!(
+            slots.0,
+            layout.id("route-body"),
+            "a child with `slot: body` fills the body slot"
+        );
+        assert_eq!(
+            slots.1,
+            layout.id("route-nav-page"),
+            "a declared page is bound to the destination its `index` names"
+        );
+
+        let tab_view = layout.id("route-tabview").expect("the tab view is mounted");
+        let tab_page = crate::widget::runtime::with_widget(tab_view, |widget| {
+            crate::widget::capability::coercion::widget_as::<TabView>(widget)
+                .map(|v| (v.tab_count(), v.content_widget_id()))
+        })
+        .flatten()
+        .expect("the tab view is a TabView");
+        assert_eq!(tab_page.0, 1, "the declared child became a tab page");
+        assert_eq!(tab_page.1, layout.id("route-tabview-page"));
+
+        let sheet = layout.id("route-sheet").expect("the sheet is mounted");
+        let sheet_content = crate::widget::runtime::with_widget(sheet, |widget| {
+            crate::widget::capability::coercion::widget_as::<ModalBottomSheet>(widget)
+                .and_then(|s| s.content_id())
+        })
+        .flatten();
+        assert_eq!(
+            sheet_content,
+            layout.id("route-sheet-content"),
+            "the declared child fills the sheet's content well"
+        );
+
+        let navstack = layout.id("route-navstack").expect("the navigation stack is mounted");
+        let pages = crate::widget::runtime::with_widget(navstack, |widget| {
+            crate::widget::capability::coercion::widget_as::<NavigationStack>(widget)
+                .map(|s| (s.page_count(), s.page_id(0), s.page_id(1)))
+        })
+        .flatten()
+        .expect("the stack is a NavigationStack");
+        assert_eq!(pages.0, 2, "each declared child became a page in the history");
+        assert_eq!(pages.1, layout.id("route-nav-root"), "the first child is the root");
+        assert_eq!(pages.2, layout.id("route-nav-top"), "the last one is on top");
+        // While the push slides, the outgoing page is shown on purpose; the visibility rule is
+        // "one page once settled", so settle the slide first and then read it.
+        crate::widget::runtime::with_widget_mut(navstack, |w| {
+            let _ = w.tick(5_000);
+        });
+        let root_visible = layout
+            .id("route-nav-root")
+            .and_then(|root| crate::widget::runtime::with_widget(root, |w| w.is_visible()));
+        assert_eq!(root_visible, Some(false), "a page below the top is hidden");
+
+        let masonry = layout.id("route-masonry").expect("the masonry layout is mounted");
+        let cards = crate::widget::runtime::with_widget(masonry, |widget| {
+            crate::widget::capability::coercion::widget_as::<MasonryLayout>(widget).map(|m| {
+                m.items()
+                    .iter()
+                    .map(|item| (item.label.clone(), item.height, item.widget_id))
+                    .collect::<alloc::vec::Vec<_>>()
+            })
+        })
+        .expect("the masonry layout is mounted")
+        .expect("the masonry layout is a MasonryLayout");
+        assert_eq!(cards.len(), 2, "each declared child became one card");
+        assert_eq!(cards[0].0, "first card", "the label is the child's own text");
+        assert_eq!(cards[0].1, 90, "the card height is the child's declared height");
+        assert_eq!(cards[1].1, DEFAULT_DECLARED_CARD_HEIGHT, "and the default when absent");
+        assert_eq!(cards[0].2, layout.id("route-card-0"), "the card carries the mounted child");
+
+        let flow = layout.id("route-flow").expect("the flow layout is mounted");
+        let items = crate::widget::runtime::with_widget(flow, |widget| {
+            crate::widget::capability::coercion::widget_as::<FlowLayout>(widget)
+                .map(|f| f.items().len())
+        })
+        .flatten();
+        assert_eq!(items, Some(2), "each declared child became one item");
     }
 }

@@ -157,7 +157,6 @@ impl EventLog {
 
     fn append(&self, msg: impl Into<String>) {
         let msg = msg.into();
-        println!("[EVENT] {}", msg);
 
         // One writer mutex order everywhere in this type: rows first, then entries.
         let mut rows = self.rows.lock().unwrap();

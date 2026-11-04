@@ -278,6 +278,65 @@ impl ViewEngine {
         self.viewport
     }
 
+    /// Replays every declarative layout attached to a control in the mounted tree against `rect`.
+    ///
+    /// # Why this exists (LY-04)
+    ///
+    /// A resize that stays inside a breakpoint tier does not rebuild the tree, which is the
+    /// documented contract of [`Self::set_viewport`]. That is correct for *which subtrees exist*,
+    /// but a host that installed a layout on a mounted id (`layout::declarative::store_layout`)
+    /// still needs that layout re-solved against the new viewport. This method is that half: it
+    /// walks the mounted tree, and for each id with a stored layout applies it against the root
+    /// rect (for the root) or the control's current rectangle (for a nested owner).
+    ///
+    /// The engine keeps no layout declarations — it only maps paths to ids — so this consults the
+    /// one registry the declarative layer already owns; there is no second solver.
+    ///
+    /// Returns whether any layout was applied, so a caller can tell "the host has no layouts"
+    /// from "layouts were replayed".
+    pub fn follow_layout(&self, rect: crate::core::Rect) -> bool {
+        let Some(root) = self.current.as_deref() else {
+            return false;
+        };
+        let mut path: crate::compat::Vec<usize> = crate::compat::Vec::new();
+        let mut applied = false;
+        self.follow_layout_node(root, rect, &mut path, &mut applied, 0);
+        applied
+    }
+
+    fn follow_layout_node(
+        &self,
+        node: &Node,
+        root_rect: crate::core::Rect,
+        path: &mut crate::compat::Vec<usize>,
+        applied: &mut bool,
+        depth: u32,
+    ) {
+        /// The same bound the declarative walk uses, so a corrupted tree cannot recurse forever.
+        const MAX_DEPTH: u32 = 64;
+        if depth > MAX_DEPTH {
+            return;
+        }
+        if let Some(id) = self.id_at(path) {
+            if crate::layout::declarative::has_layout(id) {
+                let solve_rect = if path.is_empty() {
+                    root_rect
+                } else {
+                    crate::widget::runtime::geometry_of(id)
+                        .filter(|current| current.width > 0 && current.height > 0)
+                        .unwrap_or(root_rect)
+                };
+                crate::layout::declarative::apply_layout(id, solve_rect);
+                *applied = true;
+            }
+        }
+        for (index, child) in node.children.iter().enumerate() {
+            path.push(index);
+            self.follow_layout_node(child, root_rect, path, applied, depth + 1);
+            path.pop();
+        }
+    }
+
     /// Run `build` with the reported viewport's tier in force.
     ///
     /// Both build entry points funnel through here so "the tier is in force for every build"
@@ -3524,5 +3583,54 @@ mod layer_tests {
         assert!(engine.layer("tooltip").is_some());
         assert_eq!(engine.overlay_layer(), None, "no portal was declared");
         assert_eq!(engine.layer("missing"), None);
+    }
+
+    /// LY-04: a same-tier resize replays the layouts a host installed on mounted ids.
+    #[test]
+    fn follow_layout_replays_host_layouts_on_a_same_tier_resize() {
+        use crate::layout::{BoxLayout, Layout, Orientation};
+
+        struct TwoRows;
+
+        impl View for TwoRows {
+            fn build(&self) -> Node {
+                Node::new("window")
+                    .key("root")
+                    .child(Node::new("label").key("a"))
+                    .child(Node::new("label").key("b"))
+            }
+        }
+
+        let factory = crate::widget::WidgetFactory::new_with_defaults();
+        let create = move |node: &Node| {
+            factory
+                .create(&node.widget, crate::core::Rect::new(0, 0, 80, 24), node.key_str()?)
+                .and_then(crate::widget::runtime::register)
+        };
+        let mut engine = ViewEngine::new();
+        engine.set_viewport(crate::core::Size::new(200, 40));
+        engine.mount(&TwoRows, &create);
+
+        let root = engine.id_at(&[]).expect("the root is mounted");
+        let first = engine.id_at(&[0]).expect("the first child is mounted");
+        let second = engine.id_at(&[1]).expect("the second child is mounted");
+        let mut layout = BoxLayout::new(Orientation::Horizontal, 0, 0);
+        layout.add_widget(first, 1);
+        layout.add_widget(second, 1);
+        crate::layout::declarative::store_layout(root, Box::new(layout));
+
+        assert!(engine.follow_layout(crate::core::Rect::new(0, 0, 200, 40)));
+        assert_eq!(
+            crate::widget::runtime::geometry_of(first).expect("the child is mounted").width,
+            100
+        );
+        // The same tier again (the width stays inside the tier), with a larger root rect.
+        assert!(engine.follow_layout(crate::core::Rect::new(0, 0, 300, 40)));
+        assert_eq!(
+            crate::widget::runtime::geometry_of(first).expect("the child is mounted").width,
+            150
+        );
+
+        crate::layout::declarative::forget_layout(root);
     }
 }

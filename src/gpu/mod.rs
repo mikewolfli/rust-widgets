@@ -34,7 +34,21 @@
 //!
 //! # Reachability
 //!
-//! **State:** Production callers: `src/render/gpu/mod.rs:1` (the software renderer reads the GPU capability report).
+//! **State:** Production callers: `src/render/gpu/mod.rs:1` (the software renderer reads the GPU
+//! capability report) and `src/wgpu_backend/renderer/build.rs` (`gpu_manager`, RD-04): the live
+//! `WgpuRenderer` owns one [`GpuManager`] per device, built from the adapter facts `wgpu` already
+//! reported, and brackets every offscreen frame with `begin_frame`/`end_frame`. Its operation mode,
+//! staging-pool accounting, performance samples, trap recommendations and quality advice are read
+//! through the renderer's own accessors (`gpu_adapter_info`, `gpu_performance_stats`, ...).
+//!
+//! # What is *not* on the live path, and why
+//!
+//! `GpuStagingBufferPool`'s **ring cursor** is advanced every frame by `GpuManager::begin_frame`,
+//! but its region allocator has no in-crate caller: `wgpu`'s `queue.write_buffer`/`write_texture`
+//! perform their own staging, so routing this crate's uploads through a second ring would double
+//! buffer every upload rather than remove a copy. The allocator therefore stays the host-facing
+//! surface it is documented as, and its deletion condition (next major, if no host allocates
+//! through it) is unchanged.
 //!
 //! # Relationship to `crate::performance` (G-214)
 //!

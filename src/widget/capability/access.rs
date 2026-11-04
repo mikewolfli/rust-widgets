@@ -560,6 +560,8 @@ pub fn default_widget_property_default_value(
             // RW-58: a fresh container is at its first row.
             "scroll_row" => CapabilityValue::UInt(0),
             "item_height" => CapabilityValue::Float(20.0),
+            // One column is a plain list, matching `ListBox::new`.
+            "columns" => CapabilityValue::UInt(1),
             "selected_count" => CapabilityValue::UInt(0),
             "selected_indices" => CapabilityValue::String(String::new()),
             "hovered_row" => CapabilityValue::Null,
@@ -1791,6 +1793,8 @@ pub fn default_widget_property_default_value(
             "tab_position" => CapabilityValue::String("north".to_string()),
             // `TabShape::default()` is `Rounded`.
             "tab_shape" => CapabilityValue::String("rounded".to_string()),
+            // `TabElideMode::default()` is `None`.
+            "elide" => CapabilityValue::String("none".to_string()),
             _ => return None,
         },
         WidgetKind::StackedWidget => match property_name {

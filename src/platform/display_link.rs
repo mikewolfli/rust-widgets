@@ -129,6 +129,28 @@ unsafe extern "C" {
     fn mach_timebase_info(info: *mut MachTimebaseInfo) -> i32;
 }
 
+/// Whether the frame loop still owes a frame. Set by the backend's own frame driver.
+///
+/// The CoreVideo callback runs on a dedicated thread at the display's refresh rate. Without this
+/// gate that thread published two atomics and woke the frame wait on every vsync for the whole
+/// life of the process — including a completely still window (PL-04). The default is `true` so a
+/// link started before any frame has run (the init path) behaves exactly as before.
+static FRAME_DEMAND: AtomicBool = AtomicBool::new(true);
+
+/// Records whether the frame loop still owes a frame.
+///
+/// Called by the macOS frame driver after [`crate::drive_frame`]. `false` makes the callback a
+/// no-op that keeps the link alive: when the event that starts an animation arrives on the main
+/// thread, the driver records `true` again and the next vsync resumes publishing.
+pub(crate) fn note_frame_demand(needed: bool) {
+    FRAME_DEMAND.store(needed, Ordering::Release);
+}
+
+/// Whether a frame is currently owed.
+pub(crate) fn frame_demand() -> bool {
+    FRAME_DEMAND.load(Ordering::Acquire)
+}
+
 /// The host time of the newest presented frame, or `0` when none has arrived.
 static NEXT_PRESENTED_HOST_TIME: AtomicU64 = AtomicU64::new(0);
 
@@ -350,6 +372,12 @@ extern "C" fn display_link_callback(
 ) -> i32 {
     // SAFETY: `mach_absolute_time` takes no arguments and only reads clock state.
     LAST_CALLBACK_HOST_TIME.store(unsafe { mach_absolute_time() }, Ordering::Release);
+    // Liveness is recorded above even while no frame is owed: the link *is* firing, and the
+    // stall detector must not mistake an idle window for a reconfigured display. The work below
+    // is what an idle frame skips (PL-04).
+    if !frame_demand() {
+        return CV_RETURN_SUCCESS;
+    }
     if !in_output_time.is_null() {
         // SAFETY: CoreVideo owns `in_output_time` and guarantees it is a readable `CVTimeStamp`
         // for the duration of this callback.

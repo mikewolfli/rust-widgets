@@ -12,9 +12,8 @@
 //! **State:** Production callers: `examples/control_property_uniform.rs:46`, `examples/menu_shortcut_runtime.rs:12`, `examples/control_creation_is_single_mechanism.rs:42`, `examples/macos_window_state_async_probe.rs:36`. The documented primary entry point for applications, and it has real external consumers.
 
 mod app_core;
-mod handle;
+pub(crate) mod handle;
 pub mod lifecycle;
-mod wiring;
 
 pub use app_core::{
     clear_application_event_listeners, publish_application_event, publish_dpi_change_if_needed,
@@ -41,10 +40,6 @@ pub use handle::{
     SliderHandle, SpinBoxHandle, SplitterHandle, StatusBarHandle, SurfaceHandle, SurfaceMountError,
     TabWidgetHandle, TextEditHandle, ToolBarHandle, WebViewHandle, WidgetHandle, WindowHandle,
     WindowOptions,
-};
-pub use wiring::{
-    assemble_event_loop, assemble_event_loop_with, default_dispatch_fn, default_parent_lookup,
-    ActionRuntime,
 };
 
 // The tab widget's own enums are part of its typed handle surface: a caller passes

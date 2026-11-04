@@ -102,6 +102,13 @@ macro_rules! impl_properties_input {
             // RW-58: the first visible row, in rows. `scroll_offset` is the control's own
             // spelling of the same fact; this property is the unit-explicit one.
             PropertySchema::new("scroll_row", PropertyValueKind::UInt, true, true),
+            // `edit_triggers` is a bit-flag set; this schema has no bit-flag value kind (only
+            // Bool/Int/UInt/Float/String/Color/Rect/IconSpec/Tuple/Records), so publishing it
+            // would describe a shape the contract cannot round-trip. Excluded deliberately,
+            // like `item_count`'s read-only note above.
+            // `set_columns`/`columns` grants the multi-column presentation through the property
+            // contract (WG-05).
+            PropertySchema::new("columns", PropertyValueKind::UInt, true, true),
             PropertySchema::new("item_height", PropertyValueKind::Float, true, true),
             PropertySchema::new("selected_count", PropertyValueKind::UInt, true, false),
             // The selected rows as a comma-joined list of indices, in visual order.

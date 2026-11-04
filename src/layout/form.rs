@@ -670,8 +670,10 @@ impl Layout for FormLayout {
         context: &LayoutContext,
         widgets: &mut dyn FnMut(ObjectId, Rect),
     ) {
-        let _ = context;
-        self.update(rect, widgets);
+        let min_touch = context.min_touch_size;
+        self.update(rect, &mut |id, child| {
+            widgets(id, crate::layout::types::grow_to_min_touch_size(child, min_touch))
+        });
     }
 
     fn arrange_with_context(

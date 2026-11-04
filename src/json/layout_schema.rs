@@ -51,6 +51,8 @@ pub enum ParamKind {
     Inset,
     /// An overflow token (`"clip"`, `"visible"`, `"scroll"`).
     Overflow,
+    /// A dock edge token (`"left"`, `"right"`, `"top"`, `"bottom"`).
+    DockEdge,
 }
 
 impl ParamKind {
@@ -65,6 +67,7 @@ impl ParamKind {
             Self::Bool => "bool",
             Self::Inset => "inset",
             Self::Overflow => "overflow",
+            Self::DockEdge => "dock_edge",
         }
     }
 }
@@ -246,6 +249,11 @@ pub static LAYOUT_KIND_SCHEMAS: &[LayoutKindSchema] = &[
             param("ratio", ParamKind::Float, false, true),
             param("respect_parent", ParamKind::Bool, false, true),
         ],
+    },
+    LayoutKindSchema {
+        type_token: "dock_area",
+        aliases: &["dockArea", "dock-area"],
+        params: &[param("edge", ParamKind::DockEdge, false, true)],
     },
     LayoutKindSchema {
         type_token: "keyboard_aware",
@@ -567,6 +575,9 @@ fn value_matches_kind(value: &str, kind: ParamKind) -> bool {
                 })
         }
         ParamKind::Overflow => matches!(value, "clip" | "visible" | "scroll"),
+        ParamKind::DockEdge => {
+            matches!(value.to_ascii_lowercase().as_str(), "left" | "right" | "top" | "bottom")
+        }
     }
 }
 

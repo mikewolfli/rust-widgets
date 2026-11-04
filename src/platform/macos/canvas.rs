@@ -1957,6 +1957,9 @@ extern "C" fn drain_triggers_impl(_this: &Object, _cmd: Sel, timer: id) {
     let deadline = super::display_link::next_deadline();
     let delta = crate::platform::frame_wait::presented_delta_ms(deadline);
     let outcome = crate::drive_frame(delta);
+    // Tell the display link whether this frame owed another one; an idle window's callback then
+    // skips its present-time bookkeeping and its wake (PL-04).
+    super::display_link::note_frame_demand(outcome.needs_another_frame);
     if outcome.needs_another_frame {
         if let Some(deadline) = deadline {
             retarget_heartbeat(timer, deadline);

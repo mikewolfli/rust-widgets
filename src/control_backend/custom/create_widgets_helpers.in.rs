@@ -274,9 +274,54 @@ macro_rules! impl_helpers {
                 // nothing never appeared at all, and its log still said the window was
                 // shown.
                 crate::platform::get_platform().set_widget_visible(widget_id, visible);
+                // A hidden modal must release the scrim and the input block here, below every
+                // spelling of "hide" (set_widget_visible / hide_widget / C ABI), not only in the
+                // crate-root wrapper (XC-03).
+                #[cfg(full_widgets)]
+                if !visible {
+                    crate::widget::dialog::pop_modal_layer(widget_id);
+                }
             }
             #[cfg(alloc_frugal)]
             let _ = (widget_id, visible);
+        }
+
+        /// Clipboard text, written to the platform the library runs on.
+        ///
+        /// The self-drawn backend is the one `get_control_backend()` returns in every production
+        /// profile, so it is the layer every clipboard writer (crate root, C ABI, `ClipboardManager`)
+        /// reaches. It forwards to the platform and publishes APP-012 once, on success (XC-02).
+        fn set_clipboard_text(&self, text: &str) -> bool {
+            #[cfg(not(alloc_frugal))]
+            {
+                let written = crate::platform::get_platform().set_clipboard_text(text);
+                #[cfg(full_widgets)]
+                if written {
+                    crate::app::publish_application_event(
+                        &crate::app::ApplicationEvent::ClipboardChanged {
+                            text: crate::compat::String::from(text),
+                        },
+                    );
+                }
+                written
+            }
+            #[cfg(alloc_frugal)]
+            {
+                // `mini` has no platform singleton, so there is no clipboard to reach.
+                let _ = text;
+                false
+            }
+        }
+
+        fn get_clipboard_text(&self) -> String {
+            #[cfg(not(alloc_frugal))]
+            {
+                crate::platform::get_platform().get_clipboard_text()
+            }
+            #[cfg(alloc_frugal)]
+            {
+                String::new()
+            }
         }
 
         fn is_widget_visible(&self, widget_id: ObjectId) -> bool {

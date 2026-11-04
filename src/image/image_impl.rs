@@ -54,8 +54,9 @@ impl Image {
     ///
     /// This is the *private decode* entry point: a caller that wants its own copy (loading a
     /// series of frames, say) gets one. A caller that expects to share a decode **must** use
-    /// [`crate::image::cache::pixels_rgba8_or_none`], which returns the cached `Arc<Vec<u8>>`
-    /// directly — the controls' draw paths all go through it.
+    /// [`crate::image::cache::file_rgba8_sized_or_none`], which returns the cached bytes and the
+    /// key they were filed under — that is the path the controls' draw paths actually take
+    /// (`avatar.rs`, `tool_button.rs`) (RD-05).
     ///
     /// There used to be a `from_bytes_rgba8_shared` beside this one. It went to the cache and
     /// then copied the pixels into an owning `Image`, so it saved the decode but performed the

@@ -577,12 +577,14 @@ pub(crate) fn blit_rgba(context: &cairo::Context, width: u32, height: u32, frame
         return;
     }
 
-    // Present only the damage rectangle this context is clipped to. GTK narrows the clip to
-    // the exposed region on a `draw` signal, so intersecting it with the surface bounds stops
-    // the compositor from painting pixels no one asked for. The frame-to-surface conversion
-    // stays whole-frame; clipping is what keeps a small cursor-blink damage from compositing
-    // the entire window. An unavailable or empty clip keeps the previous full-frame
-    // presentation.
+    // Present only the damage rectangle this context is clipped to, and convert only those
+    // rows. GTK narrows the clip to the exposed region on a `draw` signal, so intersecting it
+    // with the surface bounds stops the compositor from painting pixels no one asked for. The
+    // frame-to-surface conversion used to cover every row regardless of the clip: a 1px caret
+    // blink still walked the whole window's pixels (PL-02). Rows outside the damage band keep
+    // their previous contents, which is correct because they are not composited and did not
+    // change. An unavailable or empty clip keeps the previous full-frame presentation.
+    let mut damage_rows: Option<(usize, usize)> = None;
     if let Ok((clip_x0, clip_y0, clip_x1, clip_y1)) = context.clip_extents() {
         let left = clip_x0.floor().max(0.0);
         let top = clip_y0.floor().max(0.0);
@@ -592,6 +594,11 @@ pub(crate) fn blit_rgba(context: &cairo::Context, width: u32, height: u32, frame
             context.new_path();
             context.rectangle(left, top, right - left, bottom - top);
             context.clip();
+            let first_row = top as usize;
+            let last_row = (bottom as usize).min(height as usize);
+            if last_row > first_row {
+                damage_rows = Some((first_row, last_row));
+            }
         }
     }
 
@@ -637,7 +644,11 @@ pub(crate) fn blit_rgba(context: &cairo::Context, width: u32, height: u32, frame
                 }
             };
             let data: &mut [u8] = &mut data;
-            for y in 0..height as usize {
+            let (first_row, last_row) = match damage_rows {
+                Some((first, last)) => (first, last),
+                None => (0, height as usize),
+            };
+            for y in first_row..last_row {
                 let row = y * stride as usize;
                 let source_row = y * width as usize * 4;
                 for x in 0..width as usize {

@@ -75,10 +75,11 @@ fn a_shared_icon_decodes_once_for_the_whole_toolbar() {
     assert_eq!(misses, 1, "one decode, not twelve");
     assert_eq!(hits, 11, "eleven saved");
 
-    // The image-view path shares with it: a second request for the same bytes is a hit.
+    // The image-view path shares the same entry: a later request for the same file is a hit.
     let mid = stats();
-    let _ = cache::pixels_rgba8_or_none(&png_fixture()).expect("the image decodes");
+    let _ = cache::file_rgba8_or_none(&path).expect("the image loads");
     let end = stats();
+    assert_eq!(end.misses, mid.misses, "a second request for the same file decodes nothing");
     println!(
         "one image-view request: requests={} misses={}",
         end.requests - mid.requests,
@@ -139,8 +140,12 @@ fn a_shared_icon_decodes_once_for_the_whole_toolbar() {
     cache::set_budget_bytes(one_entry_bytes);
     cache::clear();
     let mut peak = 0usize;
-    for colour in colours {
-        let _ = cache::pixels_rgba8_or_none(&coloured_png(colour)).expect("each colour decodes");
+    for (index, colour) in colours.iter().enumerate() {
+        let path = std::env::temp_dir().join(format!("rw_cache_budget_{index}.png"));
+        std::fs::File::create(&path)
+            .and_then(|mut file| file.write_all(&coloured_png(*colour)))
+            .expect("write the fixture");
+        let _ = cache::file_rgba8_or_none(&path).expect("each colour decodes");
         peak = peak.max(stats().bytes);
         assert!(
             stats().bytes <= one_entry_bytes,

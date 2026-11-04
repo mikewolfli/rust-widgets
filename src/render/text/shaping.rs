@@ -170,8 +170,8 @@ pub(crate) fn cluster_advances(
     // The same memo every other shaping entry point uses. `text_line` measures before it draws and
     // a layout measures again on the next frame, so this request repeats far more often than it
     // changes; the cache turns the repeat into a lookup (G-19).
-    let key = ShapeKey::new(face.name, text, font.size(), scale, Some(font.weight()), false);
-    if let Some(advances) = cached_advances(&key) {
+    let key = ShapeKeyBase::new(face.name, font.size(), scale, Some(font.weight()), false);
+    if let Some(advances) = cached_advances(&key, text) {
         return Some(advances);
     }
     // The cached shaper parse: this runs for every measured and every drawn label, and
@@ -195,7 +195,7 @@ pub(crate) fn cluster_advances(
         // Share the computed slice by refcount: a cache hit used to deep-copy the whole advance
         // vector, which made the cache cost about as much as the shaping it saved (G-002).
         let advances: Rc<[f32]> = advances.into();
-        store_advances(key, Rc::clone(&advances));
+        store_advances(key, text, Rc::clone(&advances));
         Some(advances)
     } else {
         None
@@ -277,30 +277,33 @@ fn ligature_free_features() -> &'static [rustybuzz::Feature] {
     &FEATURES
 }
 
-/// A shaping request identity: everything that changes the glyphs a face produces.
+/// A shaping request identity **except for the text**: everything that changes the glyphs a face
+/// produces.
 ///
 /// `font_size` and `scale` are compared by their bit patterns, for the same reason the text
 /// layer's measurement caches do: the question is "is this the same request", not "are these
 /// floats approximately equal". `weight: None` is the face's own instance, which is not the same
 /// request as any explicit weight. `ligatures` selects between the cluster renderer's
 /// ligature-free feature set and the glyph-level one.
+///
+/// # Why the text is not part of the key (RD-01)
+///
+/// It used to be an `Arc<str>` inside the key, which meant every **lookup** allocated a fresh
+/// `Arc` and copied the whole text into it before the map could be probed — a cache hit cost as
+/// much as a small allocation. The text now lives in the cache's value list and is compared
+/// borrowed, so a hit allocates nothing; only an insertion pays for the shared copy.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-struct ShapeKey {
+struct ShapeKeyBase {
     face: &'static str,
-    /// The request's text, **shared** rather than copied. A lookup is therefore a refcount bump
-    /// instead of a heap allocation, including on a cache hit (G-13). The same shape
-    /// `RenderCommand::DrawText.text` uses.
-    text: Arc<str>,
     font_size_bits: u32,
     scale_bits: u32,
     weight: Option<u16>,
     ligatures: bool,
 }
 
-impl ShapeKey {
+impl ShapeKeyBase {
     fn new(
         face: &'static str,
-        text: &str,
         font_size: f32,
         scale: f32,
         weight: Option<u16>,
@@ -308,8 +311,6 @@ impl ShapeKey {
     ) -> Self {
         Self {
             face,
-            // A refcount bump, not a `String` allocation (G-13).
-            text: Arc::from(text),
             font_size_bits: font_size.to_bits(),
             scale_bits: scale.to_bits(),
             weight,
@@ -335,8 +336,10 @@ const SHAPE_CACHE_LIMIT: usize = 512;
 /// request is simply shaped again on its next use, which is the correct trade for a cache this
 /// small (no LRU bookkeeping on the shaping path).
 struct FifoCache<V> {
-    entries: HashMap<ShapeKey, V>,
-    order: VecDeque<ShapeKey>,
+    /// One bucket per non-text part of the request. A bucket holds the shared text and the value,
+    /// so a lookup compares borrowed text and allocates nothing (RD-01).
+    entries: HashMap<ShapeKeyBase, Vec<(Arc<str>, V)>>,
+    order: VecDeque<(ShapeKeyBase, Arc<str>)>,
 }
 
 impl<V> FifoCache<V> {
@@ -344,19 +347,46 @@ impl<V> FifoCache<V> {
         Self { entries: HashMap::new(), order: VecDeque::new() }
     }
 
-    fn get(&self, key: &ShapeKey) -> Option<&V> {
-        self.entries.get(key)
+    fn get(&self, base: &ShapeKeyBase, text: &str) -> Option<&V> {
+        self.entries
+            .get(base)?
+            .iter()
+            .find(|(stored, _)| stored.as_ref() == text)
+            .map(|(_, value)| value)
     }
 
-    fn insert(&mut self, key: ShapeKey, value: V) {
+    fn insert(&mut self, base: ShapeKeyBase, text: Arc<str>, value: V) {
         // Only a key that was not already resident joins the queue, so a stale queue entry can
         // never evict a live one (the rule `CoverageCache` documents).
-        if self.entries.insert(key.clone(), value).is_none() {
-            self.order.push_back(key);
+        let mut resident = false;
+        {
+            let bucket = self.entries.entry(base.clone()).or_default();
+            if let Some(slot) =
+                bucket.iter_mut().find(|(stored, _)| stored.as_ref() == text.as_ref())
+            {
+                slot.1 = value;
+                resident = true;
+            } else {
+                bucket.push((text.clone(), value));
+            }
+        }
+        if !resident {
+            self.order.push_back((base, text));
         }
         while self.order.len() > SHAPE_CACHE_LIMIT {
-            if let Some(oldest) = self.order.pop_front() {
-                self.entries.remove(&oldest);
+            if let Some((oldest_base, oldest_text)) = self.order.pop_front() {
+                let mut empty = false;
+                if let Some(bucket) = self.entries.get_mut(&oldest_base) {
+                    if let Some(index) =
+                        bucket.iter().position(|(stored, _)| *stored == oldest_text)
+                    {
+                        bucket.remove(index);
+                    }
+                    empty = bucket.is_empty();
+                }
+                if empty {
+                    self.entries.remove(&oldest_base);
+                }
             }
         }
     }
@@ -437,20 +467,22 @@ fn clear_shape_caches() {
     BIDI_LEVEL_HITS.with(|hits| hits.set(0));
 }
 
-fn cached_run(key: &ShapeKey) -> Option<Option<Rc<ShapedGlyphRun>>> {
-    SHAPED_RUNS.try_with(|cache| cache.borrow().get(key).cloned()).ok().flatten()
+fn cached_run(base: &ShapeKeyBase, text: &str) -> Option<Option<Rc<ShapedGlyphRun>>> {
+    SHAPED_RUNS.try_with(|cache| cache.borrow().get(base, text).cloned()).ok().flatten()
 }
 
-fn store_run(key: ShapeKey, run: Option<Rc<ShapedGlyphRun>>) {
-    let _ = SHAPED_RUNS.try_with(|cache| cache.borrow_mut().insert(key, run));
+fn store_run(base: ShapeKeyBase, text: &str, run: Option<Rc<ShapedGlyphRun>>) {
+    let text: Arc<str> = Arc::from(text);
+    let _ = SHAPED_RUNS.try_with(|cache| cache.borrow_mut().insert(base, text, run));
 }
 
-fn cached_advances(key: &ShapeKey) -> Option<Rc<[f32]>> {
-    CLUSTER_ADVANCES.try_with(|cache| cache.borrow().get(key).cloned()).ok().flatten()
+fn cached_advances(base: &ShapeKeyBase, text: &str) -> Option<Rc<[f32]>> {
+    CLUSTER_ADVANCES.try_with(|cache| cache.borrow().get(base, text).cloned()).ok().flatten()
 }
 
-fn store_advances(key: ShapeKey, advances: Rc<[f32]>) {
-    let _ = CLUSTER_ADVANCES.try_with(|cache| cache.borrow_mut().insert(key, advances));
+fn store_advances(base: ShapeKeyBase, text: &str, advances: Rc<[f32]>) {
+    let text: Arc<str> = Arc::from(text);
+    let _ = CLUSTER_ADVANCES.try_with(|cache| cache.borrow_mut().insert(base, text, advances));
 }
 
 /// The bidi levels for `text`'s clusters, memoised with the same key and FIFO policy as
@@ -458,7 +490,7 @@ fn store_advances(key: ShapeKey, advances: Rc<[f32]>) {
 ///
 /// A hit returns the shared level buffer, so repeating an unchanged line is a refcount bump rather
 /// than a `BidiInfo::new` paragraph analysis plus two fresh `Vec`s. `None` means this build resolved
-/// no face for `text`, so there is no `ShapeKey` to cache under; the caller then takes the
+/// no face for `text`, so there is no `ShapeKeyBase` to cache under; the caller then takes the
 /// uncached bidi entry point. `ranges` is not in the key because the crate's one clustering rule
 /// (`line::for_each_cluster`) derives the partition deterministically from the text.
 pub(crate) fn cached_bidi_levels(
@@ -468,16 +500,17 @@ pub(crate) fn cached_bidi_levels(
     scale: f32,
 ) -> Option<Rc<[u8]>> {
     let face = face_for_metrics(text, font)?;
-    let key = ShapeKey::new(face.name, text, font.size(), scale, Some(font.weight()), false);
+    let key = ShapeKeyBase::new(face.name, font.size(), scale, Some(font.weight()), false);
     if let Some(levels) =
-        BIDI_LEVELS.try_with(|cache| cache.borrow().get(&key).cloned()).ok().flatten()
+        BIDI_LEVELS.try_with(|cache| cache.borrow().get(&key, text).cloned()).ok().flatten()
     {
         #[cfg(test)]
         BIDI_LEVEL_HITS.with(|hits| hits.set(hits.get() + 1));
         return Some(levels);
     }
     let levels: Rc<[u8]> = Rc::from(super::bidi::levels_for(text, ranges));
-    let _ = BIDI_LEVELS.try_with(|cache| cache.borrow_mut().insert(key, levels.clone()));
+    let key_text: Arc<str> = Arc::from(text);
+    let _ = BIDI_LEVELS.try_with(|cache| cache.borrow_mut().insert(key, key_text, levels.clone()));
     Some(levels)
 }
 
@@ -621,9 +654,8 @@ impl RustybuzzShaper {
         // The cache is checked before the face is parsed: a repeated caption must not walk the
         // table directory, build a `UnicodeBuffer` or run `GSUB`/`GPOS` at all (G-19). The key
         // names the face, so two shapers over different faces cannot alias each other.
-        let key =
-            ShapeKey::new(self.face.name, text, font_size, scale, weight, features.is_empty());
-        if let Some(hit) = cached_run(&key) {
+        let key = ShapeKeyBase::new(self.face.name, font_size, scale, weight, features.is_empty());
+        if let Some(hit) = cached_run(&key, text) {
             return hit;
         }
         // The name-keyed shaper cache: a label is measured and then drawn, and the same face is
@@ -670,7 +702,7 @@ impl RustybuzzShaper {
         }
         .flatten();
         let shaped = shaped.map(Rc::from);
-        store_run(key, shaped.clone());
+        store_run(key, text, shaped.clone());
         shaped
     }
 }
@@ -885,18 +917,20 @@ mod tests {
     #[test]
     fn the_shaping_cache_evicts_the_oldest_entry_instead_of_clearing() {
         clear_shape_caches();
+        let base = ShapeKeyBase::new("probe", 12.0, 1.0, None, false);
         for index in 0..=SHAPE_CACHE_LIMIT {
             let text = index.to_string();
-            let key = ShapeKey::new("probe", &text, 12.0, 1.0, None, false);
-            store_run(key, None);
+            let shared: Arc<str> = Arc::from(text.as_str());
+            SHAPED_RUNS.with(|cache| cache.borrow_mut().insert(base.clone(), shared, None));
         }
-        let oldest = ShapeKey::new("probe", "0", 12.0, 1.0, None, false);
-        let newest = ShapeKey::new("probe", &SHAPE_CACHE_LIMIT.to_string(), 12.0, 1.0, None, false);
+        let oldest = "0".to_string();
+        let newest = SHAPE_CACHE_LIMIT.to_string();
         SHAPED_RUNS.with(|cache| {
             let cache = cache.borrow();
-            assert_eq!(cache.entries.len(), SHAPE_CACHE_LIMIT, "the cache stays at its bound");
-            assert!(!cache.entries.contains_key(&oldest), "the oldest entry was evicted");
-            assert!(cache.entries.contains_key(&newest), "the newest entry is resident");
+            let resident: usize = cache.entries.values().map(Vec::len).sum();
+            assert_eq!(resident, SHAPE_CACHE_LIMIT, "the cache stays at its bound");
+            assert!(cache.get(&base, &oldest).is_none(), "the oldest entry was evicted");
+            assert!(cache.get(&base, &newest).is_some(), "the newest entry is resident");
         });
     }
 

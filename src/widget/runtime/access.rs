@@ -15,6 +15,36 @@ pub fn geometry_of(id: ObjectId) -> Option<Rect> {
     mounted.or_else(|| lent_out_widget(id, |widget| widget.geometry()))
 }
 
+/// Whether `id` and every ancestor above it have their visible flag set.
+///
+/// Hiding a container clears only the container's own flag (`BaseWidget::hide` documents that
+/// the subtree effect happens at render time), so a child inside a hidden panel still answers
+/// `is_visible() == true`. The Tab order used to read that flag directly and could move focus
+/// into a control the user cannot see (WG-01). This is the single predicate that walks the
+/// parent chain; it is bounded by the same depth the runtime uses for parent walks.
+pub fn is_effectively_visible(id: ObjectId) -> bool {
+    let mut cursor = Some(id);
+    for _ in 0..TOP_WINDOW_MAX_DEPTH {
+        let Some(current) = cursor else {
+            return true;
+        };
+        let Some((visible, parent)) =
+            read_widget(current, |widget| (widget.is_visible(), widget.parent()))
+        else {
+            // An id that resolves to nothing cannot be proven hidden: a standalone control a test
+            // or a host built without mounting is not "under a hidden container". Callers that
+            // require mounting (the Tab order) already take their candidates from the registry.
+            return true;
+        };
+        if !visible {
+            return false;
+        }
+        cursor = parent;
+    }
+    // A parent chain deeper than the bound is treated as not proven visible.
+    false
+}
+
 /// The origin a control's own coordinates are relative to.
 ///
 /// # Why a window's origin is `(0, 0)`

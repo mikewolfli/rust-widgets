@@ -243,11 +243,6 @@ pub mod render_engine;
 /// or captured frame is raw RGBA8, not a `crate::image` value.
 pub mod resample;
 /// Persistent application settings (`settings store`-equivalent key/value store).
-///
-/// Gated like the existing menu-config persistence precedent (`advanced-widgets`) plus
-/// `serde_json`, and absent from `alloc_frugal` builds where `std::fs` is unavailable.
-#[cfg(all(feature = "advanced-widgets", feature = "serde_json", not(alloc_frugal)))]
-pub mod settings;
 /// Global shortcut system for keyboard shortcuts.
 pub mod shortcut;
 /// Signal-slot utilities.
@@ -358,12 +353,12 @@ pub use api::{
     is_window_in_state, last_frame_stats, list_box_add_item, list_box_clear_items,
     list_box_current_index, list_box_item_count, list_box_item_text, list_box_remove_item,
     list_box_set_current_index, menu_add_item, menu_item_icons_supported, menu_item_shortcut,
-    mount_surface, notify_native_redraw, open_path, platform_clipboard, platform_init,
-    platform_quit, platform_run, poll_drop_event, poll_menu_triggered, poll_widget_trigger_event,
+    mount_surface, notify_native_redraw, platform_clipboard, platform_init, platform_quit,
+    platform_run, poll_drop_event, poll_menu_triggered, poll_widget_trigger_event,
     poll_widget_triggered, queue_resize_trigger, reapply_active_theme, report_state,
     request_repaint_because, resize_surface, restore_save_state, runtime, runtime_gui_mode,
-    runtime_gui_mode_for, save_path, schedule_on_main, select_directory, set_animation_suspended,
-    set_clipboard_text, set_slider_orientation, set_widget_accessibility_name, set_widget_checked,
+    runtime_gui_mode_for, schedule_on_main, set_animation_suspended, set_clipboard_text,
+    set_slider_orientation, set_widget_accessibility_name, set_widget_checked,
     set_widget_echo_mode, set_widget_enabled, set_widget_geometry, set_widget_group,
     set_widget_indeterminate, set_widget_max_length, set_widget_placeholder, set_widget_range,
     set_widget_read_only, set_widget_scroll_position, set_widget_selected_index,
@@ -446,9 +441,6 @@ pub use api::{draw_icon_image, Image, ImageFormat, ImageView};
 
 #[cfg(all(feature = "image", not(alloc_frugal)))]
 pub use api::SharedIconPixels;
-
-#[cfg(all(feature = "advanced-widgets", feature = "serde_json", not(alloc_frugal)))]
-pub use api::{JsonSettings, MemorySettings, SettingValue, Settings, SettingsError, SettingsStore};
 
 #[allow(deprecated)]
 pub use api::{

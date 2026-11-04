@@ -4,9 +4,8 @@
 //! Core `App` type — lifecycle wrapper with configuration and callbacks.
 
 use crate::core::ObjectId;
-use crate::WidgetTriggerEvent;
 
-use super::handle::{dispatch_trigger, WindowHandle};
+use super::handle::WindowHandle;
 use super::lifecycle::{AppLifecycle, AppLifecycleState};
 
 // ═══════════════════════════════════════════════════════════════
@@ -337,26 +336,14 @@ impl App {
     }
 
     /// Request the event loop to shut down.
+    ///
+    /// The lifecycle state moves to `Terminating` only when the platform actually accepted the
+    /// request. `crate::quit` reports that honestly, and discarding the answer left the machine
+    /// saying `Terminating` after a request nobody honoured (HB-13).
     pub fn quit(&mut self) {
-        crate::quit();
-        self.lifecycle.transition(crate::app::lifecycle::AppLifecycleState::Terminating);
-    }
-
-    /// Run the platform event loop on a background thread (non-blocking).
-    ///
-    /// Returns a `JoinHandle` that completes when the event loop exits.
-    /// This allows the calling thread to continue working while the
-    /// event loop runs in parallel.
-    ///
-    /// Only available on desktop targets where threading is supported.
-    /// On other targets, falls back to blocking `run()` via `run_blocking`.
-    pub fn run_async(&self) -> std::thread::JoinHandle<()> {
-        trace_runtime_route("app::run_async");
-        crate::platform::fonts::prewarm_system_fonts();
-        std::thread::spawn(|| {
-            crate::run();
-            fire_shutdown();
-        })
+        if crate::quit() {
+            self.lifecycle.transition(crate::app::lifecycle::AppLifecycleState::Terminating);
+        }
     }
 
     /// Create a top-level window and return a type-safe handle.
@@ -368,21 +355,78 @@ impl App {
         WindowHandle::from_raw(id)
     }
 
-    /// Poll the next triggered event from the platform layer.
+    /// Moves a mounted control into a new top-level window and returns that window.
     ///
-    /// When a matching callback is registered the event is dispatched
-    /// automatically; you only need this method for manual event loops.
-    pub fn poll_event(&self) -> Option<WidgetTriggerEvent> {
-        let ev = crate::poll_widget_trigger_event();
-        if let Some(ref ev) = ev {
-            dispatch_trigger(ev.widget_id, ev.kind);
+    /// # What this closes (issue-20261104 DM-09)
+    ///
+    /// `DockWidget::set_floating` and `MdiArea`'s sub-windows only flip an internal flag: the
+    /// "floating" panel stayed a self-drawn rectangle inside its host window and could not be
+    /// dragged out to become a system window. This is the smallest entry that closes that gap
+    /// without inventing a new container type — it reuses [`App::new_window`] and the control's
+    /// existing `top_level_changed` signal.
+    ///
+    /// # Why adoption, rather than a second ownership
+    ///
+    /// [`crate::widget::BaseWidget::add_child_linked`] writes both halves of the parent/child
+    /// relation and removes the control from its previous parent's child list. That is exactly
+    /// what "the control now lives in another window" means, and it keeps the runtime registry
+    /// as the single owner: no `Box` is moved, no id is reissued, and every handle the caller
+    /// already holds keeps naming the same control.
+    ///
+    /// Returns `None` when `widget` is not mounted, when the window could not be created, or
+    /// when the window refused the child — never a handle to a window that does not contain it.
+    pub fn float_to_window(&self, widget: ObjectId) -> Option<WindowHandle> {
+        if widget == 0 || !crate::widget::runtime::is_mounted(widget) {
+            return None;
         }
-        ev
+        let geometry = crate::widget::runtime::with_widget(widget, |live| live.geometry())?;
+        let handle = self.new_window(
+            "Floating",
+            geometry.x,
+            geometry.y,
+            geometry.width.max(1),
+            geometry.height.max(1),
+        );
+        let window_id = handle.raw_id();
+        if window_id == 0 {
+            return None;
+        }
+        let adopted = crate::widget::runtime::with_widget_mut(window_id, |window| {
+            window.base_mut().add_child_linked(widget)
+        })
+        .unwrap_or(false);
+        if !adopted {
+            return None;
+        }
+        // The dock family announces the move through its own signal; other controls simply
+        // change parent. The flag write happens after adoption so a handler sees the new
+        // parent.
+        crate::widget::runtime::with_widget_mut(widget, |live| {
+            if let Some(dock) = crate::widget::capability::coercion::widget_as_mut::<
+                crate::widget::DockWidget,
+            >(live)
+            {
+                dock.set_floating(true);
+            }
+        });
+        crate::set_widget_geometry(widget, 0, 0, geometry.width.max(1), geometry.height.max(1));
+        crate::set_widget_visible(widget, true);
+        Some(handle)
     }
 
-    /// Poll the raw `ObjectId` of the most recently triggered widget.
-    pub fn poll_triggered(&self) -> Option<ObjectId> {
-        crate::poll_widget_triggered()
+    /// Every window this process created, in the library's registry order.
+    ///
+    /// The window state table is the registry the library already keeps per window, so this adds
+    /// no second list (HB-12). Order is the map's, which is unspecified: a caller that needs a
+    /// stable order sorts by id.
+    pub fn windows(&self) -> Vec<WindowHandle> {
+        crate::app::handle::WINDOW_STATES
+            .with(|map| map.borrow().keys().copied().map(WindowHandle::from_raw).collect())
+    }
+
+    /// The window that most recently gained keyboard focus, if the platform reported one.
+    pub fn active_window(&self) -> Option<WindowHandle> {
+        crate::platform::window_control::active_window_id().map(WindowHandle::from_raw)
     }
 }
 
@@ -578,7 +622,7 @@ fn fire_startup() {
 /// Runs every registered shutdown callback, releasing the lock before invoking any of them.
 ///
 /// Mirrors [`fire_startup`]: a shutdown callback that re-registers a shutdown callback takes
-/// effect on the next [`fire_shutdown`] (i.e. the next `run`/`run_async`), and never deadlocks.
+/// effect on the next [`fire_shutdown`] (i.e. the next `run`), and never deadlocks.
 fn fire_shutdown() {
     let callbacks = with_shutdown(core::mem::take);
     for callback in callbacks {
@@ -837,5 +881,21 @@ mod tests {
         on.init();
         assert!(on.accessibility_enabled(), "the default/true switch must be recorded on");
         assert!(accessibility_enabled());
+    }
+
+    /// DM-09: floating is refused for an id that is not mounted.
+    ///
+    /// The interesting half of `float_to_window` — creating a top-level window and adopting the
+    /// control into it — needs a live platform window, which a unit test in this crate does not
+    /// have. What can be pinned here is the guard: a caller that passes a stale or zero id must
+    /// get `None` rather than a handle to a window that does not hold the control.
+    #[test]
+    fn floating_an_unmounted_control_is_refused() {
+        let app = App::new();
+        assert!(app.float_to_window(0).is_none(), "zero is not a control");
+        assert!(
+            app.float_to_window(0xDEAD_BEEF).is_none(),
+            "an id the runtime never mounted cannot be floated"
+        );
     }
 }

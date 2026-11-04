@@ -168,8 +168,8 @@ impl Splitter {
     /// Returns every pane ratio, in pane order.
     ///
     /// These are the layout's relative weights — the same values [`Self::ratio`] exposes — so a
-    /// host can hand them to `Settings::set_split_ratios` unchanged and restore them on the next
-    /// launch with [`Self::set_ratios`].
+    /// host can store them in its own session file and restore them on the next launch with
+    /// [`Self::set_ratios`].
     pub fn ratios(&self) -> Vec<f32> {
         self.layout.ratios().to_vec()
     }

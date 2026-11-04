@@ -92,7 +92,6 @@ impl EventLog {
 
     fn append(&self, message: impl Into<String>) {
         let message = message.into();
-        println!("[EVENT] {}", message);
         {
             let mut entries = self.entries.lock().unwrap();
             if entries.len() >= EVENT_LOG_CAPACITY {
@@ -1524,8 +1523,7 @@ mod tests {
             series.len() > longest * 2,
             "the series must be long enough for the longest overlay to settle"
         );
-        let average =
-            rust_widgets_suites::finance::indicators::sma(&closes, longest);
+        let average = rust_widgets_suites::finance::indicators::sma(&closes, longest);
         let defined = average.iter().filter(|value| value.is_finite()).count();
         assert!(defined >= series.len() - longest, "the 60-period average must be defined");
     }

@@ -129,7 +129,6 @@ impl EventLog {
 
     fn append(&self, msg: impl Into<String>) {
         let msg = msg.into();
-        println!("[EVENT] {}", msg);
         let mut entries = self.entries.lock().unwrap();
         if entries.len() >= EVENT_LOG_CAPACITY {
             entries.pop_front();

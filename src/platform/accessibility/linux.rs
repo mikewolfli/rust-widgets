@@ -92,12 +92,11 @@ fn start_event_worker(conn: zbus::Connection) -> std::sync::mpsc::SyncSender<A11
     // with a warning instead of blocking the UI thread.
     let (tx, rx) = std::sync::mpsc::sync_channel::<A11yEvent>(64);
     let spawned = std::thread::Builder::new().name("atspi-events".to_string()).spawn(move || {
-        let blocking = zbus::blocking::Connection::from(conn);
         while let Ok(event) = rx.recv() {
             match event {
                 A11yEvent::Notify { event_type, id, detail1, detail2 } => {
                     LinuxAccessibilityBridge::emit_atspi_event(
-                        &blocking,
+                        &conn,
                         &event_type,
                         id,
                         detail1,
@@ -118,8 +117,8 @@ fn start_event_worker(conn: zbus::Connection) -> std::sync::mpsc::SyncSender<A11
 /// `None` for an id whose path would be invalid; the ids are decimal integers, so in practice this
 /// always succeeds, but the caller must not `expect` a value that arrives from a caller-supplied id.
 #[cfg(feature = "linux-a11y")]
-fn object_path_for(id: ObjectId) -> Option<zbus::zvariant::ObjectPath<'static>> {
-    zbus::zvariant::ObjectPath::try_from(format!("/org/a11y/atspi/accessible/{id}")).ok()
+fn object_path_for(id: ObjectId) -> Option<zbus::ObjectPath<'static>> {
+    zbus::ObjectPath::try_from(format!("/org/a11y/atspi/accessible/{id}")).ok()
 }
 
 /// Map an [`A11yRole`] to the AT-SPI `AtspiRole` numeric id.
@@ -254,9 +253,9 @@ impl AtspiAccessible {
     /// `GetParent` — this object's own path, since the bridge exports a flat set of widget objects
     /// rather than a nested tree. A parent that is the root `(unique name, "/")` is what AT-SPI
     /// expects for an object whose parent is the application frame the bridge does not model.
-    fn get_parent(&self) -> (String, zbus::zvariant::OwnedObjectPath) {
-        let root = zbus::zvariant::OwnedObjectPath::try_from("/")
-            .unwrap_or_else(|_| zbus::zvariant::OwnedObjectPath::try_from("/").expect("root path"));
+    fn get_parent(&self) -> (String, zbus::OwnedObjectPath) {
+        let root = zbus::OwnedObjectPath::try_from("/")
+            .unwrap_or_else(|_| zbus::OwnedObjectPath::try_from("/").expect("root path"));
         (self.path.clone(), root)
     }
 
@@ -363,10 +362,9 @@ impl LinuxAccessibilityBridge {
         if let Ok(ref bus_addr) = std::env::var("AT_SPI_BUS") {
             log::info!("[Linux AT-SPI] Connecting to a11y bus at AT_SPI_BUS={bus_addr}");
             let builder = zbus::connection::Builder::address(bus_addr.as_str());
-            match builder.and_then(|b| pollster::block_on(b.build())) {
+            match pollster::block_on(builder.build()) {
                 Ok(conn) => {
-                    let blocking = zbus::blocking::Connection::from(conn.clone());
-                    Self::register_for_events(&blocking);
+                    Self::register_for_events(&conn);
                     log::info!("[Linux AT-SPI] Connected via AT_SPI_BUS");
                     return Some(conn);
                 }
@@ -378,13 +376,11 @@ impl LinuxAccessibilityBridge {
 
         // Fall back to session bus.
         log::info!("[Linux AT-SPI] No AT_SPI_BUS set, trying session bus");
-        match zbus::blocking::Connection::session() {
+        match pollster::block_on(zbus::Connection::session()) {
             Ok(conn) => {
-                // Extract the inner async Connection for uniform storage.
-                let inner = conn.into_inner();
-                Self::register_for_events(&zbus::blocking::Connection::from(inner.clone()));
+                Self::register_for_events(&conn);
                 log::info!("[Linux AT-SPI] Connected to session bus");
-                Some(inner)
+                Some(conn)
             }
             Err(e) => {
                 log::warn!("[Linux AT-SPI] Session bus connection failed: {e}");
@@ -403,13 +399,13 @@ impl LinuxAccessibilityBridge {
     /// Register event types with the AT-SPI registry so it accepts our
     /// subsequent event notifications.
     #[cfg(feature = "linux-a11y")]
-    fn register_for_events(conn: &zbus::blocking::Connection) {
-        let proxy = match zbus::blocking::Proxy::new(
+    fn register_for_events(conn: &zbus::Connection) {
+        let proxy = match pollster::block_on(zbus::Proxy::new(
             conn,
             ATSPI_REGISTRY_BUS_NAME,
             ATSPI_REGISTRY_OBJECT_PATH,
             ATSPI_REGISTRY_INTERFACE,
-        ) {
+        )) {
             Ok(p) => p,
             Err(e) => {
                 log::warn!("[Linux AT-SPI] Failed to create registry proxy: {e}");
@@ -427,7 +423,7 @@ impl LinuxAccessibilityBridge {
         ];
 
         for event_type in event_types {
-            match proxy.call_method("RegisterEvent", &event_type) {
+            match pollster::block_on(proxy.call_method("RegisterEvent", &event_type)) {
                 Ok(_) => {
                     log::info!("[Linux AT-SPI] Registered for event: {event_type}");
                 }
@@ -454,9 +450,8 @@ impl LinuxAccessibilityBridge {
             return false;
         };
         let service = AtspiAccessible::new(state.clone(), path.to_string());
-        let blocking = zbus::blocking::Connection::from(conn.clone());
-        let object_server = blocking.object_server();
-        match object_server.at(path, service) {
+        let object_server = conn.object_server();
+        match pollster::block_on(object_server.at(path, service)) {
             Ok(_added) => true,
             Err(e) => {
                 log::warn!("[Linux AT-SPI] Failed to export object for id={id}: {e}");
@@ -471,9 +466,8 @@ impl LinuxAccessibilityBridge {
         let Some(path) = object_path_for(id) else {
             return;
         };
-        let blocking = zbus::blocking::Connection::from(conn.clone());
-        let object_server = blocking.object_server();
-        match object_server.remove::<AtspiAccessible, _>(path) {
+        let blocking = conn.object_server();
+        match pollster::block_on(blocking.remove::<AtspiAccessible, _>(path)) {
             Ok(_destroyed) => {
                 log::debug!("[Linux AT-SPI] Unexported object for id={id}");
             }
@@ -495,34 +489,32 @@ impl LinuxAccessibilityBridge {
     ///   })
     #[cfg(feature = "linux-a11y")]
     fn emit_atspi_event(
-        conn: &zbus::blocking::Connection,
+        conn: &zbus::Connection,
         event_type: &str,
         id: ObjectId,
         detail1: i32,
         detail2: i32,
     ) {
-        use zbus::zvariant::Value;
-
         let Some(source_path) = object_path_for(id) else {
             log::warn!("[Linux AT-SPI] Refusing to emit {event_type} for unrepresentable id={id}");
             return;
         };
 
         // Send the call directly over the already-open connection. Building a
-        // `zbus::blocking::Proxy` here used to run introspection bookkeeping for every
+        // `zbus::Proxy` here used to run introspection bookkeeping for every
         // accessibility event (focus/selection/text changes) and allocated a proxy each time.
         // The connection carries the destination/path/interface, so no proxy is needed.
         // The any_data variant — we send an empty string for simplicity.
-        let any_data = Value::new("");
+        let any_data = zbus::Variant::new("");
         let event = (event_type, &source_path, detail1, detail2, any_data);
 
-        match conn.call_method(
+        match pollster::block_on(conn.call_method(
             Some(ATSPI_REGISTRY_BUS_NAME),
             ATSPI_REGISTRY_OBJECT_PATH,
             Some(ATSPI_REGISTRY_INTERFACE),
             "NotifyEvent",
             &event,
-        ) {
+        )) {
             Ok(_) => {
                 log::debug!(
                     "[Linux AT-SPI] Event emitted: {event_type} \

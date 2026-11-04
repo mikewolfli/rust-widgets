@@ -84,6 +84,23 @@ impl WgpuRenderer {
         height: u32,
         commands: &[WgpuDrawCommand],
     ) -> Result<Vec<u8>, String> {
+        // One frame, one bracket (issue-20261104 RD-04): the manager's monitor/detector/quality
+        // tracker are fed here or nowhere. The frame is recorded whatever the outcome — a failed
+        // frame is still one the host waited for, and hiding failures from the trap detector is how
+        // it goes blind — which is why the result is passed through rather than `?`-propagated.
+        self.gpu.begin_frame();
+        let frame = self.draw_commands_owned(width, height, commands);
+        self.gpu.end_frame();
+        frame
+    }
+
+    /// The body of [`Self::render_draw_commands_rgba8`], without the frame brackets.
+    fn draw_commands_owned(
+        &self,
+        width: u32,
+        height: u32,
+        commands: &[WgpuDrawCommand],
+    ) -> Result<Vec<u8>, String> {
         let expected_len = rgba_buffer_len(width, height)?;
         // Before deciding which path draws the stream: a payload that disagrees with its declared
         // grid is an error the *caller* asked for, so it is reported here with the CPU rasteriser's
@@ -108,6 +125,22 @@ impl WgpuRenderer {
     /// An earlier form of this method always rasterised on the CPU, which meant one command stream
     /// could produce two different pictures depending on which entry point a host happened to call.
     pub fn render_draw_commands_cached_rgba8(
+        &self,
+        width: u32,
+        height: u32,
+        commands: &[WgpuDrawCommand],
+    ) -> Result<Ref<'_, [u8]>, String> {
+        // Same bracket as the owned entry point — a host that uses the borrowed path must not be
+        // invisible to the adaptive monitor. `end_frame` takes `&self`, so the returned `Ref`
+        // (which borrows a different field) stays valid.
+        self.gpu.begin_frame();
+        let frame = self.draw_commands_cached(width, height, commands);
+        self.gpu.end_frame();
+        frame
+    }
+
+    /// The body of [`Self::render_draw_commands_cached_rgba8`], without the frame brackets.
+    fn draw_commands_cached(
         &self,
         width: u32,
         height: u32,

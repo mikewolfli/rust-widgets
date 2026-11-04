@@ -382,6 +382,54 @@ pub fn elide_middle_to_width<'a>(
     Cow::Owned(candidate)
 }
 
+/// Shortens `text` so its measured width fits `max_width`, eliding the **leading** end.
+///
+/// The width-budget counterpart of [`elide_start`]. A caller whose value keeps its tail as the
+/// identifying part (a tab title with the same long prefix across every tab, a path) can trade
+/// the head for the tail. Same contract as [`elide_to_width`]: `measure` is the caller's
+/// renderer measurement, the ellipsis is part of the budget, and when even the ellipsis does not
+/// fit the result is empty rather than an overflowing glyph.
+pub fn elide_start_to_width<'a>(
+    text: &'a str,
+    max_width: u32,
+    measure: &mut dyn FnMut(&str) -> u32,
+) -> Cow<'a, str> {
+    if measure(text) <= max_width {
+        return Cow::Borrowed(text);
+    }
+    if max_width == 0 || measure(ELLIPSIS) > max_width {
+        return Cow::Borrowed("");
+    }
+
+    let char_count = text.chars().count();
+    let mut cursor = CharCursor::new(text);
+    let mut candidate = String::with_capacity(text.len() + ELLIPSIS.len());
+    let mut low = 0usize;
+    let mut high = char_count;
+    while low < high {
+        let mid = (low + high).div_ceil(2);
+        // Keep the last `mid` characters, so the suffix starts that many characters from the end.
+        let start = cursor.byte_index_of(char_count - mid);
+        candidate.clear();
+        candidate.push('\u{2026}');
+        candidate.push_str(&text[start..]);
+        if measure(&candidate) <= max_width {
+            low = mid;
+        } else {
+            high = mid - 1;
+        }
+    }
+
+    if low == char_count {
+        return Cow::Borrowed(text);
+    }
+    let start = cursor.byte_index_of(char_count - low);
+    candidate.clear();
+    candidate.push('\u{2026}');
+    candidate.push_str(&text[start..]);
+    Cow::Owned(candidate)
+}
+
 /// Shortens `text` so its measured width fits `max_width`, keeping the head.
 ///
 /// `measure` is the caller's renderer measurement (for example

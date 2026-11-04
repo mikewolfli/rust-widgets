@@ -121,6 +121,17 @@ pub enum DeclarativeLayoutKind {
         /// Whether the child is also bounded by the parent on both axes.
         respect_parent: bool,
     },
+    /// Dock-surface layout: children are docked to the edge named by `edge`.
+    ///
+    /// This is the declarative form of the dock family's **multi-dock** host. `DockArea` is a
+    /// layout owner rather than a `Widget` (see `capability/constructors.rs`), so there is no
+    /// dock *control* a document could put children into; the surface is reachable exactly as
+    /// the border and splitter arrangements are — through the `"layout"` pseudo-node. All
+    /// children share one edge, which is the granularity `Layout::add_widget` carries.
+    DockArea {
+        /// The edge [`crate::layout::Layout::add_widget`] docks to.
+        edge: crate::widget::container_widgets::dockwidget::DockWidgetArea,
+    },
     /// Keyboard-aware wrapper: a vertical box whose children slide up while the
     /// on-screen keyboard is visible.
     ///
@@ -160,6 +171,7 @@ impl DeclarativeLayoutKind {
         "border",
         "center",
         "aspect_ratio",
+        "dock_area",
         "keyboard_aware",
     ];
 }
@@ -274,6 +286,9 @@ pub fn parse_layout_kind(value: &Value) -> Result<DeclarativeLayoutKind, String>
                 respect_parent: obj.get("respect_parent").and_then(Value::as_bool).unwrap_or(true),
             })
         }
+        "dock_area" | "dockArea" | "dock-area" => {
+            Ok(DeclarativeLayoutKind::DockArea { edge: parse_dock_edge(obj.get("edge")) })
+        }
         "keyboard_aware" | "keyboardAware" | "keyboard-aware" => {
             Ok(DeclarativeLayoutKind::KeyboardAware {
                 spacing,
@@ -355,6 +370,27 @@ fn orientation_of(token: &str) -> Option<Orientation> {
 /// "horizontal" has to look at the field itself — the parser does not invent a third answer.
 fn parse_axis(value: Option<&Value>) -> Orientation {
     value.and_then(Value::as_str).and_then(orientation_of).unwrap_or(Orientation::Horizontal)
+}
+
+/// The dock edge a document token names, or the leading edge for anything else.
+///
+/// An unknown token falls back to the left edge rather than failing the document: the edge is a
+/// placement preference, and a misspelling should not make a whole layout unloadable. The
+/// fallback is the same one the arm uses when the key is absent, so there is one answer.
+fn parse_dock_edge(
+    value: Option<&Value>,
+) -> crate::widget::container_widgets::dockwidget::DockWidgetArea {
+    use crate::widget::container_widgets::dockwidget::DockWidgetArea;
+    let token = value.and_then(Value::as_str).unwrap_or("");
+    if token.eq_ignore_ascii_case("right") {
+        DockWidgetArea::RightDockWidgetArea
+    } else if token.eq_ignore_ascii_case("top") {
+        DockWidgetArea::TopDockWidgetArea
+    } else if token.eq_ignore_ascii_case("bottom") {
+        DockWidgetArea::BottomDockWidgetArea
+    } else {
+        DockWidgetArea::LeftDockWidgetArea
+    }
 }
 
 /// Build a concrete `Layout` trait object from a `DeclarativeLayoutKind`.
@@ -447,6 +483,15 @@ pub fn create_layout_from_kind(kind: &DeclarativeLayoutKind) -> Box<dyn Layout> 
         }
         DeclarativeLayoutKind::AspectRatio { ratio, respect_parent } => {
             Box::new(AspectRatioLayout::new(ratio, respect_parent))
+        }
+        DeclarativeLayoutKind::DockArea { edge } => {
+            // `from_rect` rather than `new(DockArea::new(..))`: the rectangle is the one the
+            // first `update` writes, and a zero rect states that this constructor knows no area.
+            let mut surface = crate::widget::container_widgets::DockAreaLayout::from_rect(
+                crate::core::Rect::new(0, 0, 0, 0),
+            );
+            surface.set_default_edge(edge);
+            Box::new(surface)
         }
         DeclarativeLayoutKind::KeyboardAware { spacing, margin, animation_duration } => {
             Box::new(KeyboardAwareLayout::new(
@@ -837,6 +882,44 @@ mod tests {
         assert_eq!(
             kind,
             DeclarativeLayoutKind::Splitter { orientation: Orientation::Vertical, margin: 4 }
+        );
+    }
+
+    /// A dock surface is a **layout**, not a control, so its declarative form is the `"layout"`
+    /// pseudo-node rather than a widget kind (issue-20261104 DM-11 ⑨).
+    ///
+    /// `DockArea` has no `WidgetKind` of its own — the capability row for `dock_area` constructs a
+    /// `DockWidget`, a single panel — so before this arm a document could place one dock panel and
+    /// never a multi-dock surface. This asserts the parse, the edge token, and that the built layout
+    /// really arranges a child.
+    #[test]
+    fn parse_dock_area_layout_docks_onto_the_named_edge() {
+        use crate::widget::container_widgets::dockwidget::DockWidgetArea;
+        let json: Value =
+            serde_json::from_str(r#"{"type": "dock_area", "edge": "right"}"#).unwrap();
+        let kind = parse_layout_kind(&json).unwrap();
+        assert_eq!(
+            kind,
+            DeclarativeLayoutKind::DockArea { edge: DockWidgetArea::RightDockWidgetArea }
+        );
+
+        let layout = create_layout_from_kind(&kind);
+        let mut layout = layout;
+        crate::layout::Layout::add_widget(&mut *layout, 101, 1);
+        let mut placed: Vec<(ObjectId, Rect)> = Vec::new();
+        crate::layout::Layout::update(&*layout, Rect::new(0, 0, 400, 200), &mut |id, rect| {
+            placed.push((id, rect))
+        });
+        assert_eq!(placed.len(), 1, "the dock surface arranges the child it was given");
+        assert_eq!(placed[0].0, 101);
+        assert!(placed[0].1.width > 0 && placed[0].1.height > 0, "with a real rectangle");
+
+        // An edge the parser does not know keeps the document loadable: it falls back to the
+        // leading edge, the same answer an absent key gives.
+        let fallback = parse_layout_kind(&serde_json::json!({ "type": "dock_area" })).unwrap();
+        assert_eq!(
+            fallback,
+            DeclarativeLayoutKind::DockArea { edge: DockWidgetArea::LeftDockWidgetArea }
         );
     }
 

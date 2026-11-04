@@ -19,13 +19,61 @@ use crate::platform::{Platform, PlatformCapabilities};
 /// reason: the sleep between iterations and the delta handed to [`crate::drive_frame`]
 /// must be the same number, or every transition runs at the ratio between them with
 /// nothing to notice the mismatch. A backend that later runs at the display's own rate
-/// changes exactly this value.
-///
-/// Gated with the loop that reads it: on `wasm32` the browser owns the clock and this
-/// backend's `run` returns immediately instead of sleeping, so the constant has no consumer
-/// there — and an ungated copy is the dead-code warning a build with `wasm` enabled produced.
-#[cfg(not(target_arch = "wasm32"))]
+/// changes exactly this value. Both arms of `run` read it: the host polling loop and the
+/// browser's `requestAnimationFrame` callback.
 const FRAME_INTERVAL_MS: u64 = crate::platform::types::FRAME_INTERVAL_MS;
+
+/// The live `requestAnimationFrame` chain, kept alive for the page's lifetime.
+///
+/// A browser callback must be `'static`, and the runtime owns exactly one loop per page, so one
+/// stored closure is the whole requirement (PL-06).
+#[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
+thread_local! {
+    static RAF_LOOP: core::cell::RefCell<
+        Option<std::rc::Rc<core::cell::RefCell<Option<wasm_bindgen::closure::Closure<dyn FnMut()>>>>>,
+    > = const { core::cell::RefCell::new(None) };
+}
+
+/// Installs the browser frame loop: one `requestAnimationFrame` per frame.
+///
+/// On `wasm32` the browser owns the event loop, so `run` cannot block. Without this chain the
+/// backend only set `running = true` and returned: triggers were never drained and animations
+/// never advanced, so a wasm application froze after `run()` (PL-06). The callback drives one
+/// frame and re-requests itself while `running` stays true.
+#[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
+fn start_raf_loop(running: std::sync::Arc<core::sync::atomic::AtomicBool>) {
+    use wasm_bindgen::JsCast;
+
+    let Some(window) = web_sys::window() else {
+        log::error!("[wasm] requestAnimationFrame: the page has no window object");
+        return;
+    };
+    let holder: std::rc::Rc<
+        core::cell::RefCell<Option<wasm_bindgen::closure::Closure<dyn FnMut()>>>,
+    > = std::rc::Rc::new(core::cell::RefCell::new(None));
+    let holder_for_callback = std::rc::Rc::clone(&holder);
+    let window_for_callback = window.clone();
+    let running_for_callback = std::sync::Arc::clone(&running);
+    *holder.borrow_mut() = Some(wasm_bindgen::closure::Closure::<dyn FnMut()>::new(move || {
+        if !running_for_callback.load(core::sync::atomic::Ordering::SeqCst) {
+            return;
+        }
+        crate::drive_frame(FRAME_INTERVAL_MS as u32);
+        if let Some(callback) = holder_for_callback.borrow().as_ref() {
+            let callback: &js_sys::Function = callback.as_ref().unchecked_ref();
+            let _ = window_for_callback.request_animation_frame(callback);
+        }
+    }));
+    if let Some(callback) = holder.borrow().as_ref() {
+        let callback: &js_sys::Function = callback.as_ref().unchecked_ref();
+        if let Err(error) = window.request_animation_frame(callback) {
+            log::error!("[wasm] requestAnimationFrame rejected the frame loop: {error:?}");
+        }
+    }
+    RAF_LOOP.with(|slot| {
+        *slot.borrow_mut() = Some(holder);
+    });
+}
 
 /// Evaluates a CSS media query in the browser, or `None` on a host build.
 #[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
@@ -502,6 +550,13 @@ impl Platform for WasmPlatform {
     /// `run`/`quit` pairing can be exercised without a browser.
     fn run(&self) {
         self.runtime.running.store(true, Ordering::SeqCst);
+        #[cfg(target_arch = "wasm32")]
+        {
+            // The browser owns the event loop: install a `requestAnimationFrame` chain instead
+            // of blocking. `run` returns immediately; the page keeps calling the callback.
+            #[cfg(not(target_os = "wasi"))]
+            start_raf_loop(std::sync::Arc::clone(&self.runtime.running));
+        }
         #[cfg(not(target_arch = "wasm32"))]
         {
             // The loop has no native message pump of its own — a browser host drives the

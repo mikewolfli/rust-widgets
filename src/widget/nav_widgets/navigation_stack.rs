@@ -8,7 +8,7 @@
 //! operations, similar to SwiftUI NavigationStack or UINavigationController.
 
 use crate::compat::{Cow, Rc, RefCell};
-use crate::core::{Color, HorizontalAlignment, Point, Rect, TextDirection};
+use crate::core::{Color, HorizontalAlignment, ObjectId, Point, Rect, TextDirection};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -32,6 +32,46 @@ pub enum NavigationEvent {
     PoppedToRoot,
 }
 
+/// One page in a navigation stack.
+///
+/// A page is either **owned** by the stack — the historical `push(Box<dyn Widget>)` contract — or
+/// **mounted**: created through the widget runtime, which owns it, so a declaration can only hand
+/// over its id (issue-20261104 DM-11). The two live in one list because `replace_top`, `insert` and
+/// `pop_to` address a *position*, not a storage kind, and a second list would have to be kept in
+/// step with this one at every mutation.
+enum PageSlot {
+    /// A page the stack owns and paints itself.
+    Owned(Box<dyn Widget>),
+    /// A page the runtime owns; the stack places, shows and hides it, and the tree painter draws it.
+    Mounted(ObjectId),
+}
+
+impl PageSlot {
+    /// The owned page's widget, or `None` for a mounted page.
+    fn widget(&self) -> Option<&dyn Widget> {
+        match self {
+            Self::Owned(page) => Some(page.as_ref()),
+            Self::Mounted(_) => None,
+        }
+    }
+
+    /// The owned page's widget mutably, or `None` for a mounted page.
+    fn widget_mut(&mut self) -> Option<&mut dyn Widget> {
+        match self {
+            Self::Owned(page) => Some(page.as_mut()),
+            Self::Mounted(_) => None,
+        }
+    }
+
+    /// The mounted page's id, or `None` for an owned page.
+    fn mounted_id(&self) -> Option<ObjectId> {
+        match self {
+            Self::Owned(_) => None,
+            Self::Mounted(id) => Some(*id),
+        }
+    }
+}
+
 /// Height of the navigation bar in logical pixels.
 const NAV_BAR_HEIGHT: u32 = 44;
 
@@ -48,7 +88,8 @@ const NAV_ACTION_MARGIN: i32 = 8;
 /// when there are pages below the top.
 pub struct NavigationStack {
     base: BaseWidget,
-    pages: Vec<Box<dyn Widget>>,
+    /// The history, oldest first. See [`PageSlot`] for the two storage kinds.
+    pages: Vec<PageSlot>,
     navigation_bar_title: String,
     /// How far the content region is slid, `-1.0` arriving from the left (a pop) through `0.0`
     /// settled to `1.0` arriving from the right (a push).
@@ -114,7 +155,7 @@ impl NavigationStack {
     /// Pushes a new page onto the navigation stack.
     /// The new page becomes the visible topmost page.
     pub fn push(&mut self, page: Box<dyn Widget>) {
-        self.pages.push(page);
+        self.pages.push(PageSlot::Owned(page));
         // A pushed page starts with no title of its own and inherits the global one, which is
         // what a stack that never calls `set_page_title` has always shown.
         self.page_titles.push(None);
@@ -124,6 +165,34 @@ impl NavigationStack {
         self.slide.set_target(0.0);
         self.navigation_changed.emit(NavigationEvent::Pushed);
         self.base.request_redraw();
+    }
+
+    /// Pushes a page the runtime already owns, addressed by id.
+    ///
+    /// This is the declaration path's entry (issue-20261104 DM-11): a JSON document's page is
+    /// mounted by the runtime, so only its id can be handed over. The stack links it as a child,
+    /// places it in the content band and shows only the top page — the tree painter draws it, which
+    /// is the same division of labour `StackedWidget` and `TabView` use for their page lists.
+    ///
+    /// A mounted page takes part in the push transition: `sync_mounted_pages` writes its geometry
+    /// each frame with the same offset the owned pages are drawn under, so the two slide together.
+    pub fn push_id(&mut self, page: ObjectId) {
+        if page == 0 {
+            return;
+        }
+        self.base.add_child_linked(page);
+        self.pages.push(PageSlot::Mounted(page));
+        self.page_titles.push(None);
+        self.slide.jump_to(1.0);
+        self.slide.set_target(0.0);
+        self.navigation_changed.emit(NavigationEvent::Pushed);
+        self.sync_mounted_pages();
+        self.base.request_redraw();
+    }
+
+    /// The id of the page at `index`, when it is a mounted page.
+    pub fn page_id(&self, index: usize) -> Option<ObjectId> {
+        self.pages.get(index).and_then(PageSlot::mounted_id)
     }
 
     /// Returns the index of the current (topmost) page, or `None` when the
@@ -138,7 +207,16 @@ impl NavigationStack {
         if self.pages.len() <= 1 {
             return None;
         }
-        let popped = self.pages.pop();
+        let popped = self.pages.pop().and_then(|slot| match slot {
+            PageSlot::Owned(page) => Some(page),
+            // A mounted page cannot be handed back — the runtime owns it — so it is unlinked and
+            // hidden instead, and the caller learns "popped" from the page count.
+            PageSlot::Mounted(id) => {
+                self.base.remove_child_linked(id);
+                crate::set_widget_visible(id, false);
+                None
+            }
+        });
         if self.page_titles.len() > self.pages.len() {
             self.page_titles.truncate(self.pages.len());
         }
@@ -154,12 +232,12 @@ impl NavigationStack {
 
     /// Returns a reference to the current (topmost) page, or `None` if the stack is empty.
     pub fn current_page(&self) -> Option<&dyn Widget> {
-        self.pages.last().map(|p| p.as_ref())
+        self.pages.last().and_then(PageSlot::widget)
     }
 
     /// Returns a mutable reference to the current (topmost) page, or `None` if the stack is empty.
     pub fn current_page_mut(&mut self) -> Option<&mut dyn Widget> {
-        self.pages.last_mut().map(|p| p.as_mut())
+        self.pages.last_mut().and_then(PageSlot::widget_mut)
     }
 
     /// Returns the number of pages in the stack.
@@ -178,7 +256,10 @@ impl NavigationStack {
             return;
         }
         let changed = self.pages.len() > 1;
-        self.pages.drain(1..);
+        let removed: Vec<PageSlot> = self.pages.drain(1..).collect();
+        for slot in removed {
+            self.release_slot(slot);
+        }
         self.page_titles.truncate(self.pages.len());
         if changed {
             // A pop-to-root is a pop: it arrives from the same leading edge, over frames.
@@ -197,22 +278,32 @@ impl NavigationStack {
     /// [`NavigationEvent::Pushed`]. On an empty stack it pushes the page and returns `None`.
     pub fn replace_top(&mut self, page: Box<dyn Widget>) -> Option<Box<dyn Widget>> {
         let previous = if self.pages.is_empty() {
-            self.pages.push(page);
+            self.pages.push(PageSlot::Owned(page));
             self.page_titles.push(None);
             None
         } else {
             let index = self.pages.len() - 1;
-            let previous = core::mem::replace(&mut self.pages[index], page);
+            let displaced = core::mem::replace(&mut self.pages[index], PageSlot::Owned(page));
             if self.page_titles.len() > index {
                 // The replacement has no per-page title of its own; the old page's title must not
                 // be carried over to a different screen.
                 self.page_titles[index] = None;
             }
-            Some(previous)
+            // A displaced mounted page is unlinked and hidden: the runtime owns it, so it cannot be
+            // returned, and leaving it linked would let the painter draw it under the new top.
+            match displaced {
+                PageSlot::Owned(page) => Some(page),
+                PageSlot::Mounted(id) => {
+                    self.base.remove_child_linked(id);
+                    crate::set_widget_visible(id, false);
+                    None
+                }
+            }
         };
         self.slide.jump_to(1.0);
         self.slide.set_target(0.0);
         self.navigation_changed.emit(NavigationEvent::Pushed);
+        self.sync_mounted_pages();
         self.base.request_redraw();
         previous
     }
@@ -227,7 +318,7 @@ impl NavigationStack {
             return false;
         }
         let becomes_top = index == self.pages.len();
-        self.pages.insert(index, page);
+        self.pages.insert(index, PageSlot::Owned(page));
         let title_index = index.min(self.page_titles.len());
         self.page_titles.insert(title_index, None);
         self.page_titles.resize(self.pages.len(), None);
@@ -236,6 +327,7 @@ impl NavigationStack {
             self.slide.set_target(0.0);
         }
         self.navigation_changed.emit(NavigationEvent::Pushed);
+        self.sync_mounted_pages();
         self.base.request_redraw();
         true
     }
@@ -250,7 +342,10 @@ impl NavigationStack {
         if index >= self.pages.len() || self.pages.len() <= index + 1 {
             return false;
         }
-        self.pages.truncate(index + 1);
+        let removed: Vec<PageSlot> = self.pages.drain(index + 1..).collect();
+        for slot in removed {
+            self.release_slot(slot);
+        }
         self.page_titles.truncate(self.pages.len());
         self.slide.jump_to(-1.0);
         self.slide.set_target(0.0);
@@ -261,6 +356,62 @@ impl NavigationStack {
         });
         self.base.request_redraw();
         true
+    }
+
+    /// Unlinks and hides a page the stack is dropping, when the runtime owns it.
+    ///
+    /// An owned page's `Box` is simply dropped with the slot. A mounted page has to be taken out of
+    /// the child list and hidden: a stale child would still be visited by every tree walk, and a
+    /// visible one would be painted under whatever became the top.
+    fn release_slot(&mut self, slot: PageSlot) {
+        if let PageSlot::Mounted(id) = slot {
+            self.base.remove_child_linked(id);
+            crate::set_widget_visible(id, false);
+        }
+    }
+
+    /// The content band a page is placed in, before the transition offset.
+    fn page_band(&self) -> Rect {
+        self.content_rect()
+    }
+
+    /// Places, shows and hides the mounted pages for the current transition.
+    ///
+    /// # Why the offset is written into the geometry rather than the paint context
+    ///
+    /// An owned page is painted by this control, so the transition can be expressed as a context
+    /// offset around its `draw`. A mounted page is painted by the **tree painter**, which ignores
+    /// that context, so the same visual has to be expressed as a rectangle. The arithmetic is the
+    /// one `draw` uses — the incoming page at `slide × width`, the outgoing one trailing at 30% in
+    /// the opposite direction — and it is applied in one place, so the two page kinds cannot slide
+    /// by different amounts.
+    ///
+    /// Only the top two pages are shown, which is the same visibility rule the owned path has: a
+    /// settled frame shows exactly one page.
+    fn sync_mounted_pages(&self) {
+        let band = self.page_band();
+        let slide = self.slide.value();
+        let offset = (slide * band.width as f32) as i32;
+        let previous_offset = -(((slide * band.width as f32) * 0.3) as i32);
+        let count = self.pages.len();
+        for (index, slot) in self.pages.iter().enumerate() {
+            let Some(id) = slot.mounted_id() else { continue };
+            let is_top = index + 1 == count;
+            let is_previous = count > 1 && index + 2 == count;
+            let shown = is_top || (slide != 0.0 && is_previous);
+            crate::set_widget_visible(id, shown);
+            if !shown {
+                continue;
+            }
+            let page_offset = if is_top { offset } else { previous_offset };
+            crate::set_widget_geometry(
+                id,
+                band.x.saturating_add(page_offset),
+                band.y,
+                band.width,
+                band.height,
+            );
+        }
     }
 
     /// Returns the writing direction the back affordance is placed by.
@@ -534,7 +685,18 @@ impl Widget for NavigationStack {
 
     /// Advances the content region's push/pop slide; `true` while it still owes frames.
     fn tick(&mut self, delta_ms: u32) -> bool {
-        self.slide.tick(delta_ms)
+        // A mounted page's rectangle *is* its transition: nothing else writes it, because the tree
+        // painter ignores the paint-context offset the owned pages slide under. So every frame that
+        // moves the slide — including the one that settles it and must hide the outgoing page —
+        // re-places them. `was_moving` rather than `moving` is deliberate: on the settling frame
+        // `tick` already reports "stopped", and skipping the sync there would leave the outgoing
+        // page visible until some later frame happened to redraw.
+        let was_moving = self.slide.is_moving();
+        let moving = self.slide.tick(delta_ms);
+        if was_moving {
+            self.sync_mounted_pages();
+        }
+        moving
     }
 
     fn is_animating(&self) -> bool {
@@ -809,6 +971,9 @@ impl Draw for NavigationStack {
             context.fill_rect(content, content_surface);
             context.pop_offset();
 
+            // The mounted pages are placed before the owned ones are painted, so a transition
+            // frame shows both kinds at the same offset.
+            self.sync_mounted_pages();
             let page_count = self.pages.len();
             if page_count > 0 {
                 // During a transition the outgoing page travels at 30% of the incoming page's
@@ -816,24 +981,26 @@ impl Draw for NavigationStack {
                 // rather than one screen sliding over a blank region.
                 if slide != 0.0 && page_count > 1 {
                     let previous_offset = -(((slide * content.width as f32) * 0.3) as i32);
-                    let previous = &mut self.pages[page_count - 2];
-                    // The page is painted into its own frame, so its geometry is the content
-                    // rect; the transition is expressed entirely by the context offset.
-                    previous.set_geometry(content);
-                    context.push_offset(previous_offset, 0);
-                    if let Some(drawable) = previous.as_draw_mut() {
+                    if let Some(previous) = self.pages[page_count - 2].widget_mut() {
+                        // The page is painted into its own frame, so its geometry is the content
+                        // rect; the transition is expressed entirely by the context offset.
+                        previous.set_geometry(content);
+                        context.push_offset(previous_offset, 0);
+                        if let Some(drawable) = previous.as_draw_mut() {
+                            drawable.draw(context);
+                        }
+                        context.pop_offset();
+                    }
+                }
+
+                if let Some(current) = self.pages[page_count - 1].widget_mut() {
+                    current.set_geometry(content);
+                    context.push_offset(offset, 0);
+                    if let Some(drawable) = current.as_draw_mut() {
                         drawable.draw(context);
                     }
                     context.pop_offset();
                 }
-
-                let current = &mut self.pages[page_count - 1];
-                current.set_geometry(content);
-                context.push_offset(offset, 0);
-                if let Some(drawable) = current.as_draw_mut() {
-                    drawable.draw(context);
-                }
-                context.pop_offset();
             }
         }
     }
@@ -871,7 +1038,8 @@ impl EventHandler for NavigationStack {
                     // Forward to current page
                     let content = self.content_rect();
                     if content.contains_point(*pos) {
-                        if let Some(page) = self.pages.last_mut() {
+                        if let Some(page) = self.pages.last_mut().and_then(|slot| slot.widget_mut())
+                        {
                             // The page is painted inside the content rect, so it must be
                             // hit-tested there too; otherwise it answers at a stale origin.
                             page.set_geometry(content);
@@ -886,7 +1054,7 @@ impl EventHandler for NavigationStack {
                 }
                 let content = self.content_rect();
                 if content.contains_point(*pos) {
-                    if let Some(page) = self.pages.last_mut() {
+                    if let Some(page) = self.pages.last_mut().and_then(|slot| slot.widget_mut()) {
                         page.set_geometry(content);
                         page.handle_event(event);
                     }
@@ -901,7 +1069,7 @@ impl EventHandler for NavigationStack {
                 }
                 let content = self.content_rect();
                 if content.contains_point(*pos) {
-                    if let Some(page) = self.pages.last_mut() {
+                    if let Some(page) = self.pages.last_mut().and_then(|slot| slot.widget_mut()) {
                         page.set_geometry(content);
                         page.handle_event(event);
                     }
@@ -917,7 +1085,7 @@ impl EventHandler for NavigationStack {
                 }
                 let content = self.content_rect();
                 if content.contains_point(*pos) {
-                    if let Some(page) = self.pages.last_mut() {
+                    if let Some(page) = self.pages.last_mut().and_then(|slot| slot.widget_mut()) {
                         page.set_geometry(content);
                         page.handle_event(event);
                     }
@@ -930,7 +1098,7 @@ impl EventHandler for NavigationStack {
                 }
                 let content = self.content_rect();
                 if content.contains_point(*pos) {
-                    if let Some(page) = self.pages.last_mut() {
+                    if let Some(page) = self.pages.last_mut().and_then(|slot| slot.widget_mut()) {
                         page.set_geometry(content);
                         page.handle_event(event);
                     }
@@ -943,7 +1111,7 @@ impl EventHandler for NavigationStack {
                 }
                 let content = self.content_rect();
                 if content.contains_point(*pos) {
-                    if let Some(page) = self.pages.last_mut() {
+                    if let Some(page) = self.pages.last_mut().and_then(|slot| slot.widget_mut()) {
                         page.set_geometry(content);
                         page.handle_event(event);
                     }
@@ -951,7 +1119,7 @@ impl EventHandler for NavigationStack {
             }
             _ => {
                 let content = self.content_rect();
-                if let Some(page) = self.pages.last_mut() {
+                if let Some(page) = self.pages.last_mut().and_then(|slot| slot.widget_mut()) {
                     page.set_geometry(content);
                     page.handle_event(event);
                 }
@@ -1110,6 +1278,64 @@ mod tests {
         assert!(popped.is_some());
         assert_eq!(stack.page_count(), 1);
         assert!(!stack.can_pop());
+    }
+
+    /// A declared page is a real page: linked, placed in the content band, and released on pop.
+    ///
+    /// # Why this test exists (issue-20261104 DM-11)
+    ///
+    /// `push` takes ownership of a `Box<dyn Widget>`, which a JSON document cannot give: the loader
+    /// mounts every node through the runtime, and the runtime keeps it. `push_id` is the declared
+    /// path, and its three obligations are that the page joins the child list (so the tree painter
+    /// reaches it), that its rectangle is the content band rather than its construction geometry,
+    /// and that popping it unlinks and hides it — a released page left visible would be painted
+    /// under whatever became the top.
+    #[test]
+    fn declared_pages_are_placed_and_released() {
+        let mut stack = NavigationStack::new(Rect::new(0, 0, 400, 600));
+        let root = crate::widget::runtime::register(Box::new(crate::widget::Label::new(
+            "root".to_string(),
+            Rect::new(0, 0, 10, 10),
+        )))
+        .expect("mount the root page");
+        let top = crate::widget::runtime::register(Box::new(crate::widget::Label::new(
+            "top".to_string(),
+            Rect::new(0, 0, 10, 10),
+        )))
+        .expect("mount the top page");
+
+        stack.push_id(root);
+        stack.push_id(top);
+        assert_eq!(stack.page_count(), 2, "each id is one page in the history");
+        assert_eq!(stack.page_id(0), Some(root));
+        assert_eq!(stack.page_id(1), Some(top));
+        assert!(
+            stack.base().children().contains(&root),
+            "a declared page has to be linked, or no tree walk reaches it"
+        );
+
+        // Settle the push transition; only then is exactly one page shown.
+        let _ = stack.tick(5_000);
+        assert!(stack.content_rect().height > 0, "the stack has a content band");
+        assert!(
+            crate::widget::runtime::with_widget(root, |page| page.is_visible()) == Some(false),
+            "the page under the top is hidden once the slide settles"
+        );
+        assert!(
+            crate::widget::runtime::with_widget(top, |page| page.is_visible()) == Some(true),
+            "the top page is the one on screen"
+        );
+
+        assert!(stack.pop().is_none(), "a mounted page cannot be handed back by value");
+        assert_eq!(stack.page_count(), 1);
+        assert!(!stack.base().children().contains(&top), "popping a declared page unlinks it");
+        assert!(
+            crate::widget::runtime::with_widget(top, |page| page.is_visible()) == Some(false),
+            "a popped page must not stay visible"
+        );
+
+        let _ = crate::widget::runtime::unregister(top);
+        let _ = crate::widget::runtime::unregister(root);
     }
 
     #[test]

@@ -369,6 +369,10 @@ impl<V: View> ReactiveHost<V> {
     /// Returns whether a rebuild ran.
     pub fn resize(&mut self, size: crate::core::Size) -> bool {
         if !self.engine.set_viewport(size) {
+            // Same tier: no rebuild (documented above), but layouts the host installed on mounted
+            // ids still have to follow the new viewport (LY-04).
+            let _ =
+                self.engine.follow_layout(crate::core::Rect::new(0, 0, size.width, size.height));
             return false;
         }
         self.engine.update(&self.view, self.create.as_ref());

@@ -1537,7 +1537,14 @@ impl Platform for WindowsPlatform {
     /// compile with `cannot find canvas in super`.
     #[cfg(widgets_unstripped)]
     fn invalidate_surface_rect(&self, id: ObjectId, rect: crate::core::Rect) -> bool {
-        match super::canvas::hwnd_for_widget(id) {
+        if let Some(hwnd) = super::canvas::hwnd_for_widget(id) {
+            return super::canvas::invalidate_canvas_rect(hwnd, rect);
+        }
+        // A control painted into a library window owns no `HWND` of its own: the window
+        // repaints its whole child list, so the window's client area is the surface to narrow.
+        // Without this arm the caller fell back to `invalidate_surface`, which invalidated the
+        // entire client area on every control repaint (PL-01).
+        match super::window_hwnd_for_widget_id(self, id) {
             Some(hwnd) => super::canvas::invalidate_canvas_rect(hwnd, rect),
             None => false,
         }

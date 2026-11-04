@@ -100,7 +100,7 @@ impl IbusConnection {
             )
             .await
             .ok()?;
-            let path: zbus::zvariant::OwnedObjectPath =
+            let path: zbus::OwnedObjectPath =
                 ibus.call("CreateInputContext", &("rust_widgets",)).await.ok()?;
             Some((owner, path.to_string()))
         })?;
@@ -606,10 +606,11 @@ mod tests {
         // `linux-a11y` feature, so IBus availability is false and `is_active` must stay false even
         // with focus: focus is not a connection.
         assert_eq!(*lock(&bridge.focused_widget), Some(42));
-        assert!(
-            !bridge.is_active(),
-            "focus alone must not report a live IME connection (no IBus without `linux-a11y`)"
-        );
+        // A build with `linux-a11y` may reach a real IBus daemon, in which case focus plus that
+        // live connection *is* active. The invariant this test pins is the absence case.
+        if !bridge.is_ibus_available() {
+            assert!(!bridge.is_active(), "focus alone must not report a live IME connection");
+        }
 
         bridge.focus_out(42);
         assert!(!bridge.is_active());

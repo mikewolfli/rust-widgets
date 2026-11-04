@@ -4372,7 +4372,7 @@ fn every_repaint_names_a_reason() {
         "a frame that submitted a repaint must be able to say why"
     );
     assert_eq!(
-        stats.last_repaint_reason.iter().find(|(sid, _)| *sid == id).map(|(_, r)| *r),
+        stats.last_repaint_reason.iter().find(|(sid, _)| **sid == id).map(|(_, r)| *r),
         Some(RepaintReason::Native),
         "a platform redraw is attributed to the platform: {:?}",
         stats.last_repaint_reason
@@ -4411,7 +4411,7 @@ fn two_causes_on_one_surface_record_the_first() {
         let stats = last_frame_stats().expect("a frame ran");
         assert_eq!(stats.repaints_coalesced, 1, "and the second request was merged");
         assert_eq!(
-            stats.last_repaint_reason.iter().find(|(sid, _)| *sid == id).map(|(_, r)| *r),
+            stats.last_repaint_reason.iter().find(|(sid, _)| **sid == id).map(|(_, r)| *r),
             Some(RepaintReason::Animation),
             "the cause that made the frame happen is the one recorded"
         );

@@ -243,6 +243,13 @@ impl TooltipManager {
         if !self.visible {
             match self.hovered {
                 Some(widget_id) => {
+                    // A control that has been hidden (its container collapsed, a page switched) must
+                    // not have a bubble pop up over it, and a stale hover must not survive the
+                    // hide (WG-02). `note_leave` is the same state a real pointer exit reports.
+                    if !crate::widget::runtime::is_effectively_visible(widget_id) {
+                        self.note_leave();
+                        return before != self.visible;
+                    }
                     self.hover_elapsed_ms = self.hover_elapsed_ms.saturating_add(delta_ms);
                     if self.hover_elapsed_ms >= u64::from(self.delay_ms) {
                         self.show_now(widget_id);

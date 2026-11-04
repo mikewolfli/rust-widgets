@@ -8,7 +8,7 @@
 //!
 //! # Reachability
 //!
-//! **State:** Reserved: an id-indexed widget lookup whose only consumers are this repository's tests. Removal condition: when the runtime registry fully subsumes it, or when the tests are retired.
+//! **State:** Production callers: `src/json/loader.rs:856` (feeds the index only while `LayoutInspector` is enabled, which is the default-off diagnostic path). Removal condition: when the runtime registry subsumes the index, or when the inspector is retired.
 
 mod registry;
 

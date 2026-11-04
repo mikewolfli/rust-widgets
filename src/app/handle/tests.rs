@@ -469,6 +469,7 @@ fn every_mirror_backed_getter_defers_to_the_platform_first() {
     let window = WindowHandle::from_raw(0);
 
     assert!(!window.set_min_size(320, 240), "id 0 is not a window");
+    assert!(!window.set_max_size(1920, 1080), "id 0 is not a window");
     assert!(!window.set_icon("/tmp/does-not-exist.png"));
     window.set_maximized(true);
     window.set_minimized(true);
@@ -478,6 +479,7 @@ fn every_mirror_backed_getter_defers_to_the_platform_first() {
 
     // Each getter is total: no panic, and the "nothing set" answer rather than a stale value.
     assert_eq!(window.min_size(), None, "a refused size must not be remembered");
+    assert_eq!(window.max_size(), None, "a refused max size must not be remembered");
     assert_eq!(window.icon(), None, "a refused icon must not be remembered");
     assert!(!window.is_maximized());
     assert!(!window.is_minimized());
@@ -794,6 +796,16 @@ fn every_window_state_field_is_classified_and_backed_by_a_test() {
         (
             "min_h",
             "fallback: 6 backends return `None` from `window_min_size`",
+            "every_mirror_backed_getter_defers_to_the_platform_first",
+        ),
+        (
+            "max_w",
+            "only read: `Platform` has no `window_max_size` read",
+            "every_mirror_backed_getter_defers_to_the_platform_first",
+        ),
+        (
+            "max_h",
+            "only read: `Platform` has no `window_max_size` read",
             "every_mirror_backed_getter_defers_to_the_platform_first",
         ),
         (

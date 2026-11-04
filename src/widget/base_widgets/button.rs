@@ -2684,37 +2684,41 @@ impl Draw for Button {
         // unchanged.
         if let Some(shortcut) = self.shortcut.as_ref() {
             // The formatted caption and its font come from the cache keyed by the same inputs as
-            // the intrinsic-size hint (WGT-F7); a hit costs a clone of a shared font name.
+            // the intrinsic-size hint (WGT-F7). The hit path compares the key and then draws from
+            // borrowed cache contents; it used to clone the whole `Option<(key, String, Font)>`
+            // before comparing, so every button with a shortcut allocated a `String` per frame
+            // (WG-07).
             let base_font = effective_font(style);
             let key = self.hint_key(base_font);
-            let cached = (*self.shortcut_hint_cache.borrow()).clone();
-            let (hint, hint_font) = match cached {
-                Some((cached_key, text, font)) if cached_key == key => (text, font),
-                _ => {
-                    let text = shortcut.format_shortcut();
-                    let font = base_font.with_size((base_font.size() * 0.75).max(6.0));
-                    *self.shortcut_hint_cache.borrow_mut() =
-                        Some((key, text.clone(), font.clone()));
-                    (text, font)
-                }
+            let hit = {
+                let cache = self.shortcut_hint_cache.borrow();
+                matches!(cache.as_ref(), Some((cached_key, _, _)) if cached_key == &key)
             };
-            let pad = dimensions::BUTTON_PADDING_H as i32 / 2;
-            let line = context.text_line(rect, &hint_font);
-            let band = Rect::new(
-                rect.x + pad,
-                rect.y + rect.height as i32 - line.height as i32 - pad,
-                rect.width.saturating_sub((pad as u32).saturating_mul(2)),
-                line.height,
-            );
-            let hint_line = context.text_line(band, &hint_font);
-            let ink = style.text_color.unwrap_or_else(|| bg.contrast_color()).with_alpha(170);
-            context.draw_text(
-                Point::new(band.x + band.width as i32, hint_line.y),
-                &hint,
-                &hint_font,
-                ink,
-                HorizontalAlignment::Right,
-            );
+            if !hit {
+                let text = shortcut.format_shortcut();
+                let font = base_font.with_size((base_font.size() * 0.75).max(6.0));
+                *self.shortcut_hint_cache.borrow_mut() = Some((key, text, font));
+            }
+            let cache = self.shortcut_hint_cache.borrow();
+            if let Some((_, hint, hint_font)) = cache.as_ref() {
+                let pad = dimensions::BUTTON_PADDING_H as i32 / 2;
+                let line = context.text_line(rect, hint_font);
+                let band = Rect::new(
+                    rect.x + pad,
+                    rect.y + rect.height as i32 - line.height as i32 - pad,
+                    rect.width.saturating_sub((pad as u32).saturating_mul(2)),
+                    line.height,
+                );
+                let hint_line = context.text_line(band, hint_font);
+                let ink = style.text_color.unwrap_or_else(|| bg.contrast_color()).with_alpha(170);
+                context.draw_text(
+                    Point::new(band.x + band.width as i32, hint_line.y),
+                    hint,
+                    hint_font,
+                    ink,
+                    HorizontalAlignment::Right,
+                );
+            }
         }
 
         // ── Default-button emphasis ──

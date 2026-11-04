@@ -2428,3 +2428,46 @@ fn wait_idle_leaves_the_pending_frame_ready_to_read_back() {
     let reference = rasterize_draw_commands_rgba8(16, 16, &commands).expect("reference");
     assert_eq!(first, reference, "the idle texture holds the frame the pixel entry returns");
 }
+
+/// The renderer owns the hardware-adaptive manager for its own device (issue-20261104 RD-04).
+///
+/// # Why this is a live-path test and not a unit test of the manager
+///
+/// The manager, its staging pool and its performance monitor were fully implemented and fully
+/// unreachable: nothing in the crate ever constructed one, so every number they compute was a
+/// number nothing asked for. The wiring makes the *renderer* their owner and brackets each frame
+/// with `begin_frame`/`end_frame`, and this asserts the three facts that make the wiring real —
+/// the manager's adapter answer is the renderer's own (one selection path, not two), its staging
+/// pool exists on this device, and drawing a frame publishes a performance sample.
+#[test]
+fn the_renderer_drives_the_adaptive_manager_it_owns() {
+    let Some(renderer) = renderer() else { return };
+
+    {
+        use crate::render::gpu::gpu_types::GpuRenderer;
+        assert_eq!(
+            renderer.gpu_adapter_info().name,
+            renderer.vendor_info().unwrap_or(""),
+            "the manager must answer with the adapter the renderer selected, not a second opinion"
+        );
+    }
+    assert!(
+        renderer.gpu_buffer_pool_stats().is_some(),
+        "the staging pool is built for this device"
+    );
+    assert!(
+        matches!(
+            renderer.gpu_operation_mode(),
+            crate::gpu::GpuOperationMode::Hardware | crate::gpu::GpuOperationMode::Software
+        ),
+        "the operation mode is one of the two the enum defines"
+    );
+
+    renderer
+        .render_draw_commands_rgba8(8, 8, &[WgpuDrawCommand::Clear { color: opaque(1, 2, 3) }])
+        .expect("an empty-command-free frame renders");
+    assert!(
+        renderer.gpu_performance_stats().is_some(),
+        "drawing a frame must feed the monitor, or the adaptive half is dead state"
+    );
+}

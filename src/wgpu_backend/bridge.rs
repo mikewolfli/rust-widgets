@@ -10,6 +10,7 @@
 
 use super::commands::WgpuDrawCommand;
 use super::types::{PixelRect, Rgba8};
+use crate::compat::VecDeque;
 use crate::render::RenderCommand;
 
 /// Converts a render-layer rectangle into the backend's pixel rectangle.
@@ -779,24 +780,32 @@ fn push_filled_arc(
     }
     let end = start + sweep;
     let full_turn = sweep >= core::f32::consts::TAU - 0.001;
-    let mut samples: Vec<Point> = Vec::new();
+    // Sample straight into the vertex list: the previous form built an intermediate `Vec<Point>`
+    // and copied it into a second one (RD-02). The centre is the first vertex of the fan.
+    let mut points: Vec<Point> = Vec::with_capacity(32);
+    points.push(center);
+    let mut first_sample: Option<Point> = None;
+    let mut last_sample: Option<Point> = None;
+    let mut sample_count = 0usize;
     crate::render::arc_helpers::for_each_arc_sample(center, radius as f32, start, end, |current| {
-        samples.push(current)
+        if first_sample.is_none() {
+            first_sample = Some(current);
+        }
+        last_sample = Some(current);
+        sample_count += 1;
+        points.push(current);
     });
+    if sample_count < 2 {
+        return;
+    }
     if full_turn {
-        if let Some(&first) = samples.first() {
-            if samples.last() != Some(&first) {
-                samples.push(first);
+        if let (Some(first), Some(last)) = (first_sample, last_sample) {
+            if last != first {
+                points.push(first);
             }
         }
     }
-    if samples.len() < 2 {
-        return;
-    }
-    let vertex_count = samples.len() + 1;
-    let mut points = Vec::with_capacity(vertex_count);
-    points.push(center);
-    points.extend_from_slice(&samples);
+    let vertex_count = points.len();
     let Ok(path) = crate::render::CompoundPath::new(points, vec![(0, vertex_count)]) else {
         return;
     };
@@ -916,12 +925,35 @@ pub fn ramp_is_smooth(ramp: &[crate::core::Color; 256]) -> bool {
 }
 
 /// The reference's own 256-entry ramp for `gradient`, as `RGBA8` bytes.
+///
+/// The conversion is memoised by ramp content: a gradient keeps the same ramp across frames, so a
+/// scene with a gradient present used to rebuild (and re-allocate) the same 1024 bytes every
+/// present (RD-02). The cache is tiny and exact — it compares the full entry table rather than a
+/// hash, so a collision cannot return another ramp's bytes.
 fn ramp_bytes_of(lut: &[crate::core::Color; 256]) -> crate::compat::Arc<[u8]> {
-    let mut bytes = Vec::with_capacity(256 * 4);
-    for color in lut.iter() {
-        bytes.extend_from_slice(&[color.r, color.g, color.b, color.a]);
+    /// How many recent ramps are kept. A scene has a handful of gradients at most.
+    const RAMP_CACHE_LIMIT: usize = 8;
+    thread_local! {
+        static RAMP_CACHE: core::cell::RefCell<
+            VecDeque<([crate::core::Color; 256], crate::compat::Arc<[u8]>)>,
+        > = core::cell::RefCell::new(VecDeque::new());
     }
-    crate::compat::Arc::from(bytes)
+    RAMP_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if let Some((_, bytes)) = cache.iter().find(|(stored, _)| stored == lut) {
+            return crate::compat::Arc::clone(bytes);
+        }
+        let mut bytes = Vec::with_capacity(256 * 4);
+        for color in lut.iter() {
+            bytes.extend_from_slice(&[color.r, color.g, color.b, color.a]);
+        }
+        let shared: crate::compat::Arc<[u8]> = crate::compat::Arc::from(bytes);
+        if cache.len() >= RAMP_CACHE_LIMIT {
+            cache.pop_front();
+        }
+        cache.push_back((*lut, crate::compat::Arc::clone(&shared)));
+        shared
+    })
 }
 
 /// The largest destination extent whose bilinear sample position is provably within one level of the

@@ -5,7 +5,12 @@
 //!
 //! # Reachability
 //!
-//! **State:** Reserved: shared test scaffolding exported so integration tests in separate crates can use it. Not part of the library's runtime surface. Removal condition: none; it is the deliberate test-support surface.
+//! **State:** Reserved: shared test scaffolding exported so integration tests in separate crates can use it. Not part of the library's runtime surface.
+//!
+//! **Removal condition:** when every in-repo test that uses it has migrated to an external
+//! `rust-widgets-testkit` crate, or when the cookbook's harness chapter is retired (XC-07). Until
+//! then it stays ungated by design: a feature gate would make the documented test surface
+//! disappear from the default build the cookbook compiles against.
 /// The in-process test harness: widget mounting, event injection, and
 /// teardown assertions.
 pub mod harness;

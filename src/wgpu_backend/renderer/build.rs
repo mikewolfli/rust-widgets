@@ -18,6 +18,20 @@ use super::resources::{CpuFrame, RenderCache};
 use std::cell::RefCell;
 use std::collections::HashMap;
 
+/// Builds this device's hardware-adaptive manager from the facts `wgpu` reported for it.
+///
+/// One adapter-selection path, not two: the renderer already ran the degradation ladder to obtain
+/// the adapter, so the manager is constructed *from* that answer
+/// ([`crate::gpu::GpuManager::from_adapter_info`]) rather than selecting again. A manager that
+/// cannot be built is reported as a construction error instead of being silently replaced by a
+/// stub: a renderer whose adaptive facts are made up is worse than one that refuses to start.
+fn gpu_manager(adapter_info: &wgpu::AdapterInfo) -> Result<crate::gpu::GpuManager, String> {
+    let facts = crate::gpu::AdapterInfo::from_wgpu(adapter_info);
+    crate::gpu::GpuManager::from_adapter_info(facts).map_err(|error| {
+        format!("the hardware-adaptive GPU manager could not be built for this adapter: {error}")
+    })
+}
+
 impl WgpuRenderer {
     /// Builds the renderer's pipelines on an existing device and queue.
     ///
@@ -1499,6 +1513,7 @@ impl WgpuRenderer {
             cache: RefCell::new(RenderCache::default()),
             clear_frame: CpuFrame::new(),
             commands_frame: CpuFrame::new(),
+            gpu: gpu_manager(&adapter_info)?,
             adapter_info,
         })
     }

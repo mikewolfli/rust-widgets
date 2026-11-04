@@ -57,6 +57,45 @@ use gtk::glib;
 /// that later runs at the display's own rate changes exactly one value.
 const FRAME_INTERVAL_MS: u64 = crate::platform::types::FRAME_INTERVAL_MS;
 
+/// Cadence the GTK heartbeat drops to while no frame is owed.
+///
+/// A still window does not need sixty wakeups a second (the same trade `IDLE_FRAME_INTERVAL_MS`
+/// records for the macOS backend). The drain still runs at this cadence, so an event that starts
+/// an animation is picked up on the next idle tick (PL-03).
+#[cfg(all(unix_desktop, feature = "gtk-native"))]
+const IDLE_FRAME_INTERVAL_MS: u64 = crate::platform::types::IDLE_FRAME_INTERVAL_MS;
+
+/// Installs (or re-installs) the GTK frame heartbeat at `interval_ms`.
+///
+/// # Why the cadence is re-armed rather than fixed
+///
+/// The heartbeat used to run at [`FRAME_INTERVAL_MS`] forever, so a completely still Linux
+/// desktop application woke its main thread sixty times a second to run a frame that had nothing
+/// to do (PL-03). The closure now asks the frame outcome whether another frame is owed and moves
+/// itself to [`IDLE_FRAME_INTERVAL_MS`] when it is not, or back to [`FRAME_INTERVAL_MS`] when an
+/// animation, a pending trigger or a pending repaint needs one.
+#[cfg(all(unix_desktop, feature = "gtk-native"))]
+fn arm_frame_heartbeat(
+    slot: std::rc::Rc<core::cell::Cell<Option<glib::SourceId>>>,
+    interval_ms: u64,
+) {
+    let next_slot = std::rc::Rc::clone(&slot);
+    let id = glib::timeout_add_local(core::time::Duration::from_millis(interval_ms), move || {
+        let outcome = crate::drive_frame(interval_ms as u32);
+        let wanted =
+            if outcome.needs_another_frame { FRAME_INTERVAL_MS } else { IDLE_FRAME_INTERVAL_MS };
+        if wanted != interval_ms {
+            // Retire this source and install the one for the new cadence. The recursive arm
+            // stores the fresh id in the shared slot before this closure returns.
+            next_slot.set(None);
+            arm_frame_heartbeat(std::rc::Rc::clone(&next_slot), wanted);
+            return glib::ControlFlow::Break;
+        }
+        glib::ControlFlow::Continue
+    });
+    slot.set(Some(id));
+}
+
 /// Resolves a window id to the GTK toplevel this backend owns for it.
 ///
 /// A host holds the widget-registry id while [`LinuxNativeState::windows`] is keyed by the
@@ -856,16 +895,17 @@ impl Platform for LinuxPlatform {
             // the thread GTK requires for widget work, so dispatching from here is
             // main-thread work rather than a cross-thread call.
             //
-            // The timer keeps running regardless of the answer: `ControlFlow::Break` here
-            // would stop the *drain* as well, so a still window would stop receiving the
-            // events that could start it moving again. `drive_frame` already makes a still
-            // frame nearly free -- two thread-local lookups and one `is_animating()` sweep
-            // -- which is the property that makes an unconditional heartbeat affordable.
-            glib::timeout_add_local(core::time::Duration::from_millis(FRAME_INTERVAL_MS), || {
-                crate::drive_frame(FRAME_INTERVAL_MS as u32);
-                glib::ControlFlow::Continue
-            });
+            // The timer now runs at two cadences: `FRAME_INTERVAL_MS` while a frame is owed and
+            // `IDLE_FRAME_INTERVAL_MS` while the window is still. `ControlFlow::Break` still never
+            // stops the *drain*: the idle source keeps draining triggers, so an event that starts
+            // an animation is picked up on the next idle tick (PL-03).
+            let heartbeat = std::rc::Rc::new(core::cell::Cell::new(None));
+            arm_frame_heartbeat(std::rc::Rc::clone(&heartbeat), FRAME_INTERVAL_MS);
             gtk::main();
+            // The loop is over, so the source must not outlive it.
+            if let Some(id) = heartbeat.take() {
+                id.remove();
+            }
         }
         #[cfg(not(all(unix_desktop, feature = "gtk-native")))]
         {

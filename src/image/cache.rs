@@ -24,7 +24,7 @@
 //!
 //! Two layers, because there are two costs:
 //!
-//! 1. **The read** — [`cached_from_path`] answers "these are the bytes this path produces" from a
+//! 1. **The read** — [`cached_from_path_with_key`] answers "these are the bytes this path produces" from a
 //!    `stat` when the file has not changed, so twelve tool buttons on one icon read it once. This is
 //!    the one place a **path** is a key, and only because it sits *before* the identity question: a
 //!    stat is what a filesystem answers without reading, and identity is still settled by content one
@@ -65,12 +65,9 @@
 //! `decode_requests`/`decode_hits`/`decode_misses`).
 
 use alloc::collections::BTreeMap;
-use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-
-use crate::image::format::DecodedImage;
 
 /// The default budget: 64 MiB of decoded pixel data.
 ///
@@ -78,15 +75,6 @@ use crate::image::format::DecodedImage;
 /// background it just decoded must not have it evicted by the next mid-size image — while still
 /// being small enough that a process cannot be driven out of memory by a long list of thumbnails.
 pub const DEFAULT_BUDGET_BYTES: usize = 64 * 1024 * 1024;
-
-/// One cache entry: the decoded image and what it costs.
-struct Entry {
-    image: Arc<DecodedImage>,
-    /// Bytes of decoded pixel data, which is what the budget is measured in.
-    bytes: usize,
-    /// A monotonic tick, so the least-recently-used entry can be found without a clock.
-    used_at: u64,
-}
 
 /// One cached RGBA8 pixel vector.
 ///
@@ -157,19 +145,17 @@ struct SourceStamp {
 
 /// Which entry the budget should drop next.
 ///
-/// A named type rather than a tuple of `(map-index, key)`, because the three maps have **different
+/// A named type rather than a tuple of `(map-index, key)`, because the two maps have **different
 /// key types** — a content hash is a `u64`, a path is bytes — and a tuple would have to invent a
-/// placeholder in one of the slots to unify them. Naming the victim keeps the three cases distinct
+/// placeholder in one of the slots to unify them. Naming the victim keeps the two cases distinct
 /// and the eviction loop a plain `match`.
 enum Victim {
-    Image(u64),
     Pixels(u64),
     Source(std::path::PathBuf),
 }
 
 /// The cache itself. Held behind a mutex in a process-wide `OnceLock`.
 struct DecodeCache {
-    entries: BTreeMap<u64, Entry>,
     pixels: BTreeMap<u64, PixelEntry>,
     /// File bytes, keyed by the path itself rather than by a content hash — see [`SourceEntry`].
     sources: BTreeMap<std::path::PathBuf, SourceEntry>,
@@ -186,7 +172,6 @@ struct DecodeCache {
 impl DecodeCache {
     fn new(budget_bytes: usize) -> Self {
         Self {
-            entries: BTreeMap::new(),
             pixels: BTreeMap::new(),
             sources: BTreeMap::new(),
             used_bytes: 0,
@@ -194,15 +179,6 @@ impl DecodeCache {
             tick: 0,
             evictions: 0,
         }
-    }
-
-    /// The decoded image for `key`, marking it most-recently-used.
-    fn get(&mut self, key: u64) -> Option<Arc<DecodedImage>> {
-        self.tick += 1;
-        let tick = self.tick;
-        let entry = self.entries.get_mut(&key)?;
-        entry.used_at = tick;
-        Some(Arc::clone(&entry.image))
     }
 
     /// The pixel vector for `key` and its decoded extent, marking it most-recently-used.
@@ -273,28 +249,11 @@ impl DecodeCache {
         self.used_bytes += size;
     }
 
-    /// Stores `image` under `key`, evicting least-recently-used entries until it fits.
+    /// Stores a pixel vector under `key`, evicting least-recently-used entries until it fits.
     ///
-    /// An image larger than the whole budget is **not** stored: it would evict every other entry and
-    /// still not fit, so storing it would trade the entire cache for one image that will be evicted
+    /// An entry larger than the whole budget is **not** stored: it would evict every other entry and
+    /// still not fit, so storing it would trade the entire cache for one entry that will be evicted
     /// by the next insert anyway.
-    fn insert(&mut self, key: u64, image: Arc<DecodedImage>, bytes: usize) {
-        if bytes > self.budget_bytes {
-            return;
-        }
-        // A re-insert of the same key (its content hash cannot have changed, but a caller may race
-        // two decodes of one resource) replaces rather than doubles.
-        if let Some(old) = self.entries.remove(&key) {
-            self.used_bytes = self.used_bytes.saturating_sub(old.bytes);
-        }
-        self.evict_until_fits(bytes);
-        self.tick += 1;
-        let used_at = self.tick;
-        self.entries.insert(key, Entry { image, bytes, used_at });
-        self.used_bytes += bytes;
-    }
-
-    /// Stores a pixel vector under `key`, with the same rules as [`Self::insert`].
     fn insert_pixels(
         &mut self,
         key: u64,
@@ -316,23 +275,21 @@ impl DecodeCache {
         self.used_bytes += bytes;
     }
 
-    /// Drops least-recently-used entries until `incoming` bytes fit, across all three maps.
+    /// Drops least-recently-used entries until `incoming` bytes fit, across both maps.
     ///
-    /// One budget over all of them, because the bound is on *memory*: a decoded image, its extracted
-    /// pixels and the file bytes it came from are equally real memory. Evicting by least-recently-used
-    /// across the maps, rather than draining one map first, is what keeps a screen that shows only
-    /// images from discarding images to make room for pixels it never asked for.
+    /// One budget over both, because the bound is on *memory*: the extracted pixels and the file
+    /// bytes they came from are equally real memory. Evicting by least-recently-used across the maps,
+    /// rather than draining one map first, is what keeps a screen that shows only images from
+    /// discarding file bytes to make room for pixels it never asked for.
     fn evict_until_fits(&mut self, incoming: usize) {
         if self.used_bytes + incoming <= self.budget_bytes {
             return;
         }
         // Collect and order the candidates once, then evict oldest-first. The previous loop called
-        // `least_recently_used` for every victim, rescanning all three maps (and cloning every
-        // source key it considered) each time, so one insert that evicted many entries was O(n²).
+        // `least_recently_used` for every victim, rescanning both maps (and cloning every source key
+        // it considered) each time, so one insert that evicted many entries was O(n²).
         let mut victims: Vec<(u64, Victim)> =
-            Vec::with_capacity(self.entries.len() + self.pixels.len() + self.sources.len());
-        victims
-            .extend(self.entries.iter().map(|(key, entry)| (entry.used_at, Victim::Image(*key))));
+            Vec::with_capacity(self.pixels.len() + self.sources.len());
         victims
             .extend(self.pixels.iter().map(|(key, entry)| (entry.used_at, Victim::Pixels(*key))));
         victims.extend(
@@ -345,7 +302,6 @@ impl DecodeCache {
                 break;
             }
             let removed_bytes = match victim {
-                Victim::Image(key) => self.entries.remove(&key).map(|e| e.bytes),
                 Victim::Pixels(key) => self.pixels.remove(&key).map(|e| e.bytes),
                 Victim::Source(key) => self.sources.remove(&key).map(|e| e.size),
             };
@@ -359,7 +315,6 @@ impl DecodeCache {
     }
 
     fn clear(&mut self) {
-        self.entries.clear();
         self.pixels.clear();
         self.sources.clear();
         self.used_bytes = 0;
@@ -543,20 +498,6 @@ pub fn set_budget_bytes(budget_bytes: usize) {
     }
 }
 
-/// The byte cost of a decoded image, which is what the budget is measured in.
-///
-/// Only the pixel payload counts. `DecodedImage`'s other fields are an enum discriminant and a
-/// handful of scalars, so including them would add a constant per entry and make the accounting look
-/// arbitrary; the pixels are the term that actually grows.
-fn decoded_bytes(image: &DecodedImage) -> usize {
-    use crate::image::format::ImageData;
-    match &image.data {
-        ImageData::Rgba8(v) | ImageData::Rgb8(v) | ImageData::Grayscale8(v) => v.len(),
-        ImageData::Grayscale16(v) => v.len(),
-        ImageData::Rgba16(v) | ImageData::Rgb16(v) => v.len(),
-    }
-}
-
 /// A stable content key for a request: the bytes plus the target format.
 ///
 /// # Why FNV-1a and not a cryptographic hash
@@ -596,55 +537,20 @@ fn width_tag(len: usize) -> u8 {
     (len & 0xff) as u8
 }
 
-/// The format tag hashed after the payload, so a request cannot collide with another format's.
-const FORMAT_TAG_RGBA8: u8 = 1;
-
-/// The tag for the pixel-vector cache, distinct from [`FORMAT_TAG_RGBA8`] so a decoded image and its
-/// extracted pixels are two entries rather than one overwriting the other.
+/// The tag hashed after the payload, so a pixel request cannot collide with another request shape.
+///
+/// The decoded-image entry point that used this module's other tag was removed with the dead public
+/// family (issue-20261104 RD-05): every draw path goes through [`file_rgba8_sized_or_none`], and the
+/// image entry had no production caller.
 #[cfg(all(feature = "image", not(alloc_frugal)))]
 const PIXELS_TAG_RGBA8: u8 = 2;
-
-/// Decodes `data` as RGBA8, reusing a previously decoded result for the same bytes.
-///
-/// This is the entry point every control should use. It is a drop-in for
-/// [`crate::image::decoder::decode_to_rgba8`] — same signature, same errors — with the difference
-/// that the second caller of the same bytes pays no decode.
-///
-/// # Errors
-///
-/// A decode **failure is not cached**. A file that was truncated when it was first read may be
-/// complete when it is read again, and caching the absence of an image would turn a transient error
-/// into a permanent one. `misses` therefore counts attempts, which is the honest reading of the
-/// counter for a stream of failures.
-#[cfg(all(feature = "image", not(alloc_frugal)))]
-pub fn decode_to_rgba8_cached(data: &[u8]) -> Result<Arc<DecodedImage>, String> {
-    REQUESTS.fetch_add(1, Ordering::Relaxed);
-    let key = content_key(data, FORMAT_TAG_RGBA8);
-
-    if let Some(image) = with_cache(|cache| cache.get(key)) {
-        HITS.fetch_add(1, Ordering::Relaxed);
-        return Ok(image);
-    }
-
-    MISSES.fetch_add(1, Ordering::Relaxed);
-    let decoded = crate::image::decoder::decode_to_rgba8(data)?;
-    let bytes = decoded_bytes(&decoded);
-    let image = Arc::new(decoded);
-    let (used, evictions) = with_cache(|cache| {
-        cache.insert(key, Arc::clone(&image), bytes);
-        (cache.used_bytes, cache.evictions)
-    });
-    STORED_BYTES.store(used, Ordering::Relaxed);
-    EVICTIONS.store(evictions, Ordering::Relaxed);
-    Ok(image)
-}
 
 /// The bytes of `path`, reusing a previous read when the file has not changed.
 ///
 /// # Why this is the layer under the decode cache
 ///
-/// [`decode_to_rgba8_cached`] saves the *decode*, and it is keyed on content — so it cannot save
-/// the *read*, because reading is what produces the thing it hashes. Every file entry point used to
+/// The pixel layer saves the *decode*, and it is keyed on content — so it cannot save the *read*,
+/// because reading is what produces the thing it hashes. Every file entry point used to
 /// call `std::fs::read` unconditionally, so twelve tool buttons on one icon opened, read and hashed
 /// that file twelve times to reach a pixel entry that only needed inserting once.
 ///
@@ -664,12 +570,7 @@ pub fn decode_to_rgba8_cached(data: &[u8]) -> Result<Arc<DecodedImage>, String> 
 /// The caller gets the error the read produced. Unlike a decode failure, **a read failure is not
 /// remembered**: there is nothing to remember (the cache stores bytes), and a file that appears
 /// later would otherwise stay "unreadable".
-#[cfg(all(feature = "image", not(alloc_frugal)))]
-pub fn cached_from_path(path: impl AsRef<std::path::Path>) -> Result<Arc<Vec<u8>>, std::io::Error> {
-    cached_from_path_with_key(path).map(|(bytes, _pixels_key)| bytes)
-}
-
-/// [`cached_from_path`] plus the pixel-layer content key stored with the bytes.
+/// Reads a file through the byte layer and returns its pixel-layer content key too.
 ///
 /// The key is computed when the file is read, so a later pixel lookup does not have to hash the
 /// whole file again — see [`SourceEntry::pixels_key`].
@@ -731,18 +632,6 @@ fn path_key(path: &std::path::Path) -> std::path::PathBuf {
     path.to_path_buf()
 }
 
-/// Reads and decodes a file as RGBA8, reusing a previously decoded result for the same bytes.
-///
-/// The convenience the controls actually call: it does the `fs::read` and the cached decode in one
-/// step, so a site cannot accidentally take the uncached path.
-#[cfg(all(feature = "image", not(alloc_frugal)))]
-pub fn decode_file_to_rgba8_cached(
-    path: impl AsRef<std::path::Path>,
-) -> Result<Arc<DecodedImage>, String> {
-    let bytes = cached_from_path(path.as_ref()).map_err(|error| error.to_string())?;
-    decode_to_rgba8_cached(&bytes)
-}
-
 /// The RGBA8 pixels of a file, or `None` if it cannot be read or decoded.
 ///
 /// Takes `&Path` rather than `&str` because the callers hold paths: a `tool_button`'s icon is a
@@ -762,7 +651,7 @@ pub fn decode_file_to_rgba8_cached(
 /// copy happens once, and every later request is an `Arc` bump — which is what "shared" has to mean
 /// to be worth anything.
 ///
-/// # And why it reads through [`cached_from_path`] rather than `std::fs::read`
+/// # And why it reads through [`cached_from_path_with_key`] rather than `std::fs::read`
 ///
 /// Reading directly here made the decode cache cheaper than it looked: a request whose pixels were
 /// already cached still paid a full file read to find that out. The read is now the layer below, so
@@ -794,27 +683,13 @@ pub fn file_rgba8_sized_or_none(
     pixels_rgba8_sized_or_none_cached(&bytes, pixels_key)
 }
 
-/// The RGBA8 pixels of `data`, or `None` if it does not decode.
-///
-/// See [`file_rgba8_or_none`] for why the pixel vector gets its own cache entry.
-#[cfg(all(feature = "image", not(alloc_frugal)))]
-pub fn pixels_rgba8_or_none(data: &[u8]) -> Option<Arc<Vec<u8>>> {
-    pixels_rgba8_sized_or_none(data).map(|(pixels, _, _)| pixels)
-}
-
 /// The RGBA8 pixels of `data` **and their decoded extent**, or `None` if it does not decode.
 ///
-/// See [`pixels_rgba8_or_none`] for the cache identity rules; this is the same lookup with the
-/// extent the entry was stored with.
-#[cfg(all(feature = "image", not(alloc_frugal)))]
-pub fn pixels_rgba8_sized_or_none(data: &[u8]) -> Option<(Arc<Vec<u8>>, u32, u32)> {
-    pixels_rgba8_sized_or_none_cached(data, content_key(data, PIXELS_TAG_RGBA8))
-}
-
-/// [`pixels_rgba8_sized_or_none`] with a content key the caller already has.
-///
-/// The file layer computes this key once when it reads the bytes; passing it in avoids hashing the
-/// whole file on every draw.
+/// The key is the caller's, because the only production caller is the file layer above and it
+/// computes the content key once when it reads the bytes — passing it in is what keeps a draw from
+/// hashing the whole file again. A decode **failure is not cached**: a truncated file may be complete
+/// on the next read, and caching the absence of an image would turn a transient error into a
+/// permanent one.
 #[cfg(all(feature = "image", not(alloc_frugal)))]
 fn pixels_rgba8_sized_or_none_cached(data: &[u8], key: u64) -> Option<(Arc<Vec<u8>>, u32, u32)> {
     REQUESTS.fetch_add(1, Ordering::Relaxed);
@@ -854,7 +729,14 @@ fn pixels_rgba8_sized_or_none_cached(data: &[u8], key: u64) -> Option<(Arc<Vec<u
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::image::format::{DecodedImage, ImageData, ImageFormat};
+
+    /// The byte layer's read, as the removed public wrapper used to expose it.
+    ///
+    /// `cached_from_path` was deleted with the dead public family (issue-20261104 RD-05); the tests
+    /// below are about the *byte layer*, so they read through the private function that layer keeps.
+    fn read_bytes(path: &std::path::Path) -> Result<Arc<Vec<u8>>, std::io::Error> {
+        cached_from_path_with_key(path).map(|(bytes, _pixels_key)| bytes)
+    }
 
     /// A tiny valid PNG, so the decode path is exercised for real rather than mocked.
     ///
@@ -874,19 +756,19 @@ mod tests {
     }
 
     #[test]
-    fn the_key_depends_on_the_bytes_and_the_format() {
-        let a = content_key(b"hello", FORMAT_TAG_RGBA8);
-        let b = content_key(b"hello", FORMAT_TAG_RGBA8);
-        let c = content_key(b"hellp", FORMAT_TAG_RGBA8);
+    fn the_key_depends_on_the_bytes_and_the_request_shape() {
+        let a = content_key(b"hello", PIXELS_TAG_RGBA8);
+        let b = content_key(b"hello", PIXELS_TAG_RGBA8);
+        let c = content_key(b"hellp", PIXELS_TAG_RGBA8);
         assert_eq!(a, b, "the same request must key the same");
         assert_ne!(a, c, "a one-byte change must change the key");
         assert_ne!(
-            content_key(b"hello", FORMAT_TAG_RGBA8),
-            content_key(b"hello", 2),
-            "the format is part of the request"
+            content_key(b"hello", PIXELS_TAG_RGBA8),
+            content_key(b"hello", PIXELS_TAG_RGBA8 + 1),
+            "the request shape is part of the key"
         );
         // The length is hashed, so a prefix cannot collide with a longer stream.
-        assert_ne!(content_key(b"ab", FORMAT_TAG_RGBA8), content_key(b"ab\0", FORMAT_TAG_RGBA8));
+        assert_ne!(content_key(b"ab", PIXELS_TAG_RGBA8), content_key(b"ab\0", PIXELS_TAG_RGBA8));
     }
 
     /// The whole point: the second request of the same bytes must not decode.
@@ -898,12 +780,13 @@ mod tests {
         let before = stats();
         let png = png_1x1();
 
-        let first = decode_to_rgba8_cached(&png).expect("the PNG must decode");
-        let second = decode_to_rgba8_cached(&png).expect("and the cached one");
-        let third = decode_to_rgba8_cached(&png).expect("and again");
+        let key = content_key(&png, PIXELS_TAG_RGBA8);
+        let first = pixels_rgba8_sized_or_none_cached(&png, key).expect("the PNG must decode");
+        let second = pixels_rgba8_sized_or_none_cached(&png, key).expect("and the cached one");
+        let third = pixels_rgba8_sized_or_none_cached(&png, key).expect("and again");
 
-        assert!(Arc::ptr_eq(&first, &second), "a hit must hand back the same allocation");
-        assert!(Arc::ptr_eq(&second, &third));
+        assert!(Arc::ptr_eq(&first.0, &second.0), "a hit must hand back the same allocation");
+        assert!(Arc::ptr_eq(&second.0, &third.0));
 
         let after = stats();
         assert_eq!(after.requests - before.requests, 3, "three requests");
@@ -913,11 +796,10 @@ mod tests {
         assert_eq!(after.hits + after.misses, after.requests, "the books must balance");
     }
 
-    /// The pixel-vector path must be shared too, and must be a *different* entry from the image path.
+    /// The pixel-vector path is shared, and the extent travels with the pixels.
     ///
-    /// The controls call this one, so a hit here is the case that actually saves work; and the two
-    /// paths key with different tags, so requesting the image and then its pixels is two decodes
-    /// rather than one path silently answering for the other.
+    /// The controls call this one, so a hit here is the case that actually saves work: the second
+    /// request must hand back the same allocation instead of paying a copy plus a decode.
     #[cfg(all(feature = "image", not(alloc_frugal)))]
     #[test]
     fn the_pixel_vector_is_shared_between_requests() {
@@ -926,24 +808,17 @@ mod tests {
         let png = png_1x1();
         let before = stats();
 
-        let a = pixels_rgba8_or_none(&png).expect("decodes");
-        let b = pixels_rgba8_or_none(&png).expect("hits");
-        assert!(Arc::ptr_eq(&a, &b), "the second request must not re-allocate the pixels");
-        assert_eq!(a.len(), 4, "one RGBA pixel");
+        let key = content_key(&png, PIXELS_TAG_RGBA8);
+        let a = pixels_rgba8_sized_or_none_cached(&png, key).expect("decodes");
+        let b = pixels_rgba8_sized_or_none_cached(&png, key).expect("hits");
+        assert!(Arc::ptr_eq(&a.0, &b.0), "the second request must not re-allocate the pixels");
+        assert_eq!(a.0.len(), 4, "one RGBA pixel");
+        assert_eq!((a.1, a.2), (1, 1), "the extent the entry was stored with comes back");
 
         let after = stats();
         assert_eq!(after.requests - before.requests, 2);
         assert_eq!(after.misses - before.misses, 1);
         assert_eq!(after.hits - before.hits, 1);
-
-        // And the image path is its own entry, so it decodes again rather than reusing these pixels.
-        let mid = stats();
-        let _ = decode_to_rgba8_cached(&png).expect("decodes");
-        assert_eq!(
-            stats().misses - mid.misses,
-            1,
-            "a different request shape is a different entry"
-        );
     }
 
     /// A failed decode must not be remembered as a failure.
@@ -952,9 +827,11 @@ mod tests {
     fn a_decode_failure_is_not_cached() {
         let _guard = stats_test_guard();
         clear();
+        let data = b"not an image at all";
+        let key = content_key(data, PIXELS_TAG_RGBA8);
         let before = stats();
-        assert!(decode_to_rgba8_cached(b"not an image at all").is_err());
-        assert!(decode_to_rgba8_cached(b"not an image at all").is_err());
+        assert!(pixels_rgba8_sized_or_none_cached(data, key).is_none());
+        assert!(pixels_rgba8_sized_or_none_cached(data, key).is_none());
         let after = stats();
         assert_eq!(
             after.misses - before.misses,
@@ -968,38 +845,29 @@ mod tests {
     #[cfg(all(feature = "image", not(alloc_frugal)))]
     #[test]
     fn the_budget_is_enforced_by_eviction() {
-        let image = |tag: u8, side: usize| {
-            Arc::new(DecodedImage::new(
-                ImageFormat::Rgba8,
-                ImageData::Rgba8(vec![tag; side * side * 4]),
-                side as u32,
-                side as u32,
-            ))
-        };
+        let pixels = |tag: u8| Arc::new(vec![tag; 400]);
         // A private cache, so this test cannot disturb the process-wide one.
         let mut cache = DecodeCache::new(1000);
-        cache.insert(1, image(1, 10), 400);
-        cache.insert(2, image(2, 10), 400);
+        cache.insert_pixels(1, pixels(1), 10, 10, 400);
+        cache.insert_pixels(2, pixels(2), 10, 10, 400);
         assert_eq!(cache.used_bytes, 800);
-        assert!(cache.get(1).is_some(), "touching 1 makes 2 the victim");
+        assert!(cache.get_pixels(1).is_some(), "touching 1 makes 2 the victim");
         let evictions_before = cache.evictions;
-        cache.insert(3, image(3, 10), 400);
+        cache.insert_pixels(3, pixels(3), 10, 10, 400);
         assert_eq!(cache.evictions, evictions_before + 1, "exactly one victim was dropped");
         assert!(cache.used_bytes <= 1000, "the budget is a ceiling, not a target");
-        assert!(cache.get(1).is_some(), "the recently used entry survives");
-        assert!(cache.get(2).is_none(), "the least recently used one was dropped");
+        assert!(cache.get_pixels(1).is_some(), "the recently used entry survives");
+        assert!(cache.get_pixels(2).is_none(), "the least recently used one was dropped");
     }
 
-    /// An image larger than the budget must be returned but not stored.
+    /// An entry larger than the budget must be returned but not stored.
     #[cfg(all(feature = "image", not(alloc_frugal)))]
     #[test]
-    fn an_oversized_image_is_not_stored() {
+    fn an_oversized_entry_is_not_stored() {
         let mut cache = DecodeCache::new(100);
-        let huge =
-            Arc::new(DecodedImage::new(ImageFormat::Rgba8, ImageData::Rgba8(vec![0; 400]), 10, 10));
-        cache.insert(1, huge, 400);
+        cache.insert_pixels(1, Arc::new(vec![0; 400]), 10, 10, 400);
         assert_eq!(cache.used_bytes, 0, "storing it would evict everything for nothing");
-        assert!(cache.get(1).is_none());
+        assert!(cache.get_pixels(1).is_none());
     }
 
     #[test]
@@ -1050,9 +918,9 @@ mod tests {
         let path = write_temp("read_once", &png);
 
         let before = stats();
-        let first = cached_from_path(&path).expect("the file reads");
-        let second = cached_from_path(&path).expect("and the cached one");
-        let third = cached_from_path(&path).expect("and again");
+        let first = read_bytes(&path).expect("the file reads");
+        let second = read_bytes(&path).expect("and the cached one");
+        let third = read_bytes(&path).expect("and again");
         let after = stats();
 
         assert_eq!(&*first, &png[..], "the bytes are the file's");
@@ -1080,14 +948,14 @@ mod tests {
         let _guard = stats_test_guard();
         clear();
         let path = write_temp("changed", b"first version");
-        let first = cached_from_path(&path).expect("reads");
+        let first = read_bytes(&path).expect("reads");
         assert_eq!(&*first, b"first version");
 
         // A longer file, so `len` differs and the stamp cannot match.
         std::thread::sleep(std::time::Duration::from_millis(1100));
         std::fs::write(&path, b"a second, much longer version").expect("rewrite");
 
-        let second = cached_from_path(&path).expect("re-reads");
+        let second = read_bytes(&path).expect("re-reads");
         assert_eq!(
             &*second, b"a second, much longer version",
             "a changed file must be re-read, not served from the old bytes"
@@ -1133,17 +1001,17 @@ mod tests {
         path.push(format!("rw_cache_test_missing_{}.png", std::process::id()));
         let _ = std::fs::remove_file(&path);
 
-        assert!(cached_from_path(&path).is_err(), "a missing file is an error");
+        assert!(read_bytes(&path).is_err(), "a missing file is an error");
         // Create it, and the next call must succeed: the failure was not cached.
         std::fs::write(&path, png_1x1()).expect("write");
         assert!(
-            cached_from_path(&path).is_ok(),
+            read_bytes(&path).is_ok(),
             "a file that appears later must be readable; the earlier failure was not an entry"
         );
         let _ = std::fs::remove_file(&path);
     }
 
-    /// The three maps share one budget, and the file layer is part of it.
+    /// The two maps share one budget, and the file layer is part of it.
     #[cfg(all(feature = "image", not(alloc_frugal)))]
     #[test]
     fn the_file_layer_is_inside_the_same_budget() {
@@ -1155,7 +1023,7 @@ mod tests {
         // A second file that does not fit evicts the first rather than overrunning.
         let stamp2 = SourceStamp { len: 80, modified_nanos: 2 };
         cache.insert_source(std::path::PathBuf::from("b"), Arc::new(vec![1u8; 80]), stamp2);
-        assert!(cache.used_bytes <= 100, "the budget is a ceiling across all three maps");
+        assert!(cache.used_bytes <= 100, "the budget is a ceiling across both maps");
         assert_eq!(cache.evictions, 1);
         assert!(
             cache.get_source(std::path::Path::new("a"), stamp).is_none(),

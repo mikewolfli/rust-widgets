@@ -41,6 +41,16 @@ thread_local! {
     /// accepted moves and by platform move notifications, so a read never reports a position
     /// the window is known to have left.
     static WINDOW_POSITIONS: RefCell<HashMap<ObjectId, Point>> = RefCell::new(HashMap::new());
+
+    /// The window that most recently gained keyboard focus, as reported by the platform's focus
+    /// notification. `Platform` has no focus query, so this mirror is the one runtime source a
+    /// host can ask (HB-12).
+    static ACTIVE_WINDOW: core::cell::Cell<Option<ObjectId>> = const { core::cell::Cell::new(None) };
+}
+
+/// The window that most recently gained keyboard focus, if the platform reported one.
+pub(crate) fn active_window_id() -> Option<ObjectId> {
+    ACTIVE_WINDOW.try_with(|active| active.get()).unwrap_or(None)
 }
 
 /// Records the library-side position mirror for `window_id`.
@@ -54,6 +64,15 @@ pub(crate) fn record_window_position(window_id: ObjectId, position: Point) {
 #[allow(dead_code)]
 pub(crate) fn window_position_mirror(window_id: ObjectId) -> Option<Point> {
     WINDOW_POSITIONS.with(|positions| positions.borrow().get(&window_id).copied())
+}
+
+/// Removes the library-side position mirror for `window_id`.
+///
+/// A window create/destroy loop used to leak one entry per window: the mirror had a writer and a
+/// reader but no removal, so `remove_callbacks` could not make good on "remove every callback and
+/// mirror for this id" (HB-02).
+pub(crate) fn remove_window_position(window_id: ObjectId) -> bool {
+    WINDOW_POSITIONS.with(|positions| positions.borrow_mut().remove(&window_id).is_some())
 }
 
 /// Installs (or replaces) the close handler for `window_id`.
@@ -104,6 +123,15 @@ pub(crate) fn notify_window_focus(window_id: ObjectId, gained: bool) {
     let Some(window) = crate::widget::runtime::top_level_window_of(window_id) else {
         return;
     };
+    // Track the active window beside the signal: the platform trait has no focus query, so a
+    // host that asks "which window is active?" has only this notification (HB-12).
+    let _ = ACTIVE_WINDOW.try_with(|active| {
+        if gained {
+            active.set(Some(window));
+        } else if active.get() == Some(window) {
+            active.set(None);
+        }
+    });
     let _ = crate::widget::runtime::with_widget_mut(window, |widget| {
         if let Some(window) =
             crate::widget::capability::widget_as_mut::<crate::widget::Window>(widget)

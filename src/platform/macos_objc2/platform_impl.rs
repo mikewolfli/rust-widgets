@@ -1077,6 +1077,9 @@ impl Platform for MacOSObjc2Platform {
             #[cfg(all(target_os = "macos", feature = "macos"))]
             {
                 let outcome = crate::drive_frame(FRAME_INTERVAL_MS as u32);
+                // An idle window's display-link callback then skips its published deadline
+                // and its wake until a frame is owed again (PL-04).
+                crate::platform::display_link::note_frame_demand(outcome.needs_another_frame);
                 crate::platform::frame_wait::pause_between_frames_with(
                     outcome.needs_another_frame,
                     super::native::pump_native_event_until,

@@ -15,7 +15,9 @@ impl ClipboardManager {
     /// Returns `true` when the backend accepts the update.
     #[cfg(not(alloc_frugal))]
     pub fn set_text(text: impl AsRef<str>) -> bool {
-        Self::set_text_with(get_platform(), text.as_ref())
+        // Through the crate-root entry so the APP-012 publish (which lives in the control backend)
+        // runs for a copy initiated here too (XC-02).
+        crate::set_clipboard_text(text.as_ref())
     }
     /// Clipboard not available in mini mode.
     #[cfg(alloc_frugal)]
@@ -35,8 +37,9 @@ impl ClipboardManager {
         String::new()
     }
     /// Set plain text into the system/process clipboard via an explicit platform.
-    /// Kept under mini so tests (and any `&dyn Platform` caller) can use it.
-    #[cfg_attr(alloc_frugal, allow(dead_code))]
+    /// Kept for tests and any `&dyn Platform` caller; the manager's own `set_text` now routes
+    /// through the crate-root entry so the APP-012 publish runs (XC-02).
+    #[cfg_attr(not(alloc_frugal), allow(dead_code))]
     pub(crate) fn set_text_with(platform: &dyn Platform, text: &str) -> bool {
         platform.set_clipboard_text(text)
     }

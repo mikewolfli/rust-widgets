@@ -120,8 +120,18 @@ impl LineEditHandle {
         );
     }
 
-    /// Return the placeholder text set via [`Self::set_placeholder`].
+    /// Return the placeholder text.
+    ///
+    /// Reads the control's `placeholder_text` property first (the crate-root write path and the
+    /// control itself both go through it) and falls back to the in-process mirror for an id that
+    /// is not a mounted widget (HB-08). Reading only the mirror made this and the crate-root
+    /// `set_widget_placeholder` disagree about the same field.
     pub fn placeholder(&self) -> String {
+        if let Some(crate::widget::capability::CapabilityValue::String(text)) =
+            read_control_property(self.raw_id(), "placeholder_text")
+        {
+            return text;
+        }
         LINE_EDIT_STATES.with(|map| {
             map.borrow().get(&self.raw_id()).map(|s| s.placeholder.clone()).unwrap_or_default()
         })
@@ -129,12 +139,24 @@ impl LineEditHandle {
 
     /// Return whether the line-edit is read-only.
     pub fn is_read_only(&self) -> bool {
+        if let Some(crate::widget::capability::CapabilityValue::Bool(read_only)) =
+            read_control_property(self.raw_id(), "read_only")
+        {
+            return read_only;
+        }
         LINE_EDIT_STATES
             .with(|map| map.borrow().get(&self.raw_id()).map(|s| s.read_only).unwrap_or(false))
     }
 
     /// Return the maximum number of characters allowed (default 32767).
     pub fn max_length(&self) -> u32 {
+        if let Some(crate::widget::capability::CapabilityValue::UInt(length)) =
+            read_control_property(self.raw_id(), "max_length")
+        {
+            if let Ok(length) = u32::try_from(length) {
+                return length;
+            }
+        }
         LINE_EDIT_STATES
             .with(|map| map.borrow().get(&self.raw_id()).map(|s| s.max_length).unwrap_or(32767))
     }

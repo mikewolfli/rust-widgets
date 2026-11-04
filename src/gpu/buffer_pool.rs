@@ -264,6 +264,20 @@ fn align_up_checked(value: usize, alignment: usize) -> Option<usize> {
 /// `GpuStagingBufferPool`, [`GpuUploadBatcher`] and their statistics together — a pool nobody
 /// allocates from is not a feature, and keeping it compiles ~1000 lines that no test can exercise
 /// beyond its own unit tests.
+///
+/// # What is live today (issue-20261104 RD-04)
+///
+/// The pool is constructed per renderer ([`crate::gpu::GpuManager::from_adapter_info`]) and its
+/// **ring cursor advances once per painted frame** (`GpuManager::begin_frame` →
+/// [`Self::next_frame`]`, called from `WgpuRenderer::render_draw_commands_rgba8`), so its
+/// accounting is read from a real device rather than from a test fixture.
+///
+/// The *region allocator* ([`Self::allocate`]) still has no in-crate caller, and that is a
+/// measured decision rather than an omission: this crate uploads through `wgpu`, whose
+/// `queue.write_buffer`/`write_texture` already stage internally. Serving those uploads from a
+/// second ring would **add** a copy instead of removing one — the second implementation of one
+/// concept that principle #101 exists to prevent. The allocator is therefore the host-facing
+/// surface a non-`wgpu` ring would build on, exactly as this note says.
 pub struct GpuStagingBufferPool {
     config: StagingBufferPoolConfig,
     slots: Vec<GpuRingBufferSlot>,

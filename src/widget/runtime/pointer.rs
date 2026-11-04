@@ -267,8 +267,8 @@ pub fn dispatch_pointer_event(root: ObjectId, event: &Event, point: Point) -> bo
     let pointer_origin: Option<ObjectId> = None;
 
     let target = match pointer_origin {
-        Some(popup) => widget_at_inner(popup, point, true),
-        None => widget_at(root, point),
+        Some(popup) => dispatch_widget_at(popup, point, true),
+        None => dispatch_widget_at(root, point, false),
     };
     dispatch_hover_transition(target, point);
     // A control that captured the pointer keeps receiving events even when the
@@ -486,13 +486,17 @@ impl DragCoordinator {
         if !session.is_active() {
             return;
         }
-        // Clone the payload so the session borrow ends before the registry is entered:
-        // `with_widget_mut` runs user code that may re-enter the coordinator's owner.
-        let payload = session.payload().clone();
+        // Clone the payload only when a *different* target is about to receive it. The
+        // `target == self.hovered` early return below skips the clone on the common case (a
+        // drag whose pointer stays inside the same control), which used to copy three strings
+        // and a `Vec<DragItem>` on every single mouse move (RT-02).
         let target = widget_at_point(pos, viewport);
         if target == self.hovered {
             return;
         }
+        // The session borrow must end before the registry is entered: `with_widget_mut` runs
+        // user code that may re-enter the coordinator's owner.
+        let payload = session.payload().clone();
         if let Some(previous) = self.hovered {
             let _ = with_widget_mut(previous, |widget| {
                 if let Some(target) = widget.drop_target_mut() {
@@ -553,7 +557,19 @@ impl DragCoordinator {
     }
 }
 
+/// The dispatch-path hit cache entry: descent root, whether its bounds were trusted, the point,
+/// the content epoch, and the answer. Named so the `thread_local` type stays readable.
+type DispatchHitCache = Option<(ObjectId, bool, Point, u64, Option<ObjectId>)>;
+
 thread_local! {
+    /// Top-level window ids reused by [`drag_widget_at_point`].
+    ///
+    /// The drag hit test descends each window's tree instead of scanning every mounted control
+    /// (RT-02); this buffer holds the roots for the duration of one query. A nested query takes
+    /// the flat-scan fallback rather than panicking on a borrow conflict.
+    pub(crate) static DRAG_WINDOW_ROOTS: RefCell<alloc::vec::Vec<ObjectId>> =
+        const { RefCell::new(alloc::vec::Vec::new()) };
+
     /// Single-slot memo for the last [`widget_at_point`] answer (G-103).
     ///
     /// The key is the *exact* query plus the content epoch. With all four equal the tree,
@@ -564,6 +580,15 @@ thread_local! {
     pub(crate) static LAST_POINT_HIT: RefCell<Option<(Point, Rect, u64, Option<ObjectId>)>> =
         const { RefCell::new(None) };
 
+    /// Single-slot memo for the last dispatch-path hit test (PL-05).
+    ///
+    /// The dispatch path used to descend the tree on every pointer event, including the second
+    /// event at an unchanged position (a press followed by a release, a hover re-delivery).
+    /// The key is the descent root, whether the root's bounds were trusted, the exact point and
+    /// the content epoch — the same freshness token the drag-path memo uses. `unregister` bumps
+    /// that epoch, so a destroyed control cannot leave a stale answer behind.
+    pub(crate) static LAST_DISPATCH_HIT: RefCell<DispatchHitCache> = const { RefCell::new(None) };
+
     /// Per-window containment cache for [`scan_widget_at_point`].
     ///
     /// The scan runs on every pointer move of a drag, and a fresh `Vec` per call was one
@@ -571,6 +596,28 @@ thread_local! {
     /// its own local buffer instead of re-borrowing this one.
     pub(crate) static POINT_BUCKETS: RefCell<alloc::vec::Vec<(ObjectId, bool)>> =
         const { RefCell::new(alloc::vec::Vec::new()) };
+}
+
+/// [`widget_at_inner`] with a single-slot memo for the dispatch path (PL-05).
+///
+/// `trust_root` is part of the key rather than assumed: the popup case deliberately skips the
+/// root's own bounds, so the two answers for one `(root, point)` are not interchangeable.
+fn dispatch_widget_at(root: ObjectId, point: Point, trust_root: bool) -> Option<ObjectId> {
+    let epoch = renderable_epoch();
+    if let Some((cached_root, cached_trust, cached_point, cached_epoch, hit)) =
+        LAST_DISPATCH_HIT.with(|slot| *slot.borrow())
+    {
+        if cached_root == root
+            && cached_trust == trust_root
+            && cached_point == point
+            && cached_epoch == epoch
+        {
+            return hit;
+        }
+    }
+    let hit = widget_at_inner(root, point, trust_root);
+    LAST_DISPATCH_HIT.with(|slot| *slot.borrow_mut() = Some((root, trust_root, point, epoch, hit)));
+    hit
 }
 
 /// Returns the deepest mounted control whose own hit rule accepts `point`.
@@ -601,9 +648,65 @@ pub(crate) fn widget_at_point(point: Point, viewport: Rect) -> Option<ObjectId> 
             return hit;
         }
     }
-    let hit = scan_widget_at_point(point);
+    let hit = drag_widget_at_point(point);
     LAST_POINT_HIT.with(|slot| *slot.borrow_mut() = Some((point, viewport, epoch, hit)));
     hit
+}
+
+/// Hit-tests a drag position by descending each top-level window's tree.
+///
+/// A drag has no single root to descend from (it may travel between surfaces, and the caller
+/// hands the coordinator a viewport rather than a tree), so the previous implementation scanned
+/// every mounted control and asked each one `contains_point` — O(all controls) with a virtual
+/// call per control on every mouse move (RT-02). This walks the same tree the dispatch path
+/// walks: collect the windows, descend each, keep the smallest hit. The flat scan remains the
+/// fallback for a registry with no window (a test fixture, or a host that mounts bare
+/// containers) or a hit rule that extends past every window.
+fn drag_widget_at_point(point: Point) -> Option<ObjectId> {
+    let descended = DRAG_WINDOW_ROOTS
+        .try_with(|roots| {
+            let Ok(mut roots) = roots.try_borrow_mut() else {
+                return None;
+            };
+            roots.clear();
+            // Reading `kind`/`is_visible` per entry is a field access on an already-borrowed
+            // entry; it does not call a control's own hit rule the way the old scan did.
+            let _ = MOUNTED.try_with(|map| {
+                for (id, entry) in map.borrow().iter() {
+                    if entry.widget.kind() == crate::widget::WidgetKind::Window
+                        && entry.widget.is_visible()
+                    {
+                        roots.push(*id);
+                    }
+                }
+            });
+            if roots.is_empty() {
+                return None;
+            }
+            let mut best: Option<(ObjectId, u32)> = None;
+            for window in roots.iter().copied() {
+                let Some(candidate) = widget_at(window, point) else {
+                    continue;
+                };
+                let area = geometry_of(candidate)
+                    .map(|rect| rect.width.saturating_mul(rect.height))
+                    .unwrap_or(u32::MAX);
+                let better = match best {
+                    None => true,
+                    Some((_, best_area)) => area < best_area,
+                };
+                if better {
+                    best = Some((candidate, area));
+                }
+            }
+            best.map(|(id, _)| Some(id))
+        })
+        .ok()
+        .flatten();
+    match descended {
+        Some(hit) => hit,
+        None => scan_widget_at_point(point),
+    }
 }
 
 /// The bucketed registry scan behind [`widget_at_point`].
@@ -874,6 +977,24 @@ pub(crate) fn dispatch_hover_transition(hovered: Option<ObjectId>, point: Point)
 /// coordinate-based transition cannot observe: there is no widget under the pointer,
 /// so the previous hover would otherwise stay highlighted forever.
 pub fn clear_hover(point: Point) {
+    dispatch_hover_transition(None, point);
+}
+
+/// Clears the hover target when it is `id`, sending it the `MouseLeave` it is owed.
+///
+/// A control hidden while the pointer is over it used to keep its hover state and its hover
+/// animation frozen: only a later pointer move could end it, and a pointer that never moved left
+/// the control painted as though it were still under the cursor (WG-02). The leave is dispatched
+/// at the control's own centre, because the real pointer position is not what made the state
+/// wrong.
+pub fn clear_hover_for(id: ObjectId) {
+    let hovered = HOVERED.try_with(|last| *last.borrow()).unwrap_or(None);
+    if hovered != Some(id) {
+        return;
+    }
+    let point = geometry_of(id)
+        .map(|rect| Point::new(rect.x + (rect.width / 2) as i32, rect.y + (rect.height / 2) as i32))
+        .unwrap_or(Point::new(0, 0));
     dispatch_hover_transition(None, point);
 }
 

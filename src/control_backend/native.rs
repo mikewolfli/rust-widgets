@@ -267,12 +267,14 @@ impl ControlBackend for NativeControlBackend {
     }
     fn set_widget_visible(&self, widget_id: ObjectId, visible: bool) {
         get_platform().set_widget_visible(widget_id, visible);
+        release_modal_on_hide(widget_id, visible);
     }
     fn show_widget(&self, widget_id: ObjectId) {
         get_platform().show_widget(widget_id);
     }
     fn hide_widget(&self, widget_id: ObjectId) {
         get_platform().hide_widget(widget_id);
+        release_modal_on_hide(widget_id, false);
     }
     fn is_widget_visible(&self, widget_id: ObjectId) -> bool {
         get_platform().is_widget_visible(widget_id)
@@ -293,7 +295,20 @@ impl ControlBackend for NativeControlBackend {
         get_platform().get_widget_accessibility_name(widget_id)
     }
     fn set_clipboard_text(&self, text: &str) -> bool {
-        get_platform().set_clipboard_text(text)
+        let written = get_platform().set_clipboard_text(text);
+        // APP-012 is published here, on the one path every writer funnels through: the crate-root
+        // API, the C ABI and `ClipboardManager` all reach this method, so a subscriber sees every
+        // write instead of only the crate-root one (XC-02). Publishing only on success means a
+        // subscriber never sees a change that did not happen.
+        #[cfg(full_widgets)]
+        if written {
+            crate::app::publish_application_event(
+                &crate::app::ApplicationEvent::ClipboardChanged {
+                    text: crate::compat::String::from(text),
+                },
+            );
+        }
+        written
     }
     fn get_clipboard_text(&self) -> String {
         get_platform().get_clipboard_text()
@@ -885,6 +900,21 @@ impl ControlBackend for NativeControlBackend {
     ) -> ObjectId {
         get_platform().create_context_menu(parent, x, y, width, height)
     }
+}
+
+/// Releases a modal layer when a control is hidden through any visibility spelling.
+///
+/// Four entry points reach a hide (`set_widget_visible(false)`, `hide_widget`, and their C ABI
+/// forwards). Pop used to live in `api::control::set_widget_visible` only, so the other three
+/// left the scrim entry and the modal input block in place until the control was destroyed
+/// (XC-03). One layer, below all four, is the single place it can be made true of all of them.
+fn release_modal_on_hide(widget_id: ObjectId, visible: bool) {
+    #[cfg(full_widgets)]
+    if !visible {
+        crate::widget::dialog::pop_modal_layer(widget_id);
+    }
+    #[cfg(not(full_widgets))]
+    let _ = (widget_id, visible);
 }
 
 #[cfg(test)]

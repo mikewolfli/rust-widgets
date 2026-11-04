@@ -75,6 +75,42 @@ impl WindowOptions {
         self
     }
 
+    /// Sets the maximum client size.
+    pub fn max_size(mut self, width: u32, height: u32) -> Self {
+        self.attributes.max_size = Some((width, height));
+        self
+    }
+
+    /// Whether the window content is transparent.
+    pub fn transparent(mut self, transparent: bool) -> Self {
+        self.attributes.transparent = Some(transparent);
+        self
+    }
+
+    /// Whether the window stays above other windows.
+    pub fn always_on_top(mut self, on: bool) -> Self {
+        self.attributes.always_on_top = Some(on);
+        self
+    }
+
+    /// Preferred light/dark appearance (`true` = dark).
+    pub fn preferred_theme(mut self, dark: bool) -> Self {
+        self.attributes.preferred_theme = Some(dark);
+        self
+    }
+
+    /// Whether the OS may include the window in screenshots and recordings.
+    pub fn content_protected(mut self, protected: bool) -> Self {
+        self.attributes.content_protected = Some(protected);
+        self
+    }
+
+    /// Sets the window icon from a file path.
+    pub fn icon(mut self, path: &str) -> Self {
+        self.attributes.window_icon = Some(path.to_string());
+        self
+    }
+
     /// Whether the user may resize the window.
     pub fn resizable(mut self, resizable: bool) -> Self {
         self.attributes.resizable = Some(resizable);
@@ -824,23 +860,41 @@ pub(crate) fn apply_window_layout(window_id: ObjectId) {
     LAYOUT_CONTEXT_SCALES.with(|map| {
         map.borrow_mut().insert(window_id, context.layout_scale.max(context.font_scale));
     });
+    // LY-07: the list is taken from a per-thread pool and returned after it has been applied, so a
+    // resize reuses one allocation per nesting level instead of making one.
+    let mut scratch = crate::layout::scratch::take_geometry_scratch();
     let child_geometries = LAYOUTS.with(|map| {
         let map = map.borrow();
         let Some(layout) = map.get(&window_id) else {
-            return Vec::new();
+            // A document-loaded (JSON / C ABI) root layout lives in the declarative registry,
+            // not in `LAYOUTS`. The window path used to return an empty list here, so a resize
+            // never replayed the root layout and the whole tree kept its load-time geometry
+            // (LY-01). `declarative::apply_layout` is the one store for that path; it is not
+            // mirrored into `LAYOUTS`.
+            if crate::layout::declarative::has_layout(window_id) {
+                // The pool entry is not used on this path: `apply_layout` builds its own list and
+                // returns it to the caller, so handing it back keeps the pool warm.
+                crate::layout::scratch::return_geometry_scratch(scratch);
+                return crate::layout::declarative::apply_layout(
+                    window_id,
+                    Rect::new(0, 0, width, height),
+                );
+            }
+            return scratch;
         };
-        let mut geometries = Vec::new();
         layout.update_with_context(
             Rect::new(0, 0, width, height),
             &context,
             &mut |widget_id, geometry| {
-                geometries.push((widget_id, geometry));
+                scratch.push((widget_id, geometry));
             },
         );
-        geometries
+        scratch
     });
 
-    for (widget_id, geometry) in child_geometries {
+    // Indexed rather than consuming: the allocation has to survive the loop so the pool can take
+    // it back. `(ObjectId, Rect)` is `Copy`, so this costs a copy, not a move of the buffer.
+    for (widget_id, geometry) in child_geometries.iter().copied() {
         crate::set_widget_geometry(
             widget_id,
             geometry.x,
@@ -852,15 +906,19 @@ pub(crate) fn apply_window_layout(window_id: ObjectId) {
         // children have to be laid out again. Without this a panel positioned by the
         // window layout keeps whatever child geometry it computed against its original
         // (usually zero-area) rect — the children exist but are never placed.
+        //
+        // Both registries are applied when both hold an entry: they used to be an
+        // `else if`, so a widget with a panel layout and a declarative layout only ever ran
+        // the panel side and the document's layout went stale (LY-02). The order is fixed:
+        // panel first, declarative second, so a document that wraps a panel wins.
         if widget_hosts_a_layout(widget_id) {
             apply_panel_geometry(widget_id, geometry);
-        } else if crate::layout::declarative::has_layout(widget_id) {
-            // The declarative (JSON / C ABI) registry is a second layout store. A
-            // container loaded from a document is placed by the window just like a
-            // panel, so its own layout must be asked against the new rectangle too.
+        }
+        if crate::layout::declarative::has_layout(widget_id) {
             crate::layout::declarative::apply_layout(widget_id, geometry);
         }
     }
+    crate::layout::scratch::return_geometry_scratch(child_geometries);
 }
 
 /// Whether `id` has a child layout registered on it.
@@ -1007,6 +1065,10 @@ pub(crate) struct WindowState {
     pub(crate) icon: String,
     pub(crate) min_w: u32,
     pub(crate) min_h: u32,
+    /// Largest client size the platform accepted, mirrored for the backends whose
+    /// `Platform` has no `window_max_size` read (HB-01).
+    pub(crate) max_w: u32,
+    pub(crate) max_h: u32,
     pub(crate) maximized: bool,
     pub(crate) minimized: bool,
     pub(crate) fullscreen: bool,
@@ -1024,6 +1086,8 @@ impl std::fmt::Debug for WindowState {
             .field("icon", &self.icon)
             .field("min_w", &self.min_w)
             .field("min_h", &self.min_h)
+            .field("max_w", &self.max_w)
+            .field("max_h", &self.max_h)
             .field("maximized", &self.maximized)
             .field("minimized", &self.minimized)
             .field("fullscreen", &self.fullscreen)
@@ -1043,6 +1107,8 @@ impl Default for WindowState {
             icon: String::new(),
             min_w: 0,
             min_h: 0,
+            max_w: 0,
+            max_h: 0,
             maximized: false,
             minimized: false,
             fullscreen: false,
@@ -1131,6 +1197,66 @@ impl WindowHandle {
         self.mirrored_min_size()
     }
 
+    /// Set the maximum window size.
+    ///
+    /// Pushed through [`crate::platform::Platform::set_window_max_size`]. The `Platform` has no
+    /// read for it, so the mirror this records is the only readback `max_size` has — and it is
+    /// written only when the platform accepted the request (HB-01).
+    pub fn set_max_size(&self, w: u32, h: u32) -> bool {
+        let pushed = crate::platform::get_platform().set_window_max_size(self.raw_id(), w, h);
+        if pushed {
+            WINDOW_STATES.with(|map| {
+                let mut map = map.borrow_mut();
+                let state = map.entry(self.raw_id()).or_default();
+                state.max_w = w;
+                state.max_h = h;
+            });
+        }
+        pushed
+    }
+
+    /// Read the maximum window size, if one was accepted.
+    pub fn max_size(&self) -> Option<(u32, u32)> {
+        WINDOW_STATES.with(|map| {
+            map.borrow().get(&self.raw_id()).and_then(|state| {
+                if state.max_w == 0 && state.max_h == 0 {
+                    None
+                } else {
+                    Some((state.max_w, state.max_h))
+                }
+            })
+        })
+    }
+
+    /// Whether this window is the one that most recently gained keyboard focus.
+    ///
+    /// The platform trait has no focus query, so this reads the active-window record maintained by
+    /// [`crate::platform::window_control::notify_window_focus`] — the same notification the
+    /// `focus_gained`/`focus_lost` signals fire from (HB-12).
+    pub fn is_active(&self) -> bool {
+        crate::platform::window_control::active_window_id() == Some(self.raw_id())
+    }
+
+    /// Set whether the window content is transparent.
+    pub fn set_transparent(&self, transparent: bool) -> bool {
+        crate::platform::get_platform().set_window_transparent(self.raw_id(), transparent)
+    }
+
+    /// Set whether the window stays above other windows.
+    pub fn set_always_on_top(&self, on: bool) -> bool {
+        crate::platform::get_platform().set_window_always_on_top(self.raw_id(), on)
+    }
+
+    /// Request a per-window light/dark appearance (`true` = dark).
+    pub fn set_preferred_theme(&self, dark: bool) -> bool {
+        crate::platform::get_platform().set_window_preferred_theme(self.raw_id(), dark)
+    }
+
+    /// Set whether the OS may include the window in screenshots and recordings.
+    pub fn set_content_protected(&self, protected: bool) -> bool {
+        crate::platform::get_platform().set_window_content_protected(self.raw_id(), protected)
+    }
+
     /// Read the icon path from the in-process mirror, if one was accepted.
     ///
     /// # Why a rejected icon stays unreadable
@@ -1175,6 +1301,16 @@ impl WindowHandle {
     /// `maximize()`/`unmaximize()` on GTK. Wayland and the state-only mobile backends record the
     /// value but cannot change a native window here, and `is_maximized` falls back to that record.
     pub fn set_maximized(&self, maximized: bool) {
+        let _ = self.set_maximized_applied(maximized);
+    }
+
+    /// [`Self::set_maximized`] with the platform's answer, for the generic handle path.
+    ///
+    /// The generic `WidgetHandle::set_window_state` used to call the platform directly and write
+    /// no mirror, so a backend that answers `None` to the read made `is_maximized` fall back to the
+    /// mirror's default and report the opposite of what was set (HB-04). Both paths now share this
+    /// one writer.
+    pub(crate) fn set_maximized_applied(&self, maximized: bool) -> bool {
         // The mirror records only what the platform accepted, exactly as `set_min_size` and
         // `set_icon` do — otherwise a flag set on a window that does not exist is reported as
         // applied by the `is_*` getter, which falls back to the mirror when the platform answers
@@ -1190,6 +1326,7 @@ impl WindowHandle {
                     maximized;
             });
         }
+        applied
     }
 
     /// Return whether the window is maximized.
@@ -1545,14 +1682,18 @@ impl WindowHandle {
     where
         F: FnMut(Point) + Send + Sync + 'static,
     {
+        let id = self.raw_id();
         let mut callback = Some(callback);
         let mut connected = false;
-        let _ = crate::widget::runtime::with_widget_mut(self.raw_id(), |widget| {
+        let _ = crate::widget::runtime::with_widget_mut(id, |widget| {
             if let Some(window) =
                 crate::widget::capability::widget_as::<crate::widget::Window>(widget)
             {
                 if let Some(mut callback) = callback.take() {
-                    window.moved.connect(move |position| callback(*position));
+                    let handle = window.moved.connect(move |position| callback(*position));
+                    // Recorded so `remove_callbacks` can disconnect it; these three registrars
+                    // used to discard the handle (HB-03).
+                    super::record_signal_connection(id, super::SignalKind::Moved, handle);
                     connected = true;
                 }
             }
@@ -1565,22 +1706,33 @@ impl WindowHandle {
     where
         F: FnMut() + Send + Sync + 'static,
     {
+        let id = self.raw_id();
         let mut callback = Some(callback);
         let mut connected = false;
-        let _ = crate::widget::runtime::with_widget_mut(self.raw_id(), |widget| {
+        let _ = crate::widget::runtime::with_widget_mut(id, |widget| {
             if let Some(window) =
                 crate::widget::capability::widget_as::<crate::widget::Window>(widget)
             {
                 match signal {
                     WindowSignal::FocusGained => {
                         if let Some(callback) = callback.take() {
-                            window.focus_gained.connect(callback);
+                            let handle = window.focus_gained.connect(callback);
+                            super::record_signal_connection(
+                                id,
+                                super::SignalKind::FocusGained,
+                                handle,
+                            );
                             connected = true;
                         }
                     }
                     WindowSignal::FocusLost => {
                         if let Some(callback) = callback.take() {
-                            window.focus_lost.connect(callback);
+                            let handle = window.focus_lost.connect(callback);
+                            super::record_signal_connection(
+                                id,
+                                super::SignalKind::FocusLost,
+                                handle,
+                            );
                             connected = true;
                         }
                     }

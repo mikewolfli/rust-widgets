@@ -846,3 +846,65 @@ pub(crate) fn has_dirty_rects(id: ObjectId) -> bool {
         .try_with(|map| map.borrow().get(&id).is_some_and(|state| !state.tracker.is_empty()))
         .unwrap_or(false)
 }
+
+thread_local! {
+    /// Reused walk stack for [`tree_dirty_union`] (PL-01).
+    #[allow(clippy::missing_const_for_thread_local)]
+    pub(crate) static TREE_DAMAGE_STACK: core::cell::RefCell<alloc::vec::Vec<ObjectId>> =
+        core::cell::RefCell::new(alloc::vec::Vec::new());
+
+    /// Reused rectangle buffer for [`tree_dirty_union`] (PL-01).
+    #[allow(clippy::missing_const_for_thread_local)]
+    pub(crate) static TREE_DAMAGE_RECTS: core::cell::RefCell<alloc::vec::Vec<Rect>> =
+        core::cell::RefCell::new(alloc::vec::Vec::new());
+}
+
+/// The union of the damage rectangles recorded anywhere **below** `root`.
+///
+/// A backend that can express a damaged region (Win32's `InvalidateRect`) uses this to
+/// invalidate only the pixels a frame will repaint, instead of the whole client area on every
+/// key, hover or wheel message (PL-01).
+///
+/// Returns `None` when `root` itself carries damage, because the root's geometry is written in
+/// the platform's window space while its children are written in client space — the two cannot
+/// be unioned, so the caller falls back to a full invalidate. `None` is also the answer for a
+/// tree with no damage, which is likewise safe: a full repaint shows the same picture.
+pub fn tree_dirty_union(root: ObjectId) -> Option<Rect> {
+    if has_dirty_rects(root) {
+        return None;
+    }
+    TREE_DAMAGE_STACK
+        .try_with(|stack_cell| {
+            let Ok(mut stack) = stack_cell.try_borrow_mut() else {
+                return None;
+            };
+            stack.clear();
+            let _ = with_child_ids(root, |children| stack.extend_from_slice(children));
+            if stack.is_empty() {
+                return None;
+            }
+            TREE_DAMAGE_RECTS
+                .try_with(|rect_cell| {
+                    let Ok(mut rects) = rect_cell.try_borrow_mut() else {
+                        return None;
+                    };
+                    let mut accumulated: Option<Rect> = None;
+                    while let Some(id) = stack.pop() {
+                        if dirty_rects_into(id, &mut rects) {
+                            for rect in rects.iter() {
+                                accumulated = Some(match accumulated {
+                                    None => *rect,
+                                    Some(previous) => previous.union(rect),
+                                });
+                            }
+                        }
+                        let _ = with_child_ids(id, |children| stack.extend_from_slice(children));
+                    }
+                    accumulated
+                })
+                .ok()
+                .flatten()
+        })
+        .ok()
+        .flatten()
+}

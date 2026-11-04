@@ -129,19 +129,15 @@ impl SharedIconPixels {
         Self::from_rgba8(pixels, width, height)
     }
 
-    /// Wraps the shared pixels the decode cache already holds for `data`.
+    /// Wraps the shared pixels the decode cache already holds for the file at `path`.
     ///
     /// This is the no-copy path from a decoded resource to a drawable handle: the cache's `Arc` is
     /// reused, so the only work is wrapping it with the extent the cache stored beside the bytes.
-    /// `None` means the bytes did not decode.
-    pub fn from_cached_bytes(data: &[u8]) -> Option<Self> {
-        Self::from_cached(crate::image::cache::pixels_rgba8_sized_or_none(data)?)
-    }
-
-    /// Wraps the shared pixels the decode cache already holds for the file at `path`.
+    /// A missing or undecodable file is reported by the cache and yields `None`, exactly as
+    /// [`crate::image::cache::file_rgba8_or_none`] does.
     ///
-    /// See [`Self::from_cached_bytes`]; a missing or undecodable file is reported by the cache and
-    /// yields `None`, exactly as [`crate::image::cache::file_rgba8_or_none`] does.
+    /// The in-memory counterpart was removed with the dead public family (issue-20261104 RD-05):
+    /// every caller in and out of the crate names a file, and the byte-string entry had none.
     pub fn from_cached_file(path: impl AsRef<std::path::Path>) -> Option<Self> {
         Self::from_cached(crate::image::cache::file_rgba8_sized_or_none(path)?)
     }
@@ -693,22 +689,28 @@ mod shared_pixels_tests {
         crate::image::encode(&decoded, ImageFormat::Png).expect("the encoder produces a PNG")
     }
 
+    /// The no-copy path from a file the cache decoded to a drawable handle.
+    ///
+    /// The byte-string entry point that used to cover this was removed with the dead public family
+    /// (issue-20261104 RD-05); every caller names a file, so the file route is the one to pin. The
+    /// assertions are the same ones: the decoded extent survives, and the second handle shares the
+    /// cache's allocation rather than paying a copy plus a decode.
     #[test]
-    fn cached_pixels_become_a_sized_handle_without_copying() {
-        let png = non_square_png();
-        let first = SharedIconPixels::from_cached_bytes(&png).expect("the PNG decodes");
+    fn cached_file_pixels_become_a_sized_handle_without_copying() {
+        let path = std::env::temp_dir().join("rw_icon_source_non_square.png");
+        std::fs::write(&path, non_square_png()).expect("write the fixture");
+        let first = SharedIconPixels::from_cached_file(&path).expect("the PNG decodes");
         assert_eq!((first.width(), first.height()), (4, 2), "the decoded extent is kept");
 
-        // The second request is answered by the cache entry the first one inserted, so the two
-        // handles must share one allocation: this is the seam that stops a control from paying a
-        // copy (plus a decode) for pixels the cache already holds.
-        let second = SharedIconPixels::from_cached_bytes(&png).expect("the PNG is cached");
+        let second = SharedIconPixels::from_cached_file(&path).expect("the PNG is cached");
         assert!(first.shares_allocation_with(&second));
         assert_eq!(first.pixels().len(), 4 * 2 * 4);
 
+        let missing = std::env::temp_dir().join("rw_icon_source_absent.png");
+        let _ = std::fs::remove_file(&missing);
         assert!(
-            SharedIconPixels::from_cached_bytes(b"not an image at all").is_none(),
-            "undecodable bytes produce no handle"
+            SharedIconPixels::from_cached_file(&missing).is_none(),
+            "a missing file produces no handle"
         );
     }
 

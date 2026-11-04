@@ -418,6 +418,40 @@ impl FrameCensus {
     }
 }
 
+// The census's layer stack, reused across frames (issue-20261104 RD-02).
+//
+// `census` runs once per presented frame, and its layer stack was a fresh `Vec<bool>` each time:
+// one heap allocation per frame for a buffer whose only job is to remember how deep the layer
+// nesting is. The stack mirrors the painter's child-buffer pool, so the depth-2 shape covers any
+// re-entrant audit an embedder might add without handing one live buffer to two calls.
+thread_local! {
+    #[allow(clippy::missing_const_for_thread_local)]
+    static CENSUS_LAYER_SCRATCH: std::cell::RefCell<Vec<Vec<bool>>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Takes an empty layer stack, keeping the capacity a previous frame grew.
+fn take_layer_stack() -> Vec<bool> {
+    let mut stack = CENSUS_LAYER_SCRATCH
+        .try_with(|scratch| scratch.borrow_mut().pop())
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    stack.clear();
+    stack
+}
+
+/// Returns the layer stack, keeping its capacity.
+fn return_layer_stack(mut stack: Vec<bool>) {
+    let _ = CENSUS_LAYER_SCRATCH.try_with(|scratch| {
+        let mut scratch = scratch.borrow_mut();
+        if scratch.len() < 2 {
+            stack.clear();
+            scratch.push(stack);
+        }
+    });
+}
+
 /// Counts the classes of every command in a frame.
 pub fn census(commands: &[RenderCommand]) -> FrameCensus {
     let mut result = FrameCensus::default();
@@ -425,7 +459,7 @@ pub fn census(commands: &[RenderCommand]) -> FrameCensus {
     // its own. `classify` cannot answer that for a single command, so the audit tracks the pushes
     // and answers for the pops — a pop that closes an isolating layer, or nothing at all, forces
     // the frame to the CPU exactly as the bridge does.
-    let mut layers: Vec<bool> = Vec::new();
+    let mut layers: Vec<bool> = take_layer_stack();
     for command in commands {
         let (class, _) = match command {
             RenderCommand::PushLayer { effect, .. } => {
@@ -464,6 +498,8 @@ pub fn census(commands: &[RenderCommand]) -> FrameCensus {
             }
         }
     }
+    // Hand the layer stack back before the report leaves: the frame that just used it is over.
+    return_layer_stack(layers);
     result
 }
 

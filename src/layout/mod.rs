@@ -41,6 +41,12 @@ pub mod inspector;
 pub mod keyboard_aware;
 /// Solver-level clamp/overflow telemetry for arrange passes (RW-48).
 pub mod report;
+/// Reusable resize-chain buffers (issue-20261104 LY-07).
+///
+/// The alloc-frugal profiles have no widget runtime to apply geometries to and a fixed-capacity
+/// `Vec`, so there is nothing for a pool of buffers to serve there.
+#[cfg(not(alloc_frugal))]
+pub(crate) mod scratch;
 /// Divisible panes with draggable handles; see
 /// `crate::widget::Splitter` for the widget front end.
 pub mod splitter;

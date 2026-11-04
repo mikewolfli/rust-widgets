@@ -804,6 +804,23 @@ unsafe fn widget_id_by_native_handle(hwnd: HWND) -> Option<u64> {
 /// # Safety
 /// `hwnd` must be a live window handle.
 unsafe fn invalidate_window(hwnd: HWND) {
+    // Narrow the invalidation to the damage the dispatch just recorded when the runtime can
+    // name it. A key press or a hover crossing one control used to invalidate the whole client
+    // area, so `WM_PAINT` re-converted and re-blitted every pixel of a 4K window (PL-01).
+    if let Some(window_id) = window_widget_for(hwnd) {
+        if let Some(rect) = crate::widget::runtime::tree_dirty_union(window_id) {
+            let clip = winapi::shared::windef::RECT {
+                left: rect.x,
+                top: rect.y,
+                right: rect.x.saturating_add(rect.width as i32),
+                bottom: rect.y.saturating_add(rect.height as i32),
+            };
+            // SAFETY: `clip` is a valid `RECT` for the duration of the call, and `hwnd` is a
+            // live window handle per this function's contract.
+            winapi::um::winuser::InvalidateRect(hwnd, &clip, 0);
+            return;
+        }
+    }
     // SAFETY: a null `RECT` invalidates the entire client area, which is intended.
     winapi::um::winuser::InvalidateRect(hwnd, std::ptr::null(), 0);
 }

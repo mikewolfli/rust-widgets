@@ -117,14 +117,9 @@ pub fn is_widget_enabled(widget_id: crate::core::ObjectId) -> bool {
 /// Set visibility of a widget.
 #[cfg(not(alloc_frugal))]
 pub fn set_widget_visible(widget_id: crate::core::ObjectId, visible: bool) {
+    // The modal release lives in the backend (see `ControlBackend::set_widget_visible`), so every
+    // spelling of "hide this control" shares it (XC-03).
     control_backend::get_control_backend().set_widget_visible(widget_id, visible);
-    // Hiding a modal releases the scrim plane so the modal below it (or the page) takes over
-    // (DLG-001). The call is a no-op for an id that never claimed the plane. Gated because the
-    // dialog layer only exists in a build with the full widget set.
-    #[cfg(full_widgets)]
-    if !visible {
-        crate::widget::dialog::pop_modal_layer(widget_id);
-    }
 }
 /// Check if a widget is visible.
 #[cfg(not(alloc_frugal))]
@@ -807,17 +802,8 @@ pub fn window_client_size(window_id: crate::core::ObjectId) -> Option<(u32, u32)
 /// function takes only text; see [`platform_clipboard`] for the rich backend.
 #[cfg(not(alloc_frugal))]
 pub fn set_clipboard_text(text: &str) -> bool {
-    let written = platform::get_platform().set_clipboard_text(text);
-    // APP-012: a clipboard write is an application-level fact. Publishing it only on success means
-    // a subscriber never sees a change that did not happen; a host that holds no subscription pays
-    // one empty-list check.
-    #[cfg(full_widgets)]
-    if written {
-        app::publish_application_event(&app::ApplicationEvent::ClipboardChanged {
-            text: crate::compat::String::from(text),
-        });
-    }
-    written
+    // The APP-012 publish lives in the backend, the one path every writer shares (XC-02).
+    control_backend::get_control_backend().set_clipboard_text(text)
 }
 /// The platform clipboard's text contents.
 ///
@@ -899,33 +885,6 @@ pub fn choose_path(
 #[cfg(not(alloc_frugal))]
 pub fn schedule_on_main(after: std::time::Duration, work: impl FnOnce() + Send + 'static) -> bool {
     platform::main_thread::schedule_in(after, work)
-}
-/// Asks the user to pick an existing file — [`choose_path`] with
-/// [`PathPurpose::OpenFile`](crate::platform::PathPurpose::OpenFile).
-///
-/// The three named entry points below are the vocabulary a host asks in; they are one call with
-/// one implementation, so they cannot drift apart (principles #54/#101).
-#[cfg(not(alloc_frugal))]
-pub fn open_path(
-    title: &str,
-) -> Result<Option<std::path::PathBuf>, crate::platform::PathPickerError> {
-    choose_path(crate::platform::PathPurpose::OpenFile, title)
-}
-/// Asks the user to name a path to write — [`choose_path`] with
-/// [`PathPurpose::SaveFile`](crate::platform::PathPurpose::SaveFile).
-#[cfg(not(alloc_frugal))]
-pub fn save_path(
-    title: &str,
-) -> Result<Option<std::path::PathBuf>, crate::platform::PathPickerError> {
-    choose_path(crate::platform::PathPurpose::SaveFile, title)
-}
-/// Asks the user to pick a directory — [`choose_path`] with
-/// [`PathPurpose::SelectDirectory`](crate::platform::PathPurpose::SelectDirectory).
-#[cfg(not(alloc_frugal))]
-pub fn select_directory(
-    title: &str,
-) -> Result<Option<std::path::PathBuf>, crate::platform::PathPickerError> {
-    choose_path(crate::platform::PathPurpose::SelectDirectory, title)
 }
 // Menu operations
 /// Creates a native menu bar as a child of `parent`.

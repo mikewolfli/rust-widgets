@@ -737,6 +737,21 @@ impl BaseWidget {
                     });
                 }
             }
+            // Already in this list: the link exists in both directions, so storing the id a
+            // second time would paint the child twice and make one `remove_child` leave a
+            // copy behind. Re-adoption is ordinary for the loader, which mounts a declared
+            // child under its container and then lets the container's own content entry
+            // (`ScrollArea::set_widget`, `StackedWidget::add_widget`, …) claim it.
+            if self.children.contains(&child) {
+                // Still write the parent half: the documented contract is *both* directions,
+                // and a caller that reached the list through `add_child` (which deliberately
+                // does not touch the child) relies on this call to finish the link.
+                crate::widget::runtime::with_widget_mut(child, |child| {
+                    child.set_parent(Some(parent));
+                });
+                self.request_layout();
+                return true;
+            }
             if !self.try_add_child(child) {
                 return false;
             }
@@ -922,6 +937,10 @@ impl BaseWidget {
             return;
         }
         self.visible = false;
+        // A control hidden while hovered used to keep its hover state and its hover animation
+        // until the next pointer move, and a tooltip could still pop up over it (WG-02).
+        #[cfg(not(alloc_frugal))]
+        crate::widget::runtime::clear_hover_for(self.id());
         self.request_layout();
         self.request_redraw();
     }

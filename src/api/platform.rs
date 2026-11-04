@@ -1,11 +1,4 @@
-//! Host-facing platform re-exports and the persistent settings store.
-
-#[cfg(all(feature = "advanced-widgets", feature = "serde_json", not(alloc_frugal)))]
-use crate::settings;
-#[cfg(all(feature = "advanced-widgets", feature = "serde_json", not(alloc_frugal)))]
-pub use settings::{
-    JsonSettings, MemorySettings, SettingValue, Settings, SettingsError, SettingsStore,
-};
+//! Host-facing platform re-exports.
 
 // Re-exports from platform module for convenience
 use crate::platform;

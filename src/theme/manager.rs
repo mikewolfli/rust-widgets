@@ -648,6 +648,31 @@ impl ThemeManager {
         !finished
     }
 
+    /// [`Self::effective_colors`], memoised for the duration of one theme revision.
+    ///
+    /// A crossfade blends the palette on every frame, which bumps the revision because the blend
+    /// changed. Without a memo every control re-ran the same mix of the same two palettes in that
+    /// frame — the identical arithmetic, once per control, for ~13 frames of a 220 ms fade
+    /// (RD-03). The cache is only read while a fade is running: outside one, `effective_colors`
+    /// is a clone of an already-resolved palette and a lookup would cost more than it saves.
+    fn effective_colors_cached(&self) -> Colors {
+        if self.crossfade.is_none() {
+            return self.effective_colors();
+        }
+        let revision = theme_revision();
+        EFFECTIVE_COLORS_CACHE.with(|slot| {
+            let mut slot = slot.borrow_mut();
+            if let Some((cached_revision, colors)) = slot.as_ref() {
+                if *cached_revision == revision {
+                    return colors.clone();
+                }
+            }
+            let colors = self.effective_colors();
+            *slot = Some((revision, colors.clone()));
+            colors
+        })
+    }
+
     /// Whether a colour crossfade is currently running.
     ///
     /// The frame step checks this **before** [`Self::tick_theme_crossfade`] so it can arm the
@@ -903,8 +928,10 @@ impl ThemeManager {
         let shadow = theme.elevation(surface.elevation, Color::BLACK);
         // Resolved from the **effective** palette, not the theme's stored one: during a faded
         // theme switch the stored palette is already the target while the frame should show the
-        // blend. Off the transition path this is the same value the theme carries.
-        let colors = self.effective_colors();
+        // blend. Off the transition path this is the same value the theme carries. During a
+        // crossfade every control resolves the same blended palette, so the mix is memoised per
+        // revision rather than recomputed once per control (RD-03).
+        let colors = self.effective_colors_cached();
         let (background_color, text_color, border_color) = role_colors(&colors, role);
 
         // The minimum touch target for this build's device class.
@@ -1488,6 +1515,11 @@ type ResolvedStyleCache = HashMap<String, CacheEntry<Rc<WidgetStyle>>>;
 thread_local! {
     static RESOLVED_STYLE_CACHE: crate::compat::RefCell<ResolvedStyleCache> =
         crate::compat::RefCell::new(HashMap::new());
+
+    /// The blended palette for the current theme revision (RD-03). Read only while a crossfade
+    /// is running; the revision is the freshness token a crossfade bumps whenever the blend moves.
+    static EFFECTIVE_COLORS_CACHE: crate::compat::RefCell<Option<(u64, Colors)>> =
+        const { crate::compat::RefCell::new(None) };
 }
 
 /// The largest number of resolved names the per-thread style cache keeps.

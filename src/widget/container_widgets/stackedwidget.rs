@@ -59,7 +59,15 @@ impl StackedWidget {
         self.registry.as_ref()
     }
     /// Adds a widget.
+    ///
+    /// Adding a widget that is already a page returns that page's index instead of
+    /// appending a duplicate: a loader mounts a declared child under its container first
+    /// and then routes it here, and two entries for one id would paint it twice and
+    /// desynchronise [`Self::count`] from the tree.
     pub fn add_widget(&mut self, widget: ObjectId) -> usize {
+        if let Some(index) = self.index_of(widget) {
+            return index;
+        }
         self.base.add_child_linked(widget);
         self.widgets.push(widget);
         let index = self.widgets.len().saturating_sub(1);

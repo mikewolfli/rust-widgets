@@ -30,14 +30,21 @@ pub enum WasmHandleKind {
 }
 
 /// WASM platform runtime lifecycle state.
+///
+/// `running` is shared with the `requestAnimationFrame` closure, which must be `'static` and
+/// therefore cannot borrow the backend. The flag is what lets `quit` stop the browser loop
+/// (PL-06).
 pub(crate) struct WasmRuntime {
     pub(crate) initialized: AtomicBool,
-    pub(crate) running: AtomicBool,
+    pub(crate) running: std::sync::Arc<AtomicBool>,
 }
 
 impl WasmRuntime {
     pub(crate) fn new() -> Self {
-        Self { initialized: AtomicBool::new(false), running: AtomicBool::new(false) }
+        Self {
+            initialized: AtomicBool::new(false),
+            running: std::sync::Arc::new(AtomicBool::new(false)),
+        }
     }
 }
 

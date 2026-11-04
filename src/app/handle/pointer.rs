@@ -388,19 +388,39 @@ impl SliderHandle {
 
     /// Return the current slider value.
     ///
-    /// The in-process mirror is authoritative: it is what the self-drawn path
-    /// renders and what a native write was clamped to, so both agree.
+    /// # Why the mirror and the property are both consulted (HB-09)
     ///
-    /// An id with no mirror entry falls back to `SliderState::default().value` rather than to a
-    /// literal, so the "not yet written" answer is the same one `Default` gives and cannot drift
-    /// from the control's own starting value.
+    /// The control's `value` property is the live value — the control itself updates it while the
+    /// user drags. The in-process mirror records what a handle write was clamped to. Reading only
+    /// the mirror made this report the pre-drag value; reading only the property broke the
+    /// handle's own crossed-range contract, because `Slider::set_minimum`/`set_maximum` order the
+    /// bounds while the handle's `ordered_clamp_i32` keeps the span the caller wrote.
+    ///
+    /// So the property answers only while both agree about the range. When they disagree (a
+    /// crossed range, which the control normalises), the handle's own clamped value is the contract
+    /// this method documents.
     pub fn value(&self) -> i32 {
-        SLIDER_STATES.with(|map| {
-            map.borrow()
-                .get(&self.raw_id())
-                .map(|s| s.value)
-                .unwrap_or(SliderState::default().value)
-        })
+        let mirror = SLIDER_STATES.with(|map| map.borrow().get(&self.raw_id()).cloned());
+        let live = |name: &str| match read_control_property(self.raw_id(), name) {
+            Some(crate::widget::capability::CapabilityValue::Int(value)) => {
+                i32::try_from(value).ok()
+            }
+            _ => None,
+        };
+        if let Some(mirror) = mirror {
+            if let (Some(value), Some(minimum), Some(maximum)) =
+                (live("value"), live("minimum"), live("maximum"))
+            {
+                if mirror.min == minimum && mirror.max == maximum {
+                    return value;
+                }
+            }
+            return mirror.value;
+        }
+        if let Some(value) = live("value") {
+            return value;
+        }
+        SliderState::default().value
     }
 
     /// Set the slider range (min/max). The current value is clamped into it.
@@ -1490,7 +1510,17 @@ pub(crate) fn apply_panel_geometry(panel_id: ObjectId, rect: Rect) {
     apply_panel_geometry_bounded(panel_id, rect, 0, MAX_PANEL_DEPTH);
 }
 
-fn apply_panel_geometry_bounded(panel_id: ObjectId, rect: Rect, depth: u32, max_depth: u32) {
+/// Applies `panel_id`'s stored layout against `rect` under an explicit nesting bound.
+///
+/// `pub(crate)` because the declarative layout walk reaches it for a panel nested inside a
+/// document container (LY-02), sharing the one depth semantics rather than recursing a second
+/// way.
+pub(crate) fn apply_panel_geometry_bounded(
+    panel_id: ObjectId,
+    rect: Rect,
+    depth: u32,
+    max_depth: u32,
+) {
     PANEL_STATES.with(|map| {
         let mut map = map.borrow_mut();
         let state = map.entry(panel_id).or_default();
@@ -1512,19 +1542,22 @@ fn apply_panel_geometry_bounded(panel_id: ObjectId, rect: Rect, depth: u32, max_
     }
 
     let context = crate::layout::types::LayoutContext::default();
+    // LY-07: same take/return pool as `apply_window_layout`. A nested panel re-enters this
+    // function while the outer list is still live, so the pool is a stack.
+    let mut scratch = crate::layout::scratch::take_geometry_scratch();
     let child_geometries = PANEL_LAYOUTS.with(|map| {
         let map = map.borrow();
         let Some(layout) = map.get(&panel_id) else {
-            return Vec::new();
+            return scratch;
         };
-        let mut geometries = Vec::new();
         layout.update_with_context(rect, &context, &mut |widget_id, geometry| {
-            geometries.push((widget_id, geometry));
+            scratch.push((widget_id, geometry));
         });
-        geometries
+        scratch
     });
 
-    for (widget_id, geometry) in child_geometries {
+    // Indexed rather than consuming, so the allocation can go back to the pool.
+    for (widget_id, geometry) in child_geometries.iter().copied() {
         crate::set_widget_geometry(
             widget_id,
             geometry.x,
@@ -1534,13 +1567,17 @@ fn apply_panel_geometry_bounded(panel_id: ObjectId, rect: Rect, depth: u32, max_
         );
         if widget_hosts_a_layout(widget_id) {
             apply_panel_geometry_bounded(widget_id, geometry, depth + 1, max_depth);
-        } else if crate::layout::declarative::has_layout(widget_id) {
+        }
+        // Both registries are applied when both hold an entry (LY-02): the `else if` skipped
+        // the declarative side for a widget that also had a panel layout.
+        if crate::layout::declarative::has_layout(widget_id) {
             // See `apply_window_layout`: a container loaded from a document can sit
             // inside a panel, and moving the panel must re-run the document's layout
             // for that container's children.
             crate::layout::declarative::apply_layout(widget_id, geometry);
         }
     }
+    crate::layout::scratch::return_geometry_scratch(child_geometries);
 }
 
 /// Applies the layout a panel already has, using its recorded geometry.

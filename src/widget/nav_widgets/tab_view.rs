@@ -60,6 +60,13 @@ pub struct TabView {
     drag_preview: Option<usize>,
     /// Whether Ctrl+PageUp/PageDown and Ctrl+Tab cycle the tabs.
     keyboard_navigation_enabled: bool,
+    /// Object-ids of each tab's content, parallel to `tabs` (issue-20261104 DM-11).
+    ///
+    /// A declared page is mounted by the runtime, which owns it, so it cannot be stored in
+    /// `TabPage::content` (a `Box<dyn Widget>`). The id is placed in [`Self::content_rect`] and
+    /// shown only for the selected tab, and the tree painter draws it — the same contract
+    /// `TabWidget` uses for its pages.
+    content_ids: Vec<Option<ObjectId>>,
     /// Whether the strip scrolls instead of squeezing its tabs.
     scrollable_strip: bool,
     /// The strip's horizontal scroll offset, in pixels, when scrolling is enabled.
@@ -127,6 +134,7 @@ impl TabView {
             drag: None,
             drag_preview: None,
             keyboard_navigation_enabled: true,
+            content_ids: Vec::new(),
             scrollable_strip: false,
             strip_offset: 0,
             swipe: None,
@@ -162,10 +170,58 @@ impl TabView {
         let was_empty = self.tabs.is_empty();
         self.tabs.push(TabPage { title: title.into(), content, icon: icon.map(|i| i.into()) });
         self.badges.push(None);
+        self.content_ids.push(None);
         if was_empty {
             self.set_current_index(0);
         }
+        self.sync_content_id_visibility();
         self.base.request_redraw();
+    }
+
+    /// Adds a tab whose content is an already-mounted control, addressed by id.
+    ///
+    /// This is the declaration path's entry (issue-20261104 DM-11): a JSON document's page is
+    /// mounted by the runtime, so only its id can be handed over. The id slot is drawn by the
+    /// tree painter and is placed and hidden exactly like the `Box` content.
+    pub fn add_tab_id(
+        &mut self,
+        title: impl Into<String>,
+        content: Option<ObjectId>,
+        icon: Option<impl Into<String>>,
+    ) {
+        let was_empty = self.tabs.is_empty();
+        self.tabs.push(TabPage {
+            title: title.into(),
+            content: None,
+            icon: icon.map(|i| i.into()),
+        });
+        self.badges.push(None);
+        if let Some(content) = content {
+            self.base.add_child_linked(content);
+        }
+        self.content_ids.push(content);
+        if was_empty {
+            self.set_current_index(0);
+        }
+        self.sync_content_id_visibility();
+        self.base.request_redraw();
+    }
+
+    /// Places and shows only the selected tab's id content.
+    ///
+    /// A `TabView` is defined by showing exactly one page, and the tree painter draws every
+    /// visible child, so the inactive pages must be hidden explicitly — the same pass
+    /// `TabWidget` and `StackedWidget` run for their own page lists.
+    fn sync_content_id_visibility(&self) {
+        let band = self.content_rect();
+        for (index, id) in self.content_ids.iter().enumerate() {
+            let Some(id) = *id else { continue };
+            let shown = index == self.selected_index;
+            crate::set_widget_visible(id, shown);
+            if shown {
+                crate::set_widget_geometry(id, band.x, band.y, band.width, band.height);
+            }
+        }
     }
 
     /// Removes the tab at the given index.
@@ -185,6 +241,14 @@ impl TabView {
         if index < self.badges.len() {
             self.badges.remove(index);
         }
+        if index < self.content_ids.len() {
+            if let Some(removed) = self.content_ids.remove(index) {
+                // A removed page must stop claiming to be a child of this control, or a walk
+                // would keep visiting it and the painter would draw it over the new page.
+                self.base.remove_child_linked(removed);
+                crate::set_widget_visible(removed, false);
+            }
+        }
         if self.tabs.is_empty() {
             self.selected_index = 0;
         } else if index < before {
@@ -195,6 +259,7 @@ impl TabView {
         if self.selected_index != before {
             self.tab_changed.emit(self.selected_index);
         }
+        self.sync_content_id_visibility();
         self.base.request_redraw();
     }
 
@@ -204,7 +269,9 @@ impl TabView {
     /// be drawn by a host lives in that host's registry and is addressed by id. This is the
     /// bridge: the content's own id, or `None` when the selected page has no content.
     pub fn content_widget_id(&self) -> Option<ObjectId> {
-        self.tabs.get(self.selected_index).and_then(|tab| tab.content.as_ref().map(|c| c.id()))
+        self.content_ids.get(self.selected_index).copied().flatten().or_else(|| {
+            self.tabs.get(self.selected_index).and_then(|tab| tab.content.as_ref().map(|c| c.id()))
+        })
     }
 
     /// Routes `event` to the selected tab's content widget through the registry.
@@ -1009,6 +1076,9 @@ impl WidgetProperties for TabView {
 impl Draw for TabView {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
+        // The declared (id-based) content is placed and shown for the selected tab before
+        // anything is painted, so the tree painter that follows this draw uses fresh bands.
+        self.sync_content_id_visibility();
         // The strip and the content area come from the control's own band derivation, so the
         // strip's height, the hit test and the content's top edge cannot disagree.
         let tab_bar_rect = self.tab_bar_rect();

@@ -9,7 +9,7 @@
 //! a filled background to indicate selection.
 
 use crate::compat::Cow;
-use crate::core::{Color, HorizontalAlignment, Point, Rect};
+use crate::core::{Color, HorizontalAlignment, ObjectId, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -33,7 +33,21 @@ const SEGMENT_ICON_GAP: u32 = 4;
 /// selected a segment and a generation counter so every member can tell whether its local
 /// selection is still the authoritative one. A global map is what makes two controls that
 /// know nothing about each other able to share one selection without a host-owned registry.
-type SegmentedGroupEntry = (u64, u64, Option<usize>);
+///
+/// `members` holds the **registry** id of every control that joined the group. A selection
+/// change repaints exactly those members instead of arming a process-wide repaint (RT-01).
+#[derive(Default)]
+struct SegmentedGroupEntry {
+    /// Bumped whenever a member publishes a selection.
+    generation: u64,
+    /// The control that made the authoritative selection.
+    owner: ObjectId,
+    /// The authoritative selected segment index.
+    selected: Option<usize>,
+    /// Registry ids of the controls that joined this group.
+    members: Vec<ObjectId>,
+}
+
 type SegmentedGroupTable =
     std::sync::Mutex<std::collections::BTreeMap<String, SegmentedGroupEntry>>;
 
@@ -360,10 +374,30 @@ impl SegmentedButton {
     /// Joining does not clear the local selection; the next selection in any member wins and
     /// causes the other members to report no selection (see `Self::group_owned_elsewhere`).
     pub fn set_group_id(&mut self, group: Option<String>) {
-        if self.group_id == group {
+        let next = group.filter(|name| !name.is_empty());
+        if self.group_id == next {
             return;
         }
-        self.group_id = group.filter(|name| !name.is_empty());
+        // Record the registry id so a later selection change can invalidate this control
+        // directly instead of repainting every window in the process (RT-01). An unmounted
+        // control has no registry id yet; the publish path falls back to a global repaint.
+        let own = crate::widget::runtime::registry_id_of(self.base.id());
+        if let Ok(mut groups) = segmented_groups().lock() {
+            if let Some(previous) = self.group_id.as_deref() {
+                if let (Some(entry), Some(own)) = (groups.get_mut(previous), own) {
+                    entry.members.retain(|id| *id != own);
+                }
+            }
+            if let Some(next) = next.as_deref() {
+                if let Some(own) = own {
+                    let entry = groups.entry(next.to_string()).or_default();
+                    if !entry.members.contains(&own) {
+                        entry.members.push(own);
+                    }
+                }
+            }
+        }
+        self.group_id = next;
         self.group_generation = 0;
         self.base.request_redraw();
     }
@@ -377,8 +411,8 @@ impl SegmentedButton {
             return false;
         };
         match groups.get(group) {
-            Some((generation, owner, _)) => {
-                *generation > self.group_generation && *owner != self.base.id()
+            Some(entry) => {
+                entry.generation > self.group_generation && entry.owner != self.base.id()
             }
             None => false,
         }
@@ -389,16 +423,36 @@ impl SegmentedButton {
         let Some(group) = self.group_id.clone() else {
             return;
         };
-        let Ok(mut groups) = segmented_groups().lock() else {
-            return;
+        // Update the group under the lock, then release it before touching widgets: the
+        // registry path can run host code and must never be entered while holding this lock.
+        let members = {
+            let Ok(mut groups) = segmented_groups().lock() else {
+                return;
+            };
+            let entry = groups.entry(group).or_default();
+            entry.generation = entry.generation.wrapping_add(1);
+            entry.owner = self.base.id();
+            entry.selected = self.selected.first().copied();
+            self.group_generation = entry.generation;
+            entry.members.clone()
         };
-        let entry = groups.entry(group).or_insert((0, self.base.id(), None));
-        entry.0 = entry.0.wrapping_add(1);
-        entry.1 = self.base.id();
-        entry.2 = self.selected.first().copied();
-        self.group_generation = entry.0;
-        // A selection in one member changes the painted state of every other member.
-        crate::widget::runtime::arm_global_repaint();
+        // A selection in one member changes the painted state of every other member. Repaint
+        // those members only; an empty or stale member set falls back to the process-wide
+        // repaint, which is always correct but much wider (RT-01).
+        if members.is_empty() || members.iter().any(|id| !crate::widget::runtime::is_mounted(*id)) {
+            crate::widget::runtime::arm_global_repaint();
+            return;
+        }
+        let mut targets = Vec::with_capacity(members.len());
+        for id in members {
+            if let Some(rect) = crate::widget::runtime::with_widget(id, |widget| widget.geometry())
+            {
+                targets.push((id, rect));
+            }
+        }
+        for (id, rect) in targets {
+            crate::widget::runtime::mark_dirty_rect(id, rect);
+        }
     }
 
     /// Sets the selected segment index, replacing any previous selection.

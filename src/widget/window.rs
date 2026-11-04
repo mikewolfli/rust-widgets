@@ -794,8 +794,8 @@ pub fn focus_next_in_window(forward: bool) -> Option<ObjectId> {
                     (None, Some(_)) => false,
                 };
                 in_scope
-                    && runtime::read_widget(id, |widget| widget.is_enabled() && widget.is_visible())
-                        .unwrap_or(false)
+                    && runtime::read_widget(id, |widget| widget.is_enabled()).unwrap_or(false)
+                    && runtime::is_effectively_visible(id)
             },
             wrap,
         )

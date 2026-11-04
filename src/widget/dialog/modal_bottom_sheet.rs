@@ -7,7 +7,7 @@
 //! drag handle, title, and optional content. Supports show/hide, drag-to-dismiss,
 //! and overlay-click-to-dismiss. Emits a `dismissed` signal when closed.
 
-use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
+use crate::core::{Color, HorizontalAlignment, ObjectId, Point, Rect, Size};
 use crate::event::{key_codes, Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::GenericSignal;
@@ -53,6 +53,12 @@ pub struct ModalBottomSheet {
     reveal: PropertyDriver,
     /// Emitted when the sheet is dismissed by user interaction.
     pub dismissed: GenericSignal,
+    /// The content well's control, addressed by id (issue-20261104 DM-11).
+    ///
+    /// A declared child is mounted by the runtime, which owns it, so it cannot be handed to
+    /// [`Self::set_content`]. The id is placed and shown in the same well the `Box` content
+    /// uses, and the tree painter draws it — the sheet itself paints only its own chrome.
+    content_id: Option<ObjectId>,
 }
 
 impl ModalBottomSheet {
@@ -62,6 +68,7 @@ impl ModalBottomSheet {
             base: BaseWidget::new(WidgetKind::ModalBottomSheet, geometry, "ModalBottomSheet"),
             title: String::new(),
             content: None,
+            content_id: None,
             is_visible: false,
             drag_offset: 0.0,
             is_dragging: false,
@@ -205,6 +212,33 @@ impl ModalBottomSheet {
         self.content = Some(widget);
         self.base.request_layout();
         self.base.request_redraw();
+    }
+
+    /// Sets the child content by id, for a control the runtime already owns.
+    ///
+    /// This is the declaration path's entry (issue-20261104 DM-11): a JSON document's child is
+    /// mounted under this record, so only its id can be handed over. The id slot wins over the
+    /// `Box` slot — a document that declared content meant **that** content — and the well it
+    /// is placed in is the one `draw` computes for the `Box` case, so the two cannot drift.
+    pub fn set_content_id(&mut self, widget: Option<ObjectId>) {
+        if self.content_id == widget {
+            return;
+        }
+        if let Some(previous) = self.content_id {
+            self.base.remove_child_linked(previous);
+            crate::set_widget_visible(previous, false);
+        }
+        self.content_id = widget;
+        if let Some(widget) = widget {
+            self.base.add_child_linked(widget);
+        }
+        self.base.request_layout();
+        self.base.request_redraw();
+    }
+
+    /// The content well's id, when the slot was filled by [`Self::set_content_id`].
+    pub fn content_id(&self) -> Option<ObjectId> {
+        self.content_id
     }
 
     /// The rectangle the content well occupies, or `None` when the sheet has no room for it.
@@ -587,8 +621,26 @@ impl Draw for ModalBottomSheet {
                     drawable.draw(context);
                 }
             }
+            // The declared (id-based) child occupies the same well. It is placed here and
+            // drawn by the tree painter, so it must be given the band and shown in this
+            // frame rather than in a separate pass.
+            if let Some(content_id) = self.content_id {
+                crate::set_widget_geometry(
+                    content_id,
+                    content_rect.x,
+                    content_rect.y,
+                    content_rect.width,
+                    content_rect.height,
+                );
+                crate::set_widget_visible(content_id, true);
+            }
         } else if let Some(content) = self.content.as_mut() {
             content.hide();
+        }
+        if content_available <= 20 {
+            if let Some(content_id) = self.content_id {
+                crate::set_widget_visible(content_id, false);
+            }
         }
     }
 }

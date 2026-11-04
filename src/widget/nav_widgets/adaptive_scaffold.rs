@@ -9,7 +9,7 @@
 //! platforms by using the same underlying AppBar and BottomNavigationBar
 //! primitives with platform-appropriate defaults.
 
-use crate::core::{Color, HorizontalAlignment, Point, Rect, TextDirection};
+use crate::core::{Color, HorizontalAlignment, ObjectId, Point, Rect, TextDirection};
 use crate::event::{key_codes, Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
@@ -24,6 +24,13 @@ use crate::widget::nav_widgets::app_bar::AppBar;
 use crate::widget::nav_widgets::bottom_navigation_bar::{BottomNavigationBar, NavItem};
 use crate::widget::{BaseWidget, Draw, IconItemError, IconSource, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
+
+// Declared-content (id-based) slots. A child module rather than a sibling file so it can see
+// this control's private slot fields and rect helpers without widening them to `pub(crate)`;
+// split out because `adaptive_scaffold.rs` is otherwise over the source-structure limit
+// (principle #9).
+#[path = "adaptive_scaffold_ids.rs"]
+mod ids;
 
 /// Height of the scaffold's app-bar band, in logical pixels.
 ///
@@ -184,6 +191,22 @@ pub struct AdaptiveScaffold {
     bottom_sheet: Option<Box<dyn Widget>>,
     /// Optional snackbar slot.
     snackbar: Option<Box<dyn Widget>>,
+    /// Object-id content slots (issue-20261104 DM-06/DM-08).
+    ///
+    /// A JSON document's controls are mounted by the runtime, which owns them, so a
+    /// declaration cannot hand a `Box<dyn Widget>` to the slot setters above. These fields
+    /// record the id the mount assigned instead, and [`Self::sync_id_slots`] applies the
+    /// geometry and visibility the `Box` slots receive in [`Self::draw`] — the tree painter
+    /// then draws the child, exactly as it draws any other child of this control. The two
+    /// content models are mutually exclusive per slot: when an id slot holds a value it wins,
+    /// because it is the one the document declared.
+    body_id: Option<ObjectId>,
+    nav_body_ids: Vec<Option<ObjectId>>,
+    fab_id: Option<ObjectId>,
+    drawer_id: Option<ObjectId>,
+    end_drawer_id: Option<ObjectId>,
+    bottom_sheet_id: Option<ObjectId>,
+    snackbar_id: Option<ObjectId>,
     /// Whether the leading drawer is open.
     drawer_open: bool,
     /// Whether the trailing drawer is open.
@@ -253,6 +276,13 @@ impl AdaptiveScaffold {
             end_drawer: None,
             bottom_sheet: None,
             snackbar: None,
+            body_id: None,
+            nav_body_ids: Vec::new(),
+            fab_id: None,
+            drawer_id: None,
+            end_drawer_id: None,
+            bottom_sheet_id: None,
+            snackbar_id: None,
             drawer_open: false,
             end_drawer_open: false,
             nav_item_badges: Vec::new(),
@@ -1313,6 +1343,11 @@ impl Draw for AdaptiveScaffold {
             self.style().resolved_corner_radii().to_array(),
             Color::BLACK,
         );
+
+        // Declared (id-based) content is placed before anything is painted: its children are
+        // drawn by the tree painter after this control's own draw, so the band and visibility
+        // computed here are what that pass reads in the same frame. See `sync_id_slots`.
+        self.sync_id_slots();
 
         // ── AppBar ──
         // The bar carries any bottom slot it was given, so its band is set from the same

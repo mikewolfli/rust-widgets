@@ -123,6 +123,21 @@ pub struct WgpuRenderer {
     /// What `wgpu` reported for the selected adapter, kept so [`GpuRenderer::vendor_info`] can
     /// answer with the real device name instead of a constant (G-232).
     pub(crate) adapter_info: wgpu::AdapterInfo,
+    /// Hardware-adaptive GPU management for this device (issue-20261104 RD-04).
+    ///
+    /// Built from the adapter facts `wgpu` already reported for the device above, so it runs **no**
+    /// second adapter-selection pass (`GpuManager::from_adapter_info`, not `GpuManager::new`). What
+    /// it contributes to the live path:
+    ///
+    /// * `begin_frame`/`end_frame` bracket every offscreen frame, which is what gives
+    ///   `gpu::performance` real frame durations, the trap detector real low-FPS input and the
+    ///   quality tracker real streaks — before this they were state nothing ever fed.
+    /// * `begin_frame` advances the staging pool's ring cursor (`GpuStagingBufferPool::next_frame`),
+    ///   so that pool is on the frame path rather than behind it.
+    /// * Its operation mode, warnings, pool stats and quality recommendations are readable through
+    ///   the renderer's own accessors, so a host can act on the same facts the library recorded
+    ///   instead of probing the GPU a second time.
+    pub(crate) gpu: crate::gpu::GpuManager,
 }
 
 /// The depth-stencil state every 2D pipeline in this renderer declares.
@@ -285,6 +300,59 @@ impl WgpuRenderer {
     /// gate the texture path (`docs/plans/blue29.md` §2.4).
     pub fn set_cost_gate_enabled(&mut self, enabled: bool) {
         self.cost_gate.set_enabled(enabled);
+    }
+
+    // ── Hardware-adaptive facts (issue-20261104 RD-04) ──────────────────────
+    //
+    // These read the `GpuManager` this renderer owns — the same object `begin_frame`/`end_frame`
+    // drive on every frame. They exist so a host can act on the facts the library already
+    // measured instead of probing the adapter a second time (principle #101: one answer per
+    // question).
+    //
+    // The recommended-quality pair is deliberately **not** applied automatically. This renderer
+    // promises a specific picture for a specific stream (that is what `RenderQuality` is about),
+    // and silently moving streams to the CPU because a frame was slow would break that promise
+    // while looking like a stall. A host that wants the adaptive behaviour calls
+    // `set_render_quality`/`set_cost_gate_enabled` with its own policy.
+
+    /// The adapter facts this renderer's manager was built from.
+    pub fn gpu_adapter_info(&self) -> &crate::gpu::AdapterInfo {
+        self.gpu.adapter_info()
+    }
+
+    /// Whether this renderer is on a hardware device or on the CPU fallback.
+    pub fn gpu_operation_mode(&self) -> crate::gpu::GpuOperationMode {
+        self.gpu.operation_mode()
+    }
+
+    /// The most recent frame's performance sample, once a frame has been drawn.
+    pub fn gpu_performance_stats(&self) -> Option<crate::gpu::performance::PerformanceStats> {
+        self.gpu.performance_stats()
+    }
+
+    /// The staging pool's current accounting — the ring the manager advances once per frame.
+    pub fn gpu_buffer_pool_stats(&self) -> Option<crate::gpu::GpuBufferPoolStats> {
+        self.gpu.buffer_pool_stats()
+    }
+
+    /// Construction-time advisories (degraded backend tier, browser-forced integrated GPU).
+    pub fn gpu_warnings(&self) -> Vec<String> {
+        self.gpu.warnings()
+    }
+
+    /// The actions the trap detector recommends for the current streak, most urgent first.
+    pub fn gpu_recommended_actions(&self) -> Vec<crate::gpu::GpuManagerAction> {
+        self.gpu.recommended_actions()
+    }
+
+    /// Whether the recorded frames say quality should come down.
+    pub fn should_degrade_quality(&self) -> bool {
+        self.gpu.should_degrade_quality()
+    }
+
+    /// Whether the recorded frames say quality can come back up.
+    pub fn should_upgrade_quality(&self) -> bool {
+        self.gpu.should_upgrade_quality()
     }
 
     /// The texture the last command stream was drawn into, as a fresh view.

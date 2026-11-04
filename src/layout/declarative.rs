@@ -39,17 +39,12 @@
 //! layout sits on which parent — and the geometry application. It is deliberately not a
 //! second retained-tree implementation.
 //!
-//! The bridge is `SharedLayoutRegistry` plus `SharedLayoutRegistry::apply_with_hints`
-//! (and the free `apply_layout_with_hints`): a caller that has the child hints (the view
-//! engine does) can drive the stored layouts through `Layout::arrange`, instead of the
-//! id-only `update` path `apply_layout` uses. The context-aware twins
-//! (`apply_layout_with_context` / `apply_with_hints_and_context`) close the same gap for
-//! `LayoutContext`, so a preview and a high-DPI runtime read the same scale. The thread-local
-//! `LAYOUT_MAP` remains the transitional default. The identity/diff side of G-406 lives in
-//! `view/engine` and is now reached by the JSON front end through `json::JsonViewSession`;
-//! this module stays the layout registry for callers that apply a layout directly.
+//! The thread-local `LAYOUT_MAP` is the one registry: a caller that applies a layout directly
+//! (the JSON loader, the C ABI, a panel) reaches the same store the window resize path uses.
+//! The identity/diff side of G-406 lives in `view/engine` and is reached by the JSON front end
+//! through `json::JsonViewSession`.
 
-use crate::compat::{BTreeSet, Box, HashMap, Vec};
+use crate::compat::{Box, HashMap, Vec};
 use core::cell::RefCell;
 
 use crate::core::{ObjectId, Rect};
@@ -72,237 +67,6 @@ thread_local! {
     #[allow(clippy::missing_const_for_thread_local)]
     static LAYOUT_MAP: RefCell<HashMap<ObjectId, Box<dyn Layout>>> =
         RefCell::new(HashMap::new());
-    /// Parents whose layout has been invalidated since its last application.
-    ///
-    /// An ordered set, so "already invalidated?" and "clear this parent" are both
-    /// logarithmic rather than a linear scan of a growing `Vec` (LAY-006).
-    #[allow(clippy::missing_const_for_thread_local)]
-    static DIRTY_LAYOUTS: RefCell<BTreeSet<ObjectId>> = RefCell::new(BTreeSet::new());
-}
-
-/// Marks `parent_id`'s stored layout as needing a fresh application.
-///
-/// Returns `false` when no layout is stored for the parent. Invalidation is merged: a
-/// second call before [`apply_layout_if_dirty`] is a no-op, which is the "many edits, one
-/// recompute" behaviour a layout pass wants.
-pub fn invalidate_layout(parent_id: ObjectId) -> bool {
-    if !has_layout(parent_id) {
-        return false;
-    }
-    DIRTY_LAYOUTS.with(|dirty| {
-        dirty.borrow_mut().insert(parent_id);
-    });
-    true
-}
-
-/// Whether `parent_id` has been invalidated and not yet re-applied.
-pub fn is_layout_dirty(parent_id: ObjectId) -> bool {
-    DIRTY_LAYOUTS.with(|dirty| dirty.borrow().contains(&parent_id))
-}
-
-/// Applies the layout only when it has been invalidated.
-///
-/// Returns `None` when the layout is clean or absent, so a caller can skip the whole
-/// arrangement (and the geometry writes) for an unchanged tree.
-pub fn apply_layout_if_dirty(parent_id: ObjectId, rect: Rect) -> Option<Vec<(ObjectId, Rect)>> {
-    if !is_layout_dirty(parent_id) {
-        return None;
-    }
-    DIRTY_LAYOUTS.with(|dirty| {
-        dirty.borrow_mut().remove(&parent_id);
-    });
-    Some(apply_layout(parent_id, rect))
-}
-
-/// A layout registry that may be shared across threads.
-///
-/// The default registry is thread-local by design (see the module docs), which makes a
-/// declarative tree owned by a worker thread invisible to the UI thread. This type is the
-/// opt-in alternative: a caller that owns the tree on one thread can hand the registry to
-/// the UI thread and still apply its layouts.
-///
-/// A layout stored here must be `Send`; the thread-local registry keeps accepting every
-/// `Layout`, so this is a widening of the API rather than a new requirement on existing
-/// layouts.
-#[derive(Default)]
-pub struct SharedLayoutRegistry {
-    layouts: std::sync::Mutex<HashMap<ObjectId, Box<dyn Layout + Send>>>,
-    dirty: std::sync::Mutex<Vec<ObjectId>>,
-}
-
-impl SharedLayoutRegistry {
-    /// Creates an empty shared registry.
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Stores a layout, replacing any previous one for the parent.
-    pub fn store(&self, parent_id: ObjectId, layout: Box<dyn Layout + Send>) {
-        if let Ok(mut layouts) = self.layouts.lock() {
-            layouts.insert(parent_id, layout);
-        }
-        if let Ok(mut dirty) = self.dirty.lock() {
-            if !dirty.contains(&parent_id) {
-                dirty.push(parent_id);
-            }
-        }
-    }
-
-    /// Removes a layout, returning whether one was present.
-    pub fn forget(&self, parent_id: ObjectId) -> bool {
-        let removed = self
-            .layouts
-            .lock()
-            .map(|mut layouts| layouts.remove(&parent_id).is_some())
-            .unwrap_or(false);
-        if let Ok(mut dirty) = self.dirty.lock() {
-            dirty.retain(|id| *id != parent_id);
-        }
-        removed
-    }
-
-    /// Whether a layout is stored for the parent.
-    pub fn has(&self, parent_id: ObjectId) -> bool {
-        self.layouts.lock().map(|layouts| layouts.contains_key(&parent_id)).unwrap_or(false)
-    }
-
-    /// Number of stored layouts.
-    pub fn len(&self) -> usize {
-        self.layouts.lock().map(|layouts| layouts.len()).unwrap_or(0)
-    }
-
-    /// Whether the registry is empty.
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
-
-    /// Marks a stored layout as dirty, returning whether it exists.
-    pub fn invalidate(&self, parent_id: ObjectId) -> bool {
-        if !self.has(parent_id) {
-            return false;
-        }
-        if let Ok(mut dirty) = self.dirty.lock() {
-            if !dirty.contains(&parent_id) {
-                dirty.push(parent_id);
-            }
-        }
-        true
-    }
-
-    /// Applies a stored layout, clearing its dirty flag.
-    pub fn apply(&self, parent_id: ObjectId, rect: Rect) -> Vec<(ObjectId, Rect)> {
-        let geometries = self.run(parent_id, |layout| {
-            let mut geometries = Vec::new();
-            layout.update(rect, &mut |child_id, child_rect| {
-                if child_id != SPACER_ID {
-                    geometries.push((child_id, child_rect));
-                }
-            });
-            geometries
-        });
-        if let Ok(mut dirty) = self.dirty.lock() {
-            dirty.retain(|id| *id != parent_id);
-        }
-        geometries
-    }
-
-    /// Applies a stored layout through the hint channel, clearing its dirty flag.
-    ///
-    /// [`Self::apply`] can only call `Layout::update`, which has no way to ask a child how
-    /// big it wants to be. A caller that owns the hints — the declarative view engine does —
-    /// uses this entry so the stored layout's `arrange` implementation runs instead. That is
-    /// the layout-side half of G-406: the identity/diff side stays in `view/engine`, and this
-    /// registry no longer forces the production path onto the hint-less solver.
-    pub fn apply_with_hints(
-        &self,
-        parent_id: ObjectId,
-        rect: Rect,
-        children: &[ChildInfo],
-    ) -> Vec<(ObjectId, Rect)> {
-        let geometries = self.run(parent_id, |layout| {
-            let mut geometries = Vec::new();
-            layout.arrange(rect, children, &mut |child_id, child_rect| {
-                if child_id != SPACER_ID {
-                    geometries.push((child_id, child_rect));
-                }
-            });
-            geometries
-        });
-        if let Ok(mut dirty) = self.dirty.lock() {
-            dirty.retain(|id| *id != parent_id);
-        }
-        geometries
-    }
-
-    /// Applies a stored layout through the hint **and context** channel, clearing its dirty flag.
-    ///
-    /// [`Self::apply_with_hints`] runs `Layout::arrange`, which has no device context: a
-    /// `FlexLayout` under a scale other than 1 therefore previewed differently from the same
-    /// layout applied through `update_with_context`. This entry runs `arrange_with_context` on the
-    /// stored layout, so the preview and the runtime read the same scale and touch floor (RW-49).
-    pub fn apply_with_hints_and_context(
-        &self,
-        parent_id: ObjectId,
-        rect: Rect,
-        children: &[ChildInfo],
-        context: &LayoutContext,
-    ) -> Vec<(ObjectId, Rect)> {
-        self.apply_with_hints_and_context_reported(parent_id, rect, children, context).0
-    }
-
-    /// [`Self::apply_with_hints_and_context`] with the solver's clamp/overflow report (RW-48).
-    pub fn apply_with_hints_and_context_reported(
-        &self,
-        parent_id: ObjectId,
-        rect: Rect,
-        children: &[ChildInfo],
-        context: &LayoutContext,
-    ) -> (Vec<(ObjectId, Rect)>, ArrangeReport) {
-        let applied = self.run(parent_id, |layout| {
-            let mut raw: Vec<(ObjectId, Rect)> = Vec::new();
-            layout.arrange_with_context(rect, children, context, &mut |child_id, child_rect| {
-                if child_id != SPACER_ID {
-                    // RW-48: geometry recording is automatic on this path. `record_geometry`
-                    // is a no-op unless the inspector was enabled.
-                    crate::layout::inspector::LayoutInspector::record_geometry(
-                        child_id, child_rect,
-                    );
-                }
-                raw.push((child_id, child_rect));
-            });
-            let geometries: Vec<(ObjectId, Rect)> =
-                raw.iter().copied().filter(|(id, _)| *id != SPACER_ID).collect();
-            let report = ArrangeReport::from_placements(rect, children, &geometries);
-            (geometries, report)
-        });
-        if let Ok(mut dirty) = self.dirty.lock() {
-            dirty.retain(|id| *id != parent_id);
-        }
-        applied
-    }
-
-    /// Runs `read` against the stored layout, or returns an empty list when there is none.
-    fn run<R>(&self, parent_id: ObjectId, read: impl FnOnce(&dyn Layout) -> R) -> R
-    where
-        R: Default,
-    {
-        match self.layouts.lock() {
-            Ok(layouts) => match layouts.get(&parent_id) {
-                Some(layout) => read(layout.as_ref()),
-                None => R::default(),
-            },
-            Err(_) => R::default(),
-        }
-    }
-
-    /// Applies the layout only when it is dirty.
-    pub fn apply_if_dirty(&self, parent_id: ObjectId, rect: Rect) -> Option<Vec<(ObjectId, Rect)>> {
-        let dirty = self.dirty.lock().map(|dirty| dirty.contains(&parent_id)).unwrap_or(false);
-        if !dirty {
-            return None;
-        }
-        Some(self.apply(parent_id, rect))
-    }
 }
 
 /// Stores a layout manager for a parent widget, replacing any previous one.
@@ -314,7 +78,6 @@ pub fn store_layout(parent_id: ObjectId, layout: Box<dyn Layout>) {
     LAYOUT_MAP.with(|map| {
         map.borrow_mut().insert(parent_id, layout);
     });
-    let _ = invalidate_layout(parent_id);
 }
 
 /// Removes the layout stored for `parent_id`.
@@ -323,11 +86,7 @@ pub fn store_layout(parent_id: ObjectId, layout: Box<dyn Layout>) {
 /// registry keeps a layout whose children no longer exist and whose ids may later be
 /// reused.
 pub fn forget_layout(parent_id: ObjectId) -> bool {
-    let removed = LAYOUT_MAP.with(|map| map.borrow_mut().remove(&parent_id).is_some());
-    DIRTY_LAYOUTS.with(|dirty| {
-        dirty.borrow_mut().remove(&parent_id);
-    });
-    removed
+    LAYOUT_MAP.with(|map| map.borrow_mut().remove(&parent_id).is_some())
 }
 
 /// Whether a layout is stored for `parent_id`.
@@ -506,12 +265,17 @@ pub fn apply_layout(parent_id: ObjectId, rect: Rect) -> Vec<(ObjectId, Rect)> {
     // given at load time. The bound is the same one the widget runtime uses for parent
     // walks, and it keeps a corrupted/self-referential document from recursing forever.
     const MAX_LAYOUT_DEPTH: u32 = 64;
-    apply_layout_bounded(parent_id, rect, 0, MAX_LAYOUT_DEPTH)
+    // One device context for the whole solve, constructed at the same single point the window
+    // and panel paths use (LY-03). The document path used to call `Layout::update`, so a layout
+    // that honours `LayoutContext` was asked differently here than one level up.
+    let context = LayoutContext::default();
+    apply_layout_bounded(parent_id, rect, &context, 0, MAX_LAYOUT_DEPTH)
 }
 
 fn apply_layout_bounded(
     parent_id: ObjectId,
     rect: Rect,
+    context: &LayoutContext,
     depth: u32,
     max_depth: u32,
 ) -> Vec<(ObjectId, Rect)> {
@@ -526,7 +290,7 @@ fn apply_layout_bounded(
             return Vec::new();
         };
         let mut geometries = Vec::new();
-        layout.update(rect, &mut |child_id, child_rect| {
+        layout.update_with_context(rect, context, &mut |child_id, child_rect| {
             if child_id != SPACER_ID {
                 geometries.push((child_id, child_rect));
             }
@@ -548,11 +312,25 @@ fn apply_layout_bounded(
             child_rect.height,
         );
         if depth < max_depth && has_layout(*child_id) {
-            apply_layout_bounded(*child_id, *child_rect, depth + 1, max_depth);
+            apply_layout_bounded(*child_id, *child_rect, context, depth + 1, max_depth);
         } else if depth >= max_depth && has_layout(*child_id) {
             log::warn!(
                 "declarative layout for widget {parent_id} exceeded the {max_depth}-level nesting \
                  bound; child {child_id}'s layout was not applied"
+            );
+        }
+        // A panel layout nested inside a document container must follow the box the document
+        // just gave it. The declaration walk used to consult only `LAYOUT_MAP`, so a panel
+        // placed by a document kept its children at their old geometry (LY-02). The shared
+        // bounded entry point is the panel layer's own recursion, so both paths use one depth
+        // semantics and cannot disagree about the bound.
+        #[cfg(full_widgets)]
+        if depth < max_depth && crate::app::handle::widget_hosts_a_layout(*child_id) {
+            crate::app::handle::apply_panel_geometry_bounded(
+                *child_id,
+                *child_rect,
+                depth + 1,
+                max_depth,
             );
         }
     }
@@ -582,8 +360,8 @@ pub fn preview_layout(parent_id: ObjectId, rect: Rect) -> Vec<(ObjectId, Rect)> 
 
 /// Recomputes `parent_id`'s geometry through the hint channel.
 ///
-/// The thread-local counterpart of [`SharedLayoutRegistry::apply_with_hints`]. It exists so
-/// a caller that has the child hints — the view engine, or a test — can run
+/// The thread-local counterpart of the context-aware arrangement used by the window and panel
+/// paths. It exists so a caller that has the child hints — the view engine, or a test — can run
 /// `Layout::arrange` on the stored layout without first moving it into a shared registry.
 /// The spacer is still filtered, for the same reason [`apply_layout`] filters it.
 pub fn apply_layout_with_hints(
@@ -717,7 +495,7 @@ pub enum LayoutKindName {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::layout::{BoxLayout, LayoutContext, Orientation};
+    use crate::layout::{BoxLayout, Orientation};
 
     fn box_layout() -> Box<dyn Layout> {
         Box::new(BoxLayout::new(Orientation::Horizontal, 0, 0))
@@ -840,25 +618,6 @@ mod tests {
         assert!(forget_layout(PARENT));
     }
 
-    /// The same bridge on the `Send` registry the view engine is meant to own.
-    #[test]
-    fn the_shared_registry_applies_with_hints() {
-        use crate::layout::{GridLayout, Hints};
-
-        const PARENT: ObjectId = 0x5EF4;
-        let mut grid = GridLayout::new(1, 2, 0, 0);
-        grid.set_widget(0, 0, 301);
-        grid.set_widget(0, 1, 302);
-        let registry = SharedLayoutRegistry::new();
-        registry.store(PARENT, Box::new(grid));
-        let children =
-            [ChildInfo::new(301, Hints::fixed(70, 10)), ChildInfo::new(302, Hints::fixed(130, 10))];
-
-        let out = registry.apply_with_hints(PARENT, Rect::new(0, 0, 200, 20), &children);
-        assert_eq!(out.iter().find(|(id, _)| *id == 301).expect("child").1.width, 70);
-        assert_eq!(out.iter().find(|(id, _)| *id == 302).expect("child").1.width, 130);
-    }
-
     /// RW-49: the context-aware entry reaches `arrange_with_context`, so a scaled layout previews
     /// exactly as its runtime path lays out. RW-48: the reported twin names the clamp.
     #[test]
@@ -937,30 +696,6 @@ mod tests {
         assert!(forget_layout(PARENT));
     }
 
-    /// RW-49: the shared registry has the same context-aware door.
-    #[test]
-    fn the_shared_registry_applies_with_hints_and_context() {
-        use crate::layout::{GridLayout, Hints, LayoutContext};
-
-        const PARENT: ObjectId = 0x5EF6;
-        let mut grid = GridLayout::new(1, 2, 0, 0);
-        grid.set_widget(0, 0, 311);
-        grid.set_widget(0, 1, 312);
-        let registry = SharedLayoutRegistry::new();
-        registry.store(PARENT, Box::new(grid));
-        let children =
-            [ChildInfo::new(311, Hints::fixed(60, 10)), ChildInfo::new(312, Hints::fixed(140, 10))];
-
-        let out = registry.apply_with_hints_and_context(
-            PARENT,
-            Rect::new(0, 0, 200, 20),
-            &children,
-            &LayoutContext::default(),
-        );
-        assert_eq!(out.iter().find(|(id, _)| *id == 311).expect("child").1.width, 60);
-        assert_eq!(out.iter().find(|(id, _)| *id == 312).expect("child").1.width, 140);
-    }
-
     /// Unregistering must be possible, or a reused id would inherit a stale layout.
     #[test]
     fn removing_a_child_reaches_the_layout() {
@@ -977,80 +712,5 @@ mod tests {
 
         assert!(!remove_widget_from_layout(301, 0xDEAD_BEEF));
         assert!(forget_layout(PARENT));
-    }
-
-    /// Invalidation is merged and an unchanged layout is not recomputed.
-    #[test]
-    fn dirty_layouts_apply_once_and_then_stay_clean() {
-        const PARENT: ObjectId = 0x5EF3;
-        store_layout(PARENT, box_layout());
-        add_widget_to_layout(401, 0, PARENT);
-        assert!(is_layout_dirty(PARENT));
-        assert!(invalidate_layout(PARENT));
-        let first = apply_layout_if_dirty(PARENT, Rect::new(0, 0, 80, 20));
-        assert_eq!(first.map(|entries| entries.len()), Some(1));
-        assert!(!is_layout_dirty(PARENT));
-        assert!(apply_layout_if_dirty(PARENT, Rect::new(0, 0, 80, 20)).is_none());
-        assert!(!invalidate_layout(0xDEAD_BEEF));
-        assert!(forget_layout(PARENT));
-    }
-
-    /// The shared registry carries a layout across threads, which the thread-local
-    /// default deliberately cannot do.
-    #[test]
-    fn the_shared_registry_is_usable_from_another_thread() {
-        struct OneChild;
-        impl Layout for OneChild {
-            fn add_widget(&mut self, _widget_id: ObjectId, _stretch: u32) {}
-            fn remove_widget(&mut self, _widget_id: ObjectId) {}
-            fn update(&self, rect: Rect, out: &mut dyn FnMut(ObjectId, Rect)) {
-                out(501, rect);
-            }
-            // G-403: the trait no longer defaults these entries; each forward reproduces the previous fallback behaviour.
-            fn update_with_context(
-                &self,
-                rect: Rect,
-                context: &LayoutContext,
-                out: &mut dyn FnMut(ObjectId, Rect),
-            ) {
-                let _ = context;
-                self.update(rect, out);
-            }
-            fn arrange(
-                &self,
-                rect: Rect,
-                children: &[ChildInfo],
-                out: &mut dyn FnMut(ObjectId, Rect),
-            ) {
-                let _ = children;
-                self.update(rect, out);
-            }
-            fn arrange_with_context(
-                &self,
-                rect: Rect,
-                children: &[ChildInfo],
-                context: &LayoutContext,
-                out: &mut dyn FnMut(ObjectId, Rect),
-            ) {
-                let _ = context;
-                self.arrange(rect, children, out);
-            }
-            fn as_any(&self) -> &dyn crate::compat::Any {
-                self
-            }
-            fn as_any_mut(&mut self) -> &mut dyn crate::compat::Any {
-                self
-            }
-        }
-
-        let registry = std::sync::Arc::new(SharedLayoutRegistry::new());
-        registry.store(0x5EF4, Box::new(OneChild));
-        let other = std::sync::Arc::clone(&registry);
-        let placed =
-            std::thread::spawn(move || other.apply_if_dirty(0x5EF4, Rect::new(1, 2, 30, 40)))
-                .join()
-                .expect("the worker thread finishes");
-        assert_eq!(placed, Some(vec![(501, Rect::new(1, 2, 30, 40))]));
-        assert!(registry.apply_if_dirty(0x5EF4, Rect::new(0, 0, 1, 1)).is_none());
     }
 }

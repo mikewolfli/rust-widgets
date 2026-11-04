@@ -509,6 +509,12 @@ pub trait WidgetHandle: Sized {
     /// honour the state), so a control can share the call shape without
     /// pretending the write landed.
     fn set_window_state(&self, flag: WindowStateFlag, on: bool) -> bool {
+        // Forward to the window handle's own implementation where one exists, so the mirror is
+        // written on the same path the inherent setter uses. The generic methods used to call the
+        // platform directly and skip the mirror, leaving the two read paths disagreeing (HB-04).
+        if flag == WindowStateFlag::Maximized {
+            return WindowHandle::from_raw(self.raw_id()).set_maximized_applied(on);
+        }
         crate::platform::get_platform().set_window_state(self.raw_id(), flag, on)
     }
 
@@ -519,22 +525,22 @@ pub trait WidgetHandle: Sized {
 
     /// Set a window's minimum content size.
     fn set_window_min_size(&self, width: u32, height: u32) -> bool {
-        crate::platform::get_platform().set_window_min_size(self.raw_id(), width, height)
+        WindowHandle::from_raw(self.raw_id()).set_min_size(width, height)
     }
 
     /// Read a window's minimum content size.
     fn window_min_size(&self) -> Option<(u32, u32)> {
-        crate::platform::get_platform().window_min_size(self.raw_id())
+        WindowHandle::from_raw(self.raw_id()).min_size()
     }
 
     /// Set a window's icon from a file path.
     fn set_window_icon(&self, path: &str) -> bool {
-        crate::platform::get_platform().set_window_icon(self.raw_id(), path)
+        WindowHandle::from_raw(self.raw_id()).set_icon(path)
     }
 
     /// Read a window's icon path, if one was set.
     fn window_icon(&self) -> Option<String> {
-        crate::platform::get_platform().window_icon(self.raw_id())
+        WindowHandle::from_raw(self.raw_id()).icon()
     }
 
     /// Set a text entry's selection range as ordered `(start, end)` byte offsets.
@@ -837,6 +843,12 @@ pub(crate) enum SignalKind {
     Triggered,
     /// A menu-bar entry event whose payload also carries the entry rectangle.
     TriggeredEntry,
+    /// The window's `focus_gained` signal, connected by `on_focus_gained`.
+    FocusGained,
+    /// The window's `focus_lost` signal, connected by `on_focus_lost`.
+    FocusLost,
+    /// The window's `moved` signal, connected by `on_moved`.
+    Moved,
 }
 
 /// A recorded subscription made by `on_click` / `on_close`.
@@ -1324,6 +1336,12 @@ pub fn binding_report(widget_id: ObjectId) -> BindingReport {
                             SignalKind::Clicked => clicked += 1,
                             SignalKind::Closed => closed += 1,
                             SignalKind::Triggered | SignalKind::TriggeredEntry => triggered += 1,
+                            // Window focus/move subscriptions are counted as triggered: they are
+                            // handle-recorded subscriptions whose purpose is the same (a live
+                            // callback for this id).
+                            SignalKind::FocusGained | SignalKind::FocusLost | SignalKind::Moved => {
+                                triggered += 1
+                            }
                         }
                     }
                 }
@@ -1617,6 +1635,13 @@ pub fn remove_callbacks(id: ObjectId) {
             map.remove(&id);
         }
     });
+    // Window-level closures that were reachable only through the handle's own clear method. A
+    // host that destroys a window and builds another leaked one veto closure, one key handler and
+    // one position record per cycle; the three tables had no entry here while the two above did
+    // (HB-02).
+    let _ = crate::shortcut::route::clear_key_handler(id);
+    let _ = crate::platform::window_control::clear_close_handler(id);
+    let _ = crate::platform::window_control::remove_window_position(id);
     // Disconnect the signal subscriptions this widget's handles made. The
     // handles are taken out of the table first so a re-entrant removal cannot see
     // the same handles twice, then applied against the live widget.
@@ -1649,6 +1674,27 @@ pub fn remove_callbacks(id: ObjectId) {
                             .downcast_mut::<crate::widget::menu_toolbar::menu_bar::MenuBar>(
                         ) {
                             bar.triggered_entry.disconnect(connection.handle);
+                        }
+                    }
+                    SignalKind::FocusGained | SignalKind::FocusLost | SignalKind::Moved => {
+                        // `Window` is not `BaseWidget`-signal shaped for these; the signals live on
+                        // the self-drawn window control itself (HB-03).
+                        if let Some(window) = crate::widget::capability::widget_as_mut::<
+                            crate::widget::Window,
+                        >(widget)
+                        {
+                            match connection.kind {
+                                SignalKind::FocusGained => {
+                                    window.focus_gained.disconnect(connection.handle);
+                                }
+                                SignalKind::FocusLost => {
+                                    window.focus_lost.disconnect(connection.handle);
+                                }
+                                SignalKind::Moved => {
+                                    window.moved.disconnect(connection.handle);
+                                }
+                                _ => {}
+                            }
                         }
                     }
                 }

@@ -69,7 +69,7 @@
 //! layout/breakpoint paths. The existing full-mount loader path is untouched: this module adds a
 //! session around the same parser and creates controls through the same factory.
 
-use crate::compat::{format, Rc, String, Vec};
+use crate::compat::{format, HashMap, Rc, String, Vec};
 use crate::core::{ObjectId, Rect};
 use crate::json::project::{JsonProject, ProjectNode};
 use crate::view::{Breakpoint, DiffReport, Node, ViewEngine};
@@ -647,6 +647,9 @@ pub struct JsonViewSession {
     layouts: Vec<JsonViewLayout>,
     /// The rect the host last reported, if it has.
     viewport_rect: Option<Rect>,
+    /// The rect the last successful solve ran against, so a repeated report of the same rect can
+    /// return the cached geometry instead of re-solving every declaration (LY-05).
+    solved_rect: Option<Rect>,
     /// The rectangles the last solve produced, in solve order.
     geometry: Vec<(ObjectId, Rect)>,
     /// What is currently installed in the thread-local layout registry.
@@ -670,6 +673,7 @@ impl JsonViewSession {
             engine: ViewEngine::new(),
             layouts: Vec::new(),
             viewport_rect: None,
+            solved_rect: None,
             geometry: Vec::new(),
             installed: Vec::new(),
         }
@@ -726,7 +730,7 @@ impl JsonViewSession {
     pub fn set_viewport_rect(&mut self, rect: Rect) -> JsonViewportApply {
         let tier_changed = self.engine.set_viewport(rect.size());
         self.viewport_rect = Some(rect);
-        self.solve_layouts();
+        self.solve_layouts(false);
         JsonViewportApply { tier_changed, geometry: self.geometry.clone() }
     }
 
@@ -945,16 +949,28 @@ impl JsonViewSession {
     /// that mixes direct `children` with `layout.children`: a direct child is not a member of the
     /// parent's layout, so `apply_layout`'s recursion never visits it and its own layout would
     /// never be solved. Deduping keeps the returned list one entry per control.
-    fn solve_layouts(&mut self) {
+    ///
+    /// `force` skips the unchanged-rect fast path: a mount or an edit changes the declarations, so
+    /// the same viewport still needs a fresh solve. The per-frame paint path passes `false`, which
+    /// turns a still window's repeated report into a cached answer (LY-05).
+    fn solve_layouts(&mut self, force: bool) {
         let Some(rect) = self.viewport_rect else {
             self.geometry.clear();
+            self.solved_rect = None;
             return;
         };
-        let declarations: Vec<(Vec<usize>, Option<Rect>)> =
-            self.layouts.iter().map(|layout| (layout.path.clone(), layout.declared_rect)).collect();
-        let mut geometry: Vec<(ObjectId, Rect)> = Vec::new();
-        for (path, declared) in declarations {
-            let Some(parent) = self.engine.id_at(&path) else {
+        if !force && self.solved_rect == Some(rect) {
+            return;
+        }
+        // Reuse the buffer instead of allocating a fresh one every solve.
+        let mut geometry = core::mem::take(&mut self.geometry);
+        geometry.clear();
+        // The dedupe index replaces the previous linear `find` per child, which made a large
+        // document O(declarations x children) on every solve (LY-05).
+        let mut index: HashMap<ObjectId, usize> = HashMap::with_capacity(self.layouts.len());
+        for layout in &self.layouts {
+            let path = layout.path.as_slice();
+            let Some(parent) = self.engine.id_at(path) else {
                 continue;
             };
             let solve_rect = if path.is_empty() {
@@ -966,19 +982,22 @@ impl JsonViewSession {
                 // answer: the document did not state a size either.
                 crate::widget::runtime::geometry_of(parent)
                     .filter(|rect| rect.width > 0 && rect.height > 0)
-                    .or(declared)
+                    .or(layout.declared_rect)
                     .unwrap_or(Rect::new(0, 0, 0, 0))
             };
             for (child, child_rect) in crate::layout::declarative::apply_layout(parent, solve_rect)
             {
-                if let Some(existing) = geometry.iter_mut().find(|(id, _)| *id == child) {
-                    existing.1 = child_rect;
-                } else {
-                    geometry.push((child, child_rect));
+                match index.get(&child) {
+                    Some(&position) => geometry[position].1 = child_rect,
+                    None => {
+                        index.insert(child, geometry.len());
+                        geometry.push((child, child_rect));
+                    }
                 }
             }
         }
         self.geometry = geometry;
+        self.solved_rect = Some(rect);
     }
 
     /// Solves immediately when a rect is known, including one a host reported on the engine.
@@ -992,7 +1011,7 @@ impl JsonViewSession {
                 self.viewport_rect = Some(Rect::new(0, 0, size.width, size.height));
             }
         }
-        self.solve_layouts();
+        self.solve_layouts(true);
     }
 }
 

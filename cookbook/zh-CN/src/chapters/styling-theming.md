@@ -374,7 +374,8 @@ fade.start();
 
 // 每帧：
 let current_opacity = fade.current_value();
-widget.set_opacity(current_opacity);
+// `FloatAnimation` only produces the value. Apply it through the property contract of the
+// control that publishes `opacity`; there is no generic `set_opacity` on every widget.
 ```
 
 ### `KeyframeAnimation`

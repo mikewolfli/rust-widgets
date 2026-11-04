@@ -264,6 +264,15 @@ unsafe extern "system" fn canvas_wnd_proc(
         // non-zero skips the background fill and avoids a one-frame white flash.
         WM_ERASEBKGND => 1,
         WM_SIZE => {
+            // A canvas can be resized without this module's help — a host calling `SetWindowPos`
+            // on a handle from `get_native_handle`, a parent relayout, a DPI change. The widget's
+            // layout must follow that new client size, and only the trigger queue reaches the
+            // layout layer (PL-07). The main window's `WM_SIZE` already works this way.
+            if let Some(widget_id) = widget_id_of(hwnd) {
+                if let Some((width, height)) = client_size(hwnd) {
+                    crate::queue_resize_trigger(widget_id, width, height);
+                }
+            }
             invalidate_canvas(hwnd);
             0
         }

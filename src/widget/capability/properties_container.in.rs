@@ -146,6 +146,10 @@ macro_rules! impl_properties_container {
                 true,
                 &["rounded", "triangular", "rectangular"],
             ),
+            // `set_elide_mode`/`elide_mode` existed with no schema row, so a designer or JSON host
+            // could not express a capability the control has (WG-05). Same token vocabulary
+            // Button and Label publish for `elide`.
+            PropertySchema::enumerated("elide", true, true, &["none", "left", "middle", "right"]),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),

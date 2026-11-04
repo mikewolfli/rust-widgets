@@ -154,13 +154,44 @@ pub struct TabWidget {
 }
 
 /// How a tab title that does not fit its box is shortened.
+///
+/// The variants name the end that is replaced by the ellipsis, matching
+/// [`crate::widget::text_utils::ElideMode`] and the `elide` token vocabulary Button and Label
+/// publish. `None` is the historical clip behaviour.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum TabElideMode {
     /// Clip the title (the historical behaviour).
     #[default]
     None,
-    /// Shorten the title and append an ellipsis.
+    /// Shorten the end and append an ellipsis.
     ElideRight,
+    /// Keep the tail and shorten the head.
+    ElideLeft,
+    /// Keep both ends and shorten the middle.
+    ElideMiddle,
+}
+
+impl TabElideMode {
+    /// Parses a property token, accepting exactly the spellings [`elide_token`] publishes.
+    pub fn from_token(token: &str) -> Option<Self> {
+        match token {
+            "none" => Some(TabElideMode::None),
+            "right" => Some(TabElideMode::ElideRight),
+            "left" => Some(TabElideMode::ElideLeft),
+            "middle" => Some(TabElideMode::ElideMiddle),
+            _ => None,
+        }
+    }
+}
+
+/// The token `elide` is carried as, matching the schema row's accepted spellings.
+fn elide_token(mode: TabElideMode) -> &'static str {
+    match mode {
+        TabElideMode::None => "none",
+        TabElideMode::ElideRight => "right",
+        TabElideMode::ElideLeft => "left",
+        TabElideMode::ElideMiddle => "middle",
+    }
 }
 
 /// The measurement cache behind [`TabWidget::tab_width_hints`].
@@ -2198,6 +2229,7 @@ impl WidgetProperties for TabWidget {
             // contract. Both directions are here, over the same token vocabulary the schema row
             // declares.
             "tab_shape" => Ok(CapabilityValue::String(tab_shape_token(self.tab_shape).to_string())),
+            "elide" => Ok(CapabilityValue::String(elide_token(self.elide_mode).to_string())),
             "document_mode" => Ok(CapabilityValue::Bool(self.document_mode())),
             _ => base_property_get(self, name),
         }
@@ -2251,6 +2283,13 @@ impl WidgetProperties for TabWidget {
                 self.set_tab_shape(shape);
                 Ok(())
             }
+            "elide" => {
+                let token = expect_string(value)?;
+                let mode =
+                    TabElideMode::from_token(&token).ok_or(CapabilityAccessError::OutOfRange)?;
+                self.set_elide_mode(mode);
+                Ok(())
+            }
             "document_mode" => {
                 self.set_document_mode(expect_bool(value)?);
                 Ok(())
@@ -2271,6 +2310,7 @@ impl WidgetProperties for TabWidget {
             "movable",
             "tab_position",
             "tab_shape",
+            "elide",
             "document_mode",
             BASE_PROPERTY_NAMES
         ]
@@ -2608,6 +2648,12 @@ impl Draw for TabWidget {
                     } else {
                         content_background
                     }
+                } else if self.hovered_tab == Some(i) {
+                    // The pointer is over this tab: a light wash toward the content surface, which
+                    // is the same intensity list rows use for `hovered_bg`. The field and the
+                    // per-move redraw existed with no draw arm, so a hovered tab painted the same
+                    // pixels as an idle one (WG-04).
+                    inactive_tab.blend(&content_background, 0.5)
                 } else if document_mode {
                     strip_background
                 } else {
@@ -2727,12 +2773,41 @@ impl Draw for TabWidget {
                         width: title_width,
                         height: tab_line.height,
                     };
-                    let title_text = if self.elide_mode == TabElideMode::ElideRight {
-                        let mut measure =
-                            |candidate: &str| context.measure_text(candidate, font).width;
-                        elide_tab_title(&tab.title, title_width, &mut measure)
-                    } else {
-                        Cow::Borrowed(tab.title.as_str())
+                    let title_text = match self.elide_mode {
+                        TabElideMode::None => Cow::Borrowed(tab.title.as_str()),
+                        TabElideMode::ElideRight => {
+                            let mut measure =
+                                |candidate: &str| context.measure_text(candidate, font).width;
+                            elide_tab_title(&tab.title, title_width, &mut measure)
+                        }
+                        TabElideMode::ElideLeft => {
+                            let mut measure =
+                                |candidate: &str| context.measure_text(candidate, font).width;
+                            let fitted = crate::widget::text_utils::elide_start_to_width(
+                                &tab.title,
+                                title_width,
+                                &mut measure,
+                            );
+                            if fitted.is_empty() {
+                                Cow::Borrowed("\u{2026}")
+                            } else {
+                                fitted
+                            }
+                        }
+                        TabElideMode::ElideMiddle => {
+                            let mut measure =
+                                |candidate: &str| context.measure_text(candidate, font).width;
+                            let fitted = crate::widget::text_utils::elide_middle_to_width(
+                                &tab.title,
+                                title_width,
+                                &mut measure,
+                            );
+                            if fitted.is_empty() {
+                                Cow::Borrowed("\u{2026}")
+                            } else {
+                                fitted
+                            }
+                        }
                     };
                     context.draw_text_fitted_cow(
                         title_band,

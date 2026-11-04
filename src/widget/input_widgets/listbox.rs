@@ -1552,6 +1552,11 @@ impl WidgetProperties for ListBox {
                 None => Ok(CapabilityValue::Null),
             },
             "item_height" => Ok(CapabilityValue::Float(self.item_height() as f64)),
+            // `scroll_row` was published read/write but had no arm here, so the property was
+            // declared and unanswered. It is the unit-explicit spelling of the control's own
+            // `scroll_offset` (WG-05 pattern).
+            "scroll_row" => Ok(CapabilityValue::UInt(self.scroll_offset() as u64)),
+            "columns" => Ok(CapabilityValue::UInt(self.columns() as u64)),
             "selected_count" => Ok(CapabilityValue::UInt(self.selected_indices().len() as u64)),
             // The selected rows as a comma-joined list of indices, in visual order.
             "selected_indices" => Ok(CapabilityValue::String(
@@ -1603,6 +1608,14 @@ impl WidgetProperties for ListBox {
                 self.set_item_height(expect_f32(value)?);
                 Ok(())
             }
+            "scroll_row" => {
+                self.set_scroll_offset(expect_usize(value)?);
+                Ok(())
+            }
+            "columns" => {
+                self.set_columns(expect_usize(value)?);
+                Ok(())
+            }
             "alignment" => {
                 self.set_alignment(expect_horizontal_alignment(value)?);
                 Ok(())
@@ -1634,6 +1647,7 @@ impl WidgetProperties for ListBox {
             "current_row",
             "scroll_row",
             "item_height",
+            "columns",
             "selected_count",
             "selected_indices",
             "hovered_row",
@@ -1953,7 +1967,7 @@ impl Draw for ListBox {
                 Some(selected_bg)
             } else if Some(i) == current_row {
                 Some(focused_bg)
-            } else if Some(i) == hovered_row {
+            } else if Some(i) == hovered_row && self.base.is_enabled() {
                 Some(hovered_bg)
             } else {
                 None
@@ -2023,10 +2037,11 @@ impl Draw for ListBox {
                     if self.columns > 1 {
                         // Multi-column rows split the label on `\t` and place each part in an
                         // equal-width cell, which is the cheap presentation of a table a list
-                        // needs before it becomes a real grid.
-                        let parts: Vec<&str> = text.split('\t').collect();
+                        // needs before it becomes a real grid. The split is consumed in place:
+                        // collecting it into a `Vec` allocated once per visible row per frame
+                        // (WG-06).
                         let cell_width = (inner_width / self.columns as u32).max(1);
-                        for (column, part) in parts.iter().take(self.columns).enumerate() {
+                        for (column, part) in text.split('\t').take(self.columns).enumerate() {
                             let cell_x = left + (column as i32) * cell_width as i32;
                             let width = if column + 1 == self.columns {
                                 (left + inner_width as i32 - cell_x).max(1) as u32

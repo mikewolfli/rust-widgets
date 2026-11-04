@@ -86,13 +86,17 @@ pub struct FrameStats {
     ///
     /// The saving, not the work: five requests for one surface submit once and coalesce four.
     pub repaints_coalesced: usize,
-    /// Why each repainted surface was repainted, last cause first per surface.
+    /// Why each repainted surface was repainted, keyed by surface.
     ///
     /// One entry per surface -- the reason it was repainted -- so a reader can answer "why is
     /// this still redrawing?" without a log. A surface with no entry is one that was not
     /// repainted, which is why "no anonymous repaint" (BLUE24 §8 criterion 4) is a statement
-    /// about this list being complete rather than about it being non-empty.
-    pub last_repaint_reason: alloc::vec::Vec<(ObjectId, RepaintReason)>,
+    /// about this map being complete rather than about it being non-empty.
+    ///
+    /// The map is moved out of [`FRAME_REPAINT_REASONS`] rather than collected into a second
+    /// container, so a frame that repainted pays one allocation for its messages and not two
+    /// (RT-03).
+    pub last_repaint_reason: alloc::collections::BTreeMap<ObjectId, RepaintReason>,
     /// Image decodes the frame avoided, by sharing a decode an earlier frame already did.
     ///
     /// # Why an image decode belongs in a frame's account
@@ -610,9 +614,10 @@ pub(crate) fn take_frame_coalesced_count() -> usize {
 /// takers are called together by [`drive_frame`] and the coalescing window is exactly one
 /// frame: clearing it early would let a second request for the same surface be counted as a
 /// fresh submission within the same frame.
-pub(crate) fn take_frame_repaint_reasons() -> alloc::vec::Vec<(ObjectId, RepaintReason)> {
+pub(crate) fn take_frame_repaint_reasons() -> alloc::collections::BTreeMap<ObjectId, RepaintReason>
+{
     FRAME_REPAINT_REASONS
-        .try_with(|reasons| core::mem::take(&mut *reasons.borrow_mut()).into_iter().collect())
+        .try_with(|reasons| core::mem::take(&mut *reasons.borrow_mut()))
         .unwrap_or_default()
 }
 
