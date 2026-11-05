@@ -12,6 +12,7 @@ use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
+use super::place::place_content_child;
 use super::theme_snapshot::ThemeSnapshot;
 
 /// Safe area insets for mobile devices.
@@ -162,7 +163,7 @@ impl SafeArea {
     pub fn apply(&mut self) {
         if let Some(child) = self.content_child {
             let rect = self.content_rect();
-            crate::set_widget_geometry(child, rect.x, rect.y, rect.width, rect.height);
+            place_content_child(Some(child), rect);
             crate::set_widget_visible(child, true);
         }
     }

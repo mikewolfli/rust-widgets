@@ -239,6 +239,7 @@
 | **TabWidget** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **Table** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **Tag** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **TagGroup** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **TagInput** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **TextArea** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **TextEdit** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
@@ -278,11 +279,11 @@
 
 ---
 
-Total widgets: 239 (230 parent-registered kinds plus 9 documented WebEngine wrapper types)
+Total widgets: 240 (231 parent-registered kinds plus 9 documented WebEngine wrapper types)
 
 Registered by optional packages (row describes the kind; the constructor lives in that package): `KanbanBoard`, `WebEngineView`, `CandlestickChart`, `VolumeChart`, `DepthChart`, `OrderBook`, `QuoteBoard`, `IndicatorChart`, `LottieWidget`, `RiveWidget`, `VideoPlayer`, `AudioVisualizer`, `CameraPreview`, `TileLoader`, `ZoomControl`, `ScaleBar`, `Compass`, `TimelineAxis`, `DependencyEditor`, `DiffFileList`, `WebFindBar`, `KanbanCardView`, `KanbanColumnHeader`, `Form`, `FormSet`.
 
-C-ABI typed constructors: 22 of 239 widget types. The remainder are reachable through `rw_create_widget_of_kind`, which takes a factory name at run time.
+C-ABI typed constructors: 22 of 240 widget types. The remainder are reachable through `rw_create_widget_of_kind`, which takes a factory name at run time.
 
 ---
 

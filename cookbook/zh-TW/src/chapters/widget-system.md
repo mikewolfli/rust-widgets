@@ -423,7 +423,7 @@ impl EventHandler for MyWidget {
 
 ---
 
-## `WidgetKind` 列舉——230 變體
+## `WidgetKind` 列舉——231 變體
 
 `WidgetKind` 列舉將每個控制項型別分類。它透過功能旗標進行門控：28 個變體始終可用；151 個需要非 `mini` 功能。
 
@@ -708,44 +708,50 @@ impl EventHandler for Window {
 
 ### 容器控制項
 
-容器使用 `SimpleRegistry` 將渲染與事件轉發給子控制項：
+容器不為子控制項持有一張繪製/事件表。它持有**子控制項清單**（id），透過公開幾何入口放置每個子控制項，由執行環境負責繪製與派發：
 
 ```rust
-use rust_widgets::widget::{SimpleRegistry, Widget, BaseWidget, Draw, WidgetKind};
-use rust_widgets::event::{Event, EventHandler};
-use rust_widgets::render::RenderContext;
+use rust_widgets::widget::{BaseWidget, Widget, WidgetKind};
 use rust_widgets::core::{ObjectId, Rect};
 
 struct FrameWidget {
     base: BaseWidget,
-    registry: SimpleRegistry,
+    child: Option<ObjectId>,
 }
 
 impl FrameWidget {
     fn new(title: &str, geometry: Rect) -> Self {
         Self {
             base: BaseWidget::new(WidgetKind::GroupBox, geometry, "Frame"),
-            registry: SimpleRegistry::new(),
+            child: None,
         }
     }
 
-    fn add_child_widget<W: Widget + Draw + EventHandler + 'static>(
-        &mut self,
-        child: &mut W,
-    ) {
-        let id = child.id();
-        self.base.add_child(id);
-
-        // Register the child's draw + event handlers
-        // (In practice, this uses closures that borrow the child)
-        self.registry.register(
-            id,
-            |ctx| { /* forward to child.draw(ctx) */ },
-            |evt| { /* forward to child.handle_event(evt) */ },
-        );
+    /// 記錄子控制項並把它放進內容框。
+    fn set_child(&mut self, child: Option<ObjectId>) {
+        if let Some(previous) = self.child.take() {
+            self.base.remove_child_linked(previous);
+            rust_widgets::set_widget_visible(previous, false);
+        }
+        self.child = child;
+        if let Some(id) = child {
+            self.base.add_child_linked(id);
+            rust_widgets::set_widget_visible(id, true);
+            // 依框架裝飾內縮；本例使用完整矩形。
+            let content = self.base.geometry();
+            rust_widgets::set_widget_geometry(id, content.x, content.y, content.width, content.height);
+        }
     }
 }
 ```
+
+容器需要履行三項義務，樹路徑才能正確：
+
+* **放置** — 每次佈局變更透過 `set_widget_geometry` 寫入內容矩形；只記錄 id 的容器會讓子控制項停留在建構時的矩形。
+* **裁剪** — 實作 `Widget::children_clip` 回傳內容框，樹繪製器才不會讓子控制項覆蓋標籤列、捲軸或標題等裝飾。
+* **興趣** — 當落在內容子控制項上的事件應由容器處理時，實作 `Widget::accepts_wheel` / `observes_child_press`；執行環境會沿父鏈上溯，而不是丟棄事件。
+
+早期版本用 `SimpleRegistry` 這張閉包轉發表完成上述工作，已於 4.1.0 移除：它在第二條路徑上重複了繪製、派發與幾何，且沒有生產呼叫方。
 
 ---
 

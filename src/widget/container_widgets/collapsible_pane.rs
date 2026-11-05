@@ -17,6 +17,7 @@ use crate::widget::save_state::SaveState;
 use crate::widget::{BaseWidget, Draw, IconName, IconSource, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
+use super::place::place_content_child;
 use super::theme_snapshot::ThemeSnapshot;
 
 /// The gap between the header icon and the title that follows it (C-04).
@@ -321,8 +322,8 @@ impl CollapsiblePane {
         if let Some(content) = self.content_child {
             // The main tree path (a window that paints its children) does not know this
             // control's content box; it draws the child at the child's own geometry. Writing
-            // the geometry through the public entry keeps every path agreeing.
-            crate::set_widget_geometry(content, rect.x, rect.y, rect.width, rect.height);
+            // the geometry through the shared content entry keeps every path agreeing.
+            place_content_child(Some(content), rect);
         }
     }
 
@@ -359,6 +360,11 @@ impl CollapsiblePane {
 impl Widget for CollapsiblePane {
     fn base(&self) -> &BaseWidget {
         &self.base
+    }
+    /// The content child lives in the pane's open band, never over the header. A collapsed
+    /// pane's band is empty, which the painter treats as "nothing of the subtree is visible".
+    fn children_clip(&self) -> Option<Rect> {
+        Some(self.content_rect())
     }
     fn set_state_theme_hook(&mut self) {
         crate::style::reapply_active_theme_state(self);
@@ -493,7 +499,6 @@ impl EventHandler for CollapsiblePane {
                 let hdr = self.header_rect();
                 if hdr.contains(*pos) {
                     self.toggle();
-                    return;
                 }
             }
             // Space/Enter toggles only while the pane holds focus: a pane embedded in a page
@@ -503,7 +508,6 @@ impl EventHandler for CollapsiblePane {
                     && self.base.focus_reason().is_some() =>
             {
                 self.toggle();
-                return;
             }
             _ => {}
         }
@@ -1150,5 +1154,28 @@ mod tests {
         assert!(pane.icon().is_some());
         pane.set_icon(None);
         assert_eq!(pane.icon(), None);
+    }
+
+    /// The content child fills the pane's open band, through the shared placement entry.
+    #[cfg(not(alloc_frugal))]
+    #[test]
+    fn the_content_is_placed_in_the_open_band() {
+        use crate::widget::base_widgets::label::Label;
+
+        let id = crate::widget::runtime::register(Box::new(Label::new(
+            "body".to_string(),
+            Rect::new(0, 0, 10, 10),
+        )))
+        .expect("the test thread has a widget runtime");
+        let mut pane = CollapsiblePane::new(Rect::new(10, 20, 300, 200), "Details".to_string());
+        pane.set_content(id);
+
+        let content = pane.content_rect();
+        assert_eq!(
+            crate::widget_geometry(id),
+            Some((content.x, content.y, content.width, content.height))
+        );
+
+        crate::widget::runtime::unregister(id);
     }
 }

@@ -312,12 +312,18 @@ impl Font {
     /// from: this looks it up in [`intern_family`], so a face built per frame (the chart
     /// adapter's label, a tag's fallback, a clock's readout) allocates nothing after its first
     /// use.
+    ///
+    /// The callers are chart/tag/clock widgets, which need the full widget set; a stripped build
+    /// (`mini`/`embedded`) or one with no device profile compiles them out. The constructor stays
+    /// `pub(crate)` for the builds that do have them, so the lint is silenced where it does not.
+    #[cfg_attr(not(full_widgets), allow(dead_code))]
     pub(crate) fn new_interned(family: &str, size: f32, bold: bool, italic: bool) -> Self {
         let weight = if bold { Self::BOLD_WEIGHT } else { Self::REGULAR_WEIGHT };
         Self::with_weight_shared(intern_family(family), size, weight, italic)
     }
 
     /// [`Self::simple`] for a borrowed family name; see [`Self::new_interned`].
+    #[cfg_attr(not(full_widgets), allow(dead_code))]
     pub(crate) fn simple_interned(family: &str, size: f32) -> Self {
         Self::new_interned(family, size, false, false)
     }

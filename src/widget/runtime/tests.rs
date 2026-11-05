@@ -5132,6 +5132,74 @@ fn the_tree_painter_clips_descendants_to_the_container_content_box() {
     unregister(root);
 }
 
+/// An event a control declines reaches its parent instead of disappearing.
+///
+/// # What this pins
+///
+/// `accepts_event` is only useful if the router actually walks the parent chain. A label or a
+/// spacer inside a container is the common case: the pointer lands on the innermost widget, and
+/// without the fallback the container never sees the press. The two recorders below make the
+/// hand-off observable — the child declines the press, the parent counts it.
+#[test]
+fn a_declined_event_is_handed_to_the_parent() {
+    use crate::core::Rect;
+    use crate::event::{Event, EventHandler};
+    use crate::widget::Widget;
+    use core::cell::Cell;
+    use std::rc::Rc;
+
+    struct Recorder {
+        base: BaseWidget,
+        presses: Rc<Cell<u32>>,
+        declines_press: bool,
+    }
+    impl Widget for Recorder {
+        fn base(&self) -> &BaseWidget {
+            &self.base
+        }
+        fn base_mut(&mut self) -> &mut BaseWidget {
+            &mut self.base
+        }
+        fn accepts_event(&self, event: &Event) -> bool {
+            !(self.declines_press && matches!(event, Event::MousePress { .. }))
+        }
+    }
+    impl EventHandler for Recorder {
+        fn handle_event(&mut self, event: &Event) {
+            if matches!(event, Event::MousePress { .. }) {
+                self.presses.set(self.presses.get() + 1);
+            }
+        }
+    }
+
+    let parent_presses = Rc::new(Cell::new(0));
+    let child_presses = Rc::new(Cell::new(0));
+    let parent = register(Box::new(Recorder {
+        base: BaseWidget::new(WidgetKind::Panel, Rect::new(0, 0, 100, 100), "parent"),
+        presses: Rc::clone(&parent_presses),
+        declines_press: false,
+    }))
+    .expect("mount parent");
+    let child = register(Box::new(Recorder {
+        base: BaseWidget::new(WidgetKind::Panel, Rect::new(10, 10, 20, 20), "child"),
+        presses: Rc::clone(&child_presses),
+        declines_press: true,
+    }))
+    .expect("mount child");
+    with_widget_mut(parent, |widget| {
+        widget.base_mut().add_child_linked(child);
+    })
+    .expect("the parent is mounted");
+
+    let press = Event::MousePress { pos: Point::new(15, 15), button: 1, modifiers: 0 };
+    assert!(dispatch_event(child, &press), "the child is mounted");
+    assert_eq!(child_presses.get(), 0, "the child declined, so it does not count");
+    assert_eq!(parent_presses.get(), 1, "the parent saw the press instead");
+
+    unregister(child);
+    unregister(parent);
+}
+
 /// Painting a tree into an arbitrary backend produces the frame the tree path produces.
 ///
 /// # What this pins

@@ -19,7 +19,7 @@ graph TB
     end
 
     subgraph "第2层：控件模型"
-        WIDGET["widget::Widget<br/>widget::BaseWidget<br/>widget::Draw<br/>widget::WidgetKind<br/>widget::SimpleRegistry"]
+        WIDGET["widget::Widget<br/>widget::BaseWidget<br/>widget::Draw<br/>widget::WidgetKind<br/>widget::runtime"]
     end
 
     subgraph "第3层：核心系统"
@@ -67,7 +67,7 @@ graph TB
 | 层 | 职责 | 关键模块 |
 |---|---|---|
 | **应用框架** | 应用生命周期、控件句柄、事件循环编排 | `app::App`, `AppConfig`, `WindowHandle`, `AppLifecycle` |
-| **控件模型** | 控件 trait 契约、基础控件状态、信号槽位、渲染分发、容器组合 | `widget::Widget`, `BaseWidget`, `Draw`, `WidgetKind`, `SimpleRegistry` |
+| **控件模型** | 控件 trait 契约、基础控件状态、信号槽位、渲染分发、容器组合 | `widget::Widget`, `BaseWidget`, `Draw`, `WidgetKind`, `widget::runtime` |
 | **核心系统** | 布局、渲染、事件、信号、样式、数据绑定、动作、撤销/重做 | `layout`, `render`, `event`, `signal`, `style`, `data_binding`, `action`, `undo` |
 | **平台抽象** | 窗口/绘制表面创建、事件转换、剪贴板、输入法、辅助功能、原生菜单 | `control_backend::ControlBackend`, `platform` |
 | **操作系统/GPU** | 原始平台 API、GPU 驱动 | 操作系统 SDK + `wgpu` |
@@ -401,7 +401,7 @@ pub trait EventHandler {
 
 `BaseWidget` 提供了一个默认实现，将平台事件映射为信号发射（click → `clicked.emit()`，鼠标移动 → `hover.emit(point)`）。
 
-### `WidgetKind` Enum — 230 变体
+### `WidgetKind` Enum — 231 变体
 
 `WidgetKind` 枚举对所有控件类型进行分类。变体受功能门控：28 个在所有配置文件中可用，151 个通过非 `mini` 功能解锁：
 
@@ -439,23 +439,32 @@ pub enum WidgetKind {
 }
 ```
 
-### 通过 `SimpleRegistry` 进行容器组合
+### 通过控件树进行容器组合
 
-像 `Frame`、`TabWidget` 和 `ScrollArea` 这样的容器使用 `SimpleRegistry` 将渲染和事件转发给通过 `ObjectId` 标识的子控件：
+容器通过**挂载**子控件并在自己的子控件列表中记录 id 来组合内容；运行时拥有控件，树绘制器拥有像素：
 
 ```rust
-pub struct SimpleRegistry {
-    entries: HashMap<ObjectId, (DrawClosure, EventClosure)>,
-}
+// 容器记录子控件 id …
+tab_widget.add_tab("页面".to_string(), Some(child_id));
+scroll_area.set_widget(Some(content_id));
 
-impl SimpleRegistry {
-    pub fn register<D, E>(&mut self, id: ObjectId, draw: D, event: E);
-    pub fn draw_widget(&mut self, id: ObjectId, context: &mut RenderContext) -> bool;
-    pub fn forward_event(&mut self, id: ObjectId, event: &Event) -> bool;
-}
+// … 控件由运行时注册表拥有 …
+let id = rust_widgets::widget::runtime::register(Box::new(Label::new(
+    "内容".to_string(),
+    Rect::new(0, 0, 120, 24),
+)))?;
+
+// … 容器通过公共入口写入子控件矩形。
+rust_widgets::set_widget_geometry(id, x, y, width, height);
 ```
 
-这弥合了基于 `ObjectId` 的子控件跟踪（在 `BaseWidget` 中）与基于 trait 对象的渲染/事件分发系统之间的鸿沟。
+此后三个机制都作用于同一棵树，不再需要逐容器的转发表：
+
+* **绘制** — `widget::runtime` 的树绘制器按子控件自身几何绘制每个可见的已挂载子控件，并应用容器的 `Widget::children_clip`，使内容不能覆盖标签条、滚动条带等装饰。
+* **事件** — `widget::runtime::dispatch_event` 投递给命中 id 并沿父链上溯；声明 `accepts_event == false` 的控件会把事件交给容器，而不是吞掉。
+* **几何** — 容器的内容模型是子控件矩形的唯一来源，每次布局变化通过 `set_widget_geometry` 写入一次。
+
+`widget::SimpleRegistry` 已移除（4.1.0）：它曾是一张闭包转发表，让容器按 id 绘制与分发，与上述三件事完全重复且没有生产调用方；请使用本节所示的挂载与控件树。
 
 ---
 
@@ -867,7 +876,7 @@ pub trait ControlBackend {
 
 ### 调度策略
 
-`control_backend::dispatcher` 中的调度器根据编译时的功能标志将控件创建调用路由到相应的后端。`control_backend::routing` 中的路由系统覆盖全部 230 种控件类型；每种控件均为自绘，已无第二套（平台托管）机制可选。
+`control_backend::dispatcher` 中的调度器根据编译时的功能标志将控件创建调用路由到相应的后端。`control_backend::routing` 中的路由系统覆盖全部 231 种控件类型；每种控件均为自绘，已无第二套（平台托管）机制可选。
 
 ---
 

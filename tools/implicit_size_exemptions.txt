@@ -295,3 +295,11 @@ src/widget/view_widgets/table_widget/widget.rs <free> permanent
 # A drawing surface has no content to measure; the host places it.
 src/widget/special_widgets/canvas/widget.rs Canvas permanent
 src/widget/view_widgets/virtual_table/widget.rs VirtualTable permanent
+crates/rust-widgets-suites/src/devtools/diff_viewer/file_list.rs DiffFileList backlog
+crates/rust-widgets-suites/src/devtools/diff_viewer/viewer.rs DiffViewer backlog
+crates/rust-widgets-suites/src/maps/map_view/map_view_companions/compass.rs Compass backlog
+crates/rust-widgets-suites/src/maps/map_view/map_view_companions/scale_bar.rs ScaleBar backlog
+crates/rust-widgets-suites/src/maps/map_view/map_view_companions/tile_loader.rs TileLoader backlog
+crates/rust-widgets-suites/src/maps/map_view/map_view_companions/zoom_control.rs ZoomControl backlog
+crates/rust-widgets-suites/src/project/gantt/gantt_companions/dependency_editor.rs DependencyEditor backlog
+crates/rust-widgets-suites/src/project/gantt/gantt_companions/timeline_axis.rs TimelineAxis backlog

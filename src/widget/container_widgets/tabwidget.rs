@@ -34,6 +34,7 @@ use std::borrow::Cow;
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use super::place::place_content_child;
 use super::theme_snapshot::ThemeSnapshot;
 /// Tab widget.
 pub struct TabWidget {
@@ -664,8 +665,7 @@ impl TabWidget {
     /// placement half, not a second drawing path (rule #101).
     fn place_current_page(&self) {
         if let Some(widget_id) = self.current_widget() {
-            let rect = self.content_rect();
-            crate::set_widget_geometry(widget_id, rect.x, rect.y, rect.width, rect.height);
+            place_content_child(Some(widget_id), self.content_rect());
         }
     }
 
@@ -1952,6 +1952,12 @@ impl Widget for TabWidget {
     fn accepts_wheel(&self) -> bool {
         true
     }
+    /// Descendants are clipped to the whole control: the current page fills the content box,
+    /// but the corner widget lives in the strip, so a content-box clip would erase it. The
+    /// control's own rectangle still stops a stale page from painting outside the widget.
+    fn children_clip(&self) -> Option<Rect> {
+        Some(self.geometry())
+    }
     fn set_state_theme_hook(&mut self) {
         crate::style::reapply_active_theme_state(self);
     }
@@ -2430,10 +2436,7 @@ impl EventHandler for TabWidget {
                         let before = self.overflow_scroll;
                         self.scroll_tabs(notches * WHEEL_SCROLL_STEP);
                         // C2-D0: a strip at either end hands the notch to an outer container.
-                        if self.overflow_scroll != before {
-                            crate::widget::runtime::claim_wheel();
-                        }
-                        return;
+                        crate::widget::claim_wheel_if_moved(&before, &self.overflow_scroll);
                     }
                 }
             }
@@ -2463,7 +2466,6 @@ impl EventHandler for TabWidget {
                 }
                 // The strip consumed the key: forwarding it to the page as well would move the
                 // page's own selection in the same gesture.
-                return;
             }
             Event::MouseRelease { .. } => self.end_tab_drag(),
             _ => {}
@@ -4360,5 +4362,29 @@ mod tests {
             None,
             "an entry with no hint reports none"
         );
+    }
+
+    /// The selected page fills the content box the painter uses, through the shared
+    /// `place_content_child` entry.
+    #[cfg(not(alloc_frugal))]
+    #[test]
+    fn a_tab_page_is_placed_in_the_content_box() {
+        use crate::widget::base_widgets::label::Label;
+
+        let id = crate::widget::runtime::register(Box::new(Label::new(
+            "page".to_string(),
+            Rect::new(0, 0, 10, 10),
+        )))
+        .expect("the test thread has a widget runtime");
+        let mut tabs = TabWidget::new(Rect::new(10, 20, 300, 200));
+        tabs.add_tab("One".to_string(), Some(id));
+
+        let content = Rect::new(10, 20 + TAB_HEIGHT, 300, 200 - TAB_HEIGHT as u32);
+        assert_eq!(
+            crate::widget_geometry(id),
+            Some((content.x, content.y, content.width, content.height))
+        );
+
+        crate::widget::runtime::unregister(id);
     }
 }

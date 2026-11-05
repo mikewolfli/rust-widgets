@@ -11,7 +11,7 @@
 use super::super::raster::text_coverage_into;
 use super::super::types::{PixelRect, Rgba8};
 use super::frame::WgpuRenderer;
-use super::resources::TextureKey;
+use super::resources::{ParamsFamily, TextureKey};
 use std::sync::Arc;
 
 /// One image draw in the command-stream pass.
@@ -20,6 +20,8 @@ use std::sync::Arc;
 /// handle the pass needs.
 pub(super) struct ImageDraw {
     pub(super) bind_group: wgpu::BindGroup,
+    /// Dynamic offset of this draw's 32-byte params in the shared arena.
+    pub(super) offset: u32,
     /// Whether the pass shades it with the reference's four-texel bilinear sample instead of one
     /// texel fetch. The two pipelines share this bind group's layout.
     pub(super) bilinear: bool,
@@ -34,19 +36,26 @@ pub(super) struct TextDraw {
 }
 
 /// One ring / pie-wedge / rounded outline in the command-stream pass.
+///
+/// The 64-byte params live in the frame's shared params arena; `offset` is this draw's
+/// device-aligned slice, passed as a dynamic offset when the pass binds the arena.
 pub(super) struct ShapeDraw {
-    pub(super) bind_group: wgpu::BindGroup,
+    pub(super) offset: u32,
 }
 
 /// One radial gradient in the command-stream pass.
 pub(super) struct RadialDraw {
     pub(super) bind_group: wgpu::BindGroup,
+    /// Dynamic offset of this draw's 48-byte params in the shared arena.
+    pub(super) offset: u32,
 }
 
 /// One general gradient in the command-stream pass: the params uniform and the ramp texture it
 /// samples.
 pub(super) struct GradientDraw {
     pub(super) bind_group: wgpu::BindGroup,
+    /// Dynamic offset of this draw's 64-byte params in the shared arena.
+    pub(super) offset: u32,
     /// Whether the pass writes the ramp colour verbatim (`REPLACE`) instead of compositing it.
     pub(super) verbatim: bool,
 }
@@ -56,7 +65,8 @@ pub(super) struct GradientDraw {
 /// The fan vertices live in the shared vertex buffer; this entry carries the range and the cover
 /// quad's uniform.
 pub(super) struct PathDraw {
-    pub(super) cover_bind_group: wgpu::BindGroup,
+    /// Dynamic offset of this path's 32-byte cover params in the shared arena.
+    pub(super) cover_offset: u32,
     pub(super) first_vertex: u32,
     pub(super) vertex_count: u32,
     pub(super) even_odd: bool,
@@ -70,6 +80,104 @@ fn write_f32s(data: &mut [u8], values: &[f32]) {
 }
 
 impl WgpuRenderer {
+    /// Carves `data` out of this frame's shared params uniform (RD2-01).
+    ///
+    /// Returns the buffer and the aligned offset the draw's bind group binds. One buffer per
+    /// frame replaces one buffer per draw; the bytes are still written before the frame is
+    /// submitted, so the queue's ordering keeps them valid for the pass.
+    fn params_binding(&self, data: &[u8]) -> (wgpu::Buffer, u64) {
+        self.params_scratch.borrow_mut().write(&self.device, &self.queue, data)
+    }
+
+    /// Rebuilds the dynamic-offset arena bind groups when the shared buffer was replaced.
+    ///
+    /// The groups bind the whole arena at offset 0 with the struct's own size; each draw supplies
+    /// its aligned offset at `set_bind_group` time, so one group serves every shape (or path
+    /// cover) in the frame instead of one group per draw.
+    fn refresh_params_groups(&self) {
+        let (generation, buffer) = {
+            let scratch = self.params_scratch.borrow();
+            (scratch.generation(), scratch.buffer().cloned())
+        };
+        let Some(buffer) = buffer else {
+            return;
+        };
+        if self.params_groups.borrow().as_ref().map(|groups| groups.generation) == Some(generation)
+        {
+            return;
+        }
+        let make = |label: &str, layout: &wgpu::BindGroupLayout, size: u64| {
+            self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some(label),
+                layout,
+                entries: &[wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                        buffer: &buffer,
+                        offset: 0,
+                        size: wgpu::BufferSize::new(size),
+                    }),
+                }],
+            })
+        };
+        let shape = make("shape_params_arena", &self.shape_bind_group_layout, 64);
+        let path_cover = make("path_cover_params_arena", &self.path_cover_bind_group_layout, 32);
+        *self.params_groups.borrow_mut() =
+            Some(super::resources::ParamsGroups { generation, shape, path_cover });
+    }
+
+    /// The arena bind groups to record into the pass, or `None` when no params were written.
+    pub(super) fn params_arena_groups(&self) -> Option<(wgpu::BindGroup, wgpu::BindGroup)> {
+        self.refresh_params_groups();
+        self.params_groups
+            .borrow()
+            .as_ref()
+            .map(|groups| (groups.shape.clone(), groups.path_cover.clone()))
+    }
+
+    /// A bind group over the shared params arena for one textured family.
+    ///
+    /// When `key` names the texture's content, the group is reused for every draw that samples the
+    /// same texture in this frame (RD2-01); the per-draw params offset is supplied at bind time.
+    fn textured_group(
+        &self,
+        family: ParamsFamily,
+        key: Option<TextureKey>,
+        layout: &wgpu::BindGroupLayout,
+        size: u64,
+        buffer: &wgpu::Buffer,
+        view: &wgpu::TextureView,
+    ) -> wgpu::BindGroup {
+        let generation = self.params_scratch.borrow().generation();
+        if let Some(key) = key {
+            if let Some(group) = self.params_group_cache.borrow().get(generation, family, &key) {
+                return group;
+            }
+        }
+        let group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("params_arena_textured"),
+            layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                        buffer,
+                        offset: 0,
+                        size: wgpu::BufferSize::new(size),
+                    }),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(view),
+                },
+            ],
+        });
+        if let Some(key) = key {
+            self.params_group_cache.borrow_mut().insert(generation, family, key, group.clone());
+        }
+        group
+    }
+
     /// Uploads one image draw's pixels and returns the bind group the pass draws it with.
     ///
     /// This is the path for pixel data that is generated for the draw itself (a gradient ramp
@@ -104,7 +212,30 @@ impl WgpuRenderer {
             wgpu::Extent3d { width: source_width, height: source_height, depth_or_array_layers: 1 },
         );
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        self.image_draw_bind_group(rect, &view, source_width, source_height, (0.0, 0.0), false)
+        let mut data = [0u8; 32];
+        write_f32s(
+            &mut data,
+            &[
+                rect.x as f32,
+                rect.y as f32,
+                rect.width as f32,
+                rect.height as f32,
+                source_width as f32,
+                source_height as f32,
+                0.0,
+                0.0,
+            ],
+        );
+        let (buffer, offset) = self.params_binding(&data);
+        let bind_group = self.textured_group(
+            ParamsFamily::Image,
+            None,
+            &self.image_bind_group_layout,
+            32,
+            &buffer,
+            &view,
+        );
+        ImageDraw { bind_group, offset: offset as u32, bilinear: false }
     }
 
     /// Uploads one image draw, stating how its fragments sample the source.
@@ -126,8 +257,32 @@ impl WgpuRenderer {
         sample_step: (f32, f32),
         bilinear: bool,
     ) -> ImageDraw {
+        let key = TextureKey::new(pixels, source_width, source_height);
         let view = self.cached_texture(pixels, source_width, source_height);
-        self.image_draw_bind_group(rect, &view, source_width, source_height, sample_step, bilinear)
+        let mut data = [0u8; 32];
+        write_f32s(
+            &mut data,
+            &[
+                rect.x as f32,
+                rect.y as f32,
+                rect.width as f32,
+                rect.height as f32,
+                source_width as f32,
+                source_height as f32,
+                sample_step.0,
+                sample_step.1,
+            ],
+        );
+        let (buffer, offset) = self.params_binding(&data);
+        let bind_group = self.textured_group(
+            ParamsFamily::Image,
+            Some(key),
+            &self.image_bind_group_layout,
+            32,
+            &buffer,
+            &view,
+        );
+        ImageDraw { bind_group, offset: offset as u32, bilinear }
     }
 
     /// An empty `Rgba8Unorm` texture with `TEXTURE_BINDING | COPY_DST` usage.
@@ -151,7 +306,7 @@ impl WgpuRenderer {
     /// handle clone; a miss creates the texture and writes the pixels once.
     fn cached_texture(&self, source: &Arc<[u8]>, width: u32, height: u32) -> wgpu::TextureView {
         let key = TextureKey::new(source, width, height);
-        if let Some(view) = self.cache.borrow().textures.view(&key) {
+        if let Some(view) = self.texture_cache.borrow().view(&key) {
             return view;
         }
         let texture = self.image_texture(width, height);
@@ -171,60 +326,8 @@ impl WgpuRenderer {
             wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
         );
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        self.cache.borrow_mut().textures.insert(key, Arc::clone(source), texture, view.clone());
+        self.texture_cache.borrow_mut().insert(key, Arc::clone(source), texture, view.clone());
         view
-    }
-
-    /// Builds the params uniform and bind group for an image draw over `view`.
-    fn image_draw_bind_group(
-        &self,
-        rect: PixelRect,
-        view: &wgpu::TextureView,
-        source_width: u32,
-        source_height: u32,
-        sample_step: (f32, f32),
-        bilinear: bool,
-    ) -> ImageDraw {
-        let params = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("image_draw_params"),
-            size: 32,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        let mut data = [0u8; 32];
-        write_f32s(
-            &mut data,
-            &[
-                rect.x as f32,
-                rect.y as f32,
-                rect.width as f32,
-                rect.height as f32,
-                source_width as f32,
-                source_height as f32,
-                sample_step.0,
-                sample_step.1,
-            ],
-        );
-        self.queue.write_buffer(&params, 0, &data);
-        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("image_draw_bind_group"),
-            layout: &self.image_bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                        buffer: &params,
-                        offset: 0,
-                        size: wgpu::BufferSize::new(32),
-                    }),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::TextureView(view),
-                },
-            ],
-        });
-        ImageDraw { bind_group, bilinear }
     }
 
     /// Uploads one text box's glyph coverage and returns the bind group the pass draws it with.
@@ -281,12 +384,6 @@ impl WgpuRenderer {
             size,
         );
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let params = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("text_draw_params"),
-            size: 32,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
         let mut data = [0u8; 32];
         write_f32s(
             &mut data,
@@ -301,7 +398,7 @@ impl WgpuRenderer {
                 color.a as f32 / 255.0,
             ],
         );
-        self.queue.write_buffer(&params, 0, &data);
+        let (params, offset) = self.params_binding(&data);
         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("text_draw_bind_group"),
             layout: &self.text_bind_group_layout,
@@ -310,7 +407,7 @@ impl WgpuRenderer {
                     binding: 0,
                     resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
                         buffer: &params,
-                        offset: 0,
+                        offset,
                         size: wgpu::BufferSize::new(32),
                     }),
                 },
@@ -323,14 +420,11 @@ impl WgpuRenderer {
         TextDraw { bind_group }
     }
 
-    /// Builds the bind group for one path's cover quad: its bounding box and fill colour.
-    pub(super) fn upload_path_cover(&self, bounds: PixelRect, color: Rgba8) -> wgpu::BindGroup {
-        let params = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("path_cover_params"),
-            size: 32,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
+    /// Writes one path's cover params into the shared arena and returns their dynamic offset.
+    ///
+    /// The cover pipeline binds the arena once per frame; each path supplies this offset at
+    /// `set_bind_group` time (RD2-01).
+    pub(super) fn upload_path_cover(&self, bounds: PixelRect, color: Rgba8) -> u32 {
         let mut data = [0u8; 32];
         write_f32s(
             &mut data,
@@ -345,19 +439,8 @@ impl WgpuRenderer {
                 color.a as f32 / 255.0,
             ],
         );
-        self.queue.write_buffer(&params, 0, &data);
-        self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("path_cover_bind_group"),
-            layout: &self.path_cover_bind_group_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                    buffer: &params,
-                    offset: 0,
-                    size: wgpu::BufferSize::new(32),
-                }),
-            }],
-        })
+        let (_, offset) = self.params_binding(&data);
+        offset as u32
     }
 
     /// Uploads one radial gradient's stop table and params, and returns the bind group it draws
@@ -373,17 +456,12 @@ impl WgpuRenderer {
         gradient_data: &Arc<[u8]>,
     ) -> RadialDraw {
         let stops = gradient_data.len() / 4;
+        let key = TextureKey::new(gradient_data, stops as u32, 1);
         let view = self.cached_texture(gradient_data, stops as u32, 1);
         // The same geometry the CPU arm derives from `rect` (see `draw_radial_gradient_cpu_rgba8`).
         let centre_x = rect.x as f32 + (rect.width as f32 - 1.0) / 2.0;
         let centre_y = rect.y as f32 + (rect.height as f32 - 1.0) / 2.0;
         let radius = ((rect.width as f32).min(rect.height as f32) / 2.0).max(1.0);
-        let params = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("radial_draw_params"),
-            size: 48,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
         let mut data = [0u8; 48];
         write_f32s(
             &mut data,
@@ -402,26 +480,16 @@ impl WgpuRenderer {
                 0.0,
             ],
         );
-        self.queue.write_buffer(&params, 0, &data);
-        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("radial_draw_bind_group"),
-            layout: &self.radial_bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                        buffer: &params,
-                        offset: 0,
-                        size: wgpu::BufferSize::new(48),
-                    }),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::TextureView(&view),
-                },
-            ],
-        });
-        RadialDraw { bind_group }
+        let (buffer, offset) = self.params_binding(&data);
+        let bind_group = self.textured_group(
+            ParamsFamily::Radial,
+            Some(key),
+            &self.radial_bind_group_layout,
+            48,
+            &buffer,
+            &view,
+        );
+        RadialDraw { bind_group, offset: offset as u32 }
     }
 
     /// Uploads one general gradient's ramp and params, and returns the bind group it draws with.
@@ -439,13 +507,8 @@ impl WgpuRenderer {
         ramp: &Arc<[u8]>,
         verbatim: bool,
     ) -> GradientDraw {
+        let key = TextureKey::new(ramp, 256, 1);
         let view = self.cached_texture(ramp, 256, 1);
-        let params = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("gradient_draw_params"),
-            size: 64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
         let mut data = [0u8; 64];
         write_f32s(
             &mut data,
@@ -468,29 +531,20 @@ impl WgpuRenderer {
                 0.0,
             ],
         );
-        self.queue.write_buffer(&params, 0, &data);
-        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("gradient_draw_bind_group"),
-            layout: &self.gradient_bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                        buffer: &params,
-                        offset: 0,
-                        size: wgpu::BufferSize::new(64),
-                    }),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::TextureView(&view),
-                },
-            ],
-        });
-        GradientDraw { bind_group, verbatim }
+        let (buffer, offset) = self.params_binding(&data);
+        let bind_group = self.textured_group(
+            ParamsFamily::Gradient,
+            Some(key),
+            &self.gradient_bind_group_layout,
+            64,
+            &buffer,
+            &view,
+        );
+        GradientDraw { bind_group, offset: offset as u32, verbatim }
     }
 
-    /// Uploads one shape draw's 64-byte params and returns the bind group the pass draws it with.
+    /// Uploads one shape draw's 64-byte params and returns their dynamic offset into the shared
+    /// arena.
     ///
     /// The layout is `[center_radius, window, color, rect]`, matching
     /// [`super::super::shaders::SHAPE_VS`] and [`super::super::shaders::SHAPE_FRAG`]. `rect` is
@@ -502,12 +556,6 @@ impl WgpuRenderer {
         window: [f32; 4],
         color: Rgba8,
     ) -> ShapeDraw {
-        let params = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("shape_draw_params"),
-            size: 64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
         let mut data = [0u8; 64];
         write_f32s(
             &mut data,
@@ -530,19 +578,7 @@ impl WgpuRenderer {
                 rect.height as f32,
             ],
         );
-        self.queue.write_buffer(&params, 0, &data);
-        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("shape_draw_bind_group"),
-            layout: &self.shape_bind_group_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                    buffer: &params,
-                    offset: 0,
-                    size: wgpu::BufferSize::new(64),
-                }),
-            }],
-        });
-        ShapeDraw { bind_group }
+        let (_, offset) = self.params_binding(&data);
+        ShapeDraw { offset: offset as u32 }
     }
 }

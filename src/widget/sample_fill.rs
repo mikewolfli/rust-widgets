@@ -44,13 +44,11 @@
 //! wrong shape — and `apply` reports how many it filled so the count can be checked rather than assumed.
 
 use crate::compat::Arc;
-use crate::core::{Color, ObjectId, Point, Rect, Size};
+use crate::core::{Color, Point, Rect, Size};
 use crate::widget::base_widgets::label::Label;
 use crate::widget::capability::coercion::widget_as_mut;
 use crate::widget::sample_data as sample;
 use crate::widget::Widget;
-use std::cell::RefCell;
-use std::rc::Rc;
 
 use crate::compat::{String, Vec};
 use crate::widget::advanced_widgets::calendar::Calendar;
@@ -88,6 +86,7 @@ use crate::widget::dialog::wizard::WizardDialog;
 use crate::widget::display_widgets::mini_canvas::MiniCanvas;
 use crate::widget::display_widgets::slider::{Slider, TickPosition};
 use crate::widget::display_widgets::switch::Switch;
+use crate::widget::display_widgets::tag_group::TagGroup;
 use crate::widget::input_widgets::cascader::{Cascader, CascaderOption};
 use crate::widget::input_widgets::combobox::ComboBox;
 use crate::widget::input_widgets::dropdown::Dropdown;
@@ -134,7 +133,6 @@ use crate::widget::view_widgets::tree_table::TreeTable;
 use crate::widget::view_widgets::tree_view::{TreeView, VecTreeModel};
 use crate::widget::view_widgets::virtual_list::VirtualList;
 use crate::widget::view_widgets::virtual_table::VirtualTable;
-use crate::widget::{Draw, SimpleRegistry};
 
 /// Fills `widget` with this crate's sample data, returning `true` when it wrote something.
 ///
@@ -839,6 +837,18 @@ pub fn apply(name: &str, widget: &mut dyn Widget) -> bool {
             None => false,
         },
 
+        // A group paints its child tags, so an empty group is an empty frame. Three tags put the
+        // wrap, the spacing and the chip chrome into the snapshot.
+        "tag_group" => match widget_as_mut::<TagGroup>(widget) {
+            Some(group) => {
+                group.add_tag("Alpha");
+                group.add_tag("Bravo");
+                group.add_tag("Charlie");
+                true
+            }
+            None => false,
+        },
+
         // Navigation bars are item lists with no default item, so their default picture is an
         // empty surface. The items are named icons (`home`, `search`, …) rather than letters:
         // `draw_icon_named` resolves them to the bundled outlines, so the snapshot shows the
@@ -1264,27 +1274,29 @@ pub fn apply(name: &str, widget: &mut dyn Widget) -> bool {
             None => false,
         },
 
-        // ── Containers: a registered child is the content ──
+        // ── Containers: the *state* is the content ──
         //
-        // These four draw through `SimpleRegistry`, so a child is composed here exactly
-        // the way a host composes one (register + attach). The label owns its geometry;
-        // the registry carries no geometry callback because a snapshot never resizes.
+        // These four are composed through their own content model (sub-windows, panes, a
+        // content extent, pages). A snapshot renders the control itself, so the state below is
+        // what puts the container's own chrome — frames, dividers, the scroll bar, the page
+        // count — into the picture. The ids are model entries, not mounted controls: the tree
+        // painter draws mounted children, and a snapshot has no window to mount them into.
         "mdi_area" => match widget_as_mut::<MdiArea>(widget) {
             Some(area) => {
-                let registry = sample_registry();
-                register_sample_label(&registry, 1, Rect::new(16, 16, 160, 56), "Document 1");
-                register_sample_label(&registry, 2, Rect::new(48, 48, 160, 56), "Document 2");
-                area.add_sub_window(1, Rect::new(16, 16, 160, 56));
-                area.add_sub_window(2, Rect::new(48, 48, 160, 56));
+                let first = area.add_sub_window(1, Rect::new(16, 16, 160, 56));
+                let second = area.add_sub_window(2, Rect::new(48, 48, 160, 56));
+                if let Some(subwindow) = area.sub_window_mut(first) {
+                    subwindow.set_title(crate::compat::String::from("Document 1"));
+                }
+                if let Some(subwindow) = area.sub_window_mut(second) {
+                    subwindow.set_title(crate::compat::String::from("Document 2"));
+                }
                 true
             }
             None => false,
         },
         "splitter" => match widget_as_mut::<Splitter>(widget) {
             Some(splitter) => {
-                let registry = sample_registry();
-                register_sample_label(&registry, 1, Rect::new(0, 0, 100, 80), "Left pane");
-                register_sample_label(&registry, 2, Rect::new(100, 0, 140, 80), "Right pane");
                 splitter.add_pane(1, 1);
                 splitter.add_pane(2, 1);
                 true
@@ -1293,8 +1305,6 @@ pub fn apply(name: &str, widget: &mut dyn Widget) -> bool {
         },
         "scroll_area" => match widget_as_mut::<ScrollArea>(widget) {
             Some(area) => {
-                let registry = sample_registry();
-                register_sample_label(&registry, 1, Rect::new(0, 0, 160, 24), "Scrollable content");
                 area.set_content_size(Size::new(160, 240));
                 true
             }
@@ -1302,9 +1312,6 @@ pub fn apply(name: &str, widget: &mut dyn Widget) -> bool {
         },
         "stacked_widget" => match widget_as_mut::<StackedWidget>(widget) {
             Some(stack) => {
-                let registry = sample_registry();
-                register_sample_label(&registry, 1, Rect::new(0, 0, 200, 80), "Page one");
-                register_sample_label(&registry, 2, Rect::new(0, 0, 200, 80), "Page two");
                 stack.add_widget(1);
                 stack.add_widget(2);
                 stack.set_current_index(0);
@@ -1372,25 +1379,6 @@ fn sample_list_rows() -> Vec<String> {
         .iter()
         .map(|label| (*label).to_string())
         .collect()
-}
-
-/// A registry for a composed container snapshot.
-fn sample_registry() -> Rc<RefCell<SimpleRegistry>> {
-    Rc::new(RefCell::new(SimpleRegistry::new()))
-}
-
-/// Registers a label as a container child.
-///
-/// The draw closure owns the label and draws it at the rect it was constructed with.
-/// A snapshot never resizes its children, so no geometry callback is registered.
-fn register_sample_label(
-    registry: &Rc<RefCell<SimpleRegistry>>,
-    id: ObjectId,
-    rect: Rect,
-    text: &str,
-) {
-    let mut label = Label::new(text.to_string(), rect);
-    registry.borrow_mut().register(id, move |context| label.draw(context), |_| {});
 }
 
 // `CheckBox` is imported here rather than with the other control types because it belongs to the

@@ -9,6 +9,7 @@
 // silenced for this module only — never crate-wide, where they still guard new code.
 #![allow(deprecated)]
 use super::super::{PathFilter, PathPickerError, PathPurpose};
+use crate::compat::Vec;
 use cocoa::base::{id, nil, BOOL, NO, YES};
 // `NSAutoreleasePool` is the trait that provides `autorelease()`: without it the call below does
 // not resolve, which is how the first probe compile of this file failed.

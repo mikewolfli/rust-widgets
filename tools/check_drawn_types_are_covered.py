@@ -148,10 +148,6 @@ ACKNOWLEDGED = {
         "src/widget/input_widgets/text_entry/suggestion_popup.rs",
         "Suggestions dropdown of an input; drawn by its owner.",
     ),
-    "TagGroup": (
-        "src/widget/display_widgets/tag_group.rs",
-        "Group of tags; exported companion, unregistered.",
-    ),
     "ValidationBubble": (
         "src/widget/input_widgets/text_entry/validation_bubble.rs",
         "Error bubble of a form field; drawn by its owner.",

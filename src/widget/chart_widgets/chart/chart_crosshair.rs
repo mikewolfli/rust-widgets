@@ -491,14 +491,10 @@ impl WidgetProperties for ChartCrosshair {
                 self.set_position(position);
                 Ok(())
             }
-            "snap_to_data_point" => {
-                let snap = match value {
-                    CapabilityValue::Bool(snap) => snap,
-                    _ => return Err(CapabilityAccessError::TypeMismatch),
-                };
-                self.set_snap_to_point(snap);
-                Ok(())
-            }
+            // CH2-05: the property is published read-only. Snapping needs the series data, which
+            // only the host has, so `set_snap_to_point` stays programmatic and the published
+            // write route refuses with the read-only answer the declaration promises.
+            "snap_to_data_point" => Err(CapabilityAccessError::ReadOnlyProperty),
             "show_x" | "show_y" => {
                 let CapabilityValue::Bool(flag) = value else {
                     return Err(CapabilityAccessError::TypeMismatch);

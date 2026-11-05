@@ -31,6 +31,10 @@ pub(super) struct StepRecorder<'a> {
     pub(super) uniform: &'a wgpu::BindGroup,
     pub(super) transformed: &'a wgpu::BindGroup,
     pub(super) circle_arena: &'a wgpu::BindGroup,
+    /// The shared params arena's dynamic-offset bind groups (RD2-01). Present whenever the
+    /// frame wrote any params, which is exactly when a Shape or Path step can occur.
+    pub(super) shape_arena: Option<&'a wgpu::BindGroup>,
+    pub(super) path_cover_arena: Option<&'a wgpu::BindGroup>,
     pub(super) circle_vertex_offset: u64,
     pub(super) path_vertex_offset: u64,
     pub(super) image_draws: &'a [ImageDraw],
@@ -107,7 +111,7 @@ impl<'a> StepRecorder<'a> {
                         &self.renderer.image_pipeline
                     };
                     rp.set_pipeline(pipeline);
-                    rp.set_bind_group(0, &draw.bind_group, &[]);
+                    rp.set_bind_group(0, &draw.bind_group, &[draw.offset]);
                     rp.set_bind_group(1, self.transformed, &[]);
                     rp.draw(0..6, 0..1);
                 }
@@ -136,7 +140,10 @@ impl<'a> StepRecorder<'a> {
                     rp.draw(0..draw.vertex_count, 0..1);
 
                     rp.set_pipeline(&self.renderer.path_cover_pipeline);
-                    rp.set_bind_group(0, &draw.cover_bind_group, &[]);
+                    let arena = self
+                        .path_cover_arena
+                        .expect("a Path step implies the params arena was written");
+                    rp.set_bind_group(0, arena, &[draw.cover_offset]);
                     rp.set_bind_group(1, self.transformed, &[]);
                     rp.draw(0..6, 0..1);
 
@@ -148,7 +155,7 @@ impl<'a> StepRecorder<'a> {
                 DrawStep::Radial(index) => {
                     let draw = &self.radial_draws[*index];
                     rp.set_pipeline(&self.renderer.radial_pipeline);
-                    rp.set_bind_group(0, &draw.bind_group, &[]);
+                    rp.set_bind_group(0, &draw.bind_group, &[draw.offset]);
                     rp.set_bind_group(1, self.transformed, &[]);
                     rp.draw(0..6, 0..1);
                 }
@@ -160,14 +167,17 @@ impl<'a> StepRecorder<'a> {
                         &self.renderer.gradient_pipeline
                     };
                     rp.set_pipeline(pipeline);
-                    rp.set_bind_group(0, &draw.bind_group, &[]);
+                    rp.set_bind_group(0, &draw.bind_group, &[draw.offset]);
                     rp.set_bind_group(1, self.transformed, &[]);
                     rp.draw(0..6, 0..1);
                 }
                 DrawStep::Shape(index) => {
                     let draw = &self.shape_draws[*index];
                     rp.set_pipeline(&self.renderer.shape_pipeline);
-                    rp.set_bind_group(0, &draw.bind_group, &[]);
+                    let arena = self
+                        .shape_arena
+                        .expect("a Shape step implies the params arena was written");
+                    rp.set_bind_group(0, arena, &[draw.offset]);
                     rp.set_bind_group(1, self.transformed, &[]);
                     rp.draw(0..6, 0..1);
                 }
@@ -177,7 +187,9 @@ impl<'a> StepRecorder<'a> {
                 DrawStep::Shadow(index) => {
                     let layer = &self.shadow_layers[*index];
                     rp.set_pipeline(&self.renderer.image_pipeline);
-                    rp.set_bind_group(0, &layer.composite, &[]);
+                    // The composite group binds its own 32-byte params buffer at offset 0; the
+                    // layout is shared with the dynamic-offset image draws.
+                    rp.set_bind_group(0, &layer.composite, &[0]);
                     rp.set_bind_group(1, self.transformed, &[]);
                     rp.draw(0..6, 0..1);
                 }

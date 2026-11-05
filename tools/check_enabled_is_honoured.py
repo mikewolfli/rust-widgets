@@ -91,6 +91,10 @@ NON_INTERACTIVE: dict[str, str] = {
         "hover readout; the lines themselves are host-set chrome",
     "crates/rust-widgets-suites/src/maps/map_view/map_view_companions.rs":
         "passive overlay: a tile loader and a scale bar draw map chrome, handles no input",
+    "crates/rust-widgets-suites/src/maps/map_view/map_view_companions/tile_loader.rs":
+        "passive overlay: reports tile load status, its handler only forwards to the base",
+    "crates/rust-widgets-suites/src/maps/map_view/map_view_companions/scale_bar.rs":
+        "passive overlay: draws a map scale, its handler only forwards to the base",
     "src/widget/container_widgets/layout_family.rs":
         "container: only forwards, the children it holds are what interact",
     "src/widget/container_widgets/linear_layouts.rs":
@@ -98,6 +102,8 @@ NON_INTERACTIVE: dict[str, str] = {
         "with an interaction (an emitted `item_clicked`), and its handler gates on `is_enabled()`",
 
     "src/widget/capability/properties_tests.rs": "test support, not a control",
+    "src/widget/runtime/tests.rs":
+        "test support, not a control: the recorders here exist only to observe dispatch",
     "src/widget/capability/access.rs": "property dispatch, not a control",
     "src/widget/base.rs":
         "`BaseWidget` is the shared primitive-signal router every control delegates to; it "

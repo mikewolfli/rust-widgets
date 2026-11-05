@@ -17,6 +17,8 @@ use crate::widget::save_state::SaveState;
 use crate::widget::text_utils::elide_end;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
+
+use super::place::place_content_child;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
@@ -798,13 +800,7 @@ impl DockWidget {
     /// rectangle kept painting there after the dock moved. The write goes through the public
     /// geometry entry, the same one every other container uses, so both paths agree.
     fn place_content(&self) {
-        #[cfg(not(alloc_frugal))]
-        {
-            if let Some(widget_id) = self.widget {
-                let rect = self.content_rect();
-                crate::set_widget_geometry(widget_id, rect.x, rect.y, rect.width, rect.height);
-            }
-        }
+        place_content_child(self.widget, self.content_rect());
     }
     /// Returns close button rectangle.
     ///
@@ -888,6 +884,12 @@ impl DockWidget {
 impl Widget for DockWidget {
     fn base(&self) -> &BaseWidget {
         &self.base
+    }
+    /// Descendants are clipped to the dock's whole rectangle: the content lives below the title
+    /// bar, but a host-supplied title-bar widget lives in the bar, so a content-box clip would
+    /// erase it. Clipping to the dock still stops a stale control from painting outside.
+    fn children_clip(&self) -> Option<Rect> {
+        Some(self.geometry())
     }
     fn set_state_theme_hook(&mut self) {
         crate::style::reapply_active_theme_state(self);
@@ -3557,5 +3559,28 @@ mod tests {
         guarded.about_to_close.connect_ref(|request| request.veto());
         assert!(!guarded.request_close(), "the veto is reported");
         assert!(guarded.is_visible(), "a vetoed dock stays visible");
+    }
+
+    /// The docked control fills the dock's content box, through the shared placement entry.
+    #[cfg(not(alloc_frugal))]
+    #[test]
+    fn the_docked_control_is_placed_in_the_content_box() {
+        use crate::widget::base_widgets::label::Label;
+
+        let id = crate::widget::runtime::register(Box::new(Label::new(
+            "body".to_string(),
+            Rect::new(0, 0, 10, 10),
+        )))
+        .expect("the test thread has a widget runtime");
+        let mut dock = DockWidget::new(Rect::new(10, 20, 300, 200));
+        dock.set_widget(Some(id));
+
+        let content = dock.content_rect();
+        assert_eq!(
+            crate::widget_geometry(id),
+            Some((content.x, content.y, content.width, content.height))
+        );
+
+        crate::widget::runtime::unregister(id);
     }
 }

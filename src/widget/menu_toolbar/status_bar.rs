@@ -619,6 +619,11 @@ impl Widget for StatusBar {
     fn base(&self) -> &BaseWidget {
         &self.base
     }
+    /// A status bar paints its own band and positions its children inside it, so descendants
+    /// are clipped to the control's rectangle.
+    fn children_clip(&self) -> Option<Rect> {
+        Some(self.geometry())
+    }
     fn set_state_theme_hook(&mut self) {
         crate::style::reapply_active_theme_state(self);
     }

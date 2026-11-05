@@ -1042,6 +1042,83 @@ fn an_image_box_that_draws_nothing_ignores_its_payload() {
     assert_eq!(gpu, software, "an empty box leaves the frame as the stream left it");
 }
 
+/// The cached upload path is reached twice for the same pixels and must produce the reference
+/// frame both times.
+///
+/// # The panic this pins
+///
+/// `upload_image_draw_with_sample` looks its texture up in the content cache while the packer
+/// still holds the render cache mutably. Keeping the texture cache inside `RenderCache` made
+/// that lookup re-borrow the same `RefCell`, so the first scaled image panicked. The second
+/// draw is the cache hit; comparing both against the CPU rasteriser covers create and reuse.
+#[test]
+fn a_scaled_image_is_uploaded_once_and_drawn_identically_twice() {
+    let Some(renderer) = renderer() else { return };
+    let source: std::sync::Arc<[u8]> =
+        vec![255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 0, 255].into();
+    let commands = vec![
+        WgpuDrawCommand::Clear { color: opaque(0, 0, 0) },
+        WgpuDrawCommand::DrawImageScaled {
+            rect: PixelRect { x: 0, y: 0, width: 4, height: 4 },
+            rgba8: std::sync::Arc::clone(&source),
+            image_width: 2,
+            image_height: 2,
+            u_dx: 0.25,
+            v_dy: 0.25,
+            clip: None,
+        },
+    ];
+    let software = rasterize_draw_commands_rgba8(8, 8, &commands).expect("rasterises");
+    let first = renderer.render_draw_commands_rgba8(8, 8, &commands).expect("first frame");
+    assert_eq!(first, software, "the first (cache miss) frame must match the CPU reference");
+    let second = renderer.render_draw_commands_rgba8(8, 8, &commands).expect("second frame");
+    assert_eq!(second, software, "the cached upload must draw the same pixels");
+}
+
+/// Many shape draws share one params arena, each read through its own dynamic offset.
+///
+/// The check is per-draw: six stroke circles at distinct centres with distinct colours, then the
+/// ring pixel of each is read back. If the offsets were ignored (every draw reading the first
+/// params record), only the first circle would carry its colour and the rest would stay black.
+#[test]
+fn many_shape_draws_share_one_params_arena() {
+    let Some(renderer) = renderer() else { return };
+    let colors = [
+        opaque(255, 0, 0),
+        opaque(0, 255, 0),
+        opaque(0, 0, 255),
+        opaque(255, 255, 0),
+        opaque(255, 0, 255),
+        opaque(0, 255, 255),
+    ];
+    let mut commands = vec![WgpuDrawCommand::Clear { color: opaque(0, 0, 0) }];
+    let mut samples = Vec::new();
+    for (index, color) in colors.iter().copied().enumerate() {
+        let cx = 12 + (index % 3) as i32 * 20;
+        let cy = 12 + (index / 3) as i32 * 20;
+        commands.push(WgpuDrawCommand::DrawCircle {
+            center: (cx, cy),
+            radius: 6,
+            color,
+            width: 2,
+            clip: None,
+        });
+        // The ring's centreline: radius 6, half-width 2, so this pixel is solidly inside the band
+        // and clear of the neighbouring circle's outer reach (8 px each, 20 px apart).
+        samples.push(((cx + 6) as u32, cy as u32, color));
+    }
+    assert!(commands_gpu_dispatchable(&commands), "the stream must take the GPU path");
+    let gpu = renderer.render_draw_commands_rgba8(64, 64, &commands).expect("the GPU path renders");
+    for (x, y, color) in samples {
+        let got = pixel(&gpu, 64, x, y);
+        assert_eq!(
+            [got[0], got[1], got[2]],
+            [color.r, color.g, color.b],
+            "the ring at ({x}, {y}) must use its own draw's params"
+        );
+    }
+}
+
 /// With the option on, a stream that leaves `Normal` is drawn on the GPU: each blended command is
 /// replayed into an offscreen layer and composited against a snapshot of the frame, using the CPU
 /// rasteriser's own formula. On an opaque frame the two must agree byte for byte.

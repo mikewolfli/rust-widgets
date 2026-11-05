@@ -32,6 +32,8 @@ use crate::widget::save_state::SaveState;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
+use super::place::place_content_child;
+
 /// Pixels scrolled per wheel line. A notch is one line here, so this is also the
 /// distance one notch has always moved the content.
 const WHEEL_PIXELS_PER_LINE: i32 = 20;
@@ -1267,15 +1269,7 @@ impl ScrollArea {
     /// a scroll gets the rectangle the next frame will use.
     fn place_content(&self) {
         if let Some(rect) = self.content_child_rect() {
-            // A sized profile has no mounted surfaces and no platform geometry entry, but the
-            // rectangle derivation is still the control's model, so it is computed and not
-            // discarded with a `cfg` on the helper (which would make the helper dead there).
-            #[cfg(not(alloc_frugal))]
-            if let Some(widget_id) = self.widget {
-                crate::set_widget_geometry(widget_id, rect.x, rect.y, rect.width, rect.height);
-            }
-            #[cfg(alloc_frugal)]
-            let _ = rect;
+            place_content_child(self.widget, rect);
         }
         // The corner is part of the same chrome derivation, so every state that re-places the
         // content also hands the corner its rectangle.
@@ -1913,7 +1907,6 @@ impl EventHandler for ScrollArea {
                         );
                     }
                     self.thumb_drag = Some((axis, coordinate));
-                    return;
                 }
             }
             Event::MouseRelease { button: 1, .. } => {
@@ -1958,9 +1951,7 @@ impl EventHandler for ScrollArea {
                 // C2-D0: only a position that actually moved claims the event. A viewport already
                 // at its end leaves the claim unset, so the router offers the notch to the next
                 // ancestor container — scroll chaining.
-                if self.scroll_position != before {
-                    crate::widget::runtime::claim_wheel();
-                }
+                crate::widget::claim_wheel_if_moved(&before, &self.scroll_position);
             }
             #[cfg(feature = "touch")]
             Event::Swipe { start, end, velocity } => {
@@ -2030,6 +2021,10 @@ impl Draw for ScrollArea {
         // clip and without the scroll offset, which is precisely what makes them
         // stay put. Drawing them with the offset (i.e. as ordinary content) would
         // make this loop a no-op.
+        //
+        // `band_index` only reaches the mounted-header lookup, which the stripped profiles
+        // compile out with `runtime` — there is no tree to hand the band's header to.
+        #[cfg_attr(alloc_frugal, allow(unused_variables))]
         for (band_index, region) in self.sticky_regions.iter().enumerate() {
             // A band whose group has not been reached yet scrolls normally, so the
             // content itself already put it in the right place; re-drawing it here
@@ -2129,7 +2124,11 @@ impl Draw for ScrollArea {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::{Point, Rect};
+    use crate::core::Rect;
+    // `Point` reaches the test module through the touch-only gesture test below; the stripped
+    // profiles build without `touch`, where the import would be unused.
+    #[cfg(feature = "touch")]
+    use crate::core::Point;
     use crate::render::SoftwarePaintBackend;
 
     #[test]
@@ -2854,5 +2853,28 @@ mod tests {
         assert_eq!(area.scroll_position(), (120, 90));
         assert!(!SaveState::restore_state(&mut area, &saved[..4]), "a truncated blob is refused");
         assert_eq!(area.scroll_position(), (120, 90), "a refused blob changes nothing");
+    }
+
+    /// The scrolling content sits at the content-child rectangle, through the shared entry.
+    #[cfg(not(alloc_frugal))]
+    #[test]
+    fn the_content_is_placed_at_the_content_child_rect() {
+        use crate::widget::base_widgets::label::Label;
+
+        let id = crate::widget::runtime::register(Box::new(Label::new(
+            "body".to_string(),
+            Rect::new(0, 0, 10, 10),
+        )))
+        .expect("the test thread has a widget runtime");
+        let mut area = ScrollArea::new(Rect::new(10, 20, 300, 200));
+        area.set_widget(Some(id));
+
+        let content = area.content_child_rect().expect("a content child has a rectangle");
+        assert_eq!(
+            crate::widget_geometry(id),
+            Some((content.x, content.y, content.width, content.height))
+        );
+
+        crate::widget::runtime::unregister(id);
     }
 }

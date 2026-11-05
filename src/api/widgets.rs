@@ -72,7 +72,6 @@ pub use widget::register_icon_on_grid;
 pub use widget::registered_icon;
 #[cfg(widgets_unstripped)]
 pub use widget::registered_icon_count;
-pub use widget::registry;
 #[cfg(not(alloc_frugal))]
 pub use widget::runtime;
 pub use widget::sample_data;
@@ -537,7 +536,6 @@ pub use widget::ShortcutEntry;
 pub use widget::SignaturePad;
 #[cfg(full_widgets)]
 pub use widget::SignatureStroke;
-pub use widget::SimpleRegistry;
 #[cfg(widgets_unstripped)]
 pub use widget::SkeletonLoader;
 pub use widget::Slider;

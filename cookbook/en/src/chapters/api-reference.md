@@ -543,7 +543,7 @@ pub trait Draw {
 
 ### Widget Kind Enum
 
-`WidgetKind` enumerates every widget type in the system (230 in a device profile). Selected variants:
+`WidgetKind` enumerates every widget type in the system (231 in a device profile). Selected variants:
 
 - `Button`, `CheckBox`, `RadioButton`, `Label`
 - `LineEdit`, `TextArea`, `ComboBox`, `ListBox`, `SpinBox`, `Dropdown`

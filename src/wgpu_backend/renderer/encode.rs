@@ -939,6 +939,20 @@ impl WgpuRenderer {
         height: u32,
         commands: &[WgpuDrawCommand],
     ) -> Result<(), String> {
+        // RD2-01: this frame's per-draw params are carved out of one shared uniform, so the
+        // cursor starts from zero for every encoded frame. Reserving one slot per command (plus
+        // one) keeps the shared buffer from growing mid-frame, which would invalidate offsets
+        // recorded before the growth.
+        {
+            let mut scratch = self.params_scratch.borrow_mut();
+            scratch.reset();
+            scratch.reserve(&self.device, commands.len() as u64 + 1);
+        }
+        // Textured families' groups are per-frame: their entries keep texture views alive, and a
+        // frame's worth of draws is the bound we want on that memory. They bind the arena
+        // generation established by the reservation above.
+        let arena_generation = self.params_scratch.borrow().generation();
+        self.params_group_cache.borrow_mut().reset(arena_generation);
         let framebuffer = PixelRect { x: 0, y: 0, width, height };
         let clear_count = commands
             .iter()
@@ -1533,7 +1547,7 @@ impl WgpuRenderer {
                             pack.path_vertices.extend_from_slice(&y.to_le_bytes());
                         }
                         path_draws.push(PathDraw {
-                            cover_bind_group: self.upload_path_cover(bounds, *color),
+                            cover_offset: self.upload_path_cover(bounds, *color),
                             first_vertex,
                             vertex_count: fan.len() as u32,
                             even_odd: false,
@@ -1573,7 +1587,7 @@ impl WgpuRenderer {
                             pack.path_vertices.extend_from_slice(&y.to_le_bytes());
                         }
                         path_draws.push(PathDraw {
-                            cover_bind_group: self.upload_path_cover(bounds, *color),
+                            cover_offset: self.upload_path_cover(bounds, *color),
                             first_vertex,
                             vertex_count: fan.len() as u32,
                             even_odd: true,
@@ -1823,6 +1837,8 @@ impl WgpuRenderer {
         let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("gpu_draw_commands_encoder"),
         });
+        // RD2-01: the shape / path-cover draws bind one params arena with per-draw offsets.
+        let params_arena = self.params_arena_groups();
         // Every blurred shadow is rendered first, so the frame's pass only sees finished layers.
         self.encode_shadow_layers(
             &mut encoder,
@@ -1840,6 +1856,8 @@ impl WgpuRenderer {
             uniform: &uniform.bind_group,
             transformed: &transformed.bind_group,
             circle_arena: &circle_arena.bind_group,
+            shape_arena: params_arena.as_ref().map(|(shape, _)| shape),
+            path_cover_arena: params_arena.as_ref().map(|(_, path)| path),
             circle_vertex_offset,
             path_vertex_offset,
             image_draws,

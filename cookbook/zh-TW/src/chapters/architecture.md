@@ -19,7 +19,7 @@ graph TB
     end
 
     subgraph "第 2 層：Widget 模型"
-        WIDGET["widget::Widget<br/>widget::BaseWidget<br/>widget::Draw<br/>widget::WidgetKind<br/>widget::SimpleRegistry"]
+        WIDGET["widget::Widget<br/>widget::BaseWidget<br/>widget::Draw<br/>widget::WidgetKind<br/>widget::runtime"]
     end
 
     subgraph "第 3 層：核心系統"
@@ -67,7 +67,7 @@ graph TB
 | 層級 | 職責 | 關鍵模組 |
 |---|---|---|
 | **應用程式框架** | 應用程式生命週期、widget handles、事件迴圈編排 | `app::App`、`AppConfig`、`WindowHandle`、`AppLifecycle` |
-| **Widget 模型** | Widget trait 合約、base widget 狀態、訊號插槽、渲染分派、容器組合 | `widget::Widget`、`BaseWidget`、`Draw`、`WidgetKind`、`SimpleRegistry` |
+| **Widget 模型** | Widget trait 合約、base widget 狀態、訊號插槽、渲染分派、容器組合 | `widget::Widget`、`BaseWidget`、`Draw`、`WidgetKind`、`widget::runtime` |
 | **核心系統** | 佈局、渲染、事件、訊號、樣式、資料繫結、動作、復原/重做 | `layout`、`render`、`event`、`signal`、`style`、`data_binding`、`action`、`undo` |
 | **平台抽象層** | 視窗/繪製面建立、事件轉譯、剪貼簿、IME、無障礙存取、原生選單 | `control_backend::ControlBackend`、`platform` |
 | **作業系統 / GPU** | 原始平台 API、GPU 驅動程式 | 作業系統 SDK + `wgpu` |
@@ -402,7 +402,7 @@ pub trait EventHandler {
 
 `BaseWidget` 提供了一個預設實作，將平台事件對應到訊號發射（點擊 → `clicked.emit()`、滑鼠移動 → `hover.emit(point)`）。
 
-### `WidgetKind` 列舉 — 230 個變體
+### `WidgetKind` 列舉 — 231 個變體
 
 `WidgetKind` 列舉對每個 widget 型別進行分類。變體是功能閘控的：在所有設定檔下都有 28 個可用，151 個需要非 `mini` 功能才能解鎖：
 
@@ -440,23 +440,32 @@ pub enum WidgetKind {
 }
 ```
 
-### 透過 `SimpleRegistry` 進行容器組合
+### 透過 Widget 樹進行容器組合
 
-像 `Frame`、`TabWidget` 和 `ScrollArea` 這樣的容器使用 `SimpleRegistry` 來將渲染和事件轉發給由 `ObjectId` 識別的子 widgets：
+容器透過**掛載**子元件並在自己的子清單中記錄 id 來組合內容；執行環境擁有元件，樹繪製器擁有像素：
 
 ```rust
-pub struct SimpleRegistry {
-    entries: HashMap<ObjectId, (DrawClosure, EventClosure)>,
-}
+// 容器記錄子元件 id …
+tab_widget.add_tab("頁面".to_string(), Some(child_id));
+scroll_area.set_widget(Some(content_id));
 
-impl SimpleRegistry {
-    pub fn register<D, E>(&mut self, id: ObjectId, draw: D, event: E);
-    pub fn draw_widget(&mut self, id: ObjectId, context: &mut RenderContext) -> bool;
-    pub fn forward_event(&mut self, id: ObjectId, event: &Event) -> bool;
-}
+// … 元件由執行環境註冊表擁有 …
+let id = rust_widgets::widget::runtime::register(Box::new(Label::new(
+    "內容".to_string(),
+    Rect::new(0, 0, 120, 24),
+)))?;
+
+// … 容器透過公開入口寫入子元件矩形。
+rust_widgets::set_widget_geometry(id, x, y, width, height);
 ```
 
-這橋接了基於 `ObjectId` 的子元件追蹤（在 `BaseWidget` 中）與基於 trait 物件的渲染/事件分派系統之間的差距。
+此後三個機制都作用於同一棵樹，不再需要逐容器的轉發表：
+
+* **繪製** — `widget::runtime` 的樹繪製器按子元件自身幾何繪製每個可見的已掛載子元件，並套用容器的 `Widget::children_clip`，使內容不能覆蓋標籤列、捲軸帶等裝飾。
+* **事件** — `widget::runtime::dispatch_event` 派發給命中 id 並沿父鏈上溯；宣告 `accepts_event == false` 的元件會把事件交給容器，而不是吞掉。
+* **幾何** — 容器的內容模型是子元件矩形的唯一來源，每次佈局變更透過 `set_widget_geometry` 寫入一次。
+
+`widget::SimpleRegistry` 已移除（4.1.0）：它曾是一張閉包轉發表，讓容器按 id 繪製與分派，與上述三件事完全重複且沒有生產呼叫方；請使用本節所示的掛載與元件樹。
 
 ---
 
@@ -868,7 +877,7 @@ pub trait ControlBackend {
 
 ### 分派策略
 
-`control_backend::dispatcher` 中的分派器根據編譯期功能標記，將 widget 建立呼叫路由到適當的後端。`control_backend::routing` 中的路由系統涵蓋全部 230 種 widget 種類；每種 widget 皆為自繪，已無第二套（平台託管）機制可選。
+`control_backend::dispatcher` 中的分派器根據編譯期功能標記，將 widget 建立呼叫路由到適當的後端。`control_backend::routing` 中的路由系統涵蓋全部 231 種 widget 種類；每種 widget 皆為自繪，已無第二套（平台託管）機制可選。
 
 ---
 

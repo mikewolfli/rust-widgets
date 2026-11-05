@@ -1192,9 +1192,7 @@ impl EventHandler for Pagination {
                         self.previous_page();
                     }
                     // C2-D0: a pager already at the first/last page lets an outer container scroll.
-                    if self.page != before {
-                        crate::widget::runtime::claim_wheel();
-                    }
+                    crate::widget::claim_wheel_if_moved(&before, &self.page);
                 }
             }
             // The key handler used to eat every key in the window. Focus (or a jump cell the

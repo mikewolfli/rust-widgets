@@ -25,7 +25,7 @@
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ProgrammaticSetter {
-    /// The setter's name, e.g. `set_registry`.
+    /// The setter's name, e.g. `set_delegate`.
     pub name: &'static str,
     /// Why publishing it would be a promise the control cannot keep.
     pub reason: &'static str,
@@ -386,6 +386,7 @@ pub(crate) static PROGRAMMATIC_ONLY_SETTERS: &[ProgrammaticSetter] = &[
     ProgrammaticSetter { name: "set_inverted_appearance", reason: "B: scalar state with no property carrier yet (A-class backlog)" },
     ProgrammaticSetter { name: "set_is_refreshing", reason: "B: scalar state with no property carrier yet (A-class backlog)" },
     ProgrammaticSetter { name: "set_italic", reason: "B: scalar state with no property carrier yet (A-class backlog)" },
+    ProgrammaticSetter { name: "set_item_action_id", reason: "B: scalar state with no property carrier yet (A-class backlog)" },
     ProgrammaticSetter { name: "set_item_badge", reason: "B: scalar state with no property carrier yet (A-class backlog)" },
     ProgrammaticSetter { name: "set_item_checked", reason: "B: scalar state with no property carrier yet (A-class backlog)" },
     ProgrammaticSetter { name: "set_item_closable", reason: "B: scalar state with no property carrier yet (A-class backlog)" },
@@ -565,7 +566,9 @@ pub(crate) static PROGRAMMATIC_ONLY_SETTERS: &[ProgrammaticSetter] = &[
     ProgrammaticSetter { name: "set_recent_limit", reason: "B: scalar state with no property carrier yet (A-class backlog)" },
     ProgrammaticSetter { name: "set_recent_menu_open", reason: "B: scalar state with no property carrier yet (A-class backlog)" },
     ProgrammaticSetter { name: "set_recent_searches", reason: "B: scalar state with no property carrier yet (A-class backlog)" },
-    ProgrammaticSetter { name: "set_registry", reason: "B: injects a callback/registry/handle; no property carrier" },
+    // C2-M2: `set_registry` was removed with the closure-forwarding table it injected. Container
+    // children are mounted controls addressed through the tree, so there is no second forwarding
+    // registry to set.
     ProgrammaticSetter { name: "set_release_text", reason: "B: scalar state with no property carrier yet (A-class backlog)" },
     ProgrammaticSetter { name: "set_removable", reason: "B: scalar state with no property carrier yet (A-class backlog)" },
     ProgrammaticSetter { name: "set_reorder_enabled", reason: "B: scalar state with no property carrier yet (A-class backlog)" },
@@ -685,6 +688,7 @@ pub(crate) static PROGRAMMATIC_ONLY_SETTERS: &[ProgrammaticSetter] = &[
     ProgrammaticSetter { name: "set_snackbar_id", reason: "B: injects a handle — a mounted control's `ObjectId`; no scalar property can carry a reference to another control" },
     ProgrammaticSetter { name: "set_snap_drag_to_step", reason: "B: scalar state with no property carrier yet (A-class backlog)" },
     ProgrammaticSetter { name: "set_snap_step", reason: "B: scalar state with no property carrier yet (A-class backlog)" },
+    ProgrammaticSetter { name: "set_snap_to_data_point", reason: "B: property `snap_to_data_point` is read-only, so there is no write route to publish" },
     ProgrammaticSetter { name: "set_snap_to_point", reason: "C: composite payload; write the scalar parts through their own properties" },
     ProgrammaticSetter { name: "set_sort_column", reason: "B: scalar state with no property carrier yet (A-class backlog)" },
     ProgrammaticSetter { name: "set_sort_direction", reason: "C: composite payload; write the scalar parts through their own properties" },

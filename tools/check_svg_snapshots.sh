@@ -220,6 +220,11 @@ SHAPE_ONLY = {
     # A transparent swipe wrapper's content is its child label; the wrapper itself paints
     # no chrome until it is swiped.
     "swipe_to_dismiss",
+    # A stacked widget paints only its surface: pages are tree children, and a
+    # single-control SVG renders one widget Draw stream, not the subtree. Before C2-M2 the
+    # page labels were baked in through the retired registry path, which is exactly the
+    # second drawing mechanism that decision removed.
+    "stacked_widget",
 }
 bad = []
 for path in sorted(pathlib.Path("snapshots/svg").glob("*.svg")):

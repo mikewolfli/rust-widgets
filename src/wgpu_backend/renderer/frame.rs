@@ -9,7 +9,7 @@ use super::super::shaders::ShaderModule;
 use super::policy::{CostGate, RenderQuality};
 use super::resources::{
     padded_row_bytes, readback_frame_bytes, rgba8_from_unit, rgba_buffer_len, CpuFrame,
-    RenderCache, GPU_READBACK_TIMEOUT,
+    ParamsGroupCache, ParamsGroups, ParamsScratch, RenderCache, TextureCache, GPU_READBACK_TIMEOUT,
 };
 use crate::render::gpu::{GpuCapability, GpuRenderer};
 use std::cell::{Ref, RefCell};
@@ -116,6 +116,23 @@ pub struct WgpuRenderer {
     pub(crate) shader_cache: HashMap<String, wgpu::ShaderModule>,
     /// Device resources reused across calls (REND-02).
     pub(crate) cache: RefCell<RenderCache>,
+    /// Content-keyed uploads of image / ramp / stop-table pixels (RD2-01).
+    ///
+    /// Separate from [`Self::cache`] because the packer holds `cache` mutably for the whole
+    /// command-stream build, and an image draw needs to look its texture up in the middle of
+    /// that build. Folding it into `RenderCache` made the lookup re-borrow the very cell the
+    /// caller already held mutably, which is a panic on the first cached image.
+    pub(crate) texture_cache: RefCell<TextureCache>,
+    /// Grow-only uniform buffer the per-draw params of one frame are carved out of (RD2-01).
+    ///
+    /// Separate from [`Self::cache`] for the same reason as `texture_cache`: the packer holds
+    /// `cache` mutably while it uploads draws, so the arena cannot live inside it.
+    pub(crate) params_scratch: RefCell<ParamsScratch>,
+    /// The dynamic-offset bind groups built over [`Self::params_scratch`], rebuilt when the
+    /// arena buffer grows. Kept next to the arena because both describe the same allocation.
+    pub(crate) params_groups: RefCell<Option<ParamsGroups>>,
+    /// Textured families' params bind groups, reused while the texture repeats (RD2-01).
+    pub(crate) params_group_cache: RefCell<ParamsGroupCache>,
     /// Reusable CPU frame for whole-frame clears (G-221).
     pub(crate) clear_frame: CpuFrame,
     /// Reusable CPU frame for command streams (G-221).

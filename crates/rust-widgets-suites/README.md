@@ -72,8 +72,8 @@ Each control ships the full five-part surface, not just a widget struct:
 - **events** — an `EventSchema` per name with its payload kind, an `event_signal_dyn` arm per name,
   and tests that fire the representative ones;
 - **wiring** — the events resolve to real signals (`connect_event` cannot return `Ok` for an inert
-  name), the command channel drives the published actions, and an optional `SimpleRegistry`
-  forwards pointer events into the field controls;
+  name), the command channel drives the published actions, and mounted field controls receive
+  pointer events through the widget runtime's tree dispatch;
 - **accessibility** — `accessible_name()` reports a form's title (a set's active page title), and
   `semantic_state()` reports `Error` while a field carries a message, so the themed border and the
   role assistive technology reads follow the same state;

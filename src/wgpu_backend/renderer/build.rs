@@ -14,7 +14,9 @@
 use super::encode::INSTANCE_BYTES;
 use super::frame::{passive_stencil_state, WgpuRenderer};
 use super::policy::{CostGate, RenderQuality};
-use super::resources::{CpuFrame, RenderCache};
+use super::resources::{
+    CpuFrame, ParamsGroupCache, ParamsGroups, ParamsScratch, RenderCache, TextureCache,
+};
 use std::cell::RefCell;
 use std::collections::HashMap;
 
@@ -668,7 +670,7 @@ impl WgpuRenderer {
                         visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
                         ty: wgpu::BindingType::Buffer {
                             ty: wgpu::BufferBindingType::Uniform,
-                            has_dynamic_offset: false,
+                            has_dynamic_offset: true,
                             min_binding_size: Some(wgpu::BufferSize::new(32).unwrap()),
                         },
                         count: None,
@@ -914,7 +916,7 @@ impl WgpuRenderer {
                     visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
+                        has_dynamic_offset: true,
                         min_binding_size: Some(wgpu::BufferSize::new(64).unwrap()),
                     },
                     count: None,
@@ -992,7 +994,7 @@ impl WgpuRenderer {
                         visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
                         ty: wgpu::BindingType::Buffer {
                             ty: wgpu::BufferBindingType::Uniform,
-                            has_dynamic_offset: false,
+                            has_dynamic_offset: true,
                             min_binding_size: Some(wgpu::BufferSize::new(48).unwrap()),
                         },
                         count: None,
@@ -1083,7 +1085,7 @@ impl WgpuRenderer {
                         visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
                         ty: wgpu::BindingType::Buffer {
                             ty: wgpu::BufferBindingType::Uniform,
-                            has_dynamic_offset: false,
+                            has_dynamic_offset: true,
                             min_binding_size: Some(wgpu::BufferSize::new(64).unwrap()),
                         },
                         count: None,
@@ -1213,7 +1215,7 @@ impl WgpuRenderer {
                     visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
+                        has_dynamic_offset: true,
                         min_binding_size: Some(wgpu::BufferSize::new(32).unwrap()),
                     },
                     count: None,
@@ -1511,6 +1513,10 @@ impl WgpuRenderer {
             mesh_pipeline,
             shader_cache,
             cache: RefCell::new(RenderCache::default()),
+            texture_cache: RefCell::new(TextureCache::default()),
+            params_scratch: RefCell::new(ParamsScratch::default()),
+            params_groups: RefCell::new(None::<ParamsGroups>),
+            params_group_cache: RefCell::new(ParamsGroupCache::default()),
             clear_frame: CpuFrame::new(),
             commands_frame: CpuFrame::new(),
             gpu: gpu_manager(&adapter_info)?,

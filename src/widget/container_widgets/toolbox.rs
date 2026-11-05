@@ -20,6 +20,7 @@ use crate::widget::Image;
 use crate::widget::{BaseWidget, Draw, IconItemError, IconSource, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
+use super::place::place_content_child;
 use super::theme_snapshot::ThemeSnapshot;
 
 /// The height of one tab in a vertical tool box, in logical pixels.
@@ -628,9 +629,7 @@ impl ToolBox {
             // One content derivation for every page in this pass (C-P10).
             let content = self.content_rect();
             for (index, rect) in self.page_rects(content) {
-                if let Some(widget_id) = self.items[index].widget {
-                    crate::set_widget_geometry(widget_id, rect.x, rect.y, rect.width, rect.height);
-                }
+                place_content_child(self.items[index].widget, rect);
             }
         }
     }
@@ -997,6 +996,11 @@ impl Widget for ToolBox {
         Some(self)
     }
 
+    /// A tool box's children are pages, and a page lives in the content box beside the strip.
+    /// The strip itself is painted by this control, so clipping to the page box cannot cover it.
+    fn children_clip(&self) -> Option<Rect> {
+        Some(self.content_rect())
+    }
     fn set_state_theme_hook(&mut self) {
         crate::style::reapply_active_theme_state(self);
     }
@@ -1343,11 +1347,9 @@ impl Draw for ToolBox {
         // C-29: `Popup` mode draws its page in the floating rect and adds the layer's own frame,
         // so the presentation actually reads as a popup rather than as the ordinary page band.
         for (index, page_rect) in self.page_rects(content_rect) {
-            if self.items[index].widget.is_some() {
-                if self.mode == ToolBoxMode::Popup {
-                    context.fill_rect(page_rect, page);
-                    context.draw_rect(page_rect, style.border_color.unwrap_or(selected_border));
-                }
+            if self.items[index].widget.is_some() && self.mode == ToolBoxMode::Popup {
+                context.fill_rect(page_rect, page);
+                context.draw_rect(page_rect, style.border_color.unwrap_or(selected_border));
             }
         }
         // Draw items
@@ -2293,5 +2295,29 @@ mod tests {
         assert_eq!(tool_box.expanded_items(), vec![1, 2]);
         assert!(!SaveState::restore_state(&mut tool_box, &saved[..4]));
         assert_eq!(tool_box.expanded_items(), vec![1, 2], "a refused blob changes nothing");
+    }
+
+    /// An open page fills the content box the painter uses, through the shared
+    /// `place_content_child` entry.
+    #[cfg(not(alloc_frugal))]
+    #[test]
+    fn an_open_page_is_placed_in_the_content_box() {
+        use crate::widget::base_widgets::label::Label;
+
+        let id = crate::widget::runtime::register(Box::new(Label::new(
+            "page".to_string(),
+            Rect::new(0, 0, 10, 10),
+        )))
+        .expect("the test thread has a widget runtime");
+        let mut tool_box = ToolBox::new(Rect::new(10, 20, 300, 200));
+        tool_box.add_item("One".to_string(), Some(id));
+
+        let content = tool_box.content_rect();
+        assert_eq!(
+            crate::widget_geometry(id),
+            Some((content.x, content.y, content.width, content.height))
+        );
+
+        crate::widget::runtime::unregister(id);
     }
 }

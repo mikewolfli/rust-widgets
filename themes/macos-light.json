@@ -131,7 +131,7 @@
   },
   "fonts": {
     "regular": {
-      "family": "Arial",
+      "family": "SF Pro",
       "size": 14.0,
       "weight": 400,
       "bold": false,
@@ -141,7 +141,7 @@
       "line_height": 0.0
     },
     "bold": {
-      "family": "Arial",
+      "family": "SF Pro",
       "size": 14.0,
       "weight": 700,
       "bold": true,
@@ -151,7 +151,7 @@
       "line_height": 0.0
     },
     "italic": {
-      "family": "Arial",
+      "family": "SF Pro",
       "size": 14.0,
       "weight": 400,
       "bold": false,
@@ -171,7 +171,7 @@
       "line_height": 0.0
     },
     "caption": {
-      "family": "Arial",
+      "family": "SF Pro",
       "size": 11.0,
       "weight": 400,
       "bold": false,
@@ -181,7 +181,7 @@
       "line_height": 0.0
     },
     "body": {
-      "family": "Arial",
+      "family": "SF Pro",
       "size": 14.0,
       "weight": 400,
       "bold": false,
@@ -191,7 +191,7 @@
       "line_height": 0.0
     },
     "title": {
-      "family": "Arial",
+      "family": "SF Pro",
       "size": 16.0,
       "weight": 700,
       "bold": true,
@@ -201,7 +201,7 @@
       "line_height": 0.0
     },
     "headline": {
-      "family": "Arial",
+      "family": "SF Pro",
       "size": 20.0,
       "weight": 700,
       "bold": true,
@@ -211,7 +211,7 @@
       "line_height": 0.0
     },
     "display": {
-      "family": "Arial",
+      "family": "SF Pro",
       "size": 28.0,
       "weight": 700,
       "bold": true,

@@ -58,7 +58,6 @@ MOD_RS_PENDING: dict[str, str] = {
     "src/widget/base_widgets/mod.rs": "`AutoRepeat` and its helpers → `base_widgets/auto_repeat.rs`",
 
     # Recorded 2026-10-28 (round 11): the two `mod.rs` files that still define items.
-    "src/designer/mod.rs": "`DocumentEditCommand` / `DesignerHistory` → `designer/history.rs` (mod.rs keeps the declarations and re-exports)",
     "src/json/mod.rs": "`MAX_DEPTH` → `json/limits.rs`",
 }
 
@@ -125,6 +124,15 @@ TOO_LONG_PENDING = {
     # canvas-view bookkeeping moved to `macos/canvas/canvas_views.rs` instead of being excused
     # here, so it is not listed.)
     "src/widget/input_widgets/cascader.rs": "option/load-state model vs level-row projection vs paint vs events → `cascader/{model,rows,paint,events}.rs`",
+    # Measured 2026-11-05 (issue-20261105 implementation round). These six crossed the limit before
+    # the round began and none was touched by it; recording the seam is the debt entry the gate
+    # asks for, and each row must disappear with its split.
+    "src/widget/capability/properties_other.in.rs": "one table per control family → `properties_other/{companions,display}.rs`",
+    "src/widget/container_widgets/carousel.rs": "page model vs indicator/paint → `carousel/{model,paint}.rs`",
+    "src/widget/display_widgets/slider.rs": "tick model vs paint vs events → `slider/{model,paint,events}.rs`",
+    "src/widget/nav_widgets/adaptive_scaffold.rs": "id-slot routing vs responsive layout vs paint → `adaptive_scaffold/{ids,layout,paint}.rs`",
+    "src/widget/special_widgets/freeform_shape/shape.rs": "outline model vs paint vs editing → `freeform_shape/shape/{model,paint,edit}.rs`",
+    "src/widget/view_widgets/list_view.rs": "model traits vs row paint vs selection → `list_view/{model,paint}.rs`",
 }
 
 

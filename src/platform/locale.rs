@@ -125,17 +125,25 @@ pub(crate) fn interned_from_environment() -> Option<&'static str> {
 /// `mini` build failed with `cannot find function from_environment` (feedback-20261019 §4).
 ///
 /// Only the Apple backends still call it: the Unix desktop backends answer from
-/// [`interned_from_environment`] in both profiles, so the dead-code allowance matches the
-/// non-frugal arm's.
+/// [`interned_from_environment`] in both profiles.
+///
+/// The allowance is unconditional rather than a target predicate: whether a caller is compiled
+/// depends on the *backend feature set*, not on the host target. `check_profiles` builds each
+/// backend alone (`mini,wasm`, `mini,harmony`, …) on the host, where no Apple call site exists and
+/// `not(target_vendor = "apple")` is false — which made the old attribute warn in exactly the
+/// builds this stub was written for.
 #[cfg(alloc_frugal)]
-#[cfg_attr(not(target_vendor = "apple"), allow(dead_code))]
+#[allow(dead_code)]
 pub(crate) fn from_environment() -> Option<String> {
     None
 }
 
 /// See the `not(alloc_frugal)` arm: a profile with no `std::env` reports no locale.
+///
+/// Unconditionally allowed for the same reason as [`from_environment`]: the calling backend is a
+/// feature-set fact, so `mini,wasm` alone leaves both stubs uncalled.
 #[cfg(alloc_frugal)]
-#[cfg_attr(not(any(unix_desktop, target_vendor = "apple")), allow(dead_code))]
+#[allow(dead_code)]
 pub(crate) fn interned_from_environment() -> Option<&'static str> {
     None
 }

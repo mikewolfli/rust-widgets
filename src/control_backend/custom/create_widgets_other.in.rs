@@ -453,6 +453,17 @@ macro_rules! impl_other_widgets {
             self.mount_widget_of_kind(WidgetKind::Tag, parent, "", x, y, width, height)
         }
         #[cfg(full_widgets)]
+        fn create_tag_group(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
+            self.mount_widget_of_kind(WidgetKind::TagGroup, parent, "", x, y, width, height)
+        }
+        #[cfg(full_widgets)]
         fn create_gauge(
             &self,
             parent: ObjectId,

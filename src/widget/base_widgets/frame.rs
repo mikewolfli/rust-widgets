@@ -13,6 +13,7 @@ use crate::widget::capability::coercion::{expect_bool, expect_f32, expect_string
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::container_widgets::place::place_content_child;
 use crate::widget::metrics::{dimensions, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, InteractionFade, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
@@ -354,20 +355,7 @@ impl Frame {
         if margins.top == 0 && margins.right == 0 && margins.bottom == 0 && margins.left == 0 {
             return;
         }
-        #[cfg(not(alloc_frugal))]
-        {
-            let Some(child) = self.widget else {
-                return;
-            };
-            let contents = self.contents_rect();
-            crate::set_widget_geometry(
-                child,
-                contents.x,
-                contents.y,
-                contents.width,
-                contents.height,
-            );
-        }
+        place_content_child(self.widget, self.contents_rect());
     }
 
     /// The bevel tones the painter should use.
@@ -952,6 +940,11 @@ impl Frame {
 impl Widget for Frame {
     fn base(&self) -> &BaseWidget {
         &self.base
+    }
+    /// A frame's child lives inside its contents rectangle, so a bevel and its margins cannot
+    /// be painted over by content that reaches the border.
+    fn children_clip(&self) -> Option<Rect> {
+        Some(self.contents_rect())
     }
     fn set_state_theme_hook(&mut self) {
         crate::style::reapply_active_theme_state(self);
@@ -1680,8 +1673,12 @@ mod tests {
         assert_eq!(f.contents_margins(), EdgeOffsets::new(2, 3, 4, 5));
     }
 
+    /// The margined child is placed through the tree registry, which the stripped profiles
+    /// compile out — there is nothing to mount a `Label` into there, so the case is skipped.
+    #[cfg(not(alloc_frugal))]
     #[test]
     fn a_margined_frame_positions_its_child() {
+        use crate::compat::Box;
         use crate::widget::base_widgets::label::Label;
 
         let id = crate::widget::runtime::register(Box::new(Label::new(
@@ -1860,5 +1857,29 @@ mod tests {
 
         assert_eq!(light, base.blend(&Color::WHITE, 0.5));
         assert_eq!(shade, base.blend(&Color::BLACK, 0.5));
+    }
+
+    /// A framed child sits at the frame's contents rectangle, through the shared entry.
+    #[cfg(not(alloc_frugal))]
+    #[test]
+    fn the_child_is_placed_at_the_contents_rect() {
+        use crate::widget::base_widgets::label::Label;
+
+        let id = crate::widget::runtime::register(Box::new(Label::new(
+            "body".to_string(),
+            Rect::new(0, 0, 10, 10),
+        )))
+        .expect("the test thread has a widget runtime");
+        let mut frame = Frame::new(Rect::new(10, 20, 300, 200));
+        frame.set_widget(Some(id));
+        frame.set_contents_margins(crate::style::EdgeOffsets::new(4, 4, 4, 4));
+
+        let content = frame.contents_rect();
+        assert_eq!(
+            crate::widget_geometry(id),
+            Some((content.x, content.y, content.width, content.height))
+        );
+
+        crate::widget::runtime::unregister(id);
     }
 }

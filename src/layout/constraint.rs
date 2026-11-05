@@ -15,6 +15,10 @@
 //! [`DeclarativeLayoutKind`](crate::json::layout::DeclarativeLayoutKind) cannot carry, and no
 //! widget builds one. Removal condition: when a JSON child-placement schema exists, or when the
 //! solver is confirmed redundant with [`AbsoluteLayout`](crate::layout::absolute::AbsoluteLayout).
+// A complete solver algebra: these tests exercise a subset of it (setters that no test
+// constructs are still part of the solver's contract). The module is `#[cfg(test)]`, so the
+// unused remainder produces no shipped code.
+#![allow(dead_code)]
 use super::types::ChildPlacements;
 use super::{ChildInfo, Layout, LayoutContext};
 use crate::compat::{Any, HashMap, Rc, RefCell, Vec};

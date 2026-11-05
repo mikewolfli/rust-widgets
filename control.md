@@ -2,9 +2,9 @@
 
 # 控件图像总览 / Control gallery
 
-本页共 **240** 张控件快照名（每个两种外观，共 **480** 张 SVG）。
+本页共 **241** 张控件快照名（每个两种外观，共 **482** 张 SVG）。
 这些名字来自控件注册表（`factory.widget_names()`），每行是一个**规范名**（不含别名）。
-快照名数多于 `WidgetKind` 的枚举数（**230**），是因为多个控件可以共用一个 kind（例如九种图表都报告 `WidgetKind::Chart`），而不是因为别名。
+快照名数多于 `WidgetKind` 的枚举数（**231**），是因为多个控件可以共用一个 kind（例如九种图表都报告 `WidgetKind::Chart`），而不是因为别名。
 
 此外还有 **10** 张**状态快照**（下表），它们不是额外的控件，而是某个控件在用户可切换到的状态下的样子。
 
@@ -41,7 +41,7 @@
 |---|---|---|
 | Base controls (`base_widgets`) | 6 | [跳转](#base-controls) |
 | Input controls (`input_widgets`) | 29 | [跳转](#input-controls) |
-| Display controls (`display_widgets`) | 27 | [跳转](#display-controls) |
+| Display controls (`display_widgets`) | 28 | [跳转](#display-controls) |
 | Containers (`container_widgets`) | 28 | [跳转](#containers) |
 | Navigation (`nav_widgets`) | 7 | [跳转](#navigation) |
 | Menus and toolbars (`menu_toolbar`) | 9 | [跳转](#menus-and-toolbars) |
@@ -57,7 +57,7 @@
 | companions (`companions`) | 26 | [跳转](#companions) |
 | macos (`macos`) | 5 | [跳转](#macos) |
 | Core controls (`root`) | 2 | [跳转](#core-controls) |
-| **合计** | **240** | |
+| **合计** | **241** | |
 
 ## Base controls
 
@@ -110,7 +110,7 @@
 
 ## Display controls
 
-`display_widgets` — 27 个控件。
+`display_widgets` — 28 个控件。
 
 | 控件 | 深色 | 浅色 |
 |---|---|---|
@@ -141,6 +141,7 @@
 | `spinner` | ![spinner (dark)](snapshots/svg/spinner.svg) | ![spinner (light)](snapshots/svg/spinner.light.svg) |
 | `switch` | ![switch (dark)](snapshots/svg/switch.svg) | ![switch (light)](snapshots/svg/switch.light.svg) |
 | `tag` | ![tag (dark)](snapshots/svg/tag.svg) | ![tag (light)](snapshots/svg/tag.light.svg) |
+| `tag_group` | ![tag_group (dark)](snapshots/svg/tag_group.svg) | ![tag_group (light)](snapshots/svg/tag_group.light.svg) |
 
 ## Containers
 

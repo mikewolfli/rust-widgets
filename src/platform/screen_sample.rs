@@ -26,6 +26,9 @@
 /// `None` covers a point outside every display, a point on a window this process may not read, and
 /// a host where the capture grant is missing — the caller's answer is the same for all three: fall
 /// back to sampling its own painted surface.
+///
+/// The callers are the backends' screen samplers, which a stripped profile does not build.
+#[cfg_attr(alloc_frugal, allow(dead_code))]
 pub(crate) fn presentable(pixel: (u8, u8, u8, u8)) -> Option<(u8, u8, u8, u8)> {
     (pixel.3 != 0).then_some(pixel)
 }

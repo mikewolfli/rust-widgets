@@ -69,10 +69,10 @@ pub mod uniform_grid;
 /// Line-breaking layout for a sequence of fixed-size items.
 pub mod wrap;
 pub use crate::core::Orientation;
-// API2-01: `absolute` and `constraint` are not re-exported under the short names any more. They
-// have no production caller and the declarative JSON path cannot describe their per-child data,
-// so the short paths advertised an unreachable capability. The modules stay `pub`, so a host that
-// deliberately wants those solvers still names them through their module paths.
+// API2-01: `absolute` and `constraint` are test-only modules — they have no production caller and
+// the declarative JSON path cannot describe their per-child data, so keeping them in the shipped
+// build only maintained an unreachable capability. Their tests still run; the modules are not
+// reachable from outside the crate.
 pub use aspect_ratio::*;
 pub use border::*;
 pub use box_layout::*;

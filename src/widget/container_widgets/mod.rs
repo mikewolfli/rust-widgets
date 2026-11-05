@@ -30,6 +30,8 @@ pub mod linear_layouts;
 pub mod masonry_layout;
 #[cfg(widgets_unstripped)]
 pub mod mdiarea;
+/// The single placement entry for a container's content child.
+pub(crate) mod place;
 #[cfg(widgets_unstripped)]
 pub mod safe_area;
 /// The generic scroll read/write contract shared by the scrolling containers (RW-58).

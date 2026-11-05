@@ -2250,6 +2250,12 @@ impl Widget for ToolBar {
     fn accepts_wheel(&self) -> bool {
         true
     }
+    /// Mounted item widgets belong to the strip the toolbar paints, not to the control's whole
+    /// rectangle. A toolbar is a band (see `band_rect`), so clipping to the band keeps widget
+    /// content out of the slab below it on a tall census cell.
+    fn children_clip(&self) -> Option<Rect> {
+        Some(self.band_rect())
+    }
     fn set_state_theme_hook(&mut self) {
         crate::style::reapply_active_theme_state(self);
     }
@@ -2652,9 +2658,7 @@ impl EventHandler for ToolBar {
                 }
                 self.base.request_redraw();
                 // C2-D0: an overflow window at its end lets an outer container scroll.
-                if self.overflow_offset != before {
-                    crate::widget::runtime::claim_wheel();
-                }
+                crate::widget::claim_wheel_if_moved(&before, &self.overflow_offset);
             }
             _ => { /* Other events are not relevant */ }
         }

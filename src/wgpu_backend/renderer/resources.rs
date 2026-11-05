@@ -18,6 +18,166 @@ use std::time::Duration;
 /// caller instead of reporting an error (G-63).
 pub(crate) const GPU_READBACK_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// Grow-only uniform buffer shared by every per-draw params write of one frame.
+///
+/// Each draw writes its params at a device-aligned offset and its bind group references that
+/// subrange, so a frame of N draws allocates **one** buffer instead of N. `reset` rewinds only
+/// the frame cursor; the allocation itself survives, and the queue's ordering makes the next
+/// frame's writes land after the previous frame's submission.
+#[derive(Default)]
+pub(crate) struct ParamsScratch {
+    buffer: Option<wgpu::Buffer>,
+    capacity: u64,
+    used: u64,
+    stride: u64,
+    /// Bumped whenever `buffer` is replaced, so bind groups built over the old handle can be
+    /// rebuilt. A handle identity would do, but `wgpu::Buffer` does not expose one that is stable
+    /// across backends.
+    generation: u64,
+}
+
+impl ParamsScratch {
+    /// The current buffer handle, or `None` before the first write of the process.
+    pub(crate) fn buffer(&self) -> Option<&wgpu::Buffer> {
+        self.buffer.as_ref()
+    }
+
+    /// Identifies the current buffer allocation; changes when the buffer is replaced.
+    pub(crate) fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    /// Rewinds the frame cursor. Call once per encoded frame, before the first upload.
+    pub(crate) fn reset(&mut self) {
+        self.used = 0;
+    }
+
+    /// Reserves room for `slots` aligned params records before a frame is packed.
+    ///
+    /// Each draw's params occupy at most one [`Self::stride`] slice, so reserving
+    /// `commands + 1` slots up front keeps the buffer from growing in the middle of a frame —
+    /// which matters because all draws of a frame share one dynamic-offset bind group and a
+    /// mid-frame replacement would leave earlier offsets pointing into the old allocation.
+    pub(crate) fn reserve(&mut self, device: &wgpu::Device, slots: u64) {
+        let stride = self.stride_for(device);
+        let needed = slots.saturating_mul(stride).max(4);
+        self.ensure_capacity(device, needed);
+    }
+
+    /// Writes `bytes` into the shared buffer and returns the buffer handle and its aligned offset.
+    ///
+    /// The offset is a multiple of the device's `min_uniform_buffer_offset_alignment` (256 on the
+    /// common backends, but a device may report more), which is what makes a subrange binding over
+    /// the shared buffer legal on every backend.
+    pub(crate) fn write(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        bytes: &[u8],
+    ) -> (wgpu::Buffer, u64) {
+        let stride = self.stride_for(device);
+        let offset = self.used.div_ceil(stride) * stride;
+        let needed = offset + bytes.len() as u64;
+        self.ensure_capacity(device, needed);
+        let buffer = self.buffer.as_ref().expect("the buffer was just ensured").clone();
+        queue.write_buffer(&buffer, offset, bytes);
+        self.used = needed;
+        (buffer, offset)
+    }
+
+    /// The alignment every params record is placed on, learned from the device once.
+    fn stride_for(&mut self, device: &wgpu::Device) -> u64 {
+        if self.stride == 0 {
+            let alignment = device.limits().min_uniform_buffer_offset_alignment as u64;
+            self.stride = alignment.max(4);
+        }
+        self.stride
+    }
+
+    /// Grows the buffer when `needed` does not fit, bumping the generation the bind groups key on.
+    fn ensure_capacity(&mut self, device: &wgpu::Device, needed: u64) {
+        if self.capacity >= needed {
+            return;
+        }
+        let capacity =
+            grown_buffer_capacity(self.capacity, needed, device.limits().max_buffer_size);
+        self.buffer = Some(device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("draw_params_scratch"),
+            size: capacity,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        }));
+        self.capacity = capacity;
+        self.generation = self.generation.wrapping_add(1);
+    }
+}
+
+/// The two dynamic-offset bind groups built over the shared params buffer.
+///
+/// `generation` names the buffer they were built for; a growth replaces the buffer and therefore
+/// invalidates both groups.
+pub(crate) struct ParamsGroups {
+    pub(crate) generation: u64,
+    pub(crate) shape: wgpu::BindGroup,
+    pub(crate) path_cover: wgpu::BindGroup,
+}
+
+/// Which textured family a cached params bind group belongs to.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum ParamsFamily {
+    Image,
+    Radial,
+    Gradient,
+}
+
+/// Bind groups over the shared params arena, keyed by the texture they sample (RD2-01).
+///
+/// A textured bind group can only be reused while the texture is the same, so the key pairs the
+/// family with the upload's content [`TextureKey`]. The cache lives for one frame: its entries
+/// keep texture views alive, and a per-frame lifetime bounds that memory to what this frame drew.
+/// A params-arena growth changes `generation` and drops every entry, because they bind the old
+/// buffer handle.
+#[derive(Default)]
+pub(crate) struct ParamsGroupCache {
+    generation: u64,
+    groups: HashMap<(ParamsFamily, TextureKey), wgpu::BindGroup>,
+}
+
+impl ParamsGroupCache {
+    /// Clears the cache and records the arena generation its groups would bind.
+    pub(crate) fn reset(&mut self, generation: u64) {
+        self.groups.clear();
+        self.generation = generation;
+    }
+
+    /// The group for `(family, key)`, when this frame already built one over the same arena.
+    pub(crate) fn get(
+        &self,
+        generation: u64,
+        family: ParamsFamily,
+        key: &TextureKey,
+    ) -> Option<wgpu::BindGroup> {
+        if self.generation != generation {
+            return None;
+        }
+        self.groups.get(&(family, *key)).cloned()
+    }
+
+    /// Stores a group for the rest of this arena generation.
+    pub(crate) fn insert(
+        &mut self,
+        generation: u64,
+        family: ParamsFamily,
+        key: TextureKey,
+        group: wgpu::BindGroup,
+    ) {
+        if self.generation != generation {
+            self.reset(generation);
+        }
+        self.groups.insert((family, key), group);
+    }
+}
+
 /// One persistent colour-uniform arena shared by every draw of one call.
 ///
 /// WebGPU requires a dynamic uniform offset to be a multiple of the device's
@@ -526,8 +686,6 @@ pub(crate) struct RenderCache {
     pub(crate) circle_uniforms: Option<CircleUniformArena>,
     /// CPU-side packing buffers refilled each call instead of reallocated (G-216).
     pub(crate) pack: PackScratch,
-    /// Content-keyed uploads of image / ramp / stop-table pixels (RD2-01).
-    pub(crate) textures: TextureCache,
     /// The command-stream packer's per-frame side tables, refilled each call (RD-02).
     pub(crate) tables: super::pack_tables::PackTables,
     /// The `Depth32Float` attachment for mesh draws.

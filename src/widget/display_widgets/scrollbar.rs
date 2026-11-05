@@ -1288,9 +1288,7 @@ impl EventHandler for ScrollBar {
                     self.set_value(self.value + scroll.lines_y * self.single_step);
                     self.request_frame_repaint(None);
                     // C2-D0: a bar already at its end does not claim the notch.
-                    if self.value != before {
-                        crate::widget::runtime::claim_wheel();
-                    }
+                    crate::widget::claim_wheel_if_moved(&before, &self.value);
                 }
             }
             // Keyboard stepping is reachable only while the bar holds focus: a scroll bar

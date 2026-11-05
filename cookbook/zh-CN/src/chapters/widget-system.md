@@ -422,7 +422,7 @@ impl EventHandler for MyWidget {
 
 ---
 
-## `WidgetKind` 枚举 — 230 变体
+## `WidgetKind` 枚举 — 231 变体
 
 `WidgetKind` 枚举对每个控件类型进行分类。它通过特性门控：
 28 个变体始终可用；151 个需要非 `mini` 特性。
@@ -706,44 +706,50 @@ impl EventHandler for Window {
 
 ### 容器控件
 
-容器使用 `SimpleRegistry` 将渲染和事件转发给子控件：
+容器不为子控件持有一张绘制/事件表。它持有**子控件列表**（id），通过公共几何入口放置每个子控件，由运行时负责绘制和派发：
 
 ```rust
-use rust_widgets::widget::{SimpleRegistry, Widget, BaseWidget, Draw, WidgetKind};
-use rust_widgets::event::{Event, EventHandler};
-use rust_widgets::render::RenderContext;
+use rust_widgets::widget::{BaseWidget, Widget, WidgetKind};
 use rust_widgets::core::{ObjectId, Rect};
 
 struct FrameWidget {
     base: BaseWidget,
-    registry: SimpleRegistry,
+    child: Option<ObjectId>,
 }
 
 impl FrameWidget {
     fn new(title: &str, geometry: Rect) -> Self {
         Self {
             base: BaseWidget::new(WidgetKind::GroupBox, geometry, "Frame"),
-            registry: SimpleRegistry::new(),
+            child: None,
         }
     }
 
-    fn add_child_widget<W: Widget + Draw + EventHandler + 'static>(
-        &mut self,
-        child: &mut W,
-    ) {
-        let id = child.id();
-        self.base.add_child(id);
-
-        // 注册子控件的绘制 + 事件处理器
-        // （实际应用中，这使用借用子控件的闭包）
-        self.registry.register(
-            id,
-            |ctx| { /* 转发到 child.draw(ctx) */ },
-            |evt| { /* 转发到 child.handle_event(evt) */ },
-        );
+    /// 记录子控件并把它放进内容框。
+    fn set_child(&mut self, child: Option<ObjectId>) {
+        if let Some(previous) = self.child.take() {
+            self.base.remove_child_linked(previous);
+            rust_widgets::set_widget_visible(previous, false);
+        }
+        self.child = child;
+        if let Some(id) = child {
+            self.base.add_child_linked(id);
+            rust_widgets::set_widget_visible(id, true);
+            // 按框架装饰内缩；本例使用完整矩形。
+            let content = self.base.geometry();
+            rust_widgets::set_widget_geometry(id, content.x, content.y, content.width, content.height);
+        }
     }
 }
 ```
+
+容器需要履行三项义务，树路径才能正确：
+
+* **放置** — 每次布局变化通过 `set_widget_geometry` 写入内容矩形；只记录 id 的容器会让子控件停留在构造时的矩形。
+* **裁剪** — 实现 `Widget::children_clip` 返回内容框，树绘制器才不会让子控件覆盖标签条、滚动条或标题等装饰。
+* **兴趣** — 当落在内容子控件上的事件应由容器处理时，实现 `Widget::accepts_wheel` / `observes_child_press`；运行时会沿父链上溯，而不是丢弃事件。
+
+早期版本用 `SimpleRegistry` 这张闭包转发表完成上述工作，已于 4.1.0 移除：它在第二条路径上重复了绘制、派发与几何，且没有生产调用方。
 
 ---
 

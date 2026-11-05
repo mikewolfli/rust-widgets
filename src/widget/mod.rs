@@ -142,6 +142,12 @@ pub mod sample_fill;
 pub mod save_state;
 /// Byte-index helpers shared by the text-editing controls.
 pub mod text_utils;
+/// The "this notch actually moved me" claim every scroll-bearing control reports (C2-D0).
+///
+/// Not gated: `ScrollArea` and `ScrollBar` are built in the stripped profiles, which have no
+/// [`runtime`] to claim through. This module is the one place that knows that difference.
+pub mod wheel_claim;
+pub use wheel_claim::claim_wheel_if_moved;
 pub mod widget_trait;
 // Widget subfolders
 #[cfg(full_widgets)]
@@ -201,7 +207,7 @@ pub mod misc_widgets;
 pub mod nav_widgets;
 #[cfg(full_widgets)]
 pub mod overlay_widgets;
-pub mod registry;
+
 // The rendering census needs **both** a registry to enumerate and a theme to switch
 // between. The registry follows `widgets_unstripped`; the theme follows `device_profile`,
 // and the two are not the same condition: a `windows + controls-custom` build has an
@@ -251,7 +257,6 @@ pub use crate::image::Image;
 #[cfg(feature = "image")]
 pub use crate::image::ImageFormat;
 pub use kind::WidgetKind;
-pub use registry::SimpleRegistry;
 #[cfg(not(alloc_frugal))]
 pub use save_state::{collect_save_state, restore_save_state};
 pub use save_state::{SaveState, SavedState};

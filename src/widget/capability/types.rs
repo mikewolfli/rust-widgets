@@ -979,9 +979,17 @@ pub const ANY_CHILD_WILDCARD: &str = "*";
 /// # Why this is a lookup and not a field on [`WidgetCapability`]
 ///
 /// `WidgetCapability` is written as a struct literal in every registration table in this crate. A
-/// new field would break all of them at once for a fact that only a handful of kinds have, and the
-/// rows that *do* have a constraint can state it with [`WidgetCapability::with_children`]. The
+/// new field would break all of them at once for a fact that only a handful of kinds have. The
 /// default answer here covers the containers that exist today, so no existing literal changes.
+///
+/// # Why there is no per-row override
+///
+/// There used to be a second path: `WidgetCapability::with_children` recorded a constraint in a
+/// process-wide `OnceLock<Mutex<HashMap<..>>>` keyed by canonical name. Its only writer was its own
+/// unit test — every registration row used this table — so the map was always empty in production
+/// while `child_kinds` paid a lock on the manifest path and `check_locking` reported it as widget
+/// state behind a mutex. The override was deleted rather than exempted: an always-empty table is
+/// not a capability, and `child_kinds` now answers from this one table.
 ///
 /// # Empty means "unconstrained", not "no children"
 ///
@@ -1093,20 +1101,6 @@ pub fn child_factory_names(capability: &WidgetCapability) -> Vec<String> {
     }
 }
 
-/// Child-kind constraints a capability row declared explicitly.
-///
-/// Keyed by canonical name rather than by kind: several capabilities may share one kind
-/// (`panel`/`group_box`), and a constraint belongs to the capability that declared it. The table is
-/// append-only in practice — `with_children` records a row once per process build — so a mutex
-/// around a map is sufficient and keeps the accessor allocation-free.
-fn child_overrides(
-) -> &'static crate::compat::Mutex<crate::compat::HashMap<&'static str, &'static [WidgetKind]>> {
-    static OVERRIDES: crate::compat::OnceLock<
-        crate::compat::Mutex<crate::compat::HashMap<&'static str, &'static [WidgetKind]>>,
-    > = crate::compat::OnceLock::new();
-    OVERRIDES.get_or_init(|| crate::compat::Mutex::new(crate::compat::HashMap::new()))
-}
-
 /// Capability metadata for a widget kind.
 #[derive(Debug, Clone)]
 pub struct WidgetCapability {
@@ -1138,24 +1132,10 @@ pub struct WidgetCapability {
 impl WidgetCapability {
     /// The child kinds this capability constrains its children to, empty when it constrains none.
     ///
-    /// Uses an explicit [`Self::with_children`] declaration when one was made, and otherwise falls
-    /// back to the shared table [`child_kinds_for`]. The fallback is what lets the existing
-    /// registration literals stay unchanged while still publishing the containers that exist.
+    /// Answers from the shared table [`child_kinds_for`], which is what lets the registration
+    /// literals state a constraint by kind instead of carrying a per-row field.
     pub fn child_kinds(&self) -> &'static [WidgetKind] {
-        if let Some(declared) = crate::compat::lock(child_overrides()).get(self.canonical_name) {
-            return declared;
-        }
         child_kinds_for(self.kind)
-    }
-
-    /// Declares this capability's child-kind constraint explicitly.
-    ///
-    /// Additive builder for a new registration row: a control whose allowed children are narrower
-    /// (or wider) than [`child_kinds_for`]'s default states the fact here instead of editing the
-    /// shared table, so two controls that share a kind cannot overwrite one another's constraint.
-    pub fn with_children(self, children: &'static [WidgetKind]) -> Self {
-        let _ = crate::compat::lock(child_overrides()).insert(self.canonical_name, children);
-        self
     }
 }
 
@@ -1352,20 +1332,24 @@ mod constraint_tests {
         assert!(validate_property_value("value", &schema, &CapabilityValue::Float(1.23456)).is_ok());
     }
 
-    /// RW-41: `with_children` records an explicit constraint that `child_kinds` reports.
+    /// RW-41: `child_kinds` answers from the shared table, and the container predicate agrees.
+    ///
+    /// `Panel`/`Button` rather than a constrained kind such as `DockWidget`: those variants exist
+    /// only in an unstripped build, and this test runs in every profile.
     #[test]
-    fn with_children_records_an_explicit_constraint() {
+    fn child_kinds_answers_from_the_shared_table() {
         let capability = WidgetCapability {
             kind: WidgetKind::Panel,
-            // A name no registration uses, so this test cannot affect another control's answer.
             canonical_name: "rw41_test_capability",
             aliases: &[],
             properties: &[],
             events: &[],
             commands: &[],
-        }
-        .with_children(&[WidgetKind::Button]);
-        assert_eq!(capability.child_kinds(), &[WidgetKind::Button]);
+        };
+        assert_eq!(capability.child_kinds(), child_kinds_for(WidgetKind::Panel));
+        // A kind with no constraint reports an empty slice rather than inventing one.
+        let leaf = WidgetCapability { kind: WidgetKind::Button, ..capability };
+        assert!(leaf.child_kinds().is_empty());
         assert!(is_container_kind(WidgetKind::Panel));
         assert!(!is_container_kind(WidgetKind::Button));
     }

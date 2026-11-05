@@ -198,13 +198,7 @@ fn mount_content_child(
 /// no new information; a read that finds the same rectangle now costs less and invalidates
 /// nothing.
 fn place_mounted_child(slot: Option<ObjectId>, rect: Rect) {
-    let Some(widget_id) = slot else {
-        return;
-    };
-    if crate::widget_geometry(widget_id) == Some((rect.x, rect.y, rect.width, rect.height)) {
-        return;
-    }
-    crate::set_widget_geometry(widget_id, rect.x, rect.y, rect.width, rect.height);
+    super::place::place_content_child(slot, rect);
 }
 
 /// A parent extent scaled by a `Center` factor, matching `layout::center` exactly.

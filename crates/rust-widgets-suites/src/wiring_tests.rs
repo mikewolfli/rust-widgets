@@ -225,6 +225,19 @@ fn every_registered_suite_control_exports_a_designer_manifest() {
     use rust_widgets::widget::capability::designer_manifest;
 
     let factory = suite_factory();
+    // Only `form` is in the initial list; every other group appends below behind its feature, so a
+    // build with none of those features has nothing to mutate.
+    #[cfg_attr(
+        not(any(
+            feature = "webview",
+            feature = "finance",
+            feature = "maps",
+            feature = "project",
+            feature = "devtools",
+            feature = "media-playback"
+        )),
+        allow(unused_mut)
+    )]
     let mut groups: Vec<(&'static str, Vec<&'static str>)> =
         vec![("form", vec!["form", "form_set"])];
 
@@ -299,91 +312,119 @@ fn every_registered_suite_control_exports_a_designer_manifest() {
 /// published where the rows were needed, or the only data entry point was a Rust method. This
 /// walks the published surface — `write_property` then `read_property` — and checks the command
 /// list names the same write, so a designer can reach it.
+#[cfg(any(feature = "finance", feature = "media-playback", feature = "webview"))]
 #[test]
 fn the_design_time_data_carriers_round_trip() {
-    use rust_widgets::widget::capability::types::{CapabilityAccessError, CapabilityValue as V};
+    use rust_widgets::widget::capability::types::CapabilityValue as V;
     use rust_widgets::widget::capability::{RecordList, RecordValue};
 
+    // Each schema comes from the group that owns the control, so the import carries that group's
+    // feature gate: the suite's default feature set is `form` alone, and an ungated import made
+    // `cargo test` fail to compile the crate at all (the wiring gate caught it).
+    #[cfg(feature = "finance")]
     use crate::finance::types::BOOK_LEVEL_RECORD_SCHEMA;
+    #[cfg(feature = "media-playback")]
     use crate::media_playback::chapter_list_panel::CHAPTER_RECORD_SCHEMA;
+    #[cfg(feature = "webview")]
     use crate::webview::web_history_panel::HISTORY_RECORD_SCHEMA;
 
     let factory = suite_factory();
     let rect = Rect::new(0, 0, 320, 180);
 
     // The two ladders of `order_book` / `depth_chart`.
-    let ladder = RecordList::from_items(
-        &BOOK_LEVEL_RECORD_SCHEMA,
-        vec![RecordValue::new().with("price", V::Float(100.5)).with("quantity", V::Float(3.0))],
-    );
-    for control in ["order_book", "depth_chart"] {
-        let mut widget = factory.create(control, rect, "").expect("the suite registers it");
-        factory
-            .write_property(widget.as_mut(), "bids", V::Records(ladder.clone()))
-            .expect("bids is writable");
-        let V::Records(read) = factory.read_property(widget.as_ref(), "bids").expect("readable")
-        else {
-            panic!("{control}: bids must read back as records")
-        };
-        assert_eq!(read.items().len(), 1, "{control}: the written level must survive");
-        assert_eq!(read.items()[0].get("price"), Some(&V::Float(100.5)));
-        assert!(
-            matches!(
-                factory.invoke_command(widget.as_mut(), "set_bids"),
-                Err(CapabilityAccessError::OutOfRange)
-            ),
-            "{control}: set_bids must be published and reported as value-carrying"
+    #[cfg(feature = "finance")]
+    {
+        use rust_widgets::widget::capability::types::CapabilityAccessError;
+
+        let ladder = RecordList::from_items(
+            &BOOK_LEVEL_RECORD_SCHEMA,
+            vec![RecordValue::new().with("price", V::Float(100.5)).with("quantity", V::Float(3.0))],
         );
+        for control in ["order_book", "depth_chart"] {
+            let mut widget = factory.create(control, rect, "").expect("the suite registers it");
+            factory
+                .write_property(widget.as_mut(), "bids", V::Records(ladder.clone()))
+                .expect("bids is writable");
+            let V::Records(read) =
+                factory.read_property(widget.as_ref(), "bids").expect("readable")
+            else {
+                panic!("{control}: bids must read back as records")
+            };
+            assert_eq!(read.items().len(), 1, "{control}: the written level must survive");
+            assert_eq!(read.items()[0].get("price"), Some(&V::Float(100.5)));
+            assert!(
+                matches!(
+                    factory.invoke_command(widget.as_mut(), "set_bids"),
+                    Err(CapabilityAccessError::OutOfRange)
+                ),
+                "{control}: set_bids must be published and reported as value-carrying"
+            );
+        }
     }
 
     // `chapter_list_panel`: the rows, with the count under its own name.
-    let mut chapters = factory.create("chapter_list_panel", rect, "").expect("registered");
-    let rows = RecordList::from_items(
-        &CHAPTER_RECORD_SCHEMA,
-        vec![
-            RecordValue::new()
-                .with("title", V::String("Intro".into()))
-                .with("start_seconds", V::Float(0.0)),
-            RecordValue::new()
-                .with("title", V::String("Middle".into()))
-                .with("start_seconds", V::Float(42.5)),
-        ],
-    );
-    factory
-        .write_property(chapters.as_mut(), "chapters", V::Records(rows))
-        .expect("chapters is writable");
-    assert_eq!(
-        factory.read_property(chapters.as_ref(), "chapter_count"),
-        Ok(V::UInt(2)),
-        "the count must follow the written rows"
-    );
+    #[cfg(feature = "media-playback")]
+    {
+        let mut chapters = factory.create("chapter_list_panel", rect, "").expect("registered");
+        let rows = RecordList::from_items(
+            &CHAPTER_RECORD_SCHEMA,
+            vec![
+                RecordValue::new()
+                    .with("title", V::String("Intro".into()))
+                    .with("start_seconds", V::Float(0.0)),
+                RecordValue::new()
+                    .with("title", V::String("Middle".into()))
+                    .with("start_seconds", V::Float(42.5)),
+            ],
+        );
+        factory
+            .write_property(chapters.as_mut(), "chapters", V::Records(rows))
+            .expect("chapters is writable");
+        assert_eq!(
+            factory.read_property(chapters.as_ref(), "chapter_count"),
+            Ok(V::UInt(2)),
+            "the count must follow the written rows"
+        );
+    }
 
     // `web_history_panel`: sample history, and the `clear` command.
-    let mut history = factory.create("web_history_panel", rect, "").expect("registered");
-    let entries = RecordList::from_items(
-        &HISTORY_RECORD_SCHEMA,
-        vec![RecordValue::new()
-            .with("url", V::String("https://example.com/".into()))
-            .with("title", V::String("Example".into()))
-            .with("visited_ms", V::Int(1_700_000_000_000))],
-    );
-    factory
-        .write_property(history.as_mut(), "entries", V::Records(entries))
-        .expect("entries is writable");
-    assert_eq!(factory.read_property(history.as_ref(), "visible_count"), Ok(V::UInt(1)));
-    factory.invoke_command(history.as_mut(), "clear").expect("clear is published");
-    let V::Records(cleared) = factory.read_property(history.as_ref(), "entries").expect("readable")
-    else {
-        panic!("entries must read back as records")
-    };
-    assert!(cleared.items().is_empty(), "clear must empty the rows");
+    #[cfg(feature = "webview")]
+    {
+        let mut history = factory.create("web_history_panel", rect, "").expect("registered");
+        let entries = RecordList::from_items(
+            &HISTORY_RECORD_SCHEMA,
+            vec![RecordValue::new()
+                .with("url", V::String("https://example.com/".into()))
+                .with("title", V::String("Example".into()))
+                .with("visited_ms", V::Int(1_700_000_000_000))],
+        );
+        factory
+            .write_property(history.as_mut(), "entries", V::Records(entries))
+            .expect("entries is writable");
+        assert_eq!(factory.read_property(history.as_ref(), "visible_count"), Ok(V::UInt(1)));
+        factory.invoke_command(history.as_mut(), "clear").expect("clear is published");
+        let V::Records(cleared) =
+            factory.read_property(history.as_ref(), "entries").expect("readable")
+        else {
+            panic!("entries must read back as records")
+        };
+        assert!(cleared.items().is_empty(), "clear must empty the rows");
+    }
 
     // `rive_widget`: the document reference and the scrubbed playhead.
-    let mut rive = factory.create("rive_widget", rect, "").expect("registered");
-    factory
-        .write_property(rive.as_mut(), "source", V::String("intro.riv".into()))
-        .expect("source is writable");
-    assert_eq!(factory.read_property(rive.as_ref(), "source"), Ok(V::String("intro.riv".into())));
-    factory.write_property(rive.as_mut(), "progress", V::Float(0.5)).expect("progress is writable");
-    assert_eq!(factory.read_property(rive.as_ref(), "progress"), Ok(V::Float(0.5)));
+    #[cfg(feature = "media-playback")]
+    {
+        let mut rive = factory.create("rive_widget", rect, "").expect("registered");
+        factory
+            .write_property(rive.as_mut(), "source", V::String("intro.riv".into()))
+            .expect("source is writable");
+        assert_eq!(
+            factory.read_property(rive.as_ref(), "source"),
+            Ok(V::String("intro.riv".into()))
+        );
+        factory
+            .write_property(rive.as_mut(), "progress", V::Float(0.5))
+            .expect("progress is writable");
+        assert_eq!(factory.read_property(rive.as_ref(), "progress"), Ok(V::Float(0.5)));
+    }
 }

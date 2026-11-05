@@ -10,8 +10,8 @@
 #           placeholder is not a lie, so it is not required to be answered
 # failed  = declarations that disagree with the implementation
 
-controls   240
-skipped    242
+controls   241
+skipped    241
 failed     0
 
 ## skipped entries (each with its reason)
@@ -22,8 +22,6 @@ failed     0
 - time_edit::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
 - ribbon_bar::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
 - pie_menu::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
-- date_time_edit::minimum: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
-- date_time_edit::maximum: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
 - date_time_edit::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
 - key_sequence_editor::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
 - time_picker::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
@@ -203,6 +201,7 @@ failed     0
 - drum_column::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
 - preset_chip_bar::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
 - tag::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
+- tag_group::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
 - clock::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
 - gauge::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
 - mac_segmented_control::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered

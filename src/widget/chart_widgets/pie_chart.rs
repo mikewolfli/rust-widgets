@@ -6,6 +6,15 @@
 //! The PieChart widget displays data as slices of a circle, with optional
 //! labels, percentage annotations, exploded slices, and donut mode.
 //! Each slice has a label, numeric value, color, and optional explosion offset.
+//!
+//! # `enabled` and the model signals
+//!
+//! `data_changed` from the slice mutators is **deliberately not gated** by `enabled`: a disabled
+//! pie is still painted (greyed), and the signal announces a host-driven model change rather than
+//! a user action, so a companion that updated the slices still needs the surface repainted. The
+//! user-action signal — `series_toggled` — *is* gated in the mutator that emits it, so a host that
+//! disabled the control hears nothing it could not reach. This is the same division `BarChart`
+//! states for its own model and chrome signals.
 
 use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};

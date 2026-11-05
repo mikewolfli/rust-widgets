@@ -16,6 +16,7 @@ use crate::widget::capability::coercion::{expect_bool, expect_usize};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::container_widgets::place::place_content_child;
 use crate::widget::metrics::{effective_font, estimate_text_width};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
@@ -201,7 +202,7 @@ impl TabView {
             let shown = index == self.selected_index;
             crate::set_widget_visible(id, shown);
             if shown {
-                crate::set_widget_geometry(id, band.x, band.y, band.width, band.height);
+                place_content_child(Some(id), band);
             }
         }
     }
@@ -370,7 +371,6 @@ impl TabView {
                 } else if self.selected_index > 0 {
                     self.set_current_index(self.selected_index - 1);
                 }
-                return;
             }
         }
     }
@@ -928,6 +928,11 @@ impl Widget for TabView {
     fn accepts_wheel(&self) -> bool {
         true
     }
+    /// Every child of a tab view is a page, and a page belongs to the content box below the
+    /// strip. Without this a page taller than the body painted over the tab titles.
+    fn children_clip(&self) -> Option<Rect> {
+        Some(self.content_rect())
+    }
     fn set_state_theme_hook(&mut self) {
         crate::style::reapply_active_theme_state(self);
     }
@@ -1299,14 +1304,7 @@ impl Draw for TabView {
         // box below; only the **selected** page is drawn, which is what keeps a tab view from
         // stacking every page on top of the others.
         if let Some(widget_id) = self.content_widget_id() {
-            #[cfg(not(alloc_frugal))]
-            crate::set_widget_geometry(
-                widget_id,
-                content_rect.x,
-                content_rect.y,
-                content_rect.width,
-                content_rect.height,
-            );
+            place_content_child(Some(widget_id), content_rect);
             if let Some(page) = self.tabs.get_mut(self.selected_index) {
                 if let Some(content) = page.content.as_deref_mut() {
                     let origin = content.geometry();
@@ -1369,9 +1367,7 @@ impl EventHandler for TabView {
                     self.strip_offset = (self.strip_offset - scrolled * 24).clamp(0, max_offset);
                     self.base.request_redraw();
                     // C2-D0: a strip at either end does not claim the wheel.
-                    if self.strip_offset != before {
-                        crate::widget::runtime::claim_wheel();
-                    }
+                    crate::widget::claim_wheel_if_moved(&before, &self.strip_offset);
                     return;
                 }
                 self.base.handle_event(event);
@@ -1992,5 +1988,28 @@ mod tests {
         let end = Point::new(start.x - (rect.width as i32 / 2), start.y);
         tv.handle_event(&Event::TouchEnd { pos: end, touch_id: 1 });
         assert_eq!(tv.selected_index(), Some(0));
+    }
+
+    /// A declared page is placed at the tab view's content rectangle, through the shared entry.
+    #[cfg(not(alloc_frugal))]
+    #[test]
+    fn a_declared_page_is_placed_at_the_content_rect() {
+        use crate::widget::base_widgets::label::Label;
+
+        let id = crate::widget::runtime::register(Box::new(Label::new(
+            "page".to_string(),
+            Rect::new(0, 0, 10, 10),
+        )))
+        .expect("the test thread has a widget runtime");
+        let mut view = TabView::new(Rect::new(10, 20, 300, 200));
+        view.add_tab_id("One".to_string(), Some(id), None::<String>);
+
+        let content = view.content_rect();
+        assert_eq!(
+            crate::widget_geometry(id),
+            Some((content.x, content.y, content.width, content.height))
+        );
+
+        crate::widget::runtime::unregister(id);
     }
 }

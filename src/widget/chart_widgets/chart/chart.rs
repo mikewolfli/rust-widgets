@@ -2,6 +2,14 @@
 // SPDX-License-Identifier: MIT
 
 //! Chart widget.
+//!
+//! # `enabled` and the chrome signals
+//!
+//! The `redraw` / `request_redraw` emits in the `attach_*` methods are **deliberately not gated**
+//! by `enabled`: a disabled chart is still painted (greyed), so a companion that changed the model
+//! still needs the surface repainted, and a repaint announces no user action. The user-action
+//! signals are gated in the mutators that emit them, so a host that disabled the control hears
+//! nothing it cannot reach. `BarChart` states the same division for its own signals.
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;

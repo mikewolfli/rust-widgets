@@ -252,6 +252,7 @@ fn all_kinds() -> Vec<WidgetKind> {
         FlowLayout,
         WrapLayout,
         Tag,
+        TagGroup,
         Gauge,
         Clock,
         Accordion,
@@ -502,6 +503,7 @@ fn exhaustive(kind: WidgetKind) -> &'static str {
         FlowLayout => "FlowLayout",
         WrapLayout => "WrapLayout",
         Tag => "Tag",
+        TagGroup => "TagGroup",
         Gauge => "Gauge",
         Clock => "Clock",
         Accordion => "Accordion",
@@ -593,16 +595,16 @@ mod tests {
     /// mutually visible.
     #[test]
     fn kind_list_is_exhaustive() {
-        // 228, the enum's own count (`tools/check_widget_kind_count.sh` prints it). It was 181 when
-        // added after it). The number is written down here on purpose: this is the list the
-        // reachability gate iterates, so a variant added to `WidgetKind` without a row here would
-        // silently escape the gate. `exhaustive` already makes that a compile error; this makes
-        // the count disagree too, so the two signals cannot be dismissed as "just a missing row".
+        // 231, the enum's own count (`tools/check_widget_kind_count.sh` prints it). The number is
+        // written down here on purpose: this is the list the reachability gate iterates, so a
+        // variant added to `WidgetKind` without a row here would silently escape the gate.
+        // `exhaustive` already makes that a compile error; this makes the count disagree too, so
+        // the two signals cannot be dismissed as "just a missing row".
         //
         // Kept in step with `tools/check_widget_kind_count.sh`, which is the *other* place the
         // number is asserted — it parses `src/widget/kind.rs` and prints the canonical figure.
         // When this assertion and that script disagree, the script is right: it reads the enum.
-        assert_eq!(super::all_kinds().len(), 230);
+        assert_eq!(super::all_kinds().len(), 231);
     }
 
     /// The `match` in `exhaustive` and the `vec!` in `all_kinds` must agree.

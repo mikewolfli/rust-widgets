@@ -873,13 +873,7 @@ impl EventHandler for GroupBox {
                 } else if self.checkable {
                     self.toggle();
                 }
-                return;
             }
-        }
-        // An unchecked checkable group is disabled content, and a collapsed group has no
-        // content band at all: the press must not reach a field the user could not see.
-        if (self.checkable && !self.checked) || self.collapsed {
-            return;
         }
     }
 }

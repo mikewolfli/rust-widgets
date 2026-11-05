@@ -14,6 +14,10 @@
 //!
 //! The short `crate::layout::AbsoluteLayout` path was removed in API2-01 for the same reason: a
 //! re-export implied the declarative path could reach it.
+// A complete solver algebra: these tests exercise a subset of it (anchor variants and setters
+// that no test constructs are still part of the solver's contract). The module is
+// `#[cfg(test)]`, so the unused remainder produces no shipped code.
+#![allow(dead_code)]
 use super::{ChildInfo, Layout, LayoutContext};
 use crate::compat::{Any, Box, HashMap, Vec};
 use crate::core::{ObjectId, Point, Rect, Size};
@@ -170,7 +174,7 @@ impl AbsolutePosition {
     /// negative resulting `x`/`y` values are returned as-is rather than clamped to zero.
     ///
     /// For "pin to the parent's edge", use [`Self::to_rect_in_parent`].
-    pub fn to_rect(&self, _parent_size: Size, child_size: Size) -> Rect {
+    pub fn to_rect(self, _parent_size: Size, child_size: Size) -> Rect {
         let width = self.width.unwrap_or(child_size.width);
         let height = self.height.unwrap_or(child_size.height);
         let (x, y) = match self.anchor {
@@ -243,7 +247,7 @@ impl AbsolutePosition {
     /// it is a separate method rather than a change to `to_rect` so that the existing
     /// self-relative behaviour — which snapshots and callers already depend on — is
     /// untouched.
-    pub fn to_rect_in_parent(&self, parent_size: Size, child_size: Size) -> Rect {
+    pub fn to_rect_in_parent(self, parent_size: Size, child_size: Size) -> Rect {
         let (ml, mt, mr, mb) = self.margins;
         let pw = (parent_size.width as i32 - ml - mr).max(0);
         let ph = (parent_size.height as i32 - mt - mb).max(0);
@@ -449,8 +453,6 @@ impl Anchor {
     }
 }
 
-/// Alias for Anchor to match test expectations
-pub use Anchor as AbsoluteAnchor;
 /// A size constraint with optional min/max bounds for each axis.
 #[derive(Debug, Clone, Copy)]
 pub struct Constraint {

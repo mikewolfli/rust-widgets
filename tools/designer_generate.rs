@@ -39,7 +39,7 @@
 //! [`regenerate_into`]: rust_widgets::designer::artifact::regenerate_into
 
 use rust_widgets::designer::artifact::{
-    is_generated, plan_artifacts, regenerate_into, ArtifactOutcome, GENERATED_MARKER,
+    is_generated, plan_artifacts, regenerate_into, ArtifactOutcome,
 };
 use std::process::ExitCode;
 

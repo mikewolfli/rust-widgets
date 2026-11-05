@@ -1299,6 +1299,17 @@ macro_rules! default_modern_widgets {
         ) -> ObjectId {
             0
         }
+        /// Create tag group control.
+        fn create_tag_group(
+            &self,
+            _parent: ObjectId,
+            _x: i32,
+            _y: i32,
+            _width: u32,
+            _height: u32,
+        ) -> ObjectId {
+            0
+        }
         /// Create wrap layout control.
         fn create_wrap_layout(
             &self,

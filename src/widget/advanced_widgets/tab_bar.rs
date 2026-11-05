@@ -1990,9 +1990,7 @@ impl EventHandler for TabBar {
                     let before = self.scroll_offset;
                     self.scroll_by(scroll.lines_y);
                     // C2-D0: a run already at its end must let an outer container scroll.
-                    if self.scroll_offset != before {
-                        crate::widget::runtime::claim_wheel();
-                    }
+                    crate::widget::claim_wheel_if_moved(&before, &self.scroll_offset);
                 }
             }
             // The middle button closes the tab under the pointer, the browser convention. It

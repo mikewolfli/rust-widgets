@@ -22,7 +22,7 @@ graph TB
     end
 
     subgraph "Layer 2: Widget Model"
-        WIDGET["widget::Widget<br/>widget::BaseWidget<br/>widget::Draw<br/>widget::WidgetKind<br/>widget::SimpleRegistry"]
+        WIDGET["widget::Widget<br/>widget::BaseWidget<br/>widget::Draw<br/>widget::WidgetKind<br/>widget::runtime"]
     end
 
     subgraph "Layer 3: Core Systems"
@@ -70,7 +70,7 @@ graph TB
 | Layer | Responsibility | Key Modules |
 |---|---|---|
 | **App Framework** | Application lifecycle, widget handles, event loop orchestration | `app::App`, `AppConfig`, `WindowHandle`, `AppLifecycle` |
-| **Widget Model** | Widget trait contract, base widget state, signal slots, rendering dispatch, container composition | `widget::Widget`, `BaseWidget`, `Draw`, `WidgetKind`, `SimpleRegistry` |
+| **Widget Model** | Widget trait contract, base widget state, signal slots, rendering dispatch, container composition | `widget::Widget`, `BaseWidget`, `Draw`, `WidgetKind`, `widget::runtime` |
 | **Core Systems** | Layout, rendering, events, signals, styling, data binding, actions, undo/redo | `layout`, `render`, `event`, `signal`, `style`, `data_binding`, `action`, `undo` |
 | **Platform Abstraction** | Window/surface creation, event translation, clipboard, IME, accessibility, native menus | `control_backend::ControlBackend`, `platform` |
 | **OS / GPU** | Raw platform APIs, GPU drivers | OS SDKs + `wgpu` |
@@ -412,7 +412,7 @@ pub trait EventHandler {
 `BaseWidget` provides a default implementation that maps platform events to
 signal emissions (click → `clicked.emit()`, mouse move → `hover.emit(point)`).
 
-### `WidgetKind` Enum — 230 Variants
+### `WidgetKind` Enum — 231 Variants
 
 The `WidgetKind` enum categorizes every widget type. Variants are
 feature-gated: 28 are available under all profiles, and 151 are unlocked with
@@ -452,25 +452,41 @@ pub enum WidgetKind {
 }
 ```
 
-### Container Composition via `SimpleRegistry`
+### Container Composition via the Widget Tree
 
-Containers like `Frame`, `TabWidget`, and `ScrollArea` use `SimpleRegistry` to
-forward rendering and events to child widgets identified by `ObjectId`:
+Containers compose children by **mounting** them and recording the id in their own
+child list; the runtime owns the widget and the tree painter owns the pixels:
 
 ```rust
-pub struct SimpleRegistry {
-    entries: HashMap<ObjectId, (DrawClosure, EventClosure)>,
-}
+// A container records the child id …
+tab_widget.add_tab("Page".to_string(), Some(child_id));
+scroll_area.set_widget(Some(content_id));
 
-impl SimpleRegistry {
-    pub fn register<D, E>(&mut self, id: ObjectId, draw: D, event: E);
-    pub fn draw_widget(&mut self, id: ObjectId, context: &mut RenderContext) -> bool;
-    pub fn forward_event(&mut self, id: ObjectId, event: &Event) -> bool;
-}
+// … the child is owned by the runtime registry …
+let id = rust_widgets::widget::runtime::register(Box::new(Label::new(
+    "Content".to_string(),
+    Rect::new(0, 0, 120, 24),
+)))?;
+
+// … and the container writes the child's rectangle through the public entry.
+rust_widgets::set_widget_geometry(id, x, y, width, height);
 ```
 
-This bridges the gap between `ObjectId`-based child tracking (in `BaseWidget`)
-and the trait-object-based rendering/event dispatch system.
+Three mechanisms then operate on the same tree, with no per-container forwarding
+table:
+
+* **Painting** — `widget::runtime`'s tree painter draws every visible mounted child
+  at its own geometry, and applies the container's `Widget::children_clip` so content
+  cannot paint over chrome such as a tab strip or a scroll-bar band.
+* **Events** — `widget::runtime::dispatch_event` delivers to the hit-tested id and
+  walks the parent chain, so a control that declares `accepts_event == false` hands
+  the event to its container instead of swallowing it.
+* **Geometry** — the container's content model is the single source of the child's
+  rectangle, written once per layout change through `set_widget_geometry`.
+
+`widget::SimpleRegistry` was removed in 4.1.0. It was a closure-forwarding table that let a
+container paint and dispatch to a child by id — a second implementation of exactly the three
+jobs above, with no production caller; use mounting and the tree as shown here.
 
 ---
 
@@ -892,7 +908,7 @@ pub trait ControlBackend {
 
 The dispatcher in `control_backend::dispatcher` routes widget creation calls
 to the appropriate backend based on compile-time feature flags. The routing
-system in `control_backend::routing` covers all 230 widget kinds. Every one is
+system in `control_backend::routing` covers all 231 widget kinds. Every one is
 custom-painted, so there is no second (platform-held) mechanism left to choose
 between.
 

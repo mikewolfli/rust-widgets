@@ -15,7 +15,7 @@ services at all.
 
 ## Highlights
 
-- **230 widget kinds / 240 core controls** — inputs, tables, trees, docks, dialogs, media, charts,
+- **231 widget kinds / 240 core controls** — inputs, tables, trees, docks, dialogs, media, charts,
   editors and more, with one implementation shared by every platform. The optional suites add
   **39 more controls in 7 groups**, installed into the same `WidgetFactory`.
 - **Cascading menus and real session state** — dropdowns, menu buttons and menus open up to four

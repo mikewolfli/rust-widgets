@@ -21,6 +21,7 @@ use crate::{impl_widget_property_hooks, property_names_of};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
+use super::place::place_content_child;
 use super::theme_snapshot::ThemeSnapshot;
 /// MDI area widget.
 pub struct MdiArea {
@@ -848,7 +849,7 @@ impl MdiArea {
             #[cfg(not(alloc_frugal))]
             match content {
                 Some(rect) => {
-                    crate::set_widget_geometry(widget, rect.x, rect.y, rect.width, rect.height);
+                    place_content_child(Some(widget), rect);
                     crate::set_widget_visible(widget, true);
                 }
                 None => crate::set_widget_visible(widget, false),
@@ -1804,9 +1805,7 @@ impl EventHandler for MdiArea {
                     -delta.y.saturating_mul(WHEEL_PAN_STEP),
                 );
                 // C2-D0: an area already at its pan limit lets an outer container take the notch.
-                if self.scroll_offset != before {
-                    crate::widget::runtime::claim_wheel();
-                }
+                crate::widget::claim_wheel_if_moved(&before, &self.scroll_offset);
             }
         }
     }

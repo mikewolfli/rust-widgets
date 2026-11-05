@@ -1354,9 +1354,7 @@ impl EventHandler for NavigationDrawer {
                     let before = self.list_scroll;
                     self.scroll_list_by(-step * 24);
                     // C2-D0: a list at either end lets an outer container scroll.
-                    if self.list_scroll != before {
-                        crate::widget::runtime::claim_wheel();
-                    }
+                    crate::widget::claim_wheel_if_moved(&before, &self.list_scroll);
                     return;
                 }
                 self.base.handle_event(event);

@@ -426,7 +426,7 @@ impl EventHandler for MyWidget {
 
 ---
 
-## `WidgetKind` Enum — 230 Variants
+## `WidgetKind` Enum — 231 Variants
 
 The `WidgetKind` enum categorizes every widget type. It is feature-gated:
 28 variants are always available; 151 require non-`mini` features.
@@ -711,44 +711,59 @@ border, and delegate content area — all through its `Draw` implementation.
 
 ### Container Widgets
 
-Containers use `SimpleRegistry` to forward rendering and events to children:
+A container does not own a drawing/event table for its children. It owns a **child
+list** (ids), places each child through the public geometry entry, and the runtime
+draws and dispatches to the mounted controls:
 
 ```rust
-use rust_widgets::widget::{SimpleRegistry, Widget, BaseWidget, Draw, WidgetKind};
-use rust_widgets::event::{Event, EventHandler};
-use rust_widgets::render::RenderContext;
+use rust_widgets::widget::{BaseWidget, Widget, WidgetKind};
 use rust_widgets::core::{ObjectId, Rect};
 
 struct FrameWidget {
     base: BaseWidget,
-    registry: SimpleRegistry,
+    child: Option<ObjectId>,
 }
 
 impl FrameWidget {
     fn new(title: &str, geometry: Rect) -> Self {
         Self {
             base: BaseWidget::new(WidgetKind::GroupBox, geometry, "Frame"),
-            registry: SimpleRegistry::new(),
+            child: None,
         }
     }
 
-    fn add_child_widget<W: Widget + Draw + EventHandler + 'static>(
-        &mut self,
-        child: &mut W,
-    ) {
-        let id = child.id();
-        self.base.add_child(id);
-
-        // Register the child's draw + event handlers
-        // (In practice, this uses closures that borrow the child)
-        self.registry.register(
-            id,
-            |ctx| { /* forward to child.draw(ctx) */ },
-            |evt| { /* forward to child.handle_event(evt) */ },
-        );
+    /// Record the child and place it inside the frame's content box.
+    fn set_child(&mut self, child: Option<ObjectId>) {
+        if let Some(previous) = self.child.take() {
+            self.base.remove_child_linked(previous);
+            rust_widgets::set_widget_visible(previous, false);
+        }
+        self.child = child;
+        if let Some(id) = child {
+            self.base.add_child_linked(id);
+            rust_widgets::set_widget_visible(id, true);
+            // Inset by the frame's chrome; this example uses the full rectangle.
+            let content = self.base.geometry();
+            rust_widgets::set_widget_geometry(id, content.x, content.y, content.width, content.height);
+        }
     }
 }
 ```
+
+Three container obligations keep the tree path correct:
+
+* **Placement** — write the content rectangle once per layout change through
+  `set_widget_geometry`; a container that only records ids leaves its children at
+  their construction rectangles.
+* **Clipping** — implement `Widget::children_clip` returning the content box, so the
+  tree painter cannot let a child paint over chrome (tab strip, scroll bars, title).
+* **Interest** — implement `Widget::accepts_wheel` / `observes_child_press` when the
+  container is the meaningful target of an event that lands on its content child; the
+  runtime walks the parent chain instead of dropping the event.
+
+`SimpleRegistry`, the closure-forwarding table earlier releases used for this job,
+was removed in 4.1.0: it duplicated painting, dispatch and geometry on a second path
+with no production caller.
 
 ---
 

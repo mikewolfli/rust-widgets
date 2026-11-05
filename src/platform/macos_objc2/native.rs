@@ -27,17 +27,23 @@ use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2::sel;
 use objc2::{define_class, msg_send, AnyThread, DefinedClass, MainThreadMarker, MainThreadOnly};
+// Named only by the accessibility bridge below, which is `widgets_unstripped` code. The
+// `NSAccessibilityRole` *type* stays in the unconditional list: the view's `accessibilityRole`
+// method declares it in its signature in every profile and answers `None` where the bridge is gone.
+#[cfg(widgets_unstripped)]
 use objc2_app_kit::{
     NSAccessibilityButtonRole, NSAccessibilityCheckBoxRole, NSAccessibilityComboBoxRole,
     NSAccessibilityGroupRole, NSAccessibilityImageRole, NSAccessibilityIncrementorRole,
     NSAccessibilityLinkRole, NSAccessibilityListRole, NSAccessibilityMenuItemRole,
     NSAccessibilityMenuRole, NSAccessibilityOutlineRole, NSAccessibilityProgressIndicatorRole,
-    NSAccessibilityRadioButtonRole, NSAccessibilityRole, NSAccessibilitySliderRole,
-    NSAccessibilityStaticTextRole, NSAccessibilityTabGroupRole, NSAccessibilityTableRole,
-    NSAccessibilityTextFieldRole, NSAccessibilityUnknownRole, NSAccessibilityWindowRole,
-    NSAppearance, NSAppearanceCustomization, NSAppearanceNameDarkAqua, NSApplication,
-    NSApplicationActivationPolicy, NSBackingStoreType, NSColor, NSColorSpace, NSCursor,
-    NSEventMask, NSScreen, NSTrackingArea, NSTrackingAreaOptions, NSView, NSWindow,
+    NSAccessibilityRadioButtonRole, NSAccessibilitySliderRole, NSAccessibilityStaticTextRole,
+    NSAccessibilityTabGroupRole, NSAccessibilityTableRole, NSAccessibilityTextFieldRole,
+    NSAccessibilityUnknownRole, NSAccessibilityWindowRole,
+};
+use objc2_app_kit::{
+    NSAccessibilityRole, NSAppearance, NSAppearanceCustomization, NSAppearanceNameDarkAqua,
+    NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSColor, NSColorSpace,
+    NSCursor, NSEventMask, NSScreen, NSTrackingArea, NSTrackingAreaOptions, NSView, NSWindow,
     NSWindowSharingType, NSWindowStyleMask, NSWorkspace,
 };
 // Named only by the input handlers and the blit, both of which are `widgets_unstripped` code.
@@ -975,6 +981,10 @@ pub(crate) struct CanvasIvars {
     /// light two-finger swipe by an order of magnitude. The accumulator keeps the remainder
     /// across events, so the emitted notches stay proportional to the finger travel. Both axes
     /// are carried independently so a diagonal gesture does not lose one of them.
+    ///
+    /// Read only by `forward_wheel`, which a stripped profile does not compile — same allowance
+    /// and same reason as `is_window` above.
+    #[cfg_attr(not(widgets_unstripped), allow(dead_code))]
     scroll_accumulator: std::cell::RefCell<crate::event::WheelNotchAccumulator>,
 }
 
@@ -1501,6 +1511,10 @@ impl RustWidgetsObjc2CanvasView {
     ///
     /// `dirty_rect` is AppKit's damage for this pass; it becomes the row band the blit converts
     /// and clips to. `None` from `dirty_row_range` means the whole frame is presented.
+    ///
+    /// The parameter is consumed only inside the `widgets_unstripped` block below, so a stripped
+    /// profile would report it unused without this allowance.
+    #[cfg_attr(not(widgets_unstripped), allow(unused_variables))]
     fn blit_frame(&self, dirty_rect: NSRect) {
         let widget_id = self.ivars().widget_id.get();
         if widget_id == 0 {

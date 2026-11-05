@@ -68,9 +68,9 @@
 | `capability.rs` | WidgetCapability, WidgetFactory, generic property read/write |
 | `draw.rs` | Draw trait (custom rendering) |
 | `image.rs` | Image struct + ImageFormat |
-| `kind.rs` | WidgetKind enum (230 variants) |
+| `kind.rs` | WidgetKind enum (231 variants) |
 | `mod.rs` | Re-exports + type aliases |
-| `registry.rs` | SimpleRegistry for child forwarding |
+| `runtime/` | Mounted-widget registry, tree painter, dispatch, focus, hit test |
 | `widget_trait.rs` | Widget trait (geometry, style, signals, CSS, a11y) |
 | `window.rs` | Window widget with title bar rendering |
 | `svg.rs` | SVG rendering backend for widgets |
@@ -251,7 +251,7 @@ EventHandler (handle_event)
             └── accessible_name / accessible_role
 
 Draw (draw, uses_custom_drawing)
-    └── All 230 widget kinds implement Draw
+    └── All 231 widget kinds implement Draw
 
 Platform (Send + Sync)
     ├── create_window/create_button/create_checkbox/...
@@ -313,7 +313,7 @@ Axis 3: Capabilities (arbitrary composition)
 
 ---
 
-## 6. WidgetKind→Module Mapping (230 variants)
+## 6. WidgetKind→Module Mapping (231 variants)
 
 | WidgetKind | Module Path | Type |
 |-----------|-------------|------|
@@ -378,7 +378,7 @@ Rust API → extern "C" (C ABI)
 | Category | Count |
 |----------|-------|
 | Rust source files | 350+ |
-| Widget kinds (`WidgetKind` variants) | 230 |
+| Widget kinds (`WidgetKind` variants) | 231 |
 | Layout managers | 14 |
 | Platform backends | 12 |
 | IME implementations | 4 |

@@ -15,12 +15,17 @@ use crate::widget::save_state::SaveState;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
+use super::place::place_content_child;
 use super::theme_snapshot::ThemeSnapshot;
+use crate::layout::stack::StackLayout;
+
 /// Stacked widget.
 pub struct StackedWidget {
     base: BaseWidget,
-    widgets: Vec<ObjectId>,
-    current_index: usize,
+    /// The page model and the geometry authority are the same object: the stack decides
+    /// which page is visible, and `update_slide` produces that page's rectangle (including
+    /// the slide offsets) so the placement cannot disagree with the selection.
+    layout: StackLayout,
     /// Emitted with the new visible index when the selected child changes.
     /// Not emitted for inactive children, and not emitted when the same index is
     /// re-applied; it is not emitted when the widget list is mutated.
@@ -37,8 +42,7 @@ impl StackedWidget {
     pub fn new(geometry: Rect) -> Self {
         Self {
             base: BaseWidget::new(WidgetKind::StackedWidget, geometry, "StackedWidget"),
-            widgets: Vec::new(),
-            current_index: 0,
+            layout: StackLayout::new(),
             current_changed: Signal1::new(),
             transition_ms: 0,
             transition: 1.0,
@@ -56,8 +60,8 @@ impl StackedWidget {
             return index;
         }
         self.base.add_child_linked(widget);
-        self.widgets.push(widget);
-        let index = self.widgets.len().saturating_sub(1);
+        self.layout.insert_at(self.layout.item_count(), widget);
+        let index = self.layout.item_count().saturating_sub(1);
         self.sync_pages();
         index
     }
@@ -68,18 +72,15 @@ impl StackedWidget {
     /// [`Self::add_widget`] and the rest of the container family (`tab_bar`,
     /// `pie_menu`, `kanban_board` all clamp).
     pub fn insert_widget(&mut self, index: usize, widget: ObjectId) {
-        let was_empty = self.widgets.is_empty();
-        let index = index.min(self.widgets.len());
+        let index = index.min(self.layout.item_count());
         self.base.add_child_linked(widget);
-        self.widgets.insert(index, widget);
-        if !was_empty && self.current_index >= index {
-            self.current_index += 1;
-        }
+        // The stack's own insert keeps the selected page on the same widget.
+        self.layout.insert_at(index, widget);
         self.sync_pages();
     }
     /// Removes a widget.
     pub fn remove_widget(&mut self, widget: ObjectId) {
-        if let Some(index) = self.widgets.iter().position(|&id| id == widget) {
+        if let Some(index) = self.index_of(widget) {
             self.remove_widget_at(index);
         }
     }
@@ -92,48 +93,44 @@ impl StackedWidget {
     /// repaired, and the page model is re-applied. That method now delegates here, so the
     /// two addresses cannot drift.
     pub fn remove_widget_at(&mut self, index: usize) -> bool {
-        if index >= self.widgets.len() {
+        // The stack repairs the selection: removing a page before it keeps the same page
+        // visible, and removing the selected page selects the one that took its place.
+        let Some(widget) = self.layout.remove_at(index) else {
             return false;
-        }
-        let widget = self.widgets.remove(index);
+        };
         self.base.remove_child_linked(widget);
         // A removed page is no longer part of the stack; clear its visibility too, so a host
         // that renders by id cannot paint it over the selected one.
         crate::set_widget_visible(widget, false);
-        if self.current_index >= index && self.current_index > 0 {
-            self.current_index -= 1;
-        }
-        if self.widgets.is_empty() {
-            self.current_index = 0;
-        }
         self.sync_pages();
         true
     }
     /// Returns number of widgets.
     pub fn count(&self) -> usize {
-        self.widgets.len()
+        self.layout.item_count()
     }
 
     /// Returns the number of widgets (alias for count).
     pub fn widget_count(&self) -> usize {
-        self.widgets.len()
+        self.layout.item_count()
     }
 
     /// Sets the current widget by its ObjectId.
     pub fn set_current_widget(&mut self, id: ObjectId) {
-        if let Some(index) = self.widgets.iter().position(|&wid| wid == id) {
+        if let Some(index) = self.index_of(id) {
             self.set_current_index(index);
         }
     }
     /// Returns the selected child index, or `None` when the stack is empty.
     pub fn selected_index(&self) -> Option<usize> {
-        self.widgets.get(self.current_index).map(|_| self.current_index)
+        let index = self.layout.current_index();
+        (index < self.layout.item_count()).then_some(index)
     }
 
     /// Returns current widget index.
     #[deprecated(note = "use `selected_index` (Option) — WDGT-13")]
     pub fn current_index(&self) -> usize {
-        self.current_index
+        self.layout.current_index()
     }
     /// Sets current widget index.
     ///
@@ -147,25 +144,26 @@ impl StackedWidget {
     /// does not fire; callers that need to know why can ask
     /// [`Self::current_changed_suppression_reason`].
     pub fn set_current_index(&mut self, index: usize) {
-        if index < self.widgets.len() && self.current_index != index {
-            let previous = self.current_index;
-            self.current_index = index;
-            if self.transition_ms > 0 && previous < self.widgets.len() {
-                self.previous_page = Some(previous);
-                self.transition = 0.0;
-            } else {
-                self.previous_page = None;
-                self.transition = 1.0;
-            }
-            self.sync_pages();
-            self.base.request_redraw();
-            if !self.base.is_enabled() {
-                // See `current_changed_suppression_reason`: a disabled container must not
-                // announce a page the user cannot reach.
-                return;
-            }
-            self.current_changed.emit(index);
+        let previous = self.layout.current_index();
+        if index >= self.layout.item_count() || previous == index {
+            return;
         }
+        self.layout.try_set_current_index(index);
+        if self.transition_ms > 0 {
+            self.previous_page = Some(previous);
+            self.transition = 0.0;
+        } else {
+            self.previous_page = None;
+            self.transition = 1.0;
+        }
+        self.sync_pages();
+        self.base.request_redraw();
+        if !self.base.is_enabled() {
+            // See `current_changed_suppression_reason`: a disabled container must not
+            // announce a page the user cannot reach.
+            return;
+        }
+        self.current_changed.emit(index);
     }
 
     /// Serialises the selected page for session restore (RW-64).
@@ -176,7 +174,7 @@ impl StackedWidget {
     pub fn save_state(&self) -> Vec<u8> {
         let mut state = Vec::with_capacity(5);
         state.push(STACKED_WIDGET_STATE_VERSION);
-        state.extend_from_slice(&(self.current_index as u32).to_le_bytes());
+        state.extend_from_slice(&(self.layout.current_index() as u32).to_le_bytes());
         state
     }
 
@@ -187,14 +185,14 @@ impl StackedWidget {
         if state.len() != 5 || state[0] != STACKED_WIDGET_STATE_VERSION {
             return false;
         }
-        if self.widgets.is_empty() {
+        if self.layout.item_count() == 0 {
             return false;
         }
         let index = u32::from_le_bytes([state[1], state[2], state[3], state[4]]) as usize;
-        let index = index.min(self.widgets.len() - 1);
+        let index = index.min(self.layout.item_count() - 1);
         // A restore is a state assignment, not a user navigation, so it lands on the page
         // directly rather than starting a slide from whatever was selected before.
-        self.current_index = index;
+        self.layout.set_current_index(index);
         self.previous_page = None;
         self.transition = 1.0;
         self.sync_pages();
@@ -217,9 +215,12 @@ impl StackedWidget {
     /// The write goes through the public visibility entry (the same one `TabWidget`
     /// uses), so the flag the painter reads and the one a host reads cannot disagree.
     fn sync_pages(&self) {
-        for (index, widget_id) in self.widgets.iter().enumerate() {
-            let shown = index == self.current_index || self.previous_page == Some(index);
-            crate::set_widget_visible(*widget_id, shown);
+        for index in 0..self.layout.item_count() {
+            let Some(widget_id) = self.layout.item_at(index) else {
+                continue;
+            };
+            let shown = index == self.layout.current_index() || self.previous_page == Some(index);
+            crate::set_widget_visible(widget_id, shown);
         }
         self.place_current_page();
     }
@@ -227,36 +228,18 @@ impl StackedWidget {
     /// Places the current page in the stack's own rectangle.
     ///
     /// A stacked widget has no chrome of its own — the whole control box is the page —
-    /// so "placing" is moving the selected child onto the control's geometry. Without it
-    /// a page created at `0x0` stayed at `0x0` and painted nothing.
+    /// so "placing" is moving the selected child onto the control's geometry. The
+    /// rectangle (and the slide offsets, when a transition is running) comes from
+    /// [`StackLayout::update_slide`], which is also the model that owns the page list, so
+    /// the selection and the drawn rectangle cannot drift apart.
     fn place_current_page(&self) {
         let rect = self.geometry();
-        if let Some(widget_id) = self.current_widget() {
-            let offset = if self.previous_page.is_some() {
-                ((1.0 - self.transition) * rect.width as f32).round() as i32
-            } else {
-                0
-            };
-            crate::set_widget_geometry(
-                widget_id,
-                rect.x.saturating_add(offset),
-                rect.y,
-                rect.width,
-                rect.height,
-            );
-        }
-        if let Some(previous) = self.previous_page {
-            if let Some(widget_id) = self.widgets.get(previous) {
-                let offset = (-(self.transition) * rect.width as f32).round() as i32;
-                crate::set_widget_geometry(
-                    *widget_id,
-                    rect.x.saturating_add(offset),
-                    rect.y,
-                    rect.width,
-                    rect.height,
-                );
-            }
-        }
+        self.layout.update_slide(
+            rect,
+            self.previous_page,
+            self.transition,
+            &mut |widget_id, child_rect| place_content_child(Some(widget_id), child_rect),
+        );
     }
 
     /// Sets the page-slide duration. `0` (the default) snaps, as before.
@@ -296,7 +279,7 @@ impl StackedWidget {
                  page is not reachable by the user",
             );
         }
-        if index >= self.widgets.len() {
+        if index >= self.layout.item_count() {
             return Some("current_changed not emitted: the index is out of range");
         }
         None
@@ -304,15 +287,15 @@ impl StackedWidget {
 
     /// Returns current widget.
     pub fn current_widget(&self) -> Option<ObjectId> {
-        self.widgets.get(self.current_index).copied()
+        self.layout.item_at(self.layout.current_index())
     }
     /// Returns widget at index.
     pub fn widget(&self, index: usize) -> Option<ObjectId> {
-        self.widgets.get(index).copied()
+        self.layout.item_at(index)
     }
     /// Returns index of widget.
     pub fn index_of(&self, widget: ObjectId) -> Option<usize> {
-        self.widgets.iter().position(|&id| id == widget)
+        (0..self.layout.item_count()).find(|&index| self.layout.item_at(index) == Some(widget))
     }
 }
 // Implement Widget trait
@@ -883,6 +866,29 @@ mod tests {
 
         sw.set_size(Size::new(300, 200));
         assert_eq!(sw.geometry(), Rect::new(20, 30, 300, 200));
+    }
+
+    /// The page rectangle is produced by `StackLayout::update_slide`, so the mounted child's
+    /// runtime geometry equals the stack's own box and follows a resize. This is the behaviour
+    /// the layout authority replaced the hand-written offsets with.
+    #[cfg(not(alloc_frugal))]
+    #[test]
+    fn a_page_is_placed_at_the_stack_box() {
+        use crate::widget::base_widgets::label::Label;
+
+        let id = crate::widget::runtime::register(Box::new(Label::new(
+            "page".to_string(),
+            Rect::new(0, 0, 10, 10),
+        )))
+        .expect("the test thread has a widget runtime");
+        let mut sw = StackedWidget::new(Rect::new(30, 40, 200, 120));
+        sw.add_widget(id);
+        assert_eq!(crate::widget_geometry(id), Some((30, 40, 200, 120)));
+
+        sw.set_geometry(Rect::new(10, 20, 320, 240));
+        assert_eq!(crate::widget_geometry(id), Some((10, 20, 320, 240)));
+
+        crate::widget::runtime::unregister(id);
     }
 
     // ── 10. Visibility ────────────────────────────────────────────────────

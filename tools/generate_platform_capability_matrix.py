@@ -141,6 +141,7 @@ WIDGETS: Dict[str, Tuple[str, List[str]]] = {
     "FlowLayout": ("FlowLayout", CELLS),
     "WrapLayout": ("WrapLayout", CELLS),
     "Tag": ("Tag", CELLS),
+    "TagGroup": ("TagGroup", CELLS),
     "Gauge": ("Gauge", CELLS),
     "Clock": ("Clock", CELLS),
     "Accordion": ("Accordion", CELLS),
