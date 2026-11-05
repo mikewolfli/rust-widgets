@@ -79,6 +79,13 @@ pub struct ToolBox {
     mode: ToolBoxMode,
     /// The item under the pointer, for the tooltip query (C-28).
     hovered_item: Option<usize>,
+    /// Per-frame scratch for the page rectangles.
+    ///
+    /// `draw` asks `page_rects` for the open pages every frame, and the shared derivation built two
+    /// `Vec`s per call (the expanded indices, then their rectangles). The buffer is owned and
+    /// cleared in place; the per-frame draw and placement paths both fill it through
+    /// `page_rects_into`, and only the tests keep the allocating `page_rects` shape.
+    page_rects_scratch: crate::compat::RefCell<Vec<(usize, Rect)>>,
 }
 /// How a tool box treats its items' open state.
 ///
@@ -258,6 +265,7 @@ impl ToolBox {
             item_expanded_changed: Signal1::new(),
             mode: ToolBoxMode::Exclusive,
             hovered_item: None,
+            page_rects_scratch: crate::compat::RefCell::new(Vec::new()),
         }
     }
     /// Adds an item.
@@ -523,53 +531,55 @@ impl ToolBox {
     /// One open page fills the box, which is the only state the single-page modes produce. In
     /// [`ToolBoxMode::NonExclusive`] several pages are open at once and they tile the box along its
     /// long axis, each taking an equal share — the same "share the band" rule the strip uses.
+    /// [`Self::page_rects_into`] into a freshly allocated buffer.
+    ///
+    /// The per-frame paths fill the control's own buffer instead, so this shape exists only for
+    /// the unit tests that assert on the derivation's result as a whole.
+    #[cfg(test)]
     fn page_rects(&self, content: Rect) -> Vec<(usize, Rect)> {
+        let mut rects = Vec::new();
+        self.page_rects_into(content, &mut rects);
+        rects
+    }
+
+    /// [`Self::page_rects`] into a caller-owned buffer, for the per-frame draw path.
+    fn page_rects_into(&self, content: Rect, rects: &mut Vec<(usize, Rect)>) {
+        rects.clear();
         if self.mode == ToolBoxMode::Popup {
             // C-29: the open page is presented in a floating layer beside its trigger, not in the
             // content band. `popup_rect` is the single derivation the painter, the hit test and
             // the child placement share.
-            return match self.popup_rect(content) {
-                Some(rect) => self
-                    .items
-                    .iter()
-                    .position(|item| item.expanded)
-                    .map(|index| crate::compat::vec![(index, rect)])
-                    .unwrap_or_default(),
-                None => Vec::new(),
-            };
+            if let Some(rect) = self.popup_rect(content) {
+                if let Some(index) = self.items.iter().position(|item| item.expanded) {
+                    rects.push((index, rect));
+                }
+            }
+            return;
         }
-        let open: Vec<usize> = self
-            .items
-            .iter()
-            .enumerate()
-            .filter(|(_, item)| item.expanded)
-            .map(|(index, _)| index)
-            .collect();
-        if open.is_empty() {
-            return Vec::new();
+        let count = self.items.iter().filter(|item| item.expanded).count() as u32;
+        if count == 0 {
+            return;
         }
-        let count = open.len() as u32;
         let share = content.height / count;
-        open.into_iter()
-            .enumerate()
-            .map(|(slot, index)| {
-                let offset = slot as u32 * share;
-                let height = if slot as u32 + 1 == count {
-                    content.height.saturating_sub(offset)
-                } else {
-                    share
-                };
-                (
-                    index,
-                    Rect::new(
-                        content.x,
-                        content.y.saturating_add_unsigned(offset),
-                        content.width,
-                        height,
-                    ),
-                )
-            })
-            .collect()
+        let mut slot = 0u32;
+        for (index, item) in self.items.iter().enumerate() {
+            if !item.expanded {
+                continue;
+            }
+            let offset = slot * share;
+            let height =
+                if slot + 1 == count { content.height.saturating_sub(offset) } else { share };
+            rects.push((
+                index,
+                Rect::new(
+                    content.x,
+                    content.y.saturating_add_unsigned(offset),
+                    content.width,
+                    height,
+                ),
+            ));
+            slot += 1;
+        }
     }
 
     /// The floating rectangle a [`ToolBoxMode::Popup`] page occupies (C-29).
@@ -626,9 +636,12 @@ impl ToolBox {
     fn place_pages(&self) {
         #[cfg(not(alloc_frugal))]
         {
-            // One content derivation for every page in this pass (C-P10).
+            // One content derivation for every page in this pass (C-P10), into the control's own
+            // buffer: `draw` also calls this derivation every frame.
             let content = self.content_rect();
-            for (index, rect) in self.page_rects(content) {
+            let mut rects = self.page_rects_scratch.borrow_mut();
+            self.page_rects_into(content, &mut rects);
+            for (index, rect) in rects.iter().copied() {
                 place_content_child(self.items[index].widget, rect);
             }
         }
@@ -1346,10 +1359,14 @@ impl Draw for ToolBox {
         //
         // C-29: `Popup` mode draws its page in the floating rect and adds the layer's own frame,
         // so the presentation actually reads as a popup rather than as the ordinary page band.
-        for (index, page_rect) in self.page_rects(content_rect) {
-            if self.items[index].widget.is_some() && self.mode == ToolBoxMode::Popup {
-                context.fill_rect(page_rect, page);
-                context.draw_rect(page_rect, style.border_color.unwrap_or(selected_border));
+        {
+            let mut pages = self.page_rects_scratch.borrow_mut();
+            self.page_rects_into(content_rect, &mut pages);
+            for (index, page_rect) in pages.iter().copied() {
+                if self.items[index].widget.is_some() && self.mode == ToolBoxMode::Popup {
+                    context.fill_rect(page_rect, page);
+                    context.draw_rect(page_rect, style.border_color.unwrap_or(selected_border));
+                }
             }
         }
         // Draw items

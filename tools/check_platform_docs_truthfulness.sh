@@ -8,6 +8,14 @@
 # promise. This gate fails when one of the named APIs appears in a document or method doc but
 # neither the source calls it nor the same text records it as unsupported/bundle-level.
 #
+# # Why the source pattern is a call shape, not the API name
+#
+# The first version compared the claim with the same bare token, so the claiming doc comment
+# itself satisfied "the source calls it" — every claim passed without an implementation. The
+# patterns below are call shapes (`setContentMinSize_:`, `set_icon_from_file(`, `.maximize()`),
+# and the boundary check requires an explicit unsupported/bundle note. This is the textual-gate
+# anchoring rule #106 asks for.
+#
 # The check is intentionally narrow: it names the APIs that the BLUE28 audit found over-claimed,
 # so adding a new claim is a deliberate edit to this list rather than a silently unchecked sentence.
 
@@ -29,14 +37,14 @@ check_claim() {
         pass "$api is not claimed anywhere"
         return
     fi
-    if grep -rq "$source_pattern" "$ROOT/src" --include="*.rs" 2>/dev/null; then
+    if grep -rqE "$source_pattern" "$ROOT/src" --include="*.rs" 2>/dev/null; then
         pass "$api has a source call ($source_pattern)"
     else
         # No implementation: every claiming line must state the boundary instead.
         local bad=0
         while IFS= read -r file; do
             [ -z "$file" ] && continue
-            if ! grep -q "$boundary_pattern" "$file"; then
+            if ! grep -qE "$boundary_pattern" "$file"; then
                 echo "  claiming file without a boundary: ${file#$ROOT/}"
                 bad=1
             fi
@@ -49,10 +57,10 @@ check_claim() {
     fi
 }
 
-check_claim "setContentMinSize" "setContentMinSize" "setContentMinSize"
-check_claim "set_icon_from_file" "set_icon_from_file" "set_icon_from_file"
-check_claim "setRepresentation" "setRepresentation" "bundle"
-check_claim "maximize()" "window.maximize()" "maximize()"
+check_claim "setContentMinSize" "setContentMinSize_" "unsupported|not implemented|bundle"
+check_claim "set_icon_from_file" "set_icon_from_file\\(" "unsupported|not implemented|bundle"
+check_claim "setRepresentation" "setRepresentation_:|\\.setRepresentation\\(" "unsupported|not implemented|bundle"
+check_claim "maximize()" "\\.maximize\\(\\)" "unsupported|not implemented|bundle"
 
 # The platform status files must not describe a method as implemented unless this source has an
 # override. Spot-check the four the plan names.

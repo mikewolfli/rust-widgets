@@ -259,8 +259,12 @@ struct IndicatorLayout {
     strip_center: i32,
     /// The strip's centre across its long axis.
     cross_center: i32,
-    /// One entry per drawn slot: `Some(page_index)` or `None` for the ellipsis mark.
-    slots: Vec<Option<usize>>,
+    /// How many slots the strip draws (see [`Carousel::indicator_slot_value`]).
+    ///
+    /// This used to be the length of an owned `Vec` of slot indices, built per call. The
+    /// slot list is a pure function of the page count, so the per-frame paint path asks
+    /// for an index at a time instead of materialising it.
+    slot_count: usize,
 }
 
 /// The interaction currently in progress, if any.
@@ -1473,18 +1477,31 @@ impl Carousel {
         // Past twenty pages the far end is elided, so the strip stays the same
         // width however many pages exist — the same cap `PagerPageView` used.
         let page_count = self.pages.len();
-        let slots: Vec<Option<usize>> = if page_count <= MAX_VISIBLE_SLOTS {
-            (0..page_count).map(Some).collect()
-        } else {
-            let mut slots: Vec<Option<usize>> = (0..SIDE_SLOTS).map(Some).collect();
-            slots.push(None); // ellipsis marker
-            for i in (page_count - (MAX_VISIBLE_SLOTS - SIDE_SLOTS - 1))..page_count {
-                slots.push(Some(i));
-            }
-            slots
-        };
+        let slot_count =
+            if page_count <= MAX_VISIBLE_SLOTS { page_count } else { MAX_VISIBLE_SLOTS };
 
-        IndicatorLayout { strip_rect, vertical, strip_center, cross_center, slots }
+        IndicatorLayout { strip_rect, vertical, strip_center, cross_center, slot_count }
+    }
+
+    /// The page index drawn in slot `slot`, or `None` for the ellipsis mark.
+    ///
+    /// This is the slot list [`Self::indicator_layout`] used to build: one slot per page
+    /// up to [`MAX_VISIBLE_SLOTS`], then [`SIDE_SLOTS`] leading pages, an ellipsis, and
+    /// the trailing pages. Deriving it on demand keeps the per-frame paint path free of
+    /// the `Vec` that list used to cost.
+    fn indicator_slot_value(&self, slot: usize) -> Option<usize> {
+        let page_count = self.pages.len();
+        if page_count <= MAX_VISIBLE_SLOTS {
+            return Some(slot);
+        }
+        if slot < SIDE_SLOTS {
+            return Some(slot);
+        }
+        if slot == SIDE_SLOTS {
+            return None;
+        }
+        let tail = MAX_VISIBLE_SLOTS - SIDE_SLOTS - 1;
+        Some(page_count - tail + (slot - SIDE_SLOTS - 1))
     }
 
     /// The page index of the indicator slot under `pos`, if any (C-01).
@@ -1501,7 +1518,7 @@ impl Carousel {
         if !layout.strip_rect.contains(pos) {
             return None;
         }
-        let count = layout.slots.len() as i32;
+        let count = layout.slot_count as i32;
         let span = count * SLOT_SPACING;
         let start = layout.strip_center - span / 2;
         let coordinate = if layout.vertical { pos.y } else { pos.x };
@@ -1509,7 +1526,7 @@ impl Carousel {
         if slot < 0 || slot >= count {
             return None;
         }
-        layout.slots[slot as usize]
+        self.indicator_slot_value(slot as usize)
     }
 
     /// Draws one page, either its mounted control or its title card.
@@ -1590,7 +1607,7 @@ impl Carousel {
             Some(page) => page.title.as_str(),
             None => return,
         };
-        let font = crate::core::Font::with_weight("Arial", 18.0, 600, false);
+        let font = crate::core::Font::with_weight_interned("Arial", 18.0, 600, false);
         let metrics = context.measure_text(title, &font);
         let text_x = page_rect.x + (page_rect.width as i32 - metrics.width as i32) / 2;
         let text_y = page_rect.y + (page_rect.height as i32 - metrics.height as i32) / 2;
@@ -1633,7 +1650,7 @@ impl Carousel {
                 *cache = Some((key, format!("{}/{}", key.0, key.1)));
             }
             let label = cache.as_ref().map(|(_, text)| text.as_str()).unwrap_or_default();
-            let font = crate::core::Font::simple("Sans", 12.0);
+            let font = crate::core::Font::simple_interned("Sans", 12.0);
             let metrics = context.measure_text(label, &font);
             let (text_x, text_y) = if vertical {
                 // A stacked counter on the side edge reads bottom-to-top, which is
@@ -1661,13 +1678,13 @@ impl Carousel {
         // colour to the panel still has a defined band to read the counter against.
         context.fill_rect(layout.strip_rect, strip);
 
-        let slots = &layout.slots;
-        let count = slots.len() as i32;
+        let count = layout.slot_count as i32;
         let span = count * SLOT_SPACING;
 
-        for (i, slot) in slots.iter().enumerate() {
+        for i in 0..layout.slot_count {
+            let slot = self.indicator_slot_value(i);
             let along = strip_center - span / 2 + (i as i32) * SLOT_SPACING + SLOT_SPACING / 2;
-            let active = *slot == Some(self.current_index);
+            let active = slot == Some(self.current_index);
             let Some(_) = slot else {
                 // Ellipsis marker: a smaller, dimmer mark of the same shape.
                 let ellipsis = if vertical {

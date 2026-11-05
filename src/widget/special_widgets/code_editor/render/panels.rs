@@ -61,9 +61,12 @@ impl CodeEditor {
         // text would cost a whole-document clone per frame, which at a million lines
         // measured 17 ms — the dominant cost in the whole paint path, and invisible in
         // the profile of any single draw helper. Titles are short and there are few of
-        // them, so this list is bounded by the tab count rather than by the document.
-        let titles: Vec<String> =
-            self.document.buffer_summaries().into_iter().map(|(title, _, _)| title).collect();
+        // them, so the work is bounded by the tab count rather than by the document.
+        //
+        // The titles are read through the document's borrowed slot list rather than
+        // through `buffer_summaries`, which cloned one `String` per tab per frame.
+        let document_slots = self.document.slots();
+        let title_count = document_slots.len();
         let active = self.active_buffer();
         // The dirty flag is a maintained boolean, not a string comparison: the
         // saved text is a full copy of the document, so comparing against it
@@ -80,10 +83,12 @@ impl CodeEditor {
         // Closing is only offered when another buffer would remain. With one file
         // open, `close_buffer` empties the last buffer (there is no pane to close),
         // and a button that silently erases the document is worse than no button.
-        let closeable = titles.len() > 1;
-        let mut slots: Vec<TabSlot> = Vec::with_capacity(titles.len());
+        let closeable = title_count > 1;
+        let mut slots = core::mem::take(&mut *self.tab_hits.borrow_mut());
+        slots.clear();
+        slots.reserve(title_count);
         let mut x = rect.x + 6;
-        for (index, title) in titles.iter().enumerate() {
+        for (index, document_slot) in document_slots.iter().enumerate() {
             let dirty = index == active && active_dirty;
             // The dirty marker is a **drawn dot**, not the `U+2022` bullet the label used to
             // carry. No bundled face covers the general-punctuation bullet's block with an outline
@@ -91,7 +96,7 @@ impl CodeEditor {
             // and the tab read as a blob. Keeping it out of the label also keeps the *title* the
             // title: the marker is state, and state drawn as text is state the next reader has to
             // parse out of a string.
-            let label = title.as_str();
+            let label = document_slot.title.as_str();
             // Measured in the face the title is drawn in. `chars × cell_width` is a
             // lie for a proportional face: `main.rs` and `WWWWWWWW` have the same
             // count and different widths, so tabs were both too wide and too narrow.

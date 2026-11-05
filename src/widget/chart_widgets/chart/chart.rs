@@ -142,12 +142,13 @@ struct ChartDataTableBinding {
     toggles: crate::compat::Arc<crate::compat::Mutex<Vec<usize>>>,
     /// The snapshot last pushed, so an unchanged chart does not rebuild the table.
     last_snapshot: ChartSeriesSnapshot,
-    /// The data + visibility revisions the last snapshot was built from (CH2-01).
+    /// The data + names + visibility revisions the last snapshot was built from (CH2-01).
     ///
     /// `last_snapshot` alone only says *whether* the snapshot changed after building it; this key
-    /// says whether it can possibly have changed, so a static chart pays two integer comparisons
-    /// per poll instead of an O(points) rebuild.
-    last_generation: (u64, u64),
+    /// says whether it can possibly have changed, so a static chart pays three integer comparisons
+    /// per poll instead of an O(points) rebuild. The name revision is its own dimension: this
+    /// chart publishes `set_series_names`, which does not touch the data generation.
+    last_generation: (u64, u64, u64),
     /// The subscription, dropped with the binding so a detached chart leaves no slot behind.
     _scope: crate::signal::ConnectionScope,
 }
@@ -231,8 +232,12 @@ pub struct ChartWidget {
     /// Bumped when the legend names change.
     names_generation: u64,
     /// Legend rows' labels and measured widths, with the key they were built for.
+    ///
+    /// The key carries the whole face and the DPI, not just the size: each row's width is a
+    /// measurement, so a family/italic/tracking change at the same size — or the same control
+    /// rendered at another screen scale — produced a different width from the one cached.
     legend_rows: Vec<(String, u32)>,
-    legend_key: Option<(u64, usize, u32)>,
+    legend_key: Option<(u64, usize, crate::core::Font, u32)>,
     /// The rows the attached legend should show, and the revision they were built from.
     ///
     /// The revision is every input [`Self::legend_entries`] reads: the data generation, the
@@ -717,9 +722,10 @@ impl ChartWidget {
             changed |= self.set_series_visible(index, next);
         }
         // CH2-01: build the snapshot only when the chart's own revisions say it can differ.
-        // Both generations are folded in: `data_generation` covers the points and names, and
-        // `visibility_generation` covers `set_series_visible`, which changes the snapshot's
-        // second half without touching the data.
+        // All three generations are folded in: `data_generation` covers the points,
+        // `names_generation` covers `set_series_names` (which changes a row's name without
+        // touching its points), and `visibility_generation` covers `set_series_visible`, which
+        // changes the snapshot's second half.
         let generation = self.snapshot_generation();
         let stale = self
             .chart_data_table
@@ -744,8 +750,8 @@ impl ChartWidget {
     }
 
     /// The revisions a data-table snapshot is a pure function of (CH2-01).
-    fn snapshot_generation(&self) -> (u64, u64) {
-        (self.data_generation, self.visibility_generation)
+    fn snapshot_generation(&self) -> (u64, u64, u64) {
+        (self.data_generation, self.names_generation, self.visibility_generation)
     }
 
     /// Follows `strip` as this chart's zoom control (COMP-A8).
@@ -2341,8 +2347,9 @@ impl ChartWidget {
     /// series names, the series count and the font, so those form the key.
     fn refresh_legend(&mut self, context: &mut RenderContext) {
         let font = effective_font(self.base.style());
-        let key = (self.names_generation, self.series.len(), font.size().to_bits());
-        if self.legend_key == Some(key) {
+        let key =
+            (self.names_generation, self.series.len(), font.clone(), context.dpi_scale().to_bits());
+        if self.legend_key.as_ref() == Some(&key) {
             return;
         }
         let mut rows = Vec::with_capacity(self.series.len());

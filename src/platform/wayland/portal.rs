@@ -106,7 +106,9 @@ fn query(key: &str) -> Option<u32> {
         )
         .await
         .ok()?;
-        let value: zbus::zvariant::OwnedValue =
+        // `OwnedVariant` is the current name; `zvariant::OwnedValue` is deprecated in the zbus
+        // version this target resolves.
+        let value: zbus::OwnedVariant =
             proxy.call("Read", &("org.freedesktop.appearance", key)).await.ok()?;
         value.downcast_ref::<u32>().ok()
     })

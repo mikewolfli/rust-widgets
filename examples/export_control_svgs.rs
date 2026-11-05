@@ -50,11 +50,17 @@
 
 #![cfg(all(not(feature = "mini"), not(target_arch = "wasm32")))]
 
-use rust_widgets::core::{Color, Point, Rect, Size};
+use rust_widgets::core::{Color, ObjectId, Point, Rect, Size};
 use rust_widgets::render::{PaintBackend, RenderContext, SvgPaintBackend};
 use rust_widgets::theme::{theme_test_guard, AppearanceMode};
+use rust_widgets::widget::base_widgets::label::Label;
+use rust_widgets::widget::capability::coercion::widget_as_mut;
 use rust_widgets::widget::census::{install_preset_appearances, CENSUS_RECT, CENSUS_TEXT};
-use rust_widgets::widget::svg::render_widget_to_svg_on;
+use rust_widgets::widget::container_widgets::mdiarea::MdiArea;
+use rust_widgets::widget::container_widgets::scrollarea::ScrollArea;
+use rust_widgets::widget::container_widgets::splitter::Splitter;
+use rust_widgets::widget::container_widgets::stackedwidget::StackedWidget;
+use rust_widgets::widget::runtime::{register, unregister, with_widget_mut};
 use rust_widgets::widget::{draw_bridge::draw_of, Draw, Widget, WidgetFactory};
 use std::fs;
 use std::path::Path;
@@ -664,6 +670,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(feature = "i18n")]
     rust_widgets::i18n::init();
 
+    // Pin "today" for every date control on this thread.
+    //
+    // `mobile_date_picker` marks the wall-clock day with an accent dot and `date_range_picker`
+    // seeds its range from `clock_today`, so without a pin two snapshots changed at every
+    // midnight — the committed file was a picture of the day it was generated, not of the
+    // control. The day is `sample_fill::SNAPSHOT_DAY`, the same one the sample data uses, so the
+    // whole date family agrees. RW-56 documents the pin as the snapshot-fixture answer; it is
+    // thread-local and restored below.
+    let (year, month, day) = rust_widgets::widget::sample_fill::SNAPSHOT_DAY;
+    rust_widgets::widget::advanced_widgets::calendar::set_today_override(Some(
+        chrono::NaiveDate::from_ymd_opt(year, month, day)
+            .expect("the pinned snapshot day is a valid Gregorian date"),
+    ));
+
     let dir = Path::new(OUTPUT_DIR);
     fs::create_dir_all(dir)?;
 
@@ -723,6 +743,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // removes (`switch.svg` captured a mid-travel frame).
             settle(widget.as_mut());
 
+            // Composite containers paint their children through the tree painter, which a
+            // single-control snapshot does not run. Mount the sample content so the picture shows
+            // a populated split/page/area instead of bare chrome.
+            let preview_children = compose_container_preview(name, widget.as_mut());
+
             write_one(
                 dir,
                 &mut written,
@@ -734,6 +759,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 appearance,
                 &mut failed,
             )?;
+            for child in preview_children {
+                unregister(child);
+            }
         }
 
         // The interactive states, one file each. Rendered under the dark appearance: these exist to
@@ -848,8 +876,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         for entry in &failed {
             eprintln!("  {entry}");
         }
+        rust_widgets::widget::advanced_widgets::calendar::set_today_override(None);
         return Err(format!("{} control(s) could not be exported", failed.len()).into());
     }
+    rust_widgets::widget::advanced_widgets::calendar::set_today_override(None);
     Ok(())
 }
 
@@ -890,6 +920,174 @@ fn settle(widget: &mut dyn rust_widgets::widget::Widget) {
     }
 }
 
+/// Mounts the sample children a composite container needs in its picture.
+///
+/// # Why this exists
+///
+/// These four containers draw chrome only: their content is **tree children**, which the
+/// runtime's tree painter draws. A single-control snapshot calls one `draw` stream, so after the
+/// retired registry path stopped baking child drawing into the container itself, `splitter.svg`
+/// became an empty split and `stacked_widget.svg` an empty page — a visible loss of information in
+/// `control.md` that no assertion caught.
+///
+/// So the exporter composes the picture the way a window does: mount real labels and hand them to
+/// the container's own model (`add_pane` / `add_widget` / `add_sub_window` / `set_widget`), which
+/// also places them. The returned ids are unmounted by the caller after the file is written.
+fn compose_container_preview(name: &str, widget: &mut dyn Widget) -> Vec<ObjectId> {
+    let mut mounted: Vec<ObjectId> = Vec::new();
+    match name {
+        "splitter" => {
+            let Some(splitter) = widget_as_mut::<Splitter>(widget) else {
+                return mounted;
+            };
+            // The sample fill already put two *model* panes in place (ids with no widget behind
+            // them), so the real children replace those slots rather than adding two more.
+            let panes = [
+                (Rect::new(0, 0, 100, 80), "Left pane"),
+                (Rect::new(100, 0, 140, 80), "Right pane"),
+            ];
+            for (index, (rect, text)) in panes.into_iter().enumerate() {
+                let Some(id) = mount_preview_label(rect, text) else {
+                    continue;
+                };
+                mounted.push(id);
+                if index < splitter.pane_count() {
+                    splitter.replace_widget(index, id);
+                } else {
+                    splitter.add_pane(id, 1);
+                }
+            }
+        }
+        "scroll_area" => {
+            let Some(area) = widget_as_mut::<ScrollArea>(widget) else {
+                return mounted;
+            };
+            if let Some(id) = mount_preview_label(Rect::new(0, 0, 160, 24), "Scrollable content") {
+                mounted.push(id);
+                area.set_widget(Some(id));
+            }
+        }
+        "stacked_widget" => {
+            let Some(stack) = widget_as_mut::<StackedWidget>(widget) else {
+                return mounted;
+            };
+            // The sample fill's two pages are model entries; replace them with mounted labels so
+            // the current page is painted. Removing first keeps `count` equal to the tree.
+            while stack.count() > 0 {
+                stack.remove_widget_at(0);
+            }
+            for text in ["Page one", "Page two"] {
+                if let Some(id) = mount_preview_label(Rect::new(0, 0, 200, 80), text) {
+                    mounted.push(id);
+                    stack.add_widget(id);
+                }
+            }
+            stack.set_current_index(0);
+        }
+        "mdi_area" => {
+            let Some(area) = widget_as_mut::<MdiArea>(widget) else {
+                return mounted;
+            };
+            // Same replacement: the sample fill's sub-windows are model entries.
+            area.close_all_sub_windows();
+            let windows = [
+                (Rect::new(16, 16, 160, 56), "Document 1"),
+                (Rect::new(48, 48, 160, 56), "Document 2"),
+            ];
+            for (rect, title) in windows {
+                let Some(id) = mount_preview_label(rect, title) else {
+                    continue;
+                };
+                mounted.push(id);
+                let index = area.add_sub_window(id, rect);
+                if let Some(subwindow) = area.sub_window_mut(index) {
+                    subwindow.set_title(rust_widgets::compat::String::from(title));
+                }
+            }
+        }
+        _ => {}
+    }
+    mounted
+}
+
+/// Mounts one themed sample label for [`compose_container_preview`].
+fn mount_preview_label(rect: Rect, text: &str) -> Option<ObjectId> {
+    let mut label = Label::new(rust_widgets::compat::String::from(text), rect);
+    rust_widgets::theme::apply_theme_to_widget(&mut label);
+    register(Box::new(label))
+}
+
+/// Draws a widget **and its mounted descendants** into one SVG document.
+///
+/// The runtime paints a frame by drawing the root and then every tree child (a child is a widget
+/// in its own right, at its own absolute geometry). This mirrors that order for a snapshot, with
+/// the parent's `children_clip` applied to the subtree — the same contract the tree painter
+/// honours. A control with no mounted children renders exactly as
+/// [`rust_widgets::widget::svg::render_widget_to_svg_on`] did.
+fn render_widget_tree_to_svg_on(
+    widget: &mut dyn Widget,
+    geometry: Rect,
+    backdrop: Color,
+) -> String {
+    let size = Size::new(geometry.width, geometry.height);
+    let mut backend = SvgPaintBackend::new(size);
+    backend.begin_frame(backdrop);
+    {
+        let mut context = RenderContext::new(&mut backend);
+        let children: Vec<ObjectId> = widget.base().children().to_vec();
+        let clip = widget.children_clip();
+        if let Some(drawable) = widget.as_draw_mut() {
+            drawable.draw(&mut context);
+        }
+        // A clip with no children in it is an empty `<g>` in the document and changes files that
+        // have nothing to do with this pass, so it is emitted only when a subtree will use it.
+        let clip = if children.is_empty() { None } else { clip };
+        if let Some(rect) = clip {
+            context.push_clip(rect.x, rect.y, rect.width, rect.height);
+        }
+        for child in children {
+            paint_mounted_subtree(child, &mut context);
+        }
+        if clip.is_some() {
+            context.pop_clip();
+        }
+    }
+    backend.end_frame();
+    backend.finish()
+}
+
+/// Paints one mounted widget and, recursively, its children.
+fn paint_mounted_subtree(id: ObjectId, context: &mut RenderContext) {
+    let mut children: Vec<ObjectId> = Vec::new();
+    let mut clip = None;
+    let painted = with_widget_mut(id, |widget| {
+        if !widget.is_visible() {
+            return false;
+        }
+        children.extend_from_slice(widget.base().children());
+        clip = widget.children_clip();
+        if let Some(drawable) = widget.as_draw_mut() {
+            drawable.draw(context);
+        }
+        true
+    })
+    .unwrap_or(false);
+    if !painted {
+        return;
+    }
+    // Same as the root: do not open a clip group for a leaf.
+    let clip = if children.is_empty() { None } else { clip };
+    if let Some(rect) = clip {
+        context.push_clip(rect.x, rect.y, rect.width, rect.height);
+    }
+    for child in children {
+        paint_mounted_subtree(child, context);
+    }
+    if clip.is_some() {
+        context.pop_clip();
+    }
+}
+
 /// Renders one widget and writes one snapshot file.
 ///
 /// # Why this is extracted
@@ -910,10 +1108,10 @@ fn write_one(
     appearance: AppearanceMode,
     failed: &mut Vec<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let Some(drawable) = draw_of(widget) else {
+    if draw_of(widget).is_none() {
         failed.push(format!("{name}: the widget has no `Draw` implementation"));
         return Ok(());
-    };
+    }
 
     // A control that paints no background of its own (a `Label`, a `Separator`) is
     // composited over the surface it would really sit on — the active theme's own
@@ -926,7 +1124,7 @@ fn write_one(
         .current_theme()
         .map(|active| active.colors.background)
         .unwrap_or(rust_widgets::core::Color::WHITE);
-    let body = render_widget_to_svg_on(drawable, CENSUS_RECT, backdrop);
+    let body = render_widget_tree_to_svg_on(widget, CENSUS_RECT, backdrop);
     let document = decorate(&body, name, appearance, caption, state_word);
     fs::write(dir.join(format!("{name}{suffix}.svg")), document)?;
     *written += 1;

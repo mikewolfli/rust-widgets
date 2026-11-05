@@ -77,7 +77,13 @@ impl PresetChip {
 }
 
 /// A font's identity, as far as text measurement is concerned.
-type FontKey = (u32, u16, u64);
+/// The identity of `font` for measurement caches.
+///
+/// Every field the advance is a function of is present: a caption's width depends on the
+/// family, the size, the weight, the italic and bold flags **and** the tracking. Keying on
+/// size + weight + family alone kept the old widths when a text-scale change only moved the
+/// letter spacing, so the chip was drawn (and hit-tested) at the wrong width.
+type FontKey = (u32, u16, u64, u32, u32, bool, bool);
 
 /// The facts a chip layout is a pure function of.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -107,7 +113,15 @@ fn font_key(font: &Font) -> FontKey {
         family_hash ^= u64::from(*byte);
         family_hash = family_hash.wrapping_mul(0x0000_0100_0000_01b3);
     }
-    (font.size().to_bits(), font.weight(), family_hash)
+    (
+        font.size().to_bits(),
+        font.weight(),
+        family_hash,
+        font.letter_spacing().to_bits(),
+        font.word_spacing().to_bits(),
+        font.is_bold(),
+        font.is_italic(),
+    )
 }
 
 /// A bar of selectable preset chips.

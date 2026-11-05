@@ -109,6 +109,14 @@ pub struct Splitter {
     /// The last dragged-pair ratio thousandths emitted as a preview; throttles the
     /// preview to a visible change rather than one event per pointer sample.
     preview_mark: Option<(i64, i64)>,
+    /// Per-frame scratch for the pane rectangles and the divider centres.
+    ///
+    /// `draw` asks the layout for the arrangement and derives the handles from it. Both steps used
+    /// to return a fresh `Vec` per call, so a splitter sitting still allocated twice a frame. The
+    /// buffers are owned and cleared in place; the public `pane_rects` / `divider_centers` keep
+    /// their allocating shape for callers that need an owned answer.
+    pane_rects_scratch: crate::compat::RefCell<Vec<(ObjectId, Rect)>>,
+    divider_centers_scratch: crate::compat::RefCell<Vec<i32>>,
 }
 impl Splitter {
     /// Creates an empty splitter with horizontal orientation.
@@ -130,6 +138,8 @@ impl Splitter {
             max_pane_sizes: Vec::new(),
             pre_collapse_ratios: Vec::new(),
             preview_mark: None,
+            pane_rects_scratch: crate::compat::RefCell::new(Vec::new()),
+            divider_centers_scratch: crate::compat::RefCell::new(Vec::new()),
         }
     }
     /// Returns splitter orientation.
@@ -598,8 +608,14 @@ impl Splitter {
 
     fn pane_rects(&self) -> Vec<(ObjectId, Rect)> {
         let mut rects = Vec::new();
-        self.layout.update(self.base.geometry(), &mut |id, rect| rects.push((id, rect)));
+        self.pane_rects_into(&mut rects);
         rects
+    }
+
+    /// [`Self::pane_rects`] into a caller-owned buffer, for the per-frame draw path.
+    fn pane_rects_into(&self, rects: &mut Vec<(ObjectId, Rect)>) {
+        rects.clear();
+        self.layout.update(self.base.geometry(), &mut |id, rect| rects.push((id, rect)));
     }
 
     /// The extent the pane ratios divide: the control's axis extent minus the reserved gaps.
@@ -715,15 +731,24 @@ impl Splitter {
     /// adjacent rectangles. The old form asked the layout again for each gap — `(n - 1)` full
     /// `SplitterLayout::update` runs per draw — which is O(n²) for n panes.
     fn divider_centers_from(&self, rects: &[(ObjectId, Rect)]) -> Vec<i32> {
+        let mut centers = Vec::new();
+        self.divider_centers_into(rects, &mut centers);
+        centers
+    }
+
+    /// [`Self::divider_centers_from`] into a caller-owned buffer, for the per-frame draw path.
+    fn divider_centers_into(&self, rects: &[(ObjectId, Rect)], centers: &mut Vec<i32>) {
+        centers.clear();
         let count = self.pane_count();
         if count < 2 {
             let rect = self.base.geometry();
-            return crate::compat::vec![match self.orientation() {
+            centers.push(match self.orientation() {
                 Orientation::Horizontal => rect.x + rect.width as i32 / 2,
                 Orientation::Vertical => rect.y + rect.height as i32 / 2,
-            }];
+            });
+            return;
         }
-        let mut centers = Vec::with_capacity(count.saturating_sub(1));
+        centers.reserve(count.saturating_sub(1));
         for index in 0..count - 1 {
             let (Some((_, left)), Some((_, right))) = (rects.get(index), rects.get(index + 1))
             else {
@@ -740,7 +765,6 @@ impl Splitter {
                 }
             });
         }
-        centers
     }
 }
 impl SaveState for Splitter {
@@ -955,8 +979,10 @@ impl Draw for Splitter {
         );
 
         // C-P06: one layout pass for the pane rectangles, shared by the draw and by the divider
-        // positions derived from the same rectangles.
-        let pane_rects = self.pane_rects();
+        // positions derived from the same rectangles. Both buffers are owned by the control, so a
+        // still frame reuses their capacity instead of allocating two `Vec`s per frame.
+        let mut pane_rects = self.pane_rects_scratch.borrow_mut();
+        self.pane_rects_into(&mut pane_rects);
         // Draw splitter handles between panes.
         //
         // The count guard used to be `pane_count() > 1`, so a splitter with no panes yet —
@@ -971,11 +997,12 @@ impl Draw for Splitter {
         // ratio as a relative weight (`weight / sum`), so two equal panes put the boundary at
         // the middle while the raw-weight accumulation put the handle at the right edge.
         let handle_width = self.handle_width as i32;
-        let centers = self.divider_centers_from(&pane_rects);
+        let mut centers = self.divider_centers_scratch.borrow_mut();
+        self.divider_centers_into(&pane_rects, &mut centers);
         match self.orientation() {
             Orientation::Horizontal => {
                 // Draw vertical splitter handles, one in each gap between panes.
-                for x in centers {
+                for x in centers.iter().copied() {
                     let handle_rect =
                         Rect::new(x - handle_width / 2, rect.y, handle_width as u32, rect.height);
                     context.fill_rect(handle_rect, handle_fill);
@@ -984,7 +1011,7 @@ impl Draw for Splitter {
             }
             Orientation::Vertical => {
                 // Draw horizontal splitter handles, one in each gap between panes.
-                for y in centers {
+                for y in centers.iter().copied() {
                     let handle_rect =
                         Rect::new(rect.x, y - handle_width / 2, rect.width, handle_width as u32);
                     context.fill_rect(handle_rect, handle_fill);

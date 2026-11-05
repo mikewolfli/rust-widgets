@@ -602,6 +602,16 @@ pub struct DateEdit {
     /// A `RefCell` because `draw` resolves `style` once, which holds an immutable borrow of
     /// `self` for the rest of the pass — the same reason `Calendar` caches its day line boxes.
     section_zone_cache: crate::compat::RefCell<SectionZoneCache>,
+    /// The value text `draw` spells for the field.
+    ///
+    /// `format_with_pattern_into` writes into a caller's buffer; the caller used to hand it a
+    /// fresh `String`, which allocated on its first push in every frame. The buffer is cleared
+    /// and refilled in place.
+    value_text_scratch: crate::compat::RefCell<String>,
+    /// The three section labels `refresh_section_zones` formats and measures.
+    ///
+    /// Same reason as `value_text_scratch`: one fresh `String` per section per frame.
+    section_labels_scratch: crate::compat::RefCell<[String; 3]>,
 }
 
 /// The three value sections' measured boxes and the inputs they were measured for.
@@ -669,6 +679,8 @@ impl DateEdit {
             calendar_sync_dirty: true,
             calendar_sync_rect: Rect::new(0, 0, 0, 0),
             section_zone_cache: crate::compat::RefCell::new(SectionZoneCache::default()),
+            value_text_scratch: crate::compat::RefCell::new(String::new()),
+            section_labels_scratch: crate::compat::RefCell::new(Default::default()),
         }
     }
     /// Returns the current date.
@@ -1101,7 +1113,11 @@ impl DateEdit {
             return;
         }
 
-        let mut labels = [String::new(), String::new(), String::new()];
+        let mut labels_scratch = self.section_labels_scratch.borrow_mut();
+        let labels = &mut *labels_scratch;
+        for label in labels.iter_mut() {
+            label.clear();
+        }
         let components = [
             DateTimeComponents { year: Some(self.date.year()), ..Default::default() },
             DateTimeComponents { month: Some(self.date.month()), ..Default::default() },
@@ -1744,7 +1760,9 @@ impl Draw for DateEdit {
         // can render, and by `Date`'s own `YYYY-MM-DD` otherwise. The fallback is what keeps an
         // unrecognised pattern showing the value rather than the pattern's literal words. Into the
         // buffer directly: the allocating wrapper built the result plus one string per token.
-        let mut text = String::new();
+        let mut text_scratch = self.value_text_scratch.borrow_mut();
+        let text = &mut *text_scratch;
+        text.clear();
         let special = self.special_value_text.as_deref().filter(|_| self.date == self.minimum);
         if let Some(special) = special {
             text.push_str(special);
@@ -1756,7 +1774,7 @@ impl Draw for DateEdit {
                 day: Some(self.date.day()),
                 ..Default::default()
             },
-            &mut text,
+            text,
         ) {
             text.clear();
             let _ = write!(text, "{}", self.date);
@@ -1786,6 +1804,9 @@ impl Draw for DateEdit {
             ink,
             self.alignment.to_horizontal().unwrap_or(HorizontalAlignment::Left),
         );
+        // The field painter later takes `&mut self` (`sync_calendar_page`), so the buffer has to
+        // be released before that point.
+        drop(text_scratch);
 
         // The active section is marked with a rule under its zone, so the user can see
         // which digits the arrow keys will step. Only an active section paints it.

@@ -30,7 +30,16 @@ for file in "${FILES[@]}"; do
     # `get_platform().create_*` is the shape this gate forbids. A bare `create_button` call is
     # fine: it goes through the control backend. `create_window` is the required lifecycle method,
     # not a native control constructor, so it is the one allowed `create_*`.
-    if grep -nE 'get_platform\(\)\.create_[a-z_]+' "$ROOT/$file" | grep -v 'create_window'; then
+    #
+    # Comment and doc-comment lines are excluded: prose that names the forbidden call is not a call.
+    # Without that anchor the gate was satisfied by a comment, which is the textual-gate failure
+    # rule #106 is about. (`grep -n` prefixes `line:` on a single file, so the exclusion matches
+    # after that prefix.)
+    matches=$(grep -nE 'get_platform\(\)\.create_[a-z_]+' "$ROOT/$file" \
+        | grep -v 'create_window' \
+        | grep -vE '^[0-9]+:[[:space:]]*(//|\*)' || true)
+    if [ -n "$matches" ]; then
+        echo "$matches"
         fail "$file calls a Platform::create_* directly"
     else
         pass "$file uses the control-backend path"

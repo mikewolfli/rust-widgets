@@ -581,6 +581,12 @@ impl Platform for WindowsPlatform {
         self.state.widget_geometry(widget_id).map(|(x, y, _, _)| (x, y))
     }
 
+    /// `WM_MOVE` is translated into the shared move notification, so a user drag reaches the
+    /// position mirror.
+    fn reports_window_moves(&self) -> bool {
+        true
+    }
+
     /// Moves the window with `SetWindowPos`, keeping its size, z-order and activation.
     fn set_window_position(&self, widget_id: ObjectId, x: i32, y: i32) -> bool {
         let Some(kind) = self.state.kind_of(widget_id) else {

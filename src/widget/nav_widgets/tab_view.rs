@@ -83,6 +83,13 @@ pub struct TabView {
     /// hash of `(title, icon-drawability)` in strip order, so adding/removing a tab or changing
     /// a caption/font re-measures without an invalidation list to keep in sync.
     tab_width_cache: RefCell<TabWidthCache>,
+    /// Scratch text for the undrawable-icon fallback (icon name + caption).
+    ///
+    /// That fallback used to `format!` a new string per icon-bearing tab per frame. A tab whose
+    /// icon cannot be resolved is common in builds without the bundled icon data, so a still strip
+    /// allocated on every frame for a string that only changed with the tab. One buffer is enough:
+    /// it is consumed by the draw call before the next tab is visited.
+    tab_label_scratch: RefCell<String>,
     /// Per-tab badge text, parallel to `tabs` (N-10).
     badges: Vec<Option<String>>,
     /// The last derived tab boxes, with the inputs they were derived from (G-A05).
@@ -97,7 +104,12 @@ pub struct TabView {
 struct TabWidthCache {
     font: Option<Font>,
     fingerprint: u64,
-    widths: crate::compat::Vec<i32>,
+    /// The widths, shared so a cache hit is a refcount bump.
+    ///
+    /// The hit path used to `clone()` the vector, which allocated once per call — and the draw
+    /// path asks for the widths every frame, so a still tab strip paid an allocation per frame for
+    /// a table it had already computed. Same shape as `preset_chip_bar` (GX-03).
+    widths: crate::compat::Rc<crate::compat::Vec<i32>>,
 }
 
 /// The inputs a cached tab run was derived from.
@@ -137,6 +149,7 @@ impl TabView {
             swipe: None,
             pending_close: None,
             tab_width_cache: RefCell::new(TabWidthCache::default()),
+            tab_label_scratch: RefCell::new(String::new()),
             badges: Vec::new(),
             run_cache: RefCell::new(Vec::new()),
         }
@@ -708,7 +721,7 @@ impl TabView {
     /// `TAB_MIN_WIDTH..TAB_MAX_WIDTH` so a one-character tab is still tappable and a long one
     /// does not crowd out its siblings. This is the same derivation `TabWidget::tab_widths`
     /// uses, with the same constants, so the two tab strips in this crate cannot disagree.
-    fn tab_widths(&self) -> crate::compat::Vec<i32> {
+    fn tab_widths(&self) -> crate::compat::Rc<crate::compat::Vec<i32>> {
         // Measured with the **effective font** — the same font the caption is painted with — so the
         // tab's reserved width and its ink cannot disagree (D09-STYLE-02).
         let font = effective_font(self.style());
@@ -716,7 +729,7 @@ impl TabView {
         {
             let cache = self.tab_width_cache.borrow();
             if cache.font.as_ref() == Some(font) && cache.fingerprint == fingerprint {
-                return cache.widths.clone();
+                return crate::compat::Rc::clone(&cache.widths);
             }
         }
 
@@ -756,9 +769,13 @@ impl TabView {
                     .clamp(TAB_MIN_WIDTH, TAB_MAX_WIDTH)
             })
             .collect();
+        let widths = crate::compat::Rc::new(widths);
 
-        *self.tab_width_cache.borrow_mut() =
-            TabWidthCache { font: Some(font.clone()), fingerprint, widths: widths.clone() };
+        *self.tab_width_cache.borrow_mut() = TabWidthCache {
+            font: Some(font.clone()),
+            fingerprint,
+            widths: crate::compat::Rc::clone(&widths),
+        };
         widths
     }
 
@@ -870,7 +887,7 @@ impl TabView {
         let wanted: i32 = widths.iter().sum();
         let budget = (strip_width as i32 - gaps).max(0);
         if wanted <= budget || wanted <= 0 {
-            return widths.into_iter().map(|w| w.max(0) as u32).collect();
+            return widths.iter().map(|w| (*w).max(0) as u32).collect();
         }
         // Share the shortfall equally, never below the floor that keeps a tab a tap target.
         let share = ((wanted - budget) as f32 / count as f32).round() as i32;
@@ -878,7 +895,7 @@ impl TabView {
             widths.iter().map(|w| (*w - share).max(TAB_MIN_WIDTH)).collect();
         let floored_total: i32 = floored.iter().sum();
         if floored_total <= budget || floored_total <= 0 {
-            return floored.into_iter().map(|w| w.max(0) as u32).collect();
+            return floored.iter().map(|w| (*w).max(0) as u32).collect();
         }
         // The floors themselves do not fit: scale the run so it does, distributing the integer
         // remainder from the leading edge — the same resolution a two-column squeeze uses.
@@ -1177,8 +1194,9 @@ impl Draw for TabView {
             let mut label = tab_rect;
             // Borrowed unless the icon is undrawable and must be spelled out as text. The old
             // form cloned the title on every path, then formatted a second string for the icon
-            // fallback; the common (no-icon or drawable-icon) path now allocates nothing.
-            let mut prefixed: Option<String> = None;
+            // fallback; the common (no-icon or drawable-icon) path now allocates nothing, and the
+            // fallback reuses one control-owned buffer.
+            let mut prefixed = false;
             if let Some(icon_name) = tab.icon.as_deref() {
                 let side = TAB_VIEW_ICON_SIDE.min(line.height.max(1));
                 let icon_rect = Rect {
@@ -1192,10 +1210,22 @@ impl Draw for TabView {
                     label.x += allowance as i32;
                     label.width = label.width.saturating_sub(allowance);
                 } else {
-                    prefixed = Some(format!("{} {}", icon_name, tab.title));
+                    let mut scratch = self.tab_label_scratch.borrow_mut();
+                    scratch.clear();
+                    let _ = core::fmt::write(
+                        &mut *scratch,
+                        format_args!("{} {}", icon_name, tab.title),
+                    );
+                    prefixed = true;
                 }
             }
-            let display_text = prefixed.as_deref().unwrap_or(tab.title.as_str());
+            let scratch_ref;
+            let display_text = if prefixed {
+                scratch_ref = self.tab_label_scratch.borrow();
+                scratch_ref.as_str()
+            } else {
+                tab.title.as_str()
+            };
 
             // The caption is centred on **both** axes through the shared line box. The previous
             // form computed `rect.y + (tab_bar_height - metrics.height) / 2` by hand and passed

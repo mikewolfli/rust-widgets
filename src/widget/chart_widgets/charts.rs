@@ -947,9 +947,37 @@ pub fn sector_polygon(
     end_angle: f32,
     steps: u32,
 ) -> Vec<Point> {
+    let mut vertices = Vec::new();
+    sector_polygon_into(
+        center,
+        outer_radius,
+        inner_radius,
+        start_angle,
+        end_angle,
+        steps,
+        &mut vertices,
+    );
+    vertices
+}
+
+/// [`sector_polygon`] into a caller-owned buffer, for the per-frame paint path.
+///
+/// A pie repaints every frame its hover or explode animation runs, and one sector per slice
+/// meant one `Vec` per sector per frame. The buffer is cleared in place, so a settled repaint
+/// allocates nothing after the first.
+pub fn sector_polygon_into(
+    center: Point,
+    outer_radius: f32,
+    inner_radius: f32,
+    start_angle: f32,
+    end_angle: f32,
+    steps: u32,
+    vertices: &mut Vec<Point>,
+) {
+    vertices.clear();
     let sweep = end_angle - start_angle;
     if sweep.abs() < f32::EPSILON || outer_radius <= 0.0 {
-        return Vec::new();
+        return;
     }
     let steps = steps.clamp(3, 180);
     let cx = center.x as f32;
@@ -962,7 +990,7 @@ pub fn sector_polygon(
         }
     };
 
-    let mut vertices = Vec::with_capacity((steps as usize + 1) * 2);
+    vertices.reserve((steps as usize + 1) * 2);
 
     // Outer arc, start -> end.
     for step in 0..=steps {
@@ -981,8 +1009,6 @@ pub fn sector_polygon(
         // end vertices, so a single apex vertex completes the shape.
         vertices.push(Point { x: cx.round() as i32, y: cy.round() as i32 });
     }
-
-    vertices
 }
 impl LineChart {
     /// Create a new line chart

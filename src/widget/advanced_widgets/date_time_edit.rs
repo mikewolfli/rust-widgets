@@ -268,6 +268,11 @@ pub struct DateTimeEdit {
     calendar_sync_dirty: bool,
     /// The popup rectangle last pushed into the embedded calendar.
     calendar_sync_rect: Rect,
+    /// The value text `draw` spells for the field.
+    ///
+    /// Same reason as `DateEdit::value_text_scratch`: the substituter writes into a caller's
+    /// buffer, and a fresh `String` per frame allocated on its first push.
+    value_text_scratch: crate::compat::RefCell<String>,
 }
 impl DateTimeEdit {
     /// Creates a date-time editor occupying `geometry`.
@@ -312,6 +317,7 @@ impl DateTimeEdit {
             calendar_closed: GenericSignal::new(),
             calendar_sync_dirty: true,
             calendar_sync_rect: Rect::new(0, 0, 0, 0),
+            value_text_scratch: crate::compat::RefCell::new(String::new()),
         }
     }
     /// Returns the current combined value.
@@ -1316,7 +1322,9 @@ impl Draw for DateTimeEdit {
         // can render, and by `DateTime`'s own spelling otherwise — the same rule and the same shared
         // substituter as `date_edit` and `time_edit`, so the same pattern cannot render three ways.
         // Into the buffer directly: the allocating wrapper built the result plus one string per token.
-        let mut text = String::new();
+        let mut text_scratch = self.value_text_scratch.borrow_mut();
+        let text = &mut *text_scratch;
+        text.clear();
         let special = self.special_value_text.as_deref().filter(|_| self.datetime == self.minimum);
         if let Some(special) = special {
             text.push_str(special);
@@ -1331,7 +1339,7 @@ impl Draw for DateTimeEdit {
                 second: Some(self.datetime.time.second()),
                 millisecond: Some(self.datetime.time.msec()),
             },
-            &mut text,
+            text,
         ) {
             text.clear();
             let _ = write!(text, "{}", self.datetime);
@@ -1359,6 +1367,8 @@ impl Draw for DateTimeEdit {
             ink,
             self.alignment.to_horizontal().unwrap_or(HorizontalAlignment::Left),
         );
+        // The painter takes `&mut self` further down, so the buffer is released here.
+        drop(text_scratch);
 
         if let Some(section) = self.current_section {
             let zone = self.section_zone(section);

@@ -1558,6 +1558,12 @@ impl WindowHandle {
     /// when the platform accepted the move, and by the platform's own move notification — so a
     /// backend that has no position query (a state-only window) still answers with the last
     /// position the library knows rather than inventing one.
+    ///
+    /// On a backend whose window system cannot report a move to the client at all (a Wayland
+    /// toplevel, for one), the answer is that fallback and **not** a live reading. A host that
+    /// needs to tell the two apart asks
+    /// [`Platform::reports_window_moves`](crate::platform::Platform::reports_window_moves)
+    /// instead of inferring it from a stale coordinate.
     pub fn position(&self) -> Option<Point> {
         if let Some((x, y)) = crate::platform::get_platform().window_position(self.raw_id()) {
             return Some(Point::new(x, y));

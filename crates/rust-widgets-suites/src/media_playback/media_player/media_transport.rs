@@ -609,6 +609,18 @@ impl Widget for MediaTransportBar {
     /// place a wall-clock delta reaches the bar, and [`Self::notify_pointer_activity`] is the
     /// reset half. Once the countdown reaches the delay the bar hides and owes one repaint;
     /// further ticks change nothing.
+    ///
+    /// A countdown that is still running makes the control **animating**: the frame bus only
+    /// ticks controls that answer `is_animating` with `true`, so without that override this
+    /// method was unreachable on a mounted bar and `auto_hide_ms` promised a behaviour that
+    /// never ran.
+    fn is_animating(&self) -> bool {
+        (self.auto_hide_ms > 0 && self.visible && self.idle_ms < self.auto_hide_ms)
+            || self
+                .binding
+                .as_ref()
+                .is_some_and(|binding| rust_widgets::compat::lock(&binding.mirror).dirty)
+    }
     fn tick(&mut self, delta_ms: u32) -> bool {
         let mut redrew = false;
         self.idle_ms = self.idle_ms.saturating_add(u64::from(delta_ms));

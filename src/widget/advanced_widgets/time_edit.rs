@@ -303,6 +303,11 @@ pub struct TimeEdit {
     /// The clock face numerals' centred offsets, rebuilt only when the radius or the font changes
     /// (K-P04).
     clock_numeral_cache: crate::compat::RefCell<ClockNumeralsCache>,
+    /// The value text `draw` spells for the field.
+    ///
+    /// Same reason as `DateEdit::value_text_scratch`: the substituter writes into a caller's
+    /// buffer, and a fresh `String` per frame allocated on its first push.
+    value_text_scratch: crate::compat::RefCell<String>,
 }
 
 /// The clock face's numeral offsets and the inputs they were built from.
@@ -358,6 +363,7 @@ impl TimeEdit {
             clock_reveal: crate::widget::menu_toolbar::popup_reveal::PopupReveal::new(false),
             editing_finished: GenericSignal::new(),
             clock_numeral_cache: crate::compat::RefCell::new(ClockNumeralsCache::default()),
+            value_text_scratch: crate::compat::RefCell::new(String::new()),
         }
     }
     /// Returns the current time.
@@ -1309,7 +1315,9 @@ impl Draw for TimeEdit {
         );
         // Into the buffer directly: the allocating wrapper built the result plus one string
         // per token; the same substituter as `date_edit` and `date_time_edit`.
-        let mut text = String::new();
+        let mut text_scratch = self.value_text_scratch.borrow_mut();
+        let text = &mut *text_scratch;
+        text.clear();
         if !super::date_edit::format_with_pattern_into(
             &self.display_format,
             super::date_edit::DateTimeComponents {
@@ -1319,7 +1327,7 @@ impl Draw for TimeEdit {
                 millisecond: Some(self.time.msec()),
                 ..Default::default()
             },
-            &mut text,
+            text,
         ) {
             text.clear();
             let _ = write!(text, "{}", self.time);
@@ -1344,6 +1352,8 @@ impl Draw for TimeEdit {
             ink,
             self.alignment.to_horizontal().unwrap_or(HorizontalAlignment::Left),
         );
+        // The painter takes `&mut self` further down, so the buffer is released here.
+        drop(text_scratch);
 
         if let Some(section) = self.current_section {
             let zone = self.section_zone(section);

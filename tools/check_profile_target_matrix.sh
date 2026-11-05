@@ -10,8 +10,18 @@
 # intentionally unsupported combination as a failure.
 #
 # Usage:
-#   bash tools/check_profile_target_matrix.sh            # host target, all five profiles
-#   bash tools/check_profile_target_matrix.sh --cross    # plus installed cross targets
+#   bash tools/check_profile_target_matrix.sh              # host profiles + every installed cross cell
+#   bash tools/check_profile_target_matrix.sh --host-only  # host profiles only (fast, no cross coverage)
+#
+# # Why cross cells run by default
+#
+# They used to require `--cross`, and `run_all_gates.sh` invokes this gate bare. That made the
+# whole cross half dead in every run: the PL2-01 Wayland focus wiring (`window_id_for_surface`)
+# shipped with `use wayland_client::Proxy` missing, and neither the suite nor any host-profile
+# check could see it — the code is `cfg(all(feature = "wayland-native", unix_desktop))`, so it is
+# compiled out on macOS. The first run of this gate's linux cell after the default changed caught
+# it. A cell whose target is not installed still SKIPs, so the default costs nothing on a host
+# that cannot cross-compile; `--host-only` exists for a genuinely time-boxed run.
 #
 # rw-gate-budget: 2400
 
@@ -47,7 +57,7 @@ for profile in "${PROFILES[@]}"; do
     run_cell "$profile@$HOST_TARGET" "$HOST_TARGET" "$profile" "compiles"
 done
 
-if [ "${1:-}" = "--cross" ]; then
+if [ "${1:-}" != "--host-only" ]; then
     # Representative cross cells. Each one is a target the plan names; a missing target is a
     # host limitation, reported as SKIP rather than a failure (principle #103).
     run_cell "desktop@windows" "x86_64-pc-windows-msvc" "windows,controls-custom,controls-native" "compiles (no audio C dep)"

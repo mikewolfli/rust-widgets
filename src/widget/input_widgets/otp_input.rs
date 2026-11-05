@@ -892,7 +892,7 @@ impl Draw for OtpInput {
         // The glyph size comes from the **row's** height, not the control's: deriving it
         // from a 120 px cell asked for a 48 px glyph in a 48 px box, and the character then
         // could not fit the cell it was drawn into.
-        let font = Font::simple("Sans", (rect.height as f32 * 0.4).clamp(8.0, 32.0));
+        let font = Font::simple_interned("Sans", (rect.height as f32 * 0.4).clamp(8.0, 32.0));
         // The row's own line box, so each glyph is vertically centred in its cell rather
         // than beginning on the cell's middle line (a glyph origin is the top-left corner of
         // its box, so `slot.y + slot.height / 2` drew every character half a line low).

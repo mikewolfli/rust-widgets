@@ -2231,6 +2231,26 @@ pub trait Platform: Send + Sync {
         None
     }
 
+    /// Whether moves the **window manager** performs are reported as they happen.
+    ///
+    /// # Why this is a capability and not an assumption
+    ///
+    /// [`Self::window_position`] can answer "where the window is now" only if the backend's
+    /// window system either lets the client read the frame at any time or delivers a move event
+    /// when the user drags it. Some backends have neither: a Wayland toplevel has no
+    /// absolute-position protocol at all (the compositor owns placement), and Redox's orbclient
+    /// has no move event. On those, the position a host can read is the last one the library
+    /// itself requested — a fallback, not a report.
+    ///
+    /// A host that needs to distinguish "the window is at X" from "X is the last position we
+    /// asked for" must be able to ask. Without this flag the difference is only discoverable by
+    /// noticing a stale coordinate, which is the silent-wrong-answer shape principle #37
+    /// forbids. The honest default is `false`: a backend that has not wired a notification
+    /// under-claims rather than over-claims.
+    fn reports_window_moves(&self) -> bool {
+        false
+    }
+
     /// Move a window to `(x, y)` in screen coordinates without resizing or activating it.
     ///
     /// Returns `true` when the backend accepted the request. A backend with no windowing system
@@ -2597,5 +2617,51 @@ pub trait MobilePlatformExtension: Send + Sync {
     /// Tells the backend the app is active again.
     fn resume(&self) -> bool {
         false
+    }
+}
+
+#[cfg(test)]
+mod move_report_tests {
+    use super::*;
+    use crate::core::PlatformFamily;
+
+    /// A backend that has wired nothing. It exists to pin the *default* answers: a backend that
+    /// forgets a move notification must under-claim, never inherit a plausible `true`.
+    struct MinimalPlatform;
+
+    impl Platform for MinimalPlatform {
+        fn backend_name(&self) -> &'static str {
+            "minimal"
+        }
+
+        fn family(&self) -> PlatformFamily {
+            PlatformFamily::Desktop
+        }
+
+        fn init(&self) {}
+
+        fn run(&self) {}
+
+        fn quit(&self) -> bool {
+            true
+        }
+
+        fn create_window(
+            &self,
+            _title: &str,
+            _x: i32,
+            _y: i32,
+            _width: u32,
+            _height: u32,
+        ) -> ObjectId {
+            0
+        }
+    }
+
+    #[test]
+    fn a_backend_without_a_move_notification_under_claims() {
+        assert!(!MinimalPlatform.reports_window_moves());
+        assert_eq!(MinimalPlatform.window_position(1), None);
+        assert!(!MinimalPlatform.set_window_position(1, 0, 0));
     }
 }

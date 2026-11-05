@@ -94,6 +94,13 @@ pub struct Pagination {
     page_size_hover: Option<usize>,
     /// The page cell the pointer is over, for the hover highlight and its signal.
     hovered_page: Option<usize>,
+    /// The label buffer the paint loop writes each cell's text into.
+    ///
+    /// A pager repaints whenever a table scrolls, so a fresh `String` per draw meant one heap
+    /// allocation per frame for the first cell written. The buffer is taken out of the field for
+    /// the loop and put back afterwards, which keeps the borrow of `self` free for the reads the
+    /// loop also needs.
+    label_scratch: String,
     /// Whether the wheel steps the page when it is not consumed elsewhere.
     wheel_paging_enabled: bool,
     /// Emitted with the zero-based page a cell activation landed on.
@@ -166,6 +173,7 @@ impl Pagination {
             page_size_menu_open: false,
             page_size_hover: None,
             hovered_page: None,
+            label_scratch: String::new(),
             wheel_paging_enabled: true,
             clicked: Signal1::new(),
             page_hover_changed: Signal1::new(),
@@ -1237,7 +1245,7 @@ impl Draw for Pagination {
         // The **effective font** — the resolved theme/caller font — when the style names one, else
         // the bar-height-derived face this control has always used, so a themed font or text scale
         // reaches the page numbers (D09-STYLE-01).
-        let fallback_font = Font::simple("Sans", font_size);
+        let fallback_font = Font::simple_interned("Sans", font_size);
         let font = effective_font(style);
         let font = if style.font.is_some() { font } else { &fallback_font };
 
@@ -1257,7 +1265,7 @@ impl Draw for Pagination {
         // `to_string()`/`String::new()` allocated for every page number on every paint;
         // a pagination bar repaints whenever the table scrolls.
         use core::fmt::Write as _;
-        let mut label = String::new();
+        let mut label = core::mem::take(&mut self.label_scratch);
         for (index, cell) in plan.iter().enumerate() {
             let x = layout.numbered_rect.x + (index as u32 * cell_w) as i32;
             let cell_rect = Rect::new(x, rect.y, cell_w, rect.height);
@@ -1334,6 +1342,7 @@ impl Draw for Pagination {
                 Point::new(cell_rect.x + (cell_rect.width as i32 - text_width) / 2, line.y);
             context.draw_text(origin, label, font, color, HorizontalAlignment::Left);
         }
+        self.label_scratch = label;
 
         if let Some(jump_rect) = layout.jump_rect {
             self.draw_jump_cell(context, jump_rect, font, text_color, outline);

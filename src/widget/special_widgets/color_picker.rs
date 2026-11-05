@@ -85,6 +85,12 @@ pub struct ColorPicker {
     /// `RefCell` because the cache is refreshed from inside `draw`, which already holds a shared
     /// borrow of the widget for its resolved style.
     paint_cache: RefCell<Option<ColorPickerPaintCache>>,
+    /// The `#RRGGBBAA` readout text the paint pass spells.
+    ///
+    /// `hex_rgba()` returns an owned `String`, and `draw` asked for it twice per frame (once for
+    /// the measured cache entry, once for the readout), so the picker allocated two strings per
+    /// paint. The buffer is written in place by `Color::write_hex_rgba`.
+    hex_text_scratch: RefCell<String>,
     /// Emitted when selected color changes.
     pub color_changed: Signal1<Color>,
     /// Emitted when hex text changes.
@@ -130,6 +136,7 @@ impl ColorPicker {
             recent_enabled: false,
             recent_limit: 8,
             paint_cache: RefCell::new(None),
+            hex_text_scratch: RefCell::new(String::new()),
             presets: vec![
                 Color::rgb(244, 67, 54),
                 Color::rgb(33, 150, 243),
@@ -1030,7 +1037,10 @@ impl Draw for ColorPicker {
         let hue_rect = self.hue_rect();
         let alpha_rect = self.alpha_rect();
         let hex_font = effective_font(style);
-        let hex_text = self.hex_rgba();
+        let mut hex_scratch = self.hex_text_scratch.borrow_mut();
+        hex_scratch.clear();
+        self.color.write_hex_rgba(&mut hex_scratch);
+        let hex_text = hex_scratch.as_str();
         // One cache for the four gradients and the readout's line box. They are pure functions of
         // the rects, the hue and the colour, so a still picker rebuilds nothing (SP-P70).
         let key = PaintCacheKey {
@@ -1085,7 +1095,7 @@ impl Draw for ColorPicker {
                 GradientStop::new(0.0, self.color.with_alpha(0)),
                 GradientStop::new(1.0, self.color.with_alpha(255)),
             ]);
-            let metrics = context.measure_text(&hex_text, hex_font);
+            let metrics = context.measure_text(hex_text, hex_font);
             *self.paint_cache.borrow_mut() = Some(ColorPickerPaintCache {
                 key,
                 horizontal,
@@ -1141,7 +1151,6 @@ impl Draw for ColorPicker {
 
         // The hex readout takes the row immediately below the palette, which the palette's own
         // rectangle now leaves for it.
-        let hex_text = self.hex_rgba();
         let hex_height = cache.hex_height as i32;
         let hex_band = Rect::new(
             rect.x + 8,
@@ -1171,7 +1180,7 @@ impl Draw for ColorPicker {
                 // without re-measuring or re-shaping it (SP-P70).
                 context.draw_text(
                     Point::new(hex_band.x + fit_inset, hex_band.y),
-                    &hex_text,
+                    hex_text,
                     hex_font,
                     hex_ink,
                     HorizontalAlignment::Left,
@@ -1179,7 +1188,7 @@ impl Draw for ColorPicker {
             } else {
                 context.draw_text_fitted_cow(
                     hex_band,
-                    &hex_text,
+                    hex_text,
                     hex_font,
                     hex_ink,
                     HorizontalAlignment::Left,
@@ -1220,6 +1229,8 @@ impl Draw for ColorPicker {
         // fills the strip, so nothing from the panel shows through a stale hand-drawn copy.
         // The paint cache borrow is dropped first: the band mutates its own geometry below.
         drop(cache_guard);
+        // Same for the readout buffer: the recent band takes `&mut self`.
+        drop(hex_scratch);
         if self.recent_enabled && !self.recent.colors().is_empty() {
             self.sync_recent_geometry();
             self.recent.draw(context);

@@ -1136,6 +1136,12 @@ pub fn set_default_software_render_config(config: SoftwareRenderConfig) {
 pub fn default_software_render_config() -> SoftwareRenderConfig {
     *lock(global_software_render_config())
 }
+/// How many `push_offset` levels a [`RenderContext`] saves without allocating.
+///
+/// A container that translates its child (a navigation stack sliding a page, a scroll area
+/// moving its viewport) pushes one level; nesting two or three is ordinary. Eight covers the
+/// steady-state depth of every control in this crate while keeping the inline array small.
+const OFFSET_STACK_INLINE: usize = 8;
 /// Render context for custom widget drawing.
 ///
 /// Handed to widget draw code and wrapping a [`PaintBackend`]. Every primitive
@@ -1149,7 +1155,17 @@ pub struct RenderContext<'a> {
     /// Current translation applied to all subsequent draw primitives.
     offset_x: i32,
     offset_y: i32,
-    /// Stack of previous offsets, restored by [`RenderContext::pop_offset`].
+    /// Saved offsets for the first [`OFFSET_STACK_INLINE`] nesting levels.
+    ///
+    /// A context is built per frame, so an empty `Vec` for the saves allocated on the first
+    /// `push_offset` of *every* frame — one allocation per frame for any control that translates
+    /// a child (a navigation stack slides its pages, a scroll area moves its viewport). Shallow
+    /// nesting is the whole steady-state case, so those saves live inline and the heap is only
+    /// touched by a tree deeper than`OFFSET_STACK_INLINE`.
+    offset_inline: [(i32, i32); OFFSET_STACK_INLINE],
+    /// How many [`RenderContext::push_offset`] calls are active.
+    offset_depth: usize,
+    /// Saved offsets for nesting deeper than [`OFFSET_STACK_INLINE`].
     offset_stack: Vec<(i32, i32)>,
     /// When set, draw commands are recorded into control-level groups instead of being sent to
     /// the backend immediately. [`RenderContext::end_region_buckets`] replays them per region.
@@ -1496,6 +1512,8 @@ impl<'a> RenderContext<'a> {
             backend,
             offset_x: 0,
             offset_y: 0,
+            offset_inline: [(0, 0); OFFSET_STACK_INLINE],
+            offset_depth: 0,
             offset_stack: Vec::new(),
             buckets: None,
             last_region_passes: 0,
@@ -1614,17 +1632,30 @@ impl<'a> RenderContext<'a> {
     /// Used by viewport containers such as `ScrollArea` to translate child
     /// content by the negative scroll position.
     pub fn push_offset(&mut self, dx: i32, dy: i32) {
-        self.offset_stack.push((self.offset_x, self.offset_y));
+        let saved = (self.offset_x, self.offset_y);
+        if self.offset_depth < OFFSET_STACK_INLINE {
+            self.offset_inline[self.offset_depth] = saved;
+        } else {
+            self.offset_stack.push(saved);
+        }
+        self.offset_depth += 1;
         self.offset_x += dx;
         self.offset_y += dy;
     }
     /// Restores the translation offset in effect before the matching
     /// [`RenderContext::push_offset`]. No-op when no offset is pushed.
     pub fn pop_offset(&mut self) {
-        if let Some(previous) = self.offset_stack.pop() {
-            self.offset_x = previous.0;
-            self.offset_y = previous.1;
+        if self.offset_depth == 0 {
+            return;
         }
+        self.offset_depth -= 1;
+        let previous = if self.offset_depth < OFFSET_STACK_INLINE {
+            self.offset_inline[self.offset_depth]
+        } else {
+            self.offset_stack.pop().unwrap_or((0, 0))
+        };
+        self.offset_x = previous.0;
+        self.offset_y = previous.1;
     }
     fn offset_rect(&self, rect: Rect) -> Rect {
         let mut translated = rect;

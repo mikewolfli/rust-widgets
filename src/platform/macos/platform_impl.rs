@@ -1407,6 +1407,12 @@ impl Platform for MacOSPlatform {
         self.state.widget_geometry(widget_id).map(|(x, y, _, _)| (x, y))
     }
 
+    /// AppKit's window delegate reports a drag the user finished (see the `windowDidMove:`
+    /// translation in the canvas backend), so the position mirror follows a real move.
+    fn reports_window_moves(&self) -> bool {
+        true
+    }
+
     /// Moves the frame through AppKit and records the accepted position as the fallback.
     fn set_window_position(&self, widget_id: ObjectId, x: i32, y: i32) -> bool {
         if super::types::is_main_thread() {

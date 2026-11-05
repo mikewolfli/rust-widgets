@@ -327,6 +327,15 @@ impl Font {
     pub(crate) fn simple_interned(family: &str, size: f32) -> Self {
         Self::new_interned(family, size, false, false)
     }
+    /// [`Self::with_weight`] for a borrowed family name; see [`Self::new_interned`].
+    ///
+    /// The per-frame callers are faces derived at a non-default weight (a carousel title
+    /// card's semibold label), which `simple_interned` cannot express without changing the
+    /// weight.
+    #[cfg_attr(not(full_widgets), allow(dead_code))]
+    pub(crate) fn with_weight_interned(family: &str, size: f32, weight: u16, italic: bool) -> Self {
+        Self::with_weight_shared(intern_family(family), size, weight, italic)
+    }
     /// Creates a font descriptor with explicit weight.
     pub fn with_weight(family: impl Into<String>, size: f32, weight: u16, italic: bool) -> Self {
         Self::with_weight_shared(font_family(family), size, weight, italic)

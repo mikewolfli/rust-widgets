@@ -456,23 +456,33 @@ requires with no default) and nothing reported it. `check_demo_crates.sh` is the
 |---|---|---|
 | `check_demo_crates.sh` | renamed `fn arrange(` → `fn arrange_removed(` in `demo/control/src/app.rs`, so that crate no longer implements the required `Layout::arrange` | `═══ DEMO CRATE: demo/control ═══` / `error[E0046]: not all trait items implemented, missing: \`arrange\`` / `  ❌ demo/control does not compile` / `check_demo_crates: passed=2 failed=1` |
 
+## Round 12 (2026-11-06) — regression round (appearance, caches, cross targets)
+
+| gate | injected | reported |
+|---|---|---|
+| `check_platform_facts_matrix.sh` | removed the `reports_window_moves` row from `docs/plans/platform_facts_matrix.md`, which the gate regenerates from the `Platform` trait | `FAIL: .../docs/plans/platform_facts_matrix.md is stale; run tools/generate_platform_facts_matrix.py` / `RESULT: FAIL` (after restoring the file: `PASS: ... matches the source`) |
+| `check_profile_target_matrix.sh` | added a nonexistent `not-a-feature` to the `desktop@windows` cell feature list | `error: the package 'rust_widgets' does not contain this feature: not-a-feature` / `FAIL desktop@windows (exit 101)` (restored byte-identical; the gate passes 14/14 cells) |
+| `check_platform_probe.sh` | removed the `"open_external",` row from `DIAGNOSTIC_NAMES` in `src/platform/diagnostics.rs` | `FAIL: bit names/order drifted: got [clipboard_mime … file_dialog ], expected [… file_dialog open_external ]` / `RESULT: FAIL` (restored: `RESULT: PASS`) |
+| `check_target_backend_selection.sh` | first: renamed `WasmPlatform::default()` to `WasmBackend::default()` while the gate still matched the bare type name — **the gate stayed green**, exposing a substring-only judgement; after anchoring every pattern to its `Box::new(...)` construction shape, the same rename was repeated | `FAIL: wasm32 selects WasmPlatform (missing 'Box::new(crate::platform::wasm::WasmPlatform::default())' in runtime.rs)` / `RESULT: FAIL` (restored: `RESULT: PASS`) |
+| `check_platform_docs_truthfulness.sh` | first version was vacuous: the source pattern equalled the claim token, so the claiming doc comment satisfied it. After anchoring to call shapes, renamed the real `window.setContentMinSize_(size)` call to `setContentMinSizeRenamed_` | `claiming file without a boundary: src/platform/macos_objc2/native.rs` / `FAIL: setContentMinSize is claimed without a source call or an explicit unsupported note` / `RESULT: FAIL` (restored: `RESULT: PASS`) |
+| `check_native_control_paths.sh` | two probes. First appended `// get_platform().create_button()` to `src/lib.rs` and the gate **stayed green** (prose satisfied it). After anchoring to non-comment lines, appended a real `fn _injected_probe() { let _ = ...get_platform().create_button(); }` | code probe: `FAIL: src/lib.rs calls a Platform::create_* directly` / `RESULT: FAIL`; the comment probe still: `RESULT: PASS` (restored: `RESULT: PASS`) |
+
 ### Bookkeeping: gates named but not yet injected
 
 `check_gates_are_worth_running.sh` step [3/3] fails when a gate has **no line at all** here.
-These eight gates existed without one (a pre-existing gap found while wiring the demo gate).
-The `—` rows record them as the honest backlog the file's own status column defines, rather
-than inventing an injection that was never run.
+These two gates still exist without one, and both are **host-limited**: the BSD and Redox targets
+are not installed on this machine (a Rust target for Redox is not distributed through rustup), so
+there is nothing to inject them into. The `—` rows record them as the honest backlog the file's
+own status column defines, rather than inventing an injection that was never run.
+
+The other six of the original eight were injected in round 12 (four are recorded above; two of
+those probes first **stayed green** and exposed vacuous assertions, which is why the gates were
+anchored before the successful injection).
 
 | gate | injected | reported |
 |---|---|---|
 | `check_bsd_cross.sh` | — | — |
-| `check_native_control_paths.sh` | — | — |
-| `check_platform_docs_truthfulness.sh` | — | — |
-| `check_platform_facts_matrix.sh` | — | — |
-| `check_platform_probe.sh` | — | — |
-| `check_profile_target_matrix.sh` | — | — |
 | `check_redox_cross.sh` | — | — |
-| `check_target_backend_selection.sh` | — | — |
 
 ## Round 11 (2026-10-28) — gates that had no record
 

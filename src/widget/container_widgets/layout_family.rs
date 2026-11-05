@@ -294,7 +294,7 @@ fn wrapper_palette(base: &BaseWidget, role: &str) -> WrapperPalette {
         .font
         .clone()
         .or_else(|| themed.as_ref().and_then(|resolved| resolved.font.clone()))
-        .unwrap_or_else(|| Font::simple("Arial", 12.0));
+        .unwrap_or_else(|| Font::simple_interned("Arial", 12.0));
     WrapperPalette { surface, ink, accent, font }
 }
 

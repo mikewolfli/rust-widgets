@@ -826,26 +826,27 @@ impl MdiArea {
     /// The geometry and visibility setters carry their own unchanged guards, so calling this from
     /// a draw fallback costs two comparisons per sub-window on a static frame.
     pub fn place_subwindows(&self) {
-        let placements: Vec<(ObjectId, Option<Rect>)> = (0..self.subwindows.len())
-            .map(|index| {
-                let subwindow = &self.subwindows[index];
-                let content = if subwindow.minimized {
-                    None
-                } else {
-                    self.subwindow_placement(index).map(|placement| {
-                        let bar = if placement.title_bar { TITLE_BAR_HEIGHT as u32 } else { 0 };
-                        Rect::new(
-                            placement.frame.x,
-                            placement.frame.y + bar as i32,
-                            placement.frame.width,
-                            placement.frame.height.saturating_sub(bar),
-                        )
-                    })
-                };
-                (subwindow.widget, content)
-            })
-            .collect();
-        for (widget, content) in placements {
+        // No intermediate `Vec`: the placement is read from `self.subwindows` and written to a
+        // *different* widget through the runtime, so the immutable borrow of the list is enough.
+        // The previous version collected `(id, rect)` pairs first and consumed them, which
+        // allocated once per call — and `draw` calls this every frame, so a still MDI area paid
+        // one allocation per frame for bookkeeping that never escaped the function.
+        for index in 0..self.subwindows.len() {
+            let subwindow = &self.subwindows[index];
+            let widget = subwindow.widget;
+            let content = if subwindow.minimized {
+                None
+            } else {
+                self.subwindow_placement(index).map(|placement| {
+                    let bar = if placement.title_bar { TITLE_BAR_HEIGHT as u32 } else { 0 };
+                    Rect::new(
+                        placement.frame.x,
+                        placement.frame.y + bar as i32,
+                        placement.frame.width,
+                        placement.frame.height.saturating_sub(bar),
+                    )
+                })
+            };
             #[cfg(not(alloc_frugal))]
             match content {
                 Some(rect) => {

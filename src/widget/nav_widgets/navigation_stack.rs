@@ -573,8 +573,9 @@ impl NavigationStack {
     /// Returns the title to display in the navigation bar.
     ///
     /// A `Cow` rather than a `String`: the two stored cases are borrowed, so a settled frame no
-    /// longer clones the title merely to paint it (N-002). Only the fallback that spells the page
-    /// kind has to allocate.
+    /// longer clones the title merely to paint it (N-002). The page-kind fallback is borrowed too:
+    /// `WidgetKind::css_name` spells every variant exactly as its `Debug` form did, so the label is
+    /// a `&'static str` rather than a `format!` per frame.
     fn display_title(&self) -> Cow<'_, str> {
         if let Some(title) = self
             .current_page_index()
@@ -586,7 +587,7 @@ impl NavigationStack {
         if !self.navigation_bar_title.is_empty() {
             Cow::Borrowed(&self.navigation_bar_title)
         } else if let Some(page) = self.current_page() {
-            Cow::Owned(format!("{:?}", page.kind()))
+            Cow::Borrowed(page.kind().css_name())
         } else {
             Cow::Borrowed("Navigation")
         }

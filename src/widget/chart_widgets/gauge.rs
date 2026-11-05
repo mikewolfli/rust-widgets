@@ -842,7 +842,7 @@ impl Draw for Gauge {
 
         // The readout: the value with its unit, and the caption beneath it. Both are bounded to
         // the inner square, so a long unit cannot run past the dial.
-        let font = style.font.clone().unwrap_or_else(|| Font::simple("Arial", 12.0));
+        let font = style.font.clone().unwrap_or_else(|| Font::simple_interned("Arial", 12.0));
         let mut cache = self.readout_cache.borrow_mut();
         if cache.as_ref().is_none_or(|(bits, _)| *bits != self.value.to_bits()) {
             let readout = if self.unit.is_empty() {

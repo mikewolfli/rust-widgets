@@ -101,6 +101,7 @@ use crate::widget::menu_toolbar::menu_button::{MenuButton, MenuItem};
 use crate::widget::menu_toolbar::tool_bar::ToolBar;
 use crate::widget::misc_widgets::avatar::{Avatar, GroupAvatar};
 use crate::widget::misc_widgets::date_range_picker::{RangePreset, RangePresetBar};
+use crate::widget::misc_widgets::mobile_date_picker::MobileDatePicker;
 use crate::widget::misc_widgets::preset_chip_bar::PresetChipBar;
 use crate::widget::misc_widgets::segmented_button::{Segment, SegmentedButton};
 use crate::widget::nav_widgets::bottom_navigation_bar::BottomNavigationBar;
@@ -133,6 +134,14 @@ use crate::widget::view_widgets::tree_table::TreeTable;
 use crate::widget::view_widgets::tree_view::{TreeView, VecTreeModel};
 use crate::widget::view_widgets::virtual_list::VirtualList;
 use crate::widget::view_widgets::virtual_table::VirtualTable;
+
+/// The day every date-bearing sample is pinned to.
+///
+/// A committed snapshot must regenerate on any machine on any day, so the sample data — not the
+/// control — names the date it shows. The exporter pins the thread-local clock to the same day
+/// (RW-56), so a control that marks "today" and a control that shows a selected day agree, and
+/// both stay byte-identical tomorrow.
+pub const SNAPSHOT_DAY: (i32, u32, u32) = (2026, 9, 16);
 
 /// Fills `widget` with this crate's sample data, returning `true` when it wrote something.
 ///
@@ -243,6 +252,18 @@ pub fn apply(name: &str, widget: &mut dyn Widget) -> bool {
                     // reports the failure instead of silently leaving the sample date-dependent.
                     None => false,
                 }
+            }
+            None => false,
+        },
+
+        // `MobileDatePicker::new` starts on a fixed literal date and `draw` marks the wall-clock
+        // day with an accent dot, so the picture used to depend on the day it was generated: the
+        // dot wandered or vanished as the calendar moved. The arm names the pinned snapshot day,
+        // which puts the selected value and the marker in the same picture and on a fixed date.
+        "mobile_date_picker" => match widget_as_mut::<MobileDatePicker>(widget) {
+            Some(picker) => {
+                picker.set_date(SNAPSHOT_DAY.0, SNAPSHOT_DAY.1, SNAPSHOT_DAY.2);
+                true
             }
             None => false,
         },
@@ -1459,6 +1480,16 @@ impl IncrementalTableDataSource for SampleTableSource {
 
     fn fill_cell(&self, row: usize, column: usize, out: &mut String) -> bool {
         SampleTableModel.fill_data(row, column, out)
+    }
+
+    /// The sample table is a fixed array, so its projection never changes.
+    ///
+    /// Reporting a revision is what tells a virtual table/data grid that its window cache may be
+    /// trusted: a source with no revision is refetched on **every** paint, which for the sample
+    /// meant rebuilding every visible cell's text per frame. A constant revision is the honest
+    /// statement for immutable data.
+    fn revision(&self) -> u64 {
+        1
     }
 }
 

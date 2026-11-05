@@ -851,7 +851,7 @@ impl Draw for Accordion {
             .or_else(|| themed.as_ref().and_then(|resolved| resolved.text_color))
             .unwrap_or(window_foreground);
         let accent = themed.as_ref().and_then(|resolved| resolved.border_color).unwrap_or(accent);
-        let font = style.font.clone().unwrap_or_else(|| Font::simple("Arial", 12.0));
+        let font = style.font.clone().unwrap_or_else(|| Font::simple_interned("Arial", 12.0));
 
         // The sections run as tall as their content makes them; the clip bounds them to the
         // control, so a stack longer than the control cannot paint on whatever is below it.

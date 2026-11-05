@@ -744,7 +744,7 @@ impl Tooltip {
     /// (D09-STYLE-02). The theme body font reaches a tooltip through `style.font`, so a text-scale
     /// preference now enlarges the bubble as well as its ink.
     fn bubble_font(&self) -> Font {
-        self.style().font.clone().unwrap_or_else(|| Font::simple("sans-serif", self.font_size))
+        self.style().font.clone().unwrap_or_else(|| Font::simple_interned("sans-serif", self.font_size))
     }
 }
 

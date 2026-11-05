@@ -723,6 +723,25 @@ mod tests {
         assert_eq!(sw.current_widget(), Some(widget_id_3()));
     }
 
+    /// Removing the current page shows its successor, or the new last page.
+    ///
+    /// This is the `StackLayout` rule the widget delegates to. It used to show the predecessor;
+    /// the rule is documented and pinned here so the two layers cannot drift again.
+    #[test]
+    fn stacked_widget_removing_the_current_page_selects_the_successor() {
+        let mut sw = StackedWidget::new(Rect::new(0, 0, 300, 200));
+        sw.add_widget(widget_id_1());
+        sw.add_widget(widget_id_2());
+        sw.add_widget(widget_id_3());
+        sw.set_current_index(1);
+        sw.remove_widget(widget_id_2());
+        assert_eq!(sw.current_widget(), Some(widget_id_3()), "the successor took the slot");
+
+        sw.set_current_index(1);
+        sw.remove_widget(widget_id_3());
+        assert_eq!(sw.current_widget(), Some(widget_id_1()), "the new last page is selected");
+    }
+
     #[test]
     fn stacked_widget_remove_widget_above_current_index_does_not_change_it() {
         let mut sw = StackedWidget::new(Rect::new(0, 0, 300, 200));

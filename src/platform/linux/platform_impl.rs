@@ -1831,6 +1831,12 @@ impl Platform for LinuxPlatform {
         self.state.widget_geometry(widget_id).map(|(x, y, _, _)| (x, y))
     }
 
+    /// GTK's `configure-event` reports a window-manager move, which the backend translates into
+    /// the shared move notification.
+    fn reports_window_moves(&self) -> bool {
+        true
+    }
+
     /// Moves the toplevel with `gtk::Window::move_`, keeping its size and focus.
     fn set_window_position(&self, widget_id: crate::core::ObjectId, x: i32, y: i32) -> bool {
         #[cfg(all(unix_desktop, feature = "gtk-native"))]

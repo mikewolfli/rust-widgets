@@ -703,8 +703,8 @@ impl I18nManager {
         // Walk the BCP-47 parent chain: `zh-Hans-CN` -> `zh-Hans` -> `zh`. A catalogue keyed by a
         // more specific tag wins; a region-only variant therefore still finds its language's text
         // instead of jumping straight to the fallback. `skip(1)` drops the tag already tried above.
-        for candidate in bcp47_lookup_chain(&self.current_language).into_iter().skip(1) {
-            if self.lookup_into(&candidate, key, context, count, out) {
+        for candidate in bcp47_lookup_chain(&self.current_language).skip(1) {
+            if self.lookup_into(candidate, key, context, count, out) {
                 return;
             }
         }
@@ -767,20 +767,24 @@ crate::impl_default_via_new!(I18nManager);
 /// Private because it exists to serve [`I18nManager::translate_with_context_into`], whose
 /// documented behaviour is the contract; a caller that wants to resolve keys itself uses
 /// [`I18nManager::catalogue_for`].
-fn bcp47_lookup_chain(tag: &str) -> Vec<String> {
-    let mut chain = Vec::new();
-    if tag.is_empty() {
-        return chain;
-    }
+///
+/// The candidates are prefixes of the tag itself, so they are borrowed slices rather than owned
+/// `String`s: a label whose key is missing from the active language walks this chain on **every
+/// paint**, and building a `Vec<String>` there allocated once per frame per label.
+fn bcp47_lookup_chain(tag: &str) -> impl Iterator<Item = &str> {
     let mut current = tag;
-    loop {
-        chain.push(current.to_string());
+    let mut done = tag.is_empty();
+    core::iter::from_fn(move || {
+        if done {
+            return None;
+        }
+        let candidate = current;
         match current.rfind(['-', '_']) {
             Some(index) => current = &current[..index],
-            None => break,
+            None => done = true,
         }
-    }
-    chain
+        Some(candidate)
+    })
 }
 
 /// Appends `message` to `out` with every `{name}` placeholder replaced by its argument.

@@ -86,6 +86,10 @@ const ADJUST_INTERVAL_FRAMES: usize = 60;
 /// pressure detection live to within a second — well inside the timescale on
 /// which memory pressure or CPU load actually develops — while the frame path
 /// only ever reads the last published round.
+// The interval is only read by the background probe loop, which does not exist on wasm (the
+// browser is single-threaded and its backend answers `None` for both probes). Gating the constant
+// with the loop keeps a wasm build warning-free without inventing a second value.
+#[cfg(not(target_arch = "wasm32"))]
 const UTILIZATION_SAMPLE_INTERVAL: core::time::Duration = core::time::Duration::from_secs(1);
 
 /// Classification of a single frame against the adaptivity thresholds.
@@ -363,6 +367,7 @@ impl UtilizationSnapshot {
     /// Clamping here means every reader of the shared snapshot can trust the
     /// range without re-checking, and a platform that returns a slightly
     /// out-of-range figure cannot leak into the pressure thresholds.
+    #[cfg(not(target_arch = "wasm32"))]
     fn publish(&mut self, memory: Option<f32>, cpu: Option<f32>) {
         self.memory = memory.map(|ratio| ratio.clamp(0.0, 1.0));
         self.cpu = cpu.map(|ratio| ratio.clamp(0.0, 1.0));

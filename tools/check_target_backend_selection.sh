@@ -8,6 +8,13 @@
 # library selects. This gate reads the selection function instead and asserts that every supported
 # target family has an arm naming its backend. A target added without an arm silently falls through
 # to the portable stub — the tvOS/visionOS failure this gate exists to prevent.
+#
+# # Why the patterns include `Box::new(...)`
+#
+# The first version matched the bare type name. A doc comment that mentions `WasmPlatform`
+# therefore satisfied the check, and renaming the real construction to `WasmBackend` left the gate
+# green — the textual-gate failure principle #106 is about. The pattern is now the construction
+# shape, so only an arm that actually returns that backend can satisfy it.
 
 set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -29,15 +36,15 @@ require() {
     fi
 }
 
-require 'WindowsPlatform' 'Windows selects WindowsPlatform'
-require 'SelectedMacOSPlatform' 'macOS selects the cocoa/objc2 bridge'
-require 'AndroidPlatform' 'Android selects AndroidPlatform'
-require 'IosMobilePlatform' 'the Apple UIKit family selects IosMobilePlatform'
-require 'HarmonyPlatform' 'OpenHarmony selects HarmonyPlatform'
-require 'OrbitalPlatform' 'Redox selects OrbitalPlatform'
-require 'WasmPlatform' 'wasm32 selects WasmPlatform'
-require 'LinuxPlatform' 'unix desktop selects LinuxPlatform'
-require 'WaylandPlatform' 'Wayland selects WaylandPlatform'
+require 'Box::new(WindowsPlatform::new())' 'Windows selects WindowsPlatform'
+require 'Box::new(SelectedMacOSPlatform::new())' 'macOS selects the cocoa/objc2 bridge'
+require 'Box::new(AndroidPlatform::new())' 'Android selects AndroidPlatform'
+require 'Box::new(IosMobilePlatform::new())' 'the Apple UIKit family selects IosMobilePlatform'
+require 'Box::new(HarmonyPlatform::new())' 'OpenHarmony selects HarmonyPlatform'
+require 'Box::new(crate::platform::redox::OrbitalPlatform::new())' 'Redox selects OrbitalPlatform'
+require 'Box::new(crate::platform::wasm::WasmPlatform::default())' 'wasm32 selects WasmPlatform'
+require 'Box::new(LinuxPlatform::new())' 'unix desktop selects LinuxPlatform'
+require 'Box::new(WaylandPlatform::new())' 'Wayland selects WaylandPlatform'
 
 # The Apple alias must be declared once, in build.rs, and consumed by the selection arms.
 if grep -q 'apple_uikit' "$BUILD_RS"; then
@@ -53,7 +60,7 @@ fi
 
 # A target family with no arm would land on the stub. The stub is a legitimate *fallback* but must
 # be the portable backend, not a silent wrong selection.
-if grep -q 'StubPlatform' "$RUNTIME"; then
+if grep -qF 'Box::new(crate::platform::stub::StubPlatform::new(' "$RUNTIME"; then
     pass 'the no-backend fallback is the explicit portable stub'
 else
     fail 'no explicit fallback in runtime.rs'

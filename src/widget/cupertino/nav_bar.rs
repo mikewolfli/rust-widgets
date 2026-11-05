@@ -121,14 +121,18 @@ pub struct CupertinoNavigationBar {
     title_widget: Option<crate::compat::Box<dyn Widget>>,
     /// Bumped by every mutation of [`Self::leading_items`] / [`Self::trailing_items`].
     items_version: u64,
-    /// The leading items' ink widths, keyed by `(items_version, font size bits)`.
+    /// The leading items' ink widths, keyed by `(items_version, font)`.
+    ///
+    /// The face is compared whole: an item's advance depends on its family, italic setting and
+    /// tracking as well as its size, so a size-only key kept the old widths when the theme
+    /// changed the face at the same size (the text and its hit areas then disagreed).
     ///
     /// `draw` and the release hit test both need one width per item, and each used to rebuild a
     /// `Vec<u32>` and re-walk every caption per frame and per press. The cache is the same
     /// `(version, font bits)` key `Menu`'s trailing column uses (MW2-01).
-    leading_widths_cache: Option<(u64, u32, crate::compat::Rc<[u32]>)>,
+    leading_widths_cache: Option<(u64, crate::core::Font, crate::compat::Rc<[u32]>)>,
     /// The trailing items' ink widths, keyed the same way as [`Self::leading_widths_cache`].
-    trailing_widths_cache: Option<(u64, u32, crate::compat::Rc<[u32]>)>,
+    trailing_widths_cache: Option<(u64, crate::core::Font, crate::compat::Rc<[u32]>)>,
 }
 
 impl CupertinoNavigationBar {
@@ -395,25 +399,23 @@ impl CupertinoNavigationBar {
     /// The slice is shared behind an `Rc` so both the paint pass and the release hit test can
     /// read it without copying (MW2-01).
     fn leading_item_widths(&mut self, font: &crate::core::Font) -> crate::compat::Rc<[u32]> {
-        let font_bits = font.size().to_bits();
-        if let Some((version, cached_bits, widths)) = &self.leading_widths_cache {
-            if *version == self.items_version && *cached_bits == font_bits {
+        if let Some((version, cached_font, widths)) = &self.leading_widths_cache {
+            if *version == self.items_version && cached_font == font {
                 return crate::compat::Rc::clone(widths);
             }
         }
         let widths: crate::compat::Rc<[u32]> =
             self.leading_items.iter().map(|item| item.ink_width(font)).collect::<Vec<u32>>().into();
         self.leading_widths_cache =
-            Some((self.items_version, font_bits, crate::compat::Rc::clone(&widths)));
+            Some((self.items_version, font.clone(), crate::compat::Rc::clone(&widths)));
         widths
     }
 
     /// The trailing items' ink widths at `font`; the counterpart of
     /// [`Self::leading_item_widths`].
     fn trailing_item_widths(&mut self, font: &crate::core::Font) -> crate::compat::Rc<[u32]> {
-        let font_bits = font.size().to_bits();
-        if let Some((version, cached_bits, widths)) = &self.trailing_widths_cache {
-            if *version == self.items_version && *cached_bits == font_bits {
+        if let Some((version, cached_font, widths)) = &self.trailing_widths_cache {
+            if *version == self.items_version && cached_font == font {
                 return crate::compat::Rc::clone(widths);
             }
         }
@@ -424,7 +426,7 @@ impl CupertinoNavigationBar {
             .collect::<Vec<u32>>()
             .into();
         self.trailing_widths_cache =
-            Some((self.items_version, font_bits, crate::compat::Rc::clone(&widths)));
+            Some((self.items_version, font.clone(), crate::compat::Rc::clone(&widths)));
         widths
     }
 

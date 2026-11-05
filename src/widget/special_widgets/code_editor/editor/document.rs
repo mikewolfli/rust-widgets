@@ -235,6 +235,15 @@ impl CodeEditorDocument {
             .collect()
     }
 
+    /// The buffer slots, borrowed for a paint pass.
+    ///
+    /// The tab strip needs each title as a `&str` and nothing else. [`Self::buffer_summaries`]
+    /// clones a title per tab, which allocated once per tab per frame on the editor's hottest
+    /// repaint path; a borrowed guard lets the strip read the titles in place.
+    pub(crate) fn slots(&self) -> std::cell::Ref<'_, Vec<EditorBufferSlot>> {
+        self.slots.borrow()
+    }
+
     /// The title of buffer `index`.
     pub(crate) fn title_at(&self, index: usize) -> Option<String> {
         self.slots.borrow().get(index).map(|slot| slot.title.clone())

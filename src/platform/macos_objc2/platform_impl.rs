@@ -474,6 +474,12 @@ impl Platform for MacOSObjc2Platform {
         self.state.widget_geometry(window_id).map(|(x, y, _, _)| (x, y))
     }
 
+    /// The AppKit window delegate reports a real move, which the native layer translates into
+    /// the shared move notification.
+    fn reports_window_moves(&self) -> bool {
+        true
+    }
+
     /// Moves the frame through AppKit and records the accepted position as the fallback.
     fn set_window_position(&self, window_id: u64, x: i32, y: i32) -> bool {
         #[cfg(all(target_os = "macos", feature = "macos"))]

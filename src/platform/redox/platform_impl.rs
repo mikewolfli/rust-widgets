@@ -520,7 +520,7 @@ impl OrbitalPlatform {
                 // absolute position — `EventOption` has no move variant, and the compositor owns
                 // placement. Inventing a position to feed `notify_window_moved` would be the
                 // "hardcoded pretending value" rule #37 forbids, so the mirror keeps the position
-                // the host last set.
+                // the host last set. `Platform::reports_window_moves` answers `false` here.
                 Pending::FocusGained(window) => {
                     crate::platform::window_control::notify_window_focus(window, true);
                 }

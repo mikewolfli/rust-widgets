@@ -49,6 +49,13 @@ thread_local! {
 }
 
 /// The window that most recently gained keyboard focus, if the platform reported one.
+/// The window that most recently gained keyboard focus, as reported by the platform's focus
+/// notification.
+///
+/// Not every build compiles the handle layer that reads this (a cross cell may enable a platform
+/// backend without `desktop-runtime`), so the accessor is allowed to be unused rather than
+/// producing a warning in those cells.
+#[allow(dead_code)]
 pub(crate) fn active_window_id() -> Option<ObjectId> {
     ACTIVE_WINDOW.try_with(|active| active.get()).unwrap_or(None)
 }
@@ -71,6 +78,13 @@ pub(crate) fn window_position_mirror(window_id: ObjectId) -> Option<Point> {
 /// A window create/destroy loop used to leak one entry per window: the mirror had a writer and a
 /// reader but no removal, so `remove_callbacks` could not make good on "remove every callback and
 /// mirror for this id" (HB-02).
+/// Removes the library-side position mirror for `window_id`.
+///
+/// A window create/destroy loop used to leak one entry per window: the mirror had a writer and a
+/// reader but no removal, so `remove_callbacks` could not make good on "remove every callback and
+/// mirror for this id" (HB-02). Like [`active_window_id`], the handle layer that calls this is not
+/// compiled by every cross cell.
+#[allow(dead_code)]
 pub(crate) fn remove_window_position(window_id: ObjectId) -> bool {
     WINDOW_POSITIONS.with(|positions| positions.borrow_mut().remove(&window_id).is_some())
 }

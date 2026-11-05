@@ -849,7 +849,7 @@ impl Draw for NumberPicker {
         // The **effective font**: the resolved theme/caller font when the style names one, else the
         // row-height-derived face this control has always used. Either way the hint, the row height
         // and the ink agree (D09-STYLE-01).
-        let fallback_font = Font::simple("Sans", (row_h as f32 * 0.55).max(8.0));
+        let fallback_font = Font::simple_interned("Sans", (row_h as f32 * 0.55).max(8.0));
         let font = style.font.as_ref().unwrap_or(&fallback_font);
 
         // Selection band across the centre row.

@@ -78,9 +78,13 @@ struct LegendArea {
     rows: usize,
 }
 
-/// The cached hover tooltip: `(slice index, values revision)` followed by the text and its
+/// The cached hover tooltip: the inputs it is a pure function of, followed by the text and its
 /// measured size.
-type ReadoutCache = ((usize, u64), String, u32, u32);
+///
+/// The inputs are the slice index, the values revision, the **whole** face and the DPI: the box
+/// reserves the measured size, so a family/italic/tracking change at the same size (or another
+/// screen scale) has to miss a cache keyed only by the first two.
+type ReadoutCache = ((usize, u64, crate::core::Font, u32), String, u32, u32);
 
 /// A circular pie chart widget with colored sectors.
 ///
@@ -150,6 +154,22 @@ pub struct PieChart {
     /// The hovered slice's tooltip text and measured size, keyed by
     /// `(slice index, values revision)`.
     readout_cache: RefCell<Option<ReadoutCache>>,
+    /// The vertex ring the sector painter rebuilds for each slice.
+    ///
+    /// `sector_polygon` returned a fresh `Vec<Point>` per slice per frame. A pie repaints every
+    /// frame its hover or explode animation runs, so the ring is cleared and refilled in place
+    /// instead.
+    sector_scratch: RefCell<Vec<Point>>,
+    /// The percentage label text the paint loop formats into.
+    ///
+    /// The text is at most four characters, and a fresh `String` per frame allocated on its
+    /// first `write!` even though the buffer is cleared for every slice.
+    pct_text_scratch: RefCell<String>,
+    /// The label boxes already placed in this frame's ring.
+    ///
+    /// Label placement is "one box per label, no overlap", so the pass needs the boxes it has
+    /// already accepted. That was a fresh `Vec<Rect>` per frame.
+    label_bounds_scratch: RefCell<Vec<Rect>>,
     /// Emitted with `(slice, visible)` after a legend click or [`Self::set_series_visible`].
     pub series_toggled: Signal1<(usize, bool)>,
     /// Emitted with the slice index when hover enters a slice.
@@ -202,6 +222,9 @@ impl PieChart {
             last_pointer: None,
             values_revision: 0,
             readout_cache: RefCell::new(None),
+            pct_text_scratch: RefCell::new(String::new()),
+            sector_scratch: RefCell::new(Vec::new()),
+            label_bounds_scratch: RefCell::new(Vec::new()),
             series_toggled: Signal1::new(),
             slice_hovered: Signal1::new(),
             slice_unhovered: Signal1::new(),
@@ -861,6 +884,7 @@ impl PieChart {
     /// the same angular stepping, so the visual result is identical.
     fn fill_pie_sector(
         context: &mut RenderContext,
+        ring: &mut Vec<Point>,
         center: Point,
         start_angle: f32,
         end_angle: f32,
@@ -870,6 +894,7 @@ impl PieChart {
     ) {
         let sweep = end_angle - start_angle;
         if sweep.abs() < 0.001 || outer_radius <= 0.0 {
+            ring.clear();
             return;
         }
 
@@ -877,22 +902,24 @@ impl PieChart {
         // smooth and a sliver stays cheap.
         let steps = (sweep.abs() * outer_radius / 6.0).ceil() as u32;
         #[cfg(feature = "chart")]
-        let ring = crate::widget::chart_widgets::charts::sector_polygon(
+        crate::widget::chart_widgets::charts::sector_polygon_into(
             center,
             outer_radius,
             inner_radius,
             start_angle,
             end_angle,
             steps,
+            ring,
         );
         #[cfg(not(feature = "chart"))]
-        let ring = Self::sector_polygon_local(
+        Self::sector_polygon_local_into(
             center,
             outer_radius,
             inner_radius,
             start_angle,
             end_angle,
             steps,
+            ring,
         );
 
         if ring.len() < 3 {
@@ -929,20 +956,21 @@ impl PieChart {
     /// reversed, or a single apex for a solid wedge) so tablet/mobile render the
     /// same shape as profiles that use the shared engine.
     #[cfg(not(feature = "chart"))]
-    fn sector_polygon_local(
+    fn sector_polygon_local_into(
         center: Point,
         outer_radius: f32,
         inner_radius: f32,
         start_angle: f32,
         end_angle: f32,
         steps: u32,
-    ) -> Vec<Point> {
+        vertices: &mut Vec<Point>,
+    ) {
+        vertices.clear();
         let sweep = end_angle - start_angle;
         if sweep.abs() < f32::EPSILON || outer_radius <= 0.0 {
-            return Vec::new();
+            return;
         }
         let steps = steps.clamp(3, 180);
-        let mut vertices = Vec::with_capacity((steps as usize + 1) * 2);
         for step in 0..=steps {
             let angle = start_angle + sweep * (step as f32 / steps as f32);
             vertices.push(Self::point_on_circle(center, outer_radius, angle));
@@ -955,7 +983,6 @@ impl PieChart {
         } else {
             vertices.push(center);
         }
-        vertices
     }
 
     /// Fills a triangle using scanline rasterization (each row is a 1px fill_rect).
@@ -1345,8 +1372,10 @@ impl Draw for PieChart {
         // per frame, and the text is at most four characters.
         // Labels are placed one at a time and must not land on an earlier label; the
         // `angle_cache` already omits zero-share slices, so they never reach this list.
-        let mut occupied_labels: Vec<Rect> = Vec::new();
-        let mut pct_text = crate::compat::String::new();
+        let mut occupied_labels = self.label_bounds_scratch.borrow_mut();
+        occupied_labels.clear();
+        let mut ring = self.sector_scratch.borrow_mut();
+        let mut pct_text = self.pct_text_scratch.borrow_mut();
         for (slice_index, slice) in self.slices.iter().enumerate() {
             let Some((start_angle, sweep)) = self.angle_cache.get(slice_index).copied().flatten()
             else {
@@ -1367,6 +1396,7 @@ impl Draw for PieChart {
 
             Self::fill_pie_sector(
                 context,
+                &mut ring,
                 exploded_center,
                 start_angle,
                 end_angle,
@@ -1435,7 +1465,7 @@ impl Draw for PieChart {
                     let displayed = self.displayed_value(slice_index);
                     let pct = (displayed / total * 100.0).round() as i32;
                     pct_text.clear();
-                    let _ = core::fmt::Write::write_fmt(&mut pct_text, format_args!("{pct}%"));
+                    let _ = core::fmt::Write::write_fmt(&mut *pct_text, format_args!("{pct}%"));
                     // Position percentage inside the sector, halfway between center and edge
                     let pct_radius = if self.donut {
                         (outer_radius + inner_radius) * 0.5
@@ -1500,23 +1530,22 @@ impl Draw for PieChart {
                     // value transition even though the slice's own value does not.
                     let tweening = self.animation_progress().is_some();
                     let revision = self.values_revision;
+                    let key = (index, revision, font.clone(), context.dpi_scale().to_bits());
                     let mut cache = self.readout_cache.borrow_mut();
                     let fresh = !tweening
                         && matches!(
                             cache.as_ref(),
-                            Some(((cached_index, cached_revision), _, _, _))
-                                if *cached_index == index && *cached_revision == revision
+                            Some((cached_key, _, _, _)) if *cached_key == key
                         );
                     if !fresh {
                         let text =
                             std::format!("{}  {:.1} ({:.0}%)", slice.label, slice.value, pct);
                         let metrics = context.measure_text(&text, &font);
-                        *cache =
-                            Some(((index, revision), text, metrics.width, metrics.height.max(1)));
+                        *cache = Some((key, text, metrics.width, metrics.height.max(1)));
                     }
-                    let cached = cache
-                        .as_ref()
-                        .map(|((_, _), text, width, height)| (text.as_str(), *width, *height));
+                    let cached = cache.as_ref().map(|((_, _, _, _), text, width, height)| {
+                        (text.as_str(), *width, *height)
+                    });
                     if let Some((text, cached_width, cached_height)) = cached {
                         let width = cached_width as i32 + 8;
                         let height = cached_height as i32 + 8;

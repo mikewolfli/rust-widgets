@@ -943,7 +943,20 @@ impl Widget for Frame {
     }
     /// A frame's child lives inside its contents rectangle, so a bevel and its margins cannot
     /// be painted over by content that reaches the border.
+    ///
+    /// # Why zero margins clip nothing
+    ///
+    /// Zero margins mean the frame does **not** place its child: the child keeps the geometry
+    /// its host gave it (the documented historical behaviour, asserted by
+    /// `a_margined_frame_positions_its_child`'s zero-margin sibling). That child can sit
+    /// anywhere, so clipping it to the frame rectangle hid a control the host had deliberately
+    /// mounted there — a visible regression the clip introduced and this branch removes. It is
+    /// also the only case where the contents rectangle is not a placement decision.
     fn children_clip(&self) -> Option<Rect> {
+        let m = self.contents_margins;
+        if m.top == 0 && m.right == 0 && m.bottom == 0 && m.left == 0 {
+            return None;
+        }
         Some(self.contents_rect())
     }
     fn set_state_theme_hook(&mut self) {
@@ -1671,6 +1684,25 @@ mod tests {
             "left/top are added and the right/bottom are removed"
         );
         assert_eq!(f.contents_margins(), EdgeOffsets::new(2, 3, 4, 5));
+    }
+
+    /// A zero-margin frame does **not** clip its child.
+    ///
+    /// The zero-margin rule is "the host placed the child; the frame does not move it", so the
+    /// child may sit outside the frame rectangle. Clipping to `contents_rect` there hid a control
+    /// the host had deliberately mounted (a visible regression the tree painter's clip turned on).
+    /// The clip exists to keep a *placed* child off the bevel, so it starts only once a margin is
+    /// non-zero.
+    #[test]
+    fn a_zero_margin_frame_does_not_clip_its_child() {
+        let mut frame = Frame::new(Rect::new(10, 20, 100, 60));
+        assert_eq!(frame.children_clip(), None, "zero margins leave the host's geometry alone");
+        frame.set_contents_margins(EdgeOffsets::new(4, 4, 4, 4));
+        assert_eq!(
+            frame.children_clip(),
+            Some(frame.contents_rect()),
+            "a placed child is clipped to the box it was placed in"
+        );
     }
 
     /// The margined child is placed through the tree registry, which the stripped profiles

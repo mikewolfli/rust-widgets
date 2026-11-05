@@ -98,8 +98,10 @@ fn card_palette(base: &BaseWidget, role: &str) -> CardPalette {
         .font
         .clone()
         .or_else(|| themed.as_ref().and_then(|resolved| resolved.font.clone()))
-        .unwrap_or_else(|| Font::simple("Arial", 12.0));
-    let title_font = Font::simple(font.family(), font.size() + 2.0);
+        .unwrap_or_else(|| Font::simple_interned("Arial", 12.0));
+    // The title face is derived from the same family, so it shares the interned name instead of
+    // building a fresh `String` per draw (the old `Font::simple(font.family(), ..)` did).
+    let title_font = Font::simple_interned(font.family(), font.size() + 2.0);
     CardPalette { surface, ink, accent, border, font, title_font }
 }
 

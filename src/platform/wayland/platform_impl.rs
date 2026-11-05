@@ -1796,6 +1796,12 @@ fn window_id_for_surface(
     state: &WaylandSessionState,
     surface: &wl_client::protocol::wl_surface::WlSurface,
 ) -> Option<ObjectId> {
+    // `id()` and `protocol_id()` are trait methods, not inherent ones. Without this import the
+    // function compiled only where the wayland backend is compiled out, so `--features
+    // wayland-native` failed with `no method named id` — the PL2-01 focus wiring never built on
+    // its own target. The import is local because every other use here names the protocol modules
+    // directly.
+    use wl_client::Proxy as _;
     let target = surface.id().protocol_id();
     state
         .surfaces
@@ -2085,7 +2091,8 @@ impl wl_client::Dispatch<wl_protocols::xdg::shell::client::xdg_toplevel::XdgTopl
                 // PL2-01: xdg-shell reports size only. A toplevel's absolute origin is the
                 // compositor's business, so there is no move notification to forward and
                 // `notify_window_moved` is deliberately not called — the position mirror keeps the
-                // last value the host set rather than a guess.
+                // last value the host set rather than a guess. `Platform::reports_window_moves`
+                // answers `false` here, which is how a host tells this apart from "not moved".
                 if width > 0 && height > 0 {
                     if let Some(id) = super::platform_impl::configured_window_id(proxy) {
                         crate::queue_resize_trigger(id, width as u32, height as u32);

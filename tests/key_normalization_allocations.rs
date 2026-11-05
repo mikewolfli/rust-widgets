@@ -125,6 +125,20 @@ const SPELLINGS: &[&str] = &[
 ///
 /// `table` is deliberately absent: its remaining two allocations per frame are the `Cow::Owned`
 /// of two genuinely **elided** cells, which is the truncated text itself rather than bookkeeping.
+///
+/// # Where the list came from
+///
+/// The container and navigation names below are not hand-picked: a temporary sweep rendered **all
+/// 241** constructible controls for four warm-up frames and then counted allocations over four
+/// steady-state frames, and every control it found allocating was either fixed or given a written
+/// reason to stay out. The ones that were fixed this round are `carousel` (a `Vec` of indicator
+/// slots plus two `Font` constructions per frame), `pagination` (a per-frame fallback face and
+/// label `String`), `navigation_drawer` (a sample frozen mid-slide whose header label was elided
+/// because the panel was 30 px wide — now settled before measuring) and
+/// `navigation_stack` (a `format!` of the page kind, and `RenderContext::push_offset`'s save
+/// stack, which allocated on the first push of every frame now that the context is built per
+/// frame). The rest of the sweep is recorded in `docs/log/log-20261106-1.md` §9: the remaining
+/// sites are data-source windows, dialog label/geometry derivations and the code editor's gutter.
 #[test]
 fn painting_a_steady_state_frame_allocates_nothing() {
     use rust_widgets::core::{Color, Rect, Size};
@@ -133,11 +147,79 @@ fn painting_a_steady_state_frame_allocates_nothing() {
 
     let _guard = exclusive();
     let factory = WidgetFactory::new_with_defaults();
-    for name in ["playlist_panel", "list_box", "tag", "line_chart"] {
+    for name in [
+        "playlist_panel",
+        "list_box",
+        "tag",
+        "line_chart",
+        // The container family draws chrome over children it does not paint; their own `draw`
+        // must still be steady-state allocation-free. These are the containers whose content
+        // path was reworked in 4.1.0, so pinning them here is the counterpart of the snapshot
+        // regression that shipped when the registry path retired.
+        "splitter",
+        "stacked_widget",
+        "scroll_area",
+        "mdi_area",
+        "group_box",
+        "tab_widget",
+        "frame",
+        // The rest of the container/navigation family draws chrome over mounted children in the
+        // same way, so it is held to the same steady-state rule.
+        "dock_widget",
+        "dock_area",
+        // `tab_view` is deliberately absent: its sample captions (General/Advanced/About) do not
+        // fit the 240 px strip, so `draw_text_fitted_cow` returns the elided caption as a
+        // `Cow::Owned` — the same "the allocation is the content" reason `table` is absent (see
+        // the paragraph above this test). The bookkeeping allocations this test guards were
+        // removed: the width cache now returns an `Rc` and the icon fallback reuses a buffer.
+        "tool_box",
+        "collapsible_pane",
+        // `tool_bar` is absent for the same "the allocation is the content" reason: the sample
+        // actions (Open/Save/Run) use `TextBesideIcon`, whose label gutter is narrower than the
+        // captions, so each fitted caption is a `Cow::Owned` of the elided text.
+        // `navigation_drawer` and `pagination` joined the list once their sites were located:
+        // the drawer's sample calls `open()`, which only *aims* its slide, so a harness that never
+        // ticks measured a panel 30 px wide whose header label was legitimately elided (the
+        // allocation was the truncated text); settling the transition first makes the frame the
+        // one a user rests in. The pager's two per-frame allocations were a `Font::simple`
+        // fallback and a fresh label `String` per paint, both now reused.
+        "status_bar",
+        "accordion",
+        "carousel",
+        "pagination",
+        "navigation_drawer",
+        // The value/readout family writes its formatted text into reused buffers: the date and
+        // time fields (`time_picker` is an alias of `time_edit`) and the colour picker's
+        // `#RRGGBBAA` readout, which `draw` used to ask for twice per frame.
+        "date_edit",
+        "date_time_edit",
+        "time_edit",
+        "time_picker",
+        "color_picker",
+        "safe_area",
+        "flex",
+        "flow_layout",
+        "wrap_layout",
+        "panel",
+        "split_layout",
+        "masonry_layout",
+        "navigation_stack",
+    ] {
         let mut widget = factory
             .create(name, Rect::new(0, 0, 240, 120), "Sample")
             .unwrap_or_else(|| panic!("{name} must be constructible"));
         let _ = rust_widgets::widget::sample_fill::apply(name, widget.as_mut());
+        // Settle whatever transition the sample data started. `sample_fill` turns feature states
+        // on (`drawer.open()`, `switch.set_checked(true)`), which *aims* an animation rather than
+        // arriving at its end; a control frozen mid-transition is not a steady state, and its
+        // label can be legitimately elided by the narrower band. The exporter settles for the same
+        // reason and with the same bound (`export_control_svgs::settle`).
+        for _ in 0..64 {
+            if !widget.is_animating() {
+                break;
+            }
+            let _ = widget.tick(16);
+        }
         let drawable =
             draw_of(widget.as_mut()).unwrap_or_else(|| panic!("{name} must be drawable"));
         let mut backend = SoftwarePaintBackend::new(Size::new(240, 120), 1.0);

@@ -562,7 +562,7 @@ impl InplaceEditor {
         let font = match self.base.style().font.as_ref() {
             Some(font) => font,
             None => {
-                measured_font = crate::core::Font::simple("sans-serif", self.font_size);
+                measured_font = crate::core::Font::simple_interned("sans-serif", self.font_size);
                 &measured_font
             }
         };
@@ -612,7 +612,7 @@ impl InplaceEditor {
         let font = match style_font.as_ref() {
             Some(font) => font,
             None => {
-                measured_font = crate::core::Font::simple("sans-serif", self.font_size);
+                measured_font = crate::core::Font::simple_interned("sans-serif", self.font_size);
                 &measured_font
             }
         };
@@ -862,7 +862,7 @@ impl Draw for InplaceEditor {
         let font = style
             .font
             .clone()
-            .unwrap_or_else(|| crate::core::Font::simple("sans-serif", self.font_size));
+            .unwrap_or_else(|| crate::core::Font::simple_interned("sans-serif", self.font_size));
         let theme = crate::style::resolved_theme_style_shared("inplace_editor");
         // One palette read for the whole frame (I-P07): the window fill and the accent used to
         // take the theme manager's lock in two separate calls after the resolved style. The

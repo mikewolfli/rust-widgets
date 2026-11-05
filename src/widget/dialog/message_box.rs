@@ -1819,12 +1819,17 @@ pub(crate) fn action_row_geometry(
     // Each button's own wish. `Hints::fixed` rather than the widget's `size_hint` because an
     // action button is a standard command of a standard width: it does not grow with its
     // translation, it elides.
-    let widths: Vec<u32> =
-        labels.iter().map(|label| action_button_hints(context, font, label).width.pref).collect();
+    // Each label's own width, measured twice rather than collected into a `Vec`: the row extent
+    // has to be known before the anchor is computed, and the placement pass needs the same
+    // numbers again. `action_button_hints` goes through the shared measurement cache, so the
+    // second pass is a lookup — cheaper than the `Vec<u32>` it replaces, which allocated on every
+    // call (`draw`, `frame_rect` and `intrinsic_size` each call this once per frame).
+    let button_width = |label: &String| action_button_hints(context, font, label).width.pref;
     // The gaps come out of the band *before* the anchor is computed, and only between buttons:
     // the row's own leading edge is a button's edge, not a gap.
-    let gaps = DIALOG_BUTTON_SPACING.saturating_mul(widths.len().saturating_sub(1) as u32);
-    let row_extent = widths.iter().fold(gaps, |total, width| total.saturating_add(*width)).max(1);
+    let gaps = DIALOG_BUTTON_SPACING.saturating_mul(labels.len().saturating_sub(1) as u32);
+    let row_extent =
+        labels.iter().fold(gaps, |total, label| total.saturating_add(button_width(label))).max(1);
     // Where the row lands inside the band it was offered: `band` is the room the caller has,
     // `row_extent` is what the row needs, and the difference is anchored to the trailing edge —
     // which is what "right-aligned" means, and why the buttons sit at the dialog's own right
@@ -1839,8 +1844,9 @@ pub(crate) fn action_row_geometry(
     // overhang only arises when a host forces a smaller rectangle on the control.
     let shift = if place { (band.width as i32 - row_extent as i32).max(0) } else { 0 };
     let mut cursor = band.x + shift;
-    let mut buttons = Vec::with_capacity(widths.len());
-    for width in widths {
+    let mut buttons = Vec::with_capacity(labels.len());
+    for label in labels {
+        let width = button_width(label);
         buttons.push(Rect::new(cursor, band.y, width, band.height));
         cursor += width as i32 + DIALOG_BUTTON_SPACING as i32;
     }

@@ -81,7 +81,13 @@ struct ChipLayout {
 
 struct ChipLayoutCache {
     revision: u64,
-    width: u32,
+    /// The field rectangle the chips were placed in.
+    ///
+    /// The whole rectangle, not just its width: chip positions are absolute (`x`/`y` come from
+    /// the rect), and the multiline branch derives its row limit from the height. Keying on the
+    /// width alone kept the old coordinates after the control moved or was resized vertically, so
+    /// the painter and both hit tests agreed with each other and disagreed with the field.
+    rect: Rect,
     multiline: bool,
     font: Font,
     layout: Rc<ChipLayout>,
@@ -916,11 +922,10 @@ impl TagInput {
     /// painter and the two hit tests cannot disagree about where a chip is or how wide it is.
     fn chip_layout(&self) -> Rc<ChipLayout> {
         let rect = self.field_rect();
-        let width = rect.width;
         let font = effective_font(self.style()).clone();
         if let Some(cache) = self.chip_cache.borrow().as_ref() {
             if cache.revision == self.tags_revision
-                && cache.width == width
+                && cache.rect == rect
                 && cache.multiline == self.multiline
                 && cache.font == font
             {
@@ -973,7 +978,7 @@ impl TagInput {
         let layout = Rc::new(ChipLayout { chips, hidden, overflow_label, overflow_width });
         *self.chip_cache.borrow_mut() = Some(ChipLayoutCache {
             revision: self.tags_revision,
-            width,
+            rect,
             multiline: self.multiline,
             font,
             layout: Rc::clone(&layout),

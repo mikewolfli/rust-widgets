@@ -504,6 +504,9 @@ pub(crate) fn interface_orientation() -> Option<crate::platform::ScreenOrientati
 
 pub(crate) fn main_screen_scale() -> Option<f32> {
     let mtm = MainThreadMarker::new()?;
+    // `UIScreen.mainScreen` is the documented value for the primary screen; see the longer note
+    // on `displays` below for why the replacement the framework suggests needs a view context.
+    #[allow(deprecated)]
     let screen = UIScreen::mainScreen(mtm);
     let scale = screen.scale() as f32;
     Some(if scale > 0.0 { scale } else { 1.0 })

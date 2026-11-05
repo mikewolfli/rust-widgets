@@ -23,10 +23,14 @@ use crate::platform::{Platform, PlatformCapabilities};
 /// browser's `requestAnimationFrame` callback.
 const FRAME_INTERVAL_MS: u64 = crate::platform::types::FRAME_INTERVAL_MS;
 
-/// The live `requestAnimationFrame` chain, kept alive for the page's lifetime.
-///
-/// A browser callback must be `'static`, and the runtime owns exactly one loop per page, so one
-/// stored closure is the whole requirement (PL-06).
+// The live `requestAnimationFrame` chain, kept alive for the page's lifetime.
+//
+// A browser callback must be `'static`, and the runtime owns exactly one loop per page, so one
+// stored closure is the whole requirement (PL-06).
+//
+// These are plain comments, not doc comments: there is no item for a doc comment to attach to
+// here (the item is the `thread_local!` expansion), and Rust reports that as an unused doc
+// comment on wasm.
 #[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
 thread_local! {
     static RAF_LOOP: core::cell::RefCell<

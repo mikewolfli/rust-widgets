@@ -1,8 +1,49 @@
 # Migration Guide
 
-> **Latest: 1.x → 2.0.0** — see [the 2.0.0 section](#10x--200-self-drawn-controls) below.
-> The rest of this document covers the earlier 0.9.x → 1.0.0 transition and is kept
-> for projects still on that line.
+> **Latest: 4.0.x → 4.1.0** — see [the 4.1.0 section](#40x--410-the-runtime-tree-is-the-only-composition-mechanism) below.
+> The 1.x → 2.0.0 section and the earlier 0.9.x → 1.0.0 notes are kept for projects still on those lines.
+
+---
+
+# 4.0.x → 4.1.0: the runtime tree is the only composition mechanism
+
+## What changed
+
+`widget::SimpleRegistry`, the `widget::registry` module, and every container's `set_registry` were
+removed. A container's content is now a **mounted child**: the container writes its geometry and the
+runtime tree painter draws it. There is no second forwarding/painting table.
+
+## Before and after
+
+```rust
+// Before: a closure table did the drawing and event forwarding.
+let registry = Rc::new(RefCell::new(SimpleRegistry::new()));
+registry.borrow_mut().register(id, move |context| label.draw(context), |_| {});
+scroll_area.set_registry(Some(registry));
+```
+
+```rust
+// After: mount the control and let the container place it.
+let id = rust_widgets::widget::runtime::register(Box::new(label))
+    .expect("the UI thread has a widget runtime");
+scroll_area.set_widget(Some(id));
+```
+
+The same rule applies to `Splitter::add_pane`, `StackedWidget::add_widget`,
+`TabWidget`/`TabView` pages, `MdiArea::add_sub_window` and the rest of the container family: the
+container owns the *placement*, the runtime tree owns the *painting and hit testing*.
+
+## Why this was a breaking change
+
+Two mechanisms did the same job (principle #101), and the registry half had **no production
+caller**: every defect it hid was found only when a real application mounted a child (C2-M1/C2-M2
+in `docs/issues/issue-20261105.md`). Keeping a deprecated shim for one release would have preserved
+the second path and the ambiguity that caused those defects. Repo-internal callers were audited to
+zero before removal, and the removal is allowed by principle #21's named exception (deleting the
+second implementation of one concept).
+
+If a downstream project still calls `set_registry`, pin `4.0.x`; there is no supported way to mix
+the two models in 4.1.0.
 
 ---
 

@@ -220,12 +220,16 @@ SHAPE_ONLY = {
     # A transparent swipe wrapper's content is its child label; the wrapper itself paints
     # no chrome until it is swiped.
     "swipe_to_dismiss",
-    # A stacked widget paints only its surface: pages are tree children, and a
-    # single-control SVG renders one widget Draw stream, not the subtree. Before C2-M2 the
-    # page labels were baked in through the retired registry path, which is exactly the
-    # second drawing mechanism that decision removed.
-    "stacked_widget",
 }
+# Content that is a **tree child** is not part of a single control Draw stream. These four
+# were blank after C2-M2 retired the registry path that used to paint the child inline, which is
+# the "looks degraded" regression a reviewer sees in control.md. The exporter mounts the child
+# explicitly now (compose_container_preview in examples/export_control_svgs.rs), so a name
+# here without any text means that arm was lost again. Keep the two lists in step.
+# NOTE: no apostrophes in this block. It lives inside a command substitution, and macOS bash
+# 3.2 parses quote characters there even though the heredoc delimiter is quoted, so a possessive
+# form would break the whole script with an unexpected-EOF quote error.
+COMPOSITE_CONTENT = {"splitter", "stacked_widget", "scroll_area", "mdi_area"}
 bad = []
 for path in sorted(pathlib.Path("snapshots/svg").glob("*.svg")):
     text = path.read_text(encoding="utf-8")
@@ -239,6 +243,11 @@ for path in sorted(pathlib.Path("snapshots/svg").glob("*.svg")):
         bad.append(
             f"{path}: {count} drawing element(s); a reviewable control needs 3 "
             "unless it is in the shape-only whitelist"
+        )
+    if stem in COMPOSITE_CONTENT and 'data-text="1"' not in text:
+        bad.append(
+            f"{path}: a composite container has no child text; its sample content was lost "
+            "(see compose_container_preview)"
         )
 if bad:
     print("\n".join(bad))

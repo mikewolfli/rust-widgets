@@ -5,6 +5,63 @@ The canonical project changelog is maintained at [docs/reports/CHANGELOG.md](doc
 This root-level file exists for tools and release automation that expect `CHANGELOG.md` at repository root.
 When the two disagree, this file is the one that ships; `tools/check_changelog_sync.sh` keeps them identical.
 
+## Unreleased
+
+### Changed
+
+- **The runtime tree is the only container composition mechanism.** `widget::registry`,
+  `SimpleRegistry` and every container's `set_registry` are removed; content is a mounted child,
+  painted and hit-tested by the tree painter. Repo-internal callers were audited to zero before
+  removal; the migration is described in `docs/MIGRATION_GUIDE.md` and the compiled cookbook. A
+  downstream project still on the old API should pin 4.0.x.
+- **Removing the current page of a `StackedWidget` selects its successor** (or the new last page),
+  matching `StackLayout`'s documented rule. It used to select the predecessor.
+
+### Added
+
+- `Platform::reports_window_moves()` reports whether a backend delivers window-manager moves.
+  It is `true` for the AppKit, GTK and Win32 backends and `false` for Wayland and Redox, whose
+  protocols expose no absolute position. `WindowHandle::position` documents that its answer is
+  the last known/requested position on those backends.
+- `widget::sample_fill::SNAPSHOT_DAY` names the fixed day date-bearing snapshot fixtures use,
+  so the exporter and the sample data cannot disagree about which date a picture shows.
+- `widget::chart_widgets::charts::sector_polygon_into` is [`sector_polygon`] into a caller-owned
+  buffer, for a pie chart that repaints its sectors every animation frame.
+
+### Performance
+
+- A steady-state paint of a `carousel`, `pagination`, `navigation_stack` or `navigation_drawer` no
+  longer allocates: the carousel's indicator slot list is derived per index instead of built as a
+  `Vec`, its counter face is interned, the pager reuses its label buffer, and the navigation
+  stack's page-kind fallback borrows `WidgetKind::css_name` instead of formatting it.
+- `RenderContext::push_offset` saves its first eight nesting levels inline. The context is built
+  per frame, so the heap-backed save stack allocated on the first translated child of *every*
+  frame.
+- The i18n BCP-47 parent chain borrows prefixes of the language tag instead of allocating a
+  `Vec<String>` on every lookup that misses the active language.
+- The pie chart reuses its sector vertex ring, its percentage label buffer and its label-box
+  list; the code editor's tab strip reads titles through a borrowed slot list instead of cloning
+  one `String` per tab per frame.
+- `virtual_table`/`data_grid` samples no longer rebuild every visible cell's text per frame: the
+  sample table reports a revision, which is what lets a virtual table trust its window cache.
+- `date_edit`, `date_time_edit`, `time_edit` (and its `time_picker` alias) and `color_picker`
+  paint without allocating: the value readouts and the `#RRGGBBAA` text are written into reused
+  buffers, and the date field's three section labels are formatted in place.
+- `dialog::message_box::action_row_geometry` no longer builds an intermediate width list, which
+  every dialog's action row paid for on each of its `draw`, `frame_rect` and `intrinsic_size`
+  calls per frame.
+
+### Fixed
+
+- `MediaTransportBar`'s published `auto_hide_ms` now reaches its tick on a mounted bar: the control
+  reports itself as animating while the countdown runs.
+- The SVG snapshot exporter draws composite containers together with their mounted sample children,
+  and pins the date fixtures, so `splitter`/`stacked_widget`/`scroll_area`/`mdi_area` and the date
+  pickers regenerate reproducibly.
+- Every measurement cache added for performance now keys on all inputs it reads (the whole font,
+  the DPI and the layout rectangle, not just a size or a width), so a theme or geometry change
+  cannot leave a stale measurement behind.
+
 ## 4.1.0 (2026-11-04) — the closed-loop round (issue-20261104, 63/63)
 
 Every item in `docs/issues/issue-20261104.md` is closed: the resize chain, the per-event costs, the

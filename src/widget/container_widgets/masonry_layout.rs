@@ -386,7 +386,7 @@ impl MasonryLayout {
         });
         let fallback = crate::widget::metrics::estimate_text_width(
             &item.label,
-            &Font::simple("Arial", 12.0),
+            &Font::simple_interned("Arial", 12.0),
             1.0,
         )
         .saturating_add(12);
@@ -593,7 +593,7 @@ impl WidgetProperties for MasonryLayout {
 impl Draw for MasonryLayout {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
-        let font = Font::simple("Arial", 12.0);
+        let font = Font::simple_interned("Arial", 12.0);
 
         // The container behind the cards is this control's chrome, so it follows the
         // theme. `resolved_theme_style` takes and releases the global manager's lock
@@ -681,7 +681,7 @@ impl Draw for MasonryLayout {
         if self.items.is_empty() {
             let hint = "No items";
             let hint_color = ink.blend(&base, 0.35);
-            let hint_font = Font::simple("Arial", 16.0);
+            let hint_font = Font::simple_interned("Arial", 16.0);
             let hint_x = rect.x + (rect.width / 4) as i32;
             let hint_y = rect.y + (rect.height / 3) as i32;
             context.draw_text(
