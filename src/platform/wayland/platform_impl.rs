@@ -1769,12 +1769,38 @@ impl wl_client::Dispatch<wl_client::protocol::wl_keyboard::WlKeyboard, ()> for W
     ) {
         use wl_client::protocol::wl_keyboard::Event;
         match event {
-            Event::Key { serial, .. } | Event::Enter { serial, .. } => {
+            Event::Key { serial, .. } => state.clipboard.note_serial(serial),
+            Event::Enter { serial, surface, .. } => {
                 state.clipboard.note_serial(serial);
+                // PL2-01: a keyboard `enter` is the compositor saying this window became the
+                // active one. The library's `ACTIVE_WINDOW` mirror is fed only by this
+                // notification, so without it `App::active_window()` answered `None` forever.
+                if let Some(window) = window_id_for_surface(state, &surface) {
+                    crate::platform::window_control::notify_window_focus(window, true);
+                }
+            }
+            Event::Leave { serial, surface } => {
+                state.clipboard.note_serial(serial);
+                if let Some(window) = window_id_for_surface(state, &surface) {
+                    crate::platform::window_control::notify_window_focus(window, false);
+                }
             }
             _ => log::trace!("[wayland] wl_keyboard event: {:?}", event),
         }
     }
+}
+
+/// The window this session created for `surface`, for translating focus notifications.
+#[cfg(all(feature = "wayland-native", unix_desktop))]
+fn window_id_for_surface(
+    state: &WaylandSessionState,
+    surface: &wl_client::protocol::wl_surface::WlSurface,
+) -> Option<ObjectId> {
+    let target = surface.id().protocol_id();
+    state
+        .surfaces
+        .iter()
+        .find_map(|(window, known)| (known.id().protocol_id() == target).then_some(*window))
 }
 
 // --- wl_pointer (serial only; the host owns input routing) ---
@@ -2055,6 +2081,11 @@ impl wl_client::Dispatch<wl_protocols::xdg::shell::client::xdg_toplevel::XdgTopl
                 //
                 // `proxy` is the toplevel the compositor named, so the id is looked up
                 // from *this* window rather than from a single remembered one.
+                //
+                // PL2-01: xdg-shell reports size only. A toplevel's absolute origin is the
+                // compositor's business, so there is no move notification to forward and
+                // `notify_window_moved` is deliberately not called — the position mirror keeps the
+                // last value the host set rather than a guess.
                 if width > 0 && height > 0 {
                     if let Some(id) = super::platform_impl::configured_window_id(proxy) {
                         crate::queue_resize_trigger(id, width as u32, height as u32);
@@ -2073,7 +2104,13 @@ impl wl_client::Dispatch<wl_protocols::xdg::shell::client::xdg_toplevel::XdgTopl
                 // rather than from a single remembered window, so a multi-window app closes the
                 // window the compositor named.
                 if let Some(window_id) = super::platform_impl::configured_window_id(proxy) {
-                    if !crate::close_widget(window_id) {
+                    // PL2-01: a close is a proposal, exactly as it is on the other backends — the
+                    // host's close handler and a consuming `WindowCloseRequest` may refuse it.
+                    if !crate::platform::window_control::request_window_close(window_id) {
+                        log::debug!(
+                            "[wayland] close for window widget {window_id} refused by the host"
+                        );
+                    } else if !crate::close_widget(window_id) {
                         log::error!(
                             "[wayland] close requested for window widget {window_id}, which is not \
                              a live widget; no close callback was run"

@@ -1671,6 +1671,10 @@ impl Widget for TabBar {
     fn base(&self) -> &BaseWidget {
         &self.base
     }
+    /// The tab run scrolls under the wheel (C2-D0).
+    fn accepts_wheel(&self) -> bool {
+        true
+    }
     fn set_state_theme_hook(&mut self) {
         crate::style::reapply_active_theme_state(self);
     }
@@ -1983,7 +1987,12 @@ impl EventHandler for TabBar {
             Event::Wheel { delta, modifiers } => {
                 let scroll = WheelScroll::from_event(*delta, *modifiers, 1);
                 if scroll.lines_y != 0 {
+                    let before = self.scroll_offset;
                     self.scroll_by(scroll.lines_y);
+                    // C2-D0: a run already at its end must let an outer container scroll.
+                    if self.scroll_offset != before {
+                        crate::widget::runtime::claim_wheel();
+                    }
                 }
             }
             // The middle button closes the tab under the pointer, the browser convention. It
@@ -2003,30 +2012,34 @@ impl EventHandler for TabBar {
                 self.tooltip_source = None;
                 self.tooltips.note_leave();
             }
-            Event::KeyPress { key, modifiers: _ } => match *key {
-                crate::event::key_codes::LEFT => {
-                    self.step_selection(-1);
-                }
-                crate::event::key_codes::RIGHT => {
-                    self.step_selection(1);
-                }
-                crate::event::key_codes::HOME => {
-                    if !self.tabs.is_empty() {
-                        self.set_current_index(0);
+            // Keyboard tab stepping is reachable only while the strip holds focus: a tab bar
+            // embedded in a page must not consume the arrows of whatever the user is editing.
+            Event::KeyPress { key, modifiers: _ } if self.base.focus_reason().is_some() => {
+                match *key {
+                    crate::event::key_codes::LEFT => {
+                        self.step_selection(-1);
                     }
-                }
-                crate::event::key_codes::END => {
-                    if !self.tabs.is_empty() {
-                        self.set_current_index(self.tabs.len() - 1);
+                    crate::event::key_codes::RIGHT => {
+                        self.step_selection(1);
                     }
-                }
-                crate::event::key_codes::DELETE if self.closable => {
-                    if let Some(index) = self.current_index {
-                        self.tab_close_requested.emit(index);
+                    crate::event::key_codes::HOME => {
+                        if !self.tabs.is_empty() {
+                            self.set_current_index(0);
+                        }
                     }
+                    crate::event::key_codes::END => {
+                        if !self.tabs.is_empty() {
+                            self.set_current_index(self.tabs.len() - 1);
+                        }
+                    }
+                    crate::event::key_codes::DELETE if self.closable => {
+                        if let Some(index) = self.current_index {
+                            self.tab_close_requested.emit(index);
+                        }
+                    }
+                    _ => {}
                 }
-                _ => {}
-            },
+            }
             #[cfg(feature = "touch")]
             Event::Tap { pos } => {
                 // Check close button first.
@@ -2813,6 +2826,11 @@ mod tests {
             d.fetch_add(1, Ordering::SeqCst);
         });
 
+        // Unfocused: the keys belong to whoever holds focus.
+        bar.handle_event(&Event::key_press(key_codes::RIGHT, 0));
+        assert_eq!(bar.current_index(), Some(0), "an unfocused strip ignores the key");
+
+        bar.handle_event(&Event::FocusGained { reason: crate::event::FocusReason::Tab });
         bar.handle_event(&Event::key_press(key_codes::RIGHT, 0));
         assert_eq!(bar.current_index(), Some(1));
         bar.handle_event(&Event::key_press(key_codes::END, 0));

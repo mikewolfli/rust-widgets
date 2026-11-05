@@ -243,7 +243,11 @@ pub fn register_focusable(id: ObjectId) {
     let _ = FOCUS.try_with(|focus| focus.borrow_mut().register_focusable(id));
 }
 
-/// Returns the tab order as it currently stands.
+/// Returns a snapshot of the tab order as it currently stands.
+///
+/// RT2-04: this is the convenience form and it allocates a copy. A caller that already holds a
+/// closure-shaped call site should use [`with_focus_manager`] and borrow
+/// `FocusManager::focusable_widgets()` instead, which is the zero-allocation form.
 pub fn focusable_widgets() -> Vec<ObjectId> {
     FOCUS.try_with(|focus| focus.borrow().focusable_widgets().to_vec()).unwrap_or_default()
 }
@@ -279,7 +283,7 @@ pub fn set_focusable_position(id: ObjectId, x: i32, y: i32) -> bool {
     FOCUS
         .try_with(|focus| {
             let mut focus = focus.borrow_mut();
-            if !focus.focusable_widgets().contains(&id) {
+            if !focus.is_registered(&id) {
                 return false;
             }
             focus.set_widget_position(id, x, y);

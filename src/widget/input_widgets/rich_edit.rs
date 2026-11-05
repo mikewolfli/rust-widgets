@@ -9,7 +9,7 @@ use crate::property_names_of;
 use crate::render::RenderContext;
 use crate::signal::Signal1;
 use crate::undo::{CommandDescription, CommandId, UndoCommand, UndoStack};
-use crate::widget::capability::coercion::{expect_bool, expect_string};
+use crate::widget::capability::coercion::{expect_bool, expect_selection_range, expect_string};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
@@ -315,6 +315,17 @@ pub struct RichEdit {
     format_toolbar: Option<FormatToolbar>,
     /// The caret's blink phase (X-003). Advanced once per frame while the editor is focused.
     cursor_blink: crate::style::CursorBlink,
+    /// The uncommitted input-method composition, or `None` when no IME session is active.
+    ///
+    /// # Why the preedit is a field of the editor and not only an overlay
+    ///
+    /// `ImePreedit` is an overlay widget: the string it shows never reaches a text model, so a
+    /// composition could not be seen *at the caret* while the user was building it. The field's
+    /// value must also not change per keystroke of an unfinished word — firing `text_changed` for
+    /// text the user has not committed would make a host validate a half-typed phrase. Keeping
+    /// the composition beside the value, and painting it inline, is what makes CJK input legible
+    /// without pretending the value changed (IN2-04).
+    composition: Option<String>,
 }
 
 struct VisualRowsCache {
@@ -364,6 +375,7 @@ impl RichEdit {
             typing_run: None,
             format_toolbar: None,
             cursor_blink: crate::style::CursorBlink::new(),
+            composition: None,
         }
     }
 
@@ -1322,6 +1334,30 @@ impl RichEdit {
         self.cursor_position_changed.emit(position);
         self.base.request_redraw();
     }
+
+    /// Starts or updates an input-method composition without changing the document (IN2-04).
+    ///
+    /// The value must not change while the user is building a word: a `text_changed` per preedit
+    /// keystroke would run a host's validation against text that was never committed. An empty
+    /// string clears the composition, which is what an input method sends when it withdraws.
+    pub fn set_composition(&mut self, preedit: &str) {
+        let next = if preedit.is_empty() { None } else { Some(preedit.to_string()) };
+        if self.composition == next {
+            return;
+        }
+        self.composition = next;
+        self.base.request_redraw();
+    }
+
+    /// The uncommitted composition, or `None` when no IME session is active.
+    pub fn composition(&self) -> Option<&str> {
+        self.composition.as_deref()
+    }
+
+    /// Whether an input-method composition is in progress.
+    pub fn has_composition(&self) -> bool {
+        self.composition.is_some()
+    }
 }
 impl Widget for RichEdit {
     fn base(&self) -> &BaseWidget {
@@ -1466,6 +1502,16 @@ impl WidgetProperties for RichEdit {
             "read_only" => Ok(CapabilityValue::Bool(self.read_only)),
             "line_wrap" => Ok(CapabilityValue::Bool(self.line_wrap)),
             "placeholder_text" => Ok(CapabilityValue::String(self.placeholder_text.clone())),
+            // The caret and the live range, published the way the rest of the text family publishes
+            // them (IN2-05): `cursor_position` is the caret byte offset and `selection` is the
+            // `"start,end"` pair (API-03), or `Null` when no range is live.
+            "cursor_position" => Ok(CapabilityValue::UInt(self.cursor_position() as u64)),
+            "selection" => Ok(match self.selection.filter(|(start, end)| start != end) {
+                Some((start, end)) => {
+                    CapabilityValue::String(crate::compat::format!("{start},{end}"))
+                }
+                None => CapabilityValue::Null,
+            }),
             _ => base_property_get(self, name),
         }
     }
@@ -1490,6 +1536,39 @@ impl WidgetProperties for RichEdit {
                 self.set_placeholder_text(expect_string(value)?);
                 Ok(())
             }
+            "cursor_position" => {
+                match value {
+                    // The declared kind is `UInt`; a larger offset cannot be a byte index on any
+                    // target this crate builds for, so it is refused rather than truncated.
+                    CapabilityValue::UInt(position) => {
+                        let position = usize::try_from(position)
+                            .map_err(|_| CapabilityAccessError::OutOfRange)?;
+                        self.set_cursor_position(position);
+                        Ok(())
+                    }
+                    _ => Err(CapabilityAccessError::TypeMismatch),
+                }
+            }
+            "selection" => {
+                // `Null` is the getter's "no range" answer and the declared default, so the write
+                // back round trip accepts it by clearing the range (API-03).
+                if matches!(value, CapabilityValue::Null) {
+                    self.clear_selection();
+                    return Ok(());
+                }
+                let (start, end) = expect_selection_range(value)?;
+                let len = self.text.len();
+                let start = floor_char_boundary(&self.text, start.min(len));
+                let end = floor_char_boundary(&self.text, end.min(len));
+                // The caret is the moving end; installing it first keeps `extend_caret` in step,
+                // and the anchor is then a live range. The final notification announces the pair
+                // exactly as a keyboard movement would (IN2-05).
+                self.set_cursor_position(end);
+                self.set_selection(start, end);
+                self.cursor_position_changed.emit(end);
+                self.base.request_redraw();
+                Ok(())
+            }
             // Derived from the document body.
             "line_count" => Err(CapabilityAccessError::ReadOnlyProperty),
             _ => base_property_set(self, name, value),
@@ -1503,6 +1582,8 @@ impl WidgetProperties for RichEdit {
             "read_only",
             "line_wrap",
             "placeholder_text",
+            "cursor_position",
+            "selection",
             BASE_PROPERTY_NAMES
         ]
     }
@@ -1727,6 +1808,25 @@ impl Draw for RichEdit {
                     crate::core::Point::new(cursor_x, line_y + 2),
                     caret,
                 );
+                // The uncommitted composition is drawn at the caret, where it will land when it is
+                // committed, with an underline marking it as preedit (IN2-04). Measuring it with
+                // the field's own face keeps the underline aligned to the ink, and drawing it here
+                // is what the caret's position makes possible — an overlay could never place it.
+                if let Some(preedit) = self.composition.as_deref() {
+                    let preedit_width = estimate_text_width(preedit, font, 1.0) as i32;
+                    context.draw_text(
+                        crate::core::Point::new(cursor_x, line_y),
+                        preedit,
+                        font,
+                        caret,
+                        HorizontalAlignment::Left,
+                    );
+                    context.draw_line(
+                        crate::core::Point::new(cursor_x, line_y + 2),
+                        crate::core::Point::new(cursor_x + preedit_width, line_y + 2),
+                        caret,
+                    );
+                }
             }
         }
         context.pop_clip();
@@ -1868,14 +1968,6 @@ impl crate::event::EventHandler for RichEdit {
         if !self.base.is_enabled() {
             return;
         }
-        if let crate::event::Event::KeyPress { key: 90, modifiers: 2 } = event {
-            let _ = self.undo();
-            return;
-        }
-        if let crate::event::Event::KeyPress { key: 89, modifiers: 2 } = event {
-            let _ = self.redo();
-            return;
-        }
         // Copying is the one edit gesture a read-only document still supports.
         if let crate::event::Event::KeyPress { key: 67, modifiers } = event {
             if crate::shortcut::event_carries_primary(*modifiers) {
@@ -1952,8 +2044,20 @@ impl crate::event::EventHandler for RichEdit {
             // point the `KeyPress` printable arm below uses. `set_text`/the helper reject read-only,
             // and an unfocused editor ignores it exactly as the key path does.
             crate::event::Event::TextInput { text } | crate::event::Event::ImeCommit { text } => {
+                // A commit ends the composition as well as inserting its text: an input method may
+                // deliver the commit before its `preedit_end`, and keeping the preview would paint
+                // both the committed run and a stale composition (IN2-04).
+                self.composition = None;
                 if self.focused {
                     self.insert_committed_text(text);
+                }
+            }
+            // The uncommitted composition belongs to the editor while the user is building it: the
+            // value does not change, but the inline preedit at the caret does (IN2-04). An
+            // unfocused editor owns no composition, exactly as it owns no typed text.
+            crate::event::Event::ImePreedit { text, .. } => {
+                if self.focused {
+                    self.set_composition(text);
                 }
             }
             crate::event::Event::KeyPress { key, modifiers } => {
@@ -2047,22 +2151,15 @@ impl crate::event::EventHandler for RichEdit {
                         self.select_with_modifiers(new_cursor, mods);
                     }
                     35 => {
-                        // End — end of the current line.
+                        // End — end of the current line, read from the cached line table instead of
+                        // rescanning the whole document per press (IN2-11). The next line's start
+                        // minus the newline that precedes it is this line's end; the last line ends
+                        // at the document end.
                         let new_cursor = match self.byte_offset_to_line_col(cursor) {
-                            Some((line, _)) => {
-                                let mut current_line = 0usize;
-                                let mut line_end = self.text.len();
-                                for (i, ch) in self.text.char_indices() {
-                                    if current_line == line && ch == '\n' {
-                                        line_end = i;
-                                        break;
-                                    }
-                                    if ch == '\n' {
-                                        current_line += 1;
-                                    }
-                                }
-                                line_end
-                            }
+                            Some((line, _)) => match self.line_starts().get(line + 1) {
+                                Some(next_start) => next_start.saturating_sub(1),
+                                None => self.text.len(),
+                            },
                             None => self.text.len(),
                         };
                         self.select_with_modifiers(new_cursor, mods);
@@ -2096,6 +2193,22 @@ impl crate::event::EventHandler for RichEdit {
                         // Primary+A: select the whole value.
                         self.set_selection(0, self.text.len());
                     }
+                    // Primary+Z undoes, and the two redo chords are Primary+Shift+Z and Primary+Y
+                    // (IN2-01). These used to be literal `key == 90 && modifiers == 2` intercepts
+                    // above this match, so Ctrl+Shift+Z (bit 3) and Cmd+Z (bit 8) fell through to
+                    // the printable arm below and **typed** `Z`/`z` into the document instead of
+                    // editing history — a silent data corruption. `primary` is the family's chord
+                    // predicate (`event_carries_primary`), so every platform spelling reaches the
+                    // same arms as `text_entry/lineedit/events.rs:328-340`.
+                    90 if primary && shift => {
+                        let _ = self.redo();
+                    }
+                    90 if primary => {
+                        let _ = self.undo();
+                    }
+                    89 if primary => {
+                        let _ = self.redo();
+                    }
                     88 if primary => {
                         // Primary+X: copy, then remove the selection as one splice.
                         let _ = self.copy_selection_to_clipboard();
@@ -2115,11 +2228,26 @@ impl crate::event::EventHandler for RichEdit {
                         // Primary+V: paste at the caret.
                         self.paste_from_clipboard();
                     }
-                    _ if *key >= 32 && *key <= 126 => {
+                    _ if *key >= 32
+                        && *key <= 126
+                        && !mods.contains(crate::shortcut::Modifiers::CTRL)
+                        && !mods.contains(crate::shortcut::Modifiers::ALT)
+                        && !mods.contains(crate::shortcut::Modifiers::META) =>
+                    {
                         // Printable ASCII — insert at the caret through the shared entry point, so
                         // the keyboard and the platform's committed-text path cannot drift.
+                        //
+                        // A control chord is not content (IN2-01): the three modifiers are tested
+                        // one at a time because `Modifiers::contains` compares the *value* of the
+                        // mask, so a combined `CTRL | ALT | META` test would be true only when all
+                        // three were held at once. Without the gate, an unbound Ctrl+B/Ctrl+F typed
+                        // `B`/`F`, and the two redo spellings above typed `Z`/`z`.
+                        //
+                        // The case comes from SHIFT, not from the CTRL bit: with the chord gate in
+                        // place, SHIFT is the only remaining modifier that changes a character's
+                        // case, and reading CTRL here uppercased nothing while SHIFT was held.
                         let c = char::from_u32(*key).unwrap_or(' ');
-                        let c = if *modifiers & 0x02 != 0 { c.to_ascii_uppercase() } else { c };
+                        let c = if shift { c.to_ascii_uppercase() } else { c };
                         self.insert_committed_text(&c.to_string());
                     }
                     _ => {}
@@ -2269,13 +2397,106 @@ mod tests {
 
     #[test]
     fn richedit_control_z_and_control_y_drive_history() {
+        // The host's own primary accelerator, not a literal bit: on macOS `Primary` is Command, so
+        // a test written with the raw Control bit (2) exercised a chord this platform never sends.
+        let primary = crate::widget::input_widgets::shortcut_editor::primary_modifier_event_bits();
         let mut re = focused(RichEdit::new(Rect::new(0, 0, 400, 300)));
         re.set_text("before".to_string());
         re.set_text("after".to_string());
-        re.handle_event(&crate::event::Event::key_press(90, 2));
+        re.handle_event(&crate::event::Event::key_press(90, primary));
         assert_eq!(re.text(), "before");
-        re.handle_event(&crate::event::Event::key_press(89, 2));
+        re.handle_event(&crate::event::Event::key_press(89, primary));
         assert_eq!(re.text(), "after");
+    }
+
+    /// IN2-01: every spelling of undo/redo drives history, and no chord types a letter.
+    ///
+    /// # The defect this pins
+    ///
+    /// Undo and redo were intercepted with literal `modifiers == 2` comparisons, so
+    /// `Primary+Shift+Z` (bits 3) and `Cmd+Z` (bit 8) missed them and fell into the printable
+    /// arm, which had no chord gate at all: the editor **inserted the letter** instead of editing
+    /// history. The arms are now keyed on `event_carries_primary`, the same predicate Copy uses,
+    /// and the printable arm refuses any control chord.
+    #[test]
+    fn every_primary_z_chord_drives_history_instead_of_typing() {
+        let primary = crate::widget::input_widgets::shortcut_editor::primary_modifier_event_bits();
+        let shift = crate::shortcut::Modifiers::SHIFT.bits() as u32;
+        let mut re = focused(RichEdit::new(Rect::new(0, 0, 400, 300)));
+        re.set_text("before".to_string());
+        re.set_text("after".to_string());
+
+        // Primary+Z undoes.
+        re.handle_event(&crate::event::Event::key_press(90, primary));
+        assert_eq!(re.text(), "before", "Primary+Z undoes and does not type 'z'");
+
+        // Primary+Shift+Z is the redo chord.
+        re.handle_event(&crate::event::Event::key_press(90, primary | shift));
+        assert_eq!(re.text(), "after", "Primary+Shift+Z redoes and does not type 'Z'");
+
+        // Primary+Y is the other redo chord.
+        re.handle_event(&crate::event::Event::key_press(90, primary));
+        re.handle_event(&crate::event::Event::key_press(89, primary));
+        assert_eq!(re.text(), "after", "Primary+Y redoes");
+
+        // The Command bit (8) is macOS's spelling of the same accelerator.
+        re.handle_event(&crate::event::Event::key_press(90, 0b1000));
+        assert_eq!(re.text(), "before", "Cmd+Z undoes and does not type 'z'");
+        re.handle_event(&crate::event::Event::key_press(90, 0b1000 | shift));
+        assert_eq!(re.text(), "after", "Cmd+Shift+Z redoes");
+
+        // A chord the editor does not bind is not content either.
+        re.handle_event(&crate::event::Event::key_press(66, primary));
+        assert_eq!(re.text(), "after", "an unbound Primary+B never types 'B'");
+    }
+
+    /// IN2-04: the composition is painted at the caret and never reaches the document early.
+    #[test]
+    fn an_ime_preedit_is_held_apart_and_cleared_by_the_commit() {
+        let mut re = focused(RichEdit::new(Rect::new(0, 0, 400, 300)));
+        re.set_text("a".to_string());
+        re.set_cursor_position(1);
+
+        re.handle_event(&crate::event::Event::ImePreedit { text: "に".to_string(), cursor: 3 });
+        assert_eq!(re.composition(), Some("に"));
+        assert!(re.has_composition());
+        assert_eq!(re.text(), "a", "an uncommitted composition leaves the value alone");
+
+        re.handle_event(&crate::event::Event::ImeCommit { text: "に".to_string() });
+        assert_eq!(re.text(), "aに", "the commit inserts the composed run");
+        assert_eq!(re.composition(), None, "the commit clears the preview");
+
+        // An empty preedit is the input method withdrawing.
+        re.handle_event(&crate::event::Event::ImePreedit { text: String::new(), cursor: 0 });
+        assert!(!re.has_composition());
+    }
+
+    /// IN2-05: the property contract publishes and accepts the caret and the live range.
+    #[test]
+    fn the_property_contract_publishes_the_caret_and_the_selection() {
+        use crate::widget::capability::types::CapabilityValue;
+        use crate::widget::capability::WidgetProperties;
+
+        let mut re = focused(RichEdit::new(Rect::new(0, 0, 400, 300)));
+        re.set_text("hello".to_string());
+        // `set_text` clears the range, so the caret is placed explicitly — the property reads the
+        // caret the editor actually has, not the one the last write reported.
+        re.set_cursor_position(5);
+        assert_eq!(re.get("cursor_position"), Ok(CapabilityValue::UInt(5)));
+        assert_eq!(re.get("selection"), Ok(CapabilityValue::Null));
+        assert!(re.property_names().contains(&"cursor_position"));
+        assert!(re.property_names().contains(&"selection"));
+
+        re.set("selection", CapabilityValue::String("1,4".to_string())).expect("a live range");
+        assert_eq!(re.selection(), Some((1, 4)));
+        assert_eq!(re.get("selection"), Ok(CapabilityValue::String("1,4".to_string())));
+        assert_eq!(re.cursor_position(), 1, "the caret sits on the range's moving end");
+
+        re.set("cursor_position", CapabilityValue::UInt(2)).expect("a caret offset");
+        assert_eq!(re.cursor_position(), 2);
+
+        re.set("selection", CapabilityValue::Null).expect("clearing is the default");
+        assert_eq!(re.selection(), None);
     }
 
     #[test]

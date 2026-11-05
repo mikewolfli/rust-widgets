@@ -32,6 +32,84 @@ thread_local! {
     // every popup goes through), and when the child is unregistered — see `note_overlay_maybe_changed`.
     #[allow(clippy::missing_const_for_thread_local)]
     pub(crate) static OVERLAY_CHILD_FLAGS: RefCell<HashMap<ObjectId, bool>> = RefCell::new(HashMap::new());
+    // C2-D0: whether a widget that received a wheel event actually used it. The walk up the
+    // parent chain consults this after each delivery so a scroll container at its end lets the
+    // next ancestor try ("scroll chaining") instead of swallowing the notch. `handle_event`
+    // carries no return value, so the fact has to travel beside the call, the same shape the
+    // legacy event path uses for `take_consumed`.
+    pub(crate) static WHEEL_CLAIMED: core::cell::Cell<bool> = const { core::cell::Cell::new(false) };
+}
+
+/// Marks the wheel event currently being delivered as used by this widget.
+///
+/// A scroll container calls this from its `Event::Wheel` arm when it actually moved. A container
+/// that clamps at its own end must **not** call it, so the wheel continues to the next ancestor.
+pub fn claim_wheel() {
+    WHEEL_CLAIMED.with(|claimed| claimed.set(true));
+}
+
+/// Takes and clears the wheel claim, so the next delivery starts unclaimed.
+fn take_wheel_claim() -> bool {
+    WHEEL_CLAIMED.try_with(|claimed| claimed.replace(false)).unwrap_or(false)
+}
+
+/// Delivers a wheel event to `target` and then to the ancestors that accept wheels (C2-D0).
+///
+/// The wheel used to be delivered to the deepest hit-tested widget only. A control with no wheel
+/// arm of its own (a `Label` inside a `ScrollArea`, which is how every list-shaped host mounts
+/// content) therefore swallowed it: the scroll container above it could only be scrolled by
+/// dragging the thumb. The walk delivers to the target first, then climbs `parent()` and
+/// delivers to each ancestor whose [`Widget::accepts_wheel`](crate::widget::Widget::accepts_wheel)
+/// answers `true`, stopping at the first one that calls [`claim_wheel`]. A container that does not
+/// claim (clamped at its end) lets the next ancestor try, which is scroll chaining.
+///
+/// Returns whether any widget consumed the wheel or received it.
+pub fn dispatch_wheel_event(target: ObjectId, event: &Event) -> bool {
+    let _ = take_wheel_claim();
+    let mut delivered = dispatch_event(target, event);
+    if take_wheel_claim() {
+        return true;
+    }
+    let mut cursor = read_widget(target, |widget| widget.parent()).flatten();
+    let mut depth = 0usize;
+    while let Some(id) = cursor {
+        // The same guard the other parent-chain walks use: a malformed cycle must not spin.
+        depth += 1;
+        if depth > MAX_WHEEL_ANCESTOR_DEPTH {
+            break;
+        }
+        if read_widget(id, |widget| widget.accepts_wheel()).unwrap_or(false) {
+            delivered |= dispatch_event(id, event);
+            if take_wheel_claim() {
+                return true;
+            }
+        }
+        cursor = read_widget(id, |widget| widget.parent()).flatten();
+    }
+    delivered
+}
+
+/// How far the wheel walk climbs before giving up, matching the other parent-chain guards.
+const MAX_WHEEL_ANCESTOR_DEPTH: usize = 128;
+
+/// Delivers `event` to the nearest ancestor that observes presses on its descendants (C2-M1).
+///
+/// The observer is additive: the target has already received the event, and the observer gets the
+/// same press afterwards so it can update container-level state (which sub-window is active).
+fn notify_child_press_observers(target: ObjectId, event: &Event) {
+    let mut cursor = read_widget(target, |widget| widget.parent()).flatten();
+    let mut depth = 0usize;
+    while let Some(id) = cursor {
+        depth += 1;
+        if depth > MAX_WHEEL_ANCESTOR_DEPTH {
+            break;
+        }
+        if read_widget(id, |widget| widget.observes_child_press()).unwrap_or(false) {
+            let _ = dispatch_event(id, event);
+            return;
+        }
+        cursor = read_widget(id, |widget| widget.parent()).flatten();
+    }
 }
 
 /// Takes an empty child buffer from the per-depth pool, allocating only on a cold first use.
@@ -183,13 +261,18 @@ pub(crate) fn widget_at_inner(root: ObjectId, point: Point, trust_root: bool) ->
             // A child with an **open overlay** wins over a later sibling that happens to cover the
             // same pixels: an open drop-down list is painted below its field, where the next form row
             // may sit. Without the priority that row took the click and the list could not be used.
-            let mut deepest = None;
+            let mut deepest: Option<(ObjectId, i32)> = None;
             let mut open_popup = None;
             for child in children.iter().rev().copied() {
-                let (visible, overlay, accepts) = read_widget(child, |widget| {
-                    (widget.is_visible(), widget.has_open_popup(), widget.contains_point(point))
+                let (visible, overlay, accepts, z) = read_widget(child, |widget| {
+                    (
+                        widget.is_visible(),
+                        widget.has_open_popup(),
+                        widget.contains_point(point),
+                        widget.z_index(),
+                    )
                 })
-                .unwrap_or((false, false, false));
+                .unwrap_or((false, false, false, 0));
                 if !visible || !accepts {
                     continue;
                 }
@@ -197,11 +280,13 @@ pub(crate) fn widget_at_inner(root: ObjectId, point: Point, trust_root: bool) ->
                     open_popup = Some(child);
                     break;
                 }
-                if deepest.is_none() {
-                    deepest = Some(child);
+                // A higher `z_index` wins over a later sibling; for equal values the reverse
+                // walk already prefers the later one, so `>` (not `>=`) keeps declaration order.
+                if deepest.is_none_or(|(_, best)| z > best) {
+                    deepest = Some((child, z));
                 }
             }
-            Ok(open_popup.or(deepest))
+            Ok(open_popup.or(deepest.map(|(child, _)| child)))
         })?;
         match step {
             Ok(Some(child)) => current = child,
@@ -330,7 +415,16 @@ pub fn dispatch_pointer_event(root: ObjectId, event: &Event, point: Point) -> bo
             if starts {
                 let _ = capture_pointer(target);
             }
-            let handled = dispatch_event(target, event);
+            let handled = if matches!(event, Event::Wheel { .. }) {
+                dispatch_wheel_event(target, event)
+            } else {
+                dispatch_event(target, event)
+            };
+            // C2-M1: a press inside a container's content also reaches the nearest observing
+            // ancestor, which is how clicking sub-window content raises that sub-window.
+            if starts && matches!(event, Event::MousePress { .. }) {
+                notify_child_press_observers(target, event);
+            }
             // A secondary press is both a pointer gesture and a menu request. The press above is
             // delivered first and unconditionally, so a control that starts a selection or opens
             // its own popup keeps receiving it; the request is then delivered to the *same* widget
@@ -1088,7 +1182,12 @@ pub(crate) fn forward_hover_to_tooltip_managers(hovered: Option<ObjectId>, point
     for id in managers {
         let _ = with_widget_mut(id, |widget| {
             if let Some(manager) = widget_as_mut::<TooltipManager>(widget) {
-                manager.note_runtime_hover(hovered, text.as_deref());
+                // CP2-5: an entry hint (a toolbar item or a tab header) wins over the widget's
+                // own tooltip, so the bar's generic text does not paint over the item's.
+                let adopted = hovered.is_some_and(|owner| manager.note_entry_hover(owner, point));
+                if !adopted {
+                    manager.note_runtime_hover(hovered, text.as_deref());
+                }
                 manager.note_pointer(point);
             }
         });

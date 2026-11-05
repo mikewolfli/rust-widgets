@@ -455,6 +455,18 @@ impl Cascader {
         f(&[], 0)
     }
 
+    /// The number of rows the filter keeps at `level` (IN2-09).
+    ///
+    /// The zero-allocation view used by the **event** path: it reads the same "identity order when
+    /// unfiltered" convention [`Self::with_level_filtered`] documents, so a caller never has to
+    /// collect a `Vec` just to ask how many rows there are.
+    fn level_visible_row_count(&self, level: usize) -> usize {
+        self.with_level_filtered(
+            level,
+            |rows, count| if rows.is_empty() { count } else { rows.len() },
+        )
+    }
+
     /// Replaces the whole option tree, clearing any selection that no longer
     /// resolves.
     ///
@@ -703,7 +715,9 @@ impl Cascader {
 
     /// Sets the first row painted at `level`, clamped to the level's rows.
     pub fn set_scroll_offset(&mut self, level: usize, offset: usize) {
-        let rows = self.filtered_indices(level).len();
+        // I-P12 / IN2-09: only the count is needed, so the cached zero-allocation view answers it
+        // instead of collecting the level's whole index list to read `.len()`.
+        let rows = self.level_visible_row_count(level);
         let page = self.page_size(rows);
         let max_offset = rows.saturating_sub(page.min(rows));
         let offset = offset.min(max_offset);
@@ -764,9 +778,9 @@ impl Cascader {
         }
         // A `Vec` cannot be returned by reference from a filtered view, so the filter is not
         // applied here: this accessor answers "what rows exist at this level", and
-        // [`Self::filtered_indices`] is the one that narrows them. They share the
-        // `level == expanded_path.len()` guard above, so the two cannot disagree about which
-        // level is browsable.
+        // `with_level_filtered` / `level_visible_row_count` are the cached views that narrow them.
+        // They share the `level == expanded_path.len()` guard above, so the two cannot disagree
+        // about which level is browsable.
         //
         // This used to compute `self.filter.to_lowercase()` and discard it (`let _ = needle;`),
         // which read as a filter that had been started and forgotten. It filtered nothing, so it
@@ -778,7 +792,13 @@ impl Cascader {
     ///
     /// Always ascending, so the drawing and hit-test paths iterate the same order
     /// and a row's screen position is a function of its rank in this list.
-    pub fn filtered_indices(&self, level: usize) -> Vec<usize> {
+    ///
+    /// IN2-09: not part of the public surface — the event paths read the cached, allocating-free
+    /// [`Self::with_level_filtered`] / [`Self::level_visible_row_count`] views instead, and no
+    /// caller outside this crate used this spelling. Only the tests that assert on the filtered
+    /// order of a level still read it, so it is compiled for them alone.
+    #[cfg(test)]
+    pub(crate) fn filtered_indices(&self, level: usize) -> Vec<usize> {
         let Some(siblings) = self.siblings_at(level) else {
             return Vec::new();
         };
@@ -1247,6 +1267,17 @@ impl WidgetProperties for Cascader {
                 None => Ok(CapabilityValue::Null),
             },
             "placeholder" => Ok(CapabilityValue::String(self.placeholder().to_string())),
+            // The opt-in multi-select switch and its read-back (IN2-06). The set is flattened because
+            // the declared carrier is a flat number list — the same spelling `selected_path`
+            // publishes — so the paths arrive in their stored order, each path's indices contiguous.
+            "multi_select" => Ok(CapabilityValue::Bool(self.is_multi_select())),
+            "selected_paths" => Ok(CapabilityValue::Tuple(
+                self.selected_paths()
+                    .iter()
+                    .flat_map(|path| path.iter())
+                    .map(|index| CapabilityValue::UInt(*index as u64))
+                    .collect(),
+            )),
             _ => base_property_get(self, name),
         }
     }
@@ -1317,6 +1348,14 @@ impl WidgetProperties for Cascader {
                 self.set_placeholder(&text);
                 Ok(())
             }
+            "multi_select" => {
+                self.set_multi_select(expect_bool(value)?);
+                Ok(())
+            }
+            // The set is written through `set_selected_paths`, which validates every path
+            // atomically; a flat carrier cannot carry path boundaries, so the read-only row is the
+            // only honest property spelling (IN2-06).
+            "selected_paths" => Err(CapabilityAccessError::ReadOnlyProperty),
             _ => base_property_set(self, name, value),
         }
     }
@@ -1325,6 +1364,8 @@ impl WidgetProperties for Cascader {
         // Mirrors `CASCADER_PROPERTIES`.
         property_names_of![
             "selected_path",
+            "selected_paths",
+            "multi_select",
             "value",
             "depth",
             "expanded",
@@ -1799,11 +1840,23 @@ impl EventHandler for Cascader {
                     if let Some(&current) = self.expanded_path.get(level) {
                         self.choose(level, current);
                     } else {
-                        let visible = self.filtered_indices(level);
-                        let target = visible.iter().copied().find(|&index| {
-                            self.siblings_at(level)
-                                .and_then(|siblings| siblings.get(index))
-                                .is_some_and(|option| option.enabled)
+                        // IN2-09: the filtered rows are read from the cached view by rank, so a
+                        // key press allocates nothing for the level's index list.
+                        let target = self.with_level_filtered(level, |rows, count| {
+                            let at = |rank: usize| -> Option<usize> {
+                                if rows.is_empty() {
+                                    (rank < count).then_some(rank)
+                                } else {
+                                    rows.get(rank).copied()
+                                }
+                            };
+                            (0..if rows.is_empty() { count } else { rows.len() }).find_map(|rank| {
+                                let index = at(rank)?;
+                                self.siblings_at(level)
+                                    .and_then(|siblings| siblings.get(index))
+                                    .is_some_and(|option| option.enabled)
+                                    .then_some(index)
+                            })
                         });
                         if let Some(index) = target {
                             self.choose(level, index);
@@ -1962,69 +2015,68 @@ impl Cascader {
         // not been chosen into yet. Keying on "the deepest walked node" keeps every
         // press on the column the user is deciding in.
         let level = self.expanded_path.len().saturating_sub(1);
-        let visible = self.filtered_indices(level);
-        if visible.is_empty() {
-            return;
-        }
-        let current = self
-            .expanded_path
-            .get(level)
-            .and_then(|index| visible.iter().position(|visible| visible == index));
-        let next = match current {
-            Some(position) => {
-                let mut cursor = position as i32;
-                loop {
-                    cursor += delta.signum();
-                    if cursor < 0 || cursor >= visible.len() as i32 {
-                        return;
-                    }
-                    let candidate = visible[cursor as usize];
-                    if self
-                        .siblings_at(level)
-                        .and_then(|siblings| siblings.get(candidate))
-                        .is_some_and(|option| option.enabled)
-                    {
-                        break cursor as usize;
-                    }
-                }
+        // IN2-09: the browsed level is read through the cached filtered view by rank, so a direction
+        // key no longer collects the level's whole index list to step one row.
+        let step = self.with_level_filtered(level, |rows, count| {
+            let len = if rows.is_empty() { count } else { rows.len() };
+            if len == 0 {
+                return None;
             }
-            None => {
-                let mut found = None;
-                let order: Vec<usize> = if delta > 0 {
-                    (0..visible.len()).collect()
+            let at = |rank: usize| -> Option<usize> {
+                if rows.is_empty() {
+                    (rank < count).then_some(rank)
                 } else {
-                    (0..visible.len()).rev().collect()
-                };
-                for position in order {
-                    let candidate = visible[position];
-                    if self
-                        .siblings_at(level)
-                        .and_then(|siblings| siblings.get(candidate))
+                    rows.get(rank).copied()
+                }
+            };
+            let enabled = |rank: usize| -> bool {
+                at(rank).is_some_and(|index| {
+                    self.siblings_at(level)
+                        .and_then(|siblings| siblings.get(index))
                         .is_some_and(|option| option.enabled)
-                    {
-                        found = Some(position);
-                        break;
+                })
+            };
+            let current = self
+                .expanded_path
+                .get(level)
+                .and_then(|index| (0..len).find(|&rank| at(rank) == Some(*index)));
+            let next = match current {
+                Some(position) => {
+                    let mut cursor = position as i32;
+                    loop {
+                        cursor += delta.signum();
+                        if cursor < 0 || cursor >= len as i32 {
+                            return None;
+                        }
+                        if enabled(cursor as usize) {
+                            break cursor as usize;
+                        }
                     }
                 }
-                match found {
-                    Some(position) => position,
-                    None => return,
+                None => {
+                    if delta > 0 {
+                        (0..len).find(|&rank| enabled(rank))?
+                    } else {
+                        (0..len).rev().find(|&rank| enabled(rank))?
+                    }
                 }
-            }
+            };
+            Some((next, at(next)?, len))
+        });
+        let Some((next, option_index, row_count)) = step else {
+            return;
         };
-        if let Some(&option_index) = visible.get(next) {
-            self.expanded_path.truncate(level);
-            self.expanded_path.push(option_index);
-            self.invalidate_level_rows();
-            // Keep the keyboard row inside the visible window when the level is capped.
-            let page = self.page_size(visible.len());
-            if next < self.scroll_offset(level) {
-                self.set_scroll_offset(level, next);
-            } else if next >= self.scroll_offset(level) + page {
-                self.set_scroll_offset(level, next + 1 - page);
-            }
-            self.base.request_redraw();
+        self.expanded_path.truncate(level);
+        self.expanded_path.push(option_index);
+        self.invalidate_level_rows();
+        // Keep the keyboard row inside the visible window when the level is capped.
+        let page = self.page_size(row_count);
+        if next < self.scroll_offset(level) {
+            self.set_scroll_offset(level, next);
+        } else if next >= self.scroll_offset(level) + page {
+            self.set_scroll_offset(level, next + 1 - page);
         }
+        self.base.request_redraw();
     }
 }
 
@@ -2974,5 +3026,40 @@ mod tests {
         // Clearing an already-empty set is not a change.
         c.clear_selected();
         assert_eq!(seen.lock().expect("signal lock poisoned").len(), 1);
+    }
+
+    /// IN2-06: the multi-select switch and the selected set are reachable through the property
+    /// contract, so a host can turn the mode on and read back what is picked.
+    #[test]
+    fn the_property_contract_exposes_multi_select_and_the_selected_set() {
+        let mut c = cascader();
+        assert_eq!(c.get("multi_select"), Ok(CapabilityValue::Bool(false)));
+        assert!(c.property_names().contains(&"multi_select"));
+        assert!(c.property_names().contains(&"selected_paths"));
+
+        c.set("multi_select", CapabilityValue::Bool(true)).expect("the switch is writable");
+        assert!(c.is_multi_select());
+        assert_eq!(c.get("multi_select"), Ok(CapabilityValue::Bool(true)));
+
+        assert!(c.set_selected_paths(vec![vec![0, 0, 0, 0], vec![0, 0, 0, 1]]));
+        assert_eq!(
+            c.get("selected_paths"),
+            Ok(CapabilityValue::Tuple(vec![
+                CapabilityValue::UInt(0),
+                CapabilityValue::UInt(0),
+                CapabilityValue::UInt(0),
+                CapabilityValue::UInt(0),
+                CapabilityValue::UInt(0),
+                CapabilityValue::UInt(0),
+                CapabilityValue::UInt(0),
+                CapabilityValue::UInt(1),
+            ])),
+            "the set is published in the flat number-list spelling, in stored order"
+        );
+        // The set has no flat write form: a path carries boundaries a number list cannot.
+        assert_eq!(
+            c.set("selected_paths", CapabilityValue::Tuple(vec![])),
+            Err(CapabilityAccessError::ReadOnlyProperty)
+        );
     }
 }

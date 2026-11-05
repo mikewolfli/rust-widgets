@@ -23,6 +23,19 @@ pub(crate) fn tag_capability() -> WidgetCapability {
 }
 
 #[cfg(not(alloc_frugal))]
+pub(crate) fn tag_group_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::TagGroup,
+        canonical_name: "tag_group",
+        aliases: &[],
+        properties: TAG_GROUP_PROPERTIES,
+        events: events_of!("tag_group"),
+        // One `set_` command per non-base writable property, the shape `tag_capability` uses.
+        commands: &["set_tags", "set_closable", "set_selection_mode", "set_wrap", "set_spacing"],
+    }
+}
+
+#[cfg(not(alloc_frugal))]
 pub(crate) fn clock_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::Clock,

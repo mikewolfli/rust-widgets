@@ -258,6 +258,10 @@ impl ChartCrosshair {
     }
 
     /// Sets whether the chart snaps to the nearest data point.
+    ///
+    /// CH2-05: the value is **consumed by the host**, not by this control — a crosshair carries no
+    /// series data, so "snap" is the chart's job (see the module note on `follow_pointer`). That is
+    /// why the capability publishes the flag readable but not writable.
     pub fn set_snap_to_point(&mut self, snap: bool) {
         self.snap_to_point = snap;
     }

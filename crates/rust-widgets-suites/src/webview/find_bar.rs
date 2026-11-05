@@ -36,6 +36,11 @@ pub struct WebFindBar {
     query: String,
     match_index: usize,
     match_count: usize,
+    /// The `"{index}/{count}"` label `draw` paints, rebuilt only by [`WebFindBar::set_match_progress`].
+    ///
+    /// The text is a pure function of the two counts above, so building it in `draw` allocated one
+    /// `String` per frame (SP-P66); the only mutator rebuilds it here and a repaint borrows it.
+    counter_text: String,
     case_sensitive: bool,
     visible: bool,
     /// Emitted with `(query, case_sensitive)` when the query should be run.
@@ -66,6 +71,7 @@ impl WebFindBar {
             query: String::new(),
             match_index: 0,
             match_count: 0,
+            counter_text: String::from("0/0"),
             case_sensitive: false,
             visible: false,
             search_requested: Signal1::new(),
@@ -129,6 +135,7 @@ impl WebFindBar {
         }
         self.match_index = index;
         self.match_count = count;
+        self.counter_text = format!("{}/{}", index, count);
         self.base.request_redraw();
     }
 
@@ -408,10 +415,9 @@ impl Draw for WebFindBar {
         // Match counter and the action controls, laid out from the trailing edge: case toggle,
         // next, previous, then the counter.
         let right = rect.right();
-        let counter = format!("{}/{}", self.match_index, self.match_count);
         context.draw_text_fitted_cow(
             Rect::new(right - 112, rect.y + 8, 36, rect.height.saturating_sub(16)),
-            &counter,
+            &self.counter_text,
             font,
             ink.with_alpha(160),
             HorizontalAlignment::Center,

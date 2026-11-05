@@ -374,7 +374,7 @@ pub(crate) fn mount_canvas(
             gdk::ScrollDirection::Right => (1.0, 0.0),
             _ => (delta_x, delta_y),
         };
-        if crate::widget::runtime::dispatch_event(
+        if crate::widget::runtime::dispatch_wheel_event(
             id,
             &Event::Wheel { delta: Point::new(dx.round() as i32, dy.round() as i32), modifiers: 0 },
         ) {

@@ -1983,6 +1983,9 @@ class RustWidgets:
         - bit 2: Accessibility
         - bit 3: Native menu
         - bit 4: Typed widget trigger
+        - bit 5: Clipboard
+        - bit 6: External open
+        - bit 7: Host file dialog
         """
         return self.lib.rw_platform_capabilities()
 

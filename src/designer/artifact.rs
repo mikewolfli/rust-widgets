@@ -179,7 +179,8 @@ pub fn plan_artifacts(json: &str, width: u32, height: u32) -> Result<Vec<Artifac
 ///
 /// Reads the first non-empty line rather than searching the whole text, so a file that merely
 /// *mentions* the marker (a test fixture, a document quoting it) is not mistaken for generated
-/// output. One of the two callers is a gate that must not be fooled by a quoted string.
+/// output. The callers are the `designer_generate` CLI's ownership check (BD-03) and this module's
+/// own test, and both must not be fooled by a quoted string.
 pub fn is_generated(text: &str) -> bool {
     text.lines()
         .find(|line| !line.trim().is_empty())

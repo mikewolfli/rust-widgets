@@ -71,6 +71,8 @@ const MOD_META: u32 = 8;
 enum Pending {
     /// A pointer event in window space.
     Pointer(ObjectId, Event, Point),
+    /// A wheel notch for the window under the pointer (C2-D0 routes it through the ancestor walk).
+    Wheel(ObjectId, Event),
     /// A key/text event for a window's focused control.
     Key(ObjectId, Event),
     /// A single committed character, delivered through the pooled text-input entry (G-606).
@@ -79,8 +81,11 @@ enum Pending {
     Tab(bool),
     /// A container reported a new client size.
     Resize(ObjectId, u32, u32),
+    /// The window gained the keyboard. Carries the window whose focus notification must reach
+    /// the library's mirror (PL2-01).
+    FocusGained(ObjectId),
     /// The window lost the keyboard.
-    FocusLost,
+    FocusLost(ObjectId),
     /// The pointer left every control.
     Leave(Point),
     /// The compositor asked the window to close.
@@ -444,7 +449,7 @@ impl OrbitalPlatform {
                 entry.input.buttons = (current[0], current[1], current[2]);
             }
             EventOption::Scroll(scroll) => {
-                pending.push(Pending::Key(
+                pending.push(Pending::Wheel(
                     window_widget,
                     Event::Wheel {
                         delta: Point::new(scroll.x, scroll.y),
@@ -453,8 +458,12 @@ impl OrbitalPlatform {
                 ));
             }
             EventOption::Focus(focus) => {
-                if !focus.focused {
-                    pending.push(Pending::FocusLost);
+                // PL2-01: both directions are forwarded. A gained focus used to be dropped, so
+                // `ACTIVE_WINDOW` never recorded a redox window as active.
+                if focus.focused {
+                    pending.push(Pending::FocusGained(window_widget));
+                } else {
+                    pending.push(Pending::FocusLost(window_widget));
                 }
             }
             EventOption::Hover(hover) => {
@@ -489,6 +498,10 @@ impl OrbitalPlatform {
                 Pending::Pointer(root, event, point) => {
                     runtime::dispatch_pointer_event(root, &event, point);
                 }
+                Pending::Wheel(root, event) => {
+                    let target = runtime::hovered_widget().unwrap_or(root);
+                    let _ = runtime::dispatch_wheel_event(target, &event);
+                }
                 Pending::Key(root, event) => {
                     let target = runtime::focused_widget().unwrap_or(root);
                     runtime::dispatch_event(target, &event);
@@ -503,8 +516,17 @@ impl OrbitalPlatform {
                 Pending::Resize(window, width, height) => {
                     self.queue_resize_trigger(window, width, height);
                 }
-                Pending::FocusLost => {
+                // PL2-01: there is no `Pending::Moved` because Orbital never reports a window's
+                // absolute position — `EventOption` has no move variant, and the compositor owns
+                // placement. Inventing a position to feed `notify_window_moved` would be the
+                // "hardcoded pretending value" rule #37 forbids, so the mirror keeps the position
+                // the host last set.
+                Pending::FocusGained(window) => {
+                    crate::platform::window_control::notify_window_focus(window, true);
+                }
+                Pending::FocusLost(window) => {
                     runtime::clear_focus();
+                    crate::platform::window_control::notify_window_focus(window, false);
                 }
                 Pending::Leave(point) => {
                     runtime::clear_hover(point);
@@ -513,6 +535,13 @@ impl OrbitalPlatform {
             }
         }
         for (host, window) in closes {
+            // PL2-01: `Quit` is a close proposal like the title-bar button on every other
+            // backend — the host's close handler and a consuming `WindowCloseRequest` may refuse
+            // it, and only an accepted request takes the window down.
+            if !crate::platform::window_control::request_window_close(window) {
+                log::debug!("[redox] close for window widget {window} refused by the host");
+                continue;
+            }
             crate::close_widget(window);
             runtime::unregister(window);
             self.destroy_widget(host);

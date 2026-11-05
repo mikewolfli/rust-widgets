@@ -964,13 +964,12 @@ impl EventLoop {
                         // double-click judgement, gesture feed and accelerator hook have one
                         // spelling to branch on instead of two. The *delivered* event keeps the
                         // spelling the host posted, so a control that matches `MouseDown` still
-                        // receives it. The canonicalisation only changes legacy aliases, so a
-                        // modern event is cloned without a second match.
-                        let canonical = if event.is_legacy_alias() {
-                            event.clone().into_canonical()
-                        } else {
-                            event.clone()
-                        };
+                        // receives it. Only a legacy alias needs an owned canonical form, so
+                        // a modern event is borrowed rather than cloned — the hot path pays no
+                        // allocation for `TextInput`/`ImeCommit`/`Custom` payloads (RT2-01).
+                        let canonical_owned: Option<Event> =
+                            event.is_legacy_alias().then(|| event.clone().into_canonical());
+                        let canonical: &Event = canonical_owned.as_ref().unwrap_or(event);
 
                         // C-10': the window's own key handler runs before the host accelerator
                         // hook and before control delivery. A window owns its local commands, so
@@ -983,12 +982,12 @@ impl EventLoop {
                         // window handler is logged and the key is treated as unconsumed.
                         #[cfg(full_widgets)]
                         {
-                            crate::shortcut::route::observe_input_event(&canonical);
+                            crate::shortcut::route::observe_input_event(canonical);
                             if matches!(canonical, Event::KeyPress { .. }) {
                                 let consumed =
                                     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                                         crate::shortcut::route::dispatch_window_key(
-                                            target, &canonical,
+                                            target, canonical,
                                         )
                                     }));
                                 match consumed {
@@ -1013,7 +1012,7 @@ impl EventLoop {
                             if matches!(canonical, Event::KeyPress { .. }) {
                                 let consumed =
                                     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                                        shortcut(&canonical)
+                                        shortcut(canonical)
                                     }));
                                 match consumed {
                                     Ok(true) => return,
@@ -1050,7 +1049,7 @@ impl EventLoop {
                         // for a code that is already held is the platform auto-repeat, and the
                         // flag is scoped to this delivery so a consumer can branch on it without
                         // an event-layout change. A `KeyRelease` clears the held bit at once.
-                        let repeat = match &canonical {
+                        let repeat = match canonical {
                             Event::KeyPress { key, .. } => key_ref.note_press(*key),
                             Event::KeyRelease { key, .. } => {
                                 key_ref.note_release(*key);
@@ -1070,7 +1069,7 @@ impl EventLoop {
                         // borrow that `delivery` holds. Declared without an initialiser so the
                         // allocation only happens on the arm that needs it.
                         let single_click_replay: Event;
-                        let delivery: &Event = match &canonical {
+                        let delivery: &Event = match canonical {
                             Event::MousePress { pos, button, modifiers } => {
                                 if lock(double_click_ref).observe_press(
                                     target,
@@ -1111,8 +1110,8 @@ impl EventLoop {
                         };
 
                         #[cfg(feature = "touch")]
-                        let maybe_gesture_event = if feeds_the_gesture_engine(&canonical)
-                            || is_touch_cancel(&canonical)
+                        let maybe_gesture_event = if feeds_the_gesture_engine(canonical)
+                            || is_touch_cancel(canonical)
                         {
                             // W-11: the long press has no event of its own to react to while
                             // the finger is held still, so the loop arms the deadline the
@@ -1124,7 +1123,7 @@ impl EventLoop {
                             // A mouse press arms the same deadline: the recognisers then see
                             // the translated `TouchBegin`, and a stationary held button reaches
                             // `LongPressGesture` through the same timer a finger does.
-                            match &canonical {
+                            match canonical {
                                 Event::TouchBegin { .. } | Event::MousePress { .. } => {
                                     let interval = Duration::from_millis(
                                         crate::gesture::tuning().long_press_min_ms,
@@ -1150,8 +1149,8 @@ impl EventLoop {
                             }
                             // A mouse event is fed to the engine in its touch spelling; the
                             // control still receives the original `Mouse*` event below.
-                            let translated = mouse_gesture_input(&canonical);
-                            let fed = translated.as_ref().unwrap_or(&canonical);
+                            let translated = mouse_gesture_input(canonical);
+                            let fed = translated.as_ref().unwrap_or(canonical);
                             gesture_ref.process(target, fed, monotonic_ms(gesture_epoch))
                         } else {
                             None
@@ -1408,19 +1407,20 @@ impl EventLoop {
             ),
         }
         // W-001: one canonical spelling for the dispatch-side rules; delivery keeps the host's.
-        // The canonicalisation only changes legacy aliases, so a modern event is cloned without
-        // a second match (EV-X02).
-        let canonical =
-            if event.is_legacy_alias() { event.clone().into_canonical() } else { event.clone() };
+        // Only a legacy alias needs an owned canonical form, so a modern event is borrowed
+        // rather than cloned (EV-X02, RT2-01).
+        let canonical_owned: Option<Event> =
+            event.is_legacy_alias().then(|| event.clone().into_canonical());
+        let canonical: &Event = canonical_owned.as_ref().unwrap_or(&event);
         // C-10': the window handler is consulted for every key press before the host hook and
         // before delivery. `mini` has no window registry, so the call is compiled out with
         // `full_widgets`; the existing semantic path below is unchanged.
         #[cfg(full_widgets)]
         {
-            crate::shortcut::route::observe_input_event(&canonical);
+            crate::shortcut::route::observe_input_event(canonical);
             if matches!(canonical, Event::KeyPress { .. }) {
                 let consumed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    crate::shortcut::route::dispatch_window_key(target, &canonical)
+                    crate::shortcut::route::dispatch_window_key(target, canonical)
                 }));
                 match consumed {
                     Ok(true) => return true,
@@ -1436,7 +1436,7 @@ impl EventLoop {
             if let Some(shortcut) = self.shortcut_dispatch.as_ref() {
                 // EV-X05: the same barrier the threaded dispatch uses for its accelerator hook.
                 let consumed =
-                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| shortcut(&canonical)));
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| shortcut(canonical)));
                 match consumed {
                     Ok(true) => return true,
                     Ok(false) => {}
@@ -1448,7 +1448,7 @@ impl EventLoop {
             }
         }
         // W-204: the mini profile derives the repeat fact from the same held-key stream.
-        let repeat = match &canonical {
+        let repeat = match canonical {
             Event::KeyPress { key, .. } => self.key_state.note_press(*key),
             Event::KeyRelease { key, .. } => {
                 self.key_state.note_release(*key);
@@ -1460,7 +1460,7 @@ impl EventLoop {
         let now_ms = monotonic_ms(self.clock_origin);
         let mut synthesized_double_click = None;
         let single_click_replay: Event;
-        let delivery: &Event = match &canonical {
+        let delivery: &Event = match canonical {
             Event::MousePress { pos, button, modifiers } => {
                 if lock(&self.double_click).observe_press(target, *pos, *button, *modifiers, now_ms)
                 {

@@ -953,6 +953,10 @@ impl Widget for Pagination {
     fn base(&self) -> &BaseWidget {
         &self.base
     }
+    /// A pager moves one page per wheel notch (C2-D0).
+    fn accepts_wheel(&self) -> bool {
+        true
+    }
     fn set_state_theme_hook(&mut self) {
         crate::style::reapply_active_theme_state(self);
     }
@@ -1044,6 +1048,8 @@ impl WidgetProperties for Pagination {
             "sibling_count" => Ok(CapabilityValue::UInt(self.sibling_count() as u64)),
             "show_nav_buttons" => Ok(CapabilityValue::Bool(self.show_nav_buttons())),
             "wheel_paging_enabled" => Ok(CapabilityValue::Bool(self.wheel_paging_enabled())),
+            "show_jump_input" => Ok(CapabilityValue::Bool(self.show_jump_input())),
+            "show_page_size_selector" => Ok(CapabilityValue::Bool(self.show_page_size_selector())),
             _ => base_property_get(self, name),
         }
     }
@@ -1074,6 +1080,14 @@ impl WidgetProperties for Pagination {
                 self.set_wheel_paging_enabled(expect_bool(value)?);
                 Ok(())
             }
+            "show_jump_input" => {
+                self.set_show_jump_input(expect_bool(value)?);
+                Ok(())
+            }
+            "show_page_size_selector" => {
+                self.set_show_page_size_selector(expect_bool(value)?);
+                Ok(())
+            }
             // Derived from `total` / `page_size`.
             "page_count" | "last_page" => Err(CapabilityAccessError::ReadOnlyProperty),
             _ => base_property_set(self, name, value),
@@ -1090,6 +1104,8 @@ impl WidgetProperties for Pagination {
             "sibling_count",
             "show_nav_buttons",
             "wheel_paging_enabled",
+            "show_jump_input",
+            "show_page_size_selector",
             BASE_PROPERTY_NAMES
         ]
     }
@@ -1169,10 +1185,15 @@ impl EventHandler for Pagination {
                     && !self.jump_editing
                     && delta.y != 0
                 {
+                    let before = self.page;
                     if delta.y < 0 {
                         self.next_page();
                     } else {
                         self.previous_page();
+                    }
+                    // C2-D0: a pager already at the first/last page lets an outer container scroll.
+                    if self.page != before {
+                        crate::widget::runtime::claim_wheel();
                     }
                 }
             }

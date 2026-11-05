@@ -1147,25 +1147,30 @@ impl EventHandler for TimelineWidget {
                     self.zoom(0.8);
                 }
             }
-            Event::KeyPress { key, modifiers: _ } => match *key {
-                38 => {
-                    let next = self.selected_index.map_or(0, |index| index.saturating_sub(1));
-                    let _ = self.select_index(next);
-                }
-                40 => {
-                    if !self.items.is_empty() {
-                        let next = self
-                            .selected_index
-                            .map_or(0, |index| (index + 1).min(self.items.len() - 1));
+            // Keyboard navigation is reachable only while the timeline holds focus: a
+            // timeline embedded in a page must not consume the arrows of whatever the user
+            // is editing.
+            Event::KeyPress { key, modifiers: _ } if self.base.focus_reason().is_some() => {
+                match *key {
+                    38 => {
+                        let next = self.selected_index.map_or(0, |index| index.saturating_sub(1));
                         let _ = self.select_index(next);
                     }
+                    40 => {
+                        if !self.items.is_empty() {
+                            let next = self
+                                .selected_index
+                                .map_or(0, |index| (index + 1).min(self.items.len() - 1));
+                            let _ = self.select_index(next);
+                        }
+                    }
+                    33 => self.scroll_by(-(self.visible_count() as isize)),
+                    34 => self.scroll_by(self.visible_count() as isize),
+                    36 => self.scroll_by(-1),
+                    35 => self.scroll_by(1),
+                    _ => {}
                 }
-                33 => self.scroll_by(-(self.visible_count() as isize)),
-                34 => self.scroll_by(self.visible_count() as isize),
-                36 => self.scroll_by(-1),
-                35 => self.scroll_by(1),
-                _ => {}
-            },
+            }
             _ => { /* Other events are not relevant */ }
         }
     }
@@ -1480,6 +1485,7 @@ crate::impl_scrollable_rows!(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::event::FocusReason;
     use std::sync::{Arc, Mutex};
 
     fn sample_items() -> Vec<TimelineItem> {
@@ -1532,6 +1538,32 @@ mod tests {
         timeline.handle_event(&Event::wheel(0, 120, 0));
         let after_out = timeline.viewport();
         assert!((after_out.1 - after_out.0) >= (after_in.1 - after_in.0));
+    }
+
+    /// Arrows and page keys move the timeline only while it holds focus.
+    #[test]
+    fn the_keyboard_navigates_only_while_focused() {
+        // Two visible rows over three items, so a page step has somewhere to go.
+        let mut timeline = TimelineWidget::new(Rect::new(0, 0, 500, 48));
+        timeline.set_items(sample_items());
+
+        // Unfocused: the keys belong to whoever holds focus.
+        timeline.handle_event(&Event::KeyPress { key: 40, modifiers: 0 });
+        assert_eq!(timeline.selected_index(), None, "an unfocused timeline ignores the key");
+        assert_eq!(timeline.scroll_offset(), 0, "and does not scroll either");
+
+        timeline.handle_event(&Event::FocusGained { reason: FocusReason::Tab });
+        timeline.handle_event(&Event::KeyPress { key: 40, modifiers: 0 });
+        assert_eq!(timeline.selected_index(), Some(0), "a focused timeline selects the first row");
+        timeline.handle_event(&Event::KeyPress { key: 40, modifiers: 0 });
+        assert_eq!(timeline.selected_index(), Some(1), "Down advances the selection");
+        timeline.handle_event(&Event::KeyPress { key: 38, modifiers: 0 });
+        assert_eq!(timeline.selected_index(), Some(0), "Up reverses it");
+
+        timeline.handle_event(&Event::KeyPress { key: 34, modifiers: 0 });
+        assert_eq!(timeline.scroll_offset(), 1, "PageDown scrolls by a screenful");
+        timeline.handle_event(&Event::KeyPress { key: 33, modifiers: 0 });
+        assert_eq!(timeline.scroll_offset(), 0, "PageUp scrolls back");
     }
 
     #[test]

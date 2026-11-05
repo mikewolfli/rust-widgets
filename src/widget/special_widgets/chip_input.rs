@@ -589,9 +589,10 @@ impl Draw for ChipInput {
             HorizontalAlignment::Left,
         );
         // The caret is placed from the measured prefix, so it tracks in-line editing rather than
-        // always sitting at the end of the string.
-        let prefix: String = self.text.chars().take(self.cursor).collect();
-        let caret_x = input.x + 6 + estimate_text_width(&prefix, font, 1.0) as i32;
+        // always sitting at the end of the string. The prefix is a **slice**, not a collected
+        // `String`: an idle caret must not allocate a copy of the whole text every frame (SP2-02).
+        let caret_byte = crate::widget::text_utils::byte_index_of_char(&self.text, self.cursor);
+        let caret_x = input.x + 6 + estimate_text_width(&self.text[..caret_byte], font, 1.0) as i32;
         if self.base.is_enabled() {
             context.fill_rect(Rect::new(caret_x, caret_y - 1, 1, 15), ink);
         }

@@ -60,7 +60,7 @@ use crate::widget::chart_widgets::charts::{axis_chrome, axis_chrome_color};
 #[cfg(feature = "chart")]
 use crate::widget::chart_widgets::types::ChartContext;
 use crate::widget::companions::{
-    AxisEdge, AxisPicker, ChartDataTable, Legend, LegendEntry, ZoomStrip,
+    AxisEdge, AxisPicker, ChartDataTable, ChartSeriesSnapshot, Legend, LegendEntry, ZoomStrip,
 };
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
@@ -163,9 +163,6 @@ impl BarSeries {
     }
 }
 
-/// A chart data snapshot: `(name, points)` series and the indices to show.
-type ChartSeriesSnapshot = (Vec<(String, Vec<(f64, f64)>)>, Vec<usize>);
-
 /// Ties an attached [`ChartDataTable`] to this chart (COMP-A8).
 struct ChartDataTableBinding {
     /// Writer end of the table's snapshot queue; the table drains it in its own paint/event path.
@@ -174,6 +171,8 @@ struct ChartDataTableBinding {
     toggles: Arc<Mutex<Vec<usize>>>,
     /// The snapshot last pushed, so an unchanged chart does not rebuild the table.
     last_snapshot: ChartSeriesSnapshot,
+    /// The `data_revision` the last snapshot was built from (CH2-01).
+    last_revision: u64,
     /// The subscription, dropped with the binding so a detached chart leaves no slot behind.
     _scope: ConnectionScope,
 }
@@ -833,6 +832,7 @@ impl BarChart {
             snapshots,
             toggles,
             last_snapshot: snapshot,
+            last_revision: self.data_revision,
             _scope: scope,
         });
         self.base.request_redraw();
@@ -864,16 +864,22 @@ impl BarChart {
             let next = !self.is_series_visible(index);
             changed |= self.set_series_visible(index, next);
         }
+        // CH2-01: `data_revision` is bumped by every mutator whose result the snapshot reads,
+        // including `set_series_visible`, so an unchanged chart skips the O(points) rebuild.
+        if self.chart_data_table.as_ref().is_some_and(|b| b.last_revision == self.data_revision) {
+            return changed;
+        }
         let current = self.chart_data_snapshot();
         let differs =
             self.chart_data_table.as_ref().is_some_and(|binding| current != binding.last_snapshot);
-        if differs {
-            if let Some(binding) = self.chart_data_table.as_mut() {
+        if let Some(binding) = self.chart_data_table.as_mut() {
+            binding.last_revision = self.data_revision;
+            if differs {
                 *lock(&binding.snapshots) = Some(current.clone());
                 binding.last_snapshot = current;
             }
-            changed = true;
         }
+        changed |= differs;
         changed
     }
 

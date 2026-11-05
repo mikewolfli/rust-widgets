@@ -486,6 +486,15 @@ pub(crate) fn popup_press_route(
         }
         return Ok(None);
     }
+    // DL2-03: a modal that went up while this grab was live owns the input. Dispatch already
+    // refuses delivery to anything outside the modal (`modal_blocks`), so keeping the grab
+    // swallows every press inside the popup's rectangle, and the outside-press branch below
+    // swallows the first click that would have reached the modal. Drop the grab and let the
+    // press route normally.
+    if modal_blocks(popup) {
+        clear_popup_grab();
+        return Ok(None);
+    }
     // The popup closed itself (an item was chosen, Escape, a programmatic close).
     if !read_widget(popup, |widget| widget.is_visible()).unwrap_or(false) {
         clear_popup_grab();

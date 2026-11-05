@@ -50,7 +50,7 @@ use std::sync::{Arc, Mutex};
 
 use rust_widgets::app::{App, StatusBarHandle, WidgetHandle, WindowHandle};
 use rust_widgets::core::{ObjectId, Orientation, Rect};
-use rust_widgets::theme::{global_theme_manager, AppearanceMode, Theme};
+use rust_widgets::theme::global_theme_manager;
 // The demo has a `Layout` struct of its own (the panel rects), so the library's layout
 // trait is imported under a distinct name rather than shadowing it.
 use rust_widgets::layout::{BoxLayout, Layout as LayoutTrait, LayoutConstraints};
@@ -1108,21 +1108,7 @@ fn apply_appearance(default_dark: bool) {
     } else {
         default_dark
     };
-    apply_appearance_mode(dark);
-}
-
-/// Registers both palettes and selects `dark`.
-///
-/// Split from [`apply_appearance`] so the offscreen preview can choose an appearance without
-/// going through the process arguments: the preview renders both in one run.
-fn apply_appearance_mode(dark: bool) {
-    let mut manager = global_theme_manager();
-    manager.register_theme(Theme::macos_dark());
-    manager.register_theme(Theme::macos_light());
-    let name = if dark { "macos-dark" } else { "macos-light" };
-    manager.set_theme(name);
-    drop(manager);
-    rust_widgets::reapply_active_theme();
+    preview_common::apply_appearance_mode(dark);
 }
 
 /// Renders the finance screen offscreen and returns its RGBA pixels.
@@ -1142,7 +1128,7 @@ pub fn render_offscreen(dark: bool, width: u32, height: u32) -> Option<Vec<u8>> 
     app.init();
     log.append("[App] init() done");
     register_cjk_face(&log);
-    apply_appearance_mode(dark);
+    preview_common::apply_appearance_mode(dark);
 
     let win = app.new_window("Finance Demo — preview", 0, 0, width, height);
     // The status bar is chrome around the screen, not part of what this verifies, so the preview
@@ -1160,18 +1146,6 @@ pub fn render_offscreen(dark: bool, width: u32, height: u32) -> Option<Vec<u8>> 
     )
 }
 
-/// Whether the active palette is dark.
-///
-/// Asked of the theme manager rather than mirrored in a `bool`: the theme is global state and
-/// another part of the process may switch it, so a private copy would point the menu entry the
-/// wrong way and the next click would select the palette already in use.
-fn dark_active() -> bool {
-    global_theme_manager()
-        .current_theme()
-        .map(|theme| theme.appearance == AppearanceMode::Dark)
-        .unwrap_or(false)
-}
-
 /// Switches to the other registered palette and repaints what is already mounted.
 ///
 /// This is the one View entry with a real action, so the menu is not a row of inert labels.
@@ -1179,7 +1153,11 @@ fn dark_active() -> bool {
 /// `reapply_active_theme` restyles the controls already on screen — without it the window keeps
 /// its old colours and the switch looks like a no-op.
 fn toggle_appearance(log: &Arc<EventLog>) {
-    let name = if dark_active() { "macos-light" } else { "macos-dark" };
+    let name = if preview_common::dark_active() {
+        preview_common::MACOS_LIGHT
+    } else {
+        preview_common::MACOS_DARK
+    };
     if global_theme_manager().set_theme(name) {
         rust_widgets::reapply_active_theme();
         log.append(format!("[Menu] appearance '{name}'"));
@@ -1263,23 +1241,28 @@ pub fn run() {
     let menu_bar = win.new_menu_bar(0, 0, 0, 0);
     let file_menu = win.new_menu(&menu_bar, "File", 0, 0, 0, 0);
     let view_menu = win.new_menu(&menu_bar, "View", 0, 0, 0, 0);
+    // Each dispatchable row is named by an **action id** as well as its label: the handler below
+    // matches the id, so retranslating a label cannot silently break the action (DM3-2).
     for (menu, items) in [
-        (&file_menu, &[("Reload Data", "Ctrl+R"), ("Quit", "Ctrl+Q")][..]),
-        (&view_menu, &[("Toggle Appearance", "Ctrl+Shift+D")][..]),
+        (
+            &file_menu,
+            &[("Reload Data", "Ctrl+R", "file.reload"), ("Quit", "Ctrl+Q", "file.quit")][..],
+        ),
+        (&view_menu, &[("Toggle Appearance", "Ctrl+Shift+D", "view.toggle-appearance")][..]),
     ] {
-        for &(label, chord) in items {
-            win.new_menu_item(menu, label, Some(chord));
+        for &(label, chord, action_id) in items {
+            win.new_menu_item_with_action_id(menu, label, Some(chord), Some(action_id));
         }
     }
 
     let file_log = Arc::clone(&log);
-    file_menu.on_triggered(move |label: String| match label.as_str() {
+    file_menu.on_item_action_triggered(move |action_id: String| match action_id.as_str() {
         // The sample series is generated deterministically, so there is nothing to re-fetch.
         // Saying that is honest; pretending to load would log a lie.
-        "Reload Data" => file_log.append(
+        "file.reload" => file_log.append(
             "[Menu] Reload Data: the series is a fixed sample, so there is nothing to fetch",
         ),
-        "Quit" => {
+        "file.quit" => {
             let requested = rust_widgets::quit();
             file_log.append(if requested {
                 "[Menu] Quit requested"
@@ -1291,14 +1274,13 @@ pub fn run() {
     });
 
     let view_log = Arc::clone(&log);
-    view_menu.on_triggered(move |label: String| {
-        // One handler rather than a logging one plus an action one: `on_triggered`
-        // connections are appended and all of them fire, so two handlers would each run for
-        // every item and the label test would have to be repeated.
-        if label == "Toggle Appearance" {
+    view_menu.on_item_action_triggered(move |action_id: String| {
+        // One handler rather than a logging one plus an action one: the action signal is what
+        // this menu needs, and matching the id keeps the label free to change.
+        if action_id == "view.toggle-appearance" {
             toggle_appearance(&view_log);
         } else {
-            view_log.append(format!("[Menu] {label} chosen"));
+            view_log.append(format!("[Menu] {action_id} chosen"));
         }
     });
 

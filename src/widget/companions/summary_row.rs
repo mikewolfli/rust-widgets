@@ -339,10 +339,16 @@ impl SummaryRow {
 impl EventHandler for SummaryRow {
     fn handle_event(&mut self, event: &Event) {
         // A summary row owns no gesture, but the base still records hover/focus bookkeeping so a
-        // host's generic state channel sees the same facts as for any other control. The enabled
-        // guard keeps a disabled row from receiving even that bookkeeping.
+        // host's generic state channel sees the same facts as for any other control.
+        //
+        // CP2-3: this used to end with an empty `if !self.base.is_enabled() {}` whose comment
+        // claimed the guard kept a disabled row from receiving the bookkeeping. The forwarding
+        // above runs unconditionally, so the guard changed nothing — it was an empty body that
+        // made the comment false. The display-only precedent (`DrawerSectionHeader`) forwards
+        // unconditionally and says so, which is the behaviour this control actually has, so the
+        // lying block is deleted rather than made live (a live guard would silently change what a
+        // disabled row receives).
         self.base.handle_event(event);
-        if !self.base.is_enabled() {}
     }
 }
 

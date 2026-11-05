@@ -30,7 +30,7 @@
 //! |-------|------|---------|
 //! | **gpu** | `gpu/` | GPU-accelerated rendering traits and capability enums (gated behind `gpu-wgpu`) |
 //! | **core** | `core/` | Data types (`TextMetrics`, `TextCluster`, `ShapedText`) and commands (`RenderCommand`) |
-//! | **backend** | `backend/` | Rendering backends: software surface (`BackBuffer`, `SoftwareSurface`, `RenderContext`), paint trait (`PaintBackend`, `SoftwarePaintBackend`), batch (`BatchId`), scene (`SceneLayer`, `RenderScene`) |
+//! | **backend** | `backend/` | Rendering backends: software surface (`BackBuffer`, `SoftwareSurface`, `RenderContext`), paint trait (`PaintBackend`, `SoftwarePaintBackend`), batch image registration (`BatchImage`), scene (`SceneLayer`, `RenderScene`) |
 //! | **pipeline** | `pipeline/` | Visual command pipeline for all widget types (controls, containers, dialogs, special, etc.) |
 //! | **web** | `web/` | Web engine and web view rendering |
 //! | **quality** | `quality/` | Adaptive rendering quality management |
@@ -111,9 +111,9 @@ pub(crate) use backend::fitted_origin;
 pub use backend::{average_frame_time, current_fps, current_quality_level, set_quality_level};
 pub use backend::{
     default_software_render_config, last_auto_render_backend, set_default_software_render_config,
-    text_line, AutoRenderBackend, BackBuffer, BatchCommand, BatchId, BatchImage, BatchRenderer,
-    PaintBackend, RenderContext, RenderScene, SceneLayer, SoftwarePaintBackend,
-    SoftwareRenderConfig, SoftwareSurface, VerticalAlignment, TEXT_FIT_MARGIN,
+    text_line, AutoRenderBackend, BackBuffer, BatchImage, PaintBackend, RenderContext, RenderScene,
+    SceneLayer, SoftwarePaintBackend, SoftwareRenderConfig, SoftwareSurface, VerticalAlignment,
+    TEXT_FIT_MARGIN,
 };
 
 #[cfg(all(test, feature = "desktop", widgets_unstripped))]

@@ -9,6 +9,12 @@
 use super::*;
 use crate::special_widgets::code_editor::TokenSpan;
 
+/// How many formatted fold summaries the painter keeps at once (GX-04).
+///
+/// One is needed per visible folded segment. The cap bounds the table for a viewport that shows
+/// more folds than usual; reaching it drops the table and rebuilds the visible entries.
+const FOLD_LABEL_CACHE_CAP: usize = 32;
+
 impl CodeEditor {
     /// Draws source rows and returns the document line index painted per row.
     pub(super) fn draw_source_rows(
@@ -253,21 +259,41 @@ impl CodeEditor {
                 if self.config.show_fold_summary && segment == 0 {
                     let hidden = self.hidden_lines_at(line);
                     if hidden > 0 {
-                        let label = format!("{{ … {hidden} lines }}");
+                        // The summary text and its measurements are a pure function of the fold's
+                        // end, the hidden-line count and the font, so they are built once per fold
+                        // instead of once per frame (GX-04).
                         let font = self.chrome_font();
-                        let label_width = context.measure_text(&label, font).width as i32;
+                        let key = FoldLabelKey {
+                            segment_end,
+                            hidden,
+                            font_size_bits: font.size().to_bits(),
+                            font_weight: font.weight(),
+                        };
+                        let mut labels = self.fold_labels.borrow_mut();
+                        let index = match labels.iter().position(|cached| cached.key == key) {
+                            Some(index) => index,
+                            None => {
+                                let text = format!("{{ … {hidden} lines }}");
+                                let width = context.measure_text(&text, font).width;
+                                let height = context.measure_text("M", font).height as i32;
+                                if labels.len() >= FOLD_LABEL_CACHE_CAP {
+                                    labels.clear();
+                                }
+                                labels.push(FoldLabelCache { key, text, width, height });
+                                labels.len() - 1
+                            }
+                        };
+                        let cached = &labels[index];
+                        let label = cached.text.as_str();
+                        let label_width = cached.width as i32;
+                        let label_height = cached.height;
                         let x = self.screen_x(left, geom.x_of(segment_end)) + 12;
                         if x + label_width <= right {
                             let reveal =
                                 if self.config.animate_folds { self.fold_reveal } else { 1.0 };
                             context.draw_text(
-                                Point::new(
-                                    x,
-                                    y + (row_height as i32
-                                        - context.measure_text("M", font).height as i32)
-                                        / 2,
-                                ),
-                                &label,
+                                Point::new(x, y + (row_height as i32 - label_height) / 2),
+                                label,
                                 font,
                                 chrome.dim_ink.blend(&chrome.surface, (1.0 - reveal) * 0.9),
                                 HorizontalAlignment::Left,

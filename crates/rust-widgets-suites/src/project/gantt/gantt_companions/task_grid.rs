@@ -496,15 +496,15 @@ impl Widget for GanttTaskGrid {
         use rust_widgets::signal::EventSignalRef;
         match name {
             "task_selected" | "on_task_selected" => {
-                Some(EventSignalRef::mapped("task_selected", &self.on_task_selected, |id| {
+                Some(EventSignalRef::mapped("on_task_selected", &self.on_task_selected, |id| {
                     CapabilityValue::String(id.clone())
                 }))
             }
-            "header_clicked" | "on_header_clicked" => {
-                Some(EventSignalRef::mapped("header_clicked", &self.on_header_clicked, |column| {
-                    CapabilityValue::UInt(*column as u64)
-                }))
-            }
+            "header_clicked" | "on_header_clicked" => Some(EventSignalRef::mapped(
+                "on_header_clicked",
+                &self.on_header_clicked,
+                |column| CapabilityValue::UInt(*column as u64),
+            )),
             _ => None,
         }
     }

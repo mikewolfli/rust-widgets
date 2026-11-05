@@ -353,7 +353,12 @@ impl SuggestionPopup {
     }
 
     /// The rows that pass the current filter, in row order.
-    pub fn visible_items(&self) -> Vec<PopupItem> {
+    ///
+    /// IN2-12: internal test seam only — a host reads the same rows through
+    /// [`Self::visible_indices`] plus its own item list, so this clone-returning view is not part
+    /// of the published surface any more.
+    #[cfg(test)]
+    pub(crate) fn visible_items(&self) -> Vec<PopupItem> {
         self.visible.iter().filter_map(|index| self.item(*index)).collect()
     }
 

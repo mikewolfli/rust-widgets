@@ -8,7 +8,12 @@
 //! **State:** Production callers: `src/widget/capability/constructors.rs:1` and `src/json/loader.rs:1` (both resolve layout kinds through `layout::`).
 /// Positions each child at explicit absolute coordinates, ignoring the parent
 /// rect apart from the origin it offsets from.
-pub mod absolute;
+///
+/// API2-01: test-only. No widget or container builds this solver and the declarative JSON path
+/// cannot carry its per-child `AbsolutePosition`, so keeping it in the production build only
+/// maintained an unreachable public capability. Its own tests still run.
+#[cfg(test)]
+mod absolute;
 /// Derives a child's missing dimension from a fixed width:height ratio.
 pub mod aspect_ratio;
 /// Fixed edge tracks around an elastic center, for workbench-shaped windows.
@@ -19,7 +24,11 @@ pub mod box_layout;
 /// Centers one child in the available rect.
 pub mod center;
 /// Min/max size limits and expansion weights attached to layout items.
-pub mod constraint;
+///
+/// API2-01: test-only for the same reason as `absolute` — per-child `ConstraintRef` data is not
+/// expressible in a declarative layout document, and nothing in the crate builds the solver.
+#[cfg(test)]
+mod constraint;
 /// Runtime storage and application for declarative layouts, shared by the JSON
 /// loader and the C ABI. See the module docs for why it is separate from the
 /// `serde_json`-facing translation in `json::layout`.
@@ -60,12 +69,14 @@ pub mod uniform_grid;
 /// Line-breaking layout for a sequence of fixed-size items.
 pub mod wrap;
 pub use crate::core::Orientation;
-pub use absolute::*;
+// API2-01: `absolute` and `constraint` are not re-exported under the short names any more. They
+// have no production caller and the declarative JSON path cannot describe their per-child data,
+// so the short paths advertised an unreachable capability. The modules stay `pub`, so a host that
+// deliberately wants those solvers still names them through their module paths.
 pub use aspect_ratio::*;
 pub use border::*;
 pub use box_layout::*;
 pub use center::*;
-pub use constraint::*;
 pub use flex::*;
 pub use flow::*;
 pub use form::*;

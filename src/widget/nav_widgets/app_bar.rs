@@ -27,7 +27,7 @@ use crate::object::ObjectId;
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
 use crate::widget::capability::coercion::{
-    expect_string, expect_text_direction, text_direction_to_str,
+    expect_bool, expect_string, expect_text_direction, text_direction_to_str,
 };
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
@@ -622,6 +622,12 @@ impl WidgetProperties for AppBar {
     fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
         match name {
             "title" => Ok(CapabilityValue::String(self.title().to_string())),
+            "subtitle" => Ok(match self.subtitle() {
+                Some(text) => CapabilityValue::String(text.to_string()),
+                None => CapabilityValue::Null,
+            }),
+            "show_back" => Ok(CapabilityValue::Bool(self.show_back())),
+            "action_text" => Ok(CapabilityValue::String(self.action_text().to_string())),
             "direction" => {
                 Ok(CapabilityValue::String(text_direction_to_str(self.direction()).to_string()))
             }
@@ -639,12 +645,35 @@ impl WidgetProperties for AppBar {
                 self.set_direction(expect_text_direction(value)?);
                 Ok(())
             }
+            "subtitle" => {
+                match value {
+                    CapabilityValue::Null => self.set_subtitle(None),
+                    CapabilityValue::String(text) => self.set_subtitle(Some(text)),
+                    _ => return Err(CapabilityAccessError::TypeMismatch),
+                }
+                Ok(())
+            }
+            "show_back" => {
+                self.set_show_back(expect_bool(value)?);
+                Ok(())
+            }
+            "action_text" => {
+                self.set_action_text(&expect_string(value)?);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["title", "direction", BASE_PROPERTY_NAMES]
+        property_names_of![
+            "title",
+            "direction",
+            "subtitle",
+            "show_back",
+            "action_text",
+            BASE_PROPERTY_NAMES
+        ]
     }
 }
 

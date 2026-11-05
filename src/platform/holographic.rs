@@ -47,6 +47,16 @@
 //! sensor posts `Event::holographic_touch(..)` and turns a returned [`KeyHit`] into whatever
 //! keyboard event its platform needs. (The earlier wording, "the platform layer forwards this as a
 //! synthesized keyboard event", described a forward that no backend performs.)
+//!
+//! # Reachability
+//!
+//! **State:** Reserved integration point, deliberately not wired (API2-02). Its inputs and outputs
+//! are both published and used: `Event::HolographicTouch` is consumed by `AdaptiveScaffold` and
+//! `ScrollArea`, and [`HolographicKeyboardDetector::process_depth`] is the documented producer half.
+//! What is absent is the *sensor*, and that absence cannot be filled in-tree — the library holds no
+//! depth device and no supported OS hands it one, so an in-crate adapter would itself be unreachable
+//! code. Removal condition: when a backend gains a depth source, or when the experimental feature is
+//! dropped in favour of the host-side integration point only.
 
 use crate::core::{Point, Rect};
 

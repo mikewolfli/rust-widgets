@@ -40,6 +40,7 @@ use rust_widgets::widget::capability::{
 };
 use rust_widgets::widget::metrics::{dimensions, role_font, ControlMetrics};
 use rust_widgets::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use std::cell::{Ref, RefCell};
 
 /// Height of one history row when the host does not choose one, in logical pixels.
 const DEFAULT_ROW_HEIGHT: u32 = 44;
@@ -175,8 +176,33 @@ pub struct WebHistoryPanel {
     group_by_day: bool,
     /// Height of one entry row.
     row_height: u32,
+    /// The laid-out rows and the inputs they were built from.
+    row_cache: RefCell<RowCache>,
     /// Emitted with the entry's URL when a row is activated.
     pub on_entry_activated: Signal1<String>,
+}
+
+/// The inputs the row layout is a pure function of.
+///
+/// `layout_rows` is called by both the paint and the hit test, and each group header formats its
+/// date label, so rebuilding it every frame allocated a `Vec` and N label strings that a repaint
+/// could not observe. Comparing this key first means the rebuild happens only when one of the
+/// inputs actually moved. `visible` is the projection of `records` the layout reads (an index and
+/// its visit time), so a filter or record edit that changes nothing visible reuses the cache.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LayoutKey {
+    rect: Rect,
+    row_height: u32,
+    max_entries: usize,
+    group_by_day: bool,
+    visible: Vec<(usize, Option<i64>)>,
+}
+
+/// The cached row layout and the key it was built for; an empty key means "never built".
+#[derive(Default)]
+struct RowCache {
+    key: Option<LayoutKey>,
+    rows: Vec<HistoryRow>,
 }
 
 /// A row the panel paints, with the rectangle it occupies.
@@ -207,6 +233,7 @@ impl WebHistoryPanel {
             show_timestamps: false,
             group_by_day: false,
             row_height: DEFAULT_ROW_HEIGHT,
+            row_cache: RefCell::new(RowCache::default()),
             on_entry_activated: Signal1::new(),
         }
     }
@@ -344,8 +371,8 @@ impl WebHistoryPanel {
             return None;
         }
         let mut entry_index = 0;
-        for row in self.layout_rows() {
-            match row.kind {
+        for row in self.layout_rows().iter() {
+            match &row.kind {
                 RowKind::Entry(_) => {
                     if row.rect.contains_point(pos) {
                         return Some(entry_index);
@@ -402,7 +429,32 @@ impl WebHistoryPanel {
     }
 
     /// Lays the visible records out top to bottom, inserting day headers when grouping is on.
-    fn layout_rows(&self) -> Vec<HistoryRow> {
+    ///
+    /// The rows are cached under [`LayoutKey`], so the paint and the hit test share one layout and
+    /// a repaint that changes none of its inputs allocates nothing and formats no header label.
+    fn layout_rows(&self) -> Ref<'_, Vec<HistoryRow>> {
+        let key = LayoutKey {
+            rect: self.geometry(),
+            row_height: self.row_height,
+            max_entries: self.max_entries,
+            group_by_day: self.group_by_day,
+            visible: self
+                .visible_indices()
+                .into_iter()
+                .map(|index| (index, self.records[index].visited_ms))
+                .collect(),
+        };
+        if self.row_cache.borrow().key.as_ref() != Some(&key) {
+            let rows = self.build_rows();
+            let mut cache = self.row_cache.borrow_mut();
+            cache.key = Some(key);
+            cache.rows = rows;
+        }
+        Ref::map(self.row_cache.borrow(), |cache| &cache.rows)
+    }
+
+    /// Builds the row layout from the current inputs; [`Self::layout_rows`] is the cached reader.
+    fn build_rows(&self) -> Vec<HistoryRow> {
         let rect = self.geometry();
         let mut rows = Vec::new();
         let mut y = rect.y;
@@ -468,9 +520,14 @@ impl Widget for WebHistoryPanel {
         use rust_widgets::signal::EventSignalRef;
         match name {
             "entry_activated" | "on_entry_activated" => {
-                Some(EventSignalRef::mapped("entry_activated", &self.on_entry_activated, |url| {
-                    CapabilityValue::String(url.clone())
-                }))
+                // The reference must declare the **published** name (`on_entry_activated`), not the
+                // alias: the bridge refuses a reference whose declared name differs from the one
+                // requested (the DEV-1 class the suite-wide wiring gate now checks).
+                Some(EventSignalRef::mapped(
+                    "on_entry_activated",
+                    &self.on_entry_activated,
+                    |url| CapabilityValue::String(url.clone()),
+                ))
             }
             _ => None,
         }
@@ -572,8 +629,8 @@ impl Draw for WebHistoryPanel {
 
         let title_font = role_font(style, 12.5);
         let secondary_font = role_font(style, 11.0);
-        for row in self.layout_rows() {
-            match row.kind {
+        for row in self.layout_rows().iter() {
+            match &row.kind {
                 RowKind::Header(label) => {
                     context.fill_rect(row.rect, ink.with_alpha(12));
                     let metrics = context.measure_text("M", &secondary_font);
@@ -588,7 +645,7 @@ impl Draw for WebHistoryPanel {
                                 width,
                                 metrics.height.max(1),
                             ),
-                            &label,
+                            label,
                             &secondary_font,
                             ink.with_alpha(150),
                             HorizontalAlignment::Left,
@@ -596,7 +653,7 @@ impl Draw for WebHistoryPanel {
                     }
                 }
                 RowKind::Entry(index) => {
-                    let record = &self.records[index];
+                    let record = &self.records[*index];
                     let title = if record.entry.title.is_empty() {
                         record.entry.url.as_str()
                     } else {
@@ -835,16 +892,18 @@ mod tests {
         ]);
         panel.set_group_by_day(true);
 
-        let rows = panel.layout_rows();
-        let headers: Vec<&str> = rows
-            .iter()
-            .filter_map(|row| match &row.kind {
-                RowKind::Header(label) => Some(label.as_str()),
-                RowKind::Entry(_) => None,
-            })
-            .collect();
-        assert_eq!(headers, ["1970-01-02", "1970-01-01"]);
-        assert_eq!(rows.len(), 5, "two headers plus three entry rows");
+        {
+            let rows = panel.layout_rows();
+            let headers: Vec<&str> = rows
+                .iter()
+                .filter_map(|row| match &row.kind {
+                    RowKind::Header(label) => Some(label.as_str()),
+                    RowKind::Entry(_) => None,
+                })
+                .collect();
+            assert_eq!(headers, ["1970-01-02", "1970-01-01"]);
+            assert_eq!(rows.len(), 5, "two headers plus three entry rows");
+        }
 
         // Glyphs are painted as outlines, so the paint is checked as text runs: two headers plus
         // a title and a URL per entry.
@@ -869,9 +928,9 @@ mod tests {
         panel.set_group_by_day(true);
         let headers: Vec<String> = panel
             .layout_rows()
-            .into_iter()
-            .filter_map(|row| match row.kind {
-                RowKind::Header(label) => Some(label),
+            .iter()
+            .filter_map(|row| match &row.kind {
+                RowKind::Header(label) => Some(label.clone()),
                 RowKind::Entry(_) => None,
             })
             .collect();

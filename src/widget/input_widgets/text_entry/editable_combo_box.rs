@@ -223,6 +223,12 @@ impl EditableComboBox {
         }
         self.popup.set_match_mode(MatchMode::Prefix);
         self.popup.set_anchor(self.popup_anchor());
+        // DL2-04: feed the window extent so the popup can flip above a field near the bottom.
+        #[cfg(not(alloc_frugal))]
+        {
+            let viewport = crate::widget::runtime::window_bounds_of(self.base.id());
+            self.popup.set_viewport(viewport);
+        }
         if self.items_revision != self.popup_synced_revision {
             self.popup.set_items(self.items.clone());
             self.popup_synced_revision = self.items_revision;
@@ -361,7 +367,11 @@ impl EditableComboBox {
     /// An empty value matches everything, so opening the list with no text shows the whole
     /// collection. Matching is case-insensitive and prefix-anchored: a substring match would
     /// make typing `ap` list every item whose label merely contains it.
-    pub fn filtered_items(&self) -> Vec<String> {
+    /// IN2-12: test seam only. The filtering host reads indices (`filtered_indices`) and clones
+    /// just the rows it paints; returning a freshly cloned `Vec<String>` per call was a second,
+    /// clone-returning view of the same concept.
+    #[cfg(test)]
+    pub(crate) fn filtered_items(&self) -> Vec<String> {
         // Derived from the one filter path below, so the clone-returning and
         // index-returning views cannot disagree (I-103).
         self.filtered_indices()

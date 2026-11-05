@@ -137,6 +137,19 @@ pub trait ListModel: Send + Sync {
         let _ = row;
         None
     }
+    /// Writes the row's icon token into `out`, returning whether the row has one.
+    ///
+    /// V2-01: the zero-allocation counterpart of [`Self::icon`], the same contract `fill_data`
+    /// already has. The default keeps every existing implementor working unchanged.
+    fn fill_icon_into(&self, row: usize, out: &mut String) -> bool {
+        match self.icon(row) {
+            Some(value) => {
+                out.push_str(&value);
+                true
+            }
+            None => false,
+        }
+    }
     /// Optional signal emitted when model data projection changes.
     fn data_changed_signal(&self) -> Option<&GenericSignal> {
         None
@@ -450,6 +463,20 @@ pub trait ItemDelegate: Send + Sync {
     /// The row's leading icon.
     fn icon(&self, row: usize, model: &dyn ListModel) -> Option<String> {
         model.icon(row)
+    }
+
+    /// Writes the row's leading icon into `out`, returning whether there is one.
+    ///
+    /// The zero-allocation counterpart of [`Self::icon`] (V2-01); a delegate that overrides
+    /// `icon` keeps working through this default.
+    fn fill_icon_into(&self, row: usize, model: &dyn ListModel, out: &mut String) -> bool {
+        match self.icon(row, model) {
+            Some(value) => {
+                out.push_str(&value);
+                true
+            }
+            None => false,
+        }
     }
 
     /// The ink the row's label is painted with.
@@ -1680,6 +1707,8 @@ impl Draw for ListView {
             // at the two ends. `index / columns` reports the line, `index % columns` the column within
             // it, and truncating division is what makes the two agree for the last partial line.
             let mut cell_text = String::new();
+            // One buffer for every row's icon token, so a long list allocates once (V2-01).
+            let mut icon_scratch = String::new();
             let delegate = self.item_delegate.as_deref();
             let start = self.scroll_row.saturating_mul(layout.columns.max(1) as usize);
             for i in start..row_count {
@@ -1691,18 +1720,22 @@ impl Draw for ListView {
                     context.fill_rect(cell, fill);
                 }
                 cell_text.clear();
+                icon_scratch.clear();
                 // The delegate may override the icon; with no delegate the model's own icon is
                 // used, which is what keeps an existing view byte-identical.
-                let icon_name: Option<String> = match (self.model.as_ref(), delegate) {
-                    (Some(model), Some(delegate)) => delegate.icon(i, model.as_ref()),
-                    (Some(model), None) => model.icon(i),
-                    (None, _) => None,
+                let has_icon = match (self.model.as_ref(), delegate) {
+                    (Some(model), Some(delegate)) => {
+                        delegate.fill_icon_into(i, model.as_ref(), &mut icon_scratch)
+                    }
+                    (Some(model), None) => model.fill_icon_into(i, &mut icon_scratch),
+                    (None, _) => false,
                 };
+                let icon_name = has_icon.then_some(icon_scratch.as_str());
                 let mut leading_icon = false;
                 // A grid-mode tile draws its icon in the picture area: the caption strip is
                 // carved off the foot, and the glyph is centred in what remains.
                 if layout.label_below {
-                    if let Some(name) = icon_name.as_deref() {
+                    if let Some(name) = icon_name {
                         let caption = layout.caption_height();
                         let picture = Rect::new(
                             cell.x + 4,
@@ -1717,7 +1750,7 @@ impl Draw for ListView {
                 } else if self.icon_visible_in_list_mode {
                     // A single-column row used to drop `model.icon()` entirely. The icon takes
                     // the leading inset and the label shifts by its allowance below.
-                    if let Some(name) = icon_name.as_deref() {
+                    if let Some(name) = icon_name {
                         let side = layout.row_height.saturating_sub(8).clamp(1, 20);
                         let icon_rect = Rect::new(
                             cell.x + 4,

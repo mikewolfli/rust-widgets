@@ -477,7 +477,9 @@ impl EventHandler for DrumColumn {
                     self.settle_drag();
                 }
             }
-            Event::KeyPress { key, .. } => match *key {
+            // Arrow keys scroll the drum only while it holds focus: a column embedded in a
+            // page must not consume the arrows of whatever the user is editing.
+            Event::KeyPress { key, .. } if self.base.focus_reason().is_some() => match *key {
                 crate::event::key_codes::UP => {
                     self.scroll_by(-1);
                 }
@@ -806,8 +808,14 @@ mod tests {
     #[test]
     fn the_wheel_and_arrows_still_step_the_column() {
         let mut column = column();
+        assert_eq!(column.selected_index(), 0);
+        // Unfocused: the arrows belong to whoever holds focus.
+        column.handle_event(&Event::KeyPress { key: crate::event::key_codes::DOWN, modifiers: 0 });
+        assert_eq!(column.selected_index(), 0, "an unfocused column ignores the arrow");
+
         column.handle_event(&Event::Wheel { delta: Point::new(0, 1), modifiers: 0 });
         assert_eq!(column.selected_index(), 1);
+        column.handle_event(&Event::FocusGained { reason: crate::event::FocusReason::Tab });
         column.handle_event(&Event::KeyPress { key: crate::event::key_codes::DOWN, modifiers: 0 });
         assert_eq!(column.selected_index(), 2);
         column.handle_event(&Event::KeyPress { key: crate::event::key_codes::UP, modifiers: 0 });

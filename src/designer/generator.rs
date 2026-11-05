@@ -423,10 +423,17 @@ struct PendingAnchor {
 /// on the header and on every earlier emission, both of which are only final once
 /// [`assemble`] has written the whole file.
 fn finalize_anchors(source: &str, pending: Vec<PendingAnchor>) -> Vec<NodeAnchor> {
+    // BD-02: one linear scan for every newline, then a binary search per anchor. Each anchor used
+    // to rescan the whole prefix, so generation was O(anchors x source bytes).
+    let newlines: Vec<usize> = source
+        .bytes()
+        .enumerate()
+        .filter_map(|(index, byte)| (byte == b'\n').then_some(index))
+        .collect();
     pending
         .into_iter()
         .map(|anchor| {
-            let (line, column) = line_column_at(source, anchor.offset);
+            let (line, column) = line_column_from_offsets(source, &newlines, anchor.offset);
             NodeAnchor {
                 path: anchor.path,
                 key: anchor.key,
@@ -444,16 +451,15 @@ fn finalize_anchors(source: &str, pending: Vec<PendingAnchor>) -> Vec<NodeAnchor
         .collect()
 }
 
-/// The 1-based line and byte column of `offset` in `source`.
+/// The 1-based line and byte column of `offset`, given every newline offset in `source`.
 ///
-/// A column is counted in bytes, not characters: the source map exists to index the text the
-/// generator wrote, and every consumer that reads it does so with byte offsets.
-fn line_column_at(source: &str, offset: usize) -> (usize, usize) {
+/// `newlines` is ascending, so the line is a partition point rather than a count over the
+/// prefix: O(log lines) per anchor instead of O(bytes before it).
+fn line_column_from_offsets(source: &str, newlines: &[usize], offset: usize) -> (usize, usize) {
     let clamped = offset.min(source.len());
-    let prefix = &source[..clamped];
-    let line = prefix.bytes().filter(|byte| *byte == b'\n').count() + 1;
-    let line_start = prefix.rfind('\n').map_or(0, |index| index + 1);
-    (line, clamped - line_start + 1)
+    let line_index = newlines.partition_point(|index| *index < clamped);
+    let line_start = if line_index == 0 { 0 } else { newlines[line_index - 1] + 1 };
+    (line_index + 1, clamped - line_start + 1)
 }
 
 /// Notes one built-in icon token as reachable, ignoring a repeat.
@@ -1033,8 +1039,6 @@ fn push_fmt(out: &mut String, args: core::fmt::Arguments<'_>) {
     let _ = core::fmt::Write::write_fmt(out, args);
 }
 
-/// Emits one `Node::new(..)` expression, recursing into children.
-#[allow(clippy::too_many_arguments)]
 /// Whether `event` is a name `widget`'s capability publishes.
 ///
 /// The capability table is derived from the published-name census and is exactly the list
@@ -2307,15 +2311,22 @@ fn is_known_setter_name(name: &str) -> bool {
 
 /// Receives the geometry solved at generation time (d-3).
 struct GeometryPlan {
-    /// `(path, (x, y, w, h))` for every node that has a solved rect.
-    rects: Vec<(Vec<usize>, (i32, i32, u32, u32))>,
+    /// Keyed view of every node path's solved rect (BD-01). `rect_for` was a linear search over
+    /// every path and the generation loop calls it per node, so generation was O(n²) in tree size.
+    index: HashMap<Vec<usize>, (i32, i32, u32, u32)>,
     /// The root client rect, used for the root and as the fallback for an unplaced node.
     root: (i32, i32, u32, u32),
 }
 
 impl GeometryPlan {
+    /// Builds the plan and its path index in one pass.
+    fn new(rects: Vec<(Vec<usize>, (i32, i32, u32, u32))>, root: (i32, i32, u32, u32)) -> Self {
+        let index = rects.iter().map(|(path, rect)| (path.clone(), *rect)).collect();
+        Self { index, root }
+    }
+
     fn rect_for(&self, path: &[usize], depth: usize) -> (i32, i32, u32, u32) {
-        if let Some((_, rect)) = self.rects.iter().find(|(p, _)| p.as_slice() == path) {
+        if let Some(rect) = self.index.get(path) {
             return *rect;
         }
         if depth == 1 {
@@ -2353,7 +2364,7 @@ fn plan_geometry(
                 rects.push((node.path.clone(), root));
             }
         }
-        return GeometryPlan { rects, root };
+        return GeometryPlan::new(rects, root);
     };
 
     let mut engine = crate::json::create_layout_from_kind(&kind);
@@ -2472,7 +2483,7 @@ fn plan_geometry(
         }
     }
 
-    GeometryPlan { rects, root }
+    GeometryPlan::new(rects, root)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -3174,15 +3185,13 @@ mod tests {
         crate::json::forget_layout(PARENT);
 
         assert_eq!(ui.len(), children.len(), "one rect per child: {ui:?}");
-        assert_eq!(planned.rects.len(), children.len() + 1, "the root plus every child");
+        assert_eq!(planned.index.len(), children.len() + 1, "the root plus every child");
         for (index, child) in children.iter().enumerate() {
             let node = project.node(child).expect("the child resolves");
-            let planned_rect = planned
-                .rects
-                .iter()
-                .find(|(path, _)| path == child)
-                .unwrap_or_else(|| panic!("no planned rect for {child:?}"))
-                .1;
+            let planned_rect = *planned
+                .index
+                .get(child.as_slice())
+                .unwrap_or_else(|| panic!("no planned rect for {child:?}"));
             let ui_rect = ui[index].1;
             assert_eq!(
                 planned_rect,
@@ -3410,12 +3419,10 @@ mod tests {
 
         assert_eq!(ui.len(), children.len(), "one rect per child: {ui:?}");
         for (index, child) in children.iter().enumerate() {
-            let planned_rect = planned
-                .rects
-                .iter()
-                .find(|(path, _)| path == child)
-                .unwrap_or_else(|| panic!("no planned rect for {child:?}"))
-                .1;
+            let planned_rect = *planned
+                .index
+                .get(child.as_slice())
+                .unwrap_or_else(|| panic!("no planned rect for {child:?}"));
             let ui_rect = ui[index].1;
             assert_eq!(
                 planned_rect,
@@ -3504,12 +3511,10 @@ mod tests {
 
         assert_eq!(ui.len(), children.len(), "one rect per child: {ui:?}");
         for (index, child) in children.iter().enumerate() {
-            let planned_rect = planned
-                .rects
-                .iter()
-                .find(|(path, _)| path == child)
-                .unwrap_or_else(|| panic!("no planned rect for {child:?}"))
-                .1;
+            let planned_rect = *planned
+                .index
+                .get(child.as_slice())
+                .unwrap_or_else(|| panic!("no planned rect for {child:?}"));
             // Paired by the runtime id, not by list position: a grid reports its cells in cell
             // order, which is not declaration order for a document that declares cells out of
             // sequence.

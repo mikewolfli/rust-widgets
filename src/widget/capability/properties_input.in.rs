@@ -52,6 +52,11 @@ macro_rules! impl_properties_input {
             // The mode switch was fully implemented (`is_indeterminate` / `set_indeterminate`, and
             // the paint path's sweeping band) but unpublished, so a designer could never enable it.
             PropertySchema::new("indeterminate", PropertyValueKind::Bool, true, true),
+            // D2-008: the label template and the `minimum == maximum` text decide what the
+            // label cache paints; publishing `text_visible` without them let a host show a
+            // label it could not change.
+            PropertySchema::new("format", PropertyValueKind::String, true, true),
+            PropertySchema::new("busy_text", PropertyValueKind::String, true, true),
             // The direction the *line* runs in. Distinct from `inverted_appearance`, which is a
             // decoration: direction says which end the minimum is at, and the two compose (an RTL
             // bar draws inverted *without* the property being set). Declared in both tables so a
@@ -378,6 +383,11 @@ macro_rules! impl_properties_input {
             PropertySchema::new("selected_index", PropertyValueKind::UInt, true, true),
             PropertySchema::new("visible_count", PropertyValueKind::UInt, true, true),
             PropertySchema::new("item_count", PropertyValueKind::UInt, true, false),
+            // D2-010: the three wheel behaviours that already drive `set_wrap`/`set_inertia` and
+            // key the font cache.
+            PropertySchema::new("wrap", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("inertia", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("font_size", PropertyValueKind::Float, true, true),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
@@ -730,6 +740,10 @@ macro_rules! impl_properties_input {
             // historical single-line, no-placeholder rendering.
             PropertySchema::new("line_wrap", PropertyValueKind::Bool, true, true),
             PropertySchema::new("placeholder_text", PropertyValueKind::String, true, true),
+            // IN2-05: the caret and the selected range. `selection` uses the historical
+            // `"start,end"` pair (API-03), the same spelling `LineEdit` and `TextEdit` publish.
+            PropertySchema::new("cursor_position", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("selection", PropertyValueKind::String, true, true),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),

@@ -124,6 +124,13 @@ pub struct PieChart {
     last_legend_area: Option<LegendArea>,
     /// An attached standard legend; when set it replaces the self-drawn column.
     legend: Option<Legend>,
+    /// The rows the attached legend should show, and the slice revision they were built from.
+    ///
+    /// `sync_legend` runs on every paint; without this cache it rebuilt a `Vec<LegendEntry>` and
+    /// cloned one label per slice on each of them (CH2-04). `values_revision` is bumped by every
+    /// mutator that changes the slices or their visibility, so it is exactly the set of inputs
+    /// [`Self::legend_entries`] reads.
+    legend_entries_cache: Option<(u64, crate::compat::Vec<LegendEntry>)>,
     /// Toggles queued by the attached legend's `series_toggled` signal.
     legend_events: crate::compat::Arc<crate::compat::Mutex<crate::compat::Vec<(usize, bool)>>>,
     /// The last pointer position, used to decide whether a wheel belongs to the legend.
@@ -179,6 +186,7 @@ impl PieChart {
             legend_scroll: 0,
             last_legend_area: None,
             legend: None,
+            legend_entries_cache: None,
             legend_events: crate::compat::Arc::new(crate::compat::Mutex::new(
                 crate::compat::Vec::new(),
             )),
@@ -425,13 +433,34 @@ impl PieChart {
     }
 
     /// Brings the attached legend's rows in line with the chart's slices and visibility.
+    ///
+    /// The desired rows are rebuilt only when the slice revision moved: this runs on every paint,
+    /// and a still chart used to allocate a `Vec` plus one cloned label per slice per frame for a
+    /// comparison that almost always found them equal (CH2-04). A freshly attached legend is still
+    /// populated, because the rows are compared against its own entries below.
     fn sync_legend(&mut self) {
         // A toggle made on the companion programmatically (not through the chart's event path)
         // is queued by the same slot; apply it before overwriting the companion's rows.
         self.drain_legend_toggles();
-        let desired = self.legend_entries();
-        if let Some(legend) = self.legend.as_mut() {
-            if legend.entries() != desired.as_slice() {
+        if self.legend.is_none() {
+            return;
+        }
+        let stale = match &self.legend_entries_cache {
+            Some((revision, _)) => *revision != self.values_revision,
+            None => true,
+        };
+        if stale {
+            let entries = self.legend_entries();
+            self.legend_entries_cache = Some((self.values_revision, entries));
+        }
+        let Some((_, desired)) = self.legend_entries_cache.as_ref() else {
+            return;
+        };
+        let differs =
+            self.legend.as_ref().is_some_and(|legend| legend.entries() != desired.as_slice());
+        if differs {
+            let desired = desired.clone();
+            if let Some(legend) = self.legend.as_mut() {
                 legend.set_entries(desired);
             }
         }

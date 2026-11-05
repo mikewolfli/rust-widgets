@@ -448,11 +448,11 @@ impl Widget for MapAttributionOverlay {
 
     fn event_signal_dyn(&self, name: &str) -> Option<EventSignalRef> {
         match name {
-            "entry_activated" | "on_entry_activated" => {
-                Some(EventSignalRef::mapped("entry_activated", &self.on_entry_activated, |url| {
-                    CapabilityValue::String(url.clone())
-                }))
-            }
+            "entry_activated" | "on_entry_activated" => Some(EventSignalRef::mapped(
+                "on_entry_activated",
+                &self.on_entry_activated,
+                |url| CapabilityValue::String(url.clone()),
+            )),
             _ => None,
         }
     }

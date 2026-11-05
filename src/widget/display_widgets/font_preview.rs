@@ -12,7 +12,7 @@ use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::wheel::WheelScroll;
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
-use crate::widget::capability::coercion::{expect_f64, expect_string};
+use crate::widget::capability::coercion::{expect_bool, expect_f64, expect_string};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
@@ -496,6 +496,8 @@ impl WidgetProperties for FontPreview {
             "font_family" => Ok(CapabilityValue::String(self.font_family().to_string())),
             "font_size" => Ok(CapabilityValue::Float(f64::from(self.font_size()))),
             "preview_text" => Ok(CapabilityValue::String(self.preview_text().to_string())),
+            "bold" => Ok(CapabilityValue::Bool(self.is_bold())),
+            "italic" => Ok(CapabilityValue::Bool(self.is_italic())),
             _ => base_property_get(self, name),
         }
     }
@@ -514,12 +516,27 @@ impl WidgetProperties for FontPreview {
                 self.set_preview_text(&expect_string(value)?);
                 Ok(())
             }
+            "bold" => {
+                self.set_bold(expect_bool(value)?);
+                Ok(())
+            }
+            "italic" => {
+                self.set_italic(expect_bool(value)?);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["font_family", "font_size", "preview_text", BASE_PROPERTY_NAMES]
+        property_names_of![
+            "font_family",
+            "font_size",
+            "preview_text",
+            "bold",
+            "italic",
+            BASE_PROPERTY_NAMES
+        ]
     }
 }
 

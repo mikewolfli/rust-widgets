@@ -224,6 +224,7 @@ tab_widget: current_changed, tab_close_requested, tab_moved, context_menu_reques
 table: selection_changed, focused_row_changed, context_menu_requested, edit_requested, row_activated, column_changed
 table_widget: selection_changed, focused_row_changed, context_menu_requested, edit_requested, row_activated, column_changed
 tag: closed, selected_changed
+tag_group: tag_closed, selection_changed
 tag_input: tags_changed, tag_overflow, tag_rejected
 text_area: changed, context_menu_requested, selection_changed, cursor_position_changed, undo_available, redo_available
 text_edit: context_menu_requested, cursor_position_changed, redo_available, selection_changed, text_changed, undo_available

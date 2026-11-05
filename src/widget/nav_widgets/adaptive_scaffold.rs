@@ -13,7 +13,7 @@ use crate::core::{Color, HorizontalAlignment, ObjectId, Point, Rect, TextDirecti
 use crate::event::{key_codes, Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
-use crate::widget::capability::coercion::{expect_f32, expect_string};
+use crate::widget::capability::coercion::{expect_bool, expect_f32, expect_string};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
@@ -87,6 +87,25 @@ pub enum ScaffoldBottomNavStyle {
     Classic,
     /// A real [`BottomNavigationBar`] with its sliding M3 pill.
     Material3,
+}
+
+impl ScaffoldBottomNavStyle {
+    /// The token this style is published under (N2-B1).
+    pub fn token(self) -> &'static str {
+        match self {
+            Self::Classic => "classic",
+            Self::Material3 => "material3",
+        }
+    }
+
+    /// Parses a published token; `None` for an unknown spelling.
+    pub fn from_token(token: &str) -> Option<Self> {
+        match token {
+            "classic" => Some(Self::Classic),
+            "material3" => Some(Self::Material3),
+            _ => None,
+        }
+    }
 }
 
 /// Which navigation surface the scaffold uses for its current width.
@@ -1211,6 +1230,10 @@ impl Widget for AdaptiveScaffold {
     fn base(&self) -> &BaseWidget {
         &self.base
     }
+    /// The scaffold routes the wheel to the pane under the pointer (C2-D0).
+    fn accepts_wheel(&self) -> bool {
+        true
+    }
     fn set_state_theme_hook(&mut self) {
         crate::style::reapply_active_theme_state(self);
     }
@@ -1269,6 +1292,10 @@ impl WidgetProperties for AdaptiveScaffold {
             "drawer_animated" => Ok(CapabilityValue::Bool(self.drawer_animated())),
             "scrim_opacity" => Ok(CapabilityValue::Float(f64::from(self.scrim_opacity()))),
             "page_transition" => Ok(CapabilityValue::Bool(self.page_transition())),
+            "show_bottom_nav" => Ok(CapabilityValue::Bool(self.show_bottom_nav())),
+            "bottom_nav_style" => {
+                Ok(CapabilityValue::String(self.bottom_nav_style().token().to_string()))
+            }
             _ => base_property_get(self, name),
         }
     }
@@ -1313,6 +1340,17 @@ impl WidgetProperties for AdaptiveScaffold {
                 self.set_page_transition(animated);
                 Ok(())
             }
+            "show_bottom_nav" => {
+                self.set_show_bottom_nav(expect_bool(value)?);
+                Ok(())
+            }
+            "bottom_nav_style" => {
+                let token = expect_string(value)?;
+                let style = ScaffoldBottomNavStyle::from_token(&token)
+                    .ok_or(CapabilityAccessError::TypeMismatch)?;
+                self.set_bottom_nav_style(style);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
@@ -1324,6 +1362,8 @@ impl WidgetProperties for AdaptiveScaffold {
             "drawer_animated",
             "scrim_opacity",
             "page_transition",
+            "show_bottom_nav",
+            "bottom_nav_style",
             BASE_PROPERTY_NAMES
         ]
     }
@@ -1903,6 +1943,9 @@ impl EventHandler for AdaptiveScaffold {
             }
             Event::Wheel { .. } => {
                 self.forward_wheel(event);
+                // C2-D0: the scaffold owns the wheel over its panes; forwarding is its own
+                // handling, so it claims the event rather than letting the router walk past it.
+                crate::widget::runtime::claim_wheel();
                 self.base.handle_event(event);
             }
             // Legacy pointer and stylus events carry a position too, so they follow the same

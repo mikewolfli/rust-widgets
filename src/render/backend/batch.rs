@@ -6,15 +6,22 @@
 //! Provides types for organizing draw commands into batches that can be
 //! recorded once and replayed efficiently by the renderer.
 
-use crate::compat::{fmt, Arc, HashMap, Rc, Vec, VecDeque};
+use crate::compat::{Arc, HashMap};
 
-use crate::core::{Color, Font, HorizontalAlignment, ObjectId, Point, Rect, Size};
+use crate::core::ObjectId;
+
+#[cfg(test)]
+use crate::compat::{fmt, Rc, Vec, VecDeque};
+#[cfg(test)]
+use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
+#[cfg(test)]
 use crate::render::{
     RenderCommand, ShapedText, SoftwareRenderConfig, SoftwareSurface, TextMetrics,
 };
 
+#[cfg(test)]
 use super::paint::{route_command_to_surface, PaintBackend, SoftwarePaintBackend};
-#[cfg(feature = "3d")]
+#[cfg(all(test, feature = "3d"))]
 use crate::render::math3d::{Mat3, Mat4, Transform, TransformStack, TRANSFORM_STACK_MAX};
 
 /// A zero-copy [`PaintBackend`] view over a borrowed [`SoftwareSurface`].
@@ -30,9 +37,11 @@ use crate::render::math3d::{Mat3, Mat4, Transform, TransformStack, TRANSFORM_STA
 /// the replay path can paint through the surface while the batch maps stay
 /// borrowed immutably. Because the adapter is `#[repr(transparent)]`, its address
 /// is the address of the referenced surface: the cast is sound and free.
+#[cfg(test)]
 #[repr(transparent)]
 struct SurfacePaintBackend<'a>(&'a mut SoftwareSurface);
 
+#[cfg(test)]
 impl PaintBackend for SurfacePaintBackend<'_> {
     fn begin_frame(&mut self, clear: Color) {
         self.0.begin_frame(clear);
@@ -89,8 +98,10 @@ impl PaintBackend for SurfacePaintBackend<'_> {
 /// A `BatchId` is created when a batch is recorded and can later be
 /// used to replay that batch without re-recording the individual commands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[cfg(test)]
 pub struct BatchId(pub u64);
 
+#[cfg(test)]
 impl BatchId {
     /// Creates a new `BatchId` from a raw u64 value.
     pub const fn new(id: u64) -> Self {
@@ -103,6 +114,7 @@ impl BatchId {
     }
 }
 
+#[cfg(test)]
 impl From<u64> for BatchId {
     fn from(id: u64) -> Self {
         Self(id)
@@ -111,12 +123,14 @@ impl From<u64> for BatchId {
 
 /// Errors that can occur during batch recording operations.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg(test)]
 pub enum BatchError {
     /// Attempted to record a command without an open batch.
     /// Call `begin_batch()` first.
     NoActiveBatch,
 }
 
+#[cfg(test)]
 impl fmt::Display for BatchError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -127,6 +141,7 @@ impl fmt::Display for BatchError {
     }
 }
 
+#[cfg(test)]
 impl core::error::Error for BatchError {}
 
 /// A single draw command that can be recorded into a batch.
@@ -138,6 +153,7 @@ impl core::error::Error for BatchError {}
 /// the replay transform and affect every *subsequent* command in the batch,
 /// exactly like their counterparts in an immediate-mode draw list.
 #[derive(Debug, Clone)]
+#[cfg(test)]
 pub enum BatchCommand {
     /// Fill a rectangle with a solid colour.
     ///
@@ -306,6 +322,7 @@ pub enum BatchCommand {
 ///     Ok(())
 /// }
 /// ```
+#[cfg(test)]
 pub trait BatchRenderer {
     /// Opens a new, empty batch and returns its identifier.
     ///
@@ -389,6 +406,7 @@ impl BatchImage {
 }
 
 /// Default font family used when replaying a `DrawText` batch command.
+#[cfg(test)]
 const BATCH_DEFAULT_FONT_FAMILY: &str = "Arial";
 
 /// Extension data held alongside the batch implementation on
@@ -399,10 +417,13 @@ const BATCH_DEFAULT_FONT_FAMILY: &str = "Arial";
 #[derive(Debug, Clone)]
 pub(crate) struct BatchState {
     /// Incrementing counter used to generate fresh `BatchId` values.
+    #[cfg(test)]
     next_id: u64,
     /// Active batch being recorded, if any.
+    #[cfg(test)]
     current_batch: Option<BatchId>,
     /// All recorded batches, keyed by `BatchId`.
+    #[cfg(test)]
     batches: HashMap<BatchId, Vec<BatchCommand>>,
     /// Optional image data cache mapping `ObjectId` → [`BatchImage`] (pixels **and** the grid they
     /// are laid out in).
@@ -417,9 +438,21 @@ pub(crate) struct BatchState {
 impl BatchState {
     /// Creates a fresh, empty batch state.
     pub(crate) fn new() -> Self {
-        Self { next_id: 0, current_batch: None, batches: HashMap::new(), images: HashMap::new() }
+        Self {
+            #[cfg(test)]
+            next_id: 0,
+            #[cfg(test)]
+            current_batch: None,
+            #[cfg(test)]
+            batches: HashMap::new(),
+            images: HashMap::new(),
+        }
     }
+}
 
+/// Recording bookkeeping, exercised only by the batch API's own tests (RD2-04).
+#[cfg(test)]
+impl BatchState {
     /// Begin recording a new batch. Returns the batch id.
     pub(crate) fn begin_batch(&mut self) -> BatchId {
         let id = BatchId::new(self.next_id);
@@ -469,7 +502,7 @@ impl BatchState {
 }
 
 /// The screen-space bounding box of four mapped corners.
-#[cfg(feature = "3d")]
+#[cfg(all(test, feature = "3d"))]
 fn bounds_of(corners: &[Point; 4]) -> Rect {
     let min_x = corners.iter().map(|p| p.x).min().unwrap_or(0);
     let min_y = corners.iter().map(|p| p.y).min().unwrap_or(0);
@@ -490,6 +523,7 @@ fn bounds_of(corners: &[Point; 4]) -> Rect {
 /// opacity. The affine field and its save stack exist only in a `3d` build, which is what keeps
 /// the default binary unchanged.
 #[derive(Debug, Clone, Copy)]
+#[cfg(test)]
 struct TransformState {
     /// Accumulated X offset.
     dx: f32,
@@ -513,6 +547,7 @@ struct TransformState {
     stack: TransformStack,
 }
 
+#[cfg(test)]
 impl TransformState {
     /// Whether a projective (pseudo-3D) transform is active.
     ///
@@ -673,6 +708,7 @@ impl TransformState {
     }
 }
 
+#[cfg(test)]
 impl Default for TransformState {
     fn default() -> Self {
         Self {
@@ -709,6 +745,7 @@ impl Default for TransformState {
 /// replaying one small batch cost the size of the entire state. Made free, it
 /// takes the two maps as separate borrows, which lets [`replay_into`] split
 /// `SoftwarePaintBackend`'s fields and pass them without any clone.
+#[cfg(test)]
 fn transform_command(
     cmd: &BatchCommand,
     images: &HashMap<ObjectId, BatchImage>,
@@ -1081,10 +1118,13 @@ fn transform_command(
 }
 
 /// Key for the alpha-baked image cache: source address, source length and opacity.
+#[cfg(test)]
 type BakedImageKey = (usize, usize, u32);
 /// A cached variant: the source kept alive plus the baked bytes.
+#[cfg(test)]
 type BakedImageEntry = (Arc<[u8]>, Arc<[u8]>);
 
+#[cfg(test)]
 thread_local! {
     // `HashMap::new` is const only under alloc_frugal (BTreeMap); the std profile cannot be const.
     /// Alpha-baked image variants plus the FIFO order their keys are evicted in.
@@ -1098,10 +1138,12 @@ thread_local! {
 }
 
 /// How many alpha-baked image variants one thread keeps before evicting the oldest.
+#[cfg(test)]
 const BAKED_IMAGE_CACHE_LIMIT: usize = 32;
 
 /// Returns `source` with every alpha byte scaled by `opacity`, reusing a previously baked variant
 /// when the same source allocation is faded by the same factor (G-02).
+#[cfg(test)]
 fn baked_image(source: &Arc<[u8]>, opacity: f32) -> Arc<[u8]> {
     let key = (source.as_ptr() as usize, source.len(), opacity.to_bits());
     if let Some(hit) =
@@ -1134,6 +1176,7 @@ fn baked_image(source: &Arc<[u8]>, opacity: f32) -> Arc<[u8]> {
 /// Returns `(left, top, width, height)` clipped to the image, or `None` when no pixel of the
 /// rectangle is inside it. This is the **one** definition of that clipping: the crop reads with it,
 /// and the replay path needs the same extent to declare the source grid of a scaled draw.
+#[cfg(test)]
 fn clipped_source_rect(
     rect: Rect,
     source_width: u32,
@@ -1154,6 +1197,7 @@ fn clipped_source_rect(
 /// The rectangle is clipped to the source image; `None` means the crop is empty or the source
 /// buffer does not match the dimensions it claims. `source_width`/`source_height` are the
 /// metadata a batch records with the command (G-14).
+#[cfg(test)]
 fn crop_source_rect(
     data: &[u8],
     source_width: u32,
@@ -1191,10 +1235,13 @@ fn crop_source_rect(
 /// The dimensions are part of the key because they define the stride the crop is read with; two
 /// sources with the same address cannot have different dimensions while the `Arc` is held, but
 /// including them makes the key self-describing.
+#[cfg(test)]
 type CroppedImageKey = (usize, u32, u32, i32, i32, u32, u32);
 /// A cropped variant: the source kept alive plus the cropped bytes.
+#[cfg(test)]
 type CroppedImageEntry = (Arc<[u8]>, Arc<[u8]>);
 
+#[cfg(test)]
 thread_local! {
     // `HashMap::new` is const only under alloc_frugal (BTreeMap); the std profile cannot be const.
     /// Cropped sub-rectangles, keyed by the source allocation's address, dimensions and rectangle.
@@ -1207,12 +1254,14 @@ thread_local! {
 }
 
 /// How many cropped sub-rectangles one thread keeps before evicting the oldest (G-04).
+#[cfg(test)]
 const CROPPED_IMAGE_CACHE_LIMIT: usize = 32;
 
 /// Returns the cached crop of `source`'s `rect`, copying it at most once per content (G-04).
 ///
 /// The key uses the source `Arc`'s address and the cache keeps the `Arc` alive, so the address
 /// cannot be recycled by a different image while the entry exists.
+#[cfg(test)]
 fn crop_source_rect_cached(
     source: &Arc<[u8]>,
     source_width: u32,
@@ -1292,6 +1341,7 @@ fn take_image_bytes_translated() -> usize {
 /// Commands are painted through [`SurfacePaintBackend`], a zero-copy view over the
 /// surface, so the output is byte-for-byte what the backend's own command path
 /// produces.
+#[cfg(test)]
 fn replay_into(
     batches: &HashMap<BatchId, Vec<BatchCommand>>,
     images: &HashMap<ObjectId, BatchImage>,
@@ -1310,6 +1360,7 @@ fn replay_into(
     }
 }
 
+#[cfg(test)]
 impl BatchRenderer for SoftwarePaintBackend {
     /// Opens a new batch in this backend's batch state.
     fn begin_batch(&mut self) -> BatchId {

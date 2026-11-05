@@ -13,44 +13,60 @@
 //! so they are declared under one module. Each control has its own file so the 2000-line
 //! production limit (principle #9) is not crossed as the set grows.
 //!
-//! The capability property/event tables in `src/widget/capability/` remain the single
-//! publication surface. Seven companions are reachable through their Rust types only and
-//! publish no row there; six (`MenuPanel`, `SpeedDial`, `SwipeActions`,
-//! `DrawerSectionHeader`, `LayerPanel`, `PlaylistPanel`) own a `WidgetKind` and publish a
-//! capability row, so a document can create them by name.
+//! # Capability publication
+//!
+//! The capability property/event tables in `src/widget/capability/` are the single
+//! publication surface, and every companion publishes a row there. The seven foundational
+//! companions — `Swatch`, `FilterRow`, `Legend`, `ChartTooltip`, `TooltipManager`,
+//! `ZoomPanController` and `ToastHost` — own a kind of their own and are registered by name
+//! (`capability/registration.rs`), with their property/event rows in
+//! `capability/properties/other_companion.rs`. The remaining companions (`MenuPanel`,
+//! `SpeedDial`, `SwipeActions`, `DrawerSectionHeader`, `LayerPanel`, `PlaylistPanel` and the
+//! COMP-21..29 overlays) are registered the same way, so a document can create any companion
+//! by name instead of reaching it through its Rust type only.
 //!
 //! # Reused models instead of local copies
 //!
 //! * [`FilterRow`] stores [`FilterCondition`](crate::widget::view_widgets::filter_expr::FilterCondition)
 //!   and [`FilterOperator`](crate::widget::view_widgets::filter_expr::FilterOperator), so a
-//!   filter row, `DataGrid` and a query builder evaluate one filter model.
-//! * [`ToastHost`] accepts `Toast` and `ToastItem` from the existing toast module and reuses
-//!   its `ToastLevel`.
+//!   filter row, `DataGrid` and a query builder evaluate one filter model. Its published
+//!   `filter_changed` payload is the same structured condition list (`CAP-1`).
+//! * [`ToastHost`] accepts `Toast` and `ToastItem` from the existing toast module and reuses its
+//!   `ToastLevel`; `push`/`push_at` admit through `push_item`, so both payload spellings share
+//!   one admission path.
 //!
-//! # `WidgetKind` mapping
+//! # `WidgetKind` ownership
 //!
-//! The shared `WidgetKind` enum is owned by the capability/schema surface. Six companions own
-//! a kind of their own (`MenuPanel`, `SpeedDial`, `SwipeActions`, `DrawerSectionHeader`,
-//! `LayerPanel`, `PlaylistPanel`). The other seven declare the closest existing kind for base
-//! bookkeeping: `Swatch` → `ColorHistory`, `FilterRow` → `QueryBuilder`, `Legend` → `Chart`,
-//! `ChartTooltip`/`TooltipManager` → `Tooltip`, `ZoomPanController` → `ImageView` and
-//! `ToastHost` → `PopupWindow`. The kind is bookkeeping only; behaviour is implemented here.
+//! The shared `WidgetKind` enum is owned by the capability/schema surface. Thirteen companions
+//! own a kind they report under their own name: `Swatch`, `FilterRow`, `Legend`, `ChartTooltip`,
+//! `TooltipManager`, `ZoomPanController`, `ToastHost`, `MenuPanel`, `SpeedDial`, `SwipeActions`,
+//! `DrawerSectionHeader`, `LayerPanel` and `PlaylistPanel`. The other thirteen report the kind of
+//! the primary control they partner (see the deviation table below); behaviour lives here in
+//! both cases.
 //!
 //! # What the borrowed kinds cost in audits (G-306)
 //!
-//! The mapping is not invisible to kind-level accounting: any `WidgetKind` statistic, and any
-//! registry audit that asks "which module implements this kind?", counts a borrowing companion
-//! under the kind it borrows. A `Swatch` is counted as `ColorHistory`, a `FilterRow` as
-//! `QueryBuilder`, a `Legend` as `Chart`, a `ChartTooltip`/`TooltipManager` as `Tooltip`, a
-//! `ZoomPanController` as `ImageView` and a `ToastHost` as `PopupWindow`. The direction is
-//! one-way — the borrowed kind never claims the companion as its own type — but a report saying
-//! "N controls of kind X" includes the companion even when X's module does not implement it.
-//! Because the capability tables publish no row for these seven controls (see "Reused models
-//! instead of local copies" above), a reader that needs an exact answer must consult this table
-//! rather than the reported kind alone; a registry test that pins the borrowed-kind → borrower
-//! pairs would make the deviation testable instead of only documented. The six companions that
-//! own a kind do report it, so they are counted under their own name and are absent from this
-//! deviation set.
+//! The borrowed-kind mapping is not invisible to kind-level accounting: any `WidgetKind`
+//! statistic, and any registry audit that asks "which module implements this kind?", counts a
+//! borrowing companion under the kind it borrows. The current deviation set is:
+//!
+//! * `ListStateHost` → `EmptyState`
+//! * `SummaryRow`, `ChartDataTable` → `Table`
+//! * `ZoomStrip` → `Slider`
+//! * `AxisPicker`, `CalendarMarkLayer`, `DragGhostLayer`, `LineNumberGutter`,
+//!   `DropDownPopupHost` → `Panel`
+//! * `FindReplaceBar` → `SearchBar`
+//! * `GridStatusBar` → `StatusBar`
+//! * `HeaderMenu` → `Menu`
+//! * `CommandPaletteHost` → `ListView`
+//!
+//! The direction is one-way — the borrowed kind never claims the companion as its own type —
+//! but a report saying "N controls of kind X" includes the companion even when X's module does
+//! not implement it. Each borrower still has its own capability row and a concrete-type
+//! tie-break in `WidgetFactory::widget_matches_capability` (`capability.rs`), so the name route
+//! stays unambiguous; a reader that needs "N controls *implemented by* kind X" must subtract
+//! this set. This is the same rule `registration.rs` states for the COMP-21..29 registrations:
+//! those overlays "report the kind of the control they partner".
 //!
 //! # Safety
 //!
@@ -99,7 +115,12 @@ pub use crate::widget::input_widgets::input_companions::{
 pub use crate::widget::view_widgets::column_chooser::ColumnChooser;
 pub use crate::widget::view_widgets::grid_find_bar::GridFindBar;
 pub use crate::widget::view_widgets::thumbnail_cache::ThumbnailCache;
-pub use axis_picker::{AxisEdge, AxisPicker, AxisSpec};
+pub use axis_picker::{AxisEdge, AxisPicker};
+// `AxisSpec` is the module's own property-routing type: it has no consumer outside
+// `axis_picker.rs`, so it is not re-exported at the module root (CP2-6) and remains a `pub`
+// spelling inside `axis_picker` (`axis_picker::AxisSpec`) rather than part of this module's
+// public surface. `AxisEdge` is the shared enum the chart family consumes, which is why it is
+// exported here.
 pub use calendar_mark_layer::{CalendarMark, CalendarMarkLayer, CalendarMarkShape};
 pub use chart_data_table::{ChartDataMode, ChartDataTable, ChartSeriesSnapshot};
 pub use chart_tooltip::{ChartTooltip, TooltipLine};

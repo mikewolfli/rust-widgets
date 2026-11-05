@@ -960,18 +960,25 @@ impl EventHandler for RadioButton {
                 self.set_checked(true);
                 self.emit_clicked();
             }
-            Event::KeyPress { key, .. } if *key == key_codes::SPACE || *key == key_codes::ENTER => {
+            // Keyboard activation is reachable only while the radio holds focus: a radio
+            // embedded in a page must not consume the Enter of whatever the user is editing.
+            Event::KeyPress { key, .. }
+                if (*key == key_codes::SPACE || *key == key_codes::ENTER)
+                    && self.base.focus_reason().is_some() =>
+            {
                 // Space or Enter
                 self.set_checked(true);
                 self.emit_clicked();
             }
             // Arrow keys move the selection inside the group, which is the keyboard half of
             // auto-exclusivity: Tab reaches the group, arrows choose within it.
+            // Keyboard navigation is reachable only while the radio holds focus: a radio
+            // embedded in a page must not consume the arrows of whatever the user is editing.
             Event::KeyPress { key, .. }
                 if matches!(
                     *key,
                     key_codes::UP | key_codes::DOWN | key_codes::LEFT | key_codes::RIGHT
-                ) =>
+                ) && self.base.focus_reason().is_some() =>
             {
                 let forward = matches!(*key, key_codes::DOWN | key_codes::RIGHT);
                 if self.navigate_group(forward) {
@@ -2239,6 +2246,8 @@ mod tests {
 
     #[test]
     fn arrow_keys_move_the_selection_down_the_group() {
+        use crate::event::FocusReason;
+
         let mut first = RadioButton::new(Rect::new(0, 0, 80, 20));
         let mut second = RadioButton::new(Rect::new(0, 24, 80, 20));
         let mut third = RadioButton::new(Rect::new(0, 48, 80, 20));
@@ -2247,17 +2256,32 @@ mod tests {
         }
         first.set_checked(true);
 
+        // Unfocused: the keys belong to whoever holds focus.
+        first.handle_event(&Event::KeyPress { key: key_codes::DOWN, modifiers: 0 });
+        assert!(first.is_checked(), "an unfocused radio ignores the arrows");
+        second.handle_event(&Event::KeyPress { key: key_codes::SPACE, modifiers: 0 });
+        assert!(!second.is_checked(), "an unfocused radio ignores Space");
+
+        first.handle_event(&Event::FocusGained { reason: FocusReason::Tab });
         first.handle_event(&Event::KeyPress { key: key_codes::DOWN, modifiers: 0 });
         assert!(!first.is_checked());
         assert!(second.is_checked(), "Down selects the next radio");
         assert!(!third.is_checked());
 
+        second.handle_event(&Event::FocusGained { reason: FocusReason::Tab });
         second.handle_event(&Event::KeyPress { key: key_codes::UP, modifiers: 0 });
         assert!(first.is_checked(), "Up selects the previous radio");
+
+        third.handle_event(&Event::FocusGained { reason: FocusReason::Tab });
+        third.handle_event(&Event::KeyPress { key: key_codes::SPACE, modifiers: 0 });
+        assert!(third.is_checked(), "Space selects a focused radio");
+        assert!(!first.is_checked(), "and the group still holds one selection");
     }
 
     #[test]
     fn arrow_navigation_wraps_and_skips_disabled_peers() {
+        use crate::event::FocusReason;
+
         let mut first = RadioButton::new(Rect::new(0, 0, 80, 20));
         let mut middle = RadioButton::new(Rect::new(0, 24, 80, 20));
         let mut last = RadioButton::new(Rect::new(0, 48, 80, 20));
@@ -2267,6 +2291,7 @@ mod tests {
         middle.set_enabled(false);
         first.set_checked(true);
 
+        first.handle_event(&Event::FocusGained { reason: FocusReason::Tab });
         first.handle_event(&Event::KeyPress { key: key_codes::DOWN, modifiers: 0 });
         assert!(last.is_checked(), "a disabled member is skipped, and the search wraps");
     }

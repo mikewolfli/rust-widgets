@@ -5,3 +5,6 @@ edition = "2021"
 publish = false
 
 [dependencies]
+# The appearance helpers register the library's own macOS presets, so this crate asks the
+# library rather than carrying a private palette table (DM3-1).
+rust_widgets = { path = "../.." }

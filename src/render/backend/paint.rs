@@ -312,7 +312,7 @@ impl SoftwarePaintBackend {
 
     /// Registers RGBA8 pixels as the batch image `id`, together with the grid they are laid out in.
     ///
-    /// A [`BatchCommand::DrawImage`](super::batch::BatchCommand::DrawImage) names an image by id,
+    /// A `BatchCommand::DrawImage` names an image by id,
     /// and a replay needs both the bytes and their row stride: the command's rectangle is a
     /// *destination* that may be any size. When it equals the registered grid the replay keeps the
     /// zero-copy blit; otherwise it emits

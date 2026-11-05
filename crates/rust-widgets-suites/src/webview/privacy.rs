@@ -294,14 +294,13 @@ impl Cookie {
     }
     /// Reports whether the cookie is third-party relative to `request_domain`.
     ///
-    /// The check is a domain **suffix** test (`cookie.domain.ends_with(request_domain)`),
-    /// not an equality test and not an origin check: a cookie for `example.com`
-    /// is first-party for a request to `example.com` or `sub.example.com`. A
-    /// request domain that the cookie's domain merely ends with (e.g. cookie
-    /// `ample.com`, request `example.com`) also counts as first-party, so callers
-    /// should pass real registrable domains.
+    /// The answer is the negation of the crate's single domain rule ([`domain_matches`]): a cookie
+    /// for `example.com` is first-party for a request to `example.com` or `sub.example.com`, and a
+    /// merely similar domain (`ple.com` vs `example.com`) is **not** first-party. The suffix test
+    /// this used to be got both of those wrong and disagreed with the same file's
+    /// `cookies_for_domain`/`clear_for_domain` (WV-07).
     pub fn is_third_party(&self, request_domain: &str) -> bool {
-        !self.domain.ends_with(request_domain)
+        !domain_matches(request_domain, &self.domain)
     }
 }
 #[derive(Debug, Clone, Default)]

@@ -11,6 +11,8 @@
 use super::super::raster::text_coverage_into;
 use super::super::types::{PixelRect, Rgba8};
 use super::frame::WgpuRenderer;
+use super::resources::TextureKey;
+use std::sync::Arc;
 
 /// One image draw in the command-stream pass.
 ///
@@ -70,8 +72,12 @@ fn write_f32s(data: &mut [u8], values: &[f32]) {
 impl WgpuRenderer {
     /// Uploads one image draw's pixels and returns the bind group the pass draws it with.
     ///
-    /// The texture is created per draw because the pixels belong to this frame's image. The
-    /// params uniform is 32 bytes (the destination rectangle and the source grid, each a
+    /// This is the path for pixel data that is generated for the draw itself (a gradient ramp
+    /// flattened from stops), so the bytes cannot be reused across frames and the texture is
+    /// created here. Images that arrive as a shared `Arc` go through
+    /// [`Self::upload_image_draw_with_sample`] and are uploaded once per content (RD2-01).
+    ///
+    /// The params uniform is 32 bytes (the destination rectangle and the source grid, each a
     /// `vec4f`). Rows are uploaded at the image's own pitch: `Queue::write_texture` stages the
     /// copy itself and accepts the tightly packed buffer, so no padded copy is made here.
     pub(super) fn upload_image_draw(
@@ -81,43 +87,7 @@ impl WgpuRenderer {
         source_width: u32,
         source_height: u32,
     ) -> ImageDraw {
-        self.upload_image_draw_with_sample(
-            rect,
-            pixels,
-            source_width,
-            source_height,
-            (0.0, 0.0),
-            false,
-        )
-    }
-
-    /// Uploads one image draw, stating how its fragments sample the source.
-    ///
-    /// `sample_step` is `(u_dx, v_dy)` — the reference's per-pixel step of the normalized sample
-    /// position — and is read only by the bilinear shader; `bilinear` selects that pipeline. Both
-    /// numbers travel in the params uniform's `source.zw`, which the nearest shader ignores, so the
-    /// two draws keep one bind group layout.
-    pub(super) fn upload_image_draw_with_sample(
-        &self,
-        rect: PixelRect,
-        pixels: &[u8],
-        source_width: u32,
-        source_height: u32,
-        sample_step: (f32, f32),
-        bilinear: bool,
-    ) -> ImageDraw {
-        let size =
-            wgpu::Extent3d { width: source_width, height: source_height, depth_or_array_layers: 1 };
-        let texture = self.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("image_draw_texture"),
-            size,
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8Unorm,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        });
+        let texture = self.image_texture(source_width, source_height);
         self.queue.write_texture(
             wgpu::TexelCopyTextureInfo {
                 texture: &texture,
@@ -131,9 +101,90 @@ impl WgpuRenderer {
                 bytes_per_row: Some(source_width * 4),
                 rows_per_image: Some(source_height),
             },
-            size,
+            wgpu::Extent3d { width: source_width, height: source_height, depth_or_array_layers: 1 },
         );
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        self.image_draw_bind_group(rect, &view, source_width, source_height, (0.0, 0.0), false)
+    }
+
+    /// Uploads one image draw, stating how its fragments sample the source.
+    ///
+    /// `sample_step` is `(u_dx, v_dy)` — the reference's per-pixel step of the normalized sample
+    /// position — and is read only by the bilinear shader; `bilinear` selects that pipeline. Both
+    /// numbers travel in the params uniform's `source.zw`, which the nearest shader ignores, so the
+    /// two draws keep one bind group layout.
+    ///
+    /// The pixels are keyed by allocation and grid (RD2-01): an image that does not change between
+    /// frames is uploaded on its first draw and sampled from the cached texture afterwards, so the
+    /// per-frame cost is the 32-byte params write and a bind group.
+    pub(super) fn upload_image_draw_with_sample(
+        &self,
+        rect: PixelRect,
+        pixels: &Arc<[u8]>,
+        source_width: u32,
+        source_height: u32,
+        sample_step: (f32, f32),
+        bilinear: bool,
+    ) -> ImageDraw {
+        let view = self.cached_texture(pixels, source_width, source_height);
+        self.image_draw_bind_group(rect, &view, source_width, source_height, sample_step, bilinear)
+    }
+
+    /// An empty `Rgba8Unorm` texture with `TEXTURE_BINDING | COPY_DST` usage.
+    fn image_texture(&self, width: u32, height: u32) -> wgpu::Texture {
+        self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("image_draw_texture"),
+            size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        })
+    }
+
+    /// The view of `source` at `width` x `height`, uploading it only when the content is new.
+    ///
+    /// The cache keys on the source allocation (kept alive by the entry) plus the grid, which is
+    /// the same content key the crate's other image caches use. A hit costs a hash lookup and a
+    /// handle clone; a miss creates the texture and writes the pixels once.
+    fn cached_texture(&self, source: &Arc<[u8]>, width: u32, height: u32) -> wgpu::TextureView {
+        let key = TextureKey::new(source, width, height);
+        if let Some(view) = self.cache.borrow().textures.view(&key) {
+            return view;
+        }
+        let texture = self.image_texture(width, height);
+        self.queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            source,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(width * 4),
+                rows_per_image: Some(height),
+            },
+            wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+        );
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        self.cache.borrow_mut().textures.insert(key, Arc::clone(source), texture, view.clone());
+        view
+    }
+
+    /// Builds the params uniform and bind group for an image draw over `view`.
+    fn image_draw_bind_group(
+        &self,
+        rect: PixelRect,
+        view: &wgpu::TextureView,
+        source_width: u32,
+        source_height: u32,
+        sample_step: (f32, f32),
+        bilinear: bool,
+    ) -> ImageDraw {
         let params = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("image_draw_params"),
             size: 32,
@@ -169,7 +220,7 @@ impl WgpuRenderer {
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
-                    resource: wgpu::BindingResource::TextureView(&view),
+                    resource: wgpu::BindingResource::TextureView(view),
                 },
             ],
         });
@@ -316,36 +367,13 @@ impl WgpuRenderer {
     /// `textureLoad` returns the byte triplet the CPU's stop lookup would have read. Geometry is
     /// the one the CPU arm derives from `rect`: the ramp is centred in it and reaches the nearest
     /// edge, so a caller cannot supply a different centre (the command carries none).
-    pub(super) fn upload_radial_draw(&self, rect: PixelRect, gradient_data: &[u8]) -> RadialDraw {
+    pub(super) fn upload_radial_draw(
+        &self,
+        rect: PixelRect,
+        gradient_data: &Arc<[u8]>,
+    ) -> RadialDraw {
         let stops = gradient_data.len() / 4;
-        let texels = &gradient_data[..stops * 4];
-        let size = wgpu::Extent3d { width: stops as u32, height: 1, depth_or_array_layers: 1 };
-        let texture = self.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("radial_stops_texture"),
-            size,
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8Unorm,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        });
-        self.queue.write_texture(
-            wgpu::TexelCopyTextureInfo {
-                texture: &texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            texels,
-            wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(stops as u32 * 4),
-                rows_per_image: Some(1),
-            },
-            size,
-        );
-        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let view = self.cached_texture(gradient_data, stops as u32, 1);
         // The same geometry the CPU arm derives from `rect` (see `draw_radial_gradient_cpu_rgba8`).
         let centre_x = rect.x as f32 + (rect.width as f32 - 1.0) / 2.0;
         let centre_y = rect.y as f32 + (rect.height as f32 - 1.0) / 2.0;
@@ -408,36 +436,10 @@ impl WgpuRenderer {
         kind: u8,
         start: (f32, f32),
         end: (f32, f32),
-        ramp: &[u8],
+        ramp: &Arc<[u8]>,
         verbatim: bool,
     ) -> GradientDraw {
-        let size = wgpu::Extent3d { width: 256, height: 1, depth_or_array_layers: 1 };
-        let texture = self.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("gradient_ramp_texture"),
-            size,
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8Unorm,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        });
-        self.queue.write_texture(
-            wgpu::TexelCopyTextureInfo {
-                texture: &texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            ramp,
-            wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(1024),
-                rows_per_image: Some(1),
-            },
-            size,
-        );
-        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let view = self.cached_texture(ramp, 256, 1);
         let params = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("gradient_draw_params"),
             size: 64,

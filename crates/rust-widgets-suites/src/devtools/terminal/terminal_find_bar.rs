@@ -72,6 +72,33 @@ fn find_bar_palette(style: &rust_widgets::style::WidgetStyle) -> (Color, Color, 
     (surface, border, ink)
 }
 
+/// The strip's `current/total` counter label and the reported pair it was formatted from.
+///
+/// The text is a pure function of `(match_count, current_match)`, so a repaint re-formats it
+/// only when one of the two moved — the same keyed-cache shape as
+/// `crate::devtools::diff_viewer::file_list::FileCountsCache`. An empty key means "never built".
+#[derive(Default)]
+struct CounterCache {
+    key: Option<(usize, Option<usize>)>,
+    text: String,
+}
+
+impl CounterCache {
+    /// Returns the label for `counts`, rebuilding the string only when the pair changed.
+    fn label(&mut self, counts: (usize, Option<usize>)) -> &str {
+        if self.key != Some(counts) {
+            let (total, current) = counts;
+            self.text = if total == 0 {
+                String::from("0/0")
+            } else {
+                format!("{}/{}", current.map_or(0, |index| index + 1), total)
+            };
+            self.key = Some(counts);
+        }
+        &self.text
+    }
+}
+
 /// A search strip for a terminal's scrollback.
 ///
 /// The bar is hidden until [`Self::open`]. Hiding it does not touch the terminal, and neither
@@ -102,6 +129,8 @@ pub struct TerminalFindBar {
     /// Navigation compares this key before rescanning, so a repeated next/previous over an
     /// unchanged terminal reuses the match set instead of re-stripping every line.
     rescan_key: Option<(u64, String, bool, bool)>,
+    /// The counter label, rebuilt only when the reported pair moves.
+    counter_cache: CounterCache,
     /// Emitted with `(total, current)` whenever a scan changes or reports the match set.
     ///
     /// `current` is zero-based and is `0` when there is no current match (including when the
@@ -128,6 +157,7 @@ impl TerminalFindBar {
             matches: Vec::new(),
             rows: Vec::new(),
             rescan_key: None,
+            counter_cache: CounterCache::default(),
             on_matches_changed: Signal1::new(),
         }
     }
@@ -470,12 +500,20 @@ impl Widget for TerminalFindBar {
     fn event_signal_dyn(&self, name: &str) -> Option<EventSignalRef> {
         match name {
             "matches_changed" | "on_matches_changed" => {
-                Some(EventSignalRef::mapped("matches_changed", &self.on_matches_changed, |value| {
-                    CapabilityValue::Tuple(vec![
-                        CapabilityValue::UInt(value.0 as u64),
-                        CapabilityValue::UInt(value.1 as u64),
-                    ])
-                }))
+                // DEV-1: the reference must declare the **published** name. The bridge refuses a
+                // reference whose declared name differs from the one requested, so declaring the
+                // alias here made the only published event unreachable through every standard
+                // wiring path. Both spellings still resolve for `event_signal_dyn` callers.
+                Some(EventSignalRef::mapped(
+                    "on_matches_changed",
+                    &self.on_matches_changed,
+                    |value| {
+                        CapabilityValue::Tuple(vec![
+                            CapabilityValue::UInt(value.0 as u64),
+                            CapabilityValue::UInt(value.1 as u64),
+                        ])
+                    },
+                ))
             }
             _ => None,
         }
@@ -608,12 +646,9 @@ impl Draw for TerminalFindBar {
         }
 
         let counter_rect = self.counter_rect();
-        let counter = if self.match_count == 0 {
-            String::from("0/0")
-        } else {
-            format!("{}/{}", self.current_match.map_or(0, |index| index + 1), self.match_count)
-        };
-        context.draw_text_line(counter_rect, &counter, font, accent, HorizontalAlignment::Right);
+        let counts = (self.match_count, self.current_match);
+        let counter = self.counter_cache.label(counts);
+        context.draw_text_line(counter_rect, counter, font, accent, HorizontalAlignment::Right);
     }
 }
 

@@ -24,6 +24,7 @@ cd "$PROJECT_DIR"
 run_bench() {
     local name="$1"
     local bench_name="$2"
+    TOTAL=$((TOTAL + 1))
     echo ""
     echo "╔═══════════════════════════════════════════════════════╗"
     printf "║  %-53s ║\n" "Running $name Benchmark..."
@@ -44,6 +45,7 @@ run_bench_featured() {
     local name="$1"
     local bench_name="$2"
     local features="$3"
+    TOTAL=$((TOTAL + 1))
     echo ""
     echo "╔═══════════════════════════════════════════════════════╗"
     printf "║  %-53s ║\n" "Running $name Benchmark..."
@@ -59,6 +61,9 @@ run_bench_featured() {
 }
 
 FAILURES=0
+# Incremented by each `run_bench*` call, so the summary follows the execution list instead of
+# hardcoding the count it happened to have (BN-1).
+TOTAL=0
 
 run_bench "Render" "render_bench" || FAILURES=$((FAILURES + 1))
 echo "---"
@@ -74,10 +79,19 @@ echo "---"
 # lookup is a miss and the numbers measure the empty-list case. The features are passed
 # explicitly for that reason, and `desktop` is the device profile CI uses.
 run_bench_featured "Font" "font_bench" "desktop,fonts-vector-latin,fonts-complex,fonts-cjk" || FAILURES=$((FAILURES + 1))
+echo "---"
+# These three are registered with non-default `required-features` in Cargo.toml, so they need the
+# same explicit-feature treatment as the font benchmark. Before this they were never executed by
+# the script at all, even though it advertises running every benchmark.
+run_bench_featured "Tree Index" "tree_index_bench" "desktop" || FAILURES=$((FAILURES + 1))
+echo "---"
+run_bench_featured "Capability" "capability_bench" "desktop,declarative-view" || FAILURES=$((FAILURES + 1))
+echo "---"
+run_bench_featured "Wgpu" "wgpu_bench" "gpu-wgpu" || FAILURES=$((FAILURES + 1))
 
 echo ""
 echo "═══════════════════════════════════════════════════════════"
-echo "  Benchmarks Complete: $((6 - FAILURES))/6 passed"
+echo "  Benchmarks Complete: $((TOTAL - FAILURES))/$TOTAL passed"
 echo "═══════════════════════════════════════════════════════════"
 
 if [ "$FAILURES" -gt 0 ]; then
@@ -88,7 +102,7 @@ fi
 # Save summary for CI artifact comparison
 {
     echo "Benchmark Run: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
-    echo "Passed: $((6 - FAILURES))"
+    echo "Passed: $((TOTAL - FAILURES))"
     echo "Failed: ${FAILURES}"
 } > "$SUMMARY_FILE"
 echo "  → Summary saved to $SUMMARY_FILE"

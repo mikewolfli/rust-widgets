@@ -1041,7 +1041,9 @@ impl EventHandler for SegmentedButton {
             // itself, so one key press does what one click does; in multi-select mode they move a
             // focus and Space toggles the focused segment, because moving the selection with an
             // arrow would silently change the value.
-            Event::KeyPress { key, .. } => match *key {
+            // Arrow and Space keys change the segmented button only while it holds focus: an
+            // unfocused button must not take the keys of whatever the user is editing.
+            Event::KeyPress { key, .. } if self.base.focus_reason().is_some() => match *key {
                 37 => {
                     if self.allows_multiple {
                         self.move_focus(-1);
@@ -1388,6 +1390,11 @@ mod tests {
         button.add_segment(Segment::new("Three"));
         assert_eq!(button.selected_index(), None);
 
+        // Unfocused: the arrow belongs to whoever holds focus.
+        button.handle_event(&Event::key_press(crate::event::key_codes::RIGHT, 0));
+        assert_eq!(button.selected_index(), None, "an unfocused button ignores the key");
+
+        button.handle_event(&Event::FocusGained { reason: crate::event::FocusReason::Tab });
         button.handle_event(&Event::key_press(crate::event::key_codes::RIGHT, 0));
         assert_eq!(button.selected_index(), Some(0), "the first arrow picks the first segment");
         button.handle_event(&Event::key_press(crate::event::key_codes::RIGHT, 0));
@@ -1406,6 +1413,12 @@ mod tests {
         button.add_segment(Segment::new("Bold"));
         button.add_segment(Segment::new("Italic"));
 
+        // Unfocused: neither the arrow nor Space may move or toggle.
+        button.handle_event(&Event::key_press(crate::event::key_codes::RIGHT, 0));
+        button.handle_event(&Event::key_press(crate::event::key_codes::SPACE, 0));
+        assert_eq!(button.selected_index(), None, "an unfocused button ignores the keys");
+
+        button.handle_event(&Event::FocusGained { reason: crate::event::FocusReason::Tab });
         button.handle_event(&Event::key_press(crate::event::key_codes::RIGHT, 0));
         button.handle_event(&Event::key_press(crate::event::key_codes::SPACE, 0));
         assert_eq!(button.selected_index(), Some(1));

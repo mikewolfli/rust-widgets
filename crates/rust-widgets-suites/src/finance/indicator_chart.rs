@@ -693,6 +693,9 @@ impl IndicatorChart {
         let label_left = area.rect.x - area.left_margin;
         let label_right = area.label_x();
         let label_width = (label_right - label_left).max(0) as u32;
+        // One chrome resolution for the whole axis: the loop used to re-resolve the theme for
+        // every label (FIN-4).
+        let ink = self.chrome().ink.with_alpha(190);
         for step in 0..=3 {
             let fraction = step as f64 / 3.0;
             let value = low + fraction * (high - low);
@@ -705,13 +708,7 @@ impl IndicatorChart {
                 let line_height = context.measure_text(text, &font).height.max(1);
                 let band =
                     Rect::new(label_left, y - line_height as i32 / 2, label_width, line_height);
-                context.draw_text_fitted_cow(
-                    band,
-                    text,
-                    &font,
-                    self.chrome().ink.with_alpha(190),
-                    HorizontalAlignment::Right,
-                );
+                context.draw_text_fitted_cow(band, text, &font, ink, HorizontalAlignment::Right);
             });
         }
     }
@@ -749,11 +746,7 @@ impl IndicatorChart {
             HorizontalAlignment::Center,
         );
     }
-    ///
-    /// The shared indicator preset, not a hand-written margin list: this pane used to reserve
-    /// 52 px on the left while the K-line, volume and depth panes reserved 48, so the same
-    /// bar index was drawn four pixels apart in two panes that are stacked and read against
-    /// each other.
+
     /// The hovered bar's anchor and suggested tooltip content, for an external read-out.
     ///
     /// The anchor is the primary series' point at the hovered index; when that series has no
@@ -858,7 +851,12 @@ impl rust_widgets::event::EventHandler for IndicatorChart {
     fn handle_event(&mut self, event: &rust_widgets::event::Event) {
         use rust_widgets::event::Event;
         // A strip click shows on this frame: the request queue is drained before routing.
+        // The poll stays ahead of the enabled guard, so a disabled pane still drains its
+        // companion queue (map_overview's order, FIN-8).
         self.poll_zoom_strip();
+        if !self.base.is_enabled() {
+            return;
+        }
         match event {
             Event::MouseMove { pos } | Event::PointerMove { pos, .. } => {
                 let area = self.plot_area();
@@ -1106,15 +1104,6 @@ impl WidgetProperties for IndicatorChart {
         property_names_of!["mode", "period", "show_reference_levels", "series", BASE_PROPERTY_NAMES]
     }
 
-    /// Runs one of the commands `indicator_chart` publishes.
-    ///
-    /// The pane's own studies are selected through `mode` and `period`, not stacked
-    /// as overlays, so `add_overlay` — whose method exists only on
-    /// `CandlestickChart` — is answered as
-    /// [`CapabilityAccessError::UnsupportedOnWidget`]. That refusal is an honest
-    /// answer, not a fix: the `commands` list still advertises an action this control
-    /// cannot take, and reconciling it is a registry decision. The `set_*` write names
-    /// carry their values.
     /// Runs one of the commands `indicator_chart` publishes.
     ///
     /// Every published name is a value-carrying `set_*`; the convention checks the name against

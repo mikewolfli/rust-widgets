@@ -31,6 +31,16 @@ pub(crate) struct ShapePalette {
     pub(crate) text_color: Color,
 }
 
+/// Packs a colour into the low 32 bits of a layer-cache key.
+///
+/// Same packing as the canvas's own grid key, so the two grids hash the same way their colours do.
+fn color_key(color: Color) -> u64 {
+    (u64::from(color.r) << 24)
+        | (u64::from(color.g) << 16)
+        | (u64::from(color.b) << 8)
+        | u64::from(color.a)
+}
+
 /// A flattened outline in shape-local coordinates, with the inputs it was built from.
 ///
 /// Star vertices, polygons and flattened custom paths are pure functions of the path and the
@@ -1948,9 +1958,22 @@ impl Draw for ShapeCanvas {
 
         // The grid is drawn from the same `grid_step` a drag snaps to, so a shape can be placed
         // exactly on a line the reader can see. A zero step (or a disabled flag) paints nothing.
+        //
+        // It is a fixed background: it changes only with the band, the step or the two colours
+        // the line is blended from. Wrapping it in a keyed layer group means a still canvas reuses
+        // the previous frame's pixels instead of re-issuing ~300 lines, which is the same rule the
+        // canvas's own grid follows (SP2-03).
         if self.snap_to_grid && self.grid_step > 0 {
             let step = self.grid_step as i32;
             let grid = background.blend(&ink, 0.08);
+            let key = color_key(background)
+                ^ color_key(ink)
+                ^ ((self.grid_step as u64) << 48)
+                ^ ((rect.x as u32 as u64) << 32)
+                ^ ((rect.y as u32 as u64) << 16)
+                ^ ((rect.width as u64) << 8)
+                ^ u64::from(rect.height);
+            context.push_layer_group(rect, None, 1.0, Some(key));
             let mut x = rect.x;
             while x <= rect.x + rect.width as i32 {
                 context.draw_line(
@@ -1969,6 +1992,7 @@ impl Draw for ShapeCanvas {
                 );
                 y += step;
             }
+            context.pop_layer();
         }
 
         for shape in &mut self.shapes {

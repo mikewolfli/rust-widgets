@@ -303,6 +303,7 @@ impl EventHandler for Menu {
         }
         match event {
             Event::MouseMove { pos } => {
+                self.last_pointer = Some(*pos);
                 self.tooltips.note_pointer(*pos);
                 if let Some((level, index)) = self.hit_test_submenu(*pos) {
                     if self
@@ -412,6 +413,14 @@ impl EventHandler for Menu {
                 // the menu is no longer topmost, so nothing further is needed here.
             }
             Event::Wheel { delta, .. } => {
+                // A wheel over an open nested panel belongs to that level, which has no scroll
+                // state of its own. Scrolling the top-level list here would move the parent rows —
+                // and the panel is anchored to one of them — out from under the pointer (M2-02).
+                // The press arm above applies the same layer test; `Wheel` carries no position, so
+                // it is applied to the last position a pointer event reported.
+                if self.last_pointer.is_some_and(|pos| self.hit_test_submenu(pos).is_some()) {
+                    return;
+                }
                 let capacity = Self::visible_capacity();
                 if capacity < self.items.len() {
                     let max_offset = self.items.len() - capacity;

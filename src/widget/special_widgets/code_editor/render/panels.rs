@@ -247,17 +247,41 @@ impl CodeEditor {
             chrome.separator,
         );
 
-        let query_summary = if self.goto_mode {
-            "Go to line".to_string()
-        } else if self.find.query.is_empty() {
-            "Find".to_string()
-        } else {
-            format!("{} / {}", self.find.display_index(), self.find.match_count())
+        // The summary is one of two fixed spellings or `"{index} / {count}"`, and its advance is
+        // measured in the font it is drawn in. Both are a pure function of the key, so a still find
+        // bar reuses the string and the measurement instead of formatting and shaping per frame
+        // (GX-04). Cloned so the cache write below is not blocked by a borrow of `self` that the
+        // drawing calls keep alive; `Font` is a handle, so this is a reference-count bump.
+        let font = self.chrome_font().clone();
+        let key = FindSummaryKey {
+            goto_mode: self.goto_mode,
+            query_empty: self.find.query.is_empty(),
+            display_index: self.find.display_index(),
+            match_count: self.find.match_count(),
+            font_size_bits: font.size().to_bits(),
+            font_weight: font.weight(),
         };
+        let stale = match self.find_summary_cache.as_ref() {
+            Some(cached) => cached.key != key,
+            None => true,
+        };
+        if stale {
+            let text = if key.goto_mode {
+                "Go to line".to_string()
+            } else if key.query_empty {
+                "Find".to_string()
+            } else {
+                format!("{} / {}", key.display_index, key.match_count)
+            };
+            let width = context.backend().measure_text(&text, &font).width;
+            self.find_summary_cache = Some(FindSummaryCache { key, text, width });
+        }
+        let cached = self.find_summary_cache.as_ref().expect("the summary was just filled");
+        let query_summary = cached.text.as_str();
         context.draw_text(
             Point::new(rect.x + 8, top + 20),
-            &query_summary,
-            self.chrome_font(),
+            query_summary,
+            &font,
             chrome.dim_ink,
             HorizontalAlignment::Left,
         );
@@ -265,8 +289,7 @@ impl CodeEditor {
         // The previous version used `space_advance * 8.0` — a hand-written constant multiplied by a
         // made-up column count — which put the query field at a fixed x that had no relation to where
         // the summary actually ended. Measuring both makes the gap between them what it claims to be.
-        let summary_font = self.chrome_font();
-        let summary_advance = context.backend().measure_text(&query_summary, summary_font).width;
+        let summary_advance = cached.width;
         let query_x = rect.x + 8 + summary_advance as i32 + self.cell_width() as i32;
 
         // The action buttons. Their rectangles come from `find_bar_buttons`, which the

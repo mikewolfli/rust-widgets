@@ -2255,8 +2255,12 @@ impl EventHandler for Button {
             {
                 self.click();
             }
+            // Keyboard activation is reachable only while the button holds focus: a button
+            // embedded in a page must not consume Enter or Space from the user's editing.
             Event::KeyPress { key, .. }
-                if is_keyboard_activation(*key) && self.base.is_enabled() =>
+                if is_keyboard_activation(*key)
+                    && self.base.is_enabled()
+                    && self.base.focus_reason().is_some() =>
             {
                 // A keyboard activation is `Shortcut`: the user is on the keyboard, so
                 // the ring stays lit. Only the activation itself runs here; the ring
@@ -3394,6 +3398,10 @@ mod tests {
             }
         });
         btn.handle_event(&Event::KeyPress { key: 13, modifiers: 0 });
+        assert!(!clicked.load(Ordering::SeqCst), "an unfocused button ignores Enter");
+
+        btn.handle_event(&Event::FocusGained { reason: FocusReason::Tab });
+        btn.handle_event(&Event::KeyPress { key: 13, modifiers: 0 });
         assert!(clicked.load(Ordering::SeqCst), "Enter key should trigger click");
     }
 
@@ -3407,6 +3415,10 @@ mod tests {
                 flag.store(true, Ordering::SeqCst);
             }
         });
+        btn.handle_event(&Event::KeyPress { key: 32, modifiers: 0 });
+        assert!(!clicked.load(Ordering::SeqCst), "an unfocused button ignores Space");
+
+        btn.handle_event(&Event::FocusGained { reason: FocusReason::Tab });
         btn.handle_event(&Event::KeyPress { key: 32, modifiers: 0 });
         assert!(clicked.load(Ordering::SeqCst), "Space key should trigger click");
     }

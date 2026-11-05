@@ -497,6 +497,7 @@ impl WidgetProperties for Rating {
             "max" => Ok(CapabilityValue::UInt(u64::from(self.max_rating()))),
             "star_size" => Ok(CapabilityValue::UInt(u64::from(self.star_size()))),
             "allow_half_step" => Ok(CapabilityValue::Bool(self.allow_half_step())),
+            "read_only" => Ok(CapabilityValue::Bool(self.is_read_only())),
             // The proportional fill, in `0.0..=1.0`. `value` alone is not enough for a consumer that
             // wants a bar or a percentage: it would have to know `max`, and dividing in the consumer is
             // the second derivation this contract removes.
@@ -530,6 +531,10 @@ impl WidgetProperties for Rating {
                 self.set_allow_half_step(expect_bool(value)?);
                 Ok(())
             }
+            "read_only" => {
+                self.set_read_only(expect_bool(value)?);
+                Ok(())
+            }
             // Derived from `value` and `max`, so writing either would be a second way to say the same
             // thing — and one of the two would be able to disagree.
             "fill" | "display_text" => Err(CapabilityAccessError::ReadOnlyProperty),
@@ -543,6 +548,7 @@ impl WidgetProperties for Rating {
             "max",
             "star_size",
             "allow_half_step",
+            "read_only",
             "fill",
             "display_text",
             BASE_PROPERTY_NAMES
@@ -793,7 +799,9 @@ impl EventHandler for Rating {
                 self.commit_at(*pos);
                 self.request_frame_repaint(None);
             }
-            Event::KeyPress { key, .. } => match *key {
+            // Arrow/Space keys change the rating only while the control holds focus: an
+            // unfocused rating must not take the arrows of whatever the user is editing.
+            Event::KeyPress { key, .. } if self.base.focus_reason().is_some() => match *key {
                 key_codes::LEFT => {
                     let step = if self.allow_half_step { 0.5 } else { 1.0 };
                     let next = (self.rating_exact() - step).max(0.0);
@@ -830,6 +838,7 @@ impl EventHandler for Rating {
 mod tests {
     use super::*;
     use crate::core::Point;
+    use crate::event::FocusReason;
     use std::sync::{Arc, Mutex};
 
     #[test]
@@ -1290,6 +1299,7 @@ mod tests {
     fn arrow_keys_step_the_rating_and_clamp() {
         let mut r = Rating::new(Rect::new(0, 0, 200, 40));
         r.set_rating(3);
+        r.handle_event(&Event::FocusGained { reason: FocusReason::Tab });
 
         r.handle_event(&Event::KeyPress { key: crate::event::key_codes::RIGHT, modifiers: 0 });
         assert_eq!(r.rating(), 4);
@@ -1305,6 +1315,32 @@ mod tests {
         assert_eq!(r.rating(), 0, "and at zero");
     }
 
+    /// The arrow and Space keys change the rating only while the control holds focus.
+    #[test]
+    fn the_keyboard_steps_only_while_focused() {
+        let mut r = Rating::new(Rect::new(0, 0, 200, 40));
+        r.set_rating(3);
+
+        // Unfocused: the key belongs to whoever holds focus, and no signal fires either.
+        let fired = Arc::new(Mutex::new(0u32));
+        r.rating_changed.connect({
+            let fired = Arc::clone(&fired);
+            move |_: Arc<u32>| *fired.lock().unwrap() += 1
+        });
+        r.handle_event(&Event::KeyPress { key: crate::event::key_codes::RIGHT, modifiers: 0 });
+        assert_eq!(r.rating(), 3, "an unfocused rating ignores the key");
+        assert_eq!(*fired.lock().unwrap(), 0, "and publishes nothing");
+
+        r.handle_event(&Event::FocusGained { reason: FocusReason::Tab });
+        r.handle_event(&Event::KeyPress { key: crate::event::key_codes::RIGHT, modifiers: 0 });
+        assert_eq!(r.rating(), 4, "a focused rating takes the step");
+        assert_eq!(*fired.lock().unwrap(), 1, "and publishes the change");
+
+        r.handle_event(&Event::FocusLost);
+        r.handle_event(&Event::KeyPress { key: crate::event::key_codes::RIGHT, modifiers: 0 });
+        assert_eq!(r.rating(), 4, "losing focus restores the gate");
+    }
+
     /// Space commits the value the hover was previewing.
     #[test]
     fn space_commits_the_hover_preview() {
@@ -1313,6 +1349,7 @@ mod tests {
         let mid_y = row.y + row.height as i32 / 2;
         let fourth = r.star_cell(3).expect("the fourth star fits");
         r.handle_event(&Event::MouseMove { pos: Point::new(fourth.x + 2, mid_y) });
+        r.handle_event(&Event::FocusGained { reason: FocusReason::Tab });
         assert_eq!(r.hover_preview(), Some(4));
         assert_eq!(r.rating(), 0, "the preview has not committed yet");
 
@@ -1326,6 +1363,9 @@ mod tests {
     fn a_read_only_rating_ignores_mouse_and_keyboard() {
         let mut r = Rating::new(Rect::new(0, 0, 200, 40));
         r.set_rating(2);
+        // Focus is taken before read-only latches, because a read-only control consumes
+        // nothing at all — including the focus event itself.
+        r.handle_event(&Event::FocusGained { reason: FocusReason::Tab });
         r.set_read_only(true);
         assert!(r.is_read_only());
 
@@ -1378,6 +1418,7 @@ mod tests {
         let mut r = Rating::new(Rect::new(0, 0, 200, 40));
         r.set_allow_half_step(true);
         r.set_rating_exact(2.0);
+        r.handle_event(&Event::FocusGained { reason: FocusReason::Tab });
         r.handle_event(&Event::KeyPress { key: crate::event::key_codes::RIGHT, modifiers: 0 });
         assert!((r.rating_exact() - 2.5).abs() < 1e-6);
         r.handle_event(&Event::KeyPress { key: crate::event::key_codes::LEFT, modifiers: 0 });

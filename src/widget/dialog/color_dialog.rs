@@ -763,28 +763,27 @@ impl ColorDialog {
 
     /// The action button rects, rebuilt from the same bands `draw` uses.
     ///
-    /// The press path has no render context of its own, so it builds a measuring one — the
-    /// pattern `MessageBox::action_button_at` established. The rects themselves are never
+    /// The press path has no render context of its own, so it borrows the module's measurement-only
+    /// one — the pattern `MessageBox::action_button_at` established. The rects themselves are never
     /// cached: a cache is a second copy of the geometry that a resize can leave stale, which is
     /// exactly how a hit region drifts away from the ink it is meant to describe.
     fn action_buttons(&self) -> Vec<Rect> {
-        let size = Size::new(self.base.geometry().width.max(1), self.base.geometry().height.max(1));
-        let mut backend = crate::render::SoftwarePaintBackend::new(size, 1.0);
-        let context = RenderContext::new(&mut backend);
         let rect = self.frame_rect();
         let band = super::message_box::inset_action_band(
             Rect::new(rect.x, self.button_row_top(), rect.width, Self::BUTTON_HEIGHT as u32),
             rect.y,
         );
         let labels = Self::action_labels();
-        super::message_box::action_row_geometry(
-            &context,
-            effective_font(self.base.style()),
-            &labels,
-            band,
-            true,
-        )
-        .buttons
+        super::with_measurement_context(|context| {
+            super::message_box::action_row_geometry(
+                context,
+                effective_font(self.base.style()),
+                &labels,
+                band,
+                true,
+            )
+            .buttons
+        })
     }
 
     /// The index of the action button under `pos`, or `None`.

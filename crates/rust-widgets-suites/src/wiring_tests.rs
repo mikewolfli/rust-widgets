@@ -59,27 +59,94 @@ fn suite_factory() -> WidgetFactory {
 }
 
 /// Asserts every published event of every row is reachable from a constructed control.
+///
+/// All rows are checked before the assertion fires, so one run names every control that fails
+/// instead of stopping at the first.
 fn assert_group(
     factory: &mut WidgetFactory,
     group: &str,
     rows: Vec<(&'static str, Vec<&'static str>)>,
 ) {
+    let mut failures: Vec<String> = Vec::new();
     for (control, events) in rows {
         let Some(widget) = factory.create(control, Rect::new(0, 0, 240, 120), "") else {
-            panic!("{group}: `{control}` is published but the factory cannot build it")
+            failures
+                .push(format!("{group}: `{control}` is published but the factory cannot build it"));
+            continue;
         };
-        assert_eq!(
-            factory.capability_for_kind_instance(widget.as_ref()).map(|row| row.canonical_name),
-            Some(control),
-            "{group}: the factory must resolve `{control}` to its own capability row, not a \
-             sibling that shares its kind"
-        );
+        let canonical =
+            factory.capability_for_kind_instance(widget.as_ref()).map(|row| row.canonical_name);
+        if canonical != Some(control) {
+            failures.push(format!(
+                "{group}: the factory must resolve `{control}` to its own capability row, not a \
+                 sibling that shares its kind (resolved {canonical:?})"
+            ));
+        }
         for event in events {
-            assert!(
-                widget.event_signal_dyn(event).is_some(),
-                "{group}: `{control}` publishes `{event}` but `event_signal_dyn` does not resolve \
-                 it, so a subscription would succeed and never fire"
-            );
+            let Some(reference) = widget.event_signal_dyn(event) else {
+                failures.push(format!(
+                    "{group}: `{control}` publishes `{event}` but `event_signal_dyn` does not \
+                     resolve it, so a subscription would succeed and never fire"
+                ));
+                continue;
+            };
+            // SUIT-1: the bridge's contract is stronger than "a reference exists" — the
+            // reference must also *declare* the name that was requested, or the bridge refuses
+            // it (DEV-1 was exactly that: an alias resolved, the published name never fired).
+            if reference.name() != event {
+                failures.push(format!(
+                    "{group}: `{control}` resolves `{event}` to a reference declared as `{}`, so \
+                     the bridge refuses the subscription",
+                    reference.name()
+                ));
+            }
+        }
+    }
+    assert!(failures.is_empty(), "\n{}", failures.join("\n"));
+}
+
+/// Asserts every published readable property is answered by the control that publishes it.
+///
+/// WV-04(b): the same gate the event rows get, for the read direction — and for a read-only row,
+/// the write direction must be refused. `event_signal_dyn` answering is no evidence that a
+/// schema row a designer will show can be read, which is how WV-03 landed.
+fn assert_properties(
+    factory: &mut WidgetFactory,
+    group: &str,
+    rows: Vec<(&'static str, Vec<&'static str>)>,
+) {
+    use rust_widgets::widget::capability::types::CapabilityValue;
+
+    for (control, properties) in rows {
+        if properties.is_empty() {
+            continue;
+        }
+        // Scoped to groups with a constructible widget in this harness: a property-only table
+        // row (an event-less companion) has nothing here to read from.
+        let Some(mut widget) = factory.create(control, Rect::new(0, 0, 240, 120), "") else {
+            continue;
+        };
+        let capability = factory
+            .capability(control)
+            .unwrap_or_else(|| panic!("{group}: `{control}` has properties but no capability row"));
+        for name in properties {
+            let Some(schema) = capability.properties.iter().find(|schema| schema.name == name)
+            else {
+                panic!("{group}: `{control}` lists `{name}` without a property schema")
+            };
+            if schema.readable {
+                assert!(
+                    factory.read_property(widget.as_ref(), name).is_ok(),
+                    "{group}: `{control}` publishes `{name}` as readable but the control does not \
+                     answer it, so a declarative read fails on a value the control holds"
+                );
+            }
+            if schema.readable && !schema.writable {
+                assert!(
+                    factory.write_property(widget.as_mut(), name, CapabilityValue::Null).is_err(),
+                    "{group}: `{control}` publishes `{name}` as read-only but accepted a write"
+                );
+            }
         }
     }
 }
@@ -110,6 +177,41 @@ fn every_published_suite_event_resolves_on_its_control() {
     assert_group(&mut factory, "media-playback", crate::media_playback::published_event_names());
 }
 
+/// WV-04(b): every published readable property is answered by the control that publishes it.
+#[test]
+fn every_published_suite_property_reads_on_its_control() {
+    let mut factory = suite_factory();
+
+    let (form_properties, form_set_properties) = crate::form_widgets::published_property_names();
+    assert_properties(
+        &mut factory,
+        "form",
+        vec![("form", form_properties), ("form_set", form_set_properties)],
+    );
+
+    #[cfg(feature = "webview")]
+    assert_properties(&mut factory, "webview", crate::webview::published_property_names());
+
+    #[cfg(feature = "finance")]
+    assert_properties(&mut factory, "finance", crate::finance::published_property_names());
+
+    #[cfg(feature = "maps")]
+    assert_properties(&mut factory, "maps", crate::maps::published_property_names());
+
+    #[cfg(feature = "project")]
+    assert_properties(&mut factory, "project", crate::project::published_property_names());
+
+    #[cfg(feature = "devtools")]
+    assert_properties(&mut factory, "devtools", crate::devtools::published_property_names());
+
+    #[cfg(feature = "media-playback")]
+    assert_properties(
+        &mut factory,
+        "media-playback",
+        crate::media_playback::published_property_names(),
+    );
+}
+
 /// RW-105: every control the suites register must export a designer manifest.
 ///
 /// `designer_manifest` answers `IncompleteDefaults` when one advertised property has no default.
@@ -127,11 +229,9 @@ fn every_registered_suite_control_exports_a_designer_manifest() {
         vec![("form", vec!["form", "form_set"])];
 
     #[cfg(feature = "webview")]
-    // The web group has no `published_property_names`; its event table lists the same three
-    // canonical controls, and every one of them publishes at least one event.
     groups.push((
         "webview",
-        crate::webview::published_event_names().into_iter().map(|(name, _)| name).collect(),
+        crate::webview::published_property_names().into_iter().map(|(name, _)| name).collect(),
     ));
     #[cfg(feature = "finance")]
     groups.push((

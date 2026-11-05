@@ -796,6 +796,7 @@ impl WidgetProperties for Accordion {
             "expanded_count" => Ok(CapabilityValue::UInt(
                 self.sections.iter().filter(|s| s.expanded).count() as u64,
             )),
+            "animated" => Ok(CapabilityValue::Bool(self.animated())),
             _ => base_property_get(self, name),
         }
     }
@@ -808,12 +809,22 @@ impl WidgetProperties for Accordion {
                 self.set_single_expand(expect_bool(value)?);
                 Ok(())
             }
+            "animated" => {
+                self.set_animated(expect_bool(value)?);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["section_count", "single_expand", "expanded_count", BASE_PROPERTY_NAMES]
+        property_names_of![
+            "section_count",
+            "single_expand",
+            "expanded_count",
+            "animated",
+            BASE_PROPERTY_NAMES
+        ]
     }
 }
 

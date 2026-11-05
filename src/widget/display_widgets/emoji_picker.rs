@@ -1468,49 +1468,55 @@ impl EventHandler for EmojiPicker {
                     self.base.request_redraw();
                 }
             }
-            Event::KeyDown((key, _)) | Event::KeyPress { key, .. } => match *key {
-                // Backspace edits the search, which is the only text this control has.
-                8 => {
-                    let mut search = self.search.clone();
-                    search.pop();
-                    self.set_search(&search);
-                }
-                37 => self.move_cursor(-1), // Left
-                39 => self.move_cursor(1),  // Right
-                38 => {
-                    let columns = self.columns() as i32;
-                    self.move_cursor(-columns);
-                } // Up
-                40 => {
-                    let columns = self.columns() as i32;
-                    self.move_cursor(columns);
-                } // Down
-                // PageDown/PageUp move by the rows the picker can actually show, so
-                // one keystroke is one screenful rather than a blind fixed count.
-                34 => {
-                    let rows = self.visible_rows() as i32;
-                    if self.scroll_cursor_rows(rows) {
-                        self.base.request_redraw();
+            // Keyboard navigation and Enter are reachable only while the picker holds focus:
+            // an unfocused picker must not consume the arrows of whatever the user is editing.
+            Event::KeyDown((key, _)) | Event::KeyPress { key, .. }
+                if self.base.focus_reason().is_some() =>
+            {
+                match *key {
+                    // Backspace edits the search, which is the only text this control has.
+                    8 => {
+                        let mut search = self.search.clone();
+                        search.pop();
+                        self.set_search(&search);
                     }
-                }
-                33 => {
-                    let rows = self.visible_rows() as i32;
-                    if self.scroll_cursor_rows(-rows) {
-                        self.base.request_redraw();
-                    }
-                }
-                13 => {
-                    // Enter chooses the cursor's glyph, which is how the grid is
-                    // driven entirely from the keyboard.
-                    if let Some(index) = self.cursor {
-                        if let Some(glyph) = self.glyph_at_index(index) {
-                            let id = glyph.id.clone();
-                            self.choose(&id);
+                    37 => self.move_cursor(-1), // Left
+                    39 => self.move_cursor(1),  // Right
+                    38 => {
+                        let columns = self.columns() as i32;
+                        self.move_cursor(-columns);
+                    } // Up
+                    40 => {
+                        let columns = self.columns() as i32;
+                        self.move_cursor(columns);
+                    } // Down
+                    // PageDown/PageUp move by the rows the picker can actually show, so
+                    // one keystroke is one screenful rather than a blind fixed count.
+                    34 => {
+                        let rows = self.visible_rows() as i32;
+                        if self.scroll_cursor_rows(rows) {
+                            self.base.request_redraw();
                         }
                     }
+                    33 => {
+                        let rows = self.visible_rows() as i32;
+                        if self.scroll_cursor_rows(-rows) {
+                            self.base.request_redraw();
+                        }
+                    }
+                    13 => {
+                        // Enter chooses the cursor's glyph, which is how the grid is
+                        // driven entirely from the keyboard.
+                        if let Some(index) = self.cursor {
+                            if let Some(glyph) = self.glyph_at_index(index) {
+                                let id = glyph.id.clone();
+                                self.choose(&id);
+                            }
+                        }
+                    }
+                    _ => {}
                 }
-                _ => {}
-            },
+            }
             _ => {}
         }
     }
@@ -1814,6 +1820,7 @@ mod tests {
         assert_eq!(p.search(), "check");
         assert_eq!(p.visible_glyphs().len(), 1);
 
+        p.handle_event(&Event::FocusGained { reason: crate::event::FocusReason::Tab });
         p.handle_event(&Event::KeyDown((8, 0)));
         assert_eq!(p.search(), "chec");
     }
@@ -1830,6 +1837,7 @@ mod tests {
         let mut p = picker();
         let count = p.visible_glyphs().len();
         assert_eq!(count, 2);
+        p.handle_event(&Event::FocusGained { reason: crate::event::FocusReason::Tab });
 
         p.handle_event(&Event::KeyDown((39, 0)));
         assert_eq!(p.cursor(), Some(0));
@@ -1854,6 +1862,7 @@ mod tests {
         // row and a vertical move wraps within it.
         assert!(p.columns() >= 2, "the fixture must be wider than one cell");
 
+        p.handle_event(&Event::FocusGained { reason: crate::event::FocusReason::Tab });
         p.handle_event(&Event::KeyDown((40, 0)));
         assert_eq!(p.cursor(), Some(0));
         // Down moves by a whole row, which at this width wraps back to 0.
@@ -1864,6 +1873,7 @@ mod tests {
     #[test]
     fn emoji_picker_enter_chooses_the_cursor_glyph() {
         let mut p = picker();
+        p.handle_event(&Event::FocusGained { reason: crate::event::FocusReason::Tab });
         p.handle_event(&Event::KeyDown((39, 0))); // cursor to 0
         p.handle_event(&Event::KeyDown((13, 0)));
         assert_eq!(p.recent().first().map(String::as_str), Some("smile"));
@@ -1910,6 +1920,7 @@ mod tests {
         assert_eq!(p.columns(), 3);
         assert_eq!(p.visible_rows(), 5, "240 px of picker leaves five whole grid rows");
         p.cursor = Some(0);
+        p.handle_event(&Event::FocusGained { reason: crate::event::FocusReason::Tab });
 
         p.handle_event(&Event::KeyDown((34, 0)));
         assert_eq!(p.cursor(), Some(15), "PageDown moves one visible page");
@@ -1982,13 +1993,35 @@ mod tests {
     #[test]
     fn emoji_picker_enter_without_a_cursor_does_nothing() {
         let mut p = picker();
+        p.handle_event(&Event::FocusGained { reason: crate::event::FocusReason::Tab });
         p.handle_event(&Event::KeyDown((13, 0)));
         assert!(p.recent().is_empty());
+    }
+
+    /// Keyboard navigation is reachable only while the picker holds focus.
+    #[test]
+    fn emoji_picker_keys_are_ignored_without_focus() {
+        let mut p = picker();
+
+        // Unfocused: the grid cursor does not move and Enter chooses nothing.
+        p.handle_event(&Event::KeyDown((39, 0)));
+        assert_eq!(p.cursor(), None, "an unfocused picker ignores the arrow");
+        p.handle_event(&Event::KeyDown((13, 0)));
+        assert!(p.recent().is_empty(), "and Enter chooses nothing");
+
+        p.handle_event(&Event::FocusGained { reason: crate::event::FocusReason::Tab });
+        p.handle_event(&Event::KeyDown((39, 0)));
+        assert_eq!(p.cursor(), Some(0), "a focused picker takes the arrow");
+
+        p.handle_event(&Event::FocusLost);
+        p.handle_event(&Event::KeyDown((39, 0)));
+        assert_eq!(p.cursor(), Some(0), "losing focus restores the gate");
     }
 
     #[test]
     fn emoji_picker_cursor_resets_when_the_search_changes() {
         let mut p = picker();
+        p.handle_event(&Event::FocusGained { reason: crate::event::FocusReason::Tab });
         p.handle_event(&Event::KeyDown((39, 0)));
         assert_eq!(p.cursor(), Some(0));
         // The grid's contents changed, so a stale cursor would point at a different

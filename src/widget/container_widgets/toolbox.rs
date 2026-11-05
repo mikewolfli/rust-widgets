@@ -17,12 +17,8 @@ use crate::widget::capability::WidgetProperties;
 use crate::widget::save_state::SaveState;
 #[cfg(feature = "image")]
 use crate::widget::Image;
-use crate::widget::{
-    BaseWidget, Draw, IconItemError, IconSource, SimpleRegistry, Widget, WidgetKind,
-};
+use crate::widget::{BaseWidget, Draw, IconItemError, IconSource, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
-use std::cell::RefCell;
-use std::rc::Rc;
 
 use super::theme_snapshot::ThemeSnapshot;
 
@@ -80,8 +76,6 @@ pub struct ToolBox {
     pub item_expanded_changed: Signal1<(usize, bool)>,
     /// How items' open states interact.
     mode: ToolBoxMode,
-    /// Optional shared registry for child widget forwarding.
-    registry: Option<Rc<RefCell<SimpleRegistry>>>,
     /// The item under the pointer, for the tooltip query (C-28).
     hovered_item: Option<usize>,
 }
@@ -262,7 +256,6 @@ impl ToolBox {
             current_changed: Signal1::new(),
             item_expanded_changed: Signal1::new(),
             mode: ToolBoxMode::Exclusive,
-            registry: None,
             hovered_item: None,
         }
     }
@@ -1215,16 +1208,6 @@ impl ToolBox {
             ink.blend(&surface, 0.5)
         }
     }
-
-    /// Sets the shared widget registry for child forwarding.
-    pub fn set_registry(&mut self, registry: Rc<RefCell<SimpleRegistry>>) {
-        self.registry = Some(registry);
-        self.base.request_redraw();
-    }
-    /// Returns the shared widget registry, if set.
-    pub fn registry(&self) -> Option<&Rc<RefCell<SimpleRegistry>>> {
-        self.registry.as_ref()
-    }
 }
 impl EventHandler for ToolBox {
     fn handle_event(&mut self, event: &Event) {
@@ -1262,7 +1245,9 @@ impl EventHandler for ToolBox {
                     self.base.request_redraw();
                 }
             }
-            Event::KeyPress { key, .. } => {
+            // Arrow keys walk the tabs only while the toolbox holds focus: a toolbox
+            // embedded in a page must not consume the arrows of whatever the user is editing.
+            Event::KeyPress { key, .. } if self.base.focus_reason().is_some() => {
                 // A tab that overflow has scrolled off the strip is still reachable by the arrow
                 // key that walks toward it: `set_current_index` scrolls the strip to keep the
                 // selection's tab visible, so the two agree on where the strip sits and the
@@ -1293,44 +1278,6 @@ impl EventHandler for ToolBox {
                 }
             }
             _ => {}
-        }
-        // C-P10: one content derivation for the guard and for the page hit test, and the popup's
-        // own floating rect when that mode is active.
-        let content = self.content_rect();
-        let allow_child_event = match event {
-            Event::MousePress { pos, .. }
-            | Event::MouseRelease { pos, .. }
-            | Event::MouseMove { pos } => {
-                self.popup_rect(content).unwrap_or(content).contains(*pos)
-            }
-            _ => true,
-        };
-        // Forward content events only to the open page that owns the point; a coordinate-free event
-        // goes to the selected page, which is the one a keyboard path is about.
-        if allow_child_event {
-            if let Some(ref reg) = self.registry {
-                match event {
-                    Event::MousePress { pos, .. }
-                    | Event::MouseRelease { pos, .. }
-                    | Event::MouseMove { pos }
-                    | Event::MouseDoubleClick { pos, .. }
-                    | Event::ContextMenu { pos } => {
-                        let hit = self
-                            .page_rects(content)
-                            .into_iter()
-                            .find(|(_, rect)| rect.contains(*pos))
-                            .and_then(|(index, _)| self.items[index].widget);
-                        if let Some(widget_id) = hit {
-                            reg.borrow_mut().forward_event(widget_id, event);
-                        }
-                    }
-                    _ => {
-                        if let Some(widget_id) = self.current_widget() {
-                            reg.borrow_mut().forward_event(widget_id, event);
-                        }
-                    }
-                }
-            }
         }
     }
 }
@@ -1396,20 +1343,10 @@ impl Draw for ToolBox {
         // C-29: `Popup` mode draws its page in the floating rect and adds the layer's own frame,
         // so the presentation actually reads as a popup rather than as the ordinary page band.
         for (index, page_rect) in self.page_rects(content_rect) {
-            if let Some(widget_id) = self.items[index].widget {
+            if self.items[index].widget.is_some() {
                 if self.mode == ToolBoxMode::Popup {
                     context.fill_rect(page_rect, page);
                     context.draw_rect(page_rect, style.border_color.unwrap_or(selected_border));
-                }
-                if let Some(ref reg) = self.registry {
-                    // Two acquisitions are deliberate, not an oversight: the guard must not be held
-                    // across `draw_widget`, because a nested container on the page borrows the same
-                    // registry to draw its own children and would panic as an aliased `RefCell`
-                    // borrow. Each acquisition is O(1), so there is nothing to merge here (VIEW-N04).
-                    reg.borrow_mut().set_widget_geometry(widget_id, page_rect);
-                    context.push_clip(page_rect.x, page_rect.y, page_rect.width, page_rect.height);
-                    reg.borrow_mut().draw_widget(widget_id, context);
-                    context.pop_clip();
                 }
             }
         }
@@ -1539,7 +1476,7 @@ crate::impl_scrollable_rows!(
 mod tests {
     use super::*;
     use crate::core::{Point, Rect};
-    use crate::event::Event;
+    use crate::event::{Event, FocusReason};
     use crate::widget::svg::render_to_svg;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
@@ -1569,7 +1506,6 @@ mod tests {
         assert!(tb.is_enabled(), "should be enabled");
         assert_eq!(tb.geometry(), Rect::new(0, 0, 200, 160));
         assert_eq!(tb.kind(), WidgetKind::Toolbox);
-        assert!(tb.registry().is_none(), "registry should be None by default");
     }
 
     // ── 2. Adding items ───────────────────────────────────────────────────
@@ -2064,6 +2000,11 @@ mod tests {
         tb.add_item("C".to_string(), None);
         assert_eq!(tb.selected_index().unwrap_or(0), 0);
 
+        // Unfocused: the key belongs to whoever holds focus.
+        tb.handle_event(&Event::KeyPress { key: 40, modifiers: 0 });
+        assert_eq!(tb.selected_index().unwrap_or(0), 0, "an unfocused toolbox ignores the key");
+
+        tb.handle_event(&Event::FocusGained { reason: FocusReason::Tab });
         tb.handle_event(&Event::KeyPress { key: 40, modifiers: 0 });
         assert_eq!(tb.selected_index().unwrap_or(0), 1);
 
@@ -2078,6 +2019,7 @@ mod tests {
         tb.add_item("B".to_string(), None);
         tb.set_current_index(1);
 
+        tb.handle_event(&Event::FocusGained { reason: FocusReason::Tab });
         tb.handle_event(&Event::KeyPress { key: 38, modifiers: 0 });
         assert_eq!(tb.selected_index().unwrap_or(0), 0);
     }
@@ -2087,6 +2029,7 @@ mod tests {
         let mut tb = ToolBox::new(Rect::new(0, 0, 200, 160));
         tb.add_item("A".to_string(), None);
 
+        tb.handle_event(&Event::FocusGained { reason: FocusReason::Tab });
         // Already at first item, Up should stay
         tb.handle_event(&Event::KeyPress { key: 38, modifiers: 0 });
         assert_eq!(tb.selected_index().unwrap_or(0), 0);
@@ -2106,6 +2049,7 @@ mod tests {
 
         assert_eq!(tb.selected_index().unwrap_or(0), 0);
 
+        tb.handle_event(&Event::FocusGained { reason: FocusReason::Tab });
         // Right arrow advances
         tb.handle_event(&Event::KeyPress { key: 39, modifiers: 0 });
         assert_eq!(tb.selected_index().unwrap_or(0), 1);

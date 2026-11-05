@@ -813,6 +813,20 @@ impl ComboBox {
         changed
     }
 
+    /// Writes `open = false` into the attached pop-up host without waiting for the next poll (IN2-03).
+    ///
+    /// Used when the control is about to stop painting and receiving events, so the poll it relies
+    /// on will not run again.
+    #[cfg(full_widgets)]
+    fn close_attached_popup_host(&mut self) {
+        let items = self.popup_host_items();
+        let anchor = self.popup_anchor();
+        let selected = self.current_index();
+        if let Some(binding) = self.popup_host.as_mut() {
+            let _ = Self::push_popup_host_state(&mut binding.host, items, anchor, false, selected);
+        }
+    }
+
     /// Writes `open`, `anchor`, `items` and `selected` into `host`, returning whether anything
     /// moved. Kept free of `&self` so a poll can hold a mutable borrow of the binding.
     #[cfg(full_widgets)]
@@ -890,6 +904,14 @@ impl ComboBox {
             self.popup.set_row_height(dimensions::MENU_ROW_HEIGHT);
         }
         self.popup.set_anchor(self.popup_anchor());
+        // DL2-04: the popup engine can flip above the field, but only when it knows the window it
+        // must fit into. Without this the viewport stayed `None`, so `fits_below` was always true
+        // and a field near the bottom edge overflowed the window.
+        #[cfg(not(alloc_frugal))]
+        {
+            let viewport = crate::widget::runtime::window_bounds_of(self.base.id());
+            self.popup.set_viewport(viewport);
+        }
         if self.popup_revision != self.popup_synced_revision {
             // Replacing the row list re-derives the window; keep the offset the user had, clamped
             // to the new rows, so an item edit does not send a scrolled list back to its top.
@@ -2134,6 +2156,22 @@ impl Widget for ComboBox {
         &mut self.base
     }
 
+    /// Hides the control **after** closing its list (IN2-03).
+    ///
+    /// `BaseWidget::hide` only flips the visibility flag, which left two things behind: the popup
+    /// grab, so the framework kept routing presses to a control nobody could see, and — when a
+    /// [`DropDownPopupHost`] is attached — an open host. The host is a separate node in the tree and
+    /// is not hidden by this control's visibility, and the mirror that normally keeps it in step is
+    /// driven by the poll at the top of `draw`/`handle_event`, both of which stop once the control
+    /// is hidden. The close is therefore written out here, which is the last chance the control
+    /// gets before it goes quiet.
+    fn hide(&mut self) {
+        self.set_open(false);
+        #[cfg(full_widgets)]
+        self.close_attached_popup_host();
+        self.base_mut().hide();
+    }
+
     /// Keeps the popup's anchor on the field when the control is laid out again.
     fn set_geometry(&mut self, geometry: Rect) {
         self.base.set_geometry(geometry);
@@ -2704,9 +2742,27 @@ impl EventHandler for ComboBox {
             // Platform-committed text reaches the widget here, not as a key press; an editable
             // box inserts it into its value (I-06). The whole build of the field's text used to
             // be key-press-only, so a desktop backend's `TextInput` never arrived at all.
-            Event::TextInput { text } | Event::ImeCommit { text } => {
+            Event::TextInput { text } => {
                 if self.editable {
                     self.edit_insert(text);
+                }
+            }
+            // A commit ends the composition as well as inserting its text: an input method may
+            // deliver the commit before its `preedit_end`, and the field would otherwise paint the
+            // committed run and a stale composition together (IN2-04).
+            Event::ImeCommit { text } => {
+                if self.editable {
+                    self.editor.clear_composition();
+                    self.edit_insert(text);
+                }
+            }
+            // The uncommitted composition belongs to the inner editor while the user is building
+            // it: the value does not change, but the inline preview at the caret does (IN2-04).
+            // The box only forwards, exactly as `SpinBox` forwards to its hosted field
+            // (`spinbox.rs:2008-2018`), so there is one text model for typed and composed text.
+            Event::ImePreedit { text, .. } => {
+                if self.editable && self.editor.set_composition(text) {
+                    self.base.request_redraw();
                 }
             }
             Event::FocusGained { .. } if self.editable => {
@@ -2715,12 +2771,17 @@ impl EventHandler for ComboBox {
             }
             // Focus loss commits the typed value through the insert policy, so a host that
             // validates on `text_edited` sees the value the field is showing (I-06).
+            // It also closes the list: a blurred box cannot keep owning the press stream, or a
+            // Tab away leaves an open popup whose rows still apply choices to a control the user
+            // has left (IN2-03, precedent `dropdown.rs:1074-1076`).
             Event::FocusLost if self.editable => {
                 self.cursor_blink.stop();
+                self.set_open(false);
                 self.commit_editor();
             }
             Event::FocusLost => {
                 self.cursor_blink.stop();
+                self.set_open(false);
                 self.base.request_redraw();
             }
             // Other events are not relevant for this widget
@@ -2873,6 +2934,31 @@ impl Draw for ComboBox {
                     Point::new(caret_x, value_line.y + value_line.height as i32),
                     text_color,
                 );
+            }
+            // The uncommitted composition is drawn at the caret, where it will land when it is
+            // committed, with an underline marking it as preedit (IN2-04). The inner editor owns
+            // the state; the field only places it, exactly as it places the caret.
+            if let Some(preedit) = self.editor.composition() {
+                let preedit_width = context.measure_text(preedit, font).width as i32;
+                context.push_clip(
+                    geometry.text_box.x,
+                    value_line.y,
+                    geometry.text_box.width,
+                    value_line.height.max(1),
+                );
+                context.draw_text(
+                    Point::new(caret_x, value_line.y),
+                    preedit,
+                    font,
+                    text_color,
+                    HorizontalAlignment::Left,
+                );
+                context.draw_line(
+                    Point::new(caret_x, value_line.y + value_line.height as i32),
+                    Point::new(caret_x + preedit_width, value_line.y + value_line.height as i32),
+                    text_color,
+                );
+                context.pop_clip();
             }
         }
 
@@ -4055,5 +4141,54 @@ mod tests {
         cb.set_open(true);
         assert!(!cb.poll_drop_down_popup_host(), "a detached host is not polled");
         assert!(!host.is_open(), "detach stops updates");
+    }
+
+    /// IN2-03: a blur or a hide closes the open list **and** the attached pop-up host.
+    ///
+    /// The mirror that normally keeps the host in step is driven by the poll at the top of
+    /// `draw`/`handle_event`, and a hidden control neither paints nor receives events. Without the
+    /// explicit write below, the host — a separate node in the tree — stayed open and went on
+    /// applying choices to a field the user could no longer see.
+    #[test]
+    fn a_blur_or_hide_closes_the_list_and_the_attached_host() {
+        let mut cb = ComboBox::new(Rect::new(0, 0, 200, 24));
+        cb.set_items(vec!["A".to_string(), "B".to_string()]);
+
+        cb.set_open(true);
+        cb.handle_event(&Event::FocusLost);
+        assert!(!cb.is_open(), "a blurred box closes its list");
+
+        #[cfg(full_widgets)]
+        {
+            cb.attach_drop_down_popup_host(DropDownPopupHost::new(Rect::new(0, 0, 200, 200)));
+            cb.set_open(true);
+            assert!(cb.poll_drop_down_popup_host(), "opening reaches the host");
+            assert!(cb.drop_down_popup_host().expect("attached").is_open());
+
+            Widget::hide(&mut cb);
+            assert!(!cb.is_open(), "hiding closes the list first");
+            assert!(
+                !cb.drop_down_popup_host().expect("attached").is_open(),
+                "and the attached host is closed with it, without waiting for a poll"
+            );
+            assert!(!Widget::is_visible(&cb), "the control itself is hidden");
+        }
+    }
+
+    /// IN2-04: an editable box forwards the preedit to its inner editor and never types it early.
+    #[test]
+    fn an_editable_box_shows_an_ime_composition_without_changing_the_value() {
+        let mut cb = ComboBox::new(Rect::new(0, 0, 200, 24));
+        cb.set_editable(true);
+        cb.handle_event(&Event::TextInput { text: "a".to_string() });
+        assert_eq!(cb.current_text(), "a");
+
+        cb.handle_event(&Event::ImePreedit { text: "に".to_string(), cursor: 3 });
+        assert_eq!(cb.current_text(), "a", "an uncommitted composition leaves the value alone");
+        assert_eq!(cb.editor.composition(), Some("に"));
+
+        cb.handle_event(&Event::ImeCommit { text: "に".to_string() });
+        assert_eq!(cb.current_text(), "aに", "the commit inserts the composed run");
+        assert_eq!(cb.editor.composition(), None, "the commit clears the preview");
     }
 }

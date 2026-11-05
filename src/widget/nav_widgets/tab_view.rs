@@ -12,12 +12,12 @@ use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
 use crate::style::{MotionSlot, PropertyDriver};
-use crate::widget::capability::coercion::expect_usize;
+use crate::widget::capability::coercion::{expect_bool, expect_usize};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::{effective_font, estimate_text_width};
-use crate::widget::{BaseWidget, Draw, SimpleRegistry, Widget, WidgetKind};
+use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -75,10 +75,6 @@ pub struct TabView {
     swipe: Option<(f32, f32)>,
     /// The close affordance armed by the current press, committed on release.
     pending_close: Option<usize>,
-    /// The shared registry the selected tab's content widget is drawn and dispatched
-    /// through. Without it a `TabPage::content` would be stored and never shown — the
-    /// content area is otherwise a flat fill.
-    registry: Option<Rc<RefCell<SimpleRegistry>>>,
     /// Memoised measured width per tab, keyed by the inputs the measurement reads.
     ///
     /// `tab_widths` is asked by the paint path and by every pointer move's hit test. Each
@@ -139,24 +135,10 @@ impl TabView {
             strip_offset: 0,
             swipe: None,
             pending_close: None,
-            registry: None,
             tab_width_cache: RefCell::new(TabWidthCache::default()),
             badges: Vec::new(),
             run_cache: RefCell::new(Vec::new()),
         }
-    }
-
-    /// Sets the shared widget registry used to draw and dispatch the selected tab's content.
-    ///
-    /// The registry is what makes [`TabPage::content`] visible: the widget mounted on the
-    /// selected tab is drawn into [`Self::content_rect`] by the host that owns the registry.
-    pub fn set_registry(&mut self, registry: Rc<RefCell<SimpleRegistry>>) {
-        self.registry = Some(registry);
-    }
-
-    /// Returns the shared widget registry, if set.
-    pub fn registry(&self) -> Option<&Rc<RefCell<SimpleRegistry>>> {
-        self.registry.as_ref()
     }
 
     /// Adds a new tab page at the end of the tab list.
@@ -274,33 +256,6 @@ impl TabView {
         })
     }
 
-    /// Routes `event` to the selected tab's content widget through the registry.
-    ///
-    /// Pointer events are only delivered while the pointer is inside [`Self::content_rect`],
-    /// so a click on the strip cannot also reach the content behind it; every other event kind
-    /// goes to the content unconditionally, matching `TabWidget`'s contract. Nothing is
-    /// forwarded when the selected page has no content or the host set no registry.
-    fn forward_to_content(&self, event: &Event) {
-        let Some(widget_id) = self.content_widget_id() else {
-            return;
-        };
-        let Some(ref reg) = self.registry else {
-            return;
-        };
-        let content_rect = self.content_rect();
-        let inside = match event {
-            Event::MousePress { pos, .. }
-            | Event::MouseRelease { pos, .. }
-            | Event::MouseMove { pos } => content_rect.contains(*pos),
-            _ => true,
-        };
-        if !inside {
-            return;
-        }
-        reg.borrow_mut().set_widget_geometry(widget_id, content_rect);
-        let _ = reg.borrow_mut().forward_event(widget_id, event);
-    }
-
     /// Whether a content swipe may begin at `pos`: only the leading and trailing edges are
     /// gesture bands, so a horizontal drag that starts mid-content belongs to that content.
     fn swipe_starts_at_edge(&self, pos: Point) -> bool {
@@ -313,7 +268,7 @@ impl TabView {
     }
 
     /// The shared press path for a mouse press and a touch begin.
-    fn begin_pointer_press(&mut self, pos: Point, event: &Event) {
+    fn begin_pointer_press(&mut self, pos: Point) {
         // The band comes from the control's own derivation, so the region that accepts a press
         // is by construction the region the renderer drew.
         if !self.tabs.is_empty() {
@@ -352,12 +307,10 @@ impl TabView {
                 self.swipe = Some((pos.x as f32, pos.y as f32));
             }
         }
-        self.forward_to_content(event);
     }
 
     /// The shared move path for a mouse move and a touch move.
-    fn move_pointer(&mut self, pos: Point, event: &Event) {
-        self.forward_to_content(event);
+    fn move_pointer(&mut self, pos: Point) {
         // While a tab is dragged, the strip paints an insertion marker at the slot the pointer
         // names. The preview is cleared on release, so a settled frame is byte-identical to the
         // pre-drag one.
@@ -371,7 +324,7 @@ impl TabView {
     }
 
     /// The shared release path for a mouse release and a touch end.
-    fn end_pointer_release(&mut self, pos: Point, event: &Event) {
+    fn end_pointer_release(&mut self, pos: Point) {
         if let Some(index) = self.pending_close.take() {
             let strip = self.tab_bar_rect();
             let still_hit = self
@@ -420,7 +373,6 @@ impl TabView {
                 return;
             }
         }
-        self.forward_to_content(event);
     }
 
     /// Returns the number of tabs.
@@ -972,6 +924,10 @@ impl Widget for TabView {
     fn base(&self) -> &BaseWidget {
         &self.base
     }
+    /// The navigable tab strip scrolls under the wheel (C2-D0).
+    fn accepts_wheel(&self) -> bool {
+        true
+    }
     fn set_state_theme_hook(&mut self) {
         crate::style::reapply_active_theme_state(self);
     }
@@ -1039,6 +995,9 @@ impl WidgetProperties for TabView {
             "keyboard_navigation_enabled" => {
                 Ok(CapabilityValue::Bool(self.keyboard_navigation_enabled()))
             }
+            "closable" => Ok(CapabilityValue::Bool(self.closable())),
+            "movable" => Ok(CapabilityValue::Bool(self.movable())),
+            "strip_scrollable" => Ok(CapabilityValue::Bool(self.is_strip_scrollable())),
             _ => base_property_get(self, name),
         }
     }
@@ -1059,6 +1018,18 @@ impl WidgetProperties for TabView {
                 self.set_keyboard_navigation_enabled(enabled);
                 Ok(())
             }
+            "closable" => {
+                self.set_closable(expect_bool(value)?);
+                Ok(())
+            }
+            "movable" => {
+                self.set_movable(expect_bool(value)?);
+                Ok(())
+            }
+            "strip_scrollable" => {
+                self.set_strip_scrollable(expect_bool(value)?);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
@@ -1068,6 +1039,9 @@ impl WidgetProperties for TabView {
             "tab_count",
             "selected_index",
             "keyboard_navigation_enabled",
+            "closable",
+            "movable",
+            "strip_scrollable",
             BASE_PROPERTY_NAMES
         ]
     }
@@ -1313,34 +1287,27 @@ impl Draw for TabView {
         context.fill_rect(separator_rect, separator);
 
         // Draw selected tab content area. The background is laid down first so a tab whose
-        // content widget is not registered (or a registry-less host) still paints the surface
-        // the strip leaves; the widget itself is then drawn over it.
+        // content widget is a mounted child still paints the surface the strip leaves; the child
+        // itself is drawn by the tree painter over it.
         context.fill_rect(content_rect, content_background);
 
-        // The selected tab's content widget, drawn through the host's registry.
+        // The selected tab's content widget.
         //
-        // `TabPage::content` used to be a public field that was stored and never read, so a
-        // caller that mounted a widget on a tab got a flat rectangle: the content area is not a
-        // child the widget system knows about, it is only whatever this control draws inside its
-        // own rectangle. The registry is what bridges the two, and it is the same mechanism
-        // `TabWidget` already uses (`set_widget_geometry` + `draw_widget`), so the geometry the
-        // content is drawn at is the geometry the event path forwards at.
+        // A page declared by id (`add_tab_id`) is a mounted child, so this control owes it the
+        // content rectangle and the tree painter owns the pixels. A page whose content is a
+        // `Box<dyn Widget>` this control owns is not a mounted child, so it draws itself into the
+        // box below; only the **selected** page is drawn, which is what keeps a tab view from
+        // stacking every page on top of the others.
         if let Some(widget_id) = self.content_widget_id() {
-            if let Some(ref reg) = self.registry {
-                reg.borrow_mut().set_widget_geometry(widget_id, content_rect);
-                context.push_clip(
-                    content_rect.x,
-                    content_rect.y,
-                    content_rect.width,
-                    content_rect.height,
-                );
-                reg.borrow_mut().draw_widget(widget_id, context);
-                context.pop_clip();
-            } else if let Some(page) = self.tabs.get_mut(self.selected_index) {
-                // No registry: the content is a `Box<dyn Widget>` this control owns, so it
-                // draws itself into the content box. Only the **selected** page is drawn;
-                // the other pages are not part of this frame at all, which is what keeps a
-                // tab view from stacking every page on top of the others.
+            #[cfg(not(alloc_frugal))]
+            crate::set_widget_geometry(
+                widget_id,
+                content_rect.x,
+                content_rect.y,
+                content_rect.width,
+                content_rect.height,
+            );
+            if let Some(page) = self.tabs.get_mut(self.selected_index) {
                 if let Some(content) = page.content.as_deref_mut() {
                     let origin = content.geometry();
                     if let Some(drawable) = content.as_draw_mut() {
@@ -1369,27 +1336,23 @@ impl EventHandler for TabView {
         match event {
             Event::MousePress { pos, button, .. } => {
                 if *button == 1 {
-                    self.begin_pointer_press(*pos, event);
-                } else {
-                    self.forward_to_content(event);
+                    self.begin_pointer_press(*pos);
                 }
             }
-            Event::MouseMove { pos } => self.move_pointer(*pos, event),
+            Event::MouseMove { pos } => self.move_pointer(*pos),
             Event::MouseRelease { pos, button } => {
                 if *button == 1 {
-                    self.end_pointer_release(*pos, event);
-                } else {
-                    self.forward_to_content(event);
+                    self.end_pointer_release(*pos);
                 }
             }
             // A swipe is the same gesture whether it arrives as a mouse drag or a touch drag
             // (tablet/mobile parity). Both paths share the same edge gate and helpers.
             #[cfg(feature = "touch")]
-            Event::TouchBegin { pos, .. } => self.begin_pointer_press(*pos, event),
+            Event::TouchBegin { pos, .. } => self.begin_pointer_press(*pos),
             #[cfg(feature = "touch")]
-            Event::TouchMove { pos, .. } => self.move_pointer(*pos, event),
+            Event::TouchMove { pos, .. } => self.move_pointer(*pos),
             #[cfg(feature = "touch")]
-            Event::TouchEnd { pos, .. } => self.end_pointer_release(*pos, event),
+            Event::TouchEnd { pos, .. } => self.end_pointer_release(*pos),
             Event::Wheel { delta, .. } => {
                 // A vertical wheel is the common case, so it falls back to `delta.y` rather than
                 // being ignored just because a mouse has no horizontal axis.
@@ -1402,8 +1365,13 @@ impl EventHandler for TabView {
                         .map(|tab| tab.width as i32 + TAB_SPACING)
                         .sum();
                     let max_offset = (content_width - strip.width as i32).max(0);
+                    let before = self.strip_offset;
                     self.strip_offset = (self.strip_offset - scrolled * 24).clamp(0, max_offset);
                     self.base.request_redraw();
+                    // C2-D0: a strip at either end does not claim the wheel.
+                    if self.strip_offset != before {
+                        crate::widget::runtime::claim_wheel();
+                    }
                     return;
                 }
                 self.base.handle_event(event);
@@ -1449,7 +1417,6 @@ impl EventHandler for TabView {
             }
             _ => {
                 self.base.handle_event(event);
-                self.forward_to_content(event);
             }
         }
     }
@@ -1902,18 +1869,14 @@ mod tests {
         assert_eq!(tv.selected_index().unwrap_or(0), 0);
     }
 
-    /// A tab's mounted content is reachable through the registry.
+    /// A tab's mounted content is addressed by id, and an empty tab exposes none.
     ///
-    /// `TabPage::content` is a public field documented as "displayed when this tab is
-    /// selected", but nothing read it: the content area was a flat fill and no event
-    /// reached the widget, so a host that mounted one got a silent no-op. The registry
-    /// is the bridge, and this pins the id the draw and dispatch paths resolve.
+    /// The id is what the tree painter draws and what this control places into
+    /// [`Self::content_rect`]; the registry table the test used to set up was never called by
+    /// production code and has been retired (issue C2-M2).
     #[test]
-    fn the_selected_tabs_content_is_reachable_through_the_registry() {
+    fn the_selected_tabs_content_is_addressed_by_id() {
         let mut tv = make_tab_view();
-        let registry =
-            std::rc::Rc::new(std::cell::RefCell::new(crate::widget::SimpleRegistry::new()));
-        tv.set_registry(registry.clone());
 
         let first = crate::widget::base_widgets::label::Label::new(
             "first".to_string(),

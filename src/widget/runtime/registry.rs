@@ -301,6 +301,12 @@ pub fn unregister(id: ObjectId) -> bool {
             });
         }
     });
+    // RT2-02: when the destroyed id is a *window*, drop its own entry from the reverse
+    // index as well. `surfaces_of` is keyed by window id, so nothing else removes it and a
+    // host that opens and closes surface-holding windows would accumulate dead keys.
+    let _ = SURFACES_BY_WINDOW.try_with(|index| {
+        index.borrow_mut().remove(&id);
+    });
     // A widget that is gone must not stay in the tab order: `focus_next` would
     // hand focus to an id that resolves to nothing, and the key that triggered
     // the move would be swallowed. The manager also clears focus if this id owned

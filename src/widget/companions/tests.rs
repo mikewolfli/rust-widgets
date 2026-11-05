@@ -117,6 +117,72 @@ fn filter_row_conditions_property_round_trips() {
     );
 }
 
+/// CAP-1: the published `filter_changed` payload is the structured condition list, not the
+/// Rust `Debug` spelling the arm used to emit.
+#[test]
+fn filter_row_event_payload_is_a_structured_condition_list() {
+    use crate::widget::Widget;
+
+    let mut row = FilterRow::new(Rect::new(0, 0, 300, 36));
+    row.set_columns(vec!["Name".to_string()]);
+    let event = row.event_signal_dyn("filter_changed").expect("the event is published");
+    let delivered = Arc::new(Mutex::new(Vec::new()));
+    let sink = Arc::clone(&delivered);
+    let handle = event.subscribe(Box::new(move |value| sink.lock().unwrap().push(value.clone())));
+
+    row.set_condition(
+        0,
+        crate::widget::view_widgets::filter_expr::FilterCondition::new(
+            0,
+            FilterOperator::Equals,
+            "Ada",
+        ),
+    );
+    let payloads = delivered.lock().unwrap().clone();
+    event.disconnect(handle);
+
+    assert_eq!(
+        payloads,
+        vec![CapabilityValue::Tuple(vec![CapabilityValue::Tuple(vec![
+            CapabilityValue::UInt(0),
+            CapabilityValue::String("equals".to_string()),
+            CapabilityValue::String("Ada".to_string()),
+        ])])],
+        "each condition must arrive as [column, operator, operand] rather than a debug string"
+    );
+}
+
+/// CP2-1: verbs the capability does not publish must answer `UnknownCommand`.
+///
+/// `OutOfRange` means "the command exists but needs a payload", so intercepting an
+/// unpublished name as `OutOfRange` told a caller the opposite of the truth. The names below
+/// are deliberately absent from `layer_panel`'s commands table (the selection / visibility /
+/// scroll verbs are Rust-side) and `track_selected` is an event, not a command.
+#[test]
+fn unpublished_panel_verbs_answer_unknown_command() {
+    use crate::widget::capability::types::CapabilityAccessError;
+
+    let mut layers = LayerPanel::new(Rect::new(0, 0, 200, 120));
+    for name in ["select_layer", "set_entry_visible", "scroll_to_layer"] {
+        assert_eq!(
+            layers.command(name),
+            Err(CapabilityAccessError::UnknownCommand),
+            "`{name}` is not a published command, so it must not claim it needs a payload"
+        );
+    }
+
+    let mut playlist = PlaylistPanel::new(Rect::new(0, 0, 200, 120));
+    assert_eq!(
+        playlist.command("track_selected"),
+        Err(CapabilityAccessError::UnknownCommand),
+        "`track_selected` is an event name, not a command"
+    );
+    // The two published `set_*` names still answer `OutOfRange`, because their payload is the
+    // property write.
+    assert_eq!(playlist.command("set_tracks"), Err(CapabilityAccessError::OutOfRange),);
+    assert_eq!(playlist.command("set_filter"), Err(CapabilityAccessError::OutOfRange),);
+}
+
 #[test]
 fn legend_click_reports_and_toggles_a_checkable_series() {
     let mut legend = Legend::new(Rect::new(0, 0, 200, 60));

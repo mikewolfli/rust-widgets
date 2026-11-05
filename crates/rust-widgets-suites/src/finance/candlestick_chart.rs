@@ -33,11 +33,12 @@
 
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
+use core::fmt::Write as _;
 
 use crate::finance::indicators;
 use crate::finance::layout::{panel_colors, PanelColors, PlotArea, PANEL_MIN_CONTRAST};
 use crate::finance::types::{Bar, PriceLevelKind, PriceLine, PriceSeries};
-use rust_widgets::core::{Color, HorizontalAlignment, Point, Rect};
+use rust_widgets::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use rust_widgets::event::EventHandler;
 use rust_widgets::render::RenderContext;
 use rust_widgets::signal::Signal1;
@@ -162,6 +163,48 @@ enum CachedOverlay {
     Triple(Vec<f64>, Vec<f64>, Vec<f64>),
 }
 
+/// The inputs [`CandlestickChart::chart_data_snapshot`] reads, as a cheap comparable key.
+///
+/// The poll used to build the whole snapshot — a `Vec` of every close and every overlay
+/// value, cloned — on each event and each frame, and only then let the binding decide the
+/// data had not moved. This key covers the same inputs for a fraction of the cost: the
+/// series length, the last close, and a fingerprint of the overlay list (each overlay's
+/// identity, its last values and its visibility flag). An unchanged pane compares equal and
+/// skips both the snapshot and the push — the same bargain `quote_board` strikes with its
+/// `ColumnRangesKey` (FIN-1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ChartDataKey {
+    series_len: usize,
+    last_close: u64,
+    overlays: u64,
+}
+
+/// The overlay legend's cached rows and measured label widths.
+///
+/// The rows are a pure function of the overlay list and the widths are a pure function of
+/// (names, font), so both are cached: a steady-state repaint used to collect `N` rows and
+/// measure `2N` labels every frame for a legend that had not changed. This is the same
+/// keyed treatment `FileCountsCache` gives the diff viewer's `+n -m` columns (FIN-2).
+#[derive(Default)]
+struct OverlayLegendCache {
+    /// The labels the rows and widths were built from, in draw order.
+    names: Vec<String>,
+    /// The font the widths were measured with, or `None` before the first measure.
+    font: Option<Font>,
+    /// Each row's measured label width, aligned with `names`.
+    widths: Vec<i32>,
+}
+
+/// Mixes one word into an FNV-1a fingerprint.
+fn mix_key(fingerprint: &mut u64, word: u64) {
+    *fingerprint = (*fingerprint ^ word).wrapping_mul(0x0000_0100_0000_01b3);
+}
+
+/// The last value of one cached overlay line, as key bits (`0` for an empty line).
+fn overlay_tail(values: &[f64]) -> u64 {
+    values.last().copied().unwrap_or(0.0).to_bits()
+}
+
 /// The K-line chart control.
 pub struct CandlestickChart {
     base: BaseWidget,
@@ -187,6 +230,16 @@ pub struct CandlestickChart {
     extent_cache: (f64, f64),
     /// Whether the overlay legend is painted.
     show_overlay_legend: bool,
+    /// Whether the marked price levels are drawn.
+    ///
+    /// A stored display flag rather than "are there levels?": the published property is
+    /// readable *and writable*, so a written value has to read back, and hiding the levels
+    /// must not destroy them (FIN-5).
+    show_price_levels: bool,
+    /// The overlay legend's cached rows and measured widths.
+    legend_cache: OverlayLegendCache,
+    /// The inputs the last data-table snapshot was built from (FIN-1).
+    data_table_key: Option<ChartDataKey>,
     /// The bar under the pointer, when there is one.
     hovered_index: Option<usize>,
     /// The price under the pointer, for the horizontal crosshair line.
@@ -224,6 +277,11 @@ impl CandlestickChart {
             inferred_decimals: 2,
             extent_cache: (0.0, 1.0),
             show_overlay_legend: true,
+            // Levels a caller adds are drawn until it asks otherwise, which is what every
+            // chart did before the flag existed.
+            show_price_levels: true,
+            legend_cache: OverlayLegendCache::default(),
+            data_table_key: None,
             hovered_index: None,
             hovered_price: None,
             view: None,
@@ -330,10 +388,14 @@ impl CandlestickChart {
                 }
             }
         }
-        for line in &self.price_lines {
-            if line.price.is_finite() {
-                low = low.min(line.price);
-                high = high.max(line.price);
+        // A hidden level must not stretch the axis either: the rule the hidden overlays
+        // follow above, so turning the levels off re-fits the pane to what is drawn (FIN-5).
+        if self.show_price_levels {
+            for line in &self.price_lines {
+                if line.price.is_finite() {
+                    low = low.min(line.price);
+                    high = high.max(line.price);
+                }
             }
         }
         let span = high - low;
@@ -656,6 +718,7 @@ impl CandlestickChart {
     /// not happen. Every other row toggles its overlay through [`Self::set_overlay_visible`].
     pub fn attach_chart_data_table(&mut self, table: &mut ChartDataTable) {
         let snapshot = self.chart_data_snapshot();
+        self.data_table_key = Some(self.chart_data_key());
         self.data_table = Some(super::chart_companions::ChartDataTableBinding::attach(
             table,
             self.base.redraw_requested_signal().clone(),
@@ -667,6 +730,7 @@ impl CandlestickChart {
     /// Stops following the attached data table; its last snapshot stays.
     pub fn detach_chart_data_table(&mut self) {
         if self.data_table.take().is_some() {
+            self.data_table_key = None;
             self.base.request_redraw();
         }
     }
@@ -680,6 +744,12 @@ impl CandlestickChart {
     ///
     /// Called from `draw` and `handle_event`, so a table edit is visible on the next frame. An
     /// unchanged pane, an idle table and no attachment all return `false`.
+    ///
+    /// The snapshot is only built when its inputs moved: a cheap [`ChartDataKey`] covers the
+    /// series length, the last close and every overlay's identity, last value and visibility,
+    /// so a steady-state frame or a bare pointer move no longer allocates a full snapshot for
+    /// the binding to throw away (FIN-1). A refused toggle still forces the push, because the
+    /// table has to be told to snap its checklist back.
     pub fn poll_chart_data_table(&mut self) -> bool {
         if self.data_table.is_none() {
             return false;
@@ -701,11 +771,16 @@ impl CandlestickChart {
             let visible = self.overlay_visible.get(overlay).copied().unwrap_or(false);
             changed |= self.set_overlay_visible(overlay, !visible);
         }
+        let key = self.chart_data_key();
+        if !resync && self.data_table_key == Some(key) {
+            return changed;
+        }
         let snapshot = self.chart_data_snapshot();
         if let Some(binding) = self.data_table.as_mut() {
             changed |= binding.push(snapshot, resync);
             changed |= resync;
         }
+        self.data_table_key = Some(key);
         changed
     }
 
@@ -750,6 +825,73 @@ impl CandlestickChart {
             self.set_view_range(next);
         }
         changed
+    }
+
+    /// The inputs [`Self::chart_data_snapshot`] reads, reduced to a cheap key (FIN-1).
+    ///
+    /// Allocation-free and O(overlays): everything the snapshot derives is either the series
+    /// length, the last close, or foldable from each overlay's identity, tail value and
+    /// visibility flag. A key that does not change means the snapshot would be identical, so
+    /// the poll can skip building it.
+    fn chart_data_key(&self) -> ChartDataKey {
+        let mut overlays = 0xcbf2_9ce4_8422_2325u64;
+        mix_key(&mut overlays, self.overlays.len() as u64);
+        for (index, overlay) in self.overlays.iter().enumerate() {
+            Self::mix_overlay_identity(&mut overlays, *overlay);
+            mix_key(
+                &mut overlays,
+                u64::from(self.overlay_visible.get(index).copied().unwrap_or(false)),
+            );
+            if let Some(cached) = self.overlay_values.get(index) {
+                match cached {
+                    CachedOverlay::Single(values) => {
+                        mix_key(&mut overlays, 1);
+                        mix_key(&mut overlays, overlay_tail(values));
+                    }
+                    CachedOverlay::Triple(first, second, third) => {
+                        mix_key(&mut overlays, 3);
+                        for values in [first, second, third] {
+                            mix_key(&mut overlays, overlay_tail(values));
+                        }
+                    }
+                }
+            }
+        }
+        ChartDataKey {
+            series_len: self.closes.len(),
+            last_close: self.closes.last().copied().unwrap_or(0.0).to_bits(),
+            overlays,
+        }
+    }
+
+    /// Mixes an overlay's kind and parameters into `fingerprint`.
+    ///
+    /// The snapshot's row label comes from the kind and its points from the parameters, so a
+    /// swapped study with a coincidentally equal tail value still changes the key.
+    fn mix_overlay_identity(fingerprint: &mut u64, overlay: Overlay) {
+        match overlay {
+            Overlay::MovingAverage { period } => {
+                mix_key(fingerprint, 1);
+                mix_key(fingerprint, period as u64);
+            }
+            Overlay::ExponentialMovingAverage { period } => {
+                mix_key(fingerprint, 2);
+                mix_key(fingerprint, period as u64);
+            }
+            Overlay::BollingerBands { period, multiplier } => {
+                mix_key(fingerprint, 3);
+                mix_key(fingerprint, period as u64);
+                mix_key(fingerprint, multiplier.to_bits());
+            }
+            Overlay::Vwap { period } => {
+                mix_key(fingerprint, 4);
+                mix_key(fingerprint, period as u64);
+            }
+            Overlay::DonchianChannel { period } => {
+                mix_key(fingerprint, 5);
+                mix_key(fingerprint, period as u64);
+            }
+        }
     }
 
     /// The pane's series as a data-table snapshot: closes first, then one entry per overlay.
@@ -1042,9 +1184,14 @@ impl CandlestickChart {
     /// it — the level is the annotation, and an annotation behind the data is not doing
     /// its job.
     fn draw_price_lines(&self, context: &mut RenderContext, area: &PlotArea) {
-        if self.price_lines.is_empty() {
+        // The flag is the property's own state and the list is the data: both have to be live
+        // for a level to be painted, so hiding the levels is a display change only (FIN-5).
+        if !self.show_price_levels || self.price_lines.is_empty() {
             return;
         }
+        // One chrome resolution for the whole pass: the previous-close colour used to re-resolve
+        // the theme for every line in the loop (FIN-4).
+        let chrome = self.chrome();
         let (low, high) = self.effective_price_extent();
         let price_axis = area.price_axis(low, high);
         for line in &self.price_lines {
@@ -1065,7 +1212,7 @@ impl CandlestickChart {
                 // crosshair strength rather than a third fixed grey.
                 PriceLevelKind::Support => Self::rising_color(),
                 PriceLevelKind::Resistance => Self::falling_color(),
-                PriceLevelKind::PreviousClose => self.chrome().crosshair,
+                PriceLevelKind::PreviousClose => chrome.crosshair,
             };
             // Dashes rather than a solid line, so it reads as an annotation and not as
             // another data series.
@@ -1092,8 +1239,12 @@ impl CandlestickChart {
         let (low, high) = self.effective_price_extent();
         let price_axis = area.price_axis(low, high);
         // The axis's own hairline is the pane's grid colour, so the scale a reader measures
-        // a candle against cannot be a fixed slate that only reads on a dark backdrop.
-        let grid = self.chrome().grid;
+        // a candle against cannot be a fixed slate that only reads on a dark backdrop. One
+        // resolution for the whole pass: the loop used to re-resolve the theme per label
+        // (FIN-4).
+        let chrome = self.chrome();
+        let grid = chrome.grid;
+        let ink = chrome.ink.with_alpha(190);
         // One role font for the whole column: it used to be rebuilt for each of the four
         // labels every frame.
         let font = role_font(self.style(), 10.0);
@@ -1108,23 +1259,22 @@ impl CandlestickChart {
             let fraction = step as f64 / 3.0;
             let price = price_axis.low + fraction * (price_axis.high - price_axis.low);
             let y = price_axis.y_for(price);
-            let text = format_fixed(price, decimals);
-            context.draw_line(
-                rust_widgets::core::Point { x: area.rect.x, y },
-                rust_widgets::core::Point { x: area.right(), y },
-                grid,
-            );
-            // Right-aligned in the reserved column and fitted to it, so a wide value
-            // truncates instead of starting left of the control.
-            let line_height = context.measure_text(&text, &font).height.max(1);
-            let band = Rect::new(label_left, y - line_height as i32 / 2, label_width, line_height);
-            context.draw_text_fitted_cow(
-                band,
-                &text,
-                &font,
-                self.chrome().ink.with_alpha(190),
-                HorizontalAlignment::Right,
-            );
+            // The label is written into the family's shared buffer rather than into a fresh
+            // `String` per gridline per frame (FIN-3).
+            super::volume_chart::with_axis_label(|text| {
+                write_fixed(price, decimals, text);
+                context.draw_line(
+                    rust_widgets::core::Point { x: area.rect.x, y },
+                    rust_widgets::core::Point { x: area.right(), y },
+                    grid,
+                );
+                // Right-aligned in the reserved column and fitted to it, so a wide value
+                // truncates instead of starting left of the control.
+                let line_height = context.measure_text(text, &font).height.max(1);
+                let band =
+                    Rect::new(label_left, y - line_height as i32 / 2, label_width, line_height);
+                context.draw_text_fitted_cow(band, text, &font, ink, HorizontalAlignment::Right);
+            });
         }
     }
 
@@ -1188,17 +1338,17 @@ impl CandlestickChart {
     ///
     /// The six-colour palette existed with no key, so a chart with three averages could not
     /// say which was which. Each row pairs the overlay's factory name with its swatch.
-    fn draw_overlay_legend(&self, context: &mut RenderContext, area: &PlotArea) {
+    ///
+    /// The rows are a pure function of the overlay list and the widths a pure function of
+    /// (names, font), so both come from a keyed cache: a steady-state frame no longer collects
+    /// `N` rows and measures `2N` labels for a legend that did not change (FIN-2).
+    fn draw_overlay_legend(&mut self, context: &mut RenderContext, area: &PlotArea) {
         let font = role_font(self.style(), 10.0);
         let chrome = self.chrome();
-        let rows: Vec<(&str, Color)> = self
-            .overlays
-            .iter()
-            .enumerate()
-            .map(|(index, overlay)| (overlay.as_str(), Self::overlay_color(index)))
-            .collect();
+        self.refresh_legend_cache(context, &font);
+
         let max_rows = (((area.bottom() - area.rect.y - 4) / 14).max(1)) as usize;
-        let rows = &rows[..rows.len().min(max_rows)];
+        let shown = self.legend_cache.names.len().min(max_rows);
 
         // A surface behind the legend, sized to its widest label before anything is drawn.
         //
@@ -1207,25 +1357,22 @@ impl CandlestickChart {
         // appearance, reading as a strikethrough rather than as a reference line. An opaque fill
         // in the pane's own colour is what separates the two; a translucent wash would still show
         // the dash.
-        let widest = rows
-            .iter()
-            .map(|(name, _)| context.measure_text(name, &font).width as i32)
-            .max()
-            .unwrap_or(0);
+        let widest = self.legend_cache.widths.iter().take(shown).max().copied().unwrap_or(0);
         let box_width = (widest + 24).min(area.rect.width as i32).max(1);
         let box_x = (area.right() - box_width).max(area.rect.x);
-        let box_height = (rows.len() as u32) * 14 + 4;
+        let box_height = (shown as u32) * 14 + 4;
         context
             .fill_rect(Rect::new(box_x, area.rect.y, box_width as u32, box_height), chrome.surface);
 
         let mut y = area.rect.y + 4;
-        for (name, color) in rows {
-            let text_width = context.measure_text(name, &font).width as i32;
+        for index in 0..shown {
+            let name = self.legend_cache.names[index].as_str();
+            let text_width = self.legend_cache.widths[index];
             let x = area.right() - text_width - 20;
             if x < area.rect.x {
                 break;
             }
-            context.fill_rect(Rect::new(x, y + 3, 8, 8), *color);
+            context.fill_rect(Rect::new(x, y + 3, 8, 8), Self::overlay_color(index));
             context.draw_text(
                 rust_widgets::core::Point { x: x + 12, y },
                 name,
@@ -1234,6 +1381,36 @@ impl CandlestickChart {
                 HorizontalAlignment::Left,
             );
             y += 14;
+        }
+    }
+
+    /// Rebuilds the legend's rows and widths only when their inputs moved (FIN-2).
+    ///
+    /// Both halves are cheap to compare and expensive to build, so each keeps its own
+    /// condition: a renamed or added overlay rebuilds the rows and re-measures, while a font
+    /// change re-measures the rows that are already known.
+    fn refresh_legend_cache(&mut self, context: &RenderContext, font: &Font) {
+        let rows_changed = self.legend_cache.names.len() != self.overlays.len()
+            || self
+                .overlays
+                .iter()
+                .zip(self.legend_cache.names.iter())
+                .any(|(overlay, cached)| overlay.as_str() != cached.as_str());
+        if rows_changed {
+            self.legend_cache.names.clear();
+            self.legend_cache
+                .names
+                .extend(self.overlays.iter().map(|overlay| overlay.as_str().to_string()));
+        }
+        if rows_changed || self.legend_cache.font.as_ref() != Some(font) {
+            self.legend_cache.font = Some(font.clone());
+            self.legend_cache.widths.clear();
+            self.legend_cache.widths.extend(
+                self.legend_cache
+                    .names
+                    .iter()
+                    .map(|name| context.measure_text(name, font).width as i32),
+            );
         }
     }
 
@@ -1273,13 +1450,19 @@ impl CandlestickChart {
                     chrome.crosshair,
                     1,
                 );
-                context.draw_text(
-                    rust_widgets::core::Point { x: area.rect.x + 2, y: y + 2 },
-                    &format_fixed(price, 2),
-                    &role_font(self.style(), 10.0),
-                    chrome.ink,
-                    HorizontalAlignment::Left,
-                );
+                // The tag is written into the shared axis-label buffer instead of a fresh
+                // `String` per hovered frame (FIN-3).
+                let font = role_font(self.style(), 10.0);
+                super::volume_chart::with_axis_label(|text| {
+                    write_fixed(price, 2, text);
+                    context.draw_text(
+                        rust_widgets::core::Point { x: area.rect.x + 2, y: y + 2 },
+                        text,
+                        &font,
+                        chrome.ink,
+                        HorizontalAlignment::Left,
+                    );
+                });
             }
         }
 
@@ -1291,23 +1474,30 @@ impl CandlestickChart {
         // runs further still. Clipping keeps the readout inside the control that owns it
         // instead of painting over a neighbouring pane.
         let bar = bars[index];
-        let text =
-            format!("O {:.2}  H {:.2}  L {:.2}  C {:.2}", bar.open, bar.high, bar.low, bar.close);
         // Measured, not estimated: `len * 7` assumed a monospace advance this pane does not
         // draw in, so on a proportional face the readout was placed inside the wrong edge
         // and the left/right flip happened at the wrong x (J-P19, as in the indicator pane).
+        // The readout is written into the shared axis-label buffer, so a hovered frame
+        // reformats it without allocating (FIN-3).
         let font = role_font(self.style(), 11.0);
-        let width = context.measure_text(&text, &font).width as i32;
-        let label_x = if x + 8 + width > area.right() { x - 8 - width } else { x + 8 };
-        context.push_clip(area.rect.x, area.rect.y, area.rect.width, area.rect.height);
-        context.draw_text(
-            rust_widgets::core::Point { x: label_x.max(area.rect.x), y: area.rect.y + 2 },
-            &text,
-            &font,
-            chrome.ink,
-            HorizontalAlignment::Left,
-        );
-        context.pop_clip();
+        super::volume_chart::with_axis_label(|text| {
+            let _ = write!(
+                text,
+                "O {:.2}  H {:.2}  L {:.2}  C {:.2}",
+                bar.open, bar.high, bar.low, bar.close
+            );
+            let width = context.measure_text(text, &font).width as i32;
+            let label_x = if x + 8 + width > area.right() { x - 8 - width } else { x + 8 };
+            context.push_clip(area.rect.x, area.rect.y, area.rect.width, area.rect.height);
+            context.draw_text(
+                rust_widgets::core::Point { x: label_x.max(area.rect.x), y: area.rect.y + 2 },
+                text,
+                &font,
+                chrome.ink,
+                HorizontalAlignment::Left,
+            );
+            context.pop_clip();
+        });
     }
 }
 
@@ -1506,41 +1696,59 @@ fn append_overlay_at(
     }
 }
 
-/// Formats a price with exactly `decimals` places.
+/// Writes a price with exactly `decimals` places into `out`, reusing its allocation.
 ///
-/// Written out rather than using `format!("{:.*}", decimals, value)` because the `alloc`
-/// `format!` in this crate is the `core`-backed one, which has no dynamic-precision
-/// formatter. Doing the rounding here also means the label cannot disagree with what the
-/// axis drew.
-fn format_fixed(value: f64, decimals: usize) -> String {
+/// The frame path formats four axis labels, a crosshair tag and a bar readout per paint, and a
+/// live pane repaints continuously, so the formatter writes into the caller's buffer instead of
+/// returning a fresh `String` — the treatment the volume and depth panes give their labels
+/// through `with_axis_label` (FIN-3).
+///
+/// Written out rather than using the dynamic-precision formatter, which the `alloc`-backed
+/// `format!` in this crate does not provide. Doing the rounding here also means the label cannot
+/// disagree with what the axis drew.
+fn write_fixed(value: f64, decimals: usize, out: &mut String) {
+    out.clear();
     if !value.is_finite() {
-        return "—".to_string();
+        out.push('—');
+        return;
     }
     let factor = 10f64.powi(decimals as i32);
     let rounded = (value * factor).round() / factor;
-    let mut text = alloc::format!("{:.1}", rounded);
-    // `{:.1}` gives one decimal; append the rest, which for these magnitudes is exact
-    // enough that the axis label and the drawn position agree.
-    if decimals > 1 {
-        let extra = (rounded * factor).round() as i64;
-        let digits = extra.unsigned_abs().to_string();
-        let padded = if digits.len() <= decimals {
-            let mut padded = String::new();
-            for _ in 0..(decimals - digits.len()) {
-                padded.push('0');
-            }
-            padded.push_str(&digits);
-            padded
-        } else {
-            digits
-        };
-        let sign = if extra < 0 { "-" } else { "" };
-        text = alloc::format!(
-            "{sign}{}.{}",
-            &padded[..padded.len() - decimals],
-            &padded[padded.len() - decimals..]
-        );
+    // Past i64's exact integer range the digit split below would be wrong; the plain
+    // one-decimal expansion is the honest fallback and is what this formatter always
+    // produced for sub-two-decimal labels.
+    if rounded.abs() >= 9.0e15 {
+        let _ = write!(out, "{rounded:.1}");
+        return;
     }
+    // Fewer than two requested decimals still print one, which is the shape this pane's
+    // axis and tag labels have always had.
+    let places = if decimals > 1 { decimals } else { 1 };
+    let divisor = 10u64.pow(places as u32);
+    let scaled = (rounded * divisor as f64).round();
+    if scaled < 0.0 {
+        out.push('-');
+    }
+    let digits = scaled.abs() as u64;
+    let whole = digits / divisor;
+    let fraction = digits % divisor;
+    let _ = write!(out, "{whole}.");
+    let mut fraction_digits = 1usize;
+    let mut probe = fraction;
+    while probe >= 10 {
+        probe /= 10;
+        fraction_digits += 1;
+    }
+    for _ in fraction_digits..places {
+        out.push('0');
+    }
+    let _ = write!(out, "{fraction}");
+}
+
+/// Formats a price with exactly `decimals` places, for callers that need an owned string.
+fn format_fixed(value: f64, decimals: usize) -> String {
+    let mut text = String::new();
+    write_fixed(value, decimals, &mut text);
     text
 }
 
@@ -1749,7 +1957,7 @@ impl WidgetProperties for CandlestickChart {
             // The full OHLC is available through `series()` for a caller that needs it.
             "series" => Ok(CapabilityValue::String(serialise_closes(&self.series))),
             "overlay_count" => Ok(CapabilityValue::UInt(self.overlays.len() as u64)),
-            "show_price_levels" => Ok(CapabilityValue::Bool(!self.price_lines.is_empty())),
+            "show_price_levels" => Ok(CapabilityValue::Bool(self.show_price_levels)),
             "show_overlay_legend" => Ok(CapabilityValue::Bool(self.show_overlay_legend)),
             _ => base_property_get(self, name),
         }
@@ -1792,8 +2000,16 @@ impl WidgetProperties for CandlestickChart {
                 let CapabilityValue::Bool(show) = value else {
                     return Err(CapabilityAccessError::TypeMismatch);
                 };
-                if !show {
-                    self.clear_price_lines();
+                // A display flag, not a data operation: turning the levels off hides them and
+                // turning them back on shows the same levels again. The previous write-true
+                // was a no-op and write-false destroyed the caller's levels, so the published
+                // read/write contract could not be honoured in either direction (FIN-5).
+                if self.show_price_levels != show {
+                    self.show_price_levels = show;
+                    // The axis spans what is painted, so a hidden level stops stretching it —
+                    // the same re-derivation `set_overlay_visible` performs (FIN-5).
+                    self.rebuild_extent();
+                    self.base.request_redraw();
                 }
                 Ok(())
             }
@@ -1931,6 +2147,62 @@ mod tests {
         assert_eq!(chart.price_lines().len(), 2);
         chart.clear_price_lines();
         assert!(chart.price_lines().is_empty());
+    }
+
+    /// `show_price_levels` is a stored display flag, not a derived "are there levels?" answer.
+    ///
+    /// The property is published readable *and* writable, so both directions have to work: a
+    /// written value reads back, and hiding the levels must not destroy the data (FIN-5). The
+    /// old setter ignored `true` and cleared the levels on `false`, which made the read-back a
+    /// report about unrelated state.
+    #[test]
+    fn show_price_levels_reads_back_and_hides_without_clearing() {
+        let mut chart = CandlestickChart::new(Rect::new(0, 0, 640, 360));
+        chart.add_price_line(PriceLine::new(95.0, PriceLevelKind::Support));
+        assert_eq!(
+            chart.get("show_price_levels"),
+            Ok(CapabilityValue::Bool(true)),
+            "added levels are drawn by default"
+        );
+
+        chart.set("show_price_levels", CapabilityValue::Bool(false)).expect("writable");
+        assert_eq!(chart.get("show_price_levels"), Ok(CapabilityValue::Bool(false)));
+        assert_eq!(chart.price_lines().len(), 1, "hiding the levels keeps their data");
+
+        chart.set("show_price_levels", CapabilityValue::Bool(true)).expect("writable");
+        assert_eq!(
+            chart.get("show_price_levels"),
+            Ok(CapabilityValue::Bool(true)),
+            "turning the levels back on shows the same levels"
+        );
+        assert_eq!(chart.price_lines().len(), 1);
+    }
+
+    /// The data-table key moves with every input the snapshot reads (FIN-1).
+    ///
+    /// A key that never moved would silently freeze the attached table, and one that moved too
+    /// eagerly would just be the old per-frame cost. So this pins both directions: the key is
+    /// stable on an untouched pane and different for each of the inputs the snapshot names.
+    #[test]
+    fn the_chart_data_key_tracks_the_snapshot_inputs() {
+        let mut chart = CandlestickChart::new(Rect::new(0, 0, 640, 360));
+        chart.set_series(fixtures::sample_series(30));
+        chart.add_overlay(Overlay::moving_average(5));
+        let base = chart.chart_data_key();
+        assert_eq!(base, chart.chart_data_key(), "an untouched pane keys equal");
+
+        chart.set_overlay_visible(0, false);
+        let hidden = chart.chart_data_key();
+        assert_ne!(hidden, base, "the visibility flags are part of the key");
+        chart.set_overlay_visible(0, true);
+        assert_eq!(chart.chart_data_key(), base, "showing it again restores the key");
+
+        chart.add_overlay(Overlay::bollinger_bands(5, 2.0));
+        let two_overlays = chart.chart_data_key();
+        assert_ne!(two_overlays, base, "the overlay list is part of the key");
+
+        chart.append_bar(Bar::flat(1_000.0, 1.0));
+        assert_ne!(chart.chart_data_key(), two_overlays, "a new bar moves the key");
     }
 
     /// A hovered index from a longer series is dropped when a shorter one replaces it.

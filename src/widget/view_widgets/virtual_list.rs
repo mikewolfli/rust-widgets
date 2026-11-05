@@ -1019,7 +1019,10 @@ impl WidgetProperties for VirtualList {
                 Ok(())
             }
             "fetch_visible_rows" => {
-                let _ = self.fetch_visible_rows();
+                // V2-02: this is a warm-up query, not a mutation. The shared form returns the
+                // cached window (and warms it on a miss) without cloning every row label, which
+                // the command used to fetch and immediately drop.
+                let _ = self.fetch_visible_rows_shared();
                 Ok(())
             }
             _ => self.default_command(name),

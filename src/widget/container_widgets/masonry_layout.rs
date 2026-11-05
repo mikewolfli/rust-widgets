@@ -14,7 +14,7 @@ use crate::widget::capability::coercion::expect_u32;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
-use crate::widget::{BaseWidget, Draw, SimpleRegistry, Widget, WidgetKind};
+use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
 /// An individual item in the masonry layout.
@@ -98,10 +98,6 @@ pub struct MasonryLayout {
     horizontal_gap: u32,
     /// How the column widths are derived (C-020).
     column_width: MasonryColumnWidth,
-    /// Shared forwarding table for the controls mounted in cards (C-004).
-    registry: Option<std::rc::Rc<std::cell::RefCell<SimpleRegistry>>>,
-    /// The card that last received a pointer press, so keyboard/focus events reach it.
-    active_item: Option<usize>,
     /// Emitted with the item index when a card is clicked.
     pub item_clicked: Signal1<usize>,
 }
@@ -118,20 +114,8 @@ impl MasonryLayout {
             item_spacing: DEFAULT_ITEM_SPACING,
             horizontal_gap: DEFAULT_ITEM_SPACING,
             column_width: MasonryColumnWidth::Equal,
-            registry: None,
-            active_item: None,
             item_clicked: Signal1::new(),
         }
-    }
-
-    /// Binds the shared forwarding table used to deliver events to card controls (C-004).
-    pub fn set_registry(&mut self, registry: std::rc::Rc<std::cell::RefCell<SimpleRegistry>>) {
-        self.registry = Some(registry);
-    }
-
-    /// The bound forwarding table, if any.
-    pub fn registry(&self) -> Option<&std::rc::Rc<std::cell::RefCell<SimpleRegistry>>> {
-        self.registry.as_ref()
     }
 
     /// The column-width strategy (C-020).
@@ -151,16 +135,6 @@ impl MasonryLayout {
         self.layout_version = self.layout_version.wrapping_add(1);
         self.base.request_layout();
         self.base.request_redraw();
-    }
-
-    /// Delivers `event` to the control mounted in card `index`, if one is mounted.
-    fn forward_item_event(&self, index: usize, event: &Event) {
-        let (Some(registry), Some(widget_id)) =
-            (self.registry.as_ref(), self.items.get(index).and_then(|item| item.widget_id))
-        else {
-            return;
-        };
-        let _ = registry.borrow_mut().forward_event(widget_id, event);
     }
 
     /// Returns the number of columns.
@@ -753,24 +727,6 @@ fn allocate_column_widths(needs: &[u32], budget: u32) -> Vec<u32> {
 impl EventHandler for MasonryLayout {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
-        // C-004: a card with a mounted control forwards the event to it. Pointer events are
-        // routed to the card under the pointer; key/focus events go to the card that was last
-        // pressed.
-        let pointer_target = match event {
-            Event::MousePress { pos, .. }
-            | Event::MouseRelease { pos, .. }
-            | Event::MouseMove { pos }
-            | Event::MouseDoubleClick { pos, .. }
-            | Event::MouseEnter { pos }
-            | Event::MouseLeave { pos } => self.item_at(*pos),
-            _ => self.active_item,
-        };
-        if let Some(index) = pointer_target {
-            if matches!(event, Event::MousePress { .. }) {
-                self.active_item = Some(index);
-            }
-            self.forward_item_event(index, event);
-        }
         if let Event::MousePress { pos, button: 1, .. } = event {
             if let Some(index) = self.item_at(*pos) {
                 self.item_clicked.emit(index);
@@ -983,31 +939,5 @@ mod tests {
         assert_eq!(rects[0].1.height, measured_height, "the card follows its measured hint");
         assert_eq!(rects[0].1.width, 400, "one content column takes the whole width");
         let _ = crate::widget::runtime::unregister(id);
-    }
-
-    /// C-004: a mounted card control receives forwarded pointer and key events.
-    #[test]
-    fn a_mounted_card_receives_forwarded_events() {
-        use std::sync::atomic::{AtomicUsize, Ordering};
-        use std::sync::Arc;
-
-        let registry = std::rc::Rc::new(std::cell::RefCell::new(SimpleRegistry::new()));
-        let hits = Arc::new(AtomicUsize::new(0));
-        let counter = Arc::clone(&hits);
-        registry.borrow_mut().register(
-            21,
-            |_| {},
-            move |_| {
-                counter.fetch_add(1, Ordering::SeqCst);
-            },
-        );
-
-        let mut ml = MasonryLayout::new(Rect::new(0, 0, 300, 400));
-        ml.set_columns(1);
-        ml.add_item_with_widget("card", 50, Color::WHITE, Some(21u64));
-        ml.set_registry(std::rc::Rc::clone(&registry));
-        ml.handle_event(&Event::MousePress { pos: Point::new(10, 10), button: 1, modifiers: 0 });
-        ml.handle_event(&Event::KeyPress { key: 65, modifiers: 0 });
-        assert_eq!(hits.load(Ordering::SeqCst), 2);
     }
 }

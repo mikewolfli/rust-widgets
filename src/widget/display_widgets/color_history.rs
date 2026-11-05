@@ -627,13 +627,18 @@ impl EventHandler for ColorHistory {
                     self.base.request_redraw();
                 }
             }
-            // Arrow keys walk the grid and wrap at both ends; see `move_selection`.
-            Event::KeyDown((key, _)) | Event::KeyPress { key, .. } => match *key {
-                KEY_LEFT => self.move_selection(-1),
-                KEY_RIGHT => self.move_selection(1),
-                KEY_DELETE | KEY_BACKSPACE => self.remove_selected(),
-                _ => {}
-            },
+            // Arrow keys walk the grid and wrap at both ends; see `move_selection`. The arm is
+            // gated on focus so an unfocused swatch grid does not consume another control's keys.
+            Event::KeyDown((key, _)) | Event::KeyPress { key, .. }
+                if self.base.focus_reason().is_some() =>
+            {
+                match *key {
+                    KEY_LEFT => self.move_selection(-1),
+                    KEY_RIGHT => self.move_selection(1),
+                    KEY_DELETE | KEY_BACKSPACE => self.remove_selected(),
+                    _ => {}
+                }
+            }
             // A context-menu request names the swatch under the pointer, or the
             // current selection when the request came from the keyboard (the
             // translator anchors that form at the window origin).
@@ -859,6 +864,7 @@ mod tests {
             sink.lock().unwrap().push(*color);
         });
 
+        history.handle_event(&Event::FocusGained { reason: crate::event::FocusReason::Tab });
         history.handle_event(&Event::KeyDown((KEY_RIGHT, 0)));
         assert_eq!(history.selected_index(), Some(0), "a first Right enters at the start");
         history.handle_event(&Event::KeyPress { key: KEY_RIGHT, modifiers: 0 });
@@ -891,6 +897,7 @@ mod tests {
         history.add_color(Color::GREEN);
         history.add_color(Color::BLUE);
         history.set_selected_index(Some(1));
+        history.handle_event(&Event::FocusGained { reason: crate::event::FocusReason::Tab });
 
         let removed = Arc::new(std::sync::Mutex::new(Vec::<usize>::new()));
         let sink = Arc::clone(&removed);

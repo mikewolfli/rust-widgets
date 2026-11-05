@@ -34,6 +34,12 @@ pub(crate) struct LineEditor {
     history_target: Rc<RefCell<String>>,
     /// True while a history replay writes the text, so the replay is not recorded again.
     restoring: bool,
+    /// The uncommitted input-method composition, or `None` when no IME session is active.
+    ///
+    /// Held apart from `text` because the value must not change while the user is still building a
+    /// word: an editable drop-down that committed each preedit would fire `text_edited` for a value
+    /// the user has not chosen yet (IN2-04).
+    composition: Option<String>,
 }
 
 impl LineEditor {
@@ -46,6 +52,7 @@ impl LineEditor {
             undo_stack: UndoStack::new(),
             history_target: Rc::new(RefCell::new(String::new())),
             restoring: false,
+            composition: None,
         }
     }
 
@@ -81,6 +88,9 @@ impl LineEditor {
         let after = self.text.clone();
         self.cursor = self.text.len();
         self.anchor = None;
+        // A value written from the outside replaces whatever composition was in progress; keeping
+        // it would show a preview of text that no longer follows from the value.
+        self.composition = None;
         self.push_history(&before, &after, record);
         true
     }
@@ -163,6 +173,29 @@ impl LineEditor {
         self.anchor = Some(0);
         self.cursor = self.text.len();
         changed
+    }
+
+    /// Starts or updates the composition without changing the value (IN2-04).
+    ///
+    /// Returns whether the composition changed, so the owner knows whether to repaint. An empty
+    /// string clears it, which is what an input method sends when it withdraws.
+    pub(crate) fn set_composition(&mut self, preedit: &str) -> bool {
+        let next = if preedit.is_empty() { None } else { Some(preedit.to_string()) };
+        if self.composition == next {
+            return false;
+        }
+        self.composition = next;
+        true
+    }
+
+    /// The uncommitted composition, or `None` when no session is active.
+    pub(crate) fn composition(&self) -> Option<&str> {
+        self.composition.as_deref()
+    }
+
+    /// Drops the composition without changing the value, returning whether there was one.
+    pub(crate) fn clear_composition(&mut self) -> bool {
+        self.composition.take().is_some()
     }
 
     /// Steps back one recorded edit.

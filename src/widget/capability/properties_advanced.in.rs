@@ -148,8 +148,10 @@ macro_rules! impl_properties_advanced {
             PropertySchema::new("display_format", PropertyValueKind::String, true, true),
             PropertySchema::new("calendar_popup", PropertyValueKind::Bool, true, true),
             PropertySchema::enumerated("alignment", true, true, &["left", "centre", "right"]),
-            PropertySchema::new("minimum", PropertyValueKind::String, false, false),
-            PropertySchema::new("maximum", PropertyValueKind::String, false, false),
+            // ADV2-01: both bounds have had full setters and getters all along; publishing them
+            // read/write is what makes the range expressible to a designer or JSON document.
+            PropertySchema::new("minimum", PropertyValueKind::String, true, true),
+            PropertySchema::new("maximum", PropertyValueKind::String, true, true),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),

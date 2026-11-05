@@ -15,7 +15,7 @@ use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::effective_font;
 use crate::widget::save_state::SaveState;
 use crate::widget::text_utils::elide_end;
-use crate::widget::{BaseWidget, Draw, SimpleRegistry, Widget, WidgetKind};
+use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -95,7 +95,6 @@ pub struct DockWidget {
     /// example), so a change must be announced rather than only stored. A write that does not
     /// change the flag emits nothing, which keeps a host that re-applies its layout silent.
     pub visibility_changed: Signal1<bool>,
-    registry: Option<Rc<RefCell<SimpleRegistry>>>,
     /// Offset from mouse cursor to widget top-left, set when drag begins.
     drag_offset: (i32, i32),
     /// The surface the host offers for edge docking, if it declared one.
@@ -386,23 +385,11 @@ impl DockWidget {
             top_level_changed: Signal1::new(),
             about_to_close: Signal1::new(),
             visibility_changed: Signal1::new(),
-            registry: None,
             drag_offset: (0, 0),
             dock_area: None,
             dock_hint: None,
             title_bar_widget: None,
         }
-    }
-    /// Sets the shared widget registry for child forwarding.
-    pub fn set_registry(&mut self, registry: Rc<RefCell<SimpleRegistry>>) {
-        self.registry = Some(registry);
-        self.place_content();
-        self.place_title_bar_widget();
-        self.base.request_redraw();
-    }
-    /// Returns the shared widget registry, if set.
-    pub fn registry(&self) -> Option<&Rc<RefCell<SimpleRegistry>>> {
-        self.registry.as_ref()
     }
 
     /// Asks to close this dock, giving subscribers a chance to veto (C-013).
@@ -543,9 +530,6 @@ impl DockWidget {
         #[cfg(not(alloc_frugal))]
         if let Some(widget_id) = self.title_bar_widget {
             let rect = self.title_bar_rect();
-            if let Some(ref registry) = self.registry {
-                registry.borrow_mut().set_widget_geometry(widget_id, rect);
-            }
             crate::set_widget_geometry(widget_id, rect.x, rect.y, rect.width, rect.height);
         }
     }
@@ -809,8 +793,7 @@ impl DockWidget {
     ///
     /// # Why the main tree path needs this
     ///
-    /// `DockWidget` used to place its child **only** when drawing through a host registry. A
-    /// window painted by `render_frame_tree` draws the child at the child's own geometry, so a
+    /// A window painted by `render_frame_tree` draws the child at the child's own geometry, so a
     /// docked control built at `0x0` stayed at `0x0` and a docked control built at its old
     /// rectangle kept painting there after the dock moved. The write goes through the public
     /// geometry entry, the same one every other container uses, so both paths agree.
@@ -819,9 +802,6 @@ impl DockWidget {
         {
             if let Some(widget_id) = self.widget {
                 let rect = self.content_rect();
-                if let Some(ref registry) = self.registry {
-                    registry.borrow_mut().set_widget_geometry(widget_id, rect);
-                }
                 crate::set_widget_geometry(widget_id, rect.x, rect.y, rect.width, rect.height);
             }
         }
@@ -1122,32 +1102,6 @@ impl EventHandler for DockWidget {
             }
             _ => { /* Other events are not relevant */ }
         }
-        // C-P14: the content rectangle was derived once for the guard and again for the write.
-        let content_rect = self.content_rect();
-        let allow_child_event = match event {
-            Event::MousePress { pos, .. }
-            | Event::MouseRelease { pos, .. }
-            | Event::MouseMove { pos } => content_rect.contains(*pos),
-            _ => true,
-        };
-        // Forward content events only to the docked widget.
-        if allow_child_event {
-            if let Some(widget_id) = self.widget {
-                if let Some(ref reg) = self.registry {
-                    if crate::widget_geometry(widget_id)
-                        != Some((
-                            content_rect.x,
-                            content_rect.y,
-                            content_rect.width,
-                            content_rect.height,
-                        ))
-                    {
-                        reg.borrow_mut().set_widget_geometry(widget_id, content_rect);
-                    }
-                    reg.borrow_mut().forward_event(widget_id, event);
-                }
-            }
-        }
     }
 }
 impl Draw for DockWidget {
@@ -1214,16 +1168,10 @@ impl Draw for DockWidget {
         context.fill_rect(title_bar, title_bar_color);
         // Draw title bar border
         context.draw_rect(title_bar, border);
-        if let Some(widget_id) = self.title_bar_widget {
-            // A caller-supplied title bar owns the whole strip: the built-in title and buttons
-            // are not drawn beside it, because the child is expected to provide its own chrome.
-            if let Some(ref reg) = self.registry {
-                reg.borrow_mut().set_widget_geometry(widget_id, title_bar);
-                context.push_clip(title_bar.x, title_bar.y, title_bar.width, title_bar.height);
-                reg.borrow_mut().draw_widget(widget_id, context);
-                context.pop_clip();
-            }
-        } else {
+        // A caller-supplied title bar owns the whole strip: the built-in title and buttons are
+        // not drawn beside it, because the child is expected to provide its own chrome and the
+        // tree painter draws it.
+        if self.title_bar_widget.is_none() {
             // Draw title text. The origin is the glyph's **top** edge, so the title is centred by
             // half the difference between the bar and the line box. Using the bar's midline put a
             // 14 px title at 12..26 in a 24 px bar — two pixels onto the border below it.
@@ -1355,15 +1303,6 @@ impl Draw for DockWidget {
         context.fill_rect(content, content_fill);
         // Draw content border
         context.draw_rect(content, border);
-        // Draw widget via registry
-        if let Some(widget_id) = self.widget {
-            if let Some(ref reg) = self.registry {
-                reg.borrow_mut().set_widget_geometry(widget_id, content);
-                context.push_clip(content.x, content.y, content.width, content.height);
-                reg.borrow_mut().draw_widget(widget_id, context);
-                context.pop_clip();
-            }
-        }
         // A drag that is hovering an edge previews the rectangle a release would take. Nothing is
         // drawn unless a hint is live, so the resting rendering is unchanged.
         if let Some(preview) = self.snap_preview_rect() {
@@ -1514,7 +1453,7 @@ const DOCK_AREA_STATE_VERSION_FLAT: u8 = 1;
 /// tabs, and gives the centre whatever is left.
 ///
 /// It is a layout owner rather than a `Widget`: it holds child ids, not their state, so it
-/// can arrange docks that live in any registry and cannot paint over them. Call
+/// can arrange docks that live anywhere in a window and cannot paint over them. Call
 /// [`Self::arrange`] after a change to push the computed rectangles into the widgets.
 ///
 /// # Events and the capability registry
@@ -1534,8 +1473,6 @@ pub struct DockArea {
     central: Option<ObjectId>,
     /// Next group number to hand out.
     next_group: usize,
-    /// Optional registry used to place children through the shared widget table.
-    registry: Option<Rc<RefCell<SimpleRegistry>>>,
     /// Thickness of one edge band in logical pixels.
     edge_extent: u32,
     /// Per-edge overrides of [`Self::edge_extent`], indexed like [`ALL_DOCK_AREAS`].
@@ -1626,7 +1563,6 @@ impl DockArea {
             docks: Vec::new(),
             central: None,
             next_group: 1,
-            registry: None,
             edge_extent,
             edge_extents: [None; 4],
             active_dock_changed: Signal1::new(),
@@ -1717,12 +1653,6 @@ impl DockArea {
         dock.min_size = min_size;
         self.arrange();
         true
-    }
-
-    /// Uses `registry` to place and show children in addition to the global helpers.
-    pub fn set_registry(&mut self, registry: Rc<RefCell<SimpleRegistry>>) {
-        self.registry = Some(registry);
-        self.arrange();
     }
 
     /// Registers `widget` on `area` as its own tab group.
@@ -2467,10 +2397,6 @@ impl DockArea {
         for (widget, rect, visible) in self.layout_entries().iter() {
             crate::set_widget_geometry(*widget, rect.x, rect.y, rect.width, rect.height);
             crate::set_widget_visible(*widget, *visible);
-            if let Some(ref registry) = self.registry {
-                let mut registry = registry.borrow_mut();
-                registry.set_widget_geometry(*widget, *rect);
-            }
         }
         self.layout_changed.emit(());
     }
@@ -2672,7 +2598,6 @@ mod tests {
         assert!(dw.allowed_areas().top_dock_widget_area);
         assert!(dw.allowed_areas().bottom_dock_widget_area);
         assert!(!dw.allowed_areas().no_dock_widget_areas);
-        assert!(dw.registry().is_none(), "registry should be None by default");
     }
 
     /// 2. Setting/getting title
@@ -3112,19 +3037,6 @@ mod tests {
         // Change again
         dw.set_features(DockWidgetFeatures::all());
         assert_eq!(count.load(Ordering::SeqCst), 2);
-    }
-
-    /// Registry integration
-    #[test]
-    fn test_registry() {
-        use std::cell::RefCell;
-        use std::rc::Rc;
-        let mut dw = DockWidget::new(Rect::new(0, 0, 200, 100));
-        assert!(dw.registry().is_none());
-        let registry = Rc::new(RefCell::new(crate::widget::SimpleRegistry::new()));
-        dw.set_registry(registry.clone());
-        assert!(dw.registry().is_some());
-        assert!(Rc::ptr_eq(dw.registry().unwrap(), &registry));
     }
 
     /// DockWidgetAreas helpers

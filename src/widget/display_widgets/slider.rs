@@ -1563,7 +1563,9 @@ impl EventHandler for Slider {
                 let value = self.pixel_pos_to_value(pixel);
                 self.set_slider_position(value);
             }
-            Event::KeyPress { key, modifiers: _ } => {
+            // Keyboard stepping is reachable only while the slider holds focus: a slider
+            // embedded in a page must not consume the arrows of whatever the user is editing.
+            Event::KeyPress { key, modifiers: _ } if self.base.focus_reason().is_some() => {
                 // Arrow keys name a *screen* direction, but a slider's value runs in reading order.
                 // The two agree in LTR and are opposite in RTL, so the step is expressed in reading
                 // order and converted through the direction once, here — instead of each arm
@@ -2002,6 +2004,7 @@ mod tests {
     use super::*;
     use crate::core::{Color, Orientation, Rect, Size};
     use crate::event::Event;
+    use crate::event::FocusReason;
     use crate::style::WidgetStyle;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
@@ -2187,6 +2190,7 @@ mod tests {
         let mut ltr = make_slider();
         ltr.set_range(0, 100);
         ltr.set_value(50);
+        ltr.handle_event(&Event::FocusGained { reason: FocusReason::Tab });
         ltr.handle_event(&Event::KeyPress { key: 37, modifiers: 0 });
         assert_eq!(ltr.value(), 49, "left arrow decrements in a left-to-right slider");
 
@@ -2195,6 +2199,7 @@ mod tests {
         rtl.set_range(0, 100);
         rtl.set_direction(crate::core::TextDirection::RightToLeft);
         rtl.set_value(50);
+        rtl.handle_event(&Event::FocusGained { reason: FocusReason::Tab });
         rtl.handle_event(&Event::KeyPress { key: 37, modifiers: 0 });
         assert_eq!(rtl.value(), 51, "left arrow increments in a right-to-left slider");
 

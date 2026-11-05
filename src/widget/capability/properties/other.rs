@@ -1222,7 +1222,7 @@ pub(crate) fn chart_crosshair_capability() -> WidgetCapability {
         aliases: &["crosshair"],
         properties: CHART_CROSSHAIR_PROPERTIES,
         events: events_of!("chart_crosshair"),
-        commands: &["set_follow_pointer", "set_snap_to_data_point"],
+        commands: &["set_follow_pointer"],
     }
 }
 

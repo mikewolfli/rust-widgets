@@ -657,7 +657,11 @@ impl WebViewCore {
             116 => {
                 self.reload();
             }
-            82 if modifiers == 1 => {
+            // Ctrl+R reloads. The event bitmask's Control bit (2) is the semantic one; bit 1 is
+            // Shift, and testing the wrong bit made Shift+R reload while Ctrl+R did nothing.
+            82 if rust_widgets::shortcut::Modifiers::from_event_bits(modifiers)
+                .contains(rust_widgets::shortcut::Modifiers::CTRL) =>
+            {
                 self.reload();
             }
             _ => { /* Other keys are not relevant */ }
@@ -1156,6 +1160,8 @@ mod tests {
 
     #[test]
     fn test_web_view_core_handle_key_event_ctrl_r() {
+        use std::sync::{Arc, Mutex};
+
         let mut core = WebViewCore::new(
             WidgetKind::WebEngineView,
             Rect::new(0, 0, 800, 600),
@@ -1163,8 +1169,22 @@ mod tests {
             "about:blank",
         );
         core.load_url("https://example.com");
-        // 'R' key (82) with Ctrl modifier (1) should trigger reload
+        // Count reloads by their first observable step: every reload emits `loading_started`.
+        let reloads = Arc::new(Mutex::new(0usize));
+        let sink = reloads.clone();
+        core.loading_started.connect(move |_| {
+            if let Ok(mut count) = sink.lock() {
+                *count += 1;
+            }
+        });
+
+        // Shift+R (bit 0) must not reload — it used to, because `1` was read as Ctrl.
         core.handle_key_event(82, 1);
+        assert_eq!(*reloads.lock().unwrap(), 0, "Shift+R must not reload the page");
+
+        // Ctrl+R (bit 1, value 2) must reload.
+        core.handle_key_event(82, 2);
+        assert_eq!(*reloads.lock().unwrap(), 1, "Ctrl+R must reload the page");
         assert!(!core.is_loading());
         assert_eq!(core.load_progress(), 100);
     }

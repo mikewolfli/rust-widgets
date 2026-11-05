@@ -9,10 +9,8 @@ use crate::widget::capability::coercion::expect_f32;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
-use crate::widget::{BaseWidget, Draw, SimpleRegistry, Widget, WidgetKind};
+use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
-use std::cell::RefCell;
-use std::rc::Rc;
 
 use super::theme_snapshot::ThemeSnapshot;
 
@@ -43,8 +41,6 @@ pub struct SafeArea {
     margin_color: Color,
     /// Optional child placed inside the safe content rectangle.
     content_child: Option<crate::core::ObjectId>,
-    /// Optional shared registry, used to forward events to the content child (C-19).
-    registry: Option<Rc<RefCell<SimpleRegistry>>>,
 }
 
 impl SafeArea {
@@ -59,21 +55,7 @@ impl SafeArea {
             insets: SafeAreaInsets::default(),
             margin_color: Color::WHITE,
             content_child: None,
-            registry: None,
         }
-    }
-    /// Sets the shared widget registry used to forward events to the content child.
-    ///
-    /// Without it a content control mounted through [`Self::set_content`] is painted but
-    /// receives no events, so a registry-driven host saw a control it could not interact
-    /// with (C-19). The interface matches the rest of the container family
-    /// (`StackedWidget`, `ScrollArea`, `TabWidget`).
-    pub fn set_registry(&mut self, registry: Rc<RefCell<SimpleRegistry>>) {
-        self.registry = Some(registry);
-    }
-    /// Returns the shared widget registry, if set.
-    pub fn registry(&self) -> Option<&Rc<RefCell<SimpleRegistry>>> {
-        self.registry.as_ref()
     }
     /// Replaces all four insets at once and requests a redraw.
     ///
@@ -371,36 +353,6 @@ impl Draw for SafeArea {
 impl EventHandler for SafeArea {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
-        // Forward to the mounted content control (C-19). Pointer events only reach it when
-        // they land inside the safe rect; keyboard, focus and tick events go through
-        // unconditionally, because a focused control owns the keyboard wherever the pointer
-        // is — the same split `Carousel` and `CollapsiblePane` make.
-        //
-        // No coordinate translation is applied: [`SafeArea::apply`] writes the content rect
-        // into the child's own geometry, and this library's events are expressed in the same
-        // space as that geometry (the convention `StackedWidget` and `TabWidget` follow).
-        let Some(child) = self.content_child else {
-            return;
-        };
-        let Some(ref registry) = self.registry else {
-            return;
-        };
-        let content_rect = self.content_rect();
-        match event {
-            Event::MousePress { pos, .. }
-            | Event::MouseRelease { pos, .. }
-            | Event::MouseMove { pos }
-            | Event::MouseDoubleClick { pos, .. }
-            | Event::MouseEnter { pos }
-            | Event::MouseLeave { pos } => {
-                if content_rect.contains(*pos) {
-                    registry.borrow_mut().forward_event(child, event);
-                }
-            }
-            _ => {
-                registry.borrow_mut().forward_event(child, event);
-            }
-        }
     }
 }
 
@@ -527,35 +479,6 @@ mod tests {
 
     fn safe_area_insets() -> SafeAreaInsets {
         SafeAreaInsets { top: 20, bottom: 20, left: 10, right: 10 }
-    }
-
-    /// C-19: a registry-mounted content child receives the events aimed at it, and only those
-    /// that land inside the safe rectangle.
-    #[test]
-    fn the_content_child_receives_forwarded_events() {
-        use crate::widget::SimpleRegistry;
-        use std::sync::atomic::{AtomicUsize, Ordering};
-        use std::sync::Arc;
-
-        let mut area = SafeArea::new(Rect::new(0, 0, 200, 200));
-        area.set_insets(safe_area_insets());
-        let seen = Arc::new(AtomicUsize::new(0));
-        let sink = Arc::clone(&seen);
-        let mut registry = SimpleRegistry::new();
-        registry.register(
-            0x5AFE,
-            |_ctx: &mut crate::render::RenderContext| {},
-            move |_event: &Event| {
-                sink.fetch_add(1, Ordering::SeqCst);
-            },
-        );
-        area.set_registry(Rc::new(RefCell::new(registry)));
-        area.set_content(Some(0x5AFE));
-
-        area.handle_event(&Event::MousePress { pos: Point::new(60, 60), button: 1, modifiers: 0 });
-        assert_eq!(seen.load(Ordering::SeqCst), 1, "a press inside the safe rect reaches it");
-        area.handle_event(&Event::MousePress { pos: Point::new(1, 1), button: 1, modifiers: 0 });
-        assert_eq!(seen.load(Ordering::SeqCst), 1, "a press in the margin is not the child's");
     }
 
     /// C-18: changing the insets re-places the mounted child, not only the published rect.

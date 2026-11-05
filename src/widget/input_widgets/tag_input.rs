@@ -69,6 +69,14 @@ struct ChipLayout {
     chips: Vec<ChipBox>,
     /// Chips that did not fit, rendered as a trailing "+N" chip (I-114).
     hidden: usize,
+    /// The trailing badge's text, built once per layout (IN2-08).
+    ///
+    /// The painter, the IME anchor and the hit test all need it, and every one of them used to
+    /// `format!` it — and then measure it through a fresh throwaway backend — on every frame.
+    /// Empty when nothing is hidden.
+    overflow_label: String,
+    /// The trailing badge's painted width, including its padding; zero when nothing is hidden.
+    overflow_width: i32,
 }
 
 struct ChipLayoutCache {
@@ -154,7 +162,7 @@ pub struct TagInput {
 struct InputAdvanceCache {
     revision: u64,
     font: Font,
-    cuts: Vec<(usize, i32)>,
+    cuts: Rc<Vec<(usize, i32)>>,
 }
 
 impl TagInput {
@@ -797,6 +805,10 @@ impl TagInput {
     }
 
     /// The trailing "+N" chip's rectangle and hidden count, when chips overflow (I-114).
+    ///
+    /// IN2-08: the label and its measured width come from the shared chip layout, so this path
+    /// neither formats a string nor constructs a measurement backend. It is called by the painter,
+    /// the IME query and the press path, so that used to be at least two backends per frame.
     fn overflow_rect(&self) -> Option<(Rect, usize)> {
         let layout = self.chip_layout();
         if layout.hidden == 0 {
@@ -807,12 +819,10 @@ impl TagInput {
             .last()
             .map(|chip| (chip.x + chip.width + TAG_GAP, chip.y))
             .unwrap_or((self.field_rect().x + TAG_PADDING, self.chip_row_y()));
-        let label = format!("+{}", layout.hidden);
-        let font = effective_font(self.style());
-        let width =
-            Self::with_measurement(|context| context.measure_text(&label, font).width as i32)
-                + TAG_PADDING * 2;
-        Some((Rect::new(x, y, width as u32, TAG_HEIGHT as u32), layout.hidden))
+        Some((
+            Rect::new(x, y, layout.overflow_width.max(0) as u32, TAG_HEIGHT as u32),
+            layout.hidden,
+        ))
     }
 
     /// The y of the chip row inside the painted field: the row is centred on the field.
@@ -855,10 +865,16 @@ impl TagInput {
     }
 
     /// The cumulative per-character advances of the input buffer for `font` (IP-008).
-    fn input_advance_cuts(&self, font: &Font) -> Vec<(usize, i32)> {
-        if let Some(cache) = self.input_advance_cache.borrow().as_ref() {
-            if cache.revision == self.input_revision && cache.font == *font {
-                return cache.cuts.clone();
+    ///
+    /// Returns the cache's own handle so a hit path borrows the table instead of cloning it
+    /// (IN2-08): the painter asks for it three or more times a frame, and every hit used to
+    /// allocate a whole `Vec` copy.
+    fn input_advance_cuts(&self, font: &Font) -> Rc<Vec<(usize, i32)>> {
+        if let Ok(cache) = self.input_advance_cache.try_borrow() {
+            if let Some(cache) = cache.as_ref() {
+                if cache.revision == self.input_revision && cache.font == *font {
+                    return Rc::clone(&cache.cuts);
+                }
             }
         }
         let mut cuts = Vec::with_capacity(self.input_buffer.len() + 1);
@@ -870,11 +886,14 @@ impl TagInput {
                     as i32;
             cuts.push((start + ch.len_utf8(), advance));
         }
-        *self.input_advance_cache.borrow_mut() = Some(InputAdvanceCache {
-            revision: self.input_revision,
-            font: font.clone(),
-            cuts: cuts.clone(),
-        });
+        let cuts = Rc::new(cuts);
+        if let Ok(mut cache) = self.input_advance_cache.try_borrow_mut() {
+            *cache = Some(InputAdvanceCache {
+                revision: self.input_revision,
+                font: font.clone(),
+                cuts: Rc::clone(&cuts),
+            });
+        }
         cuts
     }
 
@@ -917,6 +936,8 @@ impl TagInput {
         };
         let mut chips = Vec::new();
         let mut hidden = 0usize;
+        let mut overflow_label = String::new();
+        let mut overflow_width = 0i32;
         Self::with_measurement(|context| {
             for (index, tag) in self.tags.iter().enumerate() {
                 let text_width = context.measure_text(tag, &font).width as i32;
@@ -939,8 +960,17 @@ impl TagInput {
                 }
                 x += chip_width + TAG_GAP;
             }
+            // The trailing overflow badge is part of the layout for the same reason a chip is: the
+            // painter, the IME anchor and the press path all read the same geometry, and the label
+            // and its width are derived once here rather than formatted and measured per call
+            // (IN2-08).
+            if hidden > 0 {
+                overflow_label = format!("+{hidden}");
+                overflow_width =
+                    context.measure_text(&overflow_label, &font).width as i32 + TAG_PADDING * 2;
+            }
         });
-        let layout = Rc::new(ChipLayout { chips, hidden });
+        let layout = Rc::new(ChipLayout { chips, hidden, overflow_label, overflow_width });
         *self.chip_cache.borrow_mut() = Some(ChipLayoutCache {
             revision: self.tags_revision,
             width,
@@ -1465,9 +1495,13 @@ impl Draw for TagInput {
         if let Some((overflow, hidden)) = self.overflow_rect() {
             let chip_bg = accent.unwrap_or(Color::rgb(120, 120, 120));
             context.fill_rounded_rect(overflow, TAG_CHIP_RADIUS, chip_bg);
+            // The label is the one the layout measured, so this frame formats and measures nothing
+            // (IN2-08). `hidden` is read from the same layout entry, so the ink and the geometry
+            // cannot describe two different counts.
+            debug_assert_eq!(layout.hidden, hidden);
             context.draw_text(
                 Point::new(overflow.x + TAG_PADDING, overflow.y + 4),
-                &format!("+{hidden}"),
+                &layout.overflow_label,
                 font,
                 chip_bg.contrast_color(),
                 HorizontalAlignment::Left,
@@ -2550,5 +2584,36 @@ mod tests {
         assert!(!Rc::ptr_eq(&before.tags, &after.tags));
         assert!(ti.undo());
         assert_eq!(ti.tags(), &["alpha"]);
+    }
+
+    /// IN2-08: the overflow badge and the input advance table are cached, so a frame derives
+    /// neither a `"+N"` label nor a measurement backend per call.
+    #[test]
+    fn the_overflow_badge_and_the_advance_table_are_cached() {
+        let mut ti = TagInput::new(Rect::new(0, 0, 160, 48));
+        for tag in ["aaaaaa", "bbbbbb", "cccccc", "dddddd"] {
+            ti.add_tag(tag);
+        }
+        let layout = ti.chip_layout();
+        assert!(layout.hidden > 0, "the field is narrow enough to hide chips");
+        assert_eq!(layout.overflow_label, format!("+{}", layout.hidden));
+        assert!(layout.overflow_width > 0, "the badge's width was measured with the layout");
+
+        let first = ti.overflow_rect().expect("an overflow badge");
+        let second = ti.overflow_rect().expect("the same badge");
+        assert_eq!(first, second, "the badge geometry is read from the layout");
+        assert!(Rc::ptr_eq(&layout, &ti.chip_layout()), "the layout is the cached one");
+
+        // The advance table is handed out by handle, so a hit path borrows it instead of cloning.
+        ti.set_focused(true);
+        ti.handle_event(&Event::TextInput { text: "abc".to_string() });
+        let font = effective_font(ti.style()).clone();
+        let cuts_a = ti.input_advance_cuts(&font);
+        let cuts_b = ti.input_advance_cuts(&font);
+        assert!(Rc::ptr_eq(&cuts_a, &cuts_b), "the cached table is borrowed, not copied");
+        assert_eq!(
+            ti.input_prefix_advance(&font, 3),
+            cuts_a.last().map(|(_, advance)| *advance).unwrap_or(0)
+        );
     }
 }

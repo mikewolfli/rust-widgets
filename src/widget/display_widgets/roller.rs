@@ -12,7 +12,9 @@ use crate::event::{key_codes, Event, EventHandler, WheelScroll};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
 use crate::style::{MotionCurve, MotionSlot, PropertyDriver, SpringPreset};
-use crate::widget::capability::coercion::{expect_string_list, expect_u32, expect_usize};
+use crate::widget::capability::coercion::{
+    expect_bool, expect_f32, expect_string_list, expect_u32, expect_usize,
+};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
@@ -518,6 +520,9 @@ impl WidgetProperties for Roller {
             "options" => Ok(CapabilityValue::Tuple(
                 self.options().iter().map(|item| CapabilityValue::String(item.clone())).collect(),
             )),
+            "wrap" => Ok(CapabilityValue::Bool(self.wrap())),
+            "inertia" => Ok(CapabilityValue::Bool(self.inertia())),
+            "font_size" => Ok(CapabilityValue::Float(f64::from(self.font_size()))),
             _ => base_property_get(self, name),
         }
     }
@@ -533,6 +538,18 @@ impl WidgetProperties for Roller {
                 Ok(())
             }
             "item_count" => Err(CapabilityAccessError::ReadOnlyProperty),
+            "wrap" => {
+                self.set_wrap(expect_bool(value)?);
+                Ok(())
+            }
+            "inertia" => {
+                self.set_inertia(expect_bool(value)?);
+                Ok(())
+            }
+            "font_size" => {
+                self.set_font_size(expect_f32(value)?);
+                Ok(())
+            }
             "options" => {
                 self.set_options(expect_string_list(value)?);
                 Ok(())
@@ -547,6 +564,9 @@ impl WidgetProperties for Roller {
             "selected_index",
             "visible_count",
             "item_count",
+            "wrap",
+            "inertia",
+            "font_size",
             BASE_PROPERTY_NAMES
         ]
     }
@@ -586,7 +606,9 @@ impl EventHandler for Roller {
             }
             // The wheel is keyboard-reachable through the same `set_selected_index` path the
             // wheel notch and the drag use, so the inertia tween applies to all three.
-            Event::KeyPress { key, .. } => {
+            // Keyboard stepping is reachable only while the roller holds focus: a roller
+            // embedded in a page must not consume the arrows of whatever the user is editing.
+            Event::KeyPress { key, .. } if self.base.focus_reason().is_some() => {
                 let page = self.visible_count.max(1) as i64;
                 let target = match *key {
                     key_codes::UP => self.selected_index as i64 - 1,
@@ -867,6 +889,7 @@ mod tests {
         assert_eq!(roller.selected_index(), Some(roller.options.len() - 1), "scrolling up wraps");
 
         // The keyboard takes the same normalisation, so Home/End still land on the ends.
+        roller.handle_event(&Event::FocusGained { reason: crate::event::FocusReason::Tab });
         roller.handle_event(&Event::KeyPress { key: key_codes::HOME, modifiers: 0 });
         assert_eq!(roller.selected_index(), Some(0));
         roller.handle_event(&Event::KeyPress { key: key_codes::UP, modifiers: 0 });
@@ -1240,6 +1263,7 @@ mod tests {
     #[test]
     fn the_keyboard_steps_the_wheel() {
         let mut roller = make_roller();
+        roller.handle_event(&Event::FocusGained { reason: crate::event::FocusReason::Tab });
         roller.handle_event(&Event::KeyPress { key: crate::event::key_codes::DOWN, modifiers: 0 });
         assert_eq!(roller.selected_index(), Some(1));
         roller.handle_event(&Event::KeyPress { key: crate::event::key_codes::UP, modifiers: 0 });

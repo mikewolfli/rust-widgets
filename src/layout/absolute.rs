@@ -1,6 +1,19 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
 // SPDX-License-Identifier: MIT
 
+//! Absolute positioning: each child carries its own anchor, offset, size and margins.
+//!
+//! # Reachability
+//!
+//! **State:** Reserved public capability with no in-repo consumer. Either form of reachability is
+//! absent and stated as such: no widget or container builds an [`AbsoluteLayout`], and the
+//! declarative JSON path cannot express it — [`DeclarativeLayoutKind`](crate::json::layout::DeclarativeLayoutKind)
+//! is one struct per layout, while this solver's data is one [`AbsolutePosition`] per *child*,
+//! which that type has nowhere to carry. Removal condition: when a JSON child-placement schema
+//! exists, or when the solver is confirmed redundant with per-widget geometry writes.
+//!
+//! The short `crate::layout::AbsoluteLayout` path was removed in API2-01 for the same reason: a
+//! re-export implied the declarative path could reach it.
 use super::{ChildInfo, Layout, LayoutContext};
 use crate::compat::{Any, Box, HashMap, Vec};
 use crate::core::{ObjectId, Point, Rect, Size};

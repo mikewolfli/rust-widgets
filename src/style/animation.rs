@@ -879,8 +879,9 @@ impl ActiveAnimation {
 /// capability** with no in-crate control consumer: they compose *named* timeline animations, which
 /// the property-transition path does not need. That is a deliberate scope decision (rule #4: the
 /// library maps a control to the platform's ability; it does not invent a timeline the host never
-/// asked for), not an unfinished wiring. A host that wants timeline choreography drives them
-/// directly from its own frame loop, exactly as their docs show.
+/// asked for), not an unfinished wiring. A host that drives timeline choreography does so from its
+/// own frame loop: [`AnimationClock`] is the ready-made pairing, and the runnable doctest on
+/// [`AnimationGroup`](crate::style::animation_group::AnimationGroup) exercises that path in-tree.
 pub struct AnimationDriver {
     animations: HashMap<AnimationId, ActiveAnimation>,
     property_animations: HashMap<AnimationId, PropertyAnimation>,
@@ -1462,6 +1463,12 @@ impl KeyframeAnimation {
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// A CSS-style transition rule mapping a property to an animation config.
+///
+/// RD2-05: no production consumer anywhere in the tree (word-boundary grep over `src/`, `tests/`,
+/// `demo/`, `examples/`, `crates/`, `bindings/`), and no public entry point that would reach it —
+/// the property-transition path uses `PropertyDriver`/`Transition` instead. Kept as test-only code
+/// rather than deleted so its behaviour stays pinned.
+#[cfg(test)]
 #[derive(Debug, Clone)]
 pub struct TransitionRule {
     /// Property name pattern.
@@ -1470,6 +1477,7 @@ pub struct TransitionRule {
     pub config: AnimationConfig,
 }
 
+#[cfg(test)]
 impl TransitionRule {
     /// Creates a rule for `property` that transitions over `duration` with
     /// `easing`, with no delay.
@@ -1488,12 +1496,14 @@ impl TransitionRule {
 
 /// Manages CSS-style transitions for a set of properties.
 /// When a property value changes, smoothly interpolates to the new value.
+#[cfg(test)]
 #[derive(Debug, Clone)]
 pub struct TransitionManager {
     transitions: HashMap<String, ActiveTransition>,
     rules: HashMap<String, TransitionRule>,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone)]
 struct ActiveTransition {
     from: f32,
@@ -1504,6 +1514,7 @@ struct ActiveTransition {
     completed: bool,
 }
 
+#[cfg(test)]
 impl TransitionManager {
     /// Create a new empty transition manager.
     pub fn new() -> Self {
@@ -1591,6 +1602,7 @@ impl TransitionManager {
     }
 }
 
+#[cfg(test)]
 crate::impl_default_via_new!(TransitionManager);
 
 /// Physical spring animation (iOS-style spring physics).

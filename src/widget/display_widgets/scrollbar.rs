@@ -1054,6 +1054,10 @@ impl Widget for ScrollBar {
     fn base(&self) -> &BaseWidget {
         &self.base
     }
+    /// A scroll bar consumes wheel notches over its track (C2-D0).
+    fn accepts_wheel(&self) -> bool {
+        true
+    }
     fn set_state_theme_hook(&mut self) {
         crate::style::reapply_active_theme_state(self);
     }
@@ -1280,8 +1284,13 @@ impl EventHandler for ScrollBar {
                 // value by one line, and it is kept as-is rather than reimplemented.
                 let scroll = WheelScroll::from_event(*delta, *modifiers, 1);
                 if scroll.lines_y != 0 {
+                    let before = self.value;
                     self.set_value(self.value + scroll.lines_y * self.single_step);
                     self.request_frame_repaint(None);
+                    // C2-D0: a bar already at its end does not claim the notch.
+                    if self.value != before {
+                        crate::widget::runtime::claim_wheel();
+                    }
                 }
             }
             // Keyboard stepping is reachable only while the bar holds focus: a scroll bar

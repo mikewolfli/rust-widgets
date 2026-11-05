@@ -1,6 +1,6 @@
 //! `FilterRow` — one editor per column over the shared filter model.
 
-use crate::compat::{format, String, ToString, Vec};
+use crate::compat::{String, ToString, Vec};
 use crate::core::{Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::impl_draw_bridge;
@@ -339,7 +339,12 @@ impl Widget for FilterRow {
         match name {
             "filter_changed" => {
                 Some(EventSignalRef::mapped("filter_changed", &self.filter_changed, |conditions| {
-                    CapabilityValue::String(format!("{conditions:?}"))
+                    // CAP-1: one `[column, operator, operand]` tuple per condition, the same
+                    // structured shape the `conditions` property publishes (`condition_value`).
+                    // The old arm delivered `format!("{conditions:?}")` — Rust `Debug` spelling,
+                    // which a designer or binding could not parse. Declared shape is `Mixed`, so
+                    // the composite gate requires this `Tuple` carrier.
+                    CapabilityValue::Tuple(conditions.iter().map(condition_value).collect())
                 }))
             }
             "filter_cleared" => Some(EventSignalRef::unit("filter_cleared", &self.filter_cleared)),

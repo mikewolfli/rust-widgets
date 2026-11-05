@@ -38,7 +38,6 @@ pub struct AndroidImeBridge {
     marked_text: Mutex<String>,
     cursor_position: Mutex<usize>,
     composition: Mutex<ImeComposition>,
-    candidate_position: Mutex<ImeCandidatePosition>,
 }
 
 impl Default for AndroidImeBridge {
@@ -56,7 +55,6 @@ impl AndroidImeBridge {
             marked_text: Mutex::new(String::new()),
             cursor_position: Mutex::new(0),
             composition: Mutex::new(ImeComposition::default()),
-            candidate_position: Mutex::new(ImeCandidatePosition::default()),
         }
     }
 
@@ -137,7 +135,9 @@ impl ImeBridge for AndroidImeBridge {
     }
 
     fn set_candidate_window_position(&self, position: ImeCandidatePosition) {
-        *lock(&self.candidate_position) = position;
+        // PL2-02: `InputMethodManager` places the candidate window for the focused input
+        // connection; this bridge has no call that moves it, so the value is not stored.
+        let _ = position;
     }
 
     /// Whether an input session is **actually controllable**.

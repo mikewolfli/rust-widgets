@@ -574,7 +574,9 @@ pub(crate) static PROGRAMMATIC_ONLY_SETTERS: &[ProgrammaticSetter] = &[
     ProgrammaticSetter { name: "set_reveal_progress", reason: "B: scalar state with no property carrier yet (A-class backlog)" },
     ProgrammaticSetter { name: "set_ring_count", reason: "B: scalar state with no property carrier yet (A-class backlog)" },
     ProgrammaticSetter { name: "set_roi", reason: "C: property `roi` is Rect, not a scalar the designer writes as one value" },
-    ProgrammaticSetter { name: "set_row_close_visible", reason: "B: scalar state with no property carrier yet (A-class backlog)" },
+    // SP2-04: `set_row_close_visible` was removed — it had no caller and was not on the property
+    // or command surface. The row-close visibility remains a display rule driven by the stack's
+    // own state.
     ProgrammaticSetter { name: "set_row_delegate", reason: "B: injects a callback/registry/handle; no property carrier" },
     ProgrammaticSetter { name: "set_row_detail_provider", reason: "B: injects a callback/registry/handle; no property carrier" },
     ProgrammaticSetter { name: "set_row_error", reason: "B: scalar state with no property carrier yet (A-class backlog)" },

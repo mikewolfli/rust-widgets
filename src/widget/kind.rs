@@ -753,6 +753,9 @@ pub enum WidgetKind {
     /// Tag — a compact pill-shaped label used to categorise or filter content.
     #[cfg(widgets_unstripped)]
     Tag,
+    /// A wrapping row of removable tags with aggregated close/selection signals (D2-001).
+    #[cfg(widgets_unstripped)]
+    TagGroup,
     /// Gauge — a radial dial showing one value against a range.
     #[cfg(widgets_unstripped)]
     Gauge,
@@ -1069,6 +1072,8 @@ impl WidgetKind {
             Self::Stepper => "display",
             #[cfg(widgets_unstripped)]
             Self::Tag => "display",
+            #[cfg(widgets_unstripped)]
+            Self::TagGroup => "display",
             Self::Form => "external",
             Self::FormSet => "external",
             #[cfg(widgets_unstripped)]
@@ -1464,6 +1469,8 @@ impl WidgetKind {
             Self::SearchBox => "SearchBox",
             #[cfg(widgets_unstripped)]
             Self::Chip => "Chip",
+            #[cfg(widgets_unstripped)]
+            Self::TagGroup => "TagGroup",
             #[cfg(widgets_unstripped)]
             Self::Badge => "Badge",
             #[cfg(widgets_unstripped)]

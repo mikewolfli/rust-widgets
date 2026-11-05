@@ -1106,6 +1106,10 @@ pub extern "C" fn rw_poll_widget_triggered() -> u64 {
 
 /// Polls the next widget trigger event and optionally writes the widget ID to the provided pointer.
 ///
+/// Returns the trigger kind code, or `0` when the queue is empty — the same empty-queue
+/// sentinel [`rw_poll_menu_triggered`] documents. No real trigger kind is `0`
+/// (`WidgetTriggerKind::Unknown` is never injected), so the two answers cannot be confused.
+///
 /// # Safety
 /// The `widget_id_out` pointer must be either null or valid for writing a `u64`.
 #[no_mangle]
@@ -1131,8 +1135,10 @@ pub extern "C" fn rw_inject_menu_trigger(menu_item_id: u64) -> CBool {
 #[no_mangle]
 pub extern "C" fn rw_inject_widget_trigger_event(widget_id: u64, kind_code: c_uint) -> CBool {
     c_try!({
-        get_control_backend()
-            .inject_widget_trigger_event(widget_id, trigger_kind_from_code(kind_code))
+        let Some(kind) = trigger_kind_from_code(kind_code) else {
+            return false;
+        };
+        get_control_backend().inject_widget_trigger_event(widget_id, kind)
     })
 }
 

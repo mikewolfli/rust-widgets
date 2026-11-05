@@ -20,7 +20,7 @@ use crate::render::RenderContext;
 #[cfg(full_widgets)]
 use crate::signal::ConnectionScope;
 use crate::signal::{GenericSignal, Signal1};
-use crate::widget::capability::coercion::{expect_bool, expect_f32, expect_string};
+use crate::widget::capability::coercion::{expect_bool, expect_f32, expect_string, expect_u32};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
@@ -1247,6 +1247,11 @@ impl WidgetProperties for ImageView {
                 self.pan_offset().x,
                 self.pan_offset().y
             ))),
+            "aspect" => Ok(CapabilityValue::String(self.aspect().as_str().to_string())),
+            "image_alignment" => {
+                Ok(CapabilityValue::String(self.image_alignment().as_str().to_string()))
+            }
+            "margin" => Ok(CapabilityValue::UInt(u64::from(self.margin()))),
             _ => base_property_get(self, name),
         }
     }
@@ -1290,6 +1295,24 @@ impl WidgetProperties for ImageView {
                 self.set_pan_offset(Point::new(x, y));
                 Ok(())
             }
+            "aspect" => {
+                let token = expect_string(value)?;
+                let aspect =
+                    ImageAspect::from_token(&token).ok_or(CapabilityAccessError::OutOfRange)?;
+                self.set_aspect(aspect);
+                Ok(())
+            }
+            "image_alignment" => {
+                let token = expect_string(value)?;
+                let alignment =
+                    ImageAlignment::from_token(&token).ok_or(CapabilityAccessError::OutOfRange)?;
+                self.set_image_alignment(alignment);
+                Ok(())
+            }
+            "margin" => {
+                self.set_margin(expect_u32(value)?);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
@@ -1302,6 +1325,9 @@ impl WidgetProperties for ImageView {
             "flip_vertical",
             "zoom_level",
             "pan_offset",
+            "aspect",
+            "image_alignment",
+            "margin",
             BASE_PROPERTY_NAMES
         ]
     }

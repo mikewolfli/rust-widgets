@@ -27,8 +27,8 @@
 //!
 //! * [`js_engine`] — an engine-neutral JavaScript subset ([`JsValue`], [`JsContext`]), the
 //!   dependency-free [`SimpleJsEngine`], and [`BoaJsEngine`] when `js-engine` is enabled.
-//! * [`history`] / [`navigation`] — [`HistoryEntry`], [`BrowserHistory`], [`SessionHistory`],
-//!   [`NavigationHistory`], [`LoadStatus`], [`WebSettings`].
+//! * [`history`] / [`navigation`] — [`history::HistoryEntry`], [`BrowserHistory`],
+//!   [`SessionHistory`], [`NavigationHistory`], [`LoadStatus`], [`WebSettings`].
 //! * [`privacy`] — [`PrivacySettings`], [`CookieJar`], [`TrackingProtection`].
 //! * [`plugins`] — [`PluginManager`] and the [`Plugin`] trait.
 //! * [`web_engine`] / [`web_view`] / [`web_history_panel`] / [`find_bar`] — the controls.
@@ -54,7 +54,8 @@ pub mod web_view_enhanced;
 
 pub use capability::{
     create_web_find_bar, create_web_history_panel, create_web_view, install, published_event_names,
-    web_find_bar_capability, web_history_panel_capability, web_view_capability,
+    published_property_names, web_find_bar_capability, web_history_panel_capability,
+    web_view_capability,
 };
 pub use find_bar::WebFindBar;
 pub use history::*;
@@ -63,6 +64,11 @@ pub use navigation::*;
 pub use plugins::*;
 pub use privacy::*;
 pub use web_core::WebViewCore;
+// `history::HistoryEntry` (the visit-count model) and this one (the engine's scroll-position
+// model) share a name. The glob above puts the first on the root path and this explicit list
+// shadows it, so a bare `HistoryEntry` means the engine's; the model is reachable as
+// `history::HistoryEntry`. The same collision, and the same fix, applies to the two `Cookie`
+// types noted in the tests below.
 pub use web_engine::{
     Cookie, CookieSameSite, HistoryEntry, WebEngineContextMenuRequest, WebEngineCookieStore,
     WebEngineDownloadItem, WebEngineFindTextResult, WebEngineNotification, WebEnginePage,

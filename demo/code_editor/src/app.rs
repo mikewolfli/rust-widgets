@@ -25,7 +25,7 @@
 use rust_widgets::app::{App, AppConfig, CustomWidgetHandle, WidgetHandle};
 use rust_widgets::core::{Font, ObjectId, Orientation, Rect};
 use rust_widgets::layout::{BoxLayout, Layout, LayoutConstraints, SizePolicy};
-use rust_widgets::theme::{global_theme_manager, Theme};
+use rust_widgets::theme::global_theme_manager;
 use rust_widgets::widget::metrics::{dimensions, estimate_text_width};
 use rust_widgets::widget::special_widgets::code_editor::{
     CodeEditor, CodeEditorConfig, DiagnosticMarker, LanguageId, MarkerSeverity,
@@ -41,8 +41,9 @@ use crate::commands::{self, Command, StatusFacts};
 /// Registers the macOS-style palettes and selects one for this demo.
 ///
 /// A code editor is conventionally dark; `--light` switches to the light palette for a
-/// screenshot or a bright room. Both are library presets, so the three demos share one
-/// definition of the palette (principle #101).
+/// screenshot or a bright room. The registration/select/repaint sequence itself is shared with
+/// the other demos through [`preview_common::apply_appearance_mode`] (DM3-1); this function owns
+/// only the command-line choice of which appearance that is.
 fn apply_appearance(default_dark: bool) {
     let dark = if std::env::args().any(|arg| arg == "--light") {
         false
@@ -51,13 +52,7 @@ fn apply_appearance(default_dark: bool) {
     } else {
         default_dark
     };
-    let mut manager = global_theme_manager();
-    manager.register_theme(Theme::macos_dark());
-    manager.register_theme(Theme::macos_light());
-    let name = if dark { "macos-dark" } else { "macos-light" };
-    manager.set_theme(name);
-    drop(manager);
-    rust_widgets::reapply_active_theme();
+    preview_common::apply_appearance_mode(dark);
 }
 
 /// 事件泵的最长阻塞等待（兜底）。

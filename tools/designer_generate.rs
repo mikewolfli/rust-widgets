@@ -39,7 +39,7 @@
 //! [`regenerate_into`]: rust_widgets::designer::artifact::regenerate_into
 
 use rust_widgets::designer::artifact::{
-    plan_artifacts, regenerate_into, ArtifactOutcome, GENERATED_MARKER,
+    is_generated, plan_artifacts, regenerate_into, ArtifactOutcome, GENERATED_MARKER,
 };
 use std::process::ExitCode;
 
@@ -201,9 +201,12 @@ fn check_committed(options: &Options, json: &str, width: u32, height: u32) -> Re
             Ok(committed) if committed == artifact.source => {
                 println!("unchanged {}", absolute.display());
             }
-            Ok(committed) if !committed.contains(GENERATED_MARKER) => {
-                // A file without the marker is not one this tool wrote. Saying so is more useful than
-                // reporting a diff against a hand-written module that happens to share the path.
+            Ok(committed) if !is_generated(&committed) => {
+                // A file without the marker on its **first line** is not one this tool wrote. Saying
+                // so is more useful than reporting a diff against a hand-written module that happens
+                // to share the path. BD-03: this uses the crate's own predicate rather than a
+                // substring test, so the CLI, the generator and `tools/check_generated_sources.sh`
+                // agree on what "generated" means — a marker quoted inside a file is not one.
                 eprintln!(
                     "designer_generate: {} exists but is not a generated file (its first line is \
                      not the generated marker); refusing to compare it",

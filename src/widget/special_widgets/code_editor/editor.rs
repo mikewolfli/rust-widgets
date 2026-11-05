@@ -617,6 +617,24 @@ pub struct CodeEditor {
     completion_index: Option<super::types::DocumentWordIndex>,
     /// Generation counter for derived layout state (folds, wraps, text).
     layout_generation: u64,
+    /// Generation counter for the diagnostic marker list (GX-04).
+    ///
+    /// A marker is not document content, so the document revision does not move when one is added,
+    /// replaced or removed. The formatted diagnostic labels are keyed by this counter, which the
+    /// three marker mutators bump, so a message that changed is reformatted exactly once.
+    pub(crate) diagnostics_generation: u64,
+    /// Formatted diagnostic labels, keyed by marker, generation and font (GX-04).
+    ///
+    /// `RefCell` because the painter takes `&self`. The vector is small and bounded: it holds one
+    /// entry per label painted, and it is cleared when it reaches the cap, so a pathological
+    /// document cannot grow it without bound.
+    pub(crate) diagnostic_labels: RefCell<Vec<super::types::DiagnosticLabelCache>>,
+    /// The find bar's summary text and its measured advance (GX-04).
+    ///
+    /// `draw_find_bar` takes `&mut self`, so this needs no interior mutability.
+    pub(crate) find_summary_cache: Option<super::types::FindSummaryCache>,
+    /// Formatted fold summaries, keyed by the fold's end/hidden count and the font (GX-04).
+    pub(crate) fold_labels: RefCell<Vec<super::types::FoldLabelCache>>,
     /// Cached line→row table used by inline diagnostics under wrapping.
     diagnostic_rows: RefCell<DiagnosticRows>,
     /// How many times the diagnostics row table has been rebuilt, for tests.
@@ -832,6 +850,10 @@ impl CodeEditor {
             drag_origin: None,
             completion_index: None,
             layout_generation: 0,
+            diagnostics_generation: 0,
+            diagnostic_labels: RefCell::new(Vec::new()),
+            find_summary_cache: None,
+            fold_labels: RefCell::new(Vec::new()),
             diagnostic_rows: RefCell::new(None),
             #[cfg(test)]
             diagnostic_cache_builds: core::cell::Cell::new(0),

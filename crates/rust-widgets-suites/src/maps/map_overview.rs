@@ -394,7 +394,7 @@ impl Widget for MapOverviewPanel {
     fn event_signal_dyn(&self, name: &str) -> Option<EventSignalRef> {
         match name {
             "overview_drag" | "on_overview_drag" => {
-                Some(EventSignalRef::mapped("overview_drag", &self.on_overview_drag, |value| {
+                Some(EventSignalRef::mapped("on_overview_drag", &self.on_overview_drag, |value| {
                     CapabilityValue::Tuple(vec![
                         CapabilityValue::Float(f64::from(value.0)),
                         CapabilityValue::Float(f64::from(value.1)),

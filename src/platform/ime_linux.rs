@@ -287,8 +287,6 @@ pub struct LinuxImeBridge {
     cursor_pos: Mutex<usize>,
     /// Last insertion-point rectangle in screen coordinates.
     cursor_rect: Mutex<(i32, i32, u32, u32)>,
-    /// Last requested candidate window position.
-    candidate_position: Mutex<ImeCandidatePosition>,
 
     // ── Native IBus handle ──
     /// Whether an IBus connection was successfully established (probe result).
@@ -338,7 +336,6 @@ impl LinuxImeBridge {
             marked_text: Mutex::new(String::new()),
             cursor_pos: Mutex::new(0),
             cursor_rect: Mutex::new((0, 0, 0, 0)),
-            candidate_position: Mutex::new(ImeCandidatePosition { x: 0, y: 0 }),
             ibus_available: Mutex::new(ibus_avail),
             #[cfg(feature = "linux-a11y")]
             ibus_connection: Mutex::new(ibus_connection),
@@ -554,8 +551,9 @@ impl ImeBridge for LinuxImeBridge {
     }
 
     fn set_candidate_window_position(&self, position: ImeCandidatePosition) {
-        log::debug!("[Linux IME] set_candidate_window_position: ({}, {})", position.x, position.y);
-        *lock(&self.candidate_position) = position;
+        // PL2-02: IBus positions its own candidate window from the input context's cursor location;
+        // this bridge has no call that moves it, so the value is deliberately not stored.
+        let _ = position;
     }
 
     /// Whether an IME session is **actually connected** to a focused widget.
@@ -746,8 +744,10 @@ mod tests {
     #[test]
     fn test_set_candidate_window_position() {
         let bridge = LinuxImeBridge::new();
+        // PL2-02: IBus owns the candidate window, so the position is not stored; the call must
+        // simply not disturb the state the bridge does track.
         bridge.set_candidate_window_position(ImeCandidatePosition { x: 100, y: 200 });
-        assert_eq!(*lock(&bridge.candidate_position), ImeCandidatePosition { x: 100, y: 200 });
+        assert_eq!(*lock(&bridge.cursor_rect), (0, 0, 0, 0));
     }
 
     #[test]

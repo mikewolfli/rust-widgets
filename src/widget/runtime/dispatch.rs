@@ -118,9 +118,11 @@ pub(crate) fn clear_ime_preedit_callbacks(widget_id: ObjectId) {
 /// Places the platform IME candidate window at the focused control's caret.
 ///
 /// The query is the control's own answer ([`crate::widget::Widget::input_method_query`]);
-/// coordinates are window-relative, which is what the platform bridge expects. A control with
-/// no insertion point, a widget that is not focused, and a build without an IME bridge all
-/// answer `false` without touching the platform.
+/// coordinates are the control's **window-logical** caret rect, which is the frame
+/// [`ImeCandidatePosition`](crate::platform::ime::ImeCandidatePosition) documents (PL2-02) — a
+/// backend that moves an OS-level window converts them itself. A control with no insertion point,
+/// a widget that is not focused, and a build without an IME bridge all answer `false` without
+/// touching the platform.
 #[cfg(not(alloc_frugal))]
 pub fn sync_ime_candidate(widget_id: ObjectId) -> bool {
     let Some((focused, query)) = read_widget(widget_id, |widget| {
@@ -165,6 +167,21 @@ pub fn sync_ime_candidate(_widget_id: ObjectId) -> bool {
 pub fn dispatch_event(id: ObjectId, event: &Event) -> bool {
     if modal_blocks(id) {
         return false;
+    }
+    // The event accept/ignore split, declaratively: a control that is structurally
+    // uninterested in this event (a label, a spacer, a decorative box) hands it to its parent
+    // instead of swallowing it. The default predicate is `true`, so every existing control is
+    // unaffected; only a control that overrides `accepts_event` changes route.
+    //
+    // Returning `true` when a declining control has no parent keeps this function's documented
+    // answer ("was the widget found?") rather than turning "declined" into a routing failure.
+    if let Some((false, parent)) =
+        read_widget(id, |widget| (widget.accepts_event(event), widget.base().parent()))
+    {
+        return match parent {
+            Some(parent) if parent != id => dispatch_event(parent, event),
+            _ => true,
+        };
     }
     // Detach the widget from the registry for the duration of the call.
     //

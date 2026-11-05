@@ -214,6 +214,7 @@ impl WidgetFactory {
             self.register(split_layout_capability(), create_split_layout);
             self.register(accordion_capability(), create_accordion);
             self.register(tag_capability(), create_tag);
+            self.register(tag_group_capability(), create_tag_group);
             self.register(clock_capability(), create_clock);
             self.register(gauge_capability(), create_gauge);
             self.register(context_menu_capability(), create_context_menu);

@@ -12,7 +12,7 @@
 //! each bar is the strip the content leaves — so "the other bar shortens this one" is a consequence
 //! of the two bands' shared corner rather than a term repeated in two places.
 
-use crate::compat::{Arc, Rc, RefCell, ToString, Vec};
+use crate::compat::{Arc, RefCell, ToString, Vec};
 use crate::core::{Alignment, Color, ObjectId, Point, Rect, Size};
 use crate::event::{Event, EventHandler, WheelScroll};
 use crate::render::RenderContext;
@@ -21,95 +21,20 @@ use crate::widget::ScrollBar;
 use core::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 
 use crate::widget::capability::coercion::{
-    expect_bool, expect_i32_saturating, expect_i64, expect_string,
+    alignment_to_str, expect_alignment, expect_bool, expect_i32_saturating, expect_i64,
+    expect_string,
 };
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::dimensions;
 use crate::widget::save_state::SaveState;
-use crate::widget::{BaseWidget, Draw, SimpleRegistry, Widget, WidgetKind};
+use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
 /// Pixels scrolled per wheel line. A notch is one line here, so this is also the
 /// distance one notch has always moved the content.
 const WHEEL_PIXELS_PER_LINE: i32 = 20;
-
-fn translate_content_event(event: &Event, dx: i32, dy: i32) -> Event {
-    let translate = |point: Point| Point::new(point.x + dx, point.y + dy);
-    match event {
-        Event::MouseDown((point, button)) => Event::MouseDown((translate(*point), *button)),
-        Event::MouseUp((point, button)) => Event::MouseUp((translate(*point), *button)),
-        Event::MouseMoveLegacy((point, device)) => {
-            Event::MouseMoveLegacy((translate(*point), *device))
-        }
-        Event::MouseMove { pos } => Event::MouseMove { pos: translate(*pos) },
-        Event::MousePress { pos, button, modifiers } => {
-            Event::MousePress { pos: translate(*pos), button: *button, modifiers: *modifiers }
-        }
-        Event::MouseDoubleClick { pos, button } => {
-            Event::MouseDoubleClick { pos: translate(*pos), button: *button }
-        }
-        Event::MouseRelease { pos, button } => {
-            Event::MouseRelease { pos: translate(*pos), button: *button }
-        }
-        Event::MouseEnter { pos } => Event::MouseEnter { pos: translate(*pos) },
-        Event::MouseLeave { pos } => Event::MouseLeave { pos: translate(*pos) },
-        Event::PointerPress { pos, button, pressure, tilt_x, tilt_y } => Event::PointerPress {
-            pos: translate(*pos),
-            button: *button,
-            pressure: *pressure,
-            tilt_x: *tilt_x,
-            tilt_y: *tilt_y,
-        },
-        Event::PointerMove { pos, pressure, tilt_x, tilt_y } => Event::PointerMove {
-            pos: translate(*pos),
-            pressure: *pressure,
-            tilt_x: *tilt_x,
-            tilt_y: *tilt_y,
-        },
-        Event::PointerRelease { pos, button, pressure } => {
-            Event::PointerRelease { pos: translate(*pos), button: *button, pressure: *pressure }
-        }
-        #[cfg(feature = "touch")]
-        Event::TouchBegin { pos, touch_id } => {
-            Event::TouchBegin { pos: translate(*pos), touch_id: *touch_id }
-        }
-        #[cfg(feature = "touch")]
-        Event::TouchEnd { pos, touch_id } => {
-            Event::TouchEnd { pos: translate(*pos), touch_id: *touch_id }
-        }
-        #[cfg(feature = "touch")]
-        Event::TouchMove { pos, touch_id } => {
-            Event::TouchMove { pos: translate(*pos), touch_id: *touch_id }
-        }
-        #[cfg(feature = "touch")]
-        Event::Tap { pos } => Event::Tap { pos: translate(*pos) },
-        #[cfg(feature = "touch")]
-        Event::DoubleTap { pos } => Event::DoubleTap { pos: translate(*pos) },
-        #[cfg(feature = "touch")]
-        Event::LongPress { pos } => Event::LongPress { pos: translate(*pos) },
-        #[cfg(feature = "touch")]
-        Event::Swipe { start, end, velocity } => {
-            Event::Swipe { start: translate(*start), end: translate(*end), velocity: *velocity }
-        }
-        #[cfg(feature = "touch")]
-        Event::Drag { pos, touch_id, delta } => {
-            Event::Drag { pos: translate(*pos), touch_id: *touch_id, delta: *delta }
-        }
-        #[cfg(feature = "touch")]
-        Event::TwoFingerTap { pos } => Event::TwoFingerTap { pos: translate(*pos) },
-        #[cfg(feature = "touch")]
-        Event::Fling { pos, velocity, touch_id } => {
-            Event::Fling { pos: translate(*pos), velocity: *velocity, touch_id: *touch_id }
-        }
-        #[cfg(feature = "holographic")]
-        Event::HolographicTouch { pos, depth, touch_id } => {
-            Event::HolographicTouch { pos: translate(*pos), depth: *depth, touch_id: *touch_id }
-        }
-        _ => event.clone(),
-    }
-}
 
 /// Scroll area widget.
 pub struct ScrollArea {
@@ -140,8 +65,6 @@ pub struct ScrollArea {
     /// A caller that writes [`ScrollArea::set_content_size`] takes ownership of the extent; until
     /// then, mounting content derives it from the children's `size_hint`s.
     content_size_derived: bool,
-    /// Optional shared registry for child widget forwarding.
-    registry: Option<Rc<RefCell<SimpleRegistry>>>,
     /// Current scroll position (x, y) in content coordinates.
     scroll_position: (i32, i32),
     /// The inset applied inside the content box (C-21).
@@ -338,7 +261,6 @@ impl ScrollArea {
             content_tree_children: 0,
             content_size: Size::new(0, 0),
             content_size_derived: true,
-            registry: None,
             scroll_position: (0, 0),
             content_margins: crate::style::EdgeOffsets::default(),
             chrome_cache: RefCell::new(None),
@@ -409,14 +331,6 @@ impl ScrollArea {
         } else {
             None
         }
-    }
-    /// Sets the shared widget registry for child forwarding.
-    pub fn set_registry(&mut self, registry: Rc<RefCell<SimpleRegistry>>) {
-        self.registry = Some(registry);
-    }
-    /// Returns the shared widget registry, if set.
-    pub fn registry(&self) -> Option<&Rc<RefCell<SimpleRegistry>>> {
-        self.registry.as_ref()
     }
     /// Returns whether the widget is resizable.
     pub fn widget_resizable(&self) -> bool {
@@ -1681,6 +1595,10 @@ impl Widget for ScrollArea {
     fn base(&self) -> &BaseWidget {
         &self.base
     }
+    /// A scroll area owns the viewport its children are painted in (C2-D0).
+    fn accepts_wheel(&self) -> bool {
+        true
+    }
     fn set_state_theme_hook(&mut self) {
         crate::style::reapply_active_theme_state(self);
     }
@@ -1812,6 +1730,14 @@ impl WidgetProperties for ScrollArea {
             "scroll_position_y" => Ok(CapabilityValue::Int(self.scroll_position().1 as i64)),
             "content_width" => Ok(CapabilityValue::UInt(self.content_size().width as u64)),
             "content_height" => Ok(CapabilityValue::UInt(self.content_size().height as u64)),
+            "inertia" => Ok(CapabilityValue::Bool(self.inertia())),
+            "alignment" => {
+                Ok(CapabilityValue::String(alignment_to_str(self.alignment()).to_string()))
+            }
+            "content_margins" => {
+                let (top, bottom, left, right) = self.content_margins();
+                Ok(CapabilityValue::String(format!("{top},{right},{bottom},{left}")))
+            }
             "sticky_region_count" => Ok(CapabilityValue::UInt(self.sticky_regions().len() as u64)),
             _ => base_property_get(self, name),
         }
@@ -1864,6 +1790,30 @@ impl WidgetProperties for ScrollArea {
             // Derived from the registered bands, which are written through
             // `add_sticky_region` / `clear_sticky_regions`.
             "sticky_region_count" => Err(CapabilityAccessError::ReadOnlyProperty),
+            "inertia" => {
+                self.set_inertia(expect_bool(value)?);
+                Ok(())
+            }
+            "alignment" => {
+                self.set_alignment(expect_alignment(value)?);
+                Ok(())
+            }
+            "content_margins" => {
+                // Published as `top,right,bottom,left` (the 4-inset spelling); the setter
+                // takes its arguments in `top, bottom, left, right` order.
+                let raw = expect_string(value)?;
+                let mut parts = raw.split(',');
+                let mut side = || -> Option<u32> { parts.next()?.trim().parse().ok() };
+                let top = side().ok_or(CapabilityAccessError::TypeMismatch)?;
+                let right = side().ok_or(CapabilityAccessError::TypeMismatch)?;
+                let bottom = side().ok_or(CapabilityAccessError::TypeMismatch)?;
+                let left = side().ok_or(CapabilityAccessError::TypeMismatch)?;
+                if parts.next().is_some() {
+                    return Err(CapabilityAccessError::TypeMismatch);
+                }
+                self.set_content_margins(top, bottom, left, right);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
@@ -1878,6 +1828,9 @@ impl WidgetProperties for ScrollArea {
             "scroll_position_y",
             "content_width",
             "content_height",
+            "inertia",
+            "alignment",
+            "content_margins",
             "sticky_region_count",
             BASE_PROPERTY_NAMES
         ]
@@ -1997,10 +1950,17 @@ impl EventHandler for ScrollArea {
                 // `WheelScroll` owns the notch normalization; this control owns the
                 // line-to-pixel step. The scroll position is clamped by the setter.
                 let scroll = WheelScroll::from_event(*delta, *modifiers, 1);
+                let before = self.scroll_position;
                 self.set_scroll_position(
                     self.scroll_position.0 + scroll.columns_x * WHEEL_PIXELS_PER_LINE,
                     self.scroll_position.1 + scroll.lines_y * WHEEL_PIXELS_PER_LINE,
                 );
+                // C2-D0: only a position that actually moved claims the event. A viewport already
+                // at its end leaves the claim unset, so the router offers the notch to the next
+                // ancestor container — scroll chaining.
+                if self.scroll_position != before {
+                    crate::widget::runtime::claim_wheel();
+                }
             }
             #[cfg(feature = "touch")]
             Event::Swipe { start, end, velocity } => {
@@ -2022,14 +1982,6 @@ impl EventHandler for ScrollArea {
                 );
             }
             _ => { /* Other events are not relevant */ }
-        }
-        // Forward events to widget via registry (with viewport offset)
-        if let Some(widget_id) = self.widget {
-            if let Some(ref reg) = self.registry {
-                let content_event =
-                    translate_content_event(event, self.scroll_position.0, self.scroll_position.1);
-                reg.borrow_mut().forward_event(widget_id, &content_event);
-            }
         }
     }
 }
@@ -2074,25 +2026,6 @@ impl Draw for ScrollArea {
             chrome.content.width,
             chrome.content.height,
         );
-        // Where the child is placed inside that box. Both `alignment` and `widget_resizable` were
-        // stored, published and read by nothing; this is the one derivation both the paint and the
-        // geometry hand-off read, so a click's coordinate and the pixel under it cannot disagree.
-        let frame =
-            content_frame(chrome.content, self.content_size, self.widget_resizable, self.alignment);
-        // Draw widget via registry, translated by the negative scroll offset so
-        // the viewport shows the scrolled content window.
-        if let Some(widget_id) = self.widget {
-            if let Some(ref reg) = self.registry {
-                // Hand the child the frame rather than letting it keep whatever geometry it was
-                // constructed with. `widget_resizable: true` is exactly the promise that the scroll
-                // area sizes its content, and without this line that promise was unobservable: a
-                // resizable area and a fixed one drew the same picture.
-                reg.borrow_mut().set_widget_geometry(widget_id, frame);
-                context.push_offset(-self.scroll_position.0, -self.scroll_position.1);
-                reg.borrow_mut().draw_widget(widget_id, context);
-                context.pop_offset();
-            }
-        }
         // Sticky bands are drawn *after* the scrolled content, still inside the
         // clip and without the scroll offset, which is precisely what makes them
         // stay put. Drawing them with the offset (i.e. as ordinary content) would
@@ -2117,34 +2050,20 @@ impl Draw for ScrollArea {
             if band_rect.y + band_rect.height as i32 <= chrome.content.y {
                 continue;
             }
-            // COMP-E01: a band with a mounted header draws that control in the band box, so the
-            // group title, icon and actions are visible instead of only a colour stripe. A band
-            // without one keeps the historical fill.
-            match self.sticky_header(band_index) {
-                Some(header) => {
-                    #[cfg(not(alloc_frugal))]
-                    crate::set_widget_geometry(
-                        header,
-                        band_rect.x,
-                        band_rect.y,
-                        band_rect.width,
-                        band_rect.height,
-                    );
-                    if let Some(ref registry) = self.registry {
-                        context.push_clip(
-                            band_rect.x,
-                            band_rect.y,
-                            band_rect.width,
-                            band_rect.height,
-                        );
-                        registry.borrow_mut().draw_widget(header, context);
-                        context.pop_clip();
-                    } else {
-                        self.draw_sticky_band(context, band_rect);
-                    }
-                }
-                None => self.draw_sticky_band(context, band_rect),
+            // COMP-E01: a band with a mounted header hands that header's box to the tree so the
+            // group title, icon and actions are visible instead of only a colour stripe. The band
+            // itself keeps the historical fill either way.
+            #[cfg(not(alloc_frugal))]
+            if let Some(header) = self.sticky_header(band_index) {
+                crate::set_widget_geometry(
+                    header,
+                    band_rect.x,
+                    band_rect.y,
+                    band_rect.width,
+                    band_rect.height,
+                );
             }
+            self.draw_sticky_band(context, band_rect);
         }
         context.pop_clip();
         // ── The chrome, assembled ──
@@ -2199,21 +2118,10 @@ impl Draw for ScrollArea {
                 );
             }
         }
-        // The corner between the two bars. An explicit corner widget owns this square; otherwise
-        // the track-coloured grip is painted in it.
+        // The corner between the two bars. A mounted corner widget is painted by the tree into
+        // this square; the track-coloured grip keeps the chrome from being blank.
         if let Some(corner_rect) = chrome.corner {
-            match (self.corner_widget, self.registry.as_ref()) {
-                (Some(corner), Some(registry)) => {
-                    // The corner sits outside the content box, which is what descendants are
-                    // clipped to. Drawing it through the registry here, after the clip is popped,
-                    // gives it the square the chrome reserved for it; the tree child entry
-                    // remains for discovery and hit tests.
-                    registry.borrow_mut().draw_widget(corner, context);
-                }
-                // No corner child, or no registry able to paint one: keep the visible grip so
-                // the chrome is never blank.
-                _ => context.fill_rect(corner_rect, track_color),
-            }
+            context.fill_rect(corner_rect, track_color);
         }
     }
 }
@@ -2465,89 +2373,7 @@ mod tests {
         };
     }
 
-    #[test]
-    fn scrollarea_content_is_translated_by_scroll_position() {
-        use crate::render::{PaintBackend, RenderContext, SoftwarePaintBackend};
-        use crate::widget::SimpleRegistry;
-        use std::cell::RefCell;
-        use std::rc::Rc;
-
-        let size = Size::new(100, 100);
-        let mut backend = SoftwarePaintBackend::new(size, 1.0);
-        let stride = 100 * 4;
-        let pixel = |rgba: &[u8], x: usize, y: usize| {
-            let idx = y * stride + x * 4;
-            (rgba[idx], rgba[idx + 1], rgba[idx + 2])
-        };
-
-        let mut sa = ScrollArea::new(Rect::new(0, 0, 100, 100));
-        sa.set_geometry(Rect::new(0, 0, 100, 100));
-        sa.set_content_size(Size::new(200, 200));
-        let reg = Rc::new(RefCell::new(SimpleRegistry::new()));
-        sa.set_registry(reg.clone());
-        let child_id = 4242;
-        sa.set_widget(Some(child_id));
-        reg.borrow_mut().register(
-            child_id,
-            |ctx| {
-                // A red marker inside the content at content coordinates (60..90).
-                ctx.fill_rect(Rect::new(60, 60, 30, 30), Color::RED);
-            },
-            |_| {},
-        );
-
-        // Unscrolled: the red marker stays at its content coordinates.
-        backend.begin_frame(Color::WHITE);
-        {
-            let mut ctx = RenderContext::new(&mut backend);
-            sa.draw(&mut ctx);
-        }
-        backend.end_frame();
-        let rgba = backend.frame_rgba();
-        assert_eq!(pixel(rgba, 70, 70), (255, 0, 0), "marker visible at content origin");
-        assert_eq!(pixel(rgba, 10, 10), (255, 255, 255), "empty viewport area stays white");
-
-        // Scroll down/right by (50, 50): the marker moves to (10..40).
-        backend.begin_frame(Color::WHITE);
-        sa.set_scroll_position(50, 50);
-        {
-            let mut ctx = RenderContext::new(&mut backend);
-            sa.draw(&mut ctx);
-        }
-        backend.end_frame();
-        let rgba = backend.frame_rgba();
-        assert_eq!(pixel(rgba, 20, 20), (255, 0, 0), "marker translated into view");
-        assert_eq!(pixel(rgba, 70, 70), (255, 255, 255), "marker scrolled out of its old spot");
-    }
-
-    #[test]
-    fn scrollarea_forwards_pointer_coordinates_in_content_space() {
-        use std::sync::{Arc, Mutex};
-
-        let mut sa = ScrollArea::new(Rect::new(0, 0, 100, 100));
-        sa.set_content_size(Size::new(300, 300));
-        sa.set_scroll_position(40, 25);
-        let registry = Rc::new(RefCell::new(SimpleRegistry::new()));
-        sa.set_registry(registry.clone());
-        let received = Arc::new(Mutex::new(None));
-        let sink = received.clone();
-        registry.borrow_mut().register(
-            99,
-            |_| {},
-            move |event| {
-                if let Event::MousePress { pos, .. } = event {
-                    if let Ok(mut value) = sink.lock() {
-                        *value = Some(*pos);
-                    }
-                }
-            },
-        );
-        sa.set_widget(Some(99));
-
-        sa.handle_event(&Event::mouse_press(10, 12, 1));
-        assert_eq!(received.lock().ok().and_then(|value| *value), Some(Point::new(50, 37)));
-    }
-
+    // ── B6 / C-4: sticky regions ───────────────────
     // ── B6 / C-4: sticky regions ───────────────────────────────────────────
 
     /// Renders the scroll area into a software frame and returns the pixels.

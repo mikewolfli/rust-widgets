@@ -28,7 +28,7 @@ use crate::widget::save_state::SaveState;
 use crate::widget::IconSource;
 #[cfg(feature = "image")]
 use crate::widget::Image;
-use crate::widget::{BaseWidget, Draw, SimpleRegistry, Widget, WidgetKind};
+use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 use std::borrow::Cow;
 use std::cell::RefCell;
@@ -120,8 +120,6 @@ pub struct TabWidget {
     /// rule under its caption rather than by being filled with the page colour. It is a presentation
     /// flag only — no index, page or hit test changes.
     document_mode: bool,
-    /// Optional shared registry for child widget forwarding.
-    registry: Option<Rc<RefCell<SimpleRegistry>>>,
     /// Memoised preferred width per tab, keyed by the inputs the measurement reads.
     ///
     /// `tab_width_hints` is asked by the paint path **and** by every pointer move's hit test, and
@@ -468,7 +466,6 @@ impl TabWidget {
             tab_bar_clicked: Signal1::new(),
             tab_bar_double_clicked: Signal1::new(),
             document_mode: false,
-            registry: None,
             tab_width_cache: RefCell::new(TabWidthCache::default()),
             overflow_scroll: 0,
             show_overflow_buttons: false,
@@ -478,15 +475,6 @@ impl TabWidget {
             corner_widget: None,
             strip_cache: RefCell::new(None),
         }
-    }
-    /// Sets the shared widget registry for child forwarding.
-    pub fn set_registry(&mut self, registry: Rc<RefCell<SimpleRegistry>>) {
-        self.registry = Some(registry);
-        self.base.request_redraw();
-    }
-    /// Returns the shared widget registry, if set.
-    pub fn registry(&self) -> Option<&Rc<RefCell<SimpleRegistry>>> {
-        self.registry.as_ref()
     }
     /// Adds a tab.
     ///
@@ -1960,6 +1948,10 @@ impl Widget for TabWidget {
     fn base(&self) -> &BaseWidget {
         &self.base
     }
+    /// The tab strip scrolls under the wheel when the pointer is over it (C2-D0).
+    fn accepts_wheel(&self) -> bool {
+        true
+    }
     fn set_state_theme_hook(&mut self) {
         crate::style::reapply_active_theme_state(self);
     }
@@ -2221,6 +2213,7 @@ impl WidgetProperties for TabWidget {
             )),
             "closable" => Ok(CapabilityValue::Bool(self.closable())),
             "movable" => Ok(CapabilityValue::Bool(self.movable())),
+            "show_overflow_buttons" => Ok(CapabilityValue::Bool(self.show_overflow_buttons())),
             "tab_position" => {
                 Ok(CapabilityValue::String(tab_position_token(self.tab_position).to_string()))
             }
@@ -2239,6 +2232,10 @@ impl WidgetProperties for TabWidget {
         match name {
             "current_index" => {
                 self.set_current_index(expect_usize(value)?);
+                Ok(())
+            }
+            "show_overflow_buttons" => {
+                self.set_show_overflow_buttons(expect_bool(value)?);
                 Ok(())
             }
             // The label route reaches every other control by name, and `create_tab_widget`
@@ -2308,6 +2305,7 @@ impl WidgetProperties for TabWidget {
             "title",
             "closable",
             "movable",
+            "show_overflow_buttons",
             "tab_position",
             "tab_shape",
             "elide",
@@ -2429,7 +2427,12 @@ impl EventHandler for TabWidget {
                         TabPosition::West | TabPosition::East => delta.y,
                     };
                     if notches != 0 {
+                        let before = self.overflow_scroll;
                         self.scroll_tabs(notches * WHEEL_SCROLL_STEP);
+                        // C2-D0: a strip at either end hands the notch to an outer container.
+                        if self.overflow_scroll != before {
+                            crate::widget::runtime::claim_wheel();
+                        }
                         return;
                     }
                 }
@@ -2464,33 +2467,6 @@ impl EventHandler for TabWidget {
             }
             Event::MouseRelease { .. } => self.end_tab_drag(),
             _ => {}
-        }
-        let allow_child_event = match event {
-            Event::MousePress { pos, .. }
-            | Event::MouseRelease { pos, .. }
-            | Event::MouseMove { pos }
-            // A menu request is positional, like the pointer events above: one issued on
-            // the strip is about a tab, so forwarding it to the page would offer the page a
-            // menu request it never received the click for.
-            | Event::ContextMenu { pos } => self.content_rect().contains(*pos),
-            _ => true,
-        };
-        // Forward content events only to the current widget.
-        if allow_child_event {
-            if let Some(widget_id) = self.current_widget() {
-                if let Some(ref reg) = self.registry {
-                    // C-P05: the page rectangle only changes when the selection or the control's
-                    // geometry does. Comparing first keeps a keyboard or hover event from
-                    // performing a global geometry write it did not need.
-                    let content = self.content_rect();
-                    if crate::widget_geometry(widget_id)
-                        != Some((content.x, content.y, content.width, content.height))
-                    {
-                        reg.borrow_mut().set_widget_geometry(widget_id, content);
-                    }
-                    reg.borrow_mut().forward_event(widget_id, event);
-                }
-            }
         }
     }
 }
@@ -2839,31 +2815,6 @@ impl Draw for TabWidget {
                 }
             }
         }
-        // Draw current widget via registry
-        if let Some(widget_id) = self.current_widget() {
-            if let Some(ref reg) = self.registry {
-                // C-P05: a repaint that does not move the page must not write its rectangle
-                // through the global registry again.
-                if crate::widget_geometry(widget_id)
-                    != Some((
-                        content_rect.x,
-                        content_rect.y,
-                        content_rect.width,
-                        content_rect.height,
-                    ))
-                {
-                    reg.borrow_mut().set_widget_geometry(widget_id, content_rect);
-                }
-                context.push_clip(
-                    content_rect.x,
-                    content_rect.y,
-                    content_rect.width,
-                    content_rect.height,
-                );
-                reg.borrow_mut().draw_widget(widget_id, context);
-                context.pop_clip();
-            }
-        }
     }
 }
 
@@ -2991,7 +2942,6 @@ mod tests {
         assert!(tw.is_visible());
         assert!(tw.is_enabled());
         assert!(tw.children().is_empty());
-        assert!(tw.registry().is_none());
     }
 
     // ── 2. Adding tabs ────────────────────────────────────────────────────────
@@ -3722,19 +3672,6 @@ mod tests {
         // Widget assigned to tab 0 is also the current widget (index 0)
         assert_eq!(tw.tab(0).unwrap().widget(), Some(wid1()));
         assert_eq!(tw.current_widget(), Some(wid1()));
-    }
-
-    // ── 17. Registry round-trip ───────────────────────────────────────────────
-
-    #[test]
-    fn tabwidget_registry_set_and_get() {
-        let mut tw = TabWidget::new(Rect::new(0, 0, 300, 200));
-        assert!(tw.registry().is_none());
-        let reg = Rc::new(RefCell::new(SimpleRegistry::new()));
-        tw.set_registry(reg.clone());
-        assert!(tw.registry().is_some());
-        // Verify pointer identity
-        assert!(Rc::ptr_eq(&reg, tw.registry().unwrap()));
     }
 
     // ── 18. Tab icon set/get ───────────────────────────────────────────────────

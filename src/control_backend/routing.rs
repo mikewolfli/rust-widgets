@@ -256,6 +256,7 @@ mod tests {
             | WidgetKind::FlowLayout
             | WidgetKind::WrapLayout
             | WidgetKind::Tag
+            | WidgetKind::TagGroup
             | WidgetKind::Gauge
             | WidgetKind::Clock
             | WidgetKind::Accordion

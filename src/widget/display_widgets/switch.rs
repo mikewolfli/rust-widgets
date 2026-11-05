@@ -1134,7 +1134,11 @@ impl EventHandler for Switch {
             Event::Tap { .. } if enabled => {
                 self.toggle();
             }
-            Event::KeyPress { key, .. } if *key == key_codes::SPACE && enabled => {
+            // Space flips the switch only while it holds focus: an unfocused switch must
+            // not eat the space bar of whatever the user is typing into.
+            Event::KeyPress { key, .. }
+                if *key == key_codes::SPACE && enabled && self.base.focus_reason().is_some() =>
+            {
                 self.toggle();
             }
             // Focus entry carries the *reason*, and the reason is what decides whether a
@@ -1346,8 +1350,34 @@ mod tests {
     #[test]
     fn switch_space_bar_toggles() {
         let mut sw = Switch::new(Rect::new(0, 0, 60, 30));
+        sw.handle_event(&Event::FocusGained { reason: FocusReason::Tab });
         sw.handle_event(&Event::KeyPress { key: 32, modifiers: 0 });
         assert!(sw.is_checked());
+    }
+
+    /// The space bar toggles only while the switch holds focus.
+    #[test]
+    fn the_space_bar_toggles_only_while_focused() {
+        let mut sw = Switch::new(Rect::new(0, 0, 60, 30));
+
+        // Unfocused: the key belongs to whoever holds focus, and no signal fires either.
+        let fired = Arc::new(Mutex::new(0u32));
+        sw.toggled.connect({
+            let fired = Arc::clone(&fired);
+            move |_| *fired.lock().unwrap() += 1
+        });
+        sw.handle_event(&Event::KeyPress { key: 32, modifiers: 0 });
+        assert!(!sw.is_checked(), "an unfocused switch ignores the key");
+        assert_eq!(*fired.lock().unwrap(), 0, "and publishes nothing");
+
+        sw.handle_event(&Event::FocusGained { reason: FocusReason::Tab });
+        sw.handle_event(&Event::KeyPress { key: 32, modifiers: 0 });
+        assert!(sw.is_checked(), "a focused switch flips");
+        assert_eq!(*fired.lock().unwrap(), 1, "and publishes the change");
+
+        sw.handle_event(&Event::FocusLost);
+        sw.handle_event(&Event::KeyPress { key: 32, modifiers: 0 });
+        assert!(sw.is_checked(), "losing focus restores the gate");
     }
 
     /// D09-EVT-02: a touch cancel clears the latch without toggling.

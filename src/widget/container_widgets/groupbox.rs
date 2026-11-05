@@ -23,7 +23,7 @@
 //! frame while its width was computed correctly. `GroupBox::title_columns` states it once, so the
 //! reserve and the placement are one answer.
 
-use crate::compat::{Rc, RefCell, String, ToString, Vec};
+use crate::compat::{String, ToString, Vec};
 use crate::core::{Alignment, Color, HorizontalAlignment, ObjectId, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
@@ -36,7 +36,7 @@ use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::{dimensions, effective_font, ControlMetrics};
 use crate::widget::save_state::SaveState;
-use crate::widget::{BaseWidget, Draw, IconName, SimpleRegistry, Widget, WidgetKind};
+use crate::widget::{BaseWidget, Draw, IconName, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
 /// Padding between the title's own box and the band that erases the border behind it.
@@ -88,7 +88,6 @@ pub struct GroupBox {
     /// than carrying a duplicate local enum — the same gate `Window` uses.
     #[cfg(device_profile)]
     material: crate::theme::Material,
-    registry: Option<Rc<RefCell<SimpleRegistry>>>,
     /// Whether the frame and face are omitted, leaving only the caption and content.
     flat: bool,
     /// Optional content size, used to make the size hint content-driven.
@@ -119,7 +118,6 @@ impl GroupBox {
             collapse_changed: Signal1::new(),
             #[cfg(device_profile)]
             material: crate::theme::Material::None,
-            registry: None,
         }
     }
     /// Whether this group can be collapsed to its title band (C-08).
@@ -346,11 +344,6 @@ impl GroupBox {
         for child in self.base.children.iter().copied() {
             apply_subtree_enabled(child, self.checked, 0);
         }
-    }
-
-    /// Sets the shared widget registry for child forwarding.
-    pub fn set_registry(&mut self, registry: Rc<RefCell<SimpleRegistry>>) {
-        self.registry = Some(registry);
     }
 
     /// The material this container asks the theme for.
@@ -637,61 +630,6 @@ impl GroupBox {
         let height = self.content_top().saturating_sub(frame.y).max(0) as u32;
         Rect::new(frame.x, frame.y, frame.width, height)
     }
-
-    /// The content control that owns `pos`, searched back to front.
-    ///
-    /// # Why the walk is reversed
-    ///
-    /// [`Draw`] paints the children in list order, so the last child is the one on top; a press
-    /// must therefore be offered to it first. That is the same order a plain z-stack would use,
-    /// and it is why the last of two overlapping fields receives the click.
-    ///
-    /// A child that reports no rectangle at all (an id-only registry entry the host places itself)
-    /// cannot answer a positional question. Such a child is remembered and used only when no child
-    /// could be located, which keeps the historical "forward into the content area" behaviour for
-    /// registries that hold no geometry — the forward target is still a real child, just not a
-    /// located one.
-    fn hit_test_child(&self, pos: Point) -> Option<ObjectId> {
-        let mut unlocated = None;
-        for child in self.base.children.iter().rev().copied() {
-            match child_rect(child) {
-                Some(rect) => {
-                    if rect.contains(pos) {
-                        return Some(child);
-                    }
-                }
-                None => {
-                    if unlocated.is_none() {
-                        unlocated = Some(child);
-                    }
-                }
-            }
-        }
-        unlocated
-    }
-}
-
-/// The rectangle `child` occupies, preferring the live widget and falling back to the control
-/// backend's record.
-///
-/// A mounted control owns its own geometry (`BaseWidget`), and that is what the tree painter draws
-/// it at. The backend's record is the fallback for a control that is addressed by id only, which is
-/// the shape a designer registry has while its widget lives elsewhere. The mini profile holds no
-/// widget objects and has no backend geometry, so it answers `None` and the group box forwards into
-/// the content area as a single-child container.
-fn child_rect(child: ObjectId) -> Option<Rect> {
-    #[cfg(not(alloc_frugal))]
-    {
-        if let Some(rect) = crate::widget::runtime::with_widget(child, |widget| widget.geometry()) {
-            return Some(rect);
-        }
-        crate::widget_geometry(child).map(|(x, y, width, height)| Rect::new(x, y, width, height))
-    }
-    #[cfg(alloc_frugal)]
-    {
-        let _ = child;
-        None
-    }
 }
 
 /// Sets `enabled` on `id` and every mounted descendant.
@@ -770,6 +708,15 @@ impl Widget for GroupBox {
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
+
+    /// Children live inside the frame's content box, not over its title band.
+    ///
+    /// The registry used to clip nothing: a child whose rectangle reached the title painted over
+    /// it. The tree painter applies this answer to the descendants, so the same content box the
+    /// collapsed state reports is the one the painter clips to.
+    fn children_clip(&self) -> Option<Rect> {
+        Some(self.content_rect())
+    }
     /// Resolves a published event name to the control's own signal.
     ///
     /// # Why this is explicit per control
@@ -838,6 +785,9 @@ impl WidgetProperties for GroupBox {
             }
             "checkable" => Ok(CapabilityValue::Bool(self.is_checkable())),
             "checked" => Ok(CapabilityValue::Bool(self.is_checked())),
+            "collapsible" => Ok(CapabilityValue::Bool(self.is_collapsible())),
+            "collapsed" => Ok(CapabilityValue::Bool(self.is_collapsed())),
+            "flat" => Ok(CapabilityValue::Bool(self.is_flat())),
             _ => base_property_get(self, name),
         }
     }
@@ -860,12 +810,33 @@ impl WidgetProperties for GroupBox {
                 self.set_checked(expect_bool(value)?);
                 Ok(())
             }
+            "collapsible" => {
+                self.set_collapsible(expect_bool(value)?);
+                Ok(())
+            }
+            "collapsed" => {
+                self.set_collapsed(expect_bool(value)?);
+                Ok(())
+            }
+            "flat" => {
+                self.set_flat(expect_bool(value)?);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["title", "alignment", "checkable", "checked", BASE_PROPERTY_NAMES]
+        property_names_of![
+            "title",
+            "alignment",
+            "checkable",
+            "checked",
+            "collapsible",
+            "collapsed",
+            "flat",
+            BASE_PROPERTY_NAMES
+        ]
     }
 
     /// Runs one of the commands `group_box` publishes.
@@ -910,34 +881,6 @@ impl EventHandler for GroupBox {
         if (self.checkable && !self.checked) || self.collapsed {
             return;
         }
-        let content = self.content_rect();
-        if let Some(ref reg) = self.registry {
-            match event {
-                // Positional events go to the control that owns the point. The old code sent every
-                // one of them to `children.first()`, so in a box with several children the second
-                // and later ones never received a press even though `draw` painted them.
-                Event::MousePress { pos, .. }
-                | Event::MouseRelease { pos, .. }
-                | Event::MouseMove { pos }
-                | Event::MouseDoubleClick { pos, .. }
-                | Event::ContextMenu { pos } => {
-                    if content.contains(*pos) {
-                        if let Some(child_id) = self.hit_test_child(*pos) {
-                            let _ = reg.borrow_mut().forward_event(child_id, event);
-                        }
-                    }
-                }
-                // A coordinate-free event (keys, a wheel, focus, …) cannot name one child, so it is
-                // broadcast to every content control. A group box is documented as a multi-child
-                // container, so "the first child receives all keyboard input" would be an arbitrary
-                // choice made silently.
-                _ => {
-                    for child_id in self.base.children.iter().copied() {
-                        let _ = reg.borrow_mut().forward_event(child_id, event);
-                    }
-                }
-            }
-        }
     }
 }
 impl Draw for GroupBox {
@@ -958,7 +901,6 @@ impl Draw for GroupBox {
         self.cached_title_width = Some(metrics.width);
         // Draw base widget
         let rect = self.geometry();
-        let content = self.content_rect();
         let title_rect = self.title_rect();
         let style = self.style();
         // Draw the panel's face.
@@ -1135,15 +1077,6 @@ impl Draw for GroupBox {
                 },
                 if self.collapsed { IconName::ArrowRight } else { IconName::ArrowDown },
             );
-        }
-        if let Some(ref reg) = self.registry {
-            if !self.collapsed {
-                context.push_clip(content.x, content.y, content.width, content.height);
-                for child_id in &self.base.children {
-                    reg.borrow_mut().draw_widget(*child_id, context);
-                }
-                context.pop_clip();
-            }
         }
     }
 }

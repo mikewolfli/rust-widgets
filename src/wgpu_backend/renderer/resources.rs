@@ -7,6 +7,8 @@ use super::super::commands::WgpuDrawCommand;
 use super::super::raster::{align_to, rasterize_draw_commands_into_rgba8};
 use super::super::types::{PixelRect, Rgba8};
 use std::cell::{Ref, RefCell};
+use std::collections::{HashMap, VecDeque};
+use std::sync::Arc;
 use std::time::Duration;
 
 /// Upper bound on a single blocking GPU readback.
@@ -425,6 +427,82 @@ pub(crate) fn create_matrix_uniform(
 /// `RefCell` rather than `&mut self`: the public entry points take `&self` (and
 /// `GpuRenderer` calls them that way), so the cache is the only interior-mutable
 /// piece. It is not `Sync`, and the renderer is not shared across threads.
+/// Identity of one uploaded texture: the source allocation plus the grid it describes.
+///
+/// The source `Arc` is retained by the cache entry, so the address cannot be recycled by a
+/// different image while the entry exists — the same rule the baked-image cache in
+/// `render/backend/batch.rs` states.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct TextureKey {
+    ptr: usize,
+    len: usize,
+    width: u32,
+    height: u32,
+}
+
+impl TextureKey {
+    /// Keys `source` laid out as `width` x `height` pixels.
+    pub(crate) fn new(source: &Arc<[u8]>, width: u32, height: u32) -> Self {
+        Self { ptr: source.as_ptr() as usize, len: source.len(), width, height }
+    }
+}
+
+/// One cached upload: the view the bind groups sample, plus what keeps it alive.
+pub(crate) struct CachedTexture {
+    /// The key's source, retained so the pointer identity stays valid.
+    _source: Arc<[u8]>,
+    /// The texture the view was made from (the view alone already keeps it alive).
+    _texture: wgpu::Texture,
+    view: wgpu::TextureView,
+}
+
+/// Content-keyed uploads of draw inputs whose pixels come from a shared `Arc<[u8]>` (RD2-01).
+///
+/// Before this cache every image, gradient ramp and radial stop table was re-created and
+/// re-uploaded per draw, per frame. Those bytes do not change between frames — an `Arc` image is
+/// stable content — so the upload happens once and later draws only create their bind group.
+///
+/// Bounded FIFO: a host that streams video frames through distinct `Arc`s allocates one upload per
+/// frame and the oldest entry is dropped, exactly like the crate's other content caches.
+#[derive(Default)]
+pub(crate) struct TextureCache {
+    entries: HashMap<TextureKey, CachedTexture>,
+    order: VecDeque<TextureKey>,
+}
+
+impl TextureCache {
+    /// How many uploads one renderer keeps before evicting the oldest.
+    const LIMIT: usize = 32;
+
+    /// The cached view for `key`, when the upload is still resident.
+    pub(crate) fn view(&self, key: &TextureKey) -> Option<wgpu::TextureView> {
+        self.entries.get(key).map(|entry| entry.view.clone())
+    }
+
+    /// Stores `texture`/`view` under `key`, retaining `source` and evicting the oldest entry when
+    /// the cache is full.
+    pub(crate) fn insert(
+        &mut self,
+        key: TextureKey,
+        source: Arc<[u8]>,
+        texture: wgpu::Texture,
+        view: wgpu::TextureView,
+    ) {
+        if self
+            .entries
+            .insert(key, CachedTexture { _source: source, _texture: texture, view })
+            .is_none()
+        {
+            self.order.push_back(key);
+        }
+        while self.order.len() > Self::LIMIT {
+            if let Some(oldest) = self.order.pop_front() {
+                self.entries.remove(&oldest);
+            }
+        }
+    }
+}
+
 #[derive(Default)]
 pub(crate) struct RenderCache {
     pub(crate) uniform: Option<UniformArena>,
@@ -448,6 +526,8 @@ pub(crate) struct RenderCache {
     pub(crate) circle_uniforms: Option<CircleUniformArena>,
     /// CPU-side packing buffers refilled each call instead of reallocated (G-216).
     pub(crate) pack: PackScratch,
+    /// Content-keyed uploads of image / ramp / stop-table pixels (RD2-01).
+    pub(crate) textures: TextureCache,
     /// The command-stream packer's per-frame side tables, refilled each call (RD-02).
     pub(crate) tables: super::pack_tables::PackTables,
     /// The `Depth32Float` attachment for mesh draws.

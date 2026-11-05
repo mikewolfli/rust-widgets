@@ -28,7 +28,7 @@ use crate::widget::menu_toolbar::menu_button::{
     draw_menu_panel_range, menu_item_rect, menu_panel_rect, MenuItem,
 };
 use crate::widget::metrics::{dimensions, effective_font, ControlMetrics};
-use crate::widget::{BaseWidget, Draw, IconSource, SimpleRegistry, Widget, WidgetKind};
+use crate::widget::{BaseWidget, Draw, IconSource, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
 /// The width of the drag grip at the strip's trailing end: 12 px.
@@ -563,8 +563,8 @@ pub struct ToolBarWidgetItem {
 
 /// One already-mounted control hosted as a toolbar item by id (RW-2).
 ///
-/// The control is not owned by the toolbar; it is addressed through the registry bound with
-/// [`ToolBar::set_registry`]. This is the counterpart of [`ToolBarWidgetItem`], which owns a
+/// The control is not owned by the toolbar; it is addressed by its id and placed through
+/// [`crate::set_widget_geometry`]. This is the counterpart of [`ToolBarWidgetItem`], which owns a
 /// boxed control.
 pub struct ToolBarIdItem {
     id: String,
@@ -702,8 +702,6 @@ pub struct ToolBar {
     /// action items: one list owns its controls and the other only addresses them. Both share
     /// the `widget_bands` routing table, because a pointer cannot tell the difference.
     widget_id_items: Vec<ToolBarIdItem>,
-    /// The shared registry used to paint and route id-backed items.
-    registry: Option<Rc<RefCell<SimpleRegistry>>>,
     /// The box each hosted widget occupied on the last paint, for event routing.
     widget_bands: Vec<(String, Rect)>,
     /// The layout signature the resident `widget_bands` rectangles were computed for.
@@ -751,7 +749,6 @@ impl ToolBar {
             bands_cache: RefCell::new(None),
             widget_items: Vec::new(),
             widget_id_items: Vec::new(),
-            registry: None,
             widget_bands: Vec::new(),
             widget_bands_key: u64::MAX,
         }
@@ -793,21 +790,6 @@ impl ToolBar {
         &self.widget_id_items
     }
 
-    /// Binds the shared registry used for id-backed items (RW-2).
-    ///
-    /// An id-backed item has no box in this control, so both its painting and its pointer
-    /// events travel through this table. An owned item (`add_widget`) never consults it.
-    pub fn set_registry(&mut self, registry: Rc<RefCell<SimpleRegistry>>) {
-        self.registry = Some(registry);
-        self.widget_bands_key = u64::MAX;
-        self.base.request_redraw();
-    }
-
-    /// The shared registry, if one was bound.
-    pub fn registry(&self) -> Option<&Rc<RefCell<SimpleRegistry>>> {
-        self.registry.as_ref()
-    }
-
     /// Mounts `widget` as a toolbar item after the action items.
     ///
     /// The id must be unique among the mounted widgets; a duplicate is refused so
@@ -834,10 +816,10 @@ impl ToolBar {
 
     /// Mounts an already-mounted control as a toolbar item (RW-2).
     ///
-    /// The id must be unique across both hosted lists. The control is addressed through the
-    /// registry bound with [`Self::set_registry`] for both painting and pointer forwarding; the
-    /// toolbar does not take ownership of it. Returns `false` for an empty or duplicate id, or
-    /// for an id that is not mounted.
+    /// The id must be unique across both hosted lists. The control is placed by its id through
+    /// [`crate::set_widget_geometry`] and painted by the tree painter; the toolbar does not take
+    /// ownership of it. Returns `false` for an empty or duplicate id, or for an id that is not
+    /// mounted.
     pub fn add_widget_item(&mut self, id: impl Into<String>, widget: ObjectId) -> bool {
         let id = id.into();
         if id.is_empty()
@@ -1484,6 +1466,12 @@ impl ToolBar {
         if let Some(item) = self.items.get_mut(index) {
             item.set_enabled(enabled);
         }
+        // M2-01: a disabled item must not keep the hover highlight it had when it was enabled —
+        // the pointer does not have to move for the state to change, so waiting for the next
+        // `MouseMove` left a "clickable" ring around a control that ignores presses.
+        if !enabled && self.hovered_index == Some(index) {
+            self.hovered_index = None;
+        }
         self.base.request_redraw();
     }
     /// Returns enabled state for item at index.
@@ -1945,7 +1933,6 @@ impl ToolBar {
             let hint = Self::registered_item_hint(item.widget);
             key = key.rotate_left(7) ^ (u64::from(hint.width) << 32 | u64::from(hint.height));
         }
-        let registry = self.registry.clone();
         if key == self.widget_bands_key && self.widget_bands.len() == total {
             for (index, item) in self.widget_items.iter_mut().enumerate() {
                 let band = self.widget_bands[index].1;
@@ -1960,7 +1947,7 @@ impl ToolBar {
             }
             for (offset, item) in self.widget_id_items.iter().enumerate() {
                 let band = self.widget_bands[self.widget_items.len() + offset].1;
-                Self::paint_registered_item(registry.as_ref(), item.widget, band, context);
+                Self::paint_registered_item(item.widget, band, context);
             }
             return;
         }
@@ -2010,7 +1997,7 @@ impl ToolBar {
                 self.widget_bands[index].0.clone_from(&item.id);
             }
             self.widget_bands[index].1 = band;
-            Self::paint_registered_item(registry.as_ref(), item.widget, band, context);
+            Self::paint_registered_item(item.widget, band, context);
             cursor += extent as i32 + dimensions::TOOLBAR_SPACING as i32;
         }
         self.widget_bands_key = key;
@@ -2036,19 +2023,12 @@ impl ToolBar {
             .max(1)
     }
 
-    /// Places and paints one id-backed control through the shared registry.
-    fn paint_registered_item(
-        registry: Option<&Rc<RefCell<SimpleRegistry>>>,
-        widget_id: ObjectId,
-        band: Rect,
-        context: &mut RenderContext,
-    ) {
+    /// Places one id-backed control in its band.
+    ///
+    /// The control is mounted in the widget tree, so the tree painter draws it; this is the
+    /// placement half only.
+    fn paint_registered_item(widget_id: ObjectId, band: Rect, _context: &mut RenderContext) {
         crate::set_widget_geometry(widget_id, band.x, band.y, band.width, band.height);
-        if let Some(registry) = registry {
-            let mut registry = registry.borrow_mut();
-            registry.set_widget_geometry(widget_id, band);
-            registry.draw_widget(widget_id, context);
-        }
     }
 
     /// The painted box of item `index`, or `None` when the index is not offered.
@@ -2265,6 +2245,10 @@ impl ToolBar {
 impl Widget for ToolBar {
     fn base(&self) -> &BaseWidget {
         &self.base
+    }
+    /// An overflowing strip walks its hidden items under the wheel (C2-D0).
+    fn accepts_wheel(&self) -> bool {
+        true
     }
     fn set_state_theme_hook(&mut self) {
         crate::style::reapply_active_theme_state(self);
@@ -2504,15 +2488,6 @@ impl EventHandler for ToolBar {
                     item.widget.handle_event(event);
                     return;
                 }
-                if let Some(item) = self.widget_id_items.iter().find(|item| item.id == id) {
-                    // An id-backed item is not owned here: its event path is the registry,
-                    // exactly as its paint path is.
-                    if let Some(registry) = &self.registry {
-                        let widget_id = item.widget;
-                        registry.borrow_mut().forward_event(widget_id, event);
-                    }
-                    return;
-                }
             }
         }
         match event {
@@ -2520,7 +2495,16 @@ impl EventHandler for ToolBar {
                 // The grip is not an item: hovering it must not light up the action underneath
                 // the affordance the pointer is actually over.
                 let over_grip = self.movable && self.drag_band().contains_point(*pos);
-                self.hovered_index = if over_grip { None } else { self.hit_item(*pos) };
+                // M2-01: `hit_item` stays a pure geometry question (the tooltip lookup and the
+                // M-016 reorder path also use it); the disabled filter belongs at the assignment,
+                // the same shape the menu's hover uses.
+                self.hovered_index = if over_grip {
+                    None
+                } else {
+                    self.hit_item(*pos).filter(|&index| {
+                        self.items.get(index).map(|item| item.is_enabled()).unwrap_or(false)
+                    })
+                };
                 self.tooltips.note_pointer(*pos);
                 self.sync_hover_tooltip();
                 // An editable strip reorders the item under a held press. The move is
@@ -2660,12 +2644,17 @@ impl EventHandler for ToolBar {
                 // The wheel walks the overflow window rather than doing nothing: once a
                 // strip overflows, the hidden items have no other pointer path.
                 let max = self.items.len().saturating_sub(self.effective_capacity());
+                let before = self.overflow_offset;
                 if delta.y > 0 {
                     self.overflow_offset = self.overflow_offset.saturating_sub(1);
                 } else if delta.y < 0 {
                     self.overflow_offset = (self.overflow_offset + 1).min(max);
                 }
                 self.base.request_redraw();
+                // C2-D0: an overflow window at its end lets an outer container scroll.
+                if self.overflow_offset != before {
+                    crate::widget::runtime::claim_wheel();
+                }
             }
             _ => { /* Other events are not relevant */ }
         }
@@ -3507,12 +3496,10 @@ mod tests {
         assert!(bar.widget_band("hosted").is_none(), "a removed widget has no band");
     }
 
-    /// RW-2: an id-backed item is laid out, painted and routed through the shared registry.
+    /// RW-2: an id-backed item is laid out in the strip and released on removal, while the
+    /// mounted control keeps its own paint path through the widget tree.
     #[test]
-    fn an_id_backed_item_uses_the_registry_for_paint_and_events() {
-        use std::sync::atomic::{AtomicUsize, Ordering};
-        use std::sync::Arc;
-
+    fn an_id_backed_item_is_laid_out_and_removed() {
         let widget = crate::widget::runtime::register(Box::new(
             crate::widget::base_widgets::button::Button::new(
                 "Go".to_string(),
@@ -3520,38 +3507,20 @@ mod tests {
             ),
         ))
         .expect("the control mounts");
-        let drawn = Arc::new(AtomicUsize::new(0));
-        let events = Arc::new(AtomicUsize::new(0));
-        let draw_sink = Arc::clone(&drawn);
-        let event_sink = Arc::clone(&events);
-        let mut registry = SimpleRegistry::new();
-        registry.register(
-            widget,
-            move |_context| {
-                draw_sink.fetch_add(1, Ordering::SeqCst);
-            },
-            move |_event| {
-                event_sink.fetch_add(1, Ordering::SeqCst);
-            },
-        );
-        let registry = Rc::new(RefCell::new(registry));
 
         let mut bar = ToolBar::new(Rect::new(0, 0, 300, dimensions::TOOLBAR_HEIGHT));
         bar.add_action("open", "Open");
-        bar.set_registry(Rc::clone(&registry));
         assert!(bar.add_widget_item("hosted-id", widget));
         assert_eq!(bar.widget_id("hosted-id"), Some(widget));
         assert!(!bar.add_widget_item("hosted-id", widget), "a duplicate id is refused");
 
         let _ = crate::widget::svg::render_to_svg(&mut bar);
         let band = bar.widget_band("hosted-id").expect("the id-backed item is laid out");
-        assert!(drawn.load(Ordering::SeqCst) >= 1, "the registry drew the item");
-        bar.handle_event(&crate::event::Event::MousePress {
-            pos: crate::core::Point::new(band.x + 2, band.y + 2),
-            button: 1,
-            modifiers: 0,
-        });
-        assert_eq!(events.load(Ordering::SeqCst), 1, "the registry received the press");
+        assert_eq!(
+            crate::widget_geometry(widget),
+            Some((band.x, band.y, band.width, band.height)),
+            "the control is placed in its band"
+        );
 
         assert_eq!(bar.remove_widget_item("hosted-id"), Some(widget));
         assert!(bar.widget_band("hosted-id").is_none());

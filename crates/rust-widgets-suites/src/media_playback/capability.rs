@@ -359,7 +359,15 @@ pub fn media_player_capability() -> WidgetCapability {
         events: MEDIA_PLAYER_EVENTS,
         // Audit 20261026: `seek_to` stays unpublished — the position is the writable
         // `position_ms` property, so a seek is that property's write (principle #18).
-        commands: &["set_source", "clear_source", "play", "pause", "set_volume"],
+        commands: &[
+            "set_source",
+            "clear_source",
+            "play",
+            "pause",
+            "set_volume",
+            "next_track",
+            "previous_track",
+        ],
     }
 }
 
@@ -548,6 +556,9 @@ pub fn default_property_value(kind: &str, name: &str) -> Option<CapabilityValue>
         ("media_transport_bar", "volume") => Some(CapabilityValue::Float(0.8)),
         ("media_transport_bar", "auto_hide_ms") => Some(CapabilityValue::UInt(3000)),
         ("media_transport_bar", "show_volume" | "show_timecode") => {
+            Some(CapabilityValue::Bool(true))
+        }
+        ("media_transport_bar", "show_fullscreen" | "show_next_previous") => {
             Some(CapabilityValue::Bool(true))
         }
         ("media_scrubber", "value" | "buffered") => Some(CapabilityValue::Float(0.0)),

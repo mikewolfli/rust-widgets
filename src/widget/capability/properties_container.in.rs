@@ -21,6 +21,13 @@ macro_rules! impl_properties_container {
             ),
             PropertySchema::new("checkable", PropertyValueKind::Bool, true, true),
             PropertySchema::new("checked", PropertyValueKind::Bool, true, true),
+            // C-08: the group can fold to its title band. `collapsible` is the capability,
+            // `collapsed` the current state; publishing both lets a manifest express the pair
+            // the control already stores instead of only its Rust setters.
+            PropertySchema::new("collapsible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("collapsed", PropertyValueKind::Bool, true, true),
+            // The form-group spelling: title and content without the face or border.
+            PropertySchema::new("flat", PropertyValueKind::Bool, true, true),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
@@ -57,6 +64,9 @@ macro_rules! impl_properties_container {
             // writable made `set_pane_count` a command whose property route refuses
             // the write it names.
             PropertySchema::new("pane_count", PropertyValueKind::UInt, true, false),
+            // The divider extent. The layout reserves the same width between panes, so this is
+            // one number for the painted handle, its grab area and the gap.
+            PropertySchema::new("handle_width", PropertyValueKind::UInt, true, true),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
@@ -107,6 +117,22 @@ macro_rules! impl_properties_container {
             // `clear_sticky_regions`; the count is what the property layer reports,
             // following the same convention as `Meter`'s threshold bands.
             PropertySchema::new("sticky_region_count", PropertyValueKind::UInt, true, false),
+            // Fling momentum for a released swipe. Off by default, so a swipe moves exactly as
+            // far as the pointer travelled.
+            PropertySchema::new("inertia", PropertyValueKind::Bool, true, true),
+            // Where a fixed-size child sits in the viewport when it is smaller than the
+            // viewport. The reader answers `Alignment::Center` on a fresh area; the tokens are
+            // the six `alignment_to_str` spellings, including the vertical pair the frame
+            // placement consumes.
+            PropertySchema::enumerated(
+                "alignment",
+                true,
+                true,
+                &["left", "centre", "right", "top", "bottom", "baseline"],
+            ),
+            // The content inset, spelled as the four sides `contents_margins` uses:
+            // `top,right,bottom,left`. Zero is the historical full-bleed content box.
+            PropertySchema::new("content_margins", PropertyValueKind::String, true, true),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
@@ -155,6 +181,9 @@ macro_rules! impl_properties_container {
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
             PropertySchema::new("document_mode", PropertyValueKind::Bool, true, true),
+            // The strip's overflow arrows. Off by default, which keeps the historical
+            // proportional shrink of a crowded run.
+            PropertySchema::new("show_overflow_buttons", PropertyValueKind::Bool, true, true),
         ];
 
         #[cfg(not(alloc_frugal))]
@@ -171,6 +200,9 @@ macro_rules! impl_properties_container {
         pub(crate) const COLLAPSIBLE_PANE_PROPERTIES: &[PropertySchema] = &[
             PropertySchema::new("title", PropertyValueKind::String, true, true),
             PropertySchema::new("collapsed", PropertyValueKind::Bool, true, true),
+            // The header bar's height. A fresh pane starts at the Material touch-target height
+            // (`dimensions::COLLAPSIBLE_HEADER_HEIGHT`), which is also the schema default.
+            PropertySchema::new("header_height", PropertyValueKind::UInt, true, true),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
@@ -209,6 +241,20 @@ macro_rules! impl_properties_container {
             // Writable since the audit: the control has a real `set_view_mode` (the entry
             // point Qt's `QMdiArea::setViewMode` answers), so the property route runs it.
             PropertySchema::enumerated("view_mode", true, true, &["sub_window_view", "tabbed"]),
+            // Which edge the tabbed view's strip occupies. `TabStripPosition::default()` is
+            // `North`, so a fresh area reports `north`.
+            PropertySchema::enumerated("tab_strip_position", true, true, &["north", "south"]),
+            // The order `activate_next_sub_window` walks. `ActivationOrder::default()` is
+            // `StackingOrder`.
+            PropertySchema::enumerated(
+                "activation_order",
+                true,
+                true,
+                &["creation_order", "stacking_order", "history_order"],
+            ),
+            // The viewport pan as `x,y`, the spelling `pan_offset` already publishes for a
+            // point-valued property. Zero until a sub-window is panned.
+            PropertySchema::new("scroll_offset", PropertyValueKind::String, true, true),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
@@ -504,6 +550,8 @@ macro_rules! impl_properties_container {
             PropertySchema::new("section_count", PropertyValueKind::UInt, true, false),
             PropertySchema::new("single_expand", PropertyValueKind::Bool, true, true),
             PropertySchema::new("expanded_count", PropertyValueKind::UInt, true, false),
+            // Open/close animation. Off by default, which keeps the historical instant fold.
+            PropertySchema::new("animated", PropertyValueKind::Bool, true, true),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),

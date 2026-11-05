@@ -1172,11 +1172,7 @@ impl MessageBox {
         if self.check_box_text.is_empty() {
             return None;
         }
-        let backend_size =
-            Size::new(self.base.geometry().width.max(1), self.base.geometry().height.max(1));
-        let mut backend = crate::render::SoftwarePaintBackend::new(backend_size, 1.0);
-        let context = RenderContext::new(&mut backend);
-        let rect = self.frame_rect(&context);
+        let rect = super::with_measurement_context(|context| self.frame_rect(context));
         let body =
             ControlMetrics::content_below_top_band(rect, dimensions::DIALOG_TITLE_BAR_HEIGHT);
         let button_band = inset_action_band(
@@ -1196,11 +1192,7 @@ impl MessageBox {
         if self.detailed_text.is_empty() {
             return None;
         }
-        let backend_size =
-            Size::new(self.base.geometry().width.max(1), self.base.geometry().height.max(1));
-        let mut backend = crate::render::SoftwarePaintBackend::new(backend_size, 1.0);
-        let context = RenderContext::new(&mut backend);
-        let rect = self.frame_rect(&context);
+        let rect = super::with_measurement_context(|context| self.frame_rect(context));
         let body =
             ControlMetrics::content_below_top_band(rect, dimensions::DIALOG_TITLE_BAR_HEIGHT);
         let button_band = inset_action_band(
@@ -1251,35 +1243,35 @@ impl MessageBox {
     /// precisely how a hit region comes to disagree with the drawing it is meant to describe.
     ///
     /// The measurement only needs a backend to ask for the line height, and the band only needs
-    /// the control's rectangle, so the press path costs no state and no redraw.
+    /// the control's rectangle, so the press path costs no state and no redraw. The backend is the
+    /// module's shared measurement-only one: a full-size target here would allocate and zero two
+    /// window-sized buffers on every pointer move (DL2-01).
     fn action_button_at(&self, pos: Point) -> Option<usize> {
-        let backend_size =
-            Size::new(self.base.geometry().width.max(1), self.base.geometry().height.max(1));
-        let mut backend = crate::render::SoftwarePaintBackend::new(backend_size, 1.0);
-        let context = RenderContext::new(&mut backend);
-        let rect = self.frame_rect(&context);
-        // The band the buttons are drawn in: the strip the title bar leaves, minus the row the
-        // message occupies — the same two derivations `draw` uses, in the same order, and the
-        // same `inset_action_band` that keeps the row off the frame's rounded corners.
-        let body =
-            ControlMetrics::content_below_top_band(rect, dimensions::DIALOG_TITLE_BAR_HEIGHT);
-        let button_band = inset_action_band(
-            ControlMetrics::bottom_band(body, dimensions::DIALOG_BUTTON_HEIGHT),
-            body.y,
-        );
         // `place` is true exactly when the box has buttons, which is the same condition `draw`
         // passes: a box with no buttons has no row to hit and `hit` on an empty row is `None`
         // anyway, but the flag also keeps the two call sites reading the same way.
         let labels = self.labels();
         let place = !self.buttons.is_empty();
-        action_row_geometry(
-            &context,
-            effective_font(self.base.style()),
-            &labels,
-            button_band,
-            place,
-        )
-        .hit(pos)
+        super::with_measurement_context(|context| {
+            let rect = self.frame_rect(context);
+            // The band the buttons are drawn in: the strip the title bar leaves, minus the row the
+            // message occupies — the same two derivations `draw` uses, in the same order, and the
+            // same `inset_action_band` that keeps the row off the frame's rounded corners.
+            let body =
+                ControlMetrics::content_below_top_band(rect, dimensions::DIALOG_TITLE_BAR_HEIGHT);
+            let button_band = inset_action_band(
+                ControlMetrics::bottom_band(body, dimensions::DIALOG_BUTTON_HEIGHT),
+                body.y,
+            );
+            action_row_geometry(
+                context,
+                effective_font(self.base.style()),
+                &labels,
+                button_band,
+                place,
+            )
+            .hit(pos)
+        })
     }
 }
 

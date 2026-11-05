@@ -219,6 +219,64 @@ impl MenuHandle {
         }
     }
 
+    /// Subscribes to the **action id** of a row the user chose (DM3-2).
+    ///
+    /// The row-level counterpart of [`MenuBarHandle::on_entry_action_triggered`]. A row's id is
+    /// what a host dispatches on; the label is presentation and may change without warning. Rows
+    /// with no id emit nothing here, so a menu whose rows are plain labels keeps behaving exactly
+    /// as before.
+    ///
+    /// This is the handle-level path to the menu's own `action_triggered` signal, which fires for
+    /// any row carrying an id — including one named through
+    /// [`WindowHandle::new_menu_item_with_action_id`].
+    pub fn on_item_action_triggered<F: FnMut(String) + Send + 'static>(&self, f: F) {
+        let id = self.raw_id();
+        let held: std::sync::Arc<std::sync::Mutex<F>> =
+            std::sync::Arc::new(std::sync::Mutex::new(f));
+        let connected = crate::widget::runtime::with_widget_mut(id, |widget| {
+            let held = std::sync::Arc::clone(&held);
+            (widget as &mut dyn core::any::Any)
+                .downcast_mut::<crate::widget::menu_toolbar::menu::Menu>()
+                .map(|menu| {
+                    menu.action_triggered.connect_ref(move |action_id: &String| {
+                        if let Ok(mut callback) = held.lock() {
+                            callback(action_id.clone());
+                        } else {
+                            log::warn!(
+                                "the menu-item action callback for widget {id} could not be \
+                                 locked; skipping this trigger rather than panicking"
+                            );
+                        }
+                    })
+                })
+        })
+        .flatten();
+        match connected {
+            Some(handle) => record_signal_connection(id, SignalKind::Triggered, handle),
+            None => {
+                log::warn!(
+                    "on_item_action_triggered ignored for id={id}: it is not a live menu, so the \
+                     callback will never run."
+                );
+                record_unwired_binding(id);
+            }
+        }
+    }
+
+    /// Names the row at `index` with an action id, or clears it with `None`.
+    ///
+    /// Returns `false` for an out-of-range row or an id that is not a live menu. The id is what
+    /// [`MenuHandle::on_item_action_triggered`] reports when that row is chosen; it does not
+    /// change the row's label or shortcut.
+    pub fn set_item_action_id(&self, index: usize, action_id: Option<String>) -> bool {
+        crate::widget::runtime::with_widget_mut(self.raw_id(), |widget| {
+            (widget as &mut dyn core::any::Any)
+                .downcast_mut::<crate::widget::menu_toolbar::menu::Menu>()
+                .is_some_and(|menu| menu.set_item_action_id(index, action_id.clone()))
+        })
+        .unwrap_or(false)
+    }
+
     /// Number of entries, separators included.
     pub fn item_count(&self) -> usize {
         crate::widget::runtime::read_widget(self.raw_id(), |widget| {
@@ -275,6 +333,52 @@ impl MenuHandle {
     /// Dismisses the popup. Returns `false` when the id is not a mounted menu.
     pub fn close(&self) -> bool {
         crate::menu_close(self.raw_id())
+    }
+}
+
+impl WindowHandle {
+    /// Add a menu item carrying an **action id** for id-based dispatch.
+    ///
+    /// The sibling of [`WindowHandle::new_menu_item`]: it creates the row and links it with
+    /// [`MenuHandle::set_item_action_id`], so choosing it reports the id through
+    /// [`MenuHandle::on_item_action_triggered`] instead of leaving the visible label as the only
+    /// routing key (DM3-2). `action_id` is optional; `None` creates exactly the row
+    /// [`WindowHandle::new_menu_item`] would.
+    ///
+    /// `shortcut` is display text, like [`WindowHandle::new_menu_item`]'s.
+    ///
+    /// # Why this is a sibling rather than a fourth parameter
+    ///
+    /// [`WindowHandle::new_menu_item`] is published API; adding a parameter would break every
+    /// host that already calls it. This is the same extension shape as
+    /// [`WindowHandle::new_menu_item_with_shortcut`] and
+    /// [`WindowHandle::new_menu_item_with_icon`].
+    pub fn new_menu_item_with_action_id(
+        &self,
+        menu: &MenuHandle,
+        text: &str,
+        shortcut: Option<&str>,
+        action_id: Option<&str>,
+    ) -> MenuItemHandle {
+        // The menu appends its rows, so the count before the call is the index the new row
+        // lands on. Reading it first also means a row the backend refused is not named: those
+        // calls return id `0` and leave the list unchanged.
+        let index = menu.item_count();
+        let item = MenuItemHandle::from_raw(crate::menu_add_item(menu.raw_id(), text, shortcut));
+        if let Some(action_id) = action_id {
+            if item.raw_id() == 0 {
+                log::warn!(
+                    "menu item {text:?} could not be created, so action id {action_id:?} names \
+                     no row"
+                );
+            } else if !menu.set_item_action_id(index, Some(action_id.to_string())) {
+                log::warn!(
+                    "menu item {text:?} was created, but action id {action_id:?} could not be \
+                     linked to row {index}; dispatch by id will not fire for it"
+                );
+            }
+        }
+        item
     }
 }
 impl_handle!(MenuItemHandle, "Type-safe handle for a native menu item.");

@@ -30,10 +30,7 @@ use rust_widgets::widget::capability::types::CapabilityValue;
 use rust_widgets::widget::capability::WidgetFactory;
 use rust_widgets::widget::input_widgets::input_validator::RangeValidator;
 use rust_widgets::widget::runtime;
-use rust_widgets::widget::SimpleRegistry;
 use rust_widgets::widget::{Widget, WidgetProperties};
-use std::cell::RefCell;
-use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 fn factory() -> WidgetFactory {
@@ -704,7 +701,6 @@ fn a_direct_child_edit_publishes_its_edges_on_the_next_event() {
     let field = mount(&factory, "line_edit", "Ada");
     let mut form = Form::new(Rect::new(0, 0, 320, 240));
     assert!(form.add_field(FormField::new("name", "Name").with_widget(field)));
-    form.set_registry(Rc::new(RefCell::new(SimpleRegistry::new())));
 
     let changed = Arc::new(Mutex::new(None::<String>));
     let sink = Arc::clone(&changed);

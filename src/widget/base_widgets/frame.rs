@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 //! Frame widget.
-use crate::compat::{format, Rc, RefCell, ToString};
+use crate::compat::{format, ToString};
 use crate::core::{Color, ObjectId, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
@@ -14,7 +14,7 @@ use crate::widget::capability::properties_trait::{base_property_get, base_proper
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::{dimensions, ControlMetrics};
-use crate::widget::{BaseWidget, Draw, InteractionFade, SimpleRegistry, Widget, WidgetKind};
+use crate::widget::{BaseWidget, Draw, InteractionFade, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
 /// How far the border moves toward its contrasting tone at full interaction strength.
@@ -50,8 +50,6 @@ pub struct Frame {
     /// offering the theme-derived expression.
     theme_bevel: bool,
     widget: Option<ObjectId>,
-    /// Optional shared registry for child widget forwarding.
-    registry: Option<Rc<RefCell<SimpleRegistry>>>,
     /// The hover/press fade that tints the outline while the pointer interacts.
     ///
     /// Both drivers rest at exactly `0.0`, so a frame that has never been pointed at paints
@@ -213,24 +211,8 @@ impl Frame {
             contents_margins: EdgeOffsets::all(0),
             theme_bevel: false,
             widget: None,
-            registry: None,
             fade: InteractionFade::new(),
         }
-    }
-    /// Sets the shared widget registry for child forwarding.
-    ///
-    /// A registry that is already installed (the same allocation) returns early: the field is a
-    /// handle, so re-storing an equal handle cannot change what any lookup answers.
-    pub fn set_registry(&mut self, registry: Rc<RefCell<SimpleRegistry>>) {
-        if self.registry.as_ref().is_some_and(|current| Rc::ptr_eq(current, &registry)) {
-            return;
-        }
-        self.registry = Some(registry);
-        self.base.request_redraw();
-    }
-    /// Returns the shared widget registry, if set.
-    pub fn registry(&self) -> Option<&Rc<RefCell<SimpleRegistry>>> {
-        self.registry.as_ref()
     }
     /// Returns frame shape.
     pub fn frame_shape(&self) -> FrameShape {
@@ -325,8 +307,8 @@ impl Frame {
     ///
     /// The margin is subtracted from the frame's own rectangle when the child is positioned, so a
     /// caller can reserve the frame's chrome without computing the inset itself. A non-zero margin
-    /// moves the registered child through [`crate::widget::SimpleRegistry::set_widget_geometry`];
-    /// zero leaves the child's geometry untouched (the historical behaviour).
+    /// moves the mounted child through [`crate::set_widget_geometry`]; zero leaves the child's
+    /// geometry untouched (the historical behaviour).
     pub fn set_contents_margins(&mut self, margins: EdgeOffsets) {
         if self.contents_margins == margins {
             return;
@@ -362,7 +344,7 @@ impl Frame {
         self.base.request_redraw();
     }
 
-    /// Positions the registered child inside [`Frame::contents_rect`].
+    /// Positions the mounted child inside [`Frame::contents_rect`].
     ///
     /// A frame with zero margins keeps the child where it was: moving it by "geometry minus zero"
     /// would be a no-op for an already-correct child but a silent move for one that the caller had
@@ -372,11 +354,20 @@ impl Frame {
         if margins.top == 0 && margins.right == 0 && margins.bottom == 0 && margins.left == 0 {
             return;
         }
-        let (Some(child), Some(registry)) = (self.widget, self.registry.as_ref()) else {
-            return;
-        };
-        let contents = self.contents_rect();
-        registry.borrow_mut().set_widget_geometry(child, contents);
+        #[cfg(not(alloc_frugal))]
+        {
+            let Some(child) = self.widget else {
+                return;
+            };
+            let contents = self.contents_rect();
+            crate::set_widget_geometry(
+                child,
+                contents.x,
+                contents.y,
+                contents.width,
+                contents.height,
+            );
+        }
     }
 
     /// The bevel tones the painter should use.
@@ -1098,8 +1089,8 @@ impl EventHandler for Frame {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
         // The four pointer events are the only ones that can change the interaction fade.
-        // They are handled before the enabled early return so a disabled frame still
-        // retargets both drivers to rest instead of leaving a hovered tint frozen in place.
+        // They are handled for a disabled frame too, so it still retargets both drivers to rest
+        // instead of leaving a hovered tint frozen in place.
         match event {
             Event::MouseEnter { .. }
             | Event::MouseLeave { .. }
@@ -1107,72 +1098,13 @@ impl EventHandler for Frame {
             | Event::MouseRelease { .. } => self.sync_fade(),
             _ => { /* Other events carry no fade-relevant pointer state */ }
         }
-        // Skip event forwarding when disabled
-        if !self.base.is_enabled() {
-            return;
-        }
-        // A pointer event is only forwarded when it actually landed on the child. The frame used to
-        // take a mutable borrow of the registry for every event in the window, including pointer
-        // moves that never touched its contents (G-A11).
-        if let Some(pos) = pointer_position(event) {
-            if !self.child_hit_rect().contains_point(pos) {
-                return;
-            }
-        }
-        // Forward events to widget via registry
-        if let Some(widget_id) = self.widget {
-            if let Some(ref reg) = self.registry {
-                reg.borrow_mut().forward_event(widget_id, event);
-            }
-        }
     }
 }
 
-/// The position a pointer event carries, or `None` for events that are not positional.
-///
-/// Wheel events carry only a delta, so they keep the historical unconditional forwarding: the
-/// platform already delivers them to the pointer's target.
-fn pointer_position(event: &Event) -> Option<Point> {
-    match event {
-        Event::MousePress { pos, .. }
-        | Event::MouseRelease { pos, .. }
-        | Event::MouseMove { pos }
-        | Event::MouseEnter { pos }
-        | Event::MouseLeave { pos } => Some(*pos),
-        #[cfg(feature = "touch")]
-        Event::TouchBegin { pos, .. }
-        | Event::TouchEnd { pos, .. }
-        | Event::TouchMove { pos, .. }
-        | Event::Tap { pos } => Some(*pos),
-        _ => None,
-    }
-}
-
-impl Frame {
-    /// The rectangle a pointer event must land in to reach the child.
-    ///
-    /// The mounted child's own geometry is authoritative where the runtime is available; without
-    /// it, the frame's content box is the honest answer (the child is laid out there).
-    fn child_hit_rect(&self) -> Rect {
-        #[cfg(not(alloc_frugal))]
-        if let Some(widget_id) = self.widget {
-            if let Some(rect) = crate::widget::runtime::geometry_of(widget_id) {
-                return rect;
-            }
-        }
-        self.contents_rect()
-    }
-}
 impl Draw for Frame {
     fn draw(&mut self, context: &mut RenderContext) {
         // Draw frame
         self.draw_frame(context);
-        // Draw widget via registry
-        if let Some(widget_id) = self.widget {
-            if let Some(ref reg) = self.registry {
-                reg.borrow_mut().draw_widget(widget_id, context);
-            }
-        }
         // Dim content when disabled.
         //
         // A **recession toward the surface**, not a grey wash: the fixed
@@ -1213,7 +1145,6 @@ mod tests {
         assert!((f.line_width() - 1.0).abs() < f32::EPSILON);
         assert!((f.mid_line_width() - 0.0).abs() < f32::EPSILON);
         assert!(f.widget().is_none());
-        assert!(f.registry().is_none());
     }
 
     #[test]
@@ -1750,43 +1681,38 @@ mod tests {
     }
 
     #[test]
-    fn a_margined_frame_positions_its_registered_child() {
-        use crate::compat::Rc;
-        use crate::render::RenderContext;
-        use std::sync::{Arc, Mutex};
+    fn a_margined_frame_positions_its_child() {
+        use crate::widget::base_widgets::label::Label;
 
-        let recorded: Arc<Mutex<Option<Rect>>> = Arc::new(Mutex::new(None));
-        let sink = recorded.clone();
-        let mut registry = SimpleRegistry::new();
-        registry.register_with_geometry(
-            7,
-            |_context: &mut RenderContext| {},
-            |_event: &Event| {},
-            move |geometry: Rect| {
-                if let Ok(mut slot) = sink.lock() {
-                    *slot = Some(geometry);
-                }
-            },
-        );
+        let id = crate::widget::runtime::register(Box::new(Label::new(
+            "content".to_string(),
+            Rect::new(0, 0, 20, 20),
+        )))
+        .expect("the test control mounts");
 
         let mut frame = Frame::new(Rect::new(10, 20, 100, 60));
-        frame.set_registry(Rc::new(RefCell::new(registry)));
-        frame.set_widget(Some(7));
-        assert_eq!(*recorded.lock().unwrap(), None, "zero margins leave the child alone");
+        frame.set_widget(Some(id));
+        assert_eq!(
+            crate::widget::runtime::geometry_of(id),
+            Some(Rect::new(0, 0, 20, 20)),
+            "zero margins leave the child alone"
+        );
 
         frame.set_contents_margins(EdgeOffsets::all(4));
         assert_eq!(
-            *recorded.lock().unwrap(),
+            crate::widget::runtime::geometry_of(id),
             Some(Rect::new(14, 24, 92, 52)),
             "the child is placed inside the contents rectangle"
         );
 
         frame.set_geometry(Rect::new(0, 0, 50, 30));
         assert_eq!(
-            *recorded.lock().unwrap(),
+            crate::widget::runtime::geometry_of(id),
             Some(Rect::new(4, 4, 42, 22)),
             "moving the frame moves the margined child with it"
         );
+
+        let _ = crate::widget::runtime::unregister(id);
     }
 
     #[test]

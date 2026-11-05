@@ -8,16 +8,14 @@ use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
 use crate::style::{MotionSlot, PropertyDriver};
-use crate::widget::capability::coercion::{expect_bool, expect_string};
+use crate::widget::capability::coercion::{expect_bool, expect_string, expect_u32};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::{dimensions, effective_font};
 use crate::widget::save_state::SaveState;
-use crate::widget::{BaseWidget, Draw, IconName, IconSource, SimpleRegistry, Widget, WidgetKind};
+use crate::widget::{BaseWidget, Draw, IconName, IconSource, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
-use std::cell::RefCell;
-use std::rc::Rc;
 
 use super::theme_snapshot::ThemeSnapshot;
 
@@ -77,7 +75,6 @@ pub struct CollapsiblePane {
     content_visible: bool,
     /// Emitted when the collapsed state changes (parameter: new collapsed state).
     pub toggled: Signal1<bool>,
-    registry: Option<Rc<RefCell<SimpleRegistry>>>,
     /// Optional icon drawn in the header ahead of the title (C-04).
     icon: Option<IconSource>,
     /// The motion token that prices the disclosure (C-05).
@@ -98,7 +95,6 @@ impl CollapsiblePane {
             open: PropertyDriver::at(1.0, MotionSlot::Normal),
             content_visible: true,
             toggled: Signal1::new(),
-            registry: None,
             icon: None,
             motion_slot: MotionSlot::Normal,
         }
@@ -221,9 +217,13 @@ impl CollapsiblePane {
 
     /// Sets the child widget to display in the content area.
     pub fn set_content(&mut self, child: ObjectId) {
-        // Remove existing content child from children list if present.
+        // C2-D1: `remove_child` left the previous child's parent link pointing back here, which is
+        // the "orphan that claims a home" `BaseWidget::remove_child` itself warns about, and it also
+        // left the detached control visible. The family contract is linked removal plus hiding.
         if let Some(existing) = self.content_child {
-            self.base.remove_child(existing);
+            self.base.remove_child_linked(existing);
+            #[cfg(not(alloc_frugal))]
+            crate::set_widget_visible(existing, false);
         }
         self.content_child = Some(child);
         self.base.add_child_linked(child);
@@ -284,12 +284,6 @@ impl CollapsiblePane {
         true
     }
 
-    /// Sets the shared widget registry for child forwarding.
-    pub fn set_registry(&mut self, registry: Rc<RefCell<SimpleRegistry>>) {
-        self.registry = Some(registry);
-        self.base.request_redraw();
-    }
-
     /// Returns the geometry of the header area.
     fn header_rect(&self) -> Rect {
         let rect = self.geometry();
@@ -325,12 +319,9 @@ impl CollapsiblePane {
             return;
         }
         if let Some(content) = self.content_child {
-            if let Some(ref reg) = self.registry {
-                reg.borrow_mut().set_widget_geometry(content, rect);
-            }
             // The main tree path (a window that paints its children) does not know this
             // control's content box; it draws the child at the child's own geometry. Writing
-            // the geometry through the public entry keeps both paths agreeing.
+            // the geometry through the public entry keeps every path agreeing.
             crate::set_widget_geometry(content, rect.x, rect.y, rect.width, rect.height);
         }
     }
@@ -444,6 +435,7 @@ impl WidgetProperties for CollapsiblePane {
         match name {
             "title" => Ok(CapabilityValue::String(self.title().to_string())),
             "collapsed" => Ok(CapabilityValue::Bool(self.is_collapsed())),
+            "header_height" => Ok(CapabilityValue::UInt(u64::from(self.header_height()))),
             _ => base_property_get(self, name),
         }
     }
@@ -458,13 +450,17 @@ impl WidgetProperties for CollapsiblePane {
                 self.set_collapsed(expect_bool(value)?);
                 Ok(())
             }
+            "header_height" => {
+                self.set_header_height(expect_u32(value)?);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
         // Mirrors `COLLAPSIBLE_PANE_PROPERTIES`.
-        property_names_of!["title", "collapsed", BASE_PROPERTY_NAMES]
+        property_names_of!["title", "collapsed", "header_height", BASE_PROPERTY_NAMES]
     }
 
     /// Runs one of the commands `collapsible_pane` publishes.
@@ -500,65 +496,16 @@ impl EventHandler for CollapsiblePane {
                     return;
                 }
             }
-            Event::KeyPress { key, .. } if *key == key_codes::SPACE || *key == key_codes::ENTER => {
+            // Space/Enter toggles only while the pane holds focus: a pane embedded in a page
+            // must not consume the keys of whatever the user is editing.
+            Event::KeyPress { key, .. }
+                if (*key == key_codes::SPACE || *key == key_codes::ENTER)
+                    && self.base.focus_reason().is_some() =>
+            {
                 self.toggle();
                 return;
             }
             _ => {}
-        }
-
-        // Events reach the content only while there is a band to reach into. A closing pane
-        // shrinks that band, so the moment it reaches nothing the content stops receiving
-        // pointer events — which is the same rule the draw path applies, read from the same
-        // `content_rect` rather than from the logical flag, so the two cannot disagree.
-        let content_rect = self.content_rect();
-        if content_rect.height == 0 {
-            return;
-        }
-
-        if let Some(content) = self.content_child {
-            if let Some(ref reg) = self.registry {
-                // C-P13: one borrow serves the geometry write and the forward. The event used
-                // to be dispatched through a second `borrow_mut`, which is a needless
-                // re-entrancy point on a `RefCell` and two lock round-trips per event.
-                let mut registry = reg.borrow_mut();
-                registry.set_widget_geometry(content, content_rect);
-                match event {
-                    Event::MousePress { pos, .. }
-                    | Event::MouseRelease { pos, .. }
-                    | Event::MouseMove { pos }
-                    | Event::MouseDoubleClick { pos, .. } => {
-                        if content_rect.contains(*pos) {
-                            let _ = registry.forward_event(content, event);
-                        }
-                    }
-                    Event::Wheel { .. } => {
-                        let fallback = Point::new(content_rect.x + 1, content_rect.y + 1);
-                        if content_rect.contains(fallback) {
-                            let _ = registry.forward_event(content, event);
-                        }
-                    }
-                    #[cfg(feature = "touch")]
-                    Event::TouchBegin { pos, .. }
-                    | Event::TouchEnd { pos, .. }
-                    | Event::TouchMove { pos, .. }
-                    | Event::Tap { pos }
-                    | Event::DoubleTap { pos }
-                    | Event::LongPress { pos }
-                    | Event::Swipe { start: _, end: pos, .. }
-                    | Event::Drag { pos, .. }
-                    | Event::TwoFingerTap { pos }
-                    | Event::TwoFingerSwipe { centroid_start: _, centroid_end: pos, .. }
-                    | Event::Fling { pos, .. } => {
-                        if content_rect.contains(*pos) {
-                            let _ = registry.forward_event(content, event);
-                        }
-                    }
-                    _ => {
-                        let _ = registry.forward_event(content, event);
-                    }
-                }
-            }
         }
     }
 }
@@ -740,19 +687,6 @@ impl Draw for CollapsiblePane {
                 ),
                 border_color,
             );
-
-            if let Some(child_id) = self.content_child {
-                if let Some(ref reg) = self.registry {
-                    context.push_clip(
-                        content_rect.x,
-                        content_rect.y,
-                        content_rect.width,
-                        content_rect.height,
-                    );
-                    reg.borrow_mut().draw_widget(child_id, context);
-                    context.pop_clip();
-                }
-            }
         }
     }
 }
@@ -763,6 +697,7 @@ mod tests {
     #[cfg(full_widgets)]
     use crate::core::Size;
     use crate::core::{Point, Rect};
+    use crate::event::FocusReason;
     #[cfg(full_widgets)]
     use crate::render::{PaintBackend, RenderContext, SvgPaintBackend};
     use std::sync::Arc;
@@ -1100,6 +1035,12 @@ mod tests {
     fn collapsible_pane_keyboard_toggle() {
         let mut cp = make_pane();
         assert!(!cp.is_collapsed());
+
+        // Unfocused: the key belongs to whoever holds focus.
+        cp.handle_event(&Event::KeyPress { key: 32, modifiers: 0 });
+        assert!(!cp.is_collapsed(), "an unfocused pane ignores Space");
+
+        cp.handle_event(&Event::FocusGained { reason: FocusReason::Tab });
 
         // Space key toggles
         cp.handle_event(&Event::KeyPress { key: 32, modifiers: 0 });

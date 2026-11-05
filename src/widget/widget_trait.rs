@@ -6,7 +6,7 @@
 use super::{BaseWidget, WidgetKind};
 use crate::compat::{format, Any, String, ToString, Vec};
 use crate::core::{Color, Font, ObjectId, Point, Rect, Size};
-use crate::event::EventHandler;
+use crate::event::{Event, EventHandler};
 use crate::platform::accessibility::AccessibleRole;
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
 use crate::style::css::CssParser;
@@ -301,6 +301,56 @@ pub trait Widget: EventHandler + Any {
     fn children_clip(&self) -> Option<Rect> {
         None
     }
+    /// This control's paint order among its siblings; higher paints later and hit-tests first.
+    ///
+    /// The tree painter sorts each sibling list by this value before painting (stable, so equal
+    /// values keep declaration order) and the hit test visits the list in reverse, which is what
+    /// makes `set_z_index` a real `raise()`/`lower()` rather than a draw-only hint.
+    fn z_index(&self) -> i32 {
+        self.base().z_index()
+    }
+    /// Sets this control's paint order among its siblings.
+    fn set_z_index(&mut self, z_index: i32) {
+        self.base_mut().set_z_index(z_index);
+    }
+    /// Whether this control consumes wheel input that lands on its **descendants** (C2-D0).
+    ///
+    /// The router delivers a wheel event to the deepest hit-tested widget and then climbs the
+    /// parent chain, offering the event to every ancestor that answers `true` here, until one of
+    /// them claims it (see [`crate::widget::runtime::dispatch_wheel_event`]). A control that owns a
+    /// scrollable viewport overrides this; a leaf keeps the default so a wheel over ordinary content
+    /// passes through to the container it sits in.
+    fn accepts_wheel(&self) -> bool {
+        false
+    }
+    /// Whether this control is interested in `event` at all (the event accept/ignore split).
+    ///
+    /// # Why a predicate rather than a return value
+    ///
+    /// The router delivers an event to one target and has no way to tell whether a handler
+    /// "used" it — `handle_event` returns `()`, and several controls deliberately handle an
+    /// event without consuming it. This predicate is the declarative half of that contract that
+    /// *can* be answered without changing a hundred handlers: a control that is structurally
+    /// uninterested (a label, a spacer, a decorative box) says so here, and the router skips it
+    /// and offers the event to its parent instead of letting it disappear into a control that
+    /// would have ignored it anyway.
+    ///
+    /// The default is `true`, so every existing control keeps its current behaviour. A control
+    /// overrides this only when it must never claim the event kind it is asked about.
+    fn accepts_event(&self, _event: &Event) -> bool {
+        true
+    }
+    /// Whether this control wants to observe a press that lands on one of its **descendants**
+    /// (C2-M1).
+    ///
+    /// A pointer press is delivered to the deepest hit-tested widget only. A container that keeps
+    /// its own activation state (the MDI work area raises the sub-window whose content was clicked)
+    /// answers `true` here; the router then delivers the same press to the nearest such ancestor as
+    /// an *observation* — the target still receives it first and the observer does not take the
+    /// event away.
+    fn observes_child_press(&self) -> bool {
+        false
+    }
     /// Show widget.
     fn show(&mut self) {
         self.base_mut().show();
@@ -357,6 +407,16 @@ pub trait Widget: EventHandler + Any {
             return;
         }
         self.base_mut().set_enabled(enabled);
+        // B2-01: disabling the focused control takes it out of the input path. The tab chain already
+        // skips disabled controls when it *moves* focus; this is the other half — a control that
+        // loses its enabled state while holding focus must not keep receiving keys and IME input.
+        #[cfg(not(alloc_frugal))]
+        if !enabled
+            && crate::widget::runtime::focused_widget()
+                == crate::widget::runtime::registry_id_of(self.base().id())
+        {
+            crate::widget::runtime::clear_focus();
+        }
         self.set_state_theme_hook();
         // `enabled` is a state that can be seen and heard, so the write is not reported until
         // both have been told — the same contract `runtime::report_state` states for the backend

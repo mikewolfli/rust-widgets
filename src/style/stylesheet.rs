@@ -8,7 +8,6 @@
 //! LVGL's `lv_theme_t` but using Rust's type-safe CSS parser.
 
 use crate::style::css::{CssDeclaration, CssParser, ParsedCssRule};
-use crate::style::css_trace::TracedRuleSheet;
 use crate::style::selector::{with_match_scratch, ElementRef, RuleIndex};
 use crate::style::PseudoState;
 use crate::style::WidgetStyle;
@@ -228,23 +227,6 @@ impl StyleSheetManager {
     /// Clear all registered stylesheets.
     pub fn clear(&mut self) {
         self.sheets.clear();
-    }
-
-    /// The registered sheets in the form [`crate::style::css_trace`] consumes, without
-    /// re-parsing them (G-164).
-    ///
-    /// A designer tracing an application's actual stylesheets should use this rather than
-    /// [`TracedSheet`](crate::style::css_trace::TracedSheet), which exists for an unsaved editor
-    /// buffer where no registered copy exists yet.
-    pub fn traced_sheets(&self) -> Vec<TracedRuleSheet<'_>> {
-        self.sheets
-            .iter()
-            .map(|sheet| TracedRuleSheet {
-                name: &sheet.name,
-                priority: sheet.priority,
-                rules: &sheet.rules,
-            })
-            .collect()
     }
 
     /// Returns the number of registered sheets.
@@ -619,30 +601,5 @@ mod tests {
             Some(3),
             "the state rule is filed where the element can find it; the compound still outranks it"
         );
-    }
-
-    /// G-164: the registry hands the trace the rules it already parsed, and that trace names the
-    /// same winner the apply produced.
-    #[test]
-    fn traced_sheets_trace_the_rules_the_apply_uses() {
-        use crate::style::css_trace::trace_cascade_prepared;
-
-        let mut manager = StyleSheetManager::new();
-        manager.register("s", ".primary { color: #222222; } Button { color: #111111; }", 0);
-
-        let sheets = manager.traced_sheets();
-        assert_eq!(sheets.len(), 1);
-        let trace = trace_cascade_prepared("Button", Some("primary"), None, None, &sheets);
-        assert_eq!(
-            trace.origin_of("color").map(|origin| origin.value.as_str()),
-            Some("#222222"),
-            "the class rule is more specific, and it is written first"
-        );
-
-        let mut applied = make_style();
-        manager
-            .apply_to("Button", Some("primary"), None, None, &mut applied)
-            .expect("apply should succeed");
-        assert_eq!(applied.text_color, Some(Color::rgba(0x22, 0x22, 0x22, 255)));
     }
 }

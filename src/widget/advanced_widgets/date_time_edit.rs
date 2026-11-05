@@ -1073,6 +1073,9 @@ impl WidgetProperties for DateTimeEdit {
             "alignment" => Ok(CapabilityValue::String(
                 horizontal_alignment_to_str(self.alignment()).to_string(),
             )),
+            // ADV2-01: same spelling `datetime` uses, so both bounds round-trip.
+            "minimum" => Ok(CapabilityValue::String(self.minimum_datetime().to_string())),
+            "maximum" => Ok(CapabilityValue::String(self.maximum_datetime().to_string())),
             _ => base_property_get(self, name),
         }
     }
@@ -1099,6 +1102,14 @@ impl WidgetProperties for DateTimeEdit {
                 self.set_alignment(expect_horizontal_alignment(value)?);
                 Ok(())
             }
+            "minimum" => {
+                self.set_minimum_datetime(expect_datetime(value)?);
+                Ok(())
+            }
+            "maximum" => {
+                self.set_maximum_datetime(expect_datetime(value)?);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
@@ -1110,6 +1121,8 @@ impl WidgetProperties for DateTimeEdit {
             "calendar_popup",
             "calendar_first_day",
             "alignment",
+            "minimum",
+            "maximum",
             BASE_PROPERTY_NAMES
         ]
     }

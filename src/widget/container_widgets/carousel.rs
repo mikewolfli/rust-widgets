@@ -1825,13 +1825,19 @@ impl EventHandler for Carousel {
                     }
                 }
             }
-            Event::KeyPress { key, .. } | Event::KeyDown((key, _)) => match *key {
-                37 => self.previous(), // Left arrow
-                39 => self.next(),     // Right arrow
-                _ => {
-                    self.base.handle_event(event);
+            // Arrow keys page only while the carousel holds focus: a carousel embedded
+            // in a page must not consume the arrows of whatever the user is editing.
+            Event::KeyPress { key, .. } | Event::KeyDown((key, _))
+                if self.base.focus_reason().is_some() =>
+            {
+                match *key {
+                    37 => self.previous(), // Left arrow
+                    39 => self.next(),     // Right arrow
+                    _ => {
+                        self.base.handle_event(event);
+                    }
                 }
-            },
+            }
             Event::Timer { .. } => {
                 // The legacy timer path drives the same clock the frame bus does, at one nominal
                 // frame's worth of time, so a host that has not moved to the bus sees the carousel
@@ -2001,6 +2007,7 @@ impl Carousel {
 mod tests {
     use super::*;
     use crate::core::{Point, Size};
+    use crate::event::FocusReason;
     use crate::render::{PaintBackend, SoftwarePaintBackend};
     use crate::widget::base_widgets::label::Label;
     use std::sync::{Arc, Mutex};
@@ -2185,6 +2192,10 @@ mod tests {
     #[test]
     fn carousel_disabled_blocks_events() {
         let mut c = default_carousel();
+        // Focus is taken before the control is disabled: a disabled carousel would ignore the
+        // focus event, and without it the arrow-key assertion below would pass for the wrong
+        // reason — the focus gate, not the disabled guard.
+        c.handle_event(&Event::FocusGained { reason: FocusReason::Tab });
         c.set_enabled(false);
 
         // The event that would page when enabled.
@@ -2972,6 +2983,12 @@ mod tests {
 
         let child = Label::new("Hello".to_string(), Rect::new(0, 0, 300, 200));
         assert!(c.set_page_content(0, Box::new(child)));
+
+        // Unfocused: the arrow belongs to whoever holds focus, and the page must not turn.
+        c.handle_event(&Event::KeyPress { key: 39, modifiers: 0 });
+        assert_eq!(c.selected_index().unwrap_or(0), 0, "an unfocused carousel ignores the key");
+
+        c.handle_event(&Event::FocusGained { reason: FocusReason::Tab });
 
         // The carousel itself pages on arrows, so the assertion here is that the
         // call is handled without disturbing the mounted child's geometry.

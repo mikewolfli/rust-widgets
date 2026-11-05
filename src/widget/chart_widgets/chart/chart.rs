@@ -10,7 +10,9 @@ use crate::style::{MotionSlot, PropertyDriver};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
-use crate::widget::companions::{ChartDataTable, ChartTooltip, Legend, LegendEntry, ZoomStrip};
+use crate::widget::companions::{
+    ChartDataTable, ChartSeriesSnapshot, ChartTooltip, Legend, LegendEntry, ZoomStrip,
+};
 use crate::widget::metrics::{effective_font, role_font};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
@@ -124,9 +126,6 @@ impl ChartType {
     }
 }
 
-/// A chart data snapshot: `(name, points)` series and the indices to show.
-type ChartSeriesSnapshot = (Vec<(String, Vec<(f64, f64)>)>, Vec<usize>);
-
 /// Ties an attached [`ChartDataTable`] to this chart (COMP-A8).
 struct ChartDataTableBinding {
     /// Writer end of the table's snapshot queue; the table drains it in its own paint/event path.
@@ -135,6 +134,12 @@ struct ChartDataTableBinding {
     toggles: crate::compat::Arc<crate::compat::Mutex<Vec<usize>>>,
     /// The snapshot last pushed, so an unchanged chart does not rebuild the table.
     last_snapshot: ChartSeriesSnapshot,
+    /// The data + visibility revisions the last snapshot was built from (CH2-01).
+    ///
+    /// `last_snapshot` alone only says *whether* the snapshot changed after building it; this key
+    /// says whether it can possibly have changed, so a static chart pays two integer comparisons
+    /// per poll instead of an O(points) rebuild.
+    last_generation: (u64, u64),
     /// The subscription, dropped with the binding so a detached chart leaves no slot behind.
     _scope: crate::signal::ConnectionScope,
 }
@@ -220,6 +225,14 @@ pub struct ChartWidget {
     /// Legend rows' labels and measured widths, with the key they were built for.
     legend_rows: Vec<(String, u32)>,
     legend_key: Option<(u64, usize, u32)>,
+    /// The rows the attached legend should show, and the revision they were built from.
+    ///
+    /// The revision is every input [`Self::legend_entries`] reads: the data generation, the
+    /// series count, the name generation and the visibility generation. While it is unchanged a
+    /// draw reuses the rows instead of rebuilding a `Vec` plus one `String` per series per frame
+    /// (CH2-04). The cached rows are still compared against the attached legend's own, so a caller
+    /// that edited them through [`Self::legend_mut`] is put back in line exactly as before.
+    legend_entries_cache: Option<(u64, usize, u64, u64, crate::compat::Vec<LegendEntry>)>,
     /// The hover read-out text and its measured size, with the key it was built for.
     readout_cache: Option<(usize, u64, String, u32, u32)>,
     /// The hovered bucket's tooltip line, keyed like `readout_cache`.
@@ -304,6 +317,7 @@ impl ChartWidget {
             names_generation: 0,
             legend_rows: Vec::new(),
             legend_key: None,
+            legend_entries_cache: None,
             readout_cache: None,
             hover_anchor_cache: RefCell::new(None),
             legend_hits: Vec::new(),
@@ -662,6 +676,7 @@ impl ChartWidget {
             snapshots,
             toggles,
             last_snapshot: snapshot,
+            last_generation: self.snapshot_generation(),
             _scope: scope,
         });
         self.base.request_redraw();
@@ -693,17 +708,36 @@ impl ChartWidget {
             let next = !self.is_series_visible(index);
             changed |= self.set_series_visible(index, next);
         }
+        // CH2-01: build the snapshot only when the chart's own revisions say it can differ.
+        // Both generations are folded in: `data_generation` covers the points and names, and
+        // `visibility_generation` covers `set_series_visible`, which changes the snapshot's
+        // second half without touching the data.
+        let generation = self.snapshot_generation();
+        let stale = self
+            .chart_data_table
+            .as_ref()
+            .map(|binding| binding.last_generation != generation)
+            .unwrap_or(false);
+        if !stale {
+            return changed;
+        }
         let current = self.chart_data_snapshot();
         let differs =
             self.chart_data_table.as_ref().is_some_and(|binding| current != binding.last_snapshot);
-        if differs {
-            if let Some(binding) = self.chart_data_table.as_mut() {
+        if let Some(binding) = self.chart_data_table.as_mut() {
+            binding.last_generation = generation;
+            if differs {
                 *crate::compat::lock(&binding.snapshots) = Some(current.clone());
                 binding.last_snapshot = current;
             }
-            changed = true;
         }
+        changed |= differs;
         changed
+    }
+
+    /// The revisions a data-table snapshot is a pure function of (CH2-01).
+    fn snapshot_generation(&self) -> (u64, u64) {
+        (self.data_generation, self.visibility_generation)
     }
 
     /// Follows `strip` as this chart's zoom control (COMP-A8).
@@ -956,13 +990,49 @@ impl ChartWidget {
     ///
     /// `set_entries` only runs when something actually differs, so a still frame with an attached
     /// legend does not request a redraw of its own every paint.
+    ///
+    /// The desired rows themselves are only rebuilt when one of their inputs moved (CH2-04): this
+    /// runs on every draw, and it used to `collect` a fresh `Vec<LegendEntry>` with one cloned or
+    /// formatted label per series even when nothing had changed. The revision covers every field
+    /// [`Self::legend_entries`] reads, so a stale revision is the only condition under which the
+    /// rows can differ.
     fn sync_legend(&mut self) {
         // A toggle made on the companion programmatically (not through the chart's event path)
         // is queued by the same slot; apply it before overwriting the companion's rows.
         self.drain_legend_toggles();
-        let desired = self.legend_entries();
-        if let Some(legend) = self.legend.as_mut() {
-            if legend.entries() != desired.as_slice() {
+        // No attached legend means there is nothing to keep in line, and no reason to build the
+        // rows at all (the self-drawn path reads `series_names` directly).
+        if self.legend.is_none() {
+            return;
+        }
+        let revision = (
+            self.data_generation,
+            self.series.len(),
+            self.names_generation,
+            self.visibility_generation,
+        );
+        let stale = match &self.legend_entries_cache {
+            Some((data, count, names, visibility, _)) => {
+                *data != revision.0
+                    || *count != revision.1
+                    || *names != revision.2
+                    || *visibility != revision.3
+            }
+            None => true,
+        };
+        if stale {
+            let entries = self.legend_entries();
+            self.legend_entries_cache =
+                Some((revision.0, revision.1, revision.2, revision.3, entries));
+        }
+        let Some((_, _, _, _, desired)) = self.legend_entries_cache.as_ref() else {
+            return;
+        };
+        let differs =
+            self.legend.as_ref().is_some_and(|legend| legend.entries() != desired.as_slice());
+        if differs {
+            let desired = desired.clone();
+            if let Some(legend) = self.legend.as_mut() {
                 legend.set_entries(desired);
             }
         }
@@ -2029,6 +2099,11 @@ fn hsl_to_rgb(hue_degrees: f32, saturation: f32, lightness: f32) -> Color {
 /// `right_bound` is the widget's own right edge: the label is centred on its tick, so a
 /// tick near the edge would otherwise start inside and finish outside. Clamping the origin
 /// is what keeps the axis row inside the control at any width.
+///
+/// `char_width` is the measured advance of `"M"` in `font` and `ink` is the resolved axis-label
+/// colour. Both are properties of the control rather than of a label, so each renderer resolves
+/// them once and passes them in (CH2-02); measuring and re-reading the theme here made a
+/// 40-category chart pay ~80 measurements and ~40 theme reads per frame.
 fn draw_truncated_label(
     context: &mut RenderContext,
     x: i32,
@@ -2036,6 +2111,8 @@ fn draw_truncated_label(
     label: &str,
     right_bound: i32,
     font: &Font,
+    char_width: i32,
+    ink: Color,
 ) {
     const BUDGET: usize = 6;
     if label.is_empty() {
@@ -2045,7 +2122,7 @@ fn draw_truncated_label(
     // the old constant cut `Category` to `Categ..` even in a wide slot, and a CJK label of six
     // glyphs is twice as wide as six Latin ones. The measured `M` advance is the ruler both the
     // painter and this budget share.
-    let char_width = context.measure_text("M", font).width.max(1) as i32;
+    let char_width = char_width.max(1);
     let available = (right_bound - x - 4).max(char_width * 4);
     let budget = ((available / char_width) as usize).clamp(4, 32).max(BUDGET.min(6));
     let text = if label.chars().count() > budget {
@@ -2056,22 +2133,29 @@ fn draw_truncated_label(
     };
     let width = context.measure_text(&text, font).width as i32;
     let origin_x = (x - width / 2).min(right_bound - width).max(0);
-    // Axis chrome, derived from the **panel the label is painted on**. The literal `80,80,80`
-    // is a light chart's label colour and rendered at 1.8:1 on the dark appearance — the
-    // category names were effectively invisible while the chart itself looked correct.
-    //
-    // This used to read `theme.colors.background`, which is the *window* colour, while the
-    // panel was a hardcoded white: on the dark appearance the label therefore used the dark
-    // theme's ink on a white slab. Both now come from `ChartWidget::panel_colors`, so the
-    // label cannot disagree with the panel it sits on.
-    let (surface, ink) = ChartWidget::panel_colors();
+    // Axis chrome is derived from the **panel the label is painted on**, and `ink` is that
+    // derivation's answer for the panel these labels sit on. The literal `80,80,80` used to be
+    // here and is a light chart's label colour: it rendered at 1.8:1 on the dark appearance, so
+    // the category names were effectively invisible while the chart itself looked correct.
     context.draw_text(
         crate::core::Point { x: origin_x, y: baseline_y + LABEL_ROW_TOP },
         &text,
         font,
-        ink.legible_on(surface, 4.5).with_alpha(191),
+        ink,
         HorizontalAlignment::Left,
     );
+}
+
+/// The measured `"M"` advance and the resolved axis-label ink for a category-label font.
+///
+/// The pair is resolved once per renderer instead of once per label (CH2-02). `bar_chart.rs`
+/// records the same fix for its own label loop (`# Why the label's face and its line height are
+/// resolved once`): the face and the ink belong to the control, so resolving them inside a
+/// visible-point loop paid a measurement and a theme lookup per point, per frame.
+fn category_label_ruler(context: &RenderContext, font: &Font) -> (i32, Color) {
+    let char_width = context.measure_text("M", font).width.max(1) as i32;
+    let (surface, ink) = ChartWidget::panel_colors();
+    (char_width, ink.legible_on(surface, 4.5).with_alpha(191))
 }
 
 impl ChartWidget {
@@ -2294,6 +2378,11 @@ impl ChartWidget {
         let slot = (area.right - area.left).max(1) / visible_count as i32;
         let bar_width = (slot / series_total as i32).max(1);
         let gap = if series_total > 1 { 1 } else { 2 };
+        // The label face, its ruler and its ink are properties of the control, not of a bar;
+        // resolving them inside the loop meant a measurement and a theme lookup per bar, per
+        // frame (CH2-02).
+        let label_font = effective_font(self.style());
+        let (label_char_width, label_ink) = category_label_ruler(context, label_font);
 
         for (offset, &val) in data[start..end].iter().enumerate() {
             let i = start + offset;
@@ -2327,7 +2416,9 @@ impl ChartWidget {
                         area.baseline_y,
                         label,
                         rect.x + rect.width as i32,
-                        effective_font(self.style()),
+                        label_font,
+                        label_char_width,
+                        label_ink,
                     );
                 }
             }
@@ -2350,6 +2441,9 @@ impl ChartWidget {
             return;
         }
         let color = Self::series_color(series_index);
+        // Resolved once for the whole pass, not once per point (CH2-02).
+        let label_font = effective_font(self.style());
+        let (label_char_width, label_ink) = category_label_ruler(context, label_font);
         for pair in points.windows(2) {
             context.draw_line_stroke(pair[0], pair[1], color, 2);
         }
@@ -2364,7 +2458,9 @@ impl ChartWidget {
                         area.baseline_y,
                         label,
                         rect.x + rect.width as i32,
-                        effective_font(self.style()),
+                        label_font,
+                        label_char_width,
+                        label_ink,
                     );
                 }
             }
@@ -2392,6 +2488,9 @@ impl ChartWidget {
             return;
         }
         let color = Self::series_color(series_index);
+        // Resolved once for the whole pass, not once per point (CH2-02).
+        let label_font = effective_font(self.style());
+        let (label_char_width, label_ink) = category_label_ruler(context, label_font);
         // Fill as one closed polygon: the area under a piecewise-linear curve is a polygon, so
         // one filled path replaces a one-pixel column per x. The polygon is built in the reused
         // buffer instead of cloning the vertex list first.
@@ -2424,7 +2523,9 @@ impl ChartWidget {
                         area.baseline_y,
                         label,
                         rect.x + rect.width as i32,
-                        effective_font(self.style()),
+                        label_font,
+                        label_char_width,
+                        label_ink,
                     );
                 }
             }
@@ -2467,6 +2568,9 @@ impl ChartWidget {
         let visible_count = end.saturating_sub(start).max(1);
         let slot = (area.right - area.left).max(1) / visible_count as i32;
         let bar_width = slot.saturating_sub(2).max(1);
+        // Resolved once for the whole pass, not once per bar (CH2-02).
+        let label_font = effective_font(self.style());
+        let (label_char_width, label_ink) = category_label_ruler(context, label_font);
         for (offset, &(from, to)) in totals[start..end].iter().enumerate() {
             let i = start + offset;
             let x = area.left + (offset as i32) * slot;
@@ -2496,7 +2600,9 @@ impl ChartWidget {
                     area.baseline_y,
                     label,
                     rect.x + rect.width as i32,
-                    effective_font(self.style()),
+                    label_font,
+                    label_char_width,
+                    label_ink,
                 );
             }
         }
@@ -2520,6 +2626,9 @@ impl ChartWidget {
         let available_height = area.baseline_y.saturating_sub(area.top_y).max(1);
         let stage_height = (available_height / visible_count as i32).max(1);
         let available_width = (area.right - area.left).max(1);
+        // Resolved once for the whole pass, not once per stage (CH2-02).
+        let label_font = effective_font(self.style());
+        let (label_char_width, label_ink) = category_label_ruler(context, label_font);
 
         for (offset, &value) in data[start..end].iter().enumerate() {
             let i = start + offset;
@@ -2547,7 +2656,9 @@ impl ChartWidget {
                     y + stage_height - 4,
                     label,
                     rect.x + rect.width as i32,
-                    effective_font(self.style()),
+                    label_font,
+                    label_char_width,
+                    label_ink,
                 );
             }
         }
@@ -2589,6 +2700,9 @@ impl ChartWidget {
         let slot = (area.right - area.left).max(1) / visible_count as i32;
         let body_width = slot.saturating_sub(2).max(3);
         let wick_x_offset = body_width / 2;
+        // Resolved once for the whole pass, not once per bar (CH2-02).
+        let label_font = effective_font(self.style());
+        let (label_char_width, label_ink) = category_label_ruler(context, label_font);
         for (offset, bar) in data
             .as_chunks::<VALUES_PER_BAR>()
             .0
@@ -2638,7 +2752,9 @@ impl ChartWidget {
                     area.baseline_y,
                     label,
                     rect.x + rect.width as i32,
-                    effective_font(self.style()),
+                    label_font,
+                    label_char_width,
+                    label_ink,
                 );
             }
         }
@@ -2683,6 +2799,9 @@ impl ChartWidget {
         let box_width = slot.saturating_sub(4).max(4);
         let center_offset = box_width / 2;
         let color = Self::series_color(0);
+        // Resolved once for the whole pass, not once per box (CH2-02).
+        let label_font = effective_font(self.style());
+        let (label_char_width, label_ink) = category_label_ruler(context, label_font);
         for (offset, group) in data
             .as_chunks::<VALUES_PER_BOX>()
             .0
@@ -2729,7 +2848,9 @@ impl ChartWidget {
                     area.baseline_y,
                     label,
                     rect.x + rect.width as i32,
-                    effective_font(self.style()),
+                    label_font,
+                    label_char_width,
+                    label_ink,
                 );
             }
         }
@@ -2879,6 +3000,9 @@ impl ChartWidget {
             return;
         }
         let color = Self::series_color(series_index);
+        // Resolved once for the whole pass, not once per marker (CH2-02).
+        let label_font = effective_font(self.style());
+        let (label_char_width, label_ink) = category_label_ruler(context, label_font);
         for (offset, point) in points.iter().enumerate() {
             let i = start + offset;
             context.fill_circle(*point, 3, color);
@@ -2890,7 +3014,9 @@ impl ChartWidget {
                         area.baseline_y,
                         label,
                         rect.x + rect.width as i32,
-                        effective_font(self.style()),
+                        label_font,
+                        label_char_width,
+                        label_ink,
                     );
                 }
             }

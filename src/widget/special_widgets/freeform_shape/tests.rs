@@ -8,7 +8,7 @@
 // sees but a text scan of this file does not.
 #![cfg(test)]
 
-use super::shape::FreeformShapeWidget;
+use super::shape::{FreeformShapeWidget, ShapeCanvas};
 use super::types::{BubbleTailDirection, PathSegment, ShapePath, UnitPathSegment};
 use crate::core::{Color, Point, Rect};
 use crate::event::EventHandler;
@@ -514,4 +514,50 @@ fn mouse_enter_does_not_claim_the_transparent_corner() {
     assert!(states.lock().unwrap().is_empty(), "no hover may be reported off-outline");
     shape.handle_event(&crate::event::Event::MouseEnter { pos: Point::new(50, 50) });
     assert_eq!(*states.lock().unwrap(), vec![true]);
+}
+
+/// Renders one frame of a shape canvas into `backend` and returns the RGBA pixels.
+///
+/// The backend is the caller's, so two frames over one backend exercise the layer cache: the
+/// second frame replays the cached grid rather than reissuing its lines.
+fn render_shape_canvas(
+    canvas: &mut ShapeCanvas,
+    backend: &mut crate::render::SoftwarePaintBackend,
+) -> Vec<u8> {
+    use crate::render::{PaintBackend, RenderContext};
+    use crate::widget::draw::Draw;
+    backend.begin_frame(Color::WHITE);
+    {
+        let mut context = RenderContext::new(&mut *backend);
+        canvas.draw(&mut context);
+    }
+    backend.end_frame();
+    backend.frame_rgba().to_vec()
+}
+
+/// The grid is a cached layer, and caching it must not change what is painted (SP2-03).
+#[test]
+fn the_snapped_grid_paints_the_same_pixels_on_a_steady_frame() {
+    use crate::core::Size;
+
+    let mut canvas = ShapeCanvas::new(Rect::new(0, 0, 120, 80));
+    canvas.set_snap_to_grid(true);
+    canvas.set_grid_step(10);
+    let mut backend = crate::render::SoftwarePaintBackend::new(Size::new(120, 80), 1.0);
+
+    let first = render_shape_canvas(&mut canvas, &mut backend);
+    // A frame over the same backend sees the cached layer group; the pixels must be identical.
+    let second = render_shape_canvas(&mut canvas, &mut backend);
+    assert_eq!(first, second, "a steady grid frame replays the same pixels");
+
+    // The grid is actually in the picture, rather than a cache hit that painted nothing.
+    canvas.set_snap_to_grid(false);
+    let without_grid = render_shape_canvas(&mut canvas, &mut backend);
+    assert_ne!(first, without_grid, "the grid contributes pixels");
+
+    // A new step is a different picture, so the key must miss and rebuild.
+    canvas.set_snap_to_grid(true);
+    canvas.set_grid_step(17);
+    let resteped = render_shape_canvas(&mut canvas, &mut backend);
+    assert_ne!(first, resteped, "a different step paints a different grid");
 }

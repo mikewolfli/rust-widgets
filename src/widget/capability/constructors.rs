@@ -1782,6 +1782,17 @@ pub fn create_tag(geometry: Rect, text: &str) -> Box<dyn Widget> {
 }
 
 #[cfg(full_widgets)]
+/// Creates an empty wrapping tag group. `text` is applied as the control's label when it
+/// publishes one; `TagGroup` publishes no label, so the argument is ignored.
+pub fn create_tag_group(geometry: Rect, text: &str) -> Box<dyn Widget> {
+    label(
+        geometry,
+        text,
+        Box::new(crate::widget::display_widgets::tag_group::TagGroup::new(geometry)),
+    )
+}
+
+#[cfg(full_widgets)]
 /// Creates a clock at midnight. `text` is applied as the control's label.
 pub fn create_clock(geometry: Rect, text: &str) -> Box<dyn Widget> {
     label(geometry, text, Box::new(crate::widget::display_widgets::clock::Clock::new(geometry)))

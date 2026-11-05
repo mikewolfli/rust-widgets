@@ -472,6 +472,11 @@ impl CommandPalette {
     }
 
     /// Sets the query without echoing it through [`Self::query_changed`] (RW-16).
+    ///
+    /// This is a spelling of `set_query_with(query, true)`, kept only so existing callers keep
+    /// compiling: there is one query entry point — [`Self::set_query_with`] — and this forwards to
+    /// it rather than carrying a second implementation (SP2-04). Use `set_query_with` in new code.
+    #[doc(hidden)]
     pub fn set_query_silent(&mut self, query: impl Into<String>) {
         self.set_query_with(query, true);
     }

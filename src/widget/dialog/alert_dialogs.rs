@@ -655,11 +655,10 @@ impl CardState {
 
 /// Builds the buttons for a card on the press path, where there is no render context.
 fn measured_buttons(geometry: Rect, role: &str, base: &BaseWidget, labels: &[&str]) -> Vec<Rect> {
-    let size = Size::new(geometry.width.max(1), geometry.height.max(1));
-    let mut backend = crate::render::SoftwarePaintBackend::new(size, 1.0);
-    let context = RenderContext::new(&mut backend);
     let font = card_palette(base, role).font;
-    button_rects(&context, geometry, labels, &font)
+    // `geometry` is deliberately not a backend size: this is a measurement, and a window-sized
+    // backend would allocate and zero two full RGBA buffers on every pointer move (DL2-01).
+    super::with_measurement_context(|context| button_rects(context, geometry, labels, &font))
 }
 
 // ── AlertDialog ─────────────────────────────────────────────────────────────

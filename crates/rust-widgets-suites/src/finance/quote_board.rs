@@ -1082,6 +1082,12 @@ impl Widget for QuoteBoard {
 impl rust_widgets::event::EventHandler for QuoteBoard {
     fn handle_event(&mut self, event: &rust_widgets::event::Event) {
         use rust_widgets::event::Event;
+        // A disabled board must not emit `quote_hovered`/`quote_clicked` or move its selection
+        // for a picture that is drawn as disabled; the same guard the K-line and volume panes
+        // carry (FIN-8).
+        if !self.base.is_enabled() {
+            return;
+        }
         match event {
             Event::MouseMove { pos } | Event::PointerMove { pos, .. } => {
                 let next = self.row_at(pos.y);
@@ -1566,15 +1572,6 @@ impl WidgetProperties for QuoteBoard {
         ]
     }
 
-    /// Runs one of the commands `quote_board` publishes.
-    ///
-    /// The board renders rows of quotes and has no plotted series to hang an study
-    /// on, so `add_overlay` — shared across the finance group's command lists — is
-    /// answered as [`CapabilityAccessError::UnsupportedOnWidget`]: the name is real
-    /// and this control cannot perform it. That refusal is an honest answer, not a
-    /// fix: the `commands` list still advertises an action this control cannot take,
-    /// and reconciling it is a registry decision. `set_series` carries the quote set
-    /// and is refused as [`CapabilityAccessError::OutOfRange`].
     /// Runs one of the commands `quote_board` publishes.
     ///
     /// `set_quotes` carries its value through the property route, so a bare invocation is

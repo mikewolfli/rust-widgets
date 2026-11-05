@@ -721,6 +721,10 @@ pub(crate) fn ordered_root_children(children: &mut Vec<ObjectId>) {
             true
         }
     });
+    // z-order is applied **inside** each group, so raising an ordinary child cannot put it over
+    // an open popup: the popup group stays last regardless of z (the overlay rule outranks it).
+    order_by_z(children);
+    order_by_z(&mut overlays);
     children.extend(overlays.iter().copied());
     OVERLAY_CHILD_IDS.with(|slot| {
         let mut slot = slot.borrow_mut();
@@ -729,6 +733,24 @@ pub(crate) fn ordered_root_children(children: &mut Vec<ObjectId>) {
             *slot = overlays;
         }
     });
+}
+
+/// Stable-sorts a sibling list into paint order (`z_index`, then declaration order).
+///
+/// The fast path reads one `z_index` per child and returns without sorting when every value is
+/// zero, which is the case for every tree that never calls `set_z_index`. A stable sort keeps
+/// declaration order for equal values, so painting is unchanged unless a caller opted in.
+pub(crate) fn order_by_z(children: &mut [ObjectId]) {
+    if children.len() < 2 {
+        return;
+    }
+    let non_zero = children
+        .iter()
+        .any(|child| read_widget(*child, |widget| widget.z_index()).unwrap_or(0) != 0);
+    if !non_zero {
+        return;
+    }
+    children.sort_by_key(|child| read_widget(*child, |widget| widget.z_index()).unwrap_or(0));
 }
 
 /// Renders one frame of a widget **and its descendants**, returning RGBA bytes.
@@ -1117,6 +1139,7 @@ fn paint_subtree_into(
         return_paint_children(children);
         return drew;
     }
+    order_by_z(&mut children);
     for &child in &children {
         drew |=
             paint_subtree_into(child, child_clip, backend, origin, depth + 1, painted_ids, track);
@@ -1307,6 +1330,7 @@ pub(crate) fn paint_widget_layer(
 
     let mut child_drew = false;
     let mut cacheable = true;
+    order_by_z(&mut children);
     for &child in &children {
         let painted = paint_widget_layer(
             child,
@@ -1404,6 +1428,7 @@ pub(crate) fn paint_widget_direct(
         return LayerPaint { drew: false, cacheable: false };
     }
     let mut child_drew = false;
+    order_by_z(&mut children);
     for &child in &children {
         let painted = paint_widget_layer(
             child,

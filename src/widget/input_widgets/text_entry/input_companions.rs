@@ -352,9 +352,10 @@ fn companion_colors() -> (Color, Color, Color) {
     (surface, ink, accent)
 }
 
-// COMP-C01's single home. Re-exporting rather than re-defining is what keeps one implementation
-// path for the concept (principle #101): the merge is announced here and in `suggestion_popup`.
-pub use super::suggestion_popup::{MatchMode, PopupItem, SuggestionPopup};
+// COMP-C01's single home. IN2-12: the names are **not** re-exported here any more — they had
+// three public paths (`input_widgets`, `input_widgets::text_entry`, this module). The canonical
+// one is `input_widgets` (and `text_entry` for the widget module); a host that needs them should
+// use those, so a reader no longer has to guess which copy is authoritative.
 
 // ───────────────────────────── COMP-C02 Chip ─────────────────────────────
 

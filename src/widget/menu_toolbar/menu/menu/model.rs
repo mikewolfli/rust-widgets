@@ -361,6 +361,14 @@ impl MenuEntry {
         self.action_id = Some(action_id.into());
     }
 
+    /// Removes the row's action id, leaving its presentation unchanged.
+    ///
+    /// A row without an id emits nothing from `Menu::action_triggered`, which is the behaviour
+    /// every plain row has always had.
+    pub fn clear_action_id(&mut self) {
+        self.action_id = None;
+    }
+
     /// The hover hint shown for this row, or `""` when none was set.
     pub fn tooltip(&self) -> &str {
         &self.tooltip
@@ -659,11 +667,14 @@ pub struct Menu {
     /// Emitted with the index of the entry that was chosen, alongside
     /// [`Self::triggered`]. Use this when two entries share a label.
     pub triggered_index: Signal1<usize>,
-    /// Emitted with the **action id** of a row built from an `ActionManager`.
+    /// Emitted with the **action id** of a row that carries one.
     ///
     /// This is the consumer path the action registry was missing: a menu item carries the id it
     /// was resolved from, so a host can route the activation to `ActionManager::trigger_action`
-    /// without parsing the label. A plain row emits nothing here.
+    /// without parsing the label. A row built from an [`Action`] takes the id from its command; a
+    /// plain row takes one from [`Self::set_item_action_id`] (or
+    /// [`WindowHandle::new_menu_item_with_action_id`](crate::app::WindowHandle::new_menu_item_with_action_id)).
+    /// A row with no id emits nothing here.
     pub action_triggered: Signal1<String>,
     /// Emitted just before the menu is shown, from [`Self::open_at`].
     pub about_to_show: GenericSignal,
@@ -762,6 +773,12 @@ pub struct Menu {
     /// The open nested panels, deepest last. One step per level, up to
     /// [`MAX_SUBMENU_DEPTH`]; level 0 is the menu's own list.
     pub(super) submenu_path: Vec<SubmenuLevel>,
+    /// The last pointer position a pointer event reported, if any.
+    ///
+    /// [`Event::Wheel`] carries no position, so the wheel arm needs the position the pointer was
+    /// last seen at to tell a wheel over a nested panel from one over the menu's own list (M2-02).
+    /// Only the pointer arms write it.
+    pub(super) last_pointer: Option<Point>,
     /// Whether the popup paints a tear-off strip above its rows.
     pub(super) tearoff: bool,
     /// Emitted when the tear-off strip is pressed.
@@ -826,6 +843,7 @@ impl Menu {
             hover_open_pending: None,
             hover_open_elapsed_ms: 0,
             submenu_path: Vec::new(),
+            last_pointer: None,
             tearoff: false,
             tearoff_requested: GenericSignal::new(),
             show_mnemonics: false,
@@ -1453,6 +1471,24 @@ impl Menu {
     /// `None` when `index` is out of range.
     pub fn item_enabled(&self, index: usize) -> Option<bool> {
         self.items.get(index).map(|item| item.is_enabled())
+    }
+    /// Links the entry at `index` to an action id, or clears it with `None`.
+    ///
+    /// Activation of a named row emits [`Self::action_triggered`] with this id even when the row
+    /// was not built from an [`Action`]: the id is what a host dispatches on, so the visible
+    /// label no longer has to double as a routing key (DM3-2).
+    ///
+    /// Returns `false` for an out-of-range index; the list is then unchanged.
+    pub fn set_item_action_id(&mut self, index: usize, action_id: Option<String>) -> bool {
+        let Some(item) = self.items.get_mut(index) else {
+            return false;
+        };
+        match action_id {
+            Some(action_id) => item.set_action_id(action_id),
+            None => item.clear_action_id(),
+        }
+        self.touch_items();
+        true
     }
     /// Sets the check mark of the entry at `index`.
     ///

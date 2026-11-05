@@ -8,6 +8,13 @@
 
 use super::*;
 
+/// How many formatted diagnostic labels the paint path keeps at once (GX-04).
+///
+/// The painter only labels the hovered line and the caret's line, so a handful of entries covers
+/// every ordinary frame. The cap exists so a document with many markers on those two lines cannot
+/// grow the cache without bound; reaching it drops the table and starts again.
+const DIAGNOSTIC_LABEL_CACHE_CAP: usize = 8;
+
 impl CodeEditor {
     /// Paints the diagnostic underlines and, on the caret's line only, the message.
     ///
@@ -39,6 +46,13 @@ impl CodeEditor {
         let active_line = self.cursor.head.line;
         let font = self.chrome_font();
         let label_height = context.measure_text("M", font).height as i32;
+        // The label text and its width are a pure function of the marker, the generation the
+        // marker list was last rewritten in, and the font, so they are formatted and measured once
+        // per (marker, generation, font) instead of once per frame (GX-04).
+        let generation = self.diagnostics_generation;
+        let font_size_bits = font.size().to_bits();
+        let font_weight = font.weight();
+        let mut labels = self.diagnostic_labels.borrow_mut();
         let wrapped = self.config.word_wrap;
         let columns = self.text_columns().max(1);
         for (_, marker) in inline {
@@ -100,13 +114,38 @@ impl CodeEditor {
                 Point::new(x + width as i32, underline_y),
                 marker.severity.color(),
             );
+            // The label is formatted and measured once per (marker, generation, font) and both
+            // the hover bubble and the caret-line label read that one entry.
+            let label_index = {
+                let key = DiagnosticLabelKey {
+                    line,
+                    start_column: marker.start_column(),
+                    finish_column: marker.finish_column(),
+                    generation,
+                    font_size_bits,
+                    font_weight,
+                };
+                match labels.iter().position(|cached| cached.key == key) {
+                    Some(index) => index,
+                    None => {
+                        let text = format!("{} {}", marker.severity.badge(), marker.message);
+                        let width = context.measure_text(&text, font).width;
+                        if labels.len() >= DIAGNOSTIC_LABEL_CACHE_CAP {
+                            labels.clear();
+                        }
+                        labels.push(DiagnosticLabelCache { key, text, width });
+                        labels.len() - 1
+                    }
+                }
+            };
+            let label = labels[label_index].text.as_str();
+            let label_width = labels[label_index].width as i32;
             // The full message for the hovered line. The caret's line keeps its inline
             // label below; every other line gets its message on hover, so no diagnostic is
             // readable only by moving the caret (ED-03).
             if self.hovered_diagnostic == Some(line) {
-                let hover = format!("{} {}", marker.severity.badge(), marker.message);
                 let available = (right - left).max(40) as u32;
-                let text_width = context.measure_text(&hover, font).width as i32;
+                let text_width = label_width;
                 let bubble_width = (text_width.min(available as i32 - 16).max(24) + 16) as u32;
                 let bubble_height = (label_height.max(12) + 12) as u32;
                 let bubble_x = x.min(right - bubble_width as i32).max(left);
@@ -126,7 +165,7 @@ impl CodeEditor {
                         (bubble.width.saturating_sub(16)).max(1),
                         label_height as u32,
                     ),
-                    &hover,
+                    label,
                     font,
                     marker.severity.color().legible_on(chrome.chrome_background, 4.5),
                     HorizontalAlignment::Left,
@@ -135,8 +174,6 @@ impl CodeEditor {
             if line != active_line {
                 continue;
             }
-            let label = format!("{} {}", marker.severity.badge(), marker.message);
-            let label_width = context.measure_text(&label, font).width as i32;
             // After the underlined text, not after the whole line: on a long or wrapped
             // line the end of the line is off screen, so the message would never be
             // shown; anchored to the marker it is always beside what it describes.
@@ -144,7 +181,7 @@ impl CodeEditor {
             if label_x + label_width <= right {
                 context.draw_text(
                     Point::new(label_x, y + (row_height as i32 - label_height) / 2),
-                    &label,
+                    label,
                     font,
                     marker.severity.color().legible_on(chrome.surface, 4.5),
                     HorizontalAlignment::Left,

@@ -12,10 +12,8 @@ use crate::widget::capability::properties_trait::{base_property_get, base_proper
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::save_state::SaveState;
-use crate::widget::{BaseWidget, Draw, SimpleRegistry, Widget, WidgetKind};
+use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
-use std::cell::RefCell;
-use std::rc::Rc;
 
 use super::theme_snapshot::ThemeSnapshot;
 /// Stacked widget.
@@ -27,8 +25,6 @@ pub struct StackedWidget {
     /// Not emitted for inactive children, and not emitted when the same index is
     /// re-applied; it is not emitted when the widget list is mutated.
     pub current_changed: Signal1<usize>,
-    /// Optional shared registry for child widget forwarding.
-    registry: Option<Rc<RefCell<SimpleRegistry>>>,
     /// Duration of a page slide, in milliseconds. `0` disables the transition.
     transition_ms: u32,
     /// Slide progress, `0.0` showing the previous page and `1.0` the current one.
@@ -44,19 +40,10 @@ impl StackedWidget {
             widgets: Vec::new(),
             current_index: 0,
             current_changed: Signal1::new(),
-            registry: None,
             transition_ms: 0,
             transition: 1.0,
             previous_page: None,
         }
-    }
-    /// Sets the shared widget registry for child forwarding.
-    pub fn set_registry(&mut self, registry: Rc<RefCell<SimpleRegistry>>) {
-        self.registry = Some(registry);
-    }
-    /// Returns the shared widget registry, if set.
-    pub fn registry(&self) -> Option<&Rc<RefCell<SimpleRegistry>>> {
-        self.registry.as_ref()
     }
     /// Adds a widget.
     ///
@@ -484,12 +471,6 @@ impl WidgetProperties for StackedWidget {
 impl EventHandler for StackedWidget {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
-        if let Some(widget_id) = self.current_widget() {
-            if let Some(ref reg) = self.registry {
-                reg.borrow_mut().set_widget_geometry(widget_id, self.geometry());
-                reg.borrow_mut().forward_event(widget_id, event);
-            }
-        }
     }
 }
 impl Draw for StackedWidget {
@@ -536,17 +517,6 @@ impl Draw for StackedWidget {
             self.style().resolved_corner_radii().to_array(),
             Color::BLACK,
         );
-        if let Some(widget_id) = self.current_widget() {
-            if let Some(ref reg) = self.registry {
-                context.push_clip(rect.x, rect.y, rect.width, rect.height);
-                if let Some(previous) = self.previous_page.and_then(|index| self.widgets.get(index))
-                {
-                    reg.borrow_mut().draw_widget(*previous, context);
-                }
-                reg.borrow_mut().draw_widget(widget_id, context);
-                context.pop_clip();
-            }
-        }
     }
 }
 
@@ -579,7 +549,6 @@ mod tests {
         assert!(sw.is_enabled());
         assert_eq!(sw.geometry(), Rect::new(0, 0, 300, 200));
         assert!(sw.children().is_empty());
-        assert!(sw.registry().is_none());
     }
 
     #[test]
@@ -983,37 +952,7 @@ mod tests {
         assert!(svg.len() > 50);
     }
 
-    #[test]
-    fn stacked_widget_draw_with_registry_produces_svg() {
-        use crate::widget::SimpleRegistry;
-        use std::cell::RefCell;
-        use std::rc::Rc;
-
-        let mut sw = StackedWidget::new(Rect::new(0, 0, 300, 200));
-        let reg = Rc::new(RefCell::new(SimpleRegistry::new()));
-        sw.set_registry(reg.clone());
-
-        let child_id = 7777;
-        sw.add_widget(child_id);
-
-        // Register a draw closure that draws a red rect
-        reg.borrow_mut().register(
-            child_id,
-            |ctx| {
-                ctx.fill_rect(Rect::new(10, 10, 50, 50), crate::core::Color::RED);
-            },
-            |_| {},
-        );
-
-        let svg = crate::widget::svg::render_to_svg(&mut sw);
-        assert!(svg.starts_with("<svg"));
-        assert!(svg.contains("width=\"300\""));
-        // Both the white background from StackedWidget and the red rect from the child
-        assert!(svg.contains("fill="));
-        assert!(svg.len() > 100);
-    }
-
-    // ── 13. Signal accessors ────────────────────────────────────────────────
+    // ── 13. Signal accessors ─────────────────────────────────────────────
 
     #[test]
     fn stacked_widget_current_changed_signal_emits_on_set() {
@@ -1083,60 +1022,10 @@ mod tests {
         _clicked.emit();
     }
 
-    // ── 14. Registry ───────────────────────────────────────────────────────
+    // ── 14. Event and draw robustness ────────────────────────────────────
 
     #[test]
-    fn stacked_widget_registry_delegation() {
-        use crate::widget::SimpleRegistry;
-        use std::cell::RefCell;
-        use std::rc::Rc;
-
-        let mut sw = StackedWidget::new(Rect::new(0, 0, 300, 200));
-        assert!(sw.registry().is_none());
-
-        let reg = Rc::new(RefCell::new(SimpleRegistry::new()));
-        sw.set_registry(reg.clone());
-
-        assert!(sw.registry().is_some());
-        // Verify it's the same registry via pointer identity
-        assert!(Rc::ptr_eq(sw.registry().unwrap(), &reg));
-    }
-
-    #[test]
-    fn stacked_widget_event_forwards_to_current_widget() {
-        use crate::event::Event;
-        use crate::widget::SimpleRegistry;
-        use std::cell::RefCell;
-        use std::rc::Rc;
-        use std::sync::atomic::{AtomicBool, Ordering};
-        use std::sync::Arc;
-
-        let mut sw = StackedWidget::new(Rect::new(0, 0, 300, 200));
-        let reg = Rc::new(RefCell::new(SimpleRegistry::new()));
-        sw.set_registry(reg.clone());
-
-        let child_id = 42;
-        sw.add_widget(child_id);
-
-        let received = Arc::new(AtomicBool::new(false));
-        let r = received.clone();
-        reg.borrow_mut().register(
-            child_id,
-            |_| {},
-            move |_| {
-                r.store(true, Ordering::SeqCst);
-            },
-        );
-
-        sw.handle_event(&Event::timer(0));
-        assert!(
-            received.load(Ordering::SeqCst),
-            "Event should be forwarded to current child widget"
-        );
-    }
-
-    #[test]
-    fn stacked_widget_event_noop_without_registry() {
+    fn stacked_widget_event_is_noop_for_a_timer_tick() {
         use crate::event::Event;
 
         let mut sw = StackedWidget::new(Rect::new(0, 0, 300, 200));
@@ -1146,7 +1035,7 @@ mod tests {
     }
 
     #[test]
-    fn stacked_widget_draw_noop_without_registry() {
+    fn stacked_widget_draw_with_a_page_produces_svg() {
         use crate::render::PaintBackend;
         use crate::render::RenderContext;
         use crate::render::SvgPaintBackend;
@@ -1154,7 +1043,7 @@ mod tests {
         let mut sw = StackedWidget::new(Rect::new(0, 0, 300, 200));
         sw.add_widget(widget_id_1());
 
-        // draw without registry should not panic
+        // draw with a page and no mounted surface should not panic
         let size = Size::new(300, 200);
         let mut backend = SvgPaintBackend::new(size);
         backend.begin_frame(crate::core::Color::WHITE);

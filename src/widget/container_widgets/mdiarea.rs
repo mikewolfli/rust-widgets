@@ -16,7 +16,7 @@ use crate::widget::save_state::SaveState;
 use crate::widget::IconSource;
 #[cfg(feature = "image")]
 use crate::widget::Image;
-use crate::widget::{BaseWidget, Draw, SimpleRegistry, Widget, WidgetKind};
+use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -70,8 +70,6 @@ pub struct MdiArea {
     /// A non-zero offset pans the work area without moving the stored geometries, which is
     /// what lets a host scroll a desktop larger than the visible area.
     scroll_offset: Point,
-    /// Optional shared registry for child forwarding.
-    registry: Option<Rc<RefCell<SimpleRegistry>>>,
     /// Set by a sub-window title write; the next paint consumes it and schedules the frame that
     /// makes the new title visible.
     title_dirty: Rc<Cell<bool>>,
@@ -170,6 +168,42 @@ pub enum ActivationOrder {
     /// Activation follows history order
     HistoryOrder,
 }
+/// The published token for a tab-strip position (C2-B1).
+fn tab_strip_position_to_str(position: TabStripPosition) -> &'static str {
+    match position {
+        TabStripPosition::North => "north",
+        TabStripPosition::South => "south",
+    }
+}
+
+/// Parses a published tab-strip position token.
+fn tab_strip_position_from_token(token: &str) -> Option<TabStripPosition> {
+    match token {
+        "north" => Some(TabStripPosition::North),
+        "south" => Some(TabStripPosition::South),
+        _ => None,
+    }
+}
+
+/// The published token for an activation order (C2-B1).
+fn activation_order_to_str(order: ActivationOrder) -> &'static str {
+    match order {
+        ActivationOrder::CreationOrder => "creation_order",
+        ActivationOrder::StackingOrder => "stacking_order",
+        ActivationOrder::HistoryOrder => "history_order",
+    }
+}
+
+/// Parses a published activation-order token.
+fn activation_order_from_token(token: &str) -> Option<ActivationOrder> {
+    match token {
+        "creation_order" => Some(ActivationOrder::CreationOrder),
+        "stacking_order" => Some(ActivationOrder::StackingOrder),
+        "history_order" => Some(ActivationOrder::HistoryOrder),
+        _ => None,
+    }
+}
+
 impl MdiSubWindow {
     /// Creates a new MDI sub-window.
     pub fn new(widget: ObjectId, geometry: Rect) -> Self {
@@ -344,21 +378,11 @@ impl MdiArea {
             tab_drag: None,
             maximized_restore: None,
             scroll_offset: Point::new(0, 0),
-            registry: None,
             title_dirty: Rc::new(Cell::new(false)),
             subwindow_minimized_changed: Signal1::new(),
             subwindow_tab_moved: Signal1::new(),
             z_cache: RefCell::new(None),
         }
-    }
-    /// Sets the shared widget registry for child forwarding.
-    pub fn set_registry(&mut self, registry: Rc<RefCell<SimpleRegistry>>) {
-        self.registry = Some(registry);
-        self.base.request_redraw();
-    }
-    /// Returns the shared widget registry, if set.
-    pub fn registry(&self) -> Option<&Rc<RefCell<SimpleRegistry>>> {
-        self.registry.as_ref()
     }
     /// Adds a sub-window.
     ///
@@ -377,6 +401,8 @@ impl MdiArea {
             self.subwindow_activated.emit(widget);
         }
         self.base.request_redraw();
+        // C2-M1: the new content control is placed immediately, not on the next draw.
+        self.place_subwindows();
         index
     }
     /// Removes a sub-window.
@@ -550,6 +576,8 @@ impl MdiArea {
         }
         self.scroll_offset = self.clamp_scroll_offset(self.scroll_offset);
         self.base.request_redraw();
+        // C2-M1: a restored state moves every frame, so the content controls follow.
+        self.place_subwindows();
         true
     }
 
@@ -759,22 +787,74 @@ impl MdiArea {
                 if self.active_subwindow != Some(index) {
                     return None;
                 }
-                let rect = self.geometry();
-                let strip = self.tab_strip_rect();
-                // The body is the work area the strip leaves. Both edges are taken from the same
-                // `geometry()` the strip was, so a strip clamped to a short area cannot leave the
-                // body crossing the strip's own edge.
-                let (top, bottom) = match self.tab_strip_position {
-                    TabStripPosition::North => {
-                        (strip.y + strip.height as i32, rect.y + rect.height as i32)
-                    }
-                    TabStripPosition::South => (rect.y, strip.y),
-                };
-                Some(SubwindowPlacement {
-                    frame: Rect::new(rect.x, top, rect.width, (bottom - top).max(0) as u32),
-                    title_bar: false,
-                })
+                Some(SubwindowPlacement { frame: self.work_area_rect(), title_bar: false })
             }
+        }
+    }
+
+    /// The rectangle the sub-window body occupies.
+    ///
+    /// `SubWindowView` uses the whole area; `TabbedView` uses the body the tab strip leaves, with
+    /// both edges taken from the same `geometry()` the strip was, so a strip clamped to a short
+    /// area cannot leave the body crossing the strip's own edge (C2-M1).
+    pub fn work_area_rect(&self) -> Rect {
+        let rect = self.geometry();
+        if self.view_mode != ViewMode::TabbedView {
+            return rect;
+        }
+        let strip = self.tab_strip_rect();
+        let (top, bottom) = match self.tab_strip_position {
+            TabStripPosition::North => (strip.y + strip.height as i32, rect.y + rect.height as i32),
+            TabStripPosition::South => (rect.y, strip.y),
+        };
+        Rect::new(rect.x, top, rect.width, (bottom - top).max(0) as u32)
+    }
+
+    /// Writes every sub-window's content control to its runtime geometry and visibility (C2-M1).
+    ///
+    /// Before this, the only geometry write for a sub-window's content lived inside `draw`, which
+    /// a host's paint pass cannot rely on — a real application's content stayed at the rectangle
+    /// it was constructed with while the frame around it moved. The state
+    /// has to be written where it changes, not where it is painted, so every mutator below calls
+    /// this:
+    ///
+    /// * a minimized sub-window's content is hidden — its icon is chrome, not a content view;
+    /// * a `TabbedView` page that is not active is hidden;
+    /// * a placed sub-window's content is shown at the frame minus its title bar.
+    ///
+    /// The geometry and visibility setters carry their own unchanged guards, so calling this from
+    /// a draw fallback costs two comparisons per sub-window on a static frame.
+    pub fn place_subwindows(&self) {
+        let placements: Vec<(ObjectId, Option<Rect>)> = (0..self.subwindows.len())
+            .map(|index| {
+                let subwindow = &self.subwindows[index];
+                let content = if subwindow.minimized {
+                    None
+                } else {
+                    self.subwindow_placement(index).map(|placement| {
+                        let bar = if placement.title_bar { TITLE_BAR_HEIGHT as u32 } else { 0 };
+                        Rect::new(
+                            placement.frame.x,
+                            placement.frame.y + bar as i32,
+                            placement.frame.width,
+                            placement.frame.height.saturating_sub(bar),
+                        )
+                    })
+                };
+                (subwindow.widget, content)
+            })
+            .collect();
+        for (widget, content) in placements {
+            #[cfg(not(alloc_frugal))]
+            match content {
+                Some(rect) => {
+                    crate::set_widget_geometry(widget, rect.x, rect.y, rect.width, rect.height);
+                    crate::set_widget_visible(widget, true);
+                }
+                None => crate::set_widget_visible(widget, false),
+            }
+            #[cfg(alloc_frugal)]
+            let _ = (widget, content);
         }
     }
 
@@ -802,6 +882,8 @@ impl MdiArea {
         }
         self.scroll_offset = offset;
         self.base.request_redraw();
+        // C2-M1: the pan moved every sub-window frame, so the content controls move with them.
+        self.place_subwindows();
     }
 
     /// Clamps `offset` so the content bounding box still covers the viewport where it can.
@@ -894,6 +976,7 @@ impl MdiArea {
         let clamped = self.clamp_scroll_offset(self.scroll_offset);
         self.scroll_offset = clamped;
         self.base.request_redraw();
+        self.place_subwindows();
     }
     /// Tile sub-windows.
     pub fn tile_sub_windows(&mut self) {
@@ -917,6 +1000,7 @@ impl MdiArea {
         let clamped = self.clamp_scroll_offset(self.scroll_offset);
         self.scroll_offset = clamped;
         self.base.request_redraw();
+        self.place_subwindows();
     }
     /// Arranges minimized sub-windows.
     pub fn arrange_icons(&mut self) {
@@ -944,6 +1028,10 @@ impl MdiArea {
                 - (icon_height + spacing) * row as i32;
             subwindow.geometry = Rect::new(x, y, icon_width, icon_height as u32);
         }
+        // C2-M1: the icon slots are chrome; a minimized window's content is hidden, and a
+        // restore that moved the icon back into place re-places the content with it.
+        drop(minimized);
+        self.place_subwindows();
     }
     /// Activates next sub-window.
     ///
@@ -1027,6 +1115,7 @@ impl MdiArea {
         }
         self.set_active_sub_window(widget);
         self.base.request_redraw();
+        self.place_subwindows();
         true
     }
 
@@ -1057,6 +1146,7 @@ impl MdiArea {
         }
         self.subwindow_minimized_changed.emit((widget, minimized));
         self.base.request_redraw();
+        self.place_subwindows();
         true
     }
 
@@ -1177,6 +1267,7 @@ impl MdiArea {
         }
         subwindow.geometry = Rect::new(x, y, width as u32, height as u32);
         self.base.request_redraw();
+        self.place_subwindows();
     }
 
     /// Moves the sub-window whose title bar is being dragged (C-14).
@@ -1210,6 +1301,7 @@ impl MdiArea {
         let y = if min_y <= max_y { raw_y.clamp(min_y, max_y) } else { min_y };
         subwindow.geometry = Rect::new(x, y, drag.geometry.width, drag.geometry.height);
         self.base.request_redraw();
+        self.place_subwindows();
     }
 
     /// The sub-window whose minimize/restore button is under `pos` (C-15), topmost first.
@@ -1334,6 +1426,22 @@ impl Widget for MdiArea {
     fn base(&self) -> &BaseWidget {
         &self.base
     }
+    /// The work area pans under the wheel in sub-window mode (C2-D0).
+    fn accepts_wheel(&self) -> bool {
+        true
+    }
+    /// A click inside sub-window content must raise that sub-window (C2-M1).
+    fn observes_child_press(&self) -> bool {
+        true
+    }
+    /// Sub-window frames never paint outside the work area (C2-M1).
+    ///
+    /// `TabbedView` placed its body under the strip but never clipped it, so a sub-window taller
+    /// than the body overflowed over the strip; `SubWindowView` had no clipping at all, so a frame
+    /// dragged past the area painted over whatever surrounded it.
+    fn children_clip(&self) -> Option<Rect> {
+        Some(self.work_area_rect())
+    }
     fn set_state_theme_hook(&mut self) {
         crate::style::reapply_active_theme_state(self);
     }
@@ -1363,6 +1471,8 @@ impl Widget for MdiArea {
             }
         }
         self.scroll_offset = self.clamp_scroll_offset(self.scroll_offset);
+        // C2-M1: the area moved, so every sub-window frame moved with it.
+        self.place_subwindows();
     }
 
     fn size_hint(&self) -> crate::core::Size {
@@ -1461,6 +1571,16 @@ impl WidgetProperties for MdiArea {
                 };
                 Ok(CapabilityValue::String(token.to_string()))
             }
+            "tab_strip_position" => Ok(CapabilityValue::String(
+                tab_strip_position_to_str(self.tab_strip_position()).to_string(),
+            )),
+            "activation_order" => Ok(CapabilityValue::String(
+                activation_order_to_str(self.activation_order()).to_string(),
+            )),
+            "scroll_offset" => {
+                let offset = self.scroll_offset();
+                Ok(CapabilityValue::String(format!("{},{}", offset.x, offset.y)))
+            }
             _ => base_property_get(self, name),
         }
     }
@@ -1483,6 +1603,34 @@ impl WidgetProperties for MdiArea {
                 self.set_view_mode(mode);
                 Ok(())
             }
+            "tab_strip_position" => {
+                let token = expect_string(value)?;
+                let position = tab_strip_position_from_token(&token)
+                    .ok_or(CapabilityAccessError::TypeMismatch)?;
+                self.set_tab_strip_position(position);
+                Ok(())
+            }
+            "activation_order" => {
+                let token = expect_string(value)?;
+                let order = activation_order_from_token(&token)
+                    .ok_or(CapabilityAccessError::TypeMismatch)?;
+                self.set_activation_order(order);
+                Ok(())
+            }
+            "scroll_offset" => {
+                let raw = expect_string(value)?;
+                let mut parts = raw.split(',');
+                let x = parts
+                    .next()
+                    .and_then(|part| part.trim().parse::<i32>().ok())
+                    .ok_or(CapabilityAccessError::TypeMismatch)?;
+                let y = parts
+                    .next()
+                    .and_then(|part| part.trim().parse::<i32>().ok())
+                    .ok_or(CapabilityAccessError::TypeMismatch)?;
+                self.set_scroll_offset(Point::new(x, y));
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
@@ -1493,7 +1641,15 @@ impl WidgetProperties for MdiArea {
     /// refuses: the readable set — not the schema flag — is what callers can
     /// actually use.
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["subwindow_count", "active_subwindow", "view_mode", BASE_PROPERTY_NAMES]
+        property_names_of![
+            "subwindow_count",
+            "active_subwindow",
+            "view_mode",
+            "tab_strip_position",
+            "activation_order",
+            "scroll_offset",
+            BASE_PROPERTY_NAMES
+        ]
     }
 
     /// Runs one of the commands `mdi_area` publishes.
@@ -1519,17 +1675,15 @@ impl WidgetProperties for MdiArea {
 }
 
 impl EventHandler for MdiArea {
-    /// Sub-window activation and event forwarding stop while the area is disabled.
+    /// Sub-window activation stops while the area is disabled.
     ///
-    /// Without the guard a disabled MDI area still raised whichever sub-window was clicked and
-    /// forwarded the event into it, so `set_enabled(false)` did not take the workspace out of play.
+    /// Without the guard a disabled MDI area still raised whichever sub-window was clicked, so
+    /// `set_enabled(false)` did not take the workspace out of play.
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
         if !self.base.is_enabled() {
             return;
         }
-        let mut hit_subwindow = false;
-        let mut gesture_consumed = false;
         if let Event::MousePress { pos, button, .. } = event {
             if *button == 1 {
                 // In `TabbedView` the tabs are the only clickable chrome, because the windows they
@@ -1544,7 +1698,6 @@ impl EventHandler for MdiArea {
                         let widget = self.subwindows[index].widget;
                         self.remove_sub_window(widget);
                     } else if let Some(index) = self.tab_at_point(*pos) {
-                        hit_subwindow = true;
                         self.set_active_sub_window(self.subwindows[index].widget);
                         // C-17: a press on a tab also arms a reorder. The reorder only begins once
                         // the pointer crosses the drag threshold, so selecting a tab stays a click.
@@ -1552,10 +1705,7 @@ impl EventHandler for MdiArea {
                     }
                 } else if let Some(index) = self.close_button_at(*pos) {
                     // The ✕ closes the window it belongs to — which is what the glyph says and
-                    // what `remove_sub_window` (the area's own public close path) does. The press
-                    // is *consumed* here: `hit_subwindow` stays false so it is neither
-                    // re-targeted at the window it just closed nor at whichever window the
-                    // removal activated.
+                    // what `remove_sub_window` (the area's own public close path) does.
                     let widget = self.subwindows[index].widget;
                     self.remove_sub_window(widget);
                 } else if let Some(index) = self.minimize_button_at(*pos) {
@@ -1575,9 +1725,7 @@ impl EventHandler for MdiArea {
                         geometry: self.subwindows[index].geometry,
                     });
                     self.base.set_mouse_pressed(true);
-                    gesture_consumed = true;
                 } else if let Some(index) = self.sub_window_at_position(*pos) {
-                    hit_subwindow = true;
                     self.set_active_sub_window(self.subwindows[index].widget);
                     // C-14: a press on the title bar (and not on either button, which are tested
                     // above) starts a move. A maximized window has no meaningful frame to move —
@@ -1607,7 +1755,6 @@ impl EventHandler for MdiArea {
                 if let Some(index) = self.title_bar_at(*pos) {
                     let widget = self.subwindows[index].widget;
                     self.toggle_maximized_sub_window(widget);
-                    gesture_consumed = true;
                 }
             }
         } else if let Event::MouseMove { pos } = event {
@@ -1623,30 +1770,23 @@ impl EventHandler for MdiArea {
             }
             if self.resize_drag.is_some() {
                 self.drag_resize(*pos);
-                gesture_consumed = true;
             } else if self.move_drag.is_some() {
                 self.drag_move(*pos);
-                gesture_consumed = true;
             } else if let Some((_, origin)) = self.tab_drag {
                 // C-17: cross the drag threshold before reordering, so a click stays a click.
                 if (pos.x - origin.x).abs() > 4 || (pos.y - origin.y).abs() > 4 {
                     self.drag_tab_to(*pos);
-                    gesture_consumed = true;
                 }
             }
         } else if let Event::MouseRelease { button, .. } = event {
             if *button == 1 {
                 if self.resize_drag.take().is_some() {
                     self.base.set_mouse_pressed(false);
-                    gesture_consumed = true;
                 }
                 if self.move_drag.take().is_some() {
                     self.base.set_mouse_pressed(false);
-                    gesture_consumed = true;
                 }
-                if self.tab_drag.take().is_some() {
-                    gesture_consumed = true;
-                }
+                self.tab_drag = None;
             }
         } else if let Event::MouseLeave { .. } = event {
             // Leaving the area ends the hover, so a ✕ cannot stay highlighted after the pointer
@@ -1658,23 +1798,14 @@ impl EventHandler for MdiArea {
             // C-16: the wheel pans the work area, the same viewport offset the public `scroll_by`
             // drives. `TabbedView` shows one page with no desktop to pan, so it is ignored there.
             if self.view_mode == ViewMode::SubWindowView {
+                let before = self.scroll_offset;
                 self.scroll_by(
                     -delta.x.saturating_mul(WHEEL_PAN_STEP),
                     -delta.y.saturating_mul(WHEEL_PAN_STEP),
                 );
-                gesture_consumed = true;
-            }
-        }
-        let should_forward = if gesture_consumed {
-            false
-        } else {
-            !matches!(event, Event::MousePress { .. }) || hit_subwindow
-        };
-        // Forward background-independent events, or pointer events that hit a subwindow.
-        if should_forward {
-            if let Some(widget_id) = self.active_sub_window() {
-                if let Some(ref reg) = self.registry {
-                    reg.borrow_mut().forward_event(widget_id, event);
+                // C2-D0: an area already at its pan limit lets an outer container take the notch.
+                if self.scroll_offset != before {
+                    crate::widget::runtime::claim_wheel();
                 }
             }
         }
@@ -2015,6 +2146,10 @@ impl Draw for MdiArea {
         }
         // Draw sub-windows in paint order (lowest z-order first, so the highest draws last).
         // The order is cached, so a frame that did not raise a window does not re-sort (C-P08).
+        // C2-M1: this is the "insurance" placement. Every state change already wrote the runtime
+        // geometry; doing it here as well covers a sub-window record mutated by a host through
+        // `sub_window_mut`, and the guards in the setters make it two comparisons per window.
+        self.place_subwindows();
         for index in self.z_order_indices().iter().copied() {
             let Some(placement) = self.subwindow_placement(index) else {
                 continue;
@@ -2148,24 +2283,6 @@ impl Draw for MdiArea {
                         );
                     }
                 }
-            }
-            // Draw widget content via registry
-            let content_rect = Rect::new(
-                frame_rect.x,
-                frame_rect.y + title_bar_height,
-                frame_rect.width,
-                frame_rect.height.saturating_sub(title_bar_height as u32),
-            );
-            if let Some(ref reg) = self.registry {
-                reg.borrow_mut().set_widget_geometry(subwindow.widget, content_rect);
-                context.push_clip(
-                    content_rect.x,
-                    content_rect.y,
-                    content_rect.width,
-                    content_rect.height,
-                );
-                reg.borrow_mut().draw_widget(subwindow.widget, context);
-                context.pop_clip();
             }
         }
     }
@@ -2337,7 +2454,6 @@ mod tests {
         assert!(area.is_enabled(), "should be enabled");
         assert_eq!(area.geometry(), Rect::new(0, 0, 600, 400));
         assert_eq!(area.kind(), WidgetKind::MdiArea);
-        assert!(area.registry().is_none(), "registry should be None by default");
     }
 
     /// The view mode is a real setter on the control, so a document can switch

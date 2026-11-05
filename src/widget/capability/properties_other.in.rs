@@ -542,6 +542,11 @@ macro_rules! impl_properties_other {
             PropertySchema::new("separator", PropertyValueKind::String, true, true),
             PropertySchema::new("filterable", PropertyValueKind::Bool, true, true),
             PropertySchema::new("filter", PropertyValueKind::String, true, false),
+            // IN2-06: the multi-select switch and the read-back of the selected set. The set is
+            // published with the same `NumberList` carrier as `selected_path`; each selected
+            // path is one flattened index run, exactly as `selected_path` spells one path.
+            PropertySchema::new("multi_select", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("selected_paths", PropertyValueKind::NumberList, true, false),
             // A nullable row cap applied to every column of the browsed path.
             PropertySchema::new("max_visible", PropertyValueKind::UInt, true, true),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
@@ -602,6 +607,28 @@ macro_rules! impl_properties_other {
             PropertySchema::new("viewport_columns", PropertyValueKind::UInt, true, true),
         ];
 
+        pub(crate) const TAG_GROUP_PROPERTIES: &[PropertySchema] = &[
+            // D2-001: the instance already served every one of these through `WidgetProperties`;
+            // without a table the whole capability was unreachable (the control borrowed
+            // `WidgetKind::Chip`, whose schema publishes none of them).
+            PropertySchema::new("tags", PropertyValueKind::StringList, true, true),
+            PropertySchema::new("closable", PropertyValueKind::Bool, true, true),
+            PropertySchema::enumerated(
+                "selection_mode",
+                true,
+                true,
+                &["none", "single", "multiple"],
+            ),
+            PropertySchema::new("wrap", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("spacing", PropertyValueKind::UInt, true, true),
+            // Derived from the selected tags, so it is a read-only list.
+            PropertySchema::new("selected_indices", PropertyValueKind::NumberList, true, false),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+        ];
+
         pub(crate) const METER_PROPERTIES: &[PropertySchema] = &[
             PropertySchema::new("value", PropertyValueKind::UInt, true, true),
             PropertySchema::new("minimum", PropertyValueKind::UInt, true, true),
@@ -611,6 +638,8 @@ macro_rules! impl_properties_other {
             PropertySchema::new("unit", PropertyValueKind::String, true, true),
             // Derived from the value and the unit.
             PropertySchema::new("value_text", PropertyValueKind::String, true, false),
+            // D2-010: the meter's drag-to-change affordance.
+            PropertySchema::new("interactive", PropertyValueKind::Bool, true, true),
             // The threshold list is written through `add_threshold_range` /
             // `clear_thresholds`; the count is what the property layer reports.
             PropertySchema::new("threshold_count", PropertyValueKind::UInt, true, false),
@@ -735,6 +764,11 @@ macro_rules! impl_properties_other {
         pub(crate) const BOTTOM_NAVIGATION_BAR_PROPERTIES: &[PropertySchema] = &[
             PropertySchema::new("item_count", PropertyValueKind::UInt, true, false),
             PropertySchema::new("selected_index", PropertyValueKind::UInt, true, true),
+            // Hiding the bar while the page scrolls down. Off by default, which keeps the bar
+            // pinned.
+            PropertySchema::new("hide_on_scroll", PropertyValueKind::Bool, true, true),
+            // The two-state spelling of `NavLabelBehavior`; a fresh bar names every destination.
+            PropertySchema::new("show_unselected_labels", PropertyValueKind::Bool, true, true),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
@@ -745,6 +779,8 @@ macro_rules! impl_properties_other {
         pub(crate) const NAVIGATION_DRAWER_PROPERTIES: &[PropertySchema] = &[
             PropertySchema::new("open", PropertyValueKind::Bool, true, true),
             PropertySchema::new("width", PropertyValueKind::Float, true, true),
+            // The drawer's header text; a fresh drawer is called "Navigation".
+            PropertySchema::new("title", PropertyValueKind::String, true, true),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
@@ -755,6 +791,14 @@ macro_rules! impl_properties_other {
         #[cfg(not(alloc_frugal))]
         pub(crate) const APP_BAR_PROPERTIES: &[PropertySchema] = &[
             PropertySchema::new("title", PropertyValueKind::String, true, true),
+            // The optional second line. `Null` means "no subtitle", which is why the reader
+            // reports `Null` for the absent case (the same nullable-string convention as
+            // `carousel`'s `autoplay_interval`).
+            PropertySchema::new("subtitle", PropertyValueKind::String, true, true),
+            // Whether the leading back arrow is drawn.
+            PropertySchema::new("show_back", PropertyValueKind::Bool, true, true),
+            // The trailing action's label. An empty string hides the action area.
+            PropertySchema::new("action_text", PropertyValueKind::String, true, true),
             // Which side the back arrow and the action are placed on. The bar's leading affordance
             // belongs where the reader starts, so this is not a cosmetic setting.
             PropertySchema::enumerated("direction", true, true, &["ltr", "rtl"]),
@@ -794,6 +838,9 @@ macro_rules! impl_properties_other {
             PropertySchema::new("value", PropertyValueKind::Float, true, true),
             // D-10: half-star commits.
             PropertySchema::new("allow_half_step", PropertyValueKind::Bool, true, true),
+            // D2-010: read-only ratings are a first-class state (keyboard and pointer both drop
+            // out), not a rendering detail.
+            PropertySchema::new("read_only", PropertyValueKind::Bool, true, true),
             PropertySchema::new("max", PropertyValueKind::UInt, true, true),
             // The control's own geometry of the row. `star_size` had a setter that nothing could reach
             // through the contract, and the two derived readings are what a consumer would otherwise
@@ -829,6 +876,11 @@ macro_rules! impl_properties_other {
             // D-06: the optional second action.
             PropertySchema::new("secondary_action_text", PropertyValueKind::String, true, true),
             PropertySchema::new("description", PropertyValueKind::String, true, true),
+            // D2-003: the two fields that decide whether the primary action exists at all. Without
+            // them a capability host could write prose but not create the action button (nor the
+            // keyboard path that depends on it).
+            PropertySchema::new("icon", PropertyValueKind::String, true, true),
+            PropertySchema::new("action_text", PropertyValueKind::String, true, true),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
@@ -895,6 +947,11 @@ macro_rules! impl_properties_other {
         #[cfg(not(alloc_frugal))]
         pub(crate) const ADAPTIVE_SCAFFOLD_PROPERTIES: &[PropertySchema] = &[
             PropertySchema::new("title", PropertyValueKind::String, true, true),
+            // Whether the bottom navigation band is shown at all (hidden by default until a host
+            // opts in, matching `AdaptiveScaffold::new`).
+            PropertySchema::new("show_bottom_nav", PropertyValueKind::Bool, true, true),
+            // The band's painting style: the scaffold's own strip, or a real `BottomNavigationBar`.
+            PropertySchema::enumerated("bottom_nav_style", true, true, &["classic", "material3"]),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
@@ -988,6 +1045,9 @@ macro_rules! impl_properties_other {
             PropertySchema::new("font_family", PropertyValueKind::String, true, true),
             PropertySchema::new("font_size", PropertyValueKind::Float, true, true),
             PropertySchema::new("preview_text", PropertyValueKind::String, true, true),
+            // D2-010: the two style bits the preview already applies and invalidates its cache for.
+            PropertySchema::new("bold", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("italic", PropertyValueKind::Bool, true, true),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
@@ -1044,6 +1104,11 @@ macro_rules! impl_properties_other {
             // host could call it in Rust but could not read it through the property contract.
             PropertySchema::new("tab_count", PropertyValueKind::UInt, true, false),
             PropertySchema::new("selected_index", PropertyValueKind::UInt, true, true),
+            // N2-B1: the three strip switches TabWidget already publishes, in the same token
+            // spellings (`closable`/`movable`), plus the wheel-scrolling strip.
+            PropertySchema::new("closable", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("movable", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("strip_scrollable", PropertyValueKind::Bool, true, true),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
@@ -1167,9 +1232,11 @@ macro_rules! impl_properties_other {
             PropertySchema::new("minute", PropertyValueKind::UInt, true, true),
             PropertySchema::new("second", PropertyValueKind::UInt, true, true),
             PropertySchema::new("show_seconds", PropertyValueKind::Bool, true, true),
-            // Where the face's time comes from: the host (`manual`) or the machine clock
-            // (`system`). Published as a token so the loader can select it.
-            PropertySchema::enumerated("time_source", true, true, &["manual", "system"]),
+            // Where the face's time comes from: the host (`manual`), the machine clock
+            // (`system`), or UTC (`utc`) — the full `ClockTimeSource::ALL` set, so a value the
+            // instance can already read back can also be written through the capability layer
+            // (D2-002).
+            PropertySchema::enumerated("time_source", true, true, &["manual", "system", "utc"]),
             // The face form, published as the reader's own tokens; the writer parses
             // exactly this list and refuses anything else.
             PropertySchema::enumerated("display", true, true, &["dial", "digital"]),
@@ -1291,7 +1358,10 @@ macro_rules! impl_properties_other {
         pub(crate) const CHART_CROSSHAIR_PROPERTIES: &[PropertySchema] = &[
             // Two signed numbers, `[x, y]`; `Null` when hidden.
             PropertySchema::new("position", PropertyValueKind::NumberList, true, true),
-            PropertySchema::new("snap_to_data_point", PropertyValueKind::Bool, true, true),
+            // CH2-05: readable only. A crosshair has no series data of its own, so "snap" is a
+            // host-side decision the control cannot perform; publishing it as writable claimed an
+            // effect nothing implemented.
+            PropertySchema::new("snap_to_data_point", PropertyValueKind::Bool, true, false),
             PropertySchema::new("show_x", PropertyValueKind::Bool, true, true),
             PropertySchema::new("show_y", PropertyValueKind::Bool, true, true),
             PropertySchema::new("follow_pointer", PropertyValueKind::Bool, true, true),

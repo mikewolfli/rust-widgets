@@ -419,8 +419,6 @@ pub struct WindowsImeBridge {
     cursor_pos: Mutex<usize>,
     /// Last insertion-point rectangle in screen coordinates.
     cursor_rect: Mutex<(i32, i32, u32, u32)>,
-    /// Last requested candidate window position.
-    candidate_position: Mutex<ImeCandidatePosition>,
 
     // ── Native TSF handle ──
     /// Whether a real TSF thread manager was created and activated.
@@ -445,7 +443,6 @@ impl WindowsImeBridge {
             composition_start: Mutex::new(0),
             cursor_pos: Mutex::new(0),
             cursor_rect: Mutex::new((0, 0, 0, 0)),
-            candidate_position: Mutex::new(ImeCandidatePosition { x: 0, y: 0 }),
             native_ime_available: Mutex::new(false),
         };
 
@@ -658,13 +655,11 @@ impl ImeBridge for WindowsImeBridge {
     }
 
     fn set_candidate_window_position(&self, position: ImeCandidatePosition) {
-        log::debug!(
-            "[Windows IME] set_candidate_window_position: ({}, {})",
-            position.x,
-            position.y,
-        );
-        *lock(&self.candidate_position) = position;
-        // With a live TSF connection the candidate window follows the composition range.
+        // PL2-02: with a live TSF connection the candidate window follows the composition range,
+        // which TSF keeps in the focused context; there is no API here to place it at an arbitrary
+        // point, so the value is deliberately not stored. Storing it would be state written and
+        // never read.
+        let _ = position;
     }
 
     fn is_active(&self) -> bool {
@@ -824,8 +819,11 @@ mod tests {
     #[test]
     fn test_set_candidate_window_position() {
         let bridge = WindowsImeBridge::new();
+        // PL2-02: the Windows bridge does not store the position (TSF owns the candidate window),
+        // so the observable fact is that the call is harmless and does not change the state the
+        // bridge does track.
         bridge.set_candidate_window_position(ImeCandidatePosition { x: 50, y: 75 });
-        assert_eq!(*lock(&bridge.candidate_position), ImeCandidatePosition { x: 50, y: 75 });
+        assert_eq!(*lock(&bridge.cursor_rect), (0, 0, 0, 0));
     }
 
     #[test]

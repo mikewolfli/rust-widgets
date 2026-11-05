@@ -12,7 +12,7 @@ use crate::event::{key_codes, Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
 use crate::style::{MotionSlot, PropertyDriver};
-use crate::widget::capability::coercion::{expect_bool, expect_f32};
+use crate::widget::capability::coercion::{expect_bool, expect_f32, expect_string};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
@@ -707,6 +707,10 @@ impl Widget for NavigationDrawer {
     fn base(&self) -> &BaseWidget {
         &self.base
     }
+    /// The drawer's item list scrolls under the wheel (C2-D0).
+    fn accepts_wheel(&self) -> bool {
+        true
+    }
     fn set_state_theme_hook(&mut self) {
         crate::style::reapply_active_theme_state(self);
     }
@@ -774,6 +778,7 @@ impl WidgetProperties for NavigationDrawer {
             "section_separator_visible" => {
                 Ok(CapabilityValue::Bool(self.section_separator_visible()))
             }
+            "title" => Ok(CapabilityValue::String(self.title().to_string())),
             _ => base_property_get(self, name),
         }
     }
@@ -804,12 +809,22 @@ impl WidgetProperties for NavigationDrawer {
                 self.set_section_separator_visible(visible);
                 Ok(())
             }
+            "title" => {
+                self.set_title(expect_string(value)?);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["open", "width", "section_separator_visible", BASE_PROPERTY_NAMES]
+        property_names_of![
+            "open",
+            "width",
+            "section_separator_visible",
+            "title",
+            BASE_PROPERTY_NAMES
+        ]
     }
 }
 
@@ -1336,7 +1351,12 @@ impl EventHandler for NavigationDrawer {
                 // step `TabView` uses for its strip.
                 let step = if delta.y != 0 { delta.y } else { delta.x };
                 if step != 0 {
+                    let before = self.list_scroll;
                     self.scroll_list_by(-step * 24);
+                    // C2-D0: a list at either end lets an outer container scroll.
+                    if self.list_scroll != before {
+                        crate::widget::runtime::claim_wheel();
+                    }
                     return;
                 }
                 self.base.handle_event(event);

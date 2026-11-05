@@ -711,13 +711,6 @@ fn price_digit_count(mut value: u64) -> usize {
     digits
 }
 
-/// Formats a price at a fixed number of decimals, for callers that need an owned string.
-fn format_price(value: f64, decimals: usize) -> alloc::string::String {
-    let mut out = alloc::string::String::new();
-    write_price(value, decimals, &mut out);
-    out
-}
-
 impl Widget for OrderBookWidget {
     fn base(&self) -> &BaseWidget {
         &self.base
@@ -801,6 +794,11 @@ impl Widget for OrderBookWidget {
 impl rust_widgets::event::EventHandler for OrderBookWidget {
     fn handle_event(&mut self, event: &rust_widgets::event::Event) {
         use rust_widgets::event::Event;
+        // A disabled ladder must not emit hover/click signals the visual state contradicts;
+        // the same guard the K-line and volume panes carry (FIN-8).
+        if !self.base.is_enabled() {
+            return;
+        }
         match event {
             Event::MouseMove { pos } | Event::PointerMove { pos, .. } => {
                 let next = self.row_at(pos.y);
@@ -940,6 +938,11 @@ impl Draw for OrderBookWidget {
         // the allocations instead of building two fresh `String`s for every level per frame.
         let mut price_text = alloc::string::String::new();
         let mut quantity_text = alloc::string::String::new();
+        // The spread band's 10 px face and its label buffer, hoisted for the same reason: the
+        // label used to rebuild the font family and `format!` a fresh `String` every frame
+        // (FIN-9).
+        let spread_font = role_font(self.style(), 10.0);
+        let mut spread_text = alloc::string::String::new();
         let mut row = 0;
         for (block, side) in [self.first_side(), self.second_side()].into_iter().enumerate() {
             let (window_start, levels) = self.level_window(side);
@@ -1081,23 +1084,26 @@ impl Draw for OrderBookWidget {
                 rule_color,
                 1,
             );
-            let text = alloc::format!("spread {}", format_price(spread, decimals));
+            // Written into the hoisted buffer: the value is a pure function of the book, so
+            // this reuses the allocation once the ladder has drawn one frame (FIN-9).
+            spread_text.clear();
+            spread_text.push_str("spread ");
+            write_price(spread, decimals, &mut spread_text);
             // Centred on the spine rather than started at the frame's left margin: at that
             // margin the label sat on top of the last bid's price (the census sample read
             // `99.5spread 0.1`), because the row above the rule still owns that column. The
             // spine is the one place in the middle band that neither side's text occupies —
             // and because the size bars do reach it, the label is laid on a piece of the panel
             // first, so it is never read against a bid or an ask colour.
-            let font = role_font(self.style(), 10.0);
-            let label_w = context.measure_text(&text, &font).width as i32;
+            let label_w = context.measure_text(&spread_text, &spread_font).width as i32;
             context.fill_rect(
                 Rect::new(spine - label_w / 2 - 3, y - 14, (label_w + 6).max(1) as u32, 13),
                 panel,
             );
             context.draw_text(
                 Point { x: spine, y: y - 13 },
-                &text,
-                &font,
+                &spread_text,
+                &spread_font,
                 ink.blend(&panel, 0.45),
                 HorizontalAlignment::Center,
             );

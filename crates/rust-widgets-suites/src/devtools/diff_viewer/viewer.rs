@@ -1269,6 +1269,8 @@ impl WidgetProperties for DiffViewer {
             "fold_context_lines" => Ok(CapabilityValue::UInt(self.fold_context_lines as u64)),
             "unified_changed_pair" => Ok(CapabilityValue::Bool(self.unified_changed_pair)),
             "word_granularity" => Ok(CapabilityValue::Bool(self.word_granularity)),
+            "ignore_case" => Ok(CapabilityValue::Bool(self.ignore_case())),
+            "ignore_blank_lines" => Ok(CapabilityValue::Bool(self.ignore_blank_lines())),
             "whitespace_mode" => {
                 Ok(CapabilityValue::String(self.whitespace_mode.as_str().to_string()))
             }
@@ -1324,6 +1326,14 @@ impl WidgetProperties for DiffViewer {
                 self.set_word_granularity(expect_bool(value)?);
                 Ok(())
             }
+            "ignore_case" => {
+                self.set_ignore_case(expect_bool(value)?);
+                Ok(())
+            }
+            "ignore_blank_lines" => {
+                self.set_ignore_blank_lines(expect_bool(value)?);
+                Ok(())
+            }
             "whitespace_mode" => {
                 let token = expect_string(value)?;
                 let mode = WhitespaceMode::from_token(&token)
@@ -1348,6 +1358,8 @@ impl WidgetProperties for DiffViewer {
             "fold_context_lines",
             "unified_changed_pair",
             "word_granularity",
+            "ignore_case",
+            "ignore_blank_lines",
             "whitespace_mode",
             BASE_PROPERTY_NAMES
         ]
@@ -1355,19 +1367,15 @@ impl WidgetProperties for DiffViewer {
 
     /// Runs one of the commands `diff_viewer` publishes.
     ///
-    /// `select_index` names which diff line to select, and the control has no
-    /// defensible default — line 0 of a two-sided diff is not "the interesting one",
-    /// it is just the first — so a bare invocation is refused as
-    /// [`CapabilityAccessError::OutOfRange`]: the name is valid and the index is what
-    /// is missing. The property layer treats `selected_index` as read-only on purpose
-    /// (see the note on `TimelineWidget` for the same rule), which is why the command
-    /// is the only route and why it must not invent an argument. `set_texts` carries
-    /// both snapshots.
+    /// DEV-3: this control publishes **no** commands (`DIFF_VIEWER_PROPERTIES`' neighbour in
+    /// `devtools::capability` is an empty list, with the 20261026 audit note explaining why
+    /// `set_texts`/`select_index` stay Rust-side). Both names therefore answer
+    /// [`CapabilityAccessError::UnknownCommand`] — the same honest answer the factory layer gives
+    /// for a name that is not in the published list. The earlier doc claimed `select_index` had a
+    /// "valid name, missing payload" route, which no published manifest could ever reach.
     fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
-        match name {
-            "select_index" | "set_texts" => Err(CapabilityAccessError::OutOfRange),
-            _ => Err(CapabilityAccessError::UnknownCommand),
-        }
+        let _ = name;
+        Err(CapabilityAccessError::UnknownCommand)
     }
 }
 

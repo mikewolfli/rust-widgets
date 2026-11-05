@@ -100,7 +100,7 @@ impl TagGroup {
     /// Creates an empty wrapping group.
     pub fn new(geometry: Rect) -> Self {
         Self {
-            base: BaseWidget::new(WidgetKind::Chip, geometry, "TagGroup"),
+            base: BaseWidget::new(WidgetKind::TagGroup, geometry, "TagGroup"),
             tags: Vec::new(),
             closable: false,
             selection_mode: TagSelectionMode::None,
@@ -223,10 +223,12 @@ impl TagGroup {
         let mut tag = Tag::new(&text, Rect::new(0, 0, 1, 1));
         tag.set_closable(self.closable);
         // Aggregate the child's own close signal rather than re-deriving the close hit test:
-        // the tag owns the gesture, so the group cannot disagree about what was closed.
-        let group_closed = self.tag_closed.clone();
+        // the tag owns the gesture, so the group cannot disagree about what was closed. The
+        // callback owns a clone of this control's `tag_closed` signal (the slot must be
+        // `'static`), which is the only path by which the group emits it.
+        let tag_closed = self.tag_closed.clone();
         tag.closed.connect(move |value: Arc<String>| {
-            group_closed.emit((*value).clone());
+            tag_closed.emit((*value).clone());
         });
         self.tags.push(tag);
         let index = self.tags.len() - 1;
@@ -499,6 +501,28 @@ impl EventHandler for TagGroup {
 mod tests {
     use super::*;
     use crate::core::Point;
+
+    /// D2-001: the group has its own capability identity, so the factory reaches it by name and
+    /// every published event resolves to the signal the instance exposes.
+    #[test]
+    fn the_factory_reaches_the_group_under_its_own_name() {
+        use crate::widget::capability::WidgetFactory;
+
+        let factory = WidgetFactory::new_with_defaults();
+        let widget = factory
+            .create("tag_group", Rect::new(0, 0, 300, 40), "")
+            .expect("tag_group must be a registered factory name");
+        assert_eq!(widget.kind(), WidgetKind::TagGroup);
+
+        let capability = factory.capability("tag_group").expect("tag_group capability");
+        for event in capability.events {
+            assert!(
+                widget.event_signal_dyn(event.name).is_some(),
+                "published event `{}` has no signal on the instance",
+                event.name
+            );
+        }
+    }
 
     #[test]
     fn a_group_adds_removes_and_reports_its_tags() {

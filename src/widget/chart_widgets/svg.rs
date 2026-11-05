@@ -190,6 +190,41 @@ impl ChartContext for SvgChartContext {
     }
 }
 /// Render chart into SVG content and write to file.
+///
+/// This is the engine layer's production entry point: the headless structs in
+/// [`crate::widget::chart_widgets::charts`] own no widget and no rectangle, so a chart can be
+/// exported without a window, a `RenderContext` or an event loop.
+///
+/// # Example
+///
+/// ```
+/// use rust_widgets::core::{Color, Rect};
+/// use rust_widgets::widget::chart_widgets::charts::BarChart;
+/// use rust_widgets::widget::chart_widgets::svg::render_chart_to_svg_file;
+/// use rust_widgets::widget::chart_widgets::types::{Chart, ChartSeries, DataPoint};
+///
+/// let mut chart = BarChart::new();
+/// chart.add_series(ChartSeries {
+///     name: "Sales".to_string(),
+///     data: vec![
+///         DataPoint { x: 0.0, y: 3.0, label: None },
+///         DataPoint { x: 1.0, y: 5.0, label: None },
+///     ],
+///     color: Color::rgb(30, 120, 220),
+///     visible: true,
+/// });
+///
+/// let path = std::env::temp_dir().join(format!(
+///     "rust_widgets_chart_export_doctest_{}.svg",
+///     std::process::id()
+/// ));
+/// let path = path.to_string_lossy().into_owned();
+/// render_chart_to_svg_file(&chart, Rect::new(0, 0, 200, 120), &path).unwrap();
+///
+/// let svg = std::fs::read_to_string(&path).unwrap();
+/// assert!(svg.starts_with("<svg"), "{svg}");
+/// std::fs::remove_file(&path).ok();
+/// ```
 pub fn render_chart_to_svg_file(
     chart: &dyn Chart,
     rect: Rect,

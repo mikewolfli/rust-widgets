@@ -40,10 +40,8 @@ use rust_widgets::widget::capability::properties_trait::{base_property_get, base
 use rust_widgets::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use rust_widgets::widget::capability::WidgetProperties;
 use rust_widgets::widget::metrics::role_font;
-use rust_widgets::widget::{BaseWidget, Draw, SimpleRegistry, Widget, WidgetKind};
+use rust_widgets::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use rust_widgets::{impl_widget_property_hooks, property_names_of};
-use std::cell::RefCell;
-use std::rc::Rc;
 
 use super::model::FormPage;
 
@@ -93,7 +91,6 @@ pub struct FormSet {
     submit_label: String,
     previous_label: String,
     next_label: String,
-    registry: Option<Rc<RefCell<SimpleRegistry>>>,
     last_valid: bool,
     last_dirty: bool,
     /// Emitted with the new zero-based current index.
@@ -132,7 +129,6 @@ impl FormSet {
             submit_label: "Submit".to_string(),
             previous_label: "Back".to_string(),
             next_label: "Next".to_string(),
-            registry: None,
             last_valid: true,
             last_dirty: false,
             current_changed: Signal1::new(),
@@ -334,6 +330,9 @@ impl FormSet {
         let page = self.pages.remove(index);
         if let Some(form) = page.form {
             self.base.remove_child_linked(form);
+            // C2-D1: a removed page's form must not stay visible, whether it was the current page
+            // (the only case `apply_page_visibility` cannot cover) or not.
+            rust_widgets::set_widget_visible(form, false);
         }
         if index < self.current {
             self.current -= 1;
@@ -359,6 +358,8 @@ impl FormSet {
         while let Some(page) = self.pages.pop() {
             if let Some(form) = page.form {
                 self.base.remove_child_linked(form);
+                // C2-D1: `clear_pages` detaches every form, so every one is hidden.
+                rust_widgets::set_widget_visible(form, false);
             }
             self.page_removed.emit(page.key);
         }
@@ -675,16 +676,6 @@ impl FormSet {
                 );
             }
         }
-    }
-
-    /// Binds the shared forwarding table used to deliver events to the active form.
-    pub fn set_registry(&mut self, registry: Rc<RefCell<SimpleRegistry>>) {
-        self.registry = Some(registry);
-    }
-
-    /// The bound forwarding table, if any.
-    pub fn registry(&self) -> Option<&Rc<RefCell<SimpleRegistry>>> {
-        self.registry.as_ref()
     }
 
     fn publish_validity(&mut self, valid: bool) {
@@ -1157,12 +1148,6 @@ impl EventHandler for FormSet {
                 return;
             }
             _ => {}
-        }
-        let Some(registry) = self.registry.as_ref() else {
-            return;
-        };
-        if let Some(form) = self.current_form_id() {
-            let _ = registry.borrow_mut().forward_event(form, event);
         }
     }
 }

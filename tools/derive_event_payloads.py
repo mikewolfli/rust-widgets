@@ -186,9 +186,9 @@ MANUAL: dict[tuple[str, str], tuple[str, str]] = {
     # `pan_changed` carries a `Point`, which the property side has no kind for. The arm delivers
     # the `[x, y]` pair, so the wire is two signed numbers rather than a re-parsed string.
     ("zoom_pan_controller", "pan_changed"): ("Some(K::Int)", "Some(S::Tuple2)"),
-    # The filter row's arm serialises the condition list as one text value; a later revision can
-    # move the arm to a structured tuple without changing the name a subscriber uses.
-    ("filter_row", "filter_changed"): ("Some(K::String)", "Some(S::Scalar)"),
+    # CAP-1: the arm delivers one structured tuple per condition, so the wire is a composite
+    # value rather than a `Debug` dump. The composite gate requires a Tuple carrier.
+    ("filter_row", "filter_changed"): ("Some(K::String)", "Some(S::Mixed)"),
     # A code-editor change is (start line, removed lines, inserted lines, inserted text, whole
     # document) — four unsigned counts and a string, so more than one kind travels in one value.
     # The arm delivers those five components positionally rather than a `Debug` dump.

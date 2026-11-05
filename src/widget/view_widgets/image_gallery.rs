@@ -1475,6 +1475,12 @@ impl EventHandler for ImageGallery {
                     crate::event::key_codes::LEFT | crate::event::key_codes::UP => {
                         self.previous_image();
                     }
+                    // GX-06: Enter/Space open the full-screen view, which was pointer-only (the
+                    // double-click path above). The other press-to-activate controls all pair the
+                    // two forms the same way.
+                    crate::event::key_codes::ENTER | crate::event::key_codes::SPACE => {
+                        self.fullscreen_requested.emit(self.current_index);
+                    }
                     _ => {}
                 }
             }

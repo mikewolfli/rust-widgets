@@ -96,7 +96,8 @@ struct ChipLayoutKey {
 #[derive(Default)]
 struct ChipLayoutCache {
     key: Option<ChipLayoutKey>,
-    rects: Vec<(u64, Rect)>,
+    /// The chip boxes, shared so a cache hit is a refcount bump (GX-03).
+    rects: crate::compat::Rc<Vec<(u64, Rect)>>,
 }
 
 /// The identity of `font` for measurement caches.
@@ -268,7 +269,7 @@ impl PresetChipBar {
 
     /// The chip under `point`, if any.
     pub fn preset_at(&self, point: Point) -> Option<u64> {
-        self.chip_rects().into_iter().find(|(_, rect)| rect.contains_point(point)).map(|(id, _)| id)
+        self.chip_rects().iter().find(|(_, rect)| rect.contains_point(point)).map(|(id, _)| *id)
     }
 
     /// The bar's orientation.
@@ -333,7 +334,7 @@ impl PresetChipBar {
     /// The boxes depend on the bar geometry, the chip metrics, the font and the chip list, so the
     /// answer is cached under exactly those facts. A static frame replays the table instead of
     /// re-measuring every caption and re-walking the row (MISC-11).
-    fn chip_rects(&self) -> Vec<(u64, Rect)> {
+    fn chip_rects(&self) -> crate::compat::Rc<Vec<(u64, Rect)>> {
         let rect = self.base.geometry();
         let style = self.base.style();
         let font = role_font(style, self.chip_font_size());
@@ -385,11 +386,11 @@ impl PresetChipBar {
                         ChipOrientation::Vertical => self.chip_height as i32 + self.spacing as i32,
                     };
                 }
-                cache.rects = rects;
+                cache.rects = crate::compat::Rc::new(rects);
                 cache.key = Some(key);
             }
         }
-        self.chip_layout.borrow().rects.clone()
+        crate::compat::Rc::clone(&self.chip_layout.borrow().rects)
     }
 
     /// The font size a chip's caption is painted at.
@@ -454,7 +455,9 @@ impl EventHandler for PresetChipBar {
                     self.choose(id);
                 }
             }
-            Event::KeyPress { key, .. } => match *key {
+            // Arrow and Enter keys choose a chip only while the bar holds focus: an unfocused
+            // bar must not take the keys of whatever the user is editing.
+            Event::KeyPress { key, .. } if self.base.focus_reason().is_some() => match *key {
                 crate::event::key_codes::LEFT | crate::event::key_codes::UP => {
                     self.step(-1);
                 }
@@ -513,7 +516,7 @@ impl Draw for PresetChipBar {
         let font = role_font(style, self.chip_font_size());
         let radius = (self.chip_height / 2).max(2);
 
-        for (id, chip) in self.chip_rects() {
+        for &(id, chip) in self.chip_rects().iter() {
             let selected = self.selected_preset_id == Some(id);
             let hovered = self.hovered_id == Some(id);
             let fill = if selected {
@@ -707,5 +710,32 @@ mod tests {
 
         bar.remove_preset(bar.presets()[0].id);
         assert_eq!(bar.chip_rects().len(), 2);
+    }
+
+    /// Arrow and Enter keys choose a chip only while the bar holds focus.
+    #[test]
+    fn the_keyboard_chooses_a_chip_only_while_focused() {
+        use crate::event::FocusReason;
+
+        let mut bar = bar();
+        let first = bar.presets()[0].id;
+        let second = bar.presets()[1].id;
+
+        // Unfocused: the keys belong to whoever holds focus.
+        bar.handle_event(&Event::key_press(crate::event::key_codes::RIGHT, 0));
+        bar.handle_event(&Event::key_press(crate::event::key_codes::ENTER, 0));
+        assert_eq!(bar.selected_preset(), None, "an unfocused bar ignores the keys");
+
+        bar.handle_event(&Event::FocusGained { reason: FocusReason::Tab });
+        bar.handle_event(&Event::key_press(crate::event::key_codes::RIGHT, 0));
+        assert_eq!(bar.selected_preset(), Some(first), "the first arrow picks the first chip");
+        bar.handle_event(&Event::key_press(crate::event::key_codes::RIGHT, 0));
+        assert_eq!(bar.selected_preset(), Some(second));
+
+        // Enter re-chooses the selection through the same path a click uses.
+        bar.handle_event(&Event::key_press(crate::event::key_codes::ENTER, 0));
+        assert_eq!(bar.selected_preset(), Some(second));
+        bar.handle_event(&Event::key_press(crate::event::key_codes::LEFT, 0));
+        assert_eq!(bar.selected_preset(), Some(first));
     }
 }

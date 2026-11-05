@@ -582,6 +582,45 @@ fn enter_activates_the_highlight_and_leaves_an_empty_menu_open() {
     assert!(empty.is_visible(), "Enter with no highlight must leave the menu open");
 }
 
+/// A row named with an action id reports that id when it is chosen (DM3-2).
+///
+/// The dispatch key must be the id, not the label: two rows may share a label, and a label may be
+/// retranslated, while the id is what the host registered. A row without an id must stay silent so
+/// this remains an action channel rather than a second `triggered`.
+#[test]
+fn a_named_row_emits_its_action_id_when_chosen() {
+    let mut menu = Menu::new("Edit", Rect::new(0, 0, 160, 100));
+    let rename = menu.add_action("Rename");
+    menu.add_action("Delete");
+    assert!(
+        menu.set_item_action_id(rename, Some("edit.rename".to_string())),
+        "an in-range row must accept an action id"
+    );
+    menu.open_at(Point::new(0, 0), Rect::new(0, 0, 400, 400));
+
+    let fired = Arc::new(Mutex::new(Vec::<String>::new()));
+    let sink = Arc::clone(&fired);
+    menu.action_triggered.connect(move |action_id| sink.lock().unwrap().push((*action_id).clone()));
+
+    // `open_at` highlights the first row, which is the named one; Enter commits it.
+    menu.handle_event(&Event::KeyPress { key: 13, modifiers: 0 });
+    assert_eq!(
+        *fired.lock().unwrap(),
+        vec!["edit.rename".to_string()],
+        "choosing a named row must emit its id"
+    );
+
+    // Reopen, move to the unnamed row, commit: the signal must stay silent.
+    menu.open_at(Point::new(0, 0), Rect::new(0, 0, 400, 400));
+    menu.handle_event(&Event::KeyPress { key: 40, modifiers: 0 });
+    menu.handle_event(&Event::KeyPress { key: 13, modifiers: 0 });
+    assert_eq!(
+        *fired.lock().unwrap(),
+        vec!["edit.rename".to_string()],
+        "a row without an id must emit nothing"
+    );
+}
+
 /// Right/Left follow the writing direction; Up/Down do not.
 ///
 /// A list of entries runs downward in every locale, but the horizontal pair steps along a line of
@@ -824,6 +863,55 @@ fn a_configured_cap_windows_the_rows() {
         let first_row_y = menu.body_top() + 2 + 4;
         let hit = menu.item_index_at(Point::new(menu.geometry().x + 4, first_row_y));
         assert_eq!(hit, Some(7), "the hit test must follow the scrolled window");
+    });
+}
+
+/// A wheel over an open panel must not scroll the parent list (M2-02).
+///
+/// A panel is anchored to a parent row, so scrolling that row moves the whole panel away from the
+/// pointer resting on one of its children. The submenu level has no scroll state of its own, so
+/// the only honest answer is to leave the top-level list where it is while the pointer is over
+/// the panel.
+#[test]
+fn the_wheel_over_an_open_panel_does_not_scroll_the_parent_list() {
+    use crate::widget::menu_toolbar::effects::with_test_effects;
+
+    let mut menu = Menu::new("File", Rect::new(0, 0, 200, 200));
+    menu.add_item(
+        MenuEntry::new("Select").with_submenu(vec![MenuEntry::new("All"), MenuEntry::new("None")]),
+    );
+    for index in 0..12 {
+        menu.add_action(format!("Item {index}"));
+    }
+    let mut effects = crate::style::MenuEffects::legacy();
+    effects.enabled = true;
+    effects.max_visible_items = Some(5);
+
+    with_test_effects(effects, || {
+        menu.open_at(Point::new(0, 0), Rect::new(0, 0, 800, 600));
+        let branch_y = menu.body_top() + 4;
+        menu.handle_event(&Event::MousePress {
+            pos: Point::new(20, branch_y),
+            button: 1,
+            modifiers: 0,
+        });
+        assert_eq!(menu.open_submenu_index(), Some(0), "the branch must open its panel");
+
+        let panel = menu.submenu_panel_rect().expect("an open panel has a rectangle");
+        menu.handle_event(&Event::MouseMove { pos: Point::new(panel.x + 6, panel.y + 6) });
+        for _ in 0..3 {
+            menu.handle_event(&Event::Wheel { delta: Point::new(0, -1), modifiers: 0 });
+        }
+        assert_eq!(
+            menu.scroll_offset, 0,
+            "a wheel over the panel must leave the parent list where it is"
+        );
+
+        // Away from the panel the top-level list still scrolls: the gate is the layer, not the
+        // wheel itself.
+        menu.handle_event(&Event::MouseMove { pos: Point::new(20, branch_y) });
+        menu.handle_event(&Event::Wheel { delta: Point::new(0, -1), modifiers: 0 });
+        assert_eq!(menu.scroll_offset, 1, "the parent list must still scroll under the pointer");
     });
 }
 

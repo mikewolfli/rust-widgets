@@ -48,13 +48,20 @@ pub(crate) fn pointer_event_from_code(
 }
 
 /// Convert stable C ABI trigger code to internal typed trigger enum.
-pub(crate) fn trigger_kind_from_code(code: c_uint) -> crate::platform::WidgetTriggerKind {
+///
+/// Returns `None` for any code the published table does not name — including `0`, which
+/// [`crate::bindings::binding_impl::c_abi::rw_poll_widget_trigger_event`] uses as its
+/// empty-queue sentinel. A caller that cannot name the trigger refuses the injection rather
+/// than queueing an `Unknown` the poll side would be indistinguishable from "no event".
+pub(crate) fn trigger_kind_from_code(code: c_uint) -> Option<crate::platform::WidgetTriggerKind> {
     match code {
-        1 => crate::platform::WidgetTriggerKind::Clicked,
-        2 => crate::platform::WidgetTriggerKind::ValueChanged,
-        3 => crate::platform::WidgetTriggerKind::SelectionChanged,
-        4 => crate::platform::WidgetTriggerKind::Closed,
-        _ => crate::platform::WidgetTriggerKind::Unknown,
+        1 => Some(crate::platform::WidgetTriggerKind::Clicked),
+        2 => Some(crate::platform::WidgetTriggerKind::ValueChanged),
+        3 => Some(crate::platform::WidgetTriggerKind::SelectionChanged),
+        4 => Some(crate::platform::WidgetTriggerKind::Closed),
+        5 => Some(crate::platform::WidgetTriggerKind::Resized),
+        6 => Some(crate::platform::WidgetTriggerKind::Moved),
+        _ => None,
     }
 }
 
@@ -198,4 +205,26 @@ pub(crate) fn parse_rect_string(text: &str) -> Option<crate::core::Rect> {
         return None;
     }
     Some(crate::core::Rect::new(x, y, width, height))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// BD-08: every published kind maps, and `0` / codes past the table are refused rather than
+    /// folded into `Unknown` — which the poll side reserves as its empty-queue sentinel.
+    #[test]
+    fn trigger_codes_map_only_the_published_kinds() {
+        use crate::platform::WidgetTriggerKind;
+        assert_eq!(trigger_kind_from_code(1), Some(WidgetTriggerKind::Clicked));
+        assert_eq!(trigger_kind_from_code(2), Some(WidgetTriggerKind::ValueChanged));
+        assert_eq!(trigger_kind_from_code(3), Some(WidgetTriggerKind::SelectionChanged));
+        assert_eq!(trigger_kind_from_code(4), Some(WidgetTriggerKind::Closed));
+        assert_eq!(trigger_kind_from_code(5), Some(WidgetTriggerKind::Resized));
+        assert_eq!(trigger_kind_from_code(6), Some(WidgetTriggerKind::Moved));
+        // `0` is the poll's empty-queue sentinel and must never enter the queue.
+        assert_eq!(trigger_kind_from_code(0), None);
+        assert_eq!(trigger_kind_from_code(7), None);
+        assert_eq!(trigger_kind_from_code(u32::MAX), None);
+    }
 }

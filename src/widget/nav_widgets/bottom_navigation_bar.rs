@@ -14,7 +14,7 @@ use crate::event::{key_codes, Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
 use crate::style::{MotionSlot, PropertyDriver};
-use crate::widget::capability::coercion::expect_usize;
+use crate::widget::capability::coercion::{expect_bool, expect_usize};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
@@ -261,6 +261,11 @@ impl BottomNavigationBar {
         self.max_items = limit;
     }
 
+    /// Whether the bar slides out of the way while the content scrolls down (N2-B1).
+    pub fn hide_on_scroll(&self) -> bool {
+        self.hide_on_scroll
+    }
+
     /// Enables hiding the bar while the page scrolls down.
     pub fn set_hide_on_scroll(&mut self, hide: bool) {
         if self.hide_on_scroll == hide {
@@ -464,6 +469,10 @@ impl WidgetProperties for BottomNavigationBar {
             "selected_index" => {
                 Ok(CapabilityValue::UInt(self.selected_index().unwrap_or(0) as u64))
             }
+            "hide_on_scroll" => Ok(CapabilityValue::Bool(self.hide_on_scroll())),
+            "show_unselected_labels" => {
+                Ok(CapabilityValue::Bool(matches!(self.label_behavior(), NavLabelBehavior::Always)))
+            }
             _ => base_property_get(self, name),
         }
     }
@@ -477,12 +486,26 @@ impl WidgetProperties for BottomNavigationBar {
             // The item total is implied by how many items were added, so there is
             // nothing sensible to assign to it.
             "item_count" => Err(CapabilityAccessError::ReadOnlyProperty),
+            "hide_on_scroll" => {
+                self.set_hide_on_scroll(expect_bool(value)?);
+                Ok(())
+            }
+            "show_unselected_labels" => {
+                self.set_show_unselected_labels(expect_bool(value)?);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["item_count", "selected_index", BASE_PROPERTY_NAMES]
+        property_names_of![
+            "item_count",
+            "selected_index",
+            "hide_on_scroll",
+            "show_unselected_labels",
+            BASE_PROPERTY_NAMES
+        ]
     }
 }
 

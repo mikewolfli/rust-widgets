@@ -2011,7 +2011,9 @@ impl EventHandler for Calendar {
                     }
                 }
             }
-            Event::KeyPress { key, modifiers: _ } => {
+            // Keyboard navigation is reachable only while the calendar holds focus: a calendar
+            // embedded in a page must not consume the arrows of whatever the user is editing.
+            Event::KeyPress { key, modifiers: _ } if self.base.focus_reason().is_some() => {
                 match *key {
                     37 => {
                         // Left arrow
@@ -2641,6 +2643,7 @@ impl Draw for Calendar {
 mod tests {
     use super::*;
     use crate::core::{Font, Rect, Size};
+    use crate::event::FocusReason;
     use chrono::NaiveDate;
 
     #[test]
@@ -2875,6 +2878,15 @@ mod tests {
         let base = NaiveDate::from_ymd_opt(2026, 6, 15).unwrap();
         cal.set_selected_date(base);
 
+        // Unfocused: the key belongs to whoever holds focus, and neither the selection nor
+        // the displayed page may follow it.
+        cal.handle_event(&Event::KeyPress { key: 39, modifiers: 0 });
+        cal.handle_event(&Event::KeyPress { key: 34, modifiers: 0 });
+        assert_eq!(cal.selected_date(), base, "an unfocused calendar ignores the key");
+        assert_eq!(cal.display_month.month(), 6, "and the page does not move either");
+
+        cal.handle_event(&Event::FocusGained { reason: FocusReason::Tab });
+
         // Right arrow (key 39) advances one day
         cal.handle_event(&Event::KeyPress { key: 39, modifiers: 0 });
         assert_eq!(cal.selected_date(), NaiveDate::from_ymd_opt(2026, 6, 16).unwrap());
@@ -2984,6 +2996,7 @@ mod tests {
         cal.show_previous_month();
         // Enter/Space and the paging keys route through the same helper, so a programmatic
         // call and a key press cannot disagree about what counts as a page change.
+        cal.handle_event(&Event::FocusGained { reason: FocusReason::Tab });
         cal.handle_event(&Event::key_press(34, 0));
         let pages = seen.lock().map(|guard| guard.clone()).unwrap_or_default();
         assert_eq!(pages, vec![(2027, 1), (2026, 12), (2027, 1)]);
@@ -3003,6 +3016,7 @@ mod tests {
             }
         });
 
+        cal.handle_event(&Event::FocusGained { reason: FocusReason::Tab });
         cal.handle_event(&Event::key_press(13, 0));
         // And the pointer gesture: hit the centre of the cell that shows the 12th.
         let grid = cal.grid_rect();
@@ -3361,6 +3375,7 @@ mod tests {
         cal.set_disabled_dates(vec![date(2026, 6, 11)]);
         assert!(cal.is_date_disabled(date(2026, 6, 11)));
 
+        cal.handle_event(&Event::FocusGained { reason: FocusReason::Tab });
         cal.handle_event(&Event::key_press(39, 0));
         assert_eq!(cal.selected_date(), date(2026, 6, 10), "Right must skip the disabled day");
 

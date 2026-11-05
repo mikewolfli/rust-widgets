@@ -87,11 +87,15 @@ pub struct ToastStack {
     overlay_offset: i32,
     /// Whether each row paints a trailing close button (SP-72).
     row_close_visible: bool,
-    /// Measured action-label widths, keyed by label and font size.
+    /// Measured action-label widths, keyed by font size and then by label.
     ///
     /// `estimate_text_width` ran for every row's action on every frame for a string and a font
     /// that had not changed (SP-P76).
-    action_widths: RefCell<crate::compat::HashMap<(String, u32), u32>>,
+    ///
+    /// The font size is the outer key so the inner map can be asked with the `&str` the draw path
+    /// already holds: a flat `(String, u32)` key had to build the `String` *before* it could ask
+    /// whether the answer was cached, so the hit path allocated too (SP2-01).
+    action_widths: RefCell<crate::compat::HashMap<u32, crate::compat::HashMap<String, u32>>>,
     /// Emitted when toast is activated.
     pub toast_activated: Signal1<String>,
     /// Emitted when toast is dismissed.
@@ -307,6 +311,7 @@ impl ToastStack {
         if let Some(index) = self.selected_index.as_mut() {
             *index = index.saturating_sub(1);
         }
+        self.prune_action_widths();
         if emit {
             self.toast_expired.emit(item.id);
         }
@@ -349,6 +354,7 @@ impl ToastStack {
         }
         self.clamp_scroll();
         if removed > 0 {
+            self.prune_action_widths();
             self.base.request_layout();
             self.base.request_redraw();
         }
@@ -366,6 +372,7 @@ impl ToastStack {
         self.shown_at_ms.clear();
         self.selected_index = None;
         self.scroll_offset = 0;
+        self.action_widths.borrow_mut().clear();
         self.base.request_layout();
         self.base.request_redraw();
     }
@@ -444,6 +451,7 @@ impl ToastStack {
         }
         let max = self.toasts.len().saturating_sub(self.visible_row_count());
         self.scroll_offset = self.scroll_offset.min(max);
+        self.prune_action_widths();
         self.base.request_layout();
         self.base.request_redraw();
         true
@@ -461,33 +469,54 @@ impl ToastStack {
         Rect::new(right - width as i32 - 4, row.y, width, row.height)
     }
 
-    /// The measured width of one action label, cached per label and font size.
+    /// The measured width of one action label, cached per font size and label.
     fn action_width(&self, label: &str, font: &crate::core::Font) -> u32 {
-        let key = (label.to_string(), font.size().to_bits());
-        if let Some(width) = self.action_widths.borrow().get(&key) {
-            return *width;
+        let bits = font.size().to_bits();
+        // Asked inside the borrow and with the caller's `&str`, so a hit costs no allocation.
+        let cached =
+            self.action_widths.borrow().get(&bits).and_then(|widths| widths.get(label)).copied();
+        if let Some(width) = cached {
+            return width;
         }
         let width = estimate_text_width(label, font, 1.0) + 12;
-        self.action_widths.borrow_mut().insert(key, width);
+        self.action_widths.borrow_mut().entry(bits).or_default().insert(label.to_string(), width);
         width
+    }
+
+    /// Drops cached widths for action labels no toast on the stack carries any more.
+    ///
+    /// The cache is keyed by host data, so without an eviction it grew for the life of the
+    /// session: every label a toast ever carried kept its entry long after the toast itself left
+    /// (SP2-01). Removal is the only time the live label set shrinks, so it is done here and
+    /// called from every removal path — the `push_at` trim included.
+    fn prune_action_widths(&self) {
+        if self.action_widths.borrow().is_empty() {
+            return;
+        }
+        if self.toasts.is_empty() {
+            self.action_widths.borrow_mut().clear();
+            return;
+        }
+        let mut cache = self.action_widths.borrow_mut();
+        for widths in cache.values_mut() {
+            widths.retain(|label, _| {
+                self.toasts
+                    .iter()
+                    .any(|toast| toast.action_label.as_deref() == Some(label.as_str()))
+            });
+        }
+        cache.retain(|_, widths| !widths.is_empty());
+    }
+
+    /// The number of cached action-label widths, for the eviction test (SP2-01).
+    #[cfg(test)]
+    pub(crate) fn cached_action_widths(&self) -> usize {
+        self.action_widths.borrow().values().map(|widths| widths.len()).sum()
     }
 
     /// Whether each row paints a trailing close button.
     pub fn row_close_visible(&self) -> bool {
         self.row_close_visible
-    }
-
-    /// Shows or hides the per-row close button.
-    ///
-    /// The row was removable only through the keyboard or the host API, which left a mouse user
-    /// unable to dismiss a single toast; the button routes through the same dismissal path
-    /// `Delete` uses, so the exit animation and the signal are identical (SP-72).
-    pub fn set_row_close_visible(&mut self, visible: bool) {
-        if self.row_close_visible == visible {
-            return;
-        }
-        self.row_close_visible = visible;
-        self.base.request_redraw();
     }
 
     /// The close button's rectangle inside `row`, when it is shown.

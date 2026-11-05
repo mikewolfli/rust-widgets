@@ -32,10 +32,9 @@
 //!
 //! The keyboard router delivers a key to the focused control, not to its ancestors, and a form is
 //! deliberately not focusable — its fields own focus. So a standalone `Form` only sees Enter when
-//! something forwards it: a host binds the field's own `return_pressed` signal to `Form::submit`,
-//! and a `FormSet` (or any registry-forwarding container) forwards the key to its current form.
-//! The `Event::KeyPress` arm in `handle_event` is that forwarding path, not a claim that a form
-//! mounted alone receives keys.
+//! something forwards it, and the usual path is the field's own `return_pressed` signal bound to
+//! `Form::submit`; the `Event::KeyPress` arm in `handle_event` handles a form that is handed the
+//! key directly.
 //!
 //! # Events and wiring
 //!
@@ -55,7 +54,7 @@ use rust_widgets::widget::capability::types::{CapabilityAccessError, CapabilityV
 use rust_widgets::widget::capability::WidgetProperties;
 use rust_widgets::widget::input_widgets::input_validator::Validator;
 use rust_widgets::widget::metrics::role_font;
-use rust_widgets::widget::{BaseWidget, Draw, SimpleRegistry, Widget, WidgetKind};
+use rust_widgets::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use rust_widgets::{impl_widget_property_hooks, property_names_of};
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -155,7 +154,6 @@ pub struct Form {
     reset_label: String,
     button_width: u32,
     fields: Vec<FormField>,
-    registry: Option<Rc<RefCell<SimpleRegistry>>>,
     last_valid: bool,
     last_dirty: bool,
     /// Per-field rules installed by the host, keyed by field key.
@@ -248,7 +246,6 @@ impl Form {
             reset_label: "Reset".to_string(),
             button_width: BUTTON_MIN_W,
             fields: Vec::new(),
-            registry: None,
             last_valid: true,
             last_dirty: false,
             validators: BTreeMap::new(),
@@ -571,6 +568,8 @@ impl Form {
         let field = self.fields.remove(index);
         if let Some(widget) = field.widget {
             self.base.remove_child_linked(widget);
+            // C2-D1: a detached field must stop claiming to be visible (family contract).
+            rust_widgets::set_widget_visible(widget, false);
         }
         self.observed.retain(|(existing, _)| existing != key);
         self.form_rules.remove(key);
@@ -589,6 +588,8 @@ impl Form {
         while let Some(field) = self.fields.pop() {
             if let Some(widget) = field.widget {
                 self.base.remove_child_linked(widget);
+                // C2-D1: same rule as `remove_field` — the detached field is hidden.
+                rust_widgets::set_widget_visible(widget, false);
             }
             self.field_removed.emit(field.key);
         }
@@ -958,7 +959,7 @@ impl Form {
     /// Runs one validation pass, for every field or for `only`.
     ///
     /// The value map is materialised once so a cross-field rule sees one consistent
-    /// snapshot instead of re-reading the registry per comparison.
+    /// snapshot instead of re-reading every field per comparison.
     fn apply_validation(&mut self, only: Option<&str>) {
         let values = self.current_values();
         let required_error = self.required_error.clone();
@@ -1093,7 +1094,7 @@ impl Form {
     /// Re-reads every bound field's value and publishes the edges a direct edit produced.
     ///
     /// The form is a container: the user's keystrokes reach the child control directly, so the
-    /// form only learns about them on the next event it forwards. Comparing against the last
+    /// form only learns about them on the next event it receives. Comparing against the last
     /// observed value turns that into `field_changed` plus the `dirty`/`valid` edges. The snapshot
     /// is an edge detector, not a second value store — the value of record stays in the child.
     fn resync_derived(&mut self) {
@@ -1380,16 +1381,6 @@ impl Form {
 
     fn place_field_widgets(&self) {
         self.place_layouts(&self.field_layouts());
-    }
-
-    /// Binds the shared forwarding table used to deliver events to field controls.
-    pub fn set_registry(&mut self, registry: Rc<RefCell<SimpleRegistry>>) {
-        self.registry = Some(registry);
-    }
-
-    /// The bound forwarding table, if any.
-    pub fn registry(&self) -> Option<&Rc<RefCell<SimpleRegistry>>> {
-        self.registry.as_ref()
     }
 
     fn publish_validity(&mut self, valid: bool) {
@@ -1924,36 +1915,7 @@ impl EventHandler for Form {
                 return;
             }
         }
-        let Some(registry) = self.registry.as_ref() else {
-            return;
-        };
-        match event {
-            Event::MousePress { pos, .. }
-            | Event::MouseRelease { pos, .. }
-            | Event::MouseMove { pos }
-            | Event::MouseDoubleClick { pos, .. }
-            | Event::ContextMenu { pos } => {
-                let target: Option<ObjectId> = self.with_layouts(|layouts| {
-                    layouts
-                        .iter()
-                        .find(|layout| layout.control.contains_point(*pos))
-                        .and_then(|layout| self.field(&layout.key).and_then(FormField::widget_id))
-                });
-                if let Some(widget) = target {
-                    let _ = registry.borrow_mut().forward_event(widget, event);
-                }
-            }
-            // A coordinate-free event cannot name one field; every bound control receives it, the
-            // same rule the group box documents for a multi-child container.
-            _ => {
-                for field in &self.fields {
-                    if let Some(widget) = field.widget_id() {
-                        let _ = registry.borrow_mut().forward_event(widget, event);
-                    }
-                }
-            }
-        }
-        // The forwarded event may have changed a child's value; publish the edges it produced
+        // A direct edit of a child may have changed its value; publish the edges it produced
         // (`field_changed`, `dirty_changed`, `validity_changed`) before returning.
         self.resync_derived();
     }

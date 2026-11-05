@@ -600,6 +600,24 @@ impl SimpleJsEngine {
         if stmt.is_empty() {
             return Ok(JsValue::Undefined);
         }
+        // --- unsupported control flow ---
+        //
+        // `starts_a_statement` routes these four prefixes here, but this evaluator has no arm for
+        // them. Without this check a `while` body fell through to the assignment fallback, which
+        // found the body's first `=` and created a variable named after its left-hand side — the
+        // script "ran" and wrote garbage state. An explicit error is the honest answer until
+        // control-flow signals are designed.
+        if stmt.starts_with("while ")
+            || stmt.starts_with("while(")
+            || stmt.starts_with("break")
+            || stmt.starts_with("continue")
+        {
+            return Err(JsError::at_offset(
+                "while/break/continue are not part of this engine's supported subset".to_string(),
+                stmt,
+                stmt.len(),
+            ));
+        }
         // --- function definition ---
         if let Some(rest) = stmt.strip_prefix("function ") {
             // function name ( params ) { body }
@@ -1538,6 +1556,31 @@ mod tests {
         assert_eq!(engine.evaluate("[] || 7", &mut context).unwrap(), JsValue::Array(Vec::new()));
         assert_eq!(engine.evaluate("![]", &mut context).unwrap(), JsValue::Boolean(false));
     }
+    /// The router lists `while`/`break`/`continue` as statement forms, so each spelling must
+    /// answer an error rather than silently evaluating a loop body as an assignment.
+    #[test]
+    fn unsupported_control_flow_reports_an_error_instead_of_writing_garbage() {
+        let mut engine = SimpleJsEngine::new();
+        let mut context = JsContext::new();
+        for script in
+            ["while (i < 3) { i = i + 1 }", "while(i < 3) { i = i + 1 }", "break", "continue"]
+        {
+            let error = engine
+                .evaluate(script, &mut context)
+                .expect_err("{script} is not in the supported subset and must not evaluate");
+            assert!(
+                error.message.contains("not part of this engine's supported subset"),
+                "{script} must name the unsupported construct, got {:?}",
+                error.message
+            );
+        }
+        // The rejected `while` body must not have created a variable named `i`.
+        assert!(
+            !engine.variables.contains_key("i"),
+            "the rejected loop body must not have been stored as an assignment"
+        );
+    }
+
     #[test]
     fn test_simple_engine_evaluate() {
         let mut engine = SimpleJsEngine::new();

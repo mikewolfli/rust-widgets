@@ -37,6 +37,8 @@ use crate::widget::metrics::{effective_font, estimate_text_width};
 use crate::widget::{BaseWidget, Draw, IconSource, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
+use super::key_tip_badge::KeyTipBadge;
+
 // ── Layout constants ──────────────────────────────────────────────────────────
 
 const TAB_HEIGHT: i32 = 20;
@@ -1662,6 +1664,20 @@ impl RibbonBar {
         // loop asked the theme for the same face once per item per frame (ADV-007). One
         // resolution here is the face every label below paints with.
         let font = effective_font(self.style());
+        // The key-tip chip is [`KeyTipBadge`], not a second inline copy of it (ADV2-02): the badge
+        // owns the fill, the contrast ink and the centred tip, and the ribbon only positions it.
+        // It is built only on a draw that actually shows tips, and re-tipped per item, so routing
+        // the chip through the one implementation costs one badge per key-tip frame rather than a
+        // widget (and its label `String`) per item.
+        let mut key_tip_badge =
+            if self.key_tips_visible { Some(KeyTipBadge::new("")) } else { None };
+        if let Some(badge) = key_tip_badge.as_mut() {
+            badge.set_badge_color(Some(palette.accent));
+            // ADV2-02: keep the ribbon's own tip face. The badge's derived face is the documented
+            // default for hosts that do not state one; the ribbon already has an effective font,
+            // so it states it and the unification is pixel-identical.
+            badge.set_font(font.clone());
+        }
         for (gi, gr, item_rects) in layout.iter() {
             let group = &groups[*gi];
 
@@ -1692,15 +1708,10 @@ impl RibbonBar {
                     }
                     if self.key_tips_visible {
                         if let Some(tip) = self.key_tip(self.current_tab_index, *gi, *ii) {
-                            let badge = Rect::new(ir.x + 2, ir.y + 2, 18, 14);
-                            context.fill_rect(badge, palette.accent);
-                            context.draw_text_fitted_cow(
-                                badge,
-                                tip,
-                                font,
-                                palette.accent.contrast_color(),
-                                HorizontalAlignment::Center,
-                            );
+                            if let Some(badge) = key_tip_badge.as_mut() {
+                                badge.set_tip_text(tip);
+                                badge.paint(context, Rect::new(ir.x + 2, ir.y + 2, 18, 14));
+                            }
                         }
                     }
 
@@ -1734,11 +1745,15 @@ impl RibbonBar {
                             label_y = ir.y + LARGE_ICON_SIZE + 2;
                         } else if !item.icon_text().is_empty() {
                             let icon_char = item.icon_text().chars().next().unwrap_or(' ');
+                            // ADV2-03: encode into a stack buffer instead of `to_string()`, so a
+                            // per-item draw no longer allocates a `String` for one glyph.
+                            let mut icon_buf = [0u8; 4];
+                            let icon_text = icon_char.encode_utf8(&mut icon_buf);
                             let icon_band =
                                 Rect::new(ir.x, ir.y + 2, ir.width, LARGE_ICON_SIZE as u32);
                             context.draw_text_fitted_cow(
                                 context.text_line(icon_band, item_font),
-                                &icon_char.to_string(),
+                                icon_text,
                                 item_font,
                                 palette.accent,
                                 HorizontalAlignment::Center,
@@ -1780,9 +1795,11 @@ impl RibbonBar {
                             label_x = ir.x + SMALL_ICON_SIZE + 4;
                         } else if !item.icon_text().is_empty() {
                             let icon_char = item.icon_text().chars().next().unwrap_or(' ');
+                            let mut icon_buf = [0u8; 4];
+                            let icon_text = icon_char.encode_utf8(&mut icon_buf);
                             context.draw_text(
                                 Point::new(ir.x + 2, item_line.y),
-                                &icon_char.to_string(),
+                                icon_text,
                                 item_font,
                                 palette.accent,
                                 HorizontalAlignment::Left,
@@ -2358,7 +2375,7 @@ impl Draw for RibbonBar {
         }
 
         // ── Application button ──
-        if let Some(label) = self.application_button.clone() {
+        if let Some(label) = self.application_button.as_deref() {
             if let Some(rect) = self.application_button_rect() {
                 context.fill_rect(rect, palette.surface);
                 context.draw_rect(rect, palette.border);
@@ -2366,7 +2383,7 @@ impl Draw for RibbonBar {
                 let line = context.text_line(rect, font);
                 context.draw_text_fitted_cow(
                     Rect::new(rect.x + 2, line.y, rect.width.saturating_sub(4), line.height),
-                    label.as_str(),
+                    label,
                     font,
                     palette.accent,
                     HorizontalAlignment::Center,

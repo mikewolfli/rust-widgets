@@ -537,6 +537,11 @@ impl Widget for DepthChart {
 impl rust_widgets::event::EventHandler for DepthChart {
     fn handle_event(&mut self, event: &rust_widgets::event::Event) {
         use rust_widgets::event::Event;
+        // A disabled curve must not emit `level_hovered`/`level_clicked` for a picture that is
+        // drawn as disabled; the same guard the K-line and volume panes carry (FIN-8).
+        if !self.base.is_enabled() {
+            return;
+        }
         match event {
             Event::MouseMove { pos } | Event::PointerMove { pos, .. } => {
                 let area = self.plot_area();
@@ -653,17 +658,24 @@ impl Draw for DepthChart {
                 // The spread annotation: the bid, the ask and their distance, on the mid line.
                 // A mid line alone says where the price is but not how wide the market is.
                 if let Some((bid, ask)) = self.spread() {
-                    let text = format!("{:.2} / {:.2}  spread {:.2}", bid, ask, ask - bid);
                     let font = role_font(self.style(), 10.0);
-                    let width = context.measure_text(&text, &font).width as i32;
-                    let x_text = (x + 4).min(area.right() - width).max(area.rect.x);
-                    context.draw_text(
-                        rust_widgets::core::Point { x: x_text, y: area.rect.y + 2 },
-                        &text,
-                        &font,
-                        chrome.ink,
-                        HorizontalAlignment::Left,
-                    );
+                    // The annotation is written into the finance panes' shared label buffer:
+                    // this site used to allocate a fresh `String` every frame (FIN-10).
+                    super::volume_chart::with_axis_label(|text| {
+                        let _ = core::fmt::Write::write_fmt(
+                            &mut *text,
+                            format_args!("{bid:.2} / {ask:.2}  spread {:.2}", ask - bid),
+                        );
+                        let width = context.measure_text(text, &font).width as i32;
+                        let x_text = (x + 4).min(area.right() - width).max(area.rect.x);
+                        context.draw_text(
+                            rust_widgets::core::Point { x: x_text, y: area.rect.y + 2 },
+                            text,
+                            &font,
+                            chrome.ink,
+                            HorizontalAlignment::Left,
+                        );
+                    });
                 }
             }
         }
@@ -681,19 +693,23 @@ impl Draw for DepthChart {
                 let fraction = step as f64 / TICKS as f64;
                 let price = low + fraction * (high - low);
                 let x = area.rect.x + (fraction * area.rect.width as f64).round() as i32;
-                let text = alloc::format!("{price:.2}");
                 // Slide the label's band inward rather than letting it hang over the edge: a band
                 // centred on the last tick ran past the pane, and the painter's clip turned
                 // `121.30` into `1213` — a wrong number, not a cropped one.
                 let band_left = (x - band as i32 / 2)
                     .clamp(area.rect.x, (area.right() - band as i32).max(area.rect.x));
-                context.draw_text_fitted_cow(
-                    Rect::new(band_left, y, band, 12),
-                    &text,
-                    &font,
-                    chrome.ink.with_alpha(190),
-                    HorizontalAlignment::Center,
-                );
+                // Six ticks per frame, each formatted into the shared buffer instead of a
+                // fresh `String` (FIN-10).
+                super::volume_chart::with_axis_label(|text| {
+                    let _ = core::fmt::Write::write_fmt(&mut *text, format_args!("{price:.2}"));
+                    context.draw_text_fitted_cow(
+                        Rect::new(band_left, y, band, 12),
+                        text,
+                        &font,
+                        chrome.ink.with_alpha(190),
+                        HorizontalAlignment::Center,
+                    );
+                });
             }
         }
 
@@ -713,17 +729,24 @@ impl Draw for DepthChart {
                 let fraction_y = (quantity / max_cumulative).clamp(0.0, 1.0);
                 let y = area.bottom() - (fraction_y * area.rect.height as f64).round() as i32;
                 context.fill_circle(rust_widgets::core::Point { x, y }, 3, chrome.crosshair);
-                let text = format!("{level:.2} · {quantity:.0}");
                 let font = role_font(self.style(), 10.0);
-                let width = context.measure_text(&text, &font).width as i32;
-                let x_text = (x + 6).min(area.right() - width).max(area.rect.x);
-                context.draw_text(
-                    rust_widgets::core::Point { x: x_text, y: (y - 14).max(area.rect.y) },
-                    &text,
-                    &font,
-                    chrome.ink,
-                    HorizontalAlignment::Left,
-                );
+                // The hovered level's readout reuses the shared buffer, so a live hover does
+                // not allocate a label per frame (FIN-10).
+                super::volume_chart::with_axis_label(|text| {
+                    let _ = core::fmt::Write::write_fmt(
+                        &mut *text,
+                        format_args!("{level:.2} · {quantity:.0}"),
+                    );
+                    let width = context.measure_text(text, &font).width as i32;
+                    let x_text = (x + 6).min(area.right() - width).max(area.rect.x);
+                    context.draw_text(
+                        rust_widgets::core::Point { x: x_text, y: (y - 14).max(area.rect.y) },
+                        text,
+                        &font,
+                        chrome.ink,
+                        HorizontalAlignment::Left,
+                    );
+                });
             }
         }
     }

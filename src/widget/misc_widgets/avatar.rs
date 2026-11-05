@@ -744,6 +744,15 @@ pub struct GroupAvatar {
     spacing: i32,
     /// Maximum members painted; `0` paints every member.
     max_visible: usize,
+    /// The `+N` caption, rebuilt only when the count or the slot width changes.
+    overflow_text: String,
+    /// The caption's face, keyed like [`Self::overflow_text`].
+    ///
+    /// Seeded with the clamped minimum and replaced before its first use, because
+    /// [`Self::overflow_key`] starts `None`.
+    overflow_font: Font,
+    /// `(count, slot width)` the caption and the font were built for.
+    overflow_key: Option<(usize, u32)>,
 }
 
 impl GroupAvatar {
@@ -754,6 +763,9 @@ impl GroupAvatar {
             avatars: Vec::new(),
             spacing: 0,
             max_visible: 0,
+            overflow_text: String::new(),
+            overflow_font: Font::bold("Arial", 8.0),
+            overflow_key: None,
         }
     }
 
@@ -856,7 +868,12 @@ impl GroupAvatar {
     }
 
     /// Paints the `+N` bubble in `slot`.
-    fn paint_overflow(&self, context: &mut RenderContext, slot: Rect, count: usize) {
+    ///
+    /// The caption and its face are properties of `(count, slot width)`, not of the frame, so they
+    /// are rebuilt only when one of the two changes (MW2-02). Both used to be constructed on every
+    /// paint: one `format!` plus one `Font::bold` per frame while the group overflowed. The
+    /// key-and-buffer shape is the one `AnimatedImage::refresh_counter` uses for its counter.
+    fn paint_overflow(&mut self, context: &mut RenderContext, slot: Rect, count: usize) {
         let style = self.base.style();
         let palette = crate::style::palette_shared();
         let window = palette.as_ref().map(|colors| colors.background).unwrap_or(Color::WHITE);
@@ -869,12 +886,18 @@ impl GroupAvatar {
         };
         let center = Point::new(slot.x + slot.width as i32 / 2, slot.y + slot.height as i32 / 2);
         context.fill_circle(center, slot.width / 2, fill);
-        let font = Font::bold("Arial", (slot.width as f32 * 0.38).max(8.0));
-        let text = format!("+{count}");
+        let key = (count, slot.width);
+        if self.overflow_key != Some(key) {
+            self.overflow_key = Some(key);
+            self.overflow_text.clear();
+            use core::fmt::Write as _;
+            let _ = write!(self.overflow_text, "+{count}");
+            self.overflow_font = Font::bold("Arial", (slot.width as f32 * 0.38).max(8.0));
+        }
         context.draw_text_fitted_cow(
             slot,
-            &text,
-            &font,
+            &self.overflow_text,
+            &self.overflow_font,
             fill.contrast_color(),
             HorizontalAlignment::Center,
         );

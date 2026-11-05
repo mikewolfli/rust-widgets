@@ -82,6 +82,12 @@ pub struct KeyTipBadge {
     /// The ribbon paints an 18x14 chip; that is the default here, and a caller that needs a
     /// different one states it rather than deriving it from its own row height.
     size: Size,
+    /// The tip's font, or `None` while it is derived from the chip's height.
+    ///
+    /// A host that has already resolved its own font (the ribbon uses `effective_font`) sets it
+    /// here, so routing the chip through this control reproduces that face exactly instead of
+    /// imposing the derived bold one (ADV2-02).
+    font: Option<Font>,
 }
 
 impl KeyTipBadge {
@@ -96,6 +102,7 @@ impl KeyTipBadge {
             ink: None,
             corner: KeyTipCorner::TopLeft,
             size: Size::new(18, 14),
+            font: None,
         }
     }
 
@@ -121,6 +128,20 @@ impl KeyTipBadge {
     /// The chip size a host should reserve.
     pub fn size_hint(&self) -> Size {
         self.size
+    }
+
+    /// The tip's font, if one was set.
+    pub fn font(&self) -> Option<&Font> {
+        self.font.as_ref()
+    }
+
+    /// Overrides the tip's font.
+    ///
+    /// Without an override the tip is bold Arial at `rect.height * 0.8` (clamped), which is what
+    /// a host that does not care about the face sees. A host that draws the badge over its own
+    /// chrome passes the font it resolved, so the chip and the control cannot disagree.
+    pub fn set_font(&mut self, font: Font) {
+        self.font = Some(font);
     }
 
     /// Sets the chip size and resizes the badge to match.
@@ -208,7 +229,10 @@ impl KeyTipBadge {
         if self.tip_text.is_empty() {
             return;
         }
-        let font = Font::bold("Arial", (rect.height as f32 * 0.8).clamp(7.0, 12.0));
+        let font = self
+            .font
+            .clone()
+            .unwrap_or_else(|| Font::bold("Arial", (rect.height as f32 * 0.8).clamp(7.0, 12.0)));
         context.draw_text_fitted_cow(rect, &self.tip_text, &font, ink, HorizontalAlignment::Center);
     }
 

@@ -10,7 +10,7 @@
 //! and `PopupWindow` (a chrome-only popup), which `WidgetKind::Dialog` was previously
 //! aliased to.
 
-use crate::compat::RefCell;
+use crate::compat::{Rc, RefCell};
 use crate::core::{Color, HorizontalAlignment, ObjectId, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
@@ -160,6 +160,17 @@ pub struct Dialog {
     resize_geometry: Option<Rect>,
     /// The content frame written on the last paint, so a still frame skips the write (G-P12).
     placed_content: Option<(Rect, ObjectId)>,
+    /// Bumped whenever the action row changes, so the collected label list can be reused.
+    ///
+    /// [`Dialog::add_button`] is the one mutator of `buttons`; every write there bumps this, and
+    /// `draw` compares it to the revision it cached against.
+    labels_revision: u32,
+    /// The action row's labels as one shared list, tagged with the revision it was built from.
+    ///
+    /// `draw` runs every frame and used to clone every label into a fresh `Vec<String>` each time
+    /// (DL2-02). The list cannot change between `add_button` calls, so it is collected once and
+    /// handed out by handle — the same shape [`super::message_box::MessageBox::labels`] uses.
+    labels_cache: RefCell<Option<(u32, Rc<Vec<String>>)>>,
 }
 
 impl Dialog {
@@ -199,6 +210,8 @@ impl Dialog {
             resize_origin: None,
             resize_geometry: None,
             placed_content: None,
+            labels_revision: 0,
+            labels_cache: RefCell::new(None),
         }
     }
 
@@ -434,6 +447,7 @@ impl Dialog {
     /// first button is the default, which is the conventional safe answer.
     pub fn add_button(&mut self, text: impl Into<String>, role: ButtonRole) -> usize {
         self.buttons.push((text.into(), role));
+        self.labels_revision = self.labels_revision.wrapping_add(1);
         let index = self.buttons.len() - 1;
         match role {
             ButtonRole::Primary => self.default_button = Some(index),
@@ -504,6 +518,23 @@ impl Dialog {
     /// The action row's labels, in order (DLG-01).
     pub fn button_texts(&self) -> Vec<&str> {
         self.buttons.iter().map(|(text, _)| text.as_str()).collect()
+    }
+
+    /// The action row's labels as one shared list, rebuilt only when the row changes.
+    ///
+    /// `draw` needs an owned `Vec<String>` because `action_row_geometry` takes one shape for every
+    /// dialog in this module, but the content is fixed between `add_button` calls — so the list is
+    /// collected once per change and reused by handle instead of being re-cloned per frame (DL2-02).
+    fn labels(&self) -> Rc<Vec<String>> {
+        if let Some((revision, labels)) = self.labels_cache.borrow().as_ref() {
+            if *revision == self.labels_revision {
+                return Rc::clone(labels);
+            }
+        }
+        let labels =
+            Rc::new(self.buttons.iter().map(|(label, _)| label.clone()).collect::<Vec<String>>());
+        *self.labels_cache.borrow_mut() = Some((self.labels_revision, Rc::clone(&labels)));
+        labels
     }
 
     /// The role of the button at `index` (DLG-01).
@@ -1150,7 +1181,7 @@ impl Draw for Dialog {
         // `action_row_geometry` derivation, so a Dialog button is the same object as one in
         // every other dialog in this module (DLG-01).
         if !self.buttons.is_empty() {
-            let labels: Vec<String> = self.buttons.iter().map(|(label, _)| label.clone()).collect();
+            let labels = self.labels();
             let action_font = effective_font(style);
             let band = super::message_box::inset_action_band(
                 ControlMetrics::bottom_band(rect, dimensions::DIALOG_BUTTON_HEIGHT),
@@ -1811,5 +1842,31 @@ mod tests {
         d.handle_event(&Event::mouse_press(help.x + 2, help.y + 2, 1));
         assert_eq!(asked.load(Ordering::SeqCst), 1);
         assert!(d.is_visible(), "help must not close the dialog");
+    }
+
+    /// The action-row labels are collected once and shared by handle, not re-cloned per
+    /// frame, and a new button rebuilds them (DL2-02).
+    #[test]
+    fn the_action_row_labels_are_cached_until_the_row_changes() {
+        let mut d = dialog();
+        d.add_button("OK", ButtonRole::Primary);
+        d.add_button("Cancel", ButtonRole::Destructive);
+
+        let first = d.labels();
+        let second = d.labels();
+        assert!(
+            Rc::ptr_eq(&first, &second),
+            "a steady row must hand out the same list rather than re-cloning it"
+        );
+        assert_eq!(first.as_slice(), ["OK".to_string(), "Cancel".to_string()]);
+
+        d.add_button("Apply", ButtonRole::Normal);
+        let third = d.labels();
+        assert!(!Rc::ptr_eq(&first, &third), "a new button is a new row");
+        assert_eq!(
+            third.as_slice(),
+            ["OK".to_string(), "Cancel".to_string(), "Apply".to_string()],
+            "and the list is the new one"
+        );
     }
 }

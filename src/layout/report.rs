@@ -22,7 +22,7 @@
 //!   same on the vertical axis. These are unambiguous: the solver gave the child a size the child
 //!   itself said it cannot use.
 //! * **Parent overflow** — a rectangle extending past the parent's box. This is reported
-//!   separately because it is *not* always a defect: [`AbsoluteLayout`](crate::layout::AbsoluteLayout)
+//!   separately because it is *not* always a defect: the absolute solver (test-only now, API2-01)
 //!   documents negative offsets as legitimate, and a scrolling canvas intentionally places content
 //!   outside the viewport. A caller that knows its layout semantics can ignore `overflowing`
 //!   while still reading `clamped`.

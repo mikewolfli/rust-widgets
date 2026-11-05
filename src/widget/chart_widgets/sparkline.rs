@@ -79,6 +79,12 @@ pub struct Sparkline {
     max: Option<f64>,
     /// Whether the final sample's value is printed beside the trace.
     show_end_value: bool,
+    /// The formatted end-value annotation and its measured size (ADV2-04).
+    ///
+    /// Keyed by the value's bits, the resolved font's size and its family: the draw path used to
+    /// `format!` and `measure_text` this on every frame even when the trace was static. A sparkline
+    /// is commonly embedded in a table, so the cost was paid once per instance per frame.
+    end_value_cache: Option<(u64, u32, crate::compat::String, crate::compat::String, u32, u32)>,
     /// Whether the area under the trace is filled.
     fill: bool,
     /// Whether every sample gets a small disc.
@@ -116,6 +122,7 @@ impl Sparkline {
             min: None,
             max: None,
             show_end_value: false,
+            end_value_cache: None,
             fill: false,
             show_points: false,
             capacity: 0,
@@ -663,21 +670,40 @@ impl Draw for Sparkline {
         // control. The line box is the measured font height, so the text never reaches past
         // the bottom of a short sparkline.
         if self.show_end_value && is_enabled {
-            if let Some(text) = self.end_value_text() {
+            if let Some(value) = self.data.last().copied() {
                 let font = crate::widget::metrics::role_font(self.base.style(), 9.0);
-                let metrics = context.measure_text(&text, &font);
-                let width = metrics.width as i32;
-                let height = metrics.height.max(1) as i32;
-                let x = (rect.x + rect.width as i32 - width - 2).max(rect.x);
-                let y = (rect.y + rect.height as i32 - height - 1).max(rect.y);
-                let ink = if is_enabled { self.line_color() } else { Color::DISABLED_FOREGROUND };
-                context.draw_text(
-                    Point::new(x, y),
-                    &text,
-                    &font,
-                    ink,
-                    crate::core::HorizontalAlignment::Left,
-                );
+                let value_bits = value.to_bits();
+                let size_bits = font.size().to_bits();
+                let fresh = self.end_value_cache.as_ref().is_some_and(|cache| {
+                    cache.0 == value_bits && cache.1 == size_bits && cache.2 == font.family()
+                });
+                if !fresh {
+                    let text = format_end_value(value);
+                    let metrics = context.measure_text(&text, &font);
+                    self.end_value_cache = Some((
+                        value_bits,
+                        size_bits,
+                        font.family().to_string(),
+                        text,
+                        metrics.width,
+                        metrics.height.max(1),
+                    ));
+                }
+                if let Some(cache) = self.end_value_cache.as_ref() {
+                    let width = cache.4 as i32;
+                    let height = cache.5 as i32;
+                    let x = (rect.x + rect.width as i32 - width - 2).max(rect.x);
+                    let y = (rect.y + rect.height as i32 - height - 1).max(rect.y);
+                    let ink =
+                        if is_enabled { self.line_color() } else { Color::DISABLED_FOREGROUND };
+                    context.draw_text(
+                        Point::new(x, y),
+                        cache.3.as_str(),
+                        &font,
+                        ink,
+                        crate::core::HorizontalAlignment::Left,
+                    );
+                }
             }
         }
     }

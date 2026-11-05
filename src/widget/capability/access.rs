@@ -259,6 +259,19 @@ pub fn default_named_property_value(
         // default table was written for its owner, so the constructor defaults live here, keyed by
         // canonical name. Every value below is the one the control's own `new` reports; a wrong
         // one is a wrong value reaching a live control through `resolve_null_reset`.
+        // D2-001: `tag_group` is its own kind now, so its defaults are keyed by canonical name.
+        // Every value is the one `TagGroup::new` reports: no tags, closable off, no selection
+        // model, wrapping on, and the toolbar gap the constructor starts from.
+        ("tag_group", "tags") => Some(CapabilityValue::Tuple(crate::compat::Vec::new())),
+        ("tag_group", "closable") => Some(CapabilityValue::Bool(false)),
+        ("tag_group", "selection_mode") => Some(CapabilityValue::String("none".to_string())),
+        ("tag_group", "wrap") => Some(CapabilityValue::Bool(true)),
+        ("tag_group", "spacing") => Some(CapabilityValue::UInt(u64::from(
+            crate::widget::metrics::dimensions::TOOLBAR_SPACING,
+        ))),
+        ("tag_group", "selected_indices") => {
+            Some(CapabilityValue::Tuple(crate::compat::Vec::new()))
+        }
         ("chart_reference_line", "line_count") => Some(CapabilityValue::UInt(0)),
         ("chart_reference_line", "label_visible") => Some(CapabilityValue::Bool(true)),
         ("chart_reference_line", "hit_target") => Some(CapabilityValue::UInt(8)),
@@ -392,6 +405,8 @@ pub fn default_widget_property_default_value(
         (WidgetKind::ImageView, "pan_offset") => Some(CapabilityValue::String("0,0".to_string())),
         (WidgetKind::SkeletonLoader, "text_line_rows") => Some(CapabilityValue::UInt(3)),
         (WidgetKind::Divider, "line_style") => Some(CapabilityValue::String("plain".to_string())),
+        // D2-009: the same vocabulary on the Line separator, whose default is the same plain rule.
+        (WidgetKind::Line, "line_style") => Some(CapabilityValue::String("plain".to_string())),
         (WidgetKind::Rating, "allow_half_step") => Some(CapabilityValue::Bool(false)),
         (WidgetKind::Avatar, "square") => Some(CapabilityValue::Bool(false)),
         (WidgetKind::Avatar, "size") => Some(CapabilityValue::UInt(40)),
@@ -535,6 +550,8 @@ pub fn default_widget_property_default_value(
             "orientation" => CapabilityValue::String("horizontal".to_string()),
             "inverted_appearance" => CapabilityValue::Bool(false),
             "indeterminate" => CapabilityValue::Bool(false),
+            "format" => CapabilityValue::String("{}%".to_string()),
+            "busy_text" => CapabilityValue::String("Busy".to_string()),
             "direction" => CapabilityValue::String("ltr".to_string()),
             "progress" => CapabilityValue::Float(0.0),
             _ => return None,
@@ -648,6 +665,8 @@ pub fn default_widget_property_default_value(
             "alignment" => CapabilityValue::String("left".to_string()),
             "checkable" => CapabilityValue::Bool(false),
             "checked" => CapabilityValue::Bool(true),
+            // C-08: a fresh group is neither collapsible nor collapsed and paints its frame.
+            "collapsible" | "collapsed" | "flat" => CapabilityValue::Bool(false),
             _ => return None,
         },
         // COMP-21 / COMP-26 / COMP-28 / COMP-29: the four companion overlays that report the
@@ -701,6 +720,8 @@ pub fn default_widget_property_default_value(
         WidgetKind::Splitter => match property_name {
             "orientation" => CapabilityValue::String("horizontal".to_string()),
             "pane_count" => CapabilityValue::UInt(0),
+            // `HANDLE_WIDTH` in `splitter.rs`.
+            "handle_width" => CapabilityValue::UInt(5),
             _ => return None,
         },
         WidgetKind::Frame => match property_name {
@@ -1073,6 +1094,8 @@ pub fn default_widget_property_default_value(
             "last_page" => CapabilityValue::UInt(0),
             "sibling_count" => CapabilityValue::UInt(1),
             "show_nav_buttons" => CapabilityValue::Bool(true),
+            // Both optional cells start hidden, matching `Pagination::new`.
+            "show_jump_input" | "show_page_size_selector" => CapabilityValue::Bool(false),
             _ => return None,
         },
         WidgetKind::Menu => match property_name {
@@ -1196,6 +1219,10 @@ pub fn default_widget_property_default_value(
             "read_only" => CapabilityValue::Bool(false),
             "line_wrap" => CapabilityValue::Bool(false),
             "placeholder_text" => CapabilityValue::String(String::new()),
+            // IN2-05: a fresh document holds its caret at the start and selects nothing. The
+            // `Null` selection matches `LineEdit`'s "nothing is selected" answer.
+            "cursor_position" => CapabilityValue::UInt(0),
+            "selection" => CapabilityValue::Null,
             // `markdown_editor` shares this kind; see the `ListView` note above.
             "preview_mode" => CapabilityValue::Bool(false),
             "word_count" => CapabilityValue::UInt(0),
@@ -1477,6 +1504,9 @@ pub fn default_widget_property_default_value(
             "visible_count" => CapabilityValue::UInt(5),
             "item_count" => CapabilityValue::UInt(0),
             "options" => CapabilityValue::Tuple(crate::compat::Vec::new()),
+            "wrap" => CapabilityValue::Bool(false),
+            "inertia" => CapabilityValue::Bool(false),
+            "font_size" => CapabilityValue::Float(16.0),
             _ => return None,
         },
         WidgetKind::Dropdown => match property_name {
@@ -1547,6 +1577,7 @@ pub fn default_widget_property_default_value(
             "unit" => CapabilityValue::String(String::new()),
             "value_text" => CapabilityValue::String("0".to_string()),
             "threshold_count" => CapabilityValue::UInt(0),
+            "interactive" => CapabilityValue::Bool(false),
             _ => return None,
         },
         WidgetKind::RadarChart => match property_name {
@@ -1595,6 +1626,10 @@ pub fn default_widget_property_default_value(
             "filterable" => CapabilityValue::Bool(false),
             "filter" => CapabilityValue::String(String::new()),
             "max_visible" => CapabilityValue::Null,
+            // IN2-06: single-select by default, and an empty selected set — the same empty
+            // `NumberList` spelling `selected_path` uses.
+            "multi_select" => CapabilityValue::Bool(false),
+            "selected_paths" => CapabilityValue::Tuple(crate::compat::Vec::new()),
             _ => return None,
         },
         WidgetKind::QueryBuilder => match property_name {
@@ -1671,6 +1706,9 @@ pub fn default_widget_property_default_value(
         },
         WidgetKind::ImageView => match property_name {
             "scaled" => CapabilityValue::Bool(false),
+            "aspect" => CapabilityValue::String("stretch".to_string()),
+            "image_alignment" => CapabilityValue::String("center".to_string()),
+            "margin" => CapabilityValue::UInt(0),
             _ => return None,
         },
         // ── Dialog widgets ──────────────────────────────────
@@ -1778,6 +1816,11 @@ pub fn default_widget_property_default_value(
             // starts at zero, so the schema's default is the control's own answer.
             "content_width" | "content_height" => CapabilityValue::UInt(0),
             "sticky_region_count" => CapabilityValue::UInt(0),
+            // Mirrors `ScrollArea::new`: no fling momentum, centred placement and a full-bleed
+            // content box.
+            "inertia" => CapabilityValue::Bool(false),
+            "alignment" => CapabilityValue::String("centre".to_string()),
+            "content_margins" => CapabilityValue::String("0,0,0,0".to_string()),
             _ => return None,
         },
         WidgetKind::TabWidget => match property_name {
@@ -1795,6 +1838,9 @@ pub fn default_widget_property_default_value(
             "tab_shape" => CapabilityValue::String("rounded".to_string()),
             // `TabElideMode::default()` is `None`.
             "elide" => CapabilityValue::String("none".to_string()),
+            // `show_overflow_buttons` starts off, so the historical proportional shrink is the
+            // default picture.
+            "show_overflow_buttons" => CapabilityValue::Bool(false),
             _ => return None,
         },
         WidgetKind::StackedWidget => match property_name {
@@ -1805,6 +1851,10 @@ pub fn default_widget_property_default_value(
         WidgetKind::CollapsiblePane => match property_name {
             "title" => CapabilityValue::String(String::new()),
             "collapsed" => CapabilityValue::Bool(false),
+            // `dimensions::COLLAPSIBLE_HEADER_HEIGHT` in `collapsible_pane.rs`.
+            "header_height" => CapabilityValue::UInt(
+                crate::widget::metrics::dimensions::COLLAPSIBLE_HEADER_HEIGHT as u64,
+            ),
             _ => return None,
         },
         WidgetKind::DockWidget => match property_name {
@@ -1817,6 +1867,10 @@ pub fn default_widget_property_default_value(
             "subwindow_count" => CapabilityValue::UInt(0),
             "active_subwindow" => CapabilityValue::Null,
             "view_mode" => CapabilityValue::String("sub_window_view".to_string()),
+            // `TabStripPosition::default()` and `ActivationOrder::default()`; no pan yet.
+            "tab_strip_position" => CapabilityValue::String("north".to_string()),
+            "activation_order" => CapabilityValue::String("stacking_order".to_string()),
+            "scroll_offset" => CapabilityValue::String("0,0".to_string()),
             _ => return None,
         },
 
@@ -1876,17 +1930,26 @@ pub fn default_widget_property_default_value(
         WidgetKind::BottomNavigationBar => match property_name {
             "item_count" => CapabilityValue::UInt(0),
             "selected_index" => CapabilityValue::UInt(0),
+            // The bar is pinned by default and names every destination (`NavLabelBehavior::Always`).
+            "hide_on_scroll" => CapabilityValue::Bool(false),
+            "show_unselected_labels" => CapabilityValue::Bool(true),
             _ => return None,
         },
         WidgetKind::NavigationDrawer => match property_name {
             "section_separator_visible" => CapabilityValue::Bool(true),
             "open" => CapabilityValue::Bool(false),
             "width" => CapabilityValue::Float(250.0),
+            // `NavigationDrawer::new` names the drawer "Navigation".
+            "title" => CapabilityValue::String("Navigation".to_string()),
             _ => return None,
         },
         WidgetKind::AppBar => match property_name {
             "title" => CapabilityValue::String(String::new()),
             "direction" => CapabilityValue::String("ltr".to_string()),
+            // No second line, no back arrow and no action until a host sets one.
+            "subtitle" => CapabilityValue::Null,
+            "show_back" => CapabilityValue::Bool(false),
+            "action_text" => CapabilityValue::String(String::new()),
             _ => return None,
         },
         WidgetKind::MobileDatePicker => match property_name {
@@ -1925,6 +1988,7 @@ pub fn default_widget_property_default_value(
             // Unrated, so nothing is filled — and the text says so rather than claiming "0 of 5".
             "fill" => CapabilityValue::Float(0.0),
             "display_text" => CapabilityValue::String("no rating".to_string()),
+            "read_only" => CapabilityValue::Bool(false),
             _ => return None,
         },
         WidgetKind::Avatar => match property_name {
@@ -1938,6 +2002,8 @@ pub fn default_widget_property_default_value(
         WidgetKind::EmptyState => match property_name {
             "message" => CapabilityValue::String("No data".to_string()),
             "description" => CapabilityValue::String(String::new()),
+            "icon" => CapabilityValue::String(String::new()),
+            "action_text" => CapabilityValue::String(String::new()),
             // COMP-23: `list_state_host` shares this kind. A fresh host is idle, has no empty or
             // error content and no pull gesture in progress.
             "state" => CapabilityValue::String("idle".to_string()),
@@ -2013,6 +2079,9 @@ pub fn default_widget_property_default_value(
             "scrim_opacity" => CapabilityValue::Float(0.32),
             "page_transition" => CapabilityValue::Bool(true),
             "title" => CapabilityValue::String(String::new()),
+            // The band is opt-in and starts as the scaffold's own classic strip.
+            "show_bottom_nav" => CapabilityValue::Bool(false),
+            "bottom_nav_style" => CapabilityValue::String("classic".to_string()),
             _ => return None,
         },
         WidgetKind::WizardDialog => match property_name {
@@ -2209,6 +2278,8 @@ pub fn default_widget_property_default_value(
             "font_family" => CapabilityValue::String("Arial".to_string()),
             "font_size" => CapabilityValue::Float(16.0),
             "preview_text" => CapabilityValue::String("The quick brown fox...".to_string()),
+            "bold" => CapabilityValue::Bool(false),
+            "italic" => CapabilityValue::Bool(false),
             _ => return None,
         },
         WidgetKind::CupertinoNavigationBar => match property_name {
@@ -2348,6 +2419,8 @@ pub fn default_widget_property_default_value(
             "keyboard_navigation_enabled" => CapabilityValue::Bool(true),
             "tab_count" => CapabilityValue::UInt(0),
             "selected_index" => CapabilityValue::UInt(0),
+            // A fresh strip neither closes, reorders nor scrolls its tabs.
+            "closable" | "movable" | "strip_scrollable" => CapabilityValue::Bool(false),
             _ => return None,
         },
         WidgetKind::MaterialNavigationRail => match property_name {
@@ -2594,6 +2667,8 @@ pub fn default_widget_property_default_value(
         WidgetKind::Accordion => match property_name {
             "section_count" | "expanded_count" => CapabilityValue::UInt(0),
             "single_expand" => CapabilityValue::Bool(true),
+            // `Accordion::new` starts with the open/close animation off.
+            "animated" => CapabilityValue::Bool(false),
             _ => return None,
         },
 

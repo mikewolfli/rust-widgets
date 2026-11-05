@@ -12,6 +12,7 @@
 //! while the indicator was placed from `g.width - 14`, so a long family name — `Noto Sans
 //! CJK JP` in a narrow format bar — was painted underneath the arrow.
 
+use crate::compat::Rc;
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 
@@ -197,6 +198,20 @@ fn edit_selection(anchor: Option<usize>, cursor: usize) -> (usize, usize) {
     }
 }
 
+/// Cumulative per-character advances of an editable box's buffer (IN2-10).
+///
+/// `cuts` holds one `(byte_end, advance)` entry per character boundary, in order, so a prefix's
+/// advance is a lookup rather than a measurement. Keyed on the buffer text itself and the face it
+/// was measured with, which is every input the result depends on.
+struct EditAdvanceCache {
+    text: String,
+    font: Font,
+    /// The render context's scale, in bits: `measure_text` reports at that scale, so a cached
+    /// advance belongs to the scale it was measured at (a window moved between monitors changes it).
+    dpi_bits: u32,
+    cuts: Rc<Vec<(usize, i32)>>,
+}
+
 /// A combo box whose entries are font family names.
 pub struct FontComboBox {
     base: BaseWidget,
@@ -227,6 +242,12 @@ pub struct FontComboBox {
     /// Every painted row used to build `Font::simple(name.clone(), 14.0)` per frame — one
     /// family string allocation and one face lookup per row per frame while the list was open.
     popup_fonts: core::cell::RefCell<Option<(u64, u32, Vec<Font>)>>,
+    /// Cumulative advances of the edit buffer, keyed by the buffer and its face (IN2-10).
+    ///
+    /// The edit's draw measured the same string four times a frame — the whole value and three
+    /// prefixes — and every one of them was a fresh shaping request. The table answers all four
+    /// from one build, so an idle edit measures nothing.
+    edit_advance_cache: core::cell::RefCell<Option<EditAdvanceCache>>,
     /// Optional sample text painted beside each family name in the popup.
     sample_text: Option<String>,
     current_index: i32,
@@ -319,6 +340,7 @@ impl FontComboBox {
             visible_indices: Vec::new(),
             visible_revision: 0,
             popup_fonts: core::cell::RefCell::new(None),
+            edit_advance_cache: core::cell::RefCell::new(None),
             sample_text: None,
             current_index: -1,
             editable: false,
@@ -821,6 +843,52 @@ impl FontComboBox {
         f(&fonts)
     }
 
+    /// Cumulative advances of `text` at every character boundary, cached (IN2-10).
+    ///
+    /// The edit's draw needs the whole value's advance and three prefix advances; each used to be
+    /// a separate `measure_text` call every frame. One table serves all of them, keyed on the text,
+    /// the face it was measured with and the scale — the three inputs the result depends on. The
+    /// borrows are `try_borrow`/`try_borrow_mut` so a re-entrant paint falls back to measuring
+    /// rather than panicking, the same contract `LineEdit::cached_advance` has.
+    fn edit_advance_cuts(
+        &self,
+        context: &crate::render::RenderContext,
+        text: &str,
+    ) -> Rc<Vec<(usize, i32)>> {
+        let font = Font::default_ui();
+        let dpi_bits = context.dpi_scale().to_bits();
+        if let Ok(cache) = self.edit_advance_cache.try_borrow() {
+            if let Some(cache) = cache.as_ref() {
+                if cache.text == text && cache.font == font && cache.dpi_bits == dpi_bits {
+                    return Rc::clone(&cache.cuts);
+                }
+            }
+        }
+        let mut cuts: Vec<(usize, i32)> = Vec::with_capacity(text.chars().count());
+        for (start, ch) in text.char_indices() {
+            let end = start + ch.len_utf8();
+            cuts.push((end, context.measure_text(&text[..end], &font).width as i32));
+        }
+        let cuts = Rc::new(cuts);
+        if let Ok(mut cache) = self.edit_advance_cache.try_borrow_mut() {
+            *cache = Some(EditAdvanceCache {
+                text: text.to_string(),
+                font,
+                dpi_bits,
+                cuts: Rc::clone(&cuts),
+            });
+        }
+        cuts
+    }
+
+    /// The advance of the first `offset` bytes, read from the cached table (IN2-10).
+    fn advance_at(cuts: &[(usize, i32)], offset: usize) -> i32 {
+        cuts.iter()
+            .find(|(end, _)| *end >= offset)
+            .map(|(_, advance)| *advance)
+            .unwrap_or_else(|| cuts.last().map(|(_, advance)| *advance).unwrap_or(0))
+    }
+
     /// The popup row a point falls on.
     fn popup_row_at(&self, pos: Point) -> Option<usize> {
         if !self.expanded || self.visible_fonts.is_empty() {
@@ -894,10 +962,15 @@ impl FontComboBox {
     }
     /// Opens the popup list, emits `popup_shown`, and requests a redraw.
     ///
-    /// Not idempotent: calling it while already open emits again. The widget
-    /// does not close the popup on outside clicks.
+    /// Not idempotent: calling it while already open emits again. The grab is registered here and
+    /// released in [`Self::hide_popup`], so a press on a row — which lies *outside* this control's
+    /// geometry, below the field band — is routed to this control at all (IN2-02). Without the
+    /// grab the popup's "a press outside dismisses and a press on a row selects" contract had no
+    /// events to act on.
     pub fn show_popup(&mut self) {
         self.expanded = true;
+        #[cfg(not(alloc_frugal))]
+        crate::widget::runtime::set_popup_grab(self.base.id());
         self.popup_shown.emit();
         self.base.request_redraw();
     }
@@ -906,6 +979,10 @@ impl FontComboBox {
     /// still emits.
     pub fn hide_popup(&mut self) {
         self.expanded = false;
+        // Symmetric with the registration above: a closed list must not keep owning the press
+        // stream, or every later click on the page is routed to a field with nothing to choose.
+        #[cfg(not(alloc_frugal))]
+        crate::widget::runtime::clear_popup_grab_for(self.base.id());
         self.popup_hidden.emit();
         self.base.request_redraw();
     }
@@ -1391,6 +1468,9 @@ impl EventHandler for FontComboBox {
             Event::FocusLost => {
                 self.base.set_pressed(false);
                 self.cursor_blink.stop();
+                // A blurred field cannot own an open list: the grab would keep routing every press
+                // to a control the user has left (IN2-02, precedent `dropdown.rs:1074-1076`).
+                self.hide_popup();
                 if self.edit_buffer.is_some() {
                     self.edit_buffer = None;
                     self.edit_cursor = 0;
@@ -1521,7 +1601,9 @@ impl Draw for FontComboBox {
         // tail, so the field never said where in the family name typing would land.
         if edit_text.is_some() {
             let align = self.alignment.to_horizontal().unwrap_or(HorizontalAlignment::Left);
-            let value_advance = ctx.measure_text(font_name, &value_font).width as i32;
+            // One measurement table for the whole value and the three prefixes below (IN2-10).
+            let cuts = self.edit_advance_cuts(ctx, font_name);
+            let value_advance = Self::advance_at(&cuts, font_name.len());
             let origin = crate::render::fitted_origin(
                 Rect::new(
                     geometry.value_box.x,
@@ -1535,10 +1617,8 @@ impl Draw for FontComboBox {
             if let Some((start, end)) = self.edit_selection_range() {
                 let start = start.min(font_name.len());
                 let end = end.min(font_name.len());
-                let start_x =
-                    origin.x + ctx.measure_text(&font_name[..start], &value_font).width as i32;
-                let end_x =
-                    origin.x + ctx.measure_text(&font_name[..end], &value_font).width as i32;
+                let start_x = origin.x + Self::advance_at(&cuts, start);
+                let end_x = origin.x + Self::advance_at(&cuts, end);
                 ctx.fill_rect(
                     Rect::new(
                         start_x.min(end_x),
@@ -1550,8 +1630,7 @@ impl Draw for FontComboBox {
                 );
             }
             let caret = self.edit_cursor.min(font_name.len());
-            let caret_x =
-                origin.x + ctx.measure_text(&font_name[..caret], &value_font).width as i32;
+            let caret_x = origin.x + Self::advance_at(&cuts, caret);
             let caret_x = caret_x
                 .min(geometry.value_box.x + geometry.value_box.width as i32 - 1)
                 .max(geometry.value_box.x);
@@ -2112,5 +2191,47 @@ mod tests {
         combo.handle_event(&Event::MouseRelease { pos: center, button: 1 });
         assert!(combo.expanded, "the press opens the popup");
         assert_eq!(combo.selected_index(), None, "the release must not also cycle the font");
+    }
+
+    /// IN2-02: the open list owns the press stream, so a row selects and an outside press closes.
+    ///
+    /// # The defect this pins
+    ///
+    /// The list is painted *below* the field band, i.e. outside this control's geometry, and the
+    /// press contract says a row press selects and any other press dismisses. Without a popup grab
+    /// the router never delivered either press here, so rows could not be clicked and the list
+    /// stayed open over everything else.
+    #[test]
+    fn the_open_popup_selects_a_row_and_closes_on_an_outside_press() {
+        let mut combo = FontComboBox::new(Rect::new(0, 0, 200, 28));
+        for name in ["Alpha", "Bravo", "Charlie"] {
+            combo.add_font(name.to_string());
+        }
+        let center = Point::new(20, 14);
+        combo.handle_event(&Event::MousePress { pos: center, button: 1, modifiers: 0 });
+        assert!(combo.expanded, "a press on the field opens the list");
+
+        // A popup row hangs from the field band's bottom edge, so it lies outside `geometry()`.
+        // The point below is inside the **second** row.
+        let band = combo.field_band();
+        let row_height = combo.popup_row_height();
+        let row_y = band.y + band.height as i32 + row_height + row_height / 2;
+        combo.handle_event(&Event::MousePress {
+            pos: Point::new(20, row_y),
+            button: 1,
+            modifiers: 0,
+        });
+        assert_eq!(combo.selected_index(), Some(1), "the pressed row is the one that is chosen");
+        assert!(!combo.expanded, "choosing a row closes the list");
+
+        // Re-open and press well outside both the field and the list.
+        combo.handle_event(&Event::MousePress { pos: center, button: 1, modifiers: 0 });
+        assert!(combo.expanded);
+        combo.handle_event(&Event::MousePress {
+            pos: Point::new(500, 500),
+            button: 1,
+            modifiers: 0,
+        });
+        assert!(!combo.expanded, "a press outside the field and the list closes it");
     }
 }

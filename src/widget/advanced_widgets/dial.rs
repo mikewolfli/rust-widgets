@@ -569,7 +569,9 @@ impl EventHandler for Dial {
                 self.dragging = false;
                 self.slider_released.emit();
             }
-            Event::KeyPress { key, .. } => match *key {
+            // Keyboard stepping is reachable only while the dial holds focus: a dial
+            // embedded in a page must not consume the arrows of whatever the user is editing.
+            Event::KeyPress { key, .. } if self.base.focus_reason().is_some() => match *key {
                 37 | 40 => self.set_value(self.value - self.single_step), // Left/Down
                 38 | 39 => self.set_value(self.value + self.single_step), // Up/Right
                 33 => self.set_value(self.value - self.page_step),
@@ -765,6 +767,7 @@ impl Draw for Dial {
 mod tests {
     use super::*;
     use crate::core::Rect;
+    use crate::event::FocusReason;
 
     #[test]
     fn dial_creation_defaults() {
@@ -955,6 +958,11 @@ mod tests {
     fn dial_keyboard_navigation() {
         let mut d = Dial::new(Rect::new(0, 0, 64, 64));
         d.set_value(50);
+        // Unfocused: the key belongs to whoever holds focus.
+        d.handle_event(&Event::KeyPress { key: 37, modifiers: 0 });
+        assert_eq!(d.value(), 50, "an unfocused dial ignores the key");
+
+        d.handle_event(&Event::FocusGained { reason: FocusReason::Tab });
         // Left arrow (key 37) decreases by single step
         d.handle_event(&Event::KeyPress { key: 37, modifiers: 0 });
         assert_eq!(d.value(), 49);
@@ -1042,6 +1050,9 @@ mod tests {
     fn dial_disabled_blocks_events() {
         let mut d = Dial::new(Rect::new(0, 0, 64, 64));
         d.set_value(50);
+        // Focus is taken before the control is disabled: a disabled dial would ignore the
+        // focus event, and without it the key assertion below would pass for the wrong reason.
+        d.handle_event(&Event::FocusGained { reason: FocusReason::Tab });
         d.set_enabled(false);
         d.handle_event(&Event::KeyPress { key: 39, modifiers: 0 });
         // Should stay unchanged because disabled

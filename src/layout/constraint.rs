@@ -6,6 +6,15 @@
 //! A simplified constraint-based layout that resolves spatial relationships
 //! between widgets sequentially (not a full Cassowary solver). Each constraint
 //! references a target widget and describes how this widget relates to it.
+//!
+//! # Reachability
+//!
+//! **State:** Reserved public capability with no in-repo consumer, for the same reason
+//! [`AbsoluteLayout`](crate::layout::absolute::AbsoluteLayout) documents: the constraint data is
+//! one [`ConstraintRef`] list per *child*, which
+//! [`DeclarativeLayoutKind`](crate::json::layout::DeclarativeLayoutKind) cannot carry, and no
+//! widget builds one. Removal condition: when a JSON child-placement schema exists, or when the
+//! solver is confirmed redundant with [`AbsoluteLayout`](crate::layout::absolute::AbsoluteLayout).
 use super::types::ChildPlacements;
 use super::{ChildInfo, Layout, LayoutContext};
 use crate::compat::{Any, HashMap, Rc, RefCell, Vec};

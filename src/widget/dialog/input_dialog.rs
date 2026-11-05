@@ -984,11 +984,10 @@ impl InputDialog {
     /// The entry field's band, derived from the same rows the painter stacks.
     fn input_band(&self) -> Rect {
         let rect = self.frame_rect();
-        let size = Size::new(self.base.geometry().width.max(1), self.base.geometry().height.max(1));
-        let mut backend = crate::render::SoftwarePaintBackend::new(size, 1.0);
-        let context = RenderContext::new(&mut backend);
         let font = effective_font(self.base.style());
-        let label_line_h = context.measure_text("M", font).height.max(1);
+        let label_line_h = super::with_measurement_context(|context| {
+            context.measure_text("M", font).height.max(1)
+        });
         let body =
             ControlMetrics::content_below_top_band(rect, dimensions::DIALOG_TITLE_BAR_HEIGHT);
         let field_band = ControlMetrics::content_below_top_band(body, label_line_h);
@@ -1079,27 +1078,26 @@ impl InputDialog {
 
     /// The action button rects, rebuilt from the same frame and bottom band `draw` uses.
     ///
-    /// The press path has no render context of its own, so it builds a measuring one — the
-    /// pattern `MessageBox::action_button_at` established. Rebuilding rather than caching is
-    /// deliberate: a cached rect is a second copy of the geometry that a resize can leave stale.
+    /// The press path has no render context of its own, so it borrows the module's measurement-only
+    /// one — the pattern `MessageBox::action_button_at` established. Rebuilding rather than caching
+    /// is deliberate: a cached rect is a second copy of the geometry that a resize can leave stale.
     fn action_buttons(&self) -> Vec<Rect> {
-        let size = Size::new(self.base.geometry().width.max(1), self.base.geometry().height.max(1));
-        let mut backend = crate::render::SoftwarePaintBackend::new(size, 1.0);
-        let context = RenderContext::new(&mut backend);
         let rect = self.frame_rect();
         let button_band = super::message_box::inset_action_band(
             ControlMetrics::bottom_band(rect, dimensions::DIALOG_BUTTON_HEIGHT),
             rect.y,
         );
         let labels = Self::action_labels();
-        super::message_box::action_row_geometry(
-            &context,
-            effective_font(self.base.style()),
-            &labels,
-            button_band,
-            true,
-        )
-        .buttons
+        super::with_measurement_context(|context| {
+            super::message_box::action_row_geometry(
+                context,
+                effective_font(self.base.style()),
+                &labels,
+                button_band,
+                true,
+            )
+            .buttons
+        })
     }
 
     /// The index of the action button under `pos`, or `None`.

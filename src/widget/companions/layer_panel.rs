@@ -744,18 +744,12 @@ impl WidgetProperties for LayerPanel {
         ]
     }
 
-    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
-        match name {
-            // Every command this control publishes needs a layer id, which a bare invocation does
-            // not carry.
-            "select_layer" | "set_entry_visible" | "scroll_to_layer" => {
-                Err(CapabilityAccessError::OutOfRange)
-            }
-            // `set_entries` (and any future `set_foo`) resolves through the property route by the
-            // `default_command` convention, so the payload it needs is the property write.
-            _ => self.default_command(name),
-        }
-    }
+    // CP2-1: no `command` override. `select_layer`, `set_entry_visible` and `scroll_to_layer`
+    // are not published commands (the capability table publishes only `set_entries`,
+    // `set_row_height` and `set_scroll_row`), so answering `OutOfRange` for them claimed they
+    // existed but needed a payload. The trait's `default_command` is the honest route: an
+    // unpublished name answers `UnknownCommand`, and `set_entries` still resolves through the
+    // property route.
 }
 
 crate::impl_scrollable_rows!(

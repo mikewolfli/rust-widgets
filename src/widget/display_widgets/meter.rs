@@ -126,6 +126,10 @@ struct ValueTextCache {
     value: f32,
     unit: String,
     dpi_scale_bits: u32,
+    /// The font the metrics were measured with (D2-006). Without it a theme or style font switch
+    /// left the cached width/height describing the old face while the text was drawn with the new
+    /// one, so the reading sat off-centre until the value happened to change.
+    font: Option<crate::core::Font>,
     text: String,
     width: u32,
     height: u32,
@@ -696,6 +700,7 @@ impl WidgetProperties for Meter {
             // list itself is written through `add_threshold` / `clear_thresholds`
             // rather than through a value the property layer would have to encode.
             "threshold_count" => Ok(CapabilityValue::UInt(self.thresholds().len() as u64)),
+            "interactive" => Ok(CapabilityValue::Bool(self.is_interactive())),
             _ => base_property_get(self, name),
         }
     }
@@ -729,6 +734,10 @@ impl WidgetProperties for Meter {
             }
             // Derived from the value and the unit.
             "value_text" | "threshold_count" => Err(CapabilityAccessError::ReadOnlyProperty),
+            "interactive" => {
+                self.set_interactive(expect_bool(value)?);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
@@ -742,6 +751,7 @@ impl WidgetProperties for Meter {
             "tick_count",
             "show_tick_labels",
             "unit",
+            "interactive",
             "value_text",
             "threshold_count",
             BASE_PROPERTY_NAMES
@@ -1167,6 +1177,7 @@ impl Meter {
             cache.value == self.value
                 && cache.unit == self.unit
                 && cache.dpi_scale_bits == dpi_scale_bits
+                && cache.font.as_ref() == Some(font)
         });
         if fresh {
             return;
@@ -1177,6 +1188,7 @@ impl Meter {
             value: self.value,
             unit: self.unit.clone(),
             dpi_scale_bits,
+            font: Some(font.clone()),
             text,
             width: metrics.width,
             height: metrics.height,

@@ -10,7 +10,7 @@ use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
 use crate::widget::capability::coercion::{
-    expect_bool, expect_i32_saturating, expect_orientation, expect_text_direction,
+    expect_bool, expect_i32_saturating, expect_orientation, expect_string, expect_text_direction,
     orientation_to_str, text_direction_to_str,
 };
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
@@ -608,6 +608,8 @@ impl WidgetProperties for ProgressBar {
                 Ok(CapabilityValue::String(text_direction_to_str(self.direction()).to_string()))
             }
             "progress" => Ok(CapabilityValue::Float(self.progress() as f64)),
+            "format" => Ok(CapabilityValue::String(self.format().to_string())),
+            "busy_text" => Ok(CapabilityValue::String(self.busy_text().to_string())),
             _ => base_property_get(self, name),
         }
     }
@@ -646,6 +648,14 @@ impl WidgetProperties for ProgressBar {
                 self.set_direction(expect_text_direction(value)?);
                 Ok(())
             }
+            "format" => {
+                self.set_format(expect_string(value)?);
+                Ok(())
+            }
+            "busy_text" => {
+                self.set_busy_text(expect_string(value)?);
+                Ok(())
+            }
             // `progress` has no setter: it is a function of the range. Reporting it
             // as unsupported keeps the read-only contract explicit.
             "progress" => Err(CapabilityAccessError::ReadOnlyProperty),
@@ -663,6 +673,8 @@ impl WidgetProperties for ProgressBar {
             "orientation",
             "inverted_appearance",
             "indeterminate",
+            "format",
+            "busy_text",
             "direction",
             "progress",
             BASE_PROPERTY_NAMES

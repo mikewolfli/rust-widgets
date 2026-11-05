@@ -640,6 +640,12 @@ thread_local! {
     /// allocations. Separate buffers for y and x so neither can observe the other's borrow.
     static Y_TICK_LABEL: crate::compat::RefCell<crate::compat::String> =
         const { crate::compat::RefCell::new(crate::compat::String::new()) };
+    /// One reused buffer for the legend's `+N more` row (CH2-03).
+    ///
+    /// Both legend entries points used to build a fresh `String` per frame while the legend
+    /// overflowed, and one of them *said* it reused a buffer. This is the buffer both use.
+    static LEGEND_SUMMARY: crate::compat::RefCell<crate::compat::String> =
+        const { crate::compat::RefCell::new(crate::compat::String::new()) };
 }
 
 /// Draws value ticks and labels along the y axis.
@@ -843,14 +849,17 @@ pub fn draw_legend_entries_iter<'a, I>(
     let hidden = iter.count();
     if hidden > 0 {
         use core::fmt::Write as _;
-        let mut summary = String::new();
-        let _ = write!(summary, "+{hidden} more");
-        context.draw_text(
-            &summary,
-            Point::from_f32(layout.legend_x + 26.0, cursor_y + 4.0),
-            10.0,
-            axis_chrome_color(0.45),
-        );
+        LEGEND_SUMMARY.with(|summary| {
+            let mut summary = summary.borrow_mut();
+            summary.clear();
+            let _ = write!(summary, "+{hidden} more");
+            context.draw_text(
+                &summary,
+                Point::from_f32(layout.legend_x + 26.0, cursor_y + 4.0),
+                10.0,
+                axis_chrome_color(0.45),
+            );
+        });
     }
 }
 
@@ -891,16 +900,19 @@ fn draw_legend_rows<'a>(
     let hidden = visible_count.saturating_sub(max_items);
     if hidden > 0 {
         // Reused buffer, not `format!`: this row repaints every frame while the
-        // legend overflows, and the text never exceeds a handful of bytes.
+        // legend overflows, and the text never exceeds a handful of bytes (CH2-03).
         use core::fmt::Write as _;
-        let mut summary = String::new();
-        let _ = write!(summary, "+{hidden} more");
-        context.draw_text(
-            &summary,
-            Point::from_f32(layout.legend_x + 26.0, cursor_y + 4.0),
-            10.0,
-            Color { r: 90, g: 90, b: 90, a: 255 },
-        );
+        LEGEND_SUMMARY.with(|summary| {
+            let mut summary = summary.borrow_mut();
+            summary.clear();
+            let _ = write!(summary, "+{hidden} more");
+            context.draw_text(
+                &summary,
+                Point::from_f32(layout.legend_x + 26.0, cursor_y + 4.0),
+                10.0,
+                Color { r: 90, g: 90, b: 90, a: 255 },
+            );
+        });
     }
 }
 /// Truncates a legend label to at most `max_chars` **characters** (not bytes),

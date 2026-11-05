@@ -2,6 +2,19 @@
 // SPDX-License-Identifier: MIT
 
 //! i18n global - global functions and static instances
+//!
+//! # Reachability
+//!
+//! **`tr!`:** live. The macro resolves at construction time and is used by built-in strings
+//! (file dialog, sample fill), so a catalogue change is only visible to labels built afterwards
+//! unless the widget registered a retranslator.
+//!
+//! **`register_retranslator` / `retranslate`:** Reserved: the pump works and is tested, but no
+//! in-crate control registers a retranslator (RT2-03). Removal condition: when a built-in text
+//! control adopts the retranslator pattern, or when the declarative path (where labels are
+//! re-resolved from the catalogue on every build) makes it redundant. Until then
+//! [`set_language`] only promises to change the catalogue used by *subsequent* lookups — it does
+//! not re-resolve text already stored in a control.
 use crate::compat::{lock, MiniToString, Mutex, MutexGuard, OnceLock, String, Vec};
 use crate::i18n::manager::I18nManager;
 use crate::i18n::options::{InitOptions, InitReport};
@@ -22,7 +35,9 @@ pub(crate) static GLOBAL_I18N: Mutex<Option<I18nManager>> = Mutex::new(None);
 ///
 /// This is the entry point a language picker should call: it changes the catalogue used by every
 /// subsequent `tr!` lookup and notifies listeners that already-built labels are stale. A widget
-/// that stored the result of `tr!` should either re-resolve on the signal or resolve at draw time.
+/// that stored the result of `tr!` should either re-resolve on the signal or resolve at draw time;
+/// no built-in control registers a retranslator, so this call does not re-resolve stored text by
+/// itself (see the module-level Reachability note).
 pub fn set_language(language: &str) -> bool {
     let (changed, signal, event) = {
         let mut guard = get_manager();

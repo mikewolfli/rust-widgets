@@ -58,6 +58,10 @@ use super::helpers::{clamp_axis, surface_ink};
 /// An entry has no `ObjectId` of its own: it is a row inside a control, not a mounted widget.
 /// The derived id is stable for `(owner, index)`, so a pointer moving within one entry keeps the
 /// bubble it already showed and a move to a neighbouring entry restarts the delay.
+/// CP2-5: only [`TooltipManager::note_entry_hover`] and this module's tests use this, and the
+/// production caller (the runtime pointer bridge) is still pending, so the dead-code lint is
+/// silenced here rather than by widening the API.
+#[allow(dead_code)]
 fn entry_hover_id(owner: ObjectId, index: usize) -> ObjectId {
     owner.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ (index as u64 + 1)
 }
@@ -297,7 +301,20 @@ impl TooltipManager {
     /// own `tooltip`.
     ///
     /// Returns whether an entry hint was registered and made hovered.
-    pub fn note_entry_hover(&mut self, owner: ObjectId, pointer: Point) -> bool {
+    ///
+    /// # Why this is `pub(crate)` rather than public (CP2-5)
+    ///
+    /// The caller is the runtime's pointer-transition bridge
+    /// (`runtime::pointer::forward_hover_to_tooltip_managers`), which already holds both the
+    /// hovered widget id and the pointer. A public spelling with no in-repo caller was an API
+    /// surface nothing could exercise; narrowing it keeps the entry path reachable from the one
+    /// module that must drive it without leaving a zero-caller public method (the issue's
+    /// "reserved ledger" alternative would only have documented the gap, not closed it).
+    /// `note_entry_hover` is the entry half: it reads the item or tab header under the pointer and
+    /// routes that hint through the same hover/delay pipeline. The runtime calls it first; a hit
+    /// takes precedence over the widget-level tooltip, so a toolbar item with its own hint does not
+    /// get the bar's generic tooltip painted over it (CP2-5).
+    pub(crate) fn note_entry_hover(&mut self, owner: ObjectId, pointer: Point) -> bool {
         let resolved = crate::widget::runtime::with_widget(owner, |widget| {
             #[cfg(full_widgets)]
             {

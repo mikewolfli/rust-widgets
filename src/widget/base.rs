@@ -102,9 +102,9 @@ pub struct BaseWidget {
     pub(crate) item_rotation: Option<(crate::render::math3d::Axis, f32, Point)>,
     /// The composed affine + pseudo-3D matrix recorded by the batch replay.
     ///
-    /// Identity until either setter is called. This is what a control records as
-    /// [`crate::render::BatchCommand::PushProjectiveTransform`] when the rotation is not the
-    /// identity; the affine-only path keeps using [`Self::item_transform`].
+    /// Identity until either setter is called. This is what a control records as a projective
+    /// push when the rotation is not the identity; the affine-only path keeps using
+    /// [`Self::item_transform`].
     #[cfg(feature = "3d")]
     pub(crate) item_projective: crate::render::math3d::Mat4,
     /// The mesh this control draws through [`Self::camera_3d`], or `None` when it draws none.
@@ -245,6 +245,14 @@ pub struct BaseWidget {
     /// ([`FocusReason::draws_focus_ring`]). Storing the reason is therefore the one
     /// derivation both [`crate::widget::Widget::widget_state`] and a draw path need.
     pub(crate) focus_reason: Option<FocusReason>,
+    /// Paint order among siblings, and hit-test priority (the sibling ordering `raise()`/`lower()`
+    /// expresses in pointer-driven toolkits).
+    ///
+    /// Siblings are painted in ascending order and hit-tested in descending order, so a higher
+    /// value is both "paints on top" and "receives the pointer first". The default `0` keeps
+    /// declaration order for every control that never sets it, which is why the three callers in
+    /// `runtime` only re-sort when a sibling actually declares a non-zero value.
+    pub(crate) z_index: i32,
 }
 
 /// Why a DPI scale was refused.
@@ -321,6 +329,7 @@ impl BaseWidget {
             pressed: false,
             grabbed: false,
             focus_reason: None,
+            z_index: 0,
         }
     }
     // -- Base accessors --
@@ -462,8 +471,7 @@ impl BaseWidget {
         self.item_rotation
     }
 
-    /// The composed affine + pseudo-3D matrix, ready for
-    /// [`crate::render::BatchCommand::PushProjectiveTransform`].
+    /// The composed affine + pseudo-3D matrix, ready for the batch replay's projective push.
     ///
     /// It is the affine alone when no rotation is set, so the identity case maps every point to
     /// itself exactly.
@@ -472,8 +480,7 @@ impl BaseWidget {
         self.item_projective
     }
 
-    /// The settled item matrix, in the representation [`crate::render::BatchCommand::PushTransform`]
-    /// accepts.
+    /// The settled item matrix, in the representation the batch replay's affine push accepts.
     ///
     /// Recording it on the batch replay stack applies the control's own rotation and scale to
     /// every primitive in the batch. It is the identity until [`Self::set_item_transform`] is
@@ -941,6 +948,15 @@ impl BaseWidget {
         // until the next pointer move, and a tooltip could still pop up over it (WG-02).
         #[cfg(not(alloc_frugal))]
         crate::widget::runtime::clear_hover_for(self.id());
+        // B2-01: a control hidden while focused must hand focus back. Otherwise keys and IME input
+        // keep flowing into a subtree that is no longer on screen. `clear_focus` is the existing
+        // primitive: it clears the manager and announces the loss through the normal path. During a
+        // mutation the FocusLost delivery resolves to the lender and is skipped, which is correct —
+        // the control being hidden is the one running this code.
+        #[cfg(not(alloc_frugal))]
+        if crate::widget::runtime::focused_widget() == Some(self.id()) {
+            crate::widget::runtime::clear_focus();
+        }
         self.request_layout();
         self.request_redraw();
     }
@@ -1327,6 +1343,23 @@ impl BaseWidget {
     /// Records the focus reason directly, without requesting a redraw.
     pub fn set_focus_reason(&mut self, reason: Option<FocusReason>) {
         self.focus_reason = reason;
+    }
+    /// This widget's paint order among its siblings; higher paints later and hit-tests first.
+    pub fn z_index(&self) -> i32 {
+        self.z_index
+    }
+    /// Sets the paint order among siblings.
+    ///
+    /// A change requests a repaint: z-order decides which sibling covers which, so the pixels
+    /// under the moved control are wrong until the parent paints again. The parent's child list
+    /// is not reordered — the painter sorts by this value — so a caller may raise and lower a
+    /// child without touching the tree.
+    pub fn set_z_index(&mut self, z_index: i32) {
+        if self.z_index == z_index {
+            return;
+        }
+        self.z_index = z_index;
+        self.request_redraw();
     }
     /// Asks the host to repaint this widget, and records the damage.
     ///

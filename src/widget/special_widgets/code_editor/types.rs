@@ -451,6 +451,71 @@ pub(crate) fn marker_severity_from_token(token: &str) -> Option<MarkerSeverity> 
     }
 }
 
+/// Key for one cached diagnostic label (GX-04).
+///
+/// The label text is `"{badge} {message}"` and its width is the backend's measurement of that
+/// string in one font. Both are a pure function of the marker, the generation the marker list was
+/// last rewritten in, and the font — so those are the key. The column range is part of the key as
+/// well, because two markers may sit on one line and each gets its own label.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct DiagnosticLabelKey {
+    pub(crate) line: usize,
+    pub(crate) start_column: usize,
+    pub(crate) finish_column: usize,
+    /// `CodeEditor::diagnostics_generation`, bumped whenever the marker list is rewritten.
+    pub(crate) generation: u64,
+    pub(crate) font_size_bits: u32,
+    pub(crate) font_weight: u16,
+}
+
+/// One formatted diagnostic label and its measured advance.
+pub(crate) struct DiagnosticLabelCache {
+    pub(crate) key: DiagnosticLabelKey,
+    pub(crate) text: String,
+    pub(crate) width: u32,
+}
+
+/// Key for one cached find-bar summary (GX-04).
+///
+/// The summary is one of two fixed spellings or `"{index} / {count}"`; every component is a
+/// scalar already carried by [`FindState`], so no query-text hash is needed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct FindSummaryKey {
+    pub(crate) goto_mode: bool,
+    pub(crate) query_empty: bool,
+    pub(crate) display_index: usize,
+    pub(crate) match_count: usize,
+    pub(crate) font_size_bits: u32,
+    pub(crate) font_weight: u16,
+}
+
+/// One formatted find-bar summary and its measured advance.
+pub(crate) struct FindSummaryCache {
+    pub(crate) key: FindSummaryKey,
+    pub(crate) text: String,
+    pub(crate) width: u32,
+}
+
+/// Key for one cached fold summary (GX-04).
+///
+/// `"{{ … {hidden} lines }}"` depends only on the fold's end and the number of hidden lines, so
+/// the two counts plus the font identify it exactly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct FoldLabelKey {
+    pub(crate) segment_end: usize,
+    pub(crate) hidden: usize,
+    pub(crate) font_size_bits: u32,
+    pub(crate) font_weight: u16,
+}
+
+/// One formatted fold summary, its measured advance, and the line height it is centred in.
+pub(crate) struct FoldLabelCache {
+    pub(crate) key: FoldLabelKey,
+    pub(crate) text: String,
+    pub(crate) width: u32,
+    pub(crate) height: i32,
+}
+
 /// The declared shape of one diagnostic marker, as a record (BLUE26 B26.09).
 ///
 /// This is the row shape of the `markers` property, and the control owns both ends of it: the

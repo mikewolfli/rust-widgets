@@ -765,11 +765,10 @@ impl ProgressDialog {
                 return cached;
             }
         }
-        let size = Size::new(self.base.geometry().width.max(1), self.base.geometry().height.max(1));
-        let mut backend = crate::render::SoftwarePaintBackend::new(size, 1.0);
-        let context = RenderContext::new(&mut backend);
         let labels = self.action_labels();
-        let rect = self.cancel_button_rect_for(frame, &context, &labels);
+        let rect = super::with_measurement_context(|context| {
+            self.cancel_button_rect_for(frame, context, &labels)
+        });
         self.cancel_rect_cache.set(Some((frame, rect)));
         rect
     }

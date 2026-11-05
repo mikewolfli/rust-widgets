@@ -149,6 +149,10 @@ impl StickyHeader {
         }
         if let Some(previous) = self.content_widget {
             self.base.remove_child_linked(previous);
+            // C2-D1: a detached content control must stop claiming to be visible, the same
+            // three-step contract `ScrollArea::set_content` follows.
+            #[cfg(not(alloc_frugal))]
+            crate::set_widget_visible(previous, false);
         }
         self.content_widget = child;
         if let Some(child) = child {

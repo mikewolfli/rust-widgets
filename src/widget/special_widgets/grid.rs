@@ -1490,10 +1490,16 @@ impl Draw for GridWidget {
                 }
                 if editing {
                     // The caret follows the buffer, so a mid-string edit is visible rather than
-                    // only committed on Enter.
-                    let prefix: String = self.edit_buffer.chars().take(self.edit_caret).collect();
-                    let caret_x =
-                        cell.x + 3 + context.measure_text(&prefix, &cell_font).width as i32;
+                    // only committed on Enter. The prefix is sliced at the caret's byte offset
+                    // instead of being collected into a `String` every frame (SP2-02).
+                    let caret_byte = crate::widget::text_utils::byte_index_of_char(
+                        &self.edit_buffer,
+                        self.edit_caret,
+                    );
+                    let caret_x = cell.x
+                        + 3
+                        + context.measure_text(&self.edit_buffer[..caret_byte], &cell_font).width
+                            as i32;
                     context.fill_rect(
                         Rect::new(
                             caret_x.min(cell.x + cell.width as i32 - 1),

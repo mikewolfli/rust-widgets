@@ -205,8 +205,8 @@ pub extern "C" fn rw_widget_list_item(
 ///
 /// `kind_name` is one of `"hbox"` / `"vbox"` / `"grid"` / `"uniform_grid"` /
 /// `"stack"` / `"splitter"` / `"form"` / `"flow"` / `"wrap"` / `"flex"` /
-/// `"border"` / `"center"` / `"aspect_ratio"` / `"keyboard_aware"`; it matches
-/// the spelling a declarative document uses, so the same name works in JSON and
+/// `"border"` / `"center"` / `"aspect_ratio"` / `"dock_area"` / `"keyboard_aware"`; it
+/// matches the spelling a declarative document uses, so the same name works in JSON and
 /// here. `spacing` and `margin` are applied where the kind uses them, and are
 /// ignored by the kinds that do not.
 ///

@@ -235,11 +235,23 @@ impl ToastHost {
     }
 
     /// Pushes a `Toast` at an explicit monotonic time.
+    ///
+    /// CP2-5: this converts the `Toast` to the shared `ToastItem` and admits it through
+    /// [`Self::push_item`], so the documented "the host accepts both payload spellings" promise
+    /// has one admission path instead of a sibling that nothing calls.
     pub fn push_at(&mut self, toast: Toast, now_ms: u64) -> Option<u64> {
         self.now_ms = self.now_ms.max(now_ms);
         let duration = if toast.ttl_ms() == 0 { self.default_duration_ms } else { toast.ttl_ms() };
-        let hosted = self.hosted(toast.message().to_string(), toast.level(), duration);
-        self.admit(hosted)
+        let item = ToastItem {
+            // `push_item` documents that the item's own string id is not the host id; the queue's
+            // numeric id is assigned by `hosted`.
+            id: String::new(),
+            message: toast.message().to_string(),
+            level: toast.level(),
+            ttl_ms: duration,
+            action_label: toast.action_label().map(String::from),
+        };
+        self.push_item(item)
     }
 
     /// Pushes an existing `ToastItem` at the host's last observed clock.

@@ -184,6 +184,11 @@ enum class TriggerKind : unsigned int {
     ValueChanged     = 2,
     SelectionChanged = 3,
     Closed           = 4,
+    // BD-09: the two kinds the Rust enum has always had and the backends already post
+    // (window resize and window move). Without these the poll routine handed a host a value
+    // outside the declared enum.
+    Resized          = 5,
+    Moved            = 6,
 };
 
 /// Bit flags returned by platform_capabilities().

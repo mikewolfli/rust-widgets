@@ -253,6 +253,29 @@ macro_rules! impl_helpers {
         fn set_widget_visible(&self, widget_id: ObjectId, visible: bool) {
             #[cfg(not(alloc_frugal))]
             {
+                // C2-A1: an unchanged write is skipped, exactly as an unchanged geometry write is
+                // (see `set_widget_geometry` below). Containers that sync their declared slots every
+                // frame — TabView's page ids, AdaptiveScaffold's id slots, StackedWidget's pages —
+                // used to re-request a subtree repaint for every slot on every frame, which bumped
+                // the global render epoch and invalidated the layer caches of the whole window while
+                // nothing had changed.
+                //
+                // The Window class is exempt: its visibility is not only a model flag, it is what
+                // makes the platform create/show the OS toplevel, and on Linux the first show *is*
+                // a same-value write (the model registers `visible = true`, the toplevel is created
+                // hidden). Windows are not per-frame sync targets, so the exemption costs nothing in
+                // the steady state.
+                let (unchanged, is_window) = self
+                    .with_live_widget(widget_id, |widget| {
+                        (
+                            widget.is_visible() == visible,
+                            widget.kind() == crate::widget::WidgetKind::Window,
+                        )
+                    })
+                    .unwrap_or((false, false));
+                if unchanged && !is_window {
+                    return;
+                }
                 self.with_live_widget(widget_id, |widget| widget.set_visible(visible));
                 // Repaint the widget **and its window**: making a control visible (or
                 // hiding it) changes what the window's tree frame contains, and on a

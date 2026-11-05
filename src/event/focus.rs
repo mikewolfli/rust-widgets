@@ -228,6 +228,15 @@ impl FocusManager {
         self.focused_widget == Some(widget_id)
     }
 
+    /// Whether `widget_id` is in the tab order.
+    ///
+    /// RT2-04: membership used to be answered by `focusable_widgets().contains(&id)`, an O(n)
+    /// scan of the order; the registration index already exists for O(log n) deduplication, so
+    /// it answers the same question here.
+    pub fn is_registered(&self, widget_id: &ObjectId) -> bool {
+        self.registered.contains(widget_id)
+    }
+
     // --- Focusable widget registration (tab order) ---
 
     /// Returns the current focusable widget order.

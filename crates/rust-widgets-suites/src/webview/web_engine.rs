@@ -2298,6 +2298,11 @@ impl WidgetProperties for WebEngineView {
             "url" => Ok(CapabilityValue::String(self.url().to_string())),
             "loading" => Ok(CapabilityValue::Bool(self.is_loading())),
             "title" => Ok(CapabilityValue::String(self.title().to_string())),
+            // WV-03: the view holds the navigation state these rows publish. Without these two
+            // arms the names resolved to `base_property_get` and a read answered `UnknownProperty`
+            // even though `can_go_back()` / `can_go_forward()` were right there.
+            "can_go_back" => Ok(CapabilityValue::Bool(self.can_go_back())),
+            "can_go_forward" => Ok(CapabilityValue::Bool(self.can_go_forward())),
             "user_agent" => Ok(CapabilityValue::String(self.user_agent().to_string())),
             "background_transparent" => Ok(CapabilityValue::Bool(self.background_transparent())),
             "cookie_persistence_enabled" => {
@@ -2316,6 +2321,8 @@ impl WidgetProperties for WebEngineView {
             // Loading is a state the load pipeline drives, not a value a caller
             // assigns; navigation is the way to change it (`set_url` / `reload`).
             "loading" => Err(CapabilityAccessError::ReadOnlyProperty),
+            // Navigation state is derived from the back/forward stacks, so it has no writer.
+            "can_go_back" | "can_go_forward" => Err(CapabilityAccessError::ReadOnlyProperty),
             "title" => {
                 self.set_title(expect_string(value)?);
                 Ok(())
@@ -2349,6 +2356,8 @@ impl WidgetProperties for WebEngineView {
             "url",
             "loading",
             "title",
+            "can_go_back",
+            "can_go_forward",
             "user_agent",
             "background_transparent",
             "cookie_persistence_enabled",
@@ -2493,8 +2502,10 @@ impl EventHandler for WebEngineView {
                         self.reload();
                     }
                     82
-                        // Ctrl+R — reload
-                        if *modifiers == 1 => {
+                        // Ctrl+R — reload. `Modifiers::CTRL` is event bit 1 (value 2); comparing
+                        // the mask to `1` tested Shift, so Shift+R reloaded and Ctrl+R did not.
+                        if rust_widgets::shortcut::Modifiers::from_event_bits(*modifiers)
+                            .contains(rust_widgets::shortcut::Modifiers::CTRL) => {
                             self.reload();
                         }
                     _ => { /* Other keys are not relevant */ }

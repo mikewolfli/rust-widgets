@@ -851,6 +851,29 @@ impl DropdownMenu {
         self.selected_value.as_deref().and_then(|value| label_of(&self.items, value))
     }
 
+    /// The text the closed field displays, borrowed (GX-05).
+    ///
+    /// `selected_label()` allocates a `String` and clones it on every call, which the draw path
+    /// used to pay once per frame. This is the same lookup over borrowed labels, with the
+    /// placeholder as the fallback.
+    pub fn displayed_label(&self) -> &str {
+        fn label_of<'a>(items: &'a [DropdownItem], value: &str) -> Option<&'a str> {
+            for item in items {
+                if item.value == value {
+                    return Some(item.label.as_str());
+                }
+                if let Some(label) = label_of(&item.children, value) {
+                    return Some(label);
+                }
+            }
+            None
+        }
+        self.selected_value
+            .as_deref()
+            .and_then(|value| label_of(&self.items, value))
+            .unwrap_or(self.placeholder_text.as_str())
+    }
+
     /// Returns the index of the selected item, or `None` when nothing is selected.
     ///
     /// The index addresses the item list as a whole, so it matches the index of
@@ -1600,7 +1623,7 @@ impl Draw for DropdownMenu {
         context.draw_rounded_rect_stroke(geom, 4, border, 1);
 
         // ── Draw selected label or placeholder ──
-        let display_text = self.selected_label().unwrap_or_else(|| self.placeholder_text.clone());
+        let display_text = self.displayed_label();
         let text_color = if !is_enabled {
             disabled_text_color
         } else if self.selected_value.is_some() {
@@ -1624,7 +1647,7 @@ impl Draw for DropdownMenu {
                 geom.width.saturating_sub(PADDING as u32 * 2),
                 line.height,
             ),
-            &display_text,
+            display_text,
             font,
             text_color,
             value_align,

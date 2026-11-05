@@ -58,6 +58,14 @@ use criterion::{criterion_group, criterion_main, Criterion};
     feature = "fonts-complex",
     feature = "fonts-cjk"
 ))]
+use rust_widgets::core::{Font, Size};
+#[cfg(not(target_arch = "wasm32"))]
+#[cfg(any(
+    feature = "text-shaping",
+    feature = "fonts-vector-latin",
+    feature = "fonts-complex",
+    feature = "fonts-cjk"
+))]
 use rust_widgets::render::text;
 #[cfg(not(target_arch = "wasm32"))]
 #[cfg(any(
@@ -67,6 +75,14 @@ use rust_widgets::render::text;
     feature = "fonts-cjk"
 ))]
 use rust_widgets::render::text::{Cell, InkKind};
+#[cfg(not(target_arch = "wasm32"))]
+#[cfg(any(
+    feature = "text-shaping",
+    feature = "fonts-vector-latin",
+    feature = "fonts-complex",
+    feature = "fonts-cjk"
+))]
+use rust_widgets::render::SoftwareSurface;
 
 /// One character, many lookups: the pattern the cache exists for.
 ///
@@ -161,6 +177,47 @@ fn bench_paint_active(c: &mut Criterion) {
     group.finish();
 }
 
+/// The per-frame shaping path itself, split into its cache-hit and cache-miss halves (BN-2).
+///
+/// `shape_text` is what `draw_text` / `measure_text` call for every label on every frame. A hit is
+/// an `Rc` refcount bump; a miss runs the full `shape_line` — clustering, face resolution and
+/// advance collection — which is the cost the library comment quotes as ~1.7µs. This is the same
+/// cached/uncached comparison as the face lookup above, applied to the layer sitting on top of it,
+/// so a regression in shaping or in the cache key is visible as a number.
+#[cfg(not(target_arch = "wasm32"))]
+#[cfg(any(
+    feature = "text-shaping",
+    feature = "fonts-vector-latin",
+    feature = "fonts-complex",
+    feature = "fonts-cjk"
+))]
+fn bench_shape_text(c: &mut Criterion) {
+    let surface = SoftwareSurface::new(Size::new(320, 40), 1.0);
+    let font = Font::default();
+    let caption = "Hello, world — 中文";
+
+    let mut group = c.benchmark_group("shape_text");
+
+    // Warm the cache first: the measured closure should start from the hit path rather than
+    // reporting the single build the warm-up happens to include.
+    std::hint::black_box(surface.shape_text(caption, &font));
+    group.bench_function("hit", |b| {
+        b.iter(|| std::hint::black_box(surface.shape_text(caption, &font)));
+    });
+
+    // A new key on every iteration, so every call takes the full shaping path. The counter keeps
+    // the strings distinct for the whole warm-up/measurement run.
+    let mut serial = 0u64;
+    group.bench_function("miss", |b| {
+        b.iter(|| {
+            serial = serial.wrapping_add(1);
+            let text = format!("caption {serial}");
+            std::hint::black_box(surface.shape_text(&text, &font));
+        })
+    });
+    group.finish();
+}
+
 // Every benchmark is gated on `not(wasm32)` (criterion has no wasm build) and on a vector-face
 // feature (there is nothing to look up without one). Grouping them together keeps the gates in one
 // place.
@@ -171,7 +228,13 @@ fn bench_paint_active(c: &mut Criterion) {
     feature = "fonts-complex",
     feature = "fonts-cjk"
 ))]
-criterion_group!(font_benches, bench_repeat_lookup, bench_caption_lookup, bench_paint_active);
+criterion_group!(
+    font_benches,
+    bench_repeat_lookup,
+    bench_caption_lookup,
+    bench_paint_active,
+    bench_shape_text
+);
 
 /// The entry point for configurations where the gated `criterion_main!` above is compiled out.
 ///

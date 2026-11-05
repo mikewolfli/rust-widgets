@@ -9,15 +9,13 @@ use crate::object::ObjectId;
 use crate::render::RenderContext;
 use crate::signal::Signal1;
 
-use crate::widget::capability::coercion::{expect_orientation, orientation_to_str};
+use crate::widget::capability::coercion::{expect_orientation, expect_u32, orientation_to_str};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::save_state::SaveState;
-use crate::widget::{BaseWidget, Draw, SimpleRegistry, Widget, WidgetKind};
+use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
-use std::cell::RefCell;
-use std::rc::Rc;
 
 use super::theme_snapshot::ThemeSnapshot;
 
@@ -87,12 +85,10 @@ pub struct Splitter {
     /// Emitted when the splitter is switched between horizontal and vertical,
     /// with the new orientation.
     pub orientation_changed: Signal1<Orientation>,
-    registry: Option<Rc<RefCell<SimpleRegistry>>>,
     /// The shared drag state machine, active only while a handle is being dragged.
     drag_session: Option<DragSession>,
     /// The splitter-specific snapshot a drag started with.
     drag_state: Option<HandleDrag>,
-    active_pane: Option<usize>,
     /// The handle arrow keys move while the splitter holds focus.
     ///
     /// Set when a handle is grabbed and clamped to the current pane count, so a keyboard user
@@ -126,10 +122,8 @@ impl Splitter {
             pane_layout_changed: Signal1::new(),
             pane_layout_preview: Signal1::new(),
             orientation_changed: Signal1::new(),
-            registry: None,
             drag_session: None,
             drag_state: None,
-            active_pane: None,
             focused_handle: 0,
             handle_width: HANDLE_WIDTH,
             collapsed: Vec::new(),
@@ -180,7 +174,7 @@ impl Splitter {
         self.max_pane_sizes.push(None);
         self.pre_collapse_ratios.push((stretch.max(1)) as f32);
         // A pane is an ordinary tree child: the tree painter draws it after the splitter's
-        // track and the hit test reaches it directly, so no draw-closure registry is needed.
+        // track and the hit test reaches it directly, so no draw-time child lookup is needed.
         self.base.add_child_linked(pane_id);
         crate::set_widget_visible(pane_id, true);
         self.place_panes();
@@ -602,12 +596,6 @@ impl Splitter {
         true
     }
 
-    /// Sets the shared widget registry for child forwarding.
-    pub fn set_registry(&mut self, registry: Rc<RefCell<SimpleRegistry>>) {
-        self.registry = Some(registry);
-        self.base.request_redraw();
-    }
-
     fn pane_rects(&self) -> Vec<(ObjectId, Rect)> {
         let mut rects = Vec::new();
         self.layout.update(self.base.geometry(), &mut |id, rect| rects.push((id, rect)));
@@ -879,6 +867,7 @@ impl WidgetProperties for Splitter {
                 Ok(CapabilityValue::String(orientation_to_str(self.orientation()).to_string()))
             }
             "pane_count" => Ok(CapabilityValue::UInt(self.pane_count() as u64)),
+            "handle_width" => Ok(CapabilityValue::UInt(u64::from(self.handle_width()))),
             _ => base_property_get(self, name),
         }
     }
@@ -891,13 +880,17 @@ impl WidgetProperties for Splitter {
             }
             // Derived from the registered panes.
             "pane_count" => Err(CapabilityAccessError::ReadOnlyProperty),
+            "handle_width" => {
+                self.set_handle_width(expect_u32(value)?);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
         // Mirrors `SPLITTER_PROPERTIES`.
-        property_names_of!["orientation", "pane_count", BASE_PROPERTY_NAMES]
+        property_names_of!["orientation", "pane_count", "handle_width", BASE_PROPERTY_NAMES]
     }
 }
 
@@ -951,7 +944,7 @@ impl Draw for Splitter {
             .unwrap_or_else(|| track.blend(&secondary, 0.45));
 
         // The track is the surface the panes sit on, drawn before the panes so a splitter with no
-        // panes yet — or one whose registry is empty — still shows where it is.
+        // panes yet still shows where it is.
         context.face_with_gradient_corners(
             rect,
             track,
@@ -964,13 +957,6 @@ impl Draw for Splitter {
         // C-P06: one layout pass for the pane rectangles, shared by the draw and by the divider
         // positions derived from the same rectangles.
         let pane_rects = self.pane_rects();
-        if let Some(ref registry) = self.registry {
-            for (pane_id, pane_rect) in &pane_rects {
-                context.push_clip(pane_rect.x, pane_rect.y, pane_rect.width, pane_rect.height);
-                registry.borrow_mut().draw_widget(*pane_id, context);
-                context.pop_clip();
-            }
-        }
         // Draw splitter handles between panes.
         //
         // The count guard used to be `pane_count() > 1`, so a splitter with no panes yet —
@@ -1074,26 +1060,6 @@ impl crate::event::EventHandler for Splitter {
             }
             _ => {}
         }
-        if let Some(ref reg) = self.registry {
-            let target = match event {
-                crate::event::Event::MousePress { pos, .. }
-                | crate::event::Event::MouseRelease { pos, .. }
-                | crate::event::Event::MouseMove { pos } => {
-                    self.pane_rects().iter().position(|(_, pane)| {
-                        pos.x >= pane.x
-                            && pos.x < pane.x + pane.width as i32
-                            && pos.y >= pane.y
-                            && pos.y < pane.y + pane.height as i32
-                    })
-                }
-                _ => self.active_pane,
-            };
-            if let Some(index) = target {
-                if let Some(pane_id) = self.pane_ids().get(index) {
-                    let _ = reg.borrow_mut().forward_event(*pane_id, event);
-                }
-            }
-        }
     }
 }
 
@@ -1133,14 +1099,6 @@ impl Splitter {
     fn begin_handle_drag(&mut self, pos: crate::core::Point) {
         // C-P06: one layout pass serves both the hit test and the divider positions.
         let rects = self.pane_rects();
-        if let Some(index) = rects.iter().position(|(_, pane)| {
-            pos.x >= pane.x
-                && pos.x < pane.x + pane.width as i32
-                && pos.y >= pane.y
-                && pos.y < pane.y + pane.height as i32
-        }) {
-            self.active_pane = Some(index);
-        }
 
         let pos_primary = self.primary_offset(pos);
         for (index, center) in self.divider_centers_from(&rects).into_iter().enumerate() {
@@ -1454,7 +1412,7 @@ mod tests {
     }
 
     /// A pane is part of the splitter's tree, so the tree painter draws it and the hit test
-    /// can reach it without a draw-closure registry.
+    /// can reach it directly.
     #[test]
     fn panes_are_linked_as_children() {
         let mut sp = two_pane_splitter();

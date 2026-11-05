@@ -173,6 +173,8 @@ impl WidgetProperties for Line {
             // only one of the three rungs the painter walks.
             "color" => Ok(CapabilityValue::Color(self.line_color())),
             "thickness" => Ok(CapabilityValue::UInt(u64::from(self.thickness()))),
+            // D2-009: the same token spelling `Divider` publishes for the same vocabulary.
+            "line_style" => Ok(CapabilityValue::String(self.line_style().token().to_string())),
             _ => base_property_get(self, name),
         }
     }
@@ -207,12 +209,22 @@ impl WidgetProperties for Line {
                 self.set_thickness(expect_u32(value)?);
                 Ok(())
             }
+            "line_style" => {
+                let token = expect_string(value)?;
+                match LineStyle::from_token(token.as_str()) {
+                    Some(style) => {
+                        self.set_line_style(style);
+                        Ok(())
+                    }
+                    None => Err(CapabilityAccessError::TypeMismatch),
+                }
+            }
             _ => base_property_set(self, name, value),
         }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["orientation", "thickness", "color", BASE_PROPERTY_NAMES]
+        property_names_of!["orientation", "thickness", "color", "line_style", BASE_PROPERTY_NAMES]
     }
 
     /// Runs one of the commands `line` publishes.

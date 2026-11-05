@@ -978,9 +978,11 @@ impl Draw for Breadcrumb {
                 band.width.saturating_sub(self.segment_padding as u32 + 2),
                 line.height,
             );
-            let caret_chars = self.caret_pos.min(self.edit_buffer.chars().count());
-            let prefix: String = self.edit_buffer.chars().take(caret_chars).collect();
-            let prefix_width = context.measure_text(&prefix, font).width as i32;
+            // The prefix is sliced at the caret's byte offset rather than collected into a
+            // `String`: this runs every frame while the editor is open (SP2-02).
+            let caret_byte = char_to_byte(&self.edit_buffer, self.caret_pos);
+            let prefix_width =
+                context.measure_text(&self.edit_buffer[..caret_byte], font).width as i32;
             // Keep the caret at least one glyph inside the field: the text is shifted left by
             // whatever the prefix overflows, which is the minimal scroll a line editor needs.
             let overflow = (prefix_width - (inner.width as i32 - 2)).max(0);

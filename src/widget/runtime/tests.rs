@@ -994,6 +994,32 @@ fn a_mounted_control_is_not_advanced_by_the_paint_path() {
     assert!(stepped > after, "the same control advanced directly must move: {after} -> {stepped}");
 }
 
+/// Siblings paint and hit-test in `z_index` order (Qt's `raise`/`lower`).
+#[test]
+fn siblings_are_ordered_by_z_index() {
+    use crate::core::Rect;
+
+    let low =
+        register(Box::new(crate::widget::base_widgets::frame::Frame::new(Rect::new(0, 0, 10, 10))))
+            .expect("mount the first sibling");
+    let _low = MountGuard(low);
+    let high =
+        register(Box::new(crate::widget::base_widgets::frame::Frame::new(Rect::new(0, 0, 10, 10))))
+            .expect("mount the second sibling");
+    let _high = MountGuard(high);
+
+    let mut ids = vec![low, high];
+    with_widget_mut(low, |widget| widget.set_z_index(5));
+    order_by_z(&mut ids);
+    assert_eq!(ids, vec![high, low], "the higher z paints later");
+
+    // A stable sort keeps declaration order for equal values, so lowering it back is exact.
+    with_widget_mut(low, |widget| widget.set_z_index(0));
+    ids = vec![low, high];
+    order_by_z(&mut ids);
+    assert_eq!(ids, vec![low, high], "equal z keeps declaration order");
+}
+
 /// Unmounts a widget registered by a test, even on panic.
 struct MountGuard(ObjectId);
 impl Drop for MountGuard {

@@ -158,6 +158,11 @@ macro_rules! impl_properties_view {
             PropertySchema::new("last_page", PropertyValueKind::UInt, true, false),
             PropertySchema::new("sibling_count", PropertyValueKind::UInt, true, true),
             PropertySchema::new("show_nav_buttons", PropertyValueKind::Bool, true, true),
+            // The two optional cells the demo drives: a jump-to-page field and a page-size
+            // selector. Both are off by default, which keeps the historical index-plus-arrows
+            // bar unchanged.
+            PropertySchema::new("show_jump_input", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("show_page_size_selector", PropertyValueKind::Bool, true, true),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
@@ -340,6 +345,26 @@ macro_rules! impl_properties_view {
             PropertySchema::new("flip_vertical", PropertyValueKind::Bool, true, true),
             PropertySchema::new("zoom_level", PropertyValueKind::Float, true, true),
             PropertySchema::new("pan_offset", PropertyValueKind::String, true, true),
+            // D2-004: the three layout knobs the draw path already honours; the token tables
+            // existed, only the publish rows were missing.
+            PropertySchema::enumerated("aspect", true, true, &["stretch", "fit", "fill", "tile"]),
+            PropertySchema::enumerated(
+                "image_alignment",
+                true,
+                true,
+                &[
+                    "top_left",
+                    "top",
+                    "top_right",
+                    "left",
+                    "center",
+                    "right",
+                    "bottom_left",
+                    "bottom",
+                    "bottom_right",
+                ],
+            ),
+            PropertySchema::new("margin", PropertyValueKind::UInt, true, true),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),

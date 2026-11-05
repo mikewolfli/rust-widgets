@@ -670,3 +670,85 @@ fn the_command_table_covers_the_editing_actions() {
     assert!(editor.command("unfold_all").is_ok());
     assert!(editor.command("no_such_command").is_err());
 }
+
+/// GX-04: the three per-frame labels (diagnostic, find summary, fold summary) are formatted and
+/// measured once per key and reused while their inputs are unchanged.
+#[test]
+fn render_labels_are_reused_until_their_inputs_change() {
+    // ── Diagnostic label ───────────────────────────────────────────────
+    let mut editor = make();
+    editor.set_text("let x = 1;");
+    editor.set_markers(vec![super::types::DiagnosticMarker::new(
+        0,
+        "unused variable",
+        MarkerSeverity::Warning,
+    )]);
+    let _ = render_to_svg(&mut editor);
+    let (label, pointer, generation) = {
+        let labels = editor.diagnostic_labels.borrow();
+        assert_eq!(labels.len(), 1, "the caret line's diagnostic label was built");
+        assert_eq!(labels[0].text, "warning unused variable");
+        (labels[0].text.clone(), labels[0].text.as_ptr(), labels[0].key.generation)
+    };
+    let _ = render_to_svg(&mut editor);
+    {
+        let labels = editor.diagnostic_labels.borrow();
+        assert_eq!(labels.len(), 1, "a still editor reuses the label rather than appending");
+        assert_eq!(labels[0].text, label);
+        assert_eq!(labels[0].text.as_ptr(), pointer, "the cached string buffer is reused");
+        assert_eq!(labels[0].key.generation, generation);
+    }
+    editor.set_markers(vec![super::types::DiagnosticMarker::new(
+        0,
+        "new message",
+        MarkerSeverity::Error,
+    )]);
+    let _ = render_to_svg(&mut editor);
+    assert!(
+        editor
+            .diagnostic_labels
+            .borrow()
+            .iter()
+            .any(|cached| cached.text == "error new message"),
+        "a marker rewrite bumps the generation and reformats the label"
+    );
+
+    // ── Find summary ───────────────────────────────────────────────────
+    let mut editor = make();
+    editor.set_text("alpha\nbeta");
+    editor.open_find(false);
+    let _ = render_to_svg(&mut editor);
+    let (summary_pointer, summary) = {
+        let cached = editor.find_summary_cache.as_ref().expect("the find bar painted");
+        assert_eq!(cached.text, "Find");
+        (cached.text.as_ptr(), cached.text.clone())
+    };
+    let _ = render_to_svg(&mut editor);
+    {
+        let cached = editor.find_summary_cache.as_ref().expect("the find bar painted");
+        assert_eq!(cached.text, summary);
+        assert_eq!(cached.text.as_ptr(), summary_pointer, "the summary string is reused");
+    }
+
+    // ── Fold summary ───────────────────────────────────────────────────
+    let mut editor = make_with(CodeEditorConfig::new().show_fold_summary(true));
+    editor.set_text("fn a() {\n    x;\n}\nfn b() {}\n");
+    assert!(editor.fold_block_at(0));
+    let _ = render_to_svg(&mut editor);
+    let (fold_pointer, fold_text) = {
+        let labels = editor.fold_labels.borrow();
+        assert!(!labels.is_empty(), "the folded segment's summary was built");
+        (labels[0].text.as_ptr(), labels[0].text.clone())
+    };
+    let _ = render_to_svg(&mut editor);
+    {
+        let labels = editor.fold_labels.borrow();
+        assert!(
+            labels
+                .iter()
+                .any(|cached| cached.text == fold_text
+                    && cached.text.as_ptr() == fold_pointer),
+            "a still fold reuses the summary string instead of reformatting it"
+        );
+    }
+}

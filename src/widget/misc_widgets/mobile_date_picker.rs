@@ -739,7 +739,9 @@ impl EventHandler for MobileDatePicker {
             // The keyboard path (MISC-12): left/right move the focused column, up/down change that
             // column by one through the same `set_date` clamp and signal the wheel and click paths
             // use, and Enter re-announces the current date so a host can confirm it.
-            Event::KeyPress { key, .. } => match *key {
+            // Arrow keys step the focused column only while the picker holds focus: a picker
+            // embedded in a page must not consume the arrows of whatever the user is editing.
+            Event::KeyPress { key, .. } if self.base.focus_reason().is_some() => match *key {
                 crate::event::key_codes::LEFT => {
                     self.focus_column = self.focus_column.saturating_sub(1);
                     self.base.request_redraw();
@@ -1130,6 +1132,11 @@ mod tests {
         let mut picker = make_picker();
         picker.set_date(2026, 6, 15);
 
+        // Unfocused: the keys belong to whoever holds focus.
+        picker.handle_event(&Event::key_press(crate::event::key_codes::UP, 0));
+        assert_eq!(picker.year(), 2026, "an unfocused picker ignores the key");
+
+        picker.handle_event(&Event::FocusGained { reason: crate::event::FocusReason::Tab });
         // The year column is focused initially.
         picker.handle_event(&Event::key_press(crate::event::key_codes::UP, 0));
         assert_eq!(picker.year(), 2027);
@@ -1153,6 +1160,16 @@ mod tests {
         let sink = Arc::clone(&confirmed);
         picker.date_changed.connect(move |value| sink.lock().unwrap().push(value.to_string()));
         picker.set_date(2026, 3, 9);
+        // Unfocused: Enter belongs to whoever holds focus.
+        let announced = confirmed.lock().unwrap().len();
+        picker.handle_event(&Event::key_press(crate::event::key_codes::ENTER, 0));
+        assert_eq!(
+            confirmed.lock().unwrap().len(),
+            announced,
+            "an unfocused picker does not announce the date"
+        );
+
+        picker.handle_event(&Event::FocusGained { reason: crate::event::FocusReason::Tab });
         picker.handle_event(&Event::key_press(crate::event::key_codes::ENTER, 0));
         assert_eq!(confirmed.lock().unwrap().last().map(String::as_str), Some("2026-03-09"));
     }

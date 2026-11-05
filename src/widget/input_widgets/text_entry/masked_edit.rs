@@ -168,9 +168,37 @@ pub struct MaskedEdit {
     /// Borrowed from [`crate::style::CursorBlink`] rather than reimplemented, so this field's
     /// caret keeps the tempo and phase logic of every other caret in the crate.
     cursor_blink: crate::style::CursorBlink,
+    /// The raw value as characters, rebuilt only when the value changes (IN2-07).
+    ///
+    /// The draw walk needs one character per input cell, and it collected the whole value into a
+    /// fresh `Vec<char>` on **every** frame — including idle frames that changed nothing. The entry
+    /// stores the value it was built from, so a write that bypasses any revision counter still
+    /// cannot serve stale characters.
+    raw_chars_cache: RefCell<Option<(String, Rc<Vec<char>>)>>,
 }
 
 impl MaskedEdit {
+    /// The raw value as characters, borrowed from a cache keyed on the value itself (IN2-07).
+    ///
+    /// The result is an `Rc` so the caller can walk it after the cache borrow is released — the
+    /// draw loop indexes it defensively below and must not hold a `RefCell` borrow while painting.
+    /// The borrows are `try_borrow`/`try_borrow_mut` so a re-entrant paint falls back to building
+    /// the table instead of panicking.
+    fn raw_chars_cached(&self) -> Rc<Vec<char>> {
+        if let Ok(cache) = self.raw_chars_cache.try_borrow() {
+            if let Some((source, chars)) = cache.as_ref() {
+                if source == &self.raw_text {
+                    return Rc::clone(chars);
+                }
+            }
+        }
+        let chars = Rc::new(self.raw_text.chars().collect::<Vec<char>>());
+        if let Ok(mut cache) = self.raw_chars_cache.try_borrow_mut() {
+            *cache = Some((self.raw_text.clone(), Rc::clone(&chars)));
+        }
+        chars
+    }
+
     /// Paints the keyboard-focus ring around the field box.
     ///
     /// Only a keyboard focus draws it: a pointer (or touch) press focuses the field without
@@ -220,6 +248,7 @@ impl MaskedEdit {
             suppress_history: false,
             completion_announced: false,
             cursor_blink: crate::style::CursorBlink::new(),
+            raw_chars_cache: RefCell::new(None),
         }
     }
 
@@ -1270,11 +1299,11 @@ impl Draw for MaskedEdit {
         // Draw each segment
         let mut raw_idx = 0;
         let mut display_x = text_x + start_shift;
-        // The raw value as characters, collected **once** for the whole walk (I-P10). The segment
-        // loop used to call `chars().nth(raw_idx)` and `chars().count()` per input segment, so an
-        // n-cell mask scanned the value O(n) times per frame — O(n^2) for a string no longer than
-        // the mask.
-        let raw_chars: Vec<char> = self.raw_text.chars().collect();
+        // The raw value as characters, read from the cache keyed on the value (IN2-07). The segment
+        // loop used to call `chars().nth(raw_idx)` and `chars().count()` per input segment, and
+        // collecting once per *draw* still allocated a fresh `Vec<char>` every frame — idle frames
+        // included. The borrow outlives the walk without touching the `RefCell`.
+        let raw_chars = self.raw_chars_cached();
         let raw_count = raw_chars.len();
 
         // ── The selection, behind the glyphs ──
@@ -2497,5 +2526,29 @@ mod tests {
         assert_eq!(count.load(Ordering::SeqCst), 1, "the last cell completes the code");
         me.handle_event(&Event::TextInput { text: "5".to_string() });
         assert_eq!(count.load(Ordering::SeqCst), 1, "the signal is edge-triggered");
+    }
+
+    /// IN2-07: repeated draws reuse the raw character table instead of rebuilding it.
+    ///
+    /// The draw walk collected the whole value into a fresh `Vec<char>` on every frame, so an
+    /// idle field allocated once per frame forever. The cache hands out the **same** table until
+    /// the value changes, which is what the pointer identity below asserts; a rebuild would hand
+    /// out a new allocation and fail it.
+    #[test]
+    fn repeated_draws_do_not_rebuild_the_raw_characters() {
+        let _theme_guard = crate::style::theme_test_guard();
+        let mut me = phone("5551234567");
+        let _ = render_to_svg(&mut me);
+        let first = me.raw_chars_cached();
+        let _ = render_to_svg(&mut me);
+        let second = me.raw_chars_cached();
+        assert!(Rc::ptr_eq(&first, &second), "an unchanged value keeps the same table");
+        assert_eq!(first.as_slice(), "5551234567".chars().collect::<Vec<char>>().as_slice());
+
+        // Writing the value invalidates it: the table must describe what is drawn now.
+        me.set_text("5559999");
+        let third = me.raw_chars_cached();
+        assert!(!Rc::ptr_eq(&first, &third), "a new value builds a new table");
+        assert_eq!(third.as_slice(), "5559999".chars().collect::<Vec<char>>().as_slice());
     }
 }

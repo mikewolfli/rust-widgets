@@ -30,6 +30,24 @@
 //! names (`chart_widgets::LineChart`) always mean the control layer. This is the
 //! explicitly allowed form of principle #49: distinct layers, distinct paths.
 //!
+//! # Which layer owns what
+//!
+//! The engine structs are the **headless / SVG export layer**. They own no
+//! `BaseWidget`, no control rectangle and no event loop: a chart is data plus
+//! presentation, and [`svg::render_chart_to_svg_file`] is their production entry
+//! point, writing a complete `.svg` document with no window and no
+//! `RenderContext`. That is also why the engine's layout helpers can be borrowed
+//! by the controls — `compute_cartesian_layout*`, `draw_y_ticks*`, `draw_legend_*`
+//! and `axis_chrome_color` are called from the paint paths of
+//! [`bar_chart`]/[`line_chart`] — without the two layers sharing a type.
+//!
+//! The [`bar_chart`]/[`line_chart`]/[`pie_chart`]/[`chart`] `*Chart` controls are
+//! the **UI layer**. They own `WidgetKind` semantics, hit-testing, hover state and
+//! signals, and they paint through `RenderContext`. Principle #49 is what allows
+//! the parallel types (one path per layer), not an engine concept with no caller:
+//! the export path is therefore exercised by a runnable doctest on
+//! [`svg::render_chart_to_svg_file`] rather than shipped as an unreachable API.
+//!
 //! # Adapter
 //!
 //! [`adapter::ChartContextAdapter`] is why both layers exist here. Every

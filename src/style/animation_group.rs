@@ -25,18 +25,25 @@ use crate::compat::{String, Vec};
 ///
 /// # Example
 ///
-/// ```text
-/// let mut group = AnimationGroup::new("fade-in-slide");
-/// group.add_parallel(fade_id);
-/// group.add_parallel(scale_id);
-/// group.add_sequential(AnimationConfig::new(300));
-/// group.add_sequential(AnimationConfig::new(200));
+/// A host drives the group from its own frame loop. This example is compiled and run as a
+/// doctest, so the documented pairing with [`AnimationClock`] cannot drift silently.
 ///
-/// // Each frame:
-/// if !group.is_completed(&driver) {
-///     group.advance(&mut driver);
-///     driver.advance();
-/// }
+/// ```
+/// use core::time::Duration;
+/// use rust_widgets::style::{AnimationClock, AnimationConfig, AnimationGroup};
+///
+/// let mut clock = AnimationClock::new();
+/// let fade = clock
+///     .driver_mut()
+///     .add(AnimationConfig::new(Duration::from_millis(100)), |_| {});
+/// let mut group = AnimationGroup::new("fade-in-slide");
+/// group.add_parallel(fade);
+/// group.add_sequential(AnimationConfig::new(Duration::from_millis(300)));
+/// let index = clock.add_group(group);
+///
+/// // Each frame: one delta advances every animation the clock owns.
+/// clock.advance_delta(16);
+/// assert_eq!(clock.group(index).map(AnimationGroup::name), Some("fade-in-slide"));
 /// ```
 pub struct AnimationGroup {
     /// User-facing name for debugging / profiling.

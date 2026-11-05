@@ -55,8 +55,10 @@ pub extern "C" fn rw_harmony_on_value_changed(widget_id: u64) -> CBool {
 #[no_mangle]
 pub extern "C" fn rw_harmony_on_widget_event(widget_id: u64, kind_code: c_uint) -> CBool {
     c_try!({
-        get_control_backend()
-            .inject_widget_trigger_event(widget_id, trigger_kind_from_code(kind_code))
+        let Some(kind) = trigger_kind_from_code(kind_code) else {
+            return false;
+        };
+        get_control_backend().inject_widget_trigger_event(widget_id, kind)
     })
 }
 
@@ -153,9 +155,11 @@ pub extern "C" fn rw_harmony_on_node_value_changed(node_handle: u64) -> CBool {
 #[no_mangle]
 pub extern "C" fn rw_harmony_on_node_widget_event(node_handle: u64, kind_code: c_uint) -> CBool {
     c_try!({
+        let Some(kind) = trigger_kind_from_code(kind_code) else {
+            return false;
+        };
         with_harmony_widget(node_handle, |widget_id| {
-            get_control_backend()
-                .inject_widget_trigger_event(widget_id, trigger_kind_from_code(kind_code))
+            get_control_backend().inject_widget_trigger_event(widget_id, kind)
         })
     })
 }

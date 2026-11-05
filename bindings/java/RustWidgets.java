@@ -71,6 +71,10 @@ public final class RustWidgets {
     public static final int TRIGGER_SELECTION_CHANGED = 3;
     /** Widget / window closed. */
     public static final int TRIGGER_CLOSED           = 4;
+    /** Window resized (BD-09: present in the Rust enum and posted by the backends). */
+    public static final int TRIGGER_RESIZED          = 5;
+    /** Window moved. */
+    public static final int TRIGGER_MOVED            = 6;
 
     // ---- Static initialiser -----------------------------------------------
 

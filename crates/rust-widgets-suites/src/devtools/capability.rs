@@ -51,6 +51,10 @@ pub const DIFF_VIEWER_PROPERTIES: &[PropertySchema] = &[
     PropertySchema::enumerated("view_mode", true, true, &["side_by_side", "unified"]),
     PropertySchema::new("fold_unchanged", PropertyValueKind::Bool, true, true),
     PropertySchema::new("fold_threshold", PropertyValueKind::UInt, true, true),
+    // DEV-4: both comparison switches have had public setters all along; `word_granularity`
+    // beside them is already published, so these two were the asymmetric pair.
+    PropertySchema::new("ignore_case", PropertyValueKind::Bool, true, true),
+    PropertySchema::new("ignore_blank_lines", PropertyValueKind::Bool, true, true),
     PropertySchema::new("fold_context_lines", PropertyValueKind::UInt, true, true),
     PropertySchema::new("unified_changed_pair", PropertyValueKind::Bool, true, true),
     PropertySchema::enumerated(
@@ -269,6 +273,7 @@ pub fn default_property_value(kind: &str, name: &str) -> Option<CapabilityValue>
         ("diff_viewer", "fold_threshold") => Some(CapabilityValue::UInt(8)),
         ("diff_viewer", "fold_context_lines") => Some(CapabilityValue::UInt(0)),
         ("diff_viewer", "fold_unchanged") => Some(CapabilityValue::Bool(false)),
+        ("diff_viewer", "ignore_case" | "ignore_blank_lines") => Some(CapabilityValue::Bool(false)),
         ("diff_file_list", "files") => {
             Some(CapabilityValue::Tuple(rust_widgets::compat::Vec::new()))
         }

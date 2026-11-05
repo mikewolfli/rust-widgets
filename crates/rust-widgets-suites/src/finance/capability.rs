@@ -366,7 +366,7 @@ pub fn default_property_value(kind: &str, name: &str) -> Option<CapabilityValue>
     match (kind, name) {
         ("candlestick_chart", "series") => Some(CapabilityValue::String(String::new())),
         ("candlestick_chart", "overlay_count") => Some(CapabilityValue::UInt(0)),
-        ("candlestick_chart", "show_price_levels") => Some(CapabilityValue::Bool(false)),
+        ("candlestick_chart", "show_price_levels") => Some(CapabilityValue::Bool(true)),
         ("candlestick_chart", "show_overlay_legend") => Some(CapabilityValue::Bool(true)),
         ("volume_chart", "series") => Some(CapabilityValue::String(String::new())),
         ("volume_chart", "color_mode") => Some(CapabilityValue::String("direction".to_string())),

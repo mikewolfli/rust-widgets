@@ -163,6 +163,9 @@ macro_rules! impl_properties_base {
         pub(crate) const LINE_PROPERTIES: &[PropertySchema] = &[
             PropertySchema::enumerated("orientation", true, true, &["horizontal", "vertical"]),
             PropertySchema::new("thickness", PropertyValueKind::UInt, true, true),
+            // D2-009: the same three-state relief vocabulary `DIVIDER_PROPERTIES` publishes — one
+            // set of tokens, and now one publishable surface for both separators.
+            PropertySchema::enumerated("line_style", true, true, &["plain", "sunken", "raised"]),
             // The effective line colour: the explicit override when one is set, otherwise the
             // theme/style border colour the painter uses. A `Null` write clears the override.
             PropertySchema::new("color", PropertyValueKind::Color, true, true),

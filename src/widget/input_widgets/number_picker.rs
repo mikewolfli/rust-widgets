@@ -708,62 +708,67 @@ impl EventHandler for NumberPicker {
                 let rows = if pos.y < centre { -1 } else { 1 };
                 let _ = self.scroll_rows_visual(rows);
             }
-            Event::KeyPress { key, modifiers: _ } => match *key {
-                // Typed value entry: digits, a sign and a decimal point build a buffer, Enter
-                // commits it and Escape abandons it. Before this arm the picker was
-                // scroll-only, so a large jump took dozens of notches.
-                48..=57 | 45 | 46 if self.entering || matches!(*key, 48..=57 | 45) => {
-                    if let Some(ch) = char::from_u32(*key) {
-                        if !self.entering {
-                            self.entering = true;
-                            self.entry_buffer.clear();
+            // Keyboard stepping and typed entry are reachable only while the picker holds
+            // focus: a picker embedded in a page must not consume the digits and arrows of
+            // whatever the user is editing.
+            Event::KeyPress { key, modifiers: _ } if self.base.focus_reason().is_some() => {
+                match *key {
+                    // Typed value entry: digits, a sign and a decimal point build a buffer, Enter
+                    // commits it and Escape abandons it. Before this arm the picker was
+                    // scroll-only, so a large jump took dozens of notches.
+                    48..=57 | 45 | 46 if self.entering || matches!(*key, 48..=57 | 45) => {
+                        if let Some(ch) = char::from_u32(*key) {
+                            if !self.entering {
+                                self.entering = true;
+                                self.entry_buffer.clear();
+                            }
+                            self.entry_buffer.push(ch);
+                            self.base.request_redraw();
                         }
-                        self.entry_buffer.push(ch);
+                    }
+                    8 if self.entering => {
+                        self.entry_buffer.pop();
+                        if self.entry_buffer.is_empty() {
+                            self.entering = false;
+                        }
                         self.base.request_redraw();
                     }
-                }
-                8 if self.entering => {
-                    self.entry_buffer.pop();
-                    if self.entry_buffer.is_empty() {
+                    13 | 10 if self.entering => {
+                        if let Some(value) = self.parse_entry() {
+                            self.set_value(value);
+                        }
                         self.entering = false;
+                        self.entry_buffer.clear();
+                        self.base.request_redraw();
                     }
-                    self.base.request_redraw();
-                }
-                13 | 10 if self.entering => {
-                    if let Some(value) = self.parse_entry() {
-                        self.set_value(value);
+                    27 if self.entering => {
+                        self.entering = false;
+                        self.entry_buffer.clear();
+                        self.base.request_redraw();
                     }
-                    self.entering = false;
-                    self.entry_buffer.clear();
-                    self.base.request_redraw();
+                    // Up / Right.
+                    38 | 39 => {
+                        let _ = self.scroll_rows(1);
+                    }
+                    // Down / Left.
+                    40 | 37 => {
+                        let _ = self.scroll_rows(-1);
+                    }
+                    // Page Up / Page Down move by a screenful.
+                    33 => {
+                        let rows = self.visible_rows();
+                        let _ = self.scroll_rows(rows);
+                    }
+                    34 => {
+                        let rows = self.visible_rows();
+                        let _ = self.scroll_rows(-rows);
+                    }
+                    // Home / End jump to the bounds.
+                    36 => self.set_value(self.minimum),
+                    35 => self.set_value(self.maximum),
+                    _ => {}
                 }
-                27 if self.entering => {
-                    self.entering = false;
-                    self.entry_buffer.clear();
-                    self.base.request_redraw();
-                }
-                // Up / Right.
-                38 | 39 => {
-                    let _ = self.scroll_rows(1);
-                }
-                // Down / Left.
-                40 | 37 => {
-                    let _ = self.scroll_rows(-1);
-                }
-                // Page Up / Page Down move by a screenful.
-                33 => {
-                    let rows = self.visible_rows();
-                    let _ = self.scroll_rows(rows);
-                }
-                34 => {
-                    let rows = self.visible_rows();
-                    let _ = self.scroll_rows(-rows);
-                }
-                // Home / End jump to the bounds.
-                36 => self.set_value(self.minimum),
-                35 => self.set_value(self.maximum),
-                _ => {}
-            },
+            }
             Event::Wheel { delta, modifiers } => {
                 // A wheel notch is a discrete step, so it starts from rest. Leaving the
                 // drag settle remainder in place made the wheel and the drag paths end
@@ -977,6 +982,7 @@ impl ContainsPoint for NumberPicker {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::event::FocusReason;
 
     fn picker() -> NumberPicker {
         NumberPicker::new(Rect::new(0, 0, 80, 84))
@@ -1141,6 +1147,11 @@ mod tests {
         let mut picker = picker();
         picker.set_range(0, 10);
 
+        // Unfocused: the arrows belong to whatever else holds focus.
+        picker.handle_event(&Event::key_press(38, 0));
+        assert_eq!(picker.value(), 0, "an unfocused picker ignores the key");
+
+        picker.handle_event(&Event::FocusGained { reason: FocusReason::Tab });
         picker.handle_event(&Event::key_press(38, 0));
         assert_eq!(picker.value(), 1, "Up increases");
         picker.handle_event(&Event::key_press(40, 0));
@@ -1314,6 +1325,7 @@ mod tests {
     fn a_typed_value_is_parsed_on_commit() {
         let mut picker = picker();
         picker.set_range(0, 1_000);
+        picker.handle_event(&Event::FocusGained { reason: FocusReason::Tab });
         for key in [49u32, 50, 51] {
             picker.handle_event(&Event::KeyPress { key, modifiers: 0 });
         }

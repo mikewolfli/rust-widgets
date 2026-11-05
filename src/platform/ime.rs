@@ -22,15 +22,18 @@ pub struct ImeComposition {
 
 /// IME candidate window position.
 ///
-/// In **screen** coordinates, not widget-relative ones, because the candidate
-/// window is an OS-level window rather than part of the widget tree. Physical or
-/// logical pixels depends on the backend, which is why this is documented rather
-/// than converted here.
+/// In the **window's logical** coordinates — the same frame as the control's own
+/// `InputMethodQuery::caret_rect` and the same value `sync_ime_candidate` forwards, with no
+/// conversion in between (PL2-02). A backend
+/// that actually moves an OS-level candidate window (macOS invalidates AppKit's character
+/// coordinates so the system re-queries the caret) converts to screen coordinates itself; a
+/// backend that cannot place the window does not store the value at all, so nothing claims a
+/// position that is never read.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct ImeCandidatePosition {
-    /// Horizontal position in screen coordinates.
+    /// Horizontal position in window-logical pixels.
     pub x: i32,
-    /// Vertical position in screen coordinates. Screen y grows downward on all
+    /// Vertical position in window-logical pixels. Y grows downward on all
     /// supported backends.
     pub y: i32,
 }
@@ -52,7 +55,11 @@ pub trait ImeBridge: Send + Sync {
     /// Update the current composition preview (pre-edit text).
     fn set_composition(&self, composition: &ImeComposition);
 
-    /// Set the position of the IME candidate window (in screen coordinates).
+    /// Set the position the IME candidate window should follow, in the **window's logical**
+    /// coordinates (the caret rect the control reported).
+    ///
+    /// A backend that can move the OS window converts to screen coordinates itself; one that cannot
+    /// leaves the window where the OS put it. See [`ImeCandidatePosition`].
     fn set_candidate_window_position(&self, position: ImeCandidatePosition);
 
     /// Returns true if the platform currently has an active IME connection.

@@ -109,6 +109,12 @@ pub struct FloatingLabel {
     travel: crate::style::PropertyDriver,
     /// Emitted when the text content changes.
     pub text_changed: Signal1<String>,
+    /// The resolved chrome for one theme revision, reused across frames (D2-005).
+    ///
+    /// The draw path used to take three to four global theme-manager locks per frame and
+    /// recompute the blends. The cache compares the caller style's colour fields and the shared
+    /// style handles, so the derivation happens once per theme change.
+    chrome_cache: crate::compat::RefCell<Option<FloatingLabelChromeCache>>,
     /// Whether the host has delivered committed text for this widget.
     ///
     /// The printable-key path is a fallback for hosts that report typing only as key
@@ -117,6 +123,26 @@ pub struct FloatingLabel {
     /// character twice — or insert a key code that a non-Latin layout never meant as
     /// that character.
     text_input_seen: bool,
+}
+
+/// The resolved field chrome for one theme revision (D2-005).
+#[derive(Clone, Copy)]
+struct FloatingLabelChrome {
+    field_background: Color,
+    window_fill: Color,
+    ink: Color,
+    border_color: Color,
+}
+
+/// The inputs and result of [`FloatingLabelChrome`]'s derivation.
+struct FloatingLabelChromeCache {
+    style_background: Option<Color>,
+    style_text: Option<Color>,
+    style_border: Option<Color>,
+    floating: Option<crate::compat::Rc<crate::style::WidgetStyle>>,
+    window: Option<crate::compat::Rc<crate::style::WidgetStyle>>,
+    input: Option<crate::compat::Rc<crate::style::WidgetStyle>>,
+    chrome: FloatingLabelChrome,
 }
 
 impl FloatingLabel {
@@ -136,6 +162,7 @@ impl FloatingLabel {
             // what the theme's `fast` token describes.
             travel: crate::style::PropertyDriver::at(0.0, crate::style::MotionSlot::Fast),
             text_changed: Signal1::new(),
+            chrome_cache: crate::compat::RefCell::new(None),
             text_input_seen: false,
         }
     }
@@ -349,6 +376,62 @@ impl FloatingLabel {
                     .and_then(|input| input.background_color)
             })
             .unwrap_or(Color::rgba(255, 255, 255, 255))
+    }
+
+    /// The field's resolved chrome, computed once per theme revision (D2-005).
+    fn chrome(&self) -> FloatingLabelChrome {
+        let style = self.base.style();
+        let floating = crate::style::resolved_theme_style_shared("floating_label");
+        let window = crate::style::resolved_theme_style_shared("window");
+        let input = crate::style::resolved_theme_style_shared("line_edit");
+        let style_background = style.background_color;
+        let style_text = style.text_color;
+        let style_border = style.border_color;
+        let fresh = self.chrome_cache.borrow().as_ref().is_some_and(|cache| {
+            cache.style_background == style_background
+                && cache.style_text == style_text
+                && cache.style_border == style_border
+                && cache.floating.as_ref().map(crate::compat::Rc::as_ptr)
+                    == floating.as_ref().map(crate::compat::Rc::as_ptr)
+                && cache.window.as_ref().map(crate::compat::Rc::as_ptr)
+                    == window.as_ref().map(crate::compat::Rc::as_ptr)
+                && cache.input.as_ref().map(crate::compat::Rc::as_ptr)
+                    == input.as_ref().map(crate::compat::Rc::as_ptr)
+        });
+        if fresh {
+            if let Some(cache) = self.chrome_cache.borrow().as_ref() {
+                return cache.chrome;
+            }
+        }
+        let field_background = style_background
+            .or_else(|| floating.as_ref().and_then(|t| t.background_color))
+            .or_else(|| input.as_ref().and_then(|t| t.background_color))
+            .unwrap_or(Color::rgba(255, 255, 255, 255));
+        // The surface the field sits on, which the *disabled* rules need: ink recedes toward the
+        // field's contrast colour and a fill recedes toward the window it is painted on.
+        let window_fill = window
+            .as_ref()
+            .and_then(|t| t.background_color)
+            .or_else(|| floating.as_ref().and_then(|t| t.background_color))
+            .unwrap_or(field_background);
+        let ink = style_text
+            .or_else(|| floating.as_ref().and_then(|t| t.text_color))
+            .unwrap_or(Color::BLACK);
+        let border_color = style_border
+            .or_else(|| floating.as_ref().and_then(|t| t.border_color))
+            .or_else(|| floating.as_ref().and_then(|t| t.text_color))
+            .unwrap_or_else(|| ink.blend(&field_background, 0.55));
+        let chrome = FloatingLabelChrome { field_background, window_fill, ink, border_color };
+        *self.chrome_cache.borrow_mut() = Some(FloatingLabelChromeCache {
+            style_background,
+            style_text,
+            style_border,
+            floating,
+            window,
+            input,
+            chrome,
+        });
+        chrome
     }
 
     /// The label colour for the current state.
@@ -576,38 +659,13 @@ impl Draw for FloatingLabel {
         // `resolved_theme_style`, so none is held across the draw or across another
         // accessor — the global manager's mutex is not re-entrant.
         let style = self.base.style();
-        let field_background = self.field_background_color();
-        // The surface the field sits on, which the *disabled* rules need: ink recedes toward the
-        // field's contrast colour and a fill recedes toward the window it is painted on. Falls back
-        // to the field's own background when the theme names no window role, which makes the rule a
-        // no-op rather than a wrong answer.
-        let window_fill = crate::style::resolved_theme_style_shared("window")
-            .and_then(|theme| theme.background_color)
-            .or_else(|| {
-                crate::style::resolved_theme_style_shared("floating_label")
-                    .and_then(|theme| theme.background_color)
-            })
-            .unwrap_or(field_background);
-        // The label is a `Text` role, so its resolved ink is the theme's foreground; the
-        // border colour carries the underline and the focused accent.
-        let ink = style
-            .text_color
-            .or_else(|| {
-                crate::style::resolved_theme_style_shared("floating_label")
-                    .and_then(|t| t.text_color)
-            })
-            .unwrap_or(Color::BLACK);
-        let border_color = style
-            .border_color
-            .or_else(|| {
-                crate::style::resolved_theme_style_shared("floating_label")
-                    .and_then(|t| t.border_color)
-            })
-            .or_else(|| {
-                crate::style::resolved_theme_style_shared("floating_label")
-                    .and_then(|t| t.text_color)
-            })
-            .unwrap_or_else(|| ink.blend(&field_background, 0.55));
+        // D2-005: one derivation per theme revision instead of three to four manager locks and
+        // four blends per frame.
+        let chrome = self.chrome();
+        let field_background = chrome.field_background;
+        let window_fill = chrome.window_fill;
+        let ink = chrome.ink;
+        let border_color = chrome.border_color;
 
         // Draw the text field background
         //

@@ -513,7 +513,7 @@ impl Widget for ChapterListPanel {
         use rust_widgets::signal::EventSignalRef;
         match name {
             "chapter_selected" | "on_chapter_selected" => Some(EventSignalRef::mapped(
-                "chapter_selected",
+                "on_chapter_selected",
                 &self.on_chapter_selected,
                 |index| CapabilityValue::UInt(*index as u64),
             )),

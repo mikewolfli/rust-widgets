@@ -27,8 +27,11 @@ pub(super) const WEB_VIEW_PROPERTIES: &[PropertySchema] = &[
     PropertySchema::new("url", PropertyValueKind::String, true, true),
     PropertySchema::new("loading", PropertyValueKind::Bool, true, false),
     PropertySchema::new("title", PropertyValueKind::String, true, true),
-    PropertySchema::new("can_go_back", PropertyValueKind::Bool, false, false),
-    PropertySchema::new("can_go_forward", PropertyValueKind::Bool, false, false),
+    // WV-03: read-only navigation state. `readable` must be true for the view's `get` arms to be
+    // reachable at all — the factory refuses a read on a `readable: false` row before asking the
+    // control — and `writable: false` makes the write side answer `ReadOnlyProperty`.
+    PropertySchema::new("can_go_back", PropertyValueKind::Bool, true, false),
+    PropertySchema::new("can_go_forward", PropertyValueKind::Bool, true, false),
     PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
     PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
     PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
@@ -185,6 +188,22 @@ pub fn published_event_names() -> Vec<(&'static str, Vec<&'static str>)> {
         ("web_engine_view", WEB_ENGINE_VIEW_EVENTS.iter().map(|event| event.name).collect()),
         ("web_find_bar", WEB_FIND_BAR_EVENTS.iter().map(|event| event.name).collect()),
         ("web_history_panel", WEB_HISTORY_PANEL_EVENTS.iter().map(|event| event.name).collect()),
+    ]
+}
+
+/// Every property name the web group publishes, paired with the control that publishes it.
+///
+/// Kept in the same shape the other suite groups expose (WV-04). The event table alone could not
+/// see WV-03: a property row whose control has no `get` arm resolves to nothing, and the event
+/// gate never asked for a read.
+pub fn published_property_names() -> Vec<(&'static str, Vec<&'static str>)> {
+    vec![
+        ("web_engine_view", WEB_VIEW_PROPERTIES.iter().map(|schema| schema.name).collect()),
+        ("web_find_bar", WEB_FIND_BAR_PROPERTIES.iter().map(|schema| schema.name).collect()),
+        (
+            "web_history_panel",
+            WEB_HISTORY_PANEL_PROPERTIES.iter().map(|schema| schema.name).collect(),
+        ),
     ]
 }
 

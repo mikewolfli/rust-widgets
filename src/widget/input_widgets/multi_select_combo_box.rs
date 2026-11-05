@@ -624,6 +624,16 @@ impl Widget for MultiSelectComboBox {
         &mut self.base
     }
 
+    /// Hides the control **after** closing its list (IN2-03).
+    ///
+    /// `BaseWidget::hide` only flips the visibility flag, so an open list kept the popup grab — the
+    /// framework went on routing every press to a control nobody could see, and the hover stayed
+    /// on the popup. Closing first is what makes hiding the field mean hiding its choice.
+    fn hide(&mut self) {
+        self.set_expanded(false);
+        self.base_mut().hide();
+    }
+
     fn size_hint(&self) -> crate::core::Size {
         // Derived through the same metric the band is drawn from, so the reported size and the
         // painted box cannot describe two different controls. The width was a bare `200` while
@@ -1122,6 +1132,13 @@ impl EventHandler for MultiSelectComboBox {
                     self.set_scroll_offset(offset);
                 }
             }
+            // A blurred multi-select cannot own an open list: the grab would keep routing presses
+            // to a control the user has left, so Tab or a click on another focusable control closes
+            // the list (IN2-03, precedent `dropdown.rs:1074-1076`).
+            Event::FocusLost => {
+                self.set_expanded(false);
+                self.base.handle_event(event);
+            }
             _ => {
                 self.base.handle_event(event);
             }
@@ -1387,5 +1404,22 @@ mod tests {
 
         combo.set_summary_limit(1);
         assert_eq!(combo.summary_text(), "2 selected");
+    }
+
+    /// IN2-03: a blur or a hide closes the open list instead of leaving the grab behind.
+    #[test]
+    fn a_blur_or_hide_closes_the_open_list() {
+        let mut combo = MultiSelectComboBox::new(Rect::new(0, 0, 200, 40));
+        combo.add_item(MultiSelectItem::new(1, "A".to_string()));
+
+        combo.set_expanded(true);
+        combo.handle_event(&Event::FocusLost);
+        assert!(!combo.is_expanded(), "a blurred box closes its list");
+
+        combo.set_expanded(true);
+        Widget::hide(&mut combo);
+        assert!(!combo.is_expanded(), "hiding closes the list first");
+        assert!(!Widget::is_visible(&combo), "the control itself is hidden");
+        assert_eq!(combo.selected_count(), 0, "hiding applies no choice");
     }
 }

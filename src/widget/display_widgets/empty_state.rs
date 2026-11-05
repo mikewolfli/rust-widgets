@@ -417,6 +417,8 @@ impl WidgetProperties for EmptyState {
             "secondary_action_text" => {
                 Ok(CapabilityValue::String(self.secondary_action_text().to_string()))
             }
+            "icon" => Ok(CapabilityValue::String(self.icon().to_string())),
+            "action_text" => Ok(CapabilityValue::String(self.action_text().to_string())),
             _ => base_property_get(self, name),
         }
     }
@@ -435,12 +437,27 @@ impl WidgetProperties for EmptyState {
                 self.set_secondary_action_text(&expect_string(value)?);
                 Ok(())
             }
+            "icon" => {
+                self.set_icon(&expect_string(value)?);
+                Ok(())
+            }
+            "action_text" => {
+                self.set_action_text(&expect_string(value)?);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["message", "description", "secondary_action_text", BASE_PROPERTY_NAMES]
+        property_names_of![
+            "message",
+            "description",
+            "secondary_action_text",
+            "icon",
+            "action_text",
+            BASE_PROPERTY_NAMES
+        ]
     }
 }
 

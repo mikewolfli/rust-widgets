@@ -951,7 +951,13 @@ impl EventHandler for CheckBox {
             Event::TouchEnd { .. } => self.end_auto_repeat(),
             #[cfg(feature = "touch")]
             event if crate::event::translator::is_touch_cancel(event) => self.end_auto_repeat(),
-            Event::KeyPress { key, .. } if *key == key_codes::SPACE && self.base.is_enabled() => {
+            // Keyboard toggling is reachable only while the checkbox holds focus: a box
+            // embedded in a page must not consume the Space of whatever the user is editing.
+            Event::KeyPress { key, .. }
+                if *key == key_codes::SPACE
+                    && self.base.is_enabled()
+                    && self.base.focus_reason().is_some() =>
+            {
                 self.toggle();
             }
             // Other events are not relevant for this widget
@@ -1651,6 +1657,11 @@ mod tests {
         let mut cb = CheckBox::new(Rect::new(0, 0, 100, 30));
         assert_eq!(cb.state(), CheckState::Unchecked);
         // Space key code is 32
+        // Unfocused: the key belongs to whoever holds focus.
+        cb.handle_event(&Event::KeyPress { key: 32, modifiers: 0 });
+        assert_eq!(cb.state(), CheckState::Unchecked, "an unfocused box ignores Space");
+
+        cb.handle_event(&Event::FocusGained { reason: FocusReason::Tab });
         cb.handle_event(&Event::KeyPress { key: 32, modifiers: 0 });
         assert_eq!(cb.state(), CheckState::Checked);
     }

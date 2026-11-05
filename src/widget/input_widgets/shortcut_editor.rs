@@ -1096,9 +1096,14 @@ impl Draw for ShortcutEditor {
                 // three ASCII dot glyphs for the ellipsis.
                 let name_text: Cow<'_, str> = elide_end(&entry.name, 30);
 
-                // Key binding and collision flag come from the per-generation cache.
-                let (key_text, conflict) =
-                    display.get(index).cloned().unwrap_or_else(|| (String::new(), false));
+                // Key binding and collision flag come from the per-generation cache, borrowed
+                // rather than cloned: the entry was already in a shared `Rc`, and cloning it here
+                // allocated one `String` per visible row per frame for nothing (IN2-10). The empty
+                // fallback is a `&str` borrow, so an unbound row allocates nothing either.
+                let (key_text, conflict) = display
+                    .get(index)
+                    .map(|(text, conflict)| (text.as_str(), *conflict))
+                    .unwrap_or(("", false));
                 // Unbound rows are de-emphasised rather than hidden, so "this shortcut has no key"
                 // reads differently from "this shortcut has a key".
                 let key_color = if entry.keys.is_empty() {
@@ -1111,7 +1116,7 @@ impl Draw for ShortcutEditor {
                 // Measured, not estimated: the binding was placed from a UTF-8 byte count at
                 // 8 px/byte, capped at 150 px, so a wide font, a text-scale preference or a
                 // non-ASCII key name made the two columns overlap.
-                let key_width = context.measure_text(&key_text, &key_font).width as i32;
+                let key_width = context.measure_text(key_text, &key_font).width as i32;
                 let name_x = rect.x + margin + 16;
                 let key_x = (rect.x + rect.width as i32 - margin - key_width).max(name_x);
                 let name_width = (key_x - name_x - 8).max(0) as u32;
@@ -1137,7 +1142,7 @@ impl Draw for ShortcutEditor {
                         key_width.max(1) as u32 + 2 * fit_inset as u32,
                         key_font.size().max(1.0) as u32,
                     ),
-                    &key_text,
+                    key_text,
                     &key_font,
                     key_color,
                     HorizontalAlignment::Left,

@@ -1371,7 +1371,9 @@ impl EventHandler for DateRangePicker {
                 }
                 return;
             }
-            Event::KeyPress { key, modifiers } => {
+            // Month paging and grid navigation are reachable only while the picker holds focus: a
+            // picker embedded in a page must not consume the arrows of whatever the user is editing.
+            Event::KeyPress { key, modifiers } if self.base.focus_reason().is_some() => {
                 // Month navigation from the keyboard: PageUp/PageDown step the visible
                 // month, and Ctrl+Left/Right do the same for a keyboard user coming from a
                 // text-field convention. Neither arm existed, so the grid could only be
@@ -1866,7 +1868,9 @@ impl EventHandler for RangePresetBar {
                     self.base.request_redraw();
                 }
             }
-            Event::KeyPress { key, .. } => match *key {
+            // Arrow keys move the preset bar's cursor only while it holds focus: a bar embedded
+            // in a page must not consume the arrows of whatever the user is editing.
+            Event::KeyPress { key, .. } if self.base.focus_reason().is_some() => match *key {
                 37 | 38 => self.move_cursor(-1),
                 39 | 40 => self.move_cursor(1),
                 13 if !self.presets.is_empty() => {
@@ -2313,6 +2317,29 @@ mod tests {
         assert_eq!(bar.selected_label(), Some("Today"));
     }
 
+    /// The preset bar's arrows and Enter act only while it holds focus.
+    #[test]
+    fn the_preset_bar_keys_act_only_while_focused() {
+        use crate::event::FocusReason;
+
+        let mut bar = RangePresetBar::new(Rect::new(0, 0, 300, 24));
+        bar.set_presets(vec![
+            RangePreset::new("Today", (2025, 1, 1), (2025, 1, 1)),
+            RangePreset::new("Week", (2025, 1, 1), (2025, 1, 7)),
+        ]);
+
+        // Unfocused: the keys belong to whoever holds focus.
+        bar.handle_event(&Event::key_press(crate::event::key_codes::RIGHT, 0));
+        bar.handle_event(&Event::key_press(crate::event::key_codes::ENTER, 0));
+        assert_eq!(bar.selected_label(), None, "an unfocused bar ignores the keys");
+
+        bar.handle_event(&Event::FocusGained { reason: FocusReason::Tab });
+        bar.handle_event(&Event::key_press(crate::event::key_codes::RIGHT, 0));
+        assert_eq!(bar.selected_label(), Some("Week"), "the arrow moves off the first chip");
+        bar.handle_event(&Event::key_press(crate::event::key_codes::LEFT, 0));
+        assert_eq!(bar.selected_label(), Some("Today"));
+    }
+
     #[test]
     fn preset_bar_properties_drive_layout_and_round_trip() {
         let mut bar = RangePresetBar::new(Rect::new(0, 0, 300, 100));
@@ -2373,6 +2400,11 @@ mod tests {
         picker.set_display_page(2025, 6);
         picker.set_start_date(Some((2025, 6, 10)));
 
+        // Unfocused: the arrows belong to whoever holds focus.
+        picker.handle_event(&Event::key_press(crate::event::key_codes::RIGHT, 0));
+        assert_eq!(picker.focus_date(), None, "an unfocused picker ignores the key");
+
+        picker.handle_event(&Event::FocusGained { reason: crate::event::FocusReason::Tab });
         picker.handle_event(&Event::key_press(crate::event::key_codes::RIGHT, 0));
         assert_eq!(picker.focus_date(), Some((2025, 6, 11)));
         picker.handle_event(&Event::key_press(crate::event::key_codes::DOWN, 0));
@@ -2394,6 +2426,12 @@ mod tests {
         let mut picker = DateRangePicker::new(Rect::new(0, 0, 240, 260));
         picker.set_display_page(2025, 6);
         picker.set_start_date(Some((2025, 6, 30)));
+
+        // Unfocused: the key belongs to whoever holds focus.
+        picker.handle_event(&Event::key_press(crate::event::key_codes::RIGHT, 0));
+        assert_eq!(picker.focus_date(), None, "an unfocused picker ignores the key");
+
+        picker.handle_event(&Event::FocusGained { reason: crate::event::FocusReason::Tab });
         picker.handle_event(&Event::key_press(crate::event::key_codes::RIGHT, 0));
         assert_eq!(picker.focus_date(), Some((2025, 7, 1)));
         assert_eq!(picker.display_month(), 7);

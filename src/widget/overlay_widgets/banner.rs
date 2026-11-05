@@ -21,6 +21,7 @@
 //! therefore reachable by name from the declarative path and CSS selectors),
 //! publishes a property contract, and has interaction tests.
 
+use crate::compat::RefCell;
 use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{key_codes, Event, EventHandler};
 use crate::render::RenderContext;
@@ -179,11 +180,41 @@ enum BannerPressTarget {
     Action(usize),
 }
 
+/// The inputs a wrapped message's line ranges are a pure function of.
+///
+/// The message itself enters as `revision`, not as bytes: `set_text` is its only writer, so a
+/// counter identifies it exactly and comparing it is free. The rest of the key is what the
+/// measurement sees — the width the lines wrap into and the face they wrap in — so a resize or a
+/// theme font change misses the cache while a still frame hits it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct WrapKey {
+    /// The `text_revision` the ranges were computed for.
+    revision: u32,
+    /// The width the message is wrapped into, in pixels.
+    text_width: u32,
+    /// The message face's size, as bits so the key can be compared exactly.
+    font_size_bits: u32,
+    /// The message face's weight.
+    font_weight: u16,
+}
+
 /// A persistent full-width notice with a severity, a message, an optional
 /// dismiss control, and optional actions.
 pub struct Banner {
     base: BaseWidget,
     text: String,
+    /// Bumped by [`Banner::set_text`], the only writer of `text`.
+    ///
+    /// It stands in for the string in the wrap cache's key: a counter identifies the message
+    /// exactly, where hashing it would cost the scan the cache exists to avoid (OV2-01).
+    text_revision: u32,
+    /// The wrapped line ranges of the current message, with the inputs they were derived from.
+    ///
+    /// `wrap_to_width` walks the whole string at word boundaries, and a banner's message is
+    /// usually static for its whole life, so recomputing it every frame was pure waste (OV2-01).
+    /// The key carries every input the ranges are a function of — see [`WrapKey`] — so a resize or
+    /// a font change rebuilds it and nothing else does.
+    wrap_cache: RefCell<Option<(WrapKey, Vec<core::ops::Range<usize>>)>>,
     severity: BannerSeverity,
     /// Whether the control offers a dismiss affordance at all. A non-dismissible
     /// banner `dismiss()`es to `false` and keeps reporting `false`, rather than
@@ -235,6 +266,8 @@ impl Banner {
         Self {
             base: BaseWidget::new(WidgetKind::Banner, geometry, "Banner"),
             text: String::new(),
+            text_revision: 0,
+            wrap_cache: RefCell::new(None),
             severity: BannerSeverity::Info,
             dismissible: true,
             is_dismissed: false,
@@ -263,6 +296,7 @@ impl Banner {
             return;
         }
         self.text = text;
+        self.text_revision = self.text_revision.wrapping_add(1);
         self.base.request_redraw();
     }
 
@@ -897,12 +931,35 @@ impl Draw for Banner {
             // the last permitted line is elided rather than shrunk to fit (OV-002). Building the
             // line strings first releases the immutable measurement borrow before the draw calls
             // need the context mutably.
+            //
+            // The wrap ranges are cached: `wrap_to_width` walks the whole message at every word
+            // boundary, and a banner's text is usually fixed for its whole life, so recomputing it
+            // per frame was paying for the same answer (OV2-01). The key names every input the
+            // ranges depend on, so `set_text`, a resize or a font change simply misses.
+            let limit = self.max_text_lines.max(1) as usize;
             let fitted_lines = {
-                let mut lines: Vec<crate::compat::Cow<'_, str>> = Vec::new();
+                let key = WrapKey {
+                    revision: self.text_revision,
+                    text_width,
+                    font_size_bits: font.size().to_bits(),
+                    font_weight: font.weight(),
+                };
+                let mut cache = self.wrap_cache.borrow_mut();
+                if cache.as_ref().is_none_or(|(cached, _)| *cached != key) {
+                    let mut measure = |text: &str| context.measure_text(text, &font).width;
+                    let ranges = crate::widget::text_utils::wrap_to_width(
+                        &self.text,
+                        text_width,
+                        &mut measure,
+                    );
+                    *cache = Some((key, ranges));
+                }
+                let ranges = match cache.as_ref() {
+                    Some((_, ranges)) => ranges.as_slice(),
+                    None => &[],
+                };
                 let mut measure = |text: &str| context.measure_text(text, &font).width;
-                let ranges =
-                    crate::widget::text_utils::wrap_to_width(&self.text, text_width, &mut measure);
-                let limit = self.max_text_lines.max(1) as usize;
+                let mut lines: Vec<crate::compat::Cow<'_, str>> = Vec::new();
                 for (index, range) in ranges.iter().take(limit).enumerate() {
                     if index + 1 == limit && ranges.len() > limit {
                         // The tail of the message does not fit: elide the remaining text on the
@@ -1560,5 +1617,43 @@ mod tests {
         banner.auto_dismiss(Duration::from_millis(10));
         banner.tick(10);
         assert!(banner.is_dismissed(), "the timeout expires regardless of the affordance");
+    }
+
+    /// The wrapped line ranges are cached, and only an input change rebuilds them (OV2-01).
+    #[test]
+    fn the_wrap_cache_follows_the_text_and_the_wrap_width() {
+        const LONG: &str = "A very long notice that cannot possibly fit on one line of this \
+             banner, and continues for long enough to need more than two lines as well";
+
+        let mut banner = banner();
+        banner.set_text(LONG);
+        let _ = render_to_svg(&mut banner);
+        let first = banner.wrap_cache.borrow().clone().expect("the first frame wraps the message");
+        assert_eq!(first.0.revision, banner.text_revision);
+        assert!(first.1.len() > 1, "the fixture wraps into several lines");
+
+        // A second frame replays the same ranges rather than walking the string again.
+        let _ = render_to_svg(&mut banner);
+        let second = banner.wrap_cache.borrow().clone().expect("still cached");
+        assert_eq!(first, second, "a steady frame reuses the cached ranges");
+
+        // New text invalidates through the revision.
+        banner.set_text("Short");
+        let _ = render_to_svg(&mut banner);
+        let resumed = banner.wrap_cache.borrow().clone().expect("the new message is wrapped");
+        assert_eq!(resumed.0.revision, banner.text_revision);
+        assert_ne!(resumed.0, first.0, "a new message is a new key");
+        assert!(resumed.1.len() <= 2, "and a short message needs at most the default cap");
+
+        // A narrower bar leaves less room per line, so the width is part of the key too.
+        banner.set_text(LONG);
+        let _ = render_to_svg(&mut banner);
+        let wide = banner.wrap_cache.borrow().clone().expect("wrapped at the wide width").0;
+        banner.set_geometry(Rect::new(0, 0, 160, 48));
+        let _ = render_to_svg(&mut banner);
+        let narrow = banner.wrap_cache.borrow().clone().expect("wrapped at the narrow width").0;
+        assert_eq!(narrow.revision, wide.revision, "the text did not change");
+        assert!(narrow.text_width < wide.text_width, "the resize changed the wrap width");
+        assert_ne!(narrow, wide, "so the key misses and the message is re-wrapped");
     }
 }

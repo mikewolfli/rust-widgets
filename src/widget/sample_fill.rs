@@ -1274,7 +1274,6 @@ pub fn apply(name: &str, widget: &mut dyn Widget) -> bool {
                 let registry = sample_registry();
                 register_sample_label(&registry, 1, Rect::new(16, 16, 160, 56), "Document 1");
                 register_sample_label(&registry, 2, Rect::new(48, 48, 160, 56), "Document 2");
-                area.set_registry(registry);
                 area.add_sub_window(1, Rect::new(16, 16, 160, 56));
                 area.add_sub_window(2, Rect::new(48, 48, 160, 56));
                 true
@@ -1286,7 +1285,6 @@ pub fn apply(name: &str, widget: &mut dyn Widget) -> bool {
                 let registry = sample_registry();
                 register_sample_label(&registry, 1, Rect::new(0, 0, 100, 80), "Left pane");
                 register_sample_label(&registry, 2, Rect::new(100, 0, 140, 80), "Right pane");
-                splitter.set_registry(registry);
                 splitter.add_pane(1, 1);
                 splitter.add_pane(2, 1);
                 true
@@ -1297,7 +1295,6 @@ pub fn apply(name: &str, widget: &mut dyn Widget) -> bool {
             Some(area) => {
                 let registry = sample_registry();
                 register_sample_label(&registry, 1, Rect::new(0, 0, 160, 24), "Scrollable content");
-                area.set_registry(registry);
                 area.set_content_size(Size::new(160, 240));
                 true
             }
@@ -1308,7 +1305,6 @@ pub fn apply(name: &str, widget: &mut dyn Widget) -> bool {
                 let registry = sample_registry();
                 register_sample_label(&registry, 1, Rect::new(0, 0, 200, 80), "Page one");
                 register_sample_label(&registry, 2, Rect::new(0, 0, 200, 80), "Page two");
-                stack.set_registry(registry);
                 stack.add_widget(1);
                 stack.add_widget(2);
                 stack.set_current_index(0);

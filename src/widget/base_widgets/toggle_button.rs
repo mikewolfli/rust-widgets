@@ -1591,10 +1591,13 @@ impl crate::event::EventHandler for ToggleButton {
                 self.set_pressed(false);
             }
             // Space and Enter activate a tool button, matching the push button's contract.
+            // Keyboard activation is reachable only while the button holds focus: a tool button
+            // embedded in a page must not consume the keys of whatever the user is editing.
             crate::event::Event::KeyPress { key, .. }
-                if *key == crate::event::key_codes::SPACE
+                if (*key == crate::event::key_codes::SPACE
                     || *key == crate::event::key_codes::ENTER
-                    || *key == crate::event::key_codes::LINE_FEED =>
+                    || *key == crate::event::key_codes::LINE_FEED)
+                    && self.base.focus_reason().is_some() =>
             {
                 self.toggle();
                 self.emit_clicked();
@@ -1982,7 +1985,13 @@ mod tests {
     #[test]
     fn space_and_enter_toggle_the_button() {
         use crate::event::key_codes;
+        use crate::event::FocusReason;
         let mut button = ToggleButton::new("Bold".to_string(), Rect::new(0, 0, 80, 30));
+        // Unfocused: the key belongs to whoever holds focus.
+        button.handle_event(&Event::KeyPress { key: key_codes::SPACE, modifiers: 0 });
+        assert!(!button.is_checked(), "an unfocused tool button ignores Space");
+
+        button.handle_event(&Event::FocusGained { reason: FocusReason::Tab });
         button.handle_event(&Event::KeyPress { key: key_codes::SPACE, modifiers: 0 });
         assert!(button.is_checked(), "Space activates a focused tool button");
         button.handle_event(&Event::KeyPress { key: key_codes::ENTER, modifiers: 0 });

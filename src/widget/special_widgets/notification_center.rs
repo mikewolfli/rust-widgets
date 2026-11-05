@@ -1113,20 +1113,24 @@ impl EventHandler for NotificationCenter {
                     self.scroll_by(if delta.y > 0 { 1 } else { -1 });
                 }
             }
-            Event::KeyPress { key, modifiers: _ } => match *key {
-                38 => self.move_selection_by(-1),
-                40 => self.move_selection_by(1),
-                13 => {
-                    let _ = self.activate_selected();
-                }
-                46 => {
-                    if let Some(id) = self.selected_id().map(str::to_owned) {
-                        let _ = self.remove(&id);
+            // Keyboard navigation is reachable only while the center holds focus: a panel
+            // embedded in a page must not consume the arrows of whatever the user is editing.
+            Event::KeyPress { key, modifiers: _ } if self.base.focus_reason().is_some() => {
+                match *key {
+                    38 => self.move_selection_by(-1),
+                    40 => self.move_selection_by(1),
+                    13 => {
+                        let _ = self.activate_selected();
                     }
+                    46 => {
+                        if let Some(id) = self.selected_id().map(str::to_owned) {
+                            let _ = self.remove(&id);
+                        }
+                    }
+                    // Unknown key; ignore
+                    _ => {}
                 }
-                // Unknown key; ignore
-                _ => {}
-            },
+            }
             // Other events are not relevant for this widget
             _ => {}
         }
@@ -1374,6 +1378,7 @@ crate::impl_scrollable_rows!(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::event::FocusReason;
     use std::sync::{Arc, Mutex};
 
     fn sample_center() -> NotificationCenter {
@@ -1459,6 +1464,11 @@ mod tests {
     fn keyboard_navigation_changes_selection() {
         let mut center = sample_center();
 
+        // Unfocused: the arrows belong to whatever else holds focus.
+        center.handle_event(&Event::key_press(40, 0));
+        assert_eq!(center.selected_id(), Some("n1"), "an unfocused center ignores the key");
+
+        center.handle_event(&Event::FocusGained { reason: FocusReason::Tab });
         center.handle_event(&Event::key_press(40, 0));
         assert_eq!(center.selected_id(), Some("n2"));
 
@@ -1531,6 +1541,7 @@ mod tests {
     #[test]
     fn keyboard_navigation_on_empty_does_nothing() {
         let mut center = NotificationCenter::new(Rect::new(0, 0, 800, 600));
+        center.handle_event(&Event::FocusGained { reason: FocusReason::Tab });
 
         // Should not panic
         center.handle_event(&Event::key_press(40, 0));
@@ -1592,6 +1603,7 @@ mod tests {
         });
 
         // Navigate down to n2, then activate
+        center.handle_event(&Event::FocusGained { reason: FocusReason::Tab });
         center.handle_event(&Event::key_press(40, 0));
         center.handle_event(&Event::key_press(13, 0));
 
@@ -1640,6 +1652,7 @@ mod tests {
             ));
         }
         center.set_level_filter(Some(NotificationLevel::Warning));
+        center.handle_event(&Event::FocusGained { reason: FocusReason::Tab });
         center.handle_event(&Event::key_press(40, 0));
         assert_eq!(center.selected_id(), Some("n2"), "the first visible row is the warning");
 

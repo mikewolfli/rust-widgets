@@ -91,6 +91,27 @@ pub struct InplaceEditor {
     pub edit_accepted: Signal1<String>,
     /// Emitted when the edit is cancelled (Escape).
     pub edit_canceled: GenericSignal,
+    /// Cumulative advances of the value, keyed by the value and the face it was measured with
+    /// (IN2-10).
+    ///
+    /// [`Self::advance_of_prefix`] walks the prefix one character at a time and was called three
+    /// times per frame — the caret and both selection edges. One table answers all three, so an
+    /// idle edit measures nothing.
+    advance_cache: RefCell<Option<AdvanceCache>>,
+    /// The uncommitted input-method composition, or `None` when no IME session is active (IN2-04).
+    ///
+    /// Held apart from `text` so the value does not change while the user is still building a word:
+    /// `edit_accepted` carries the value, and it must be the text the user committed.
+    composition: Option<String>,
+}
+
+/// Cumulative per-character advances of an in-place editor's value (IN2-10).
+struct AdvanceCache {
+    text: String,
+    /// The face the value was measured with, before the fallback is resolved.
+    style_font: Option<crate::core::Font>,
+    font_size_bits: u32,
+    cuts: Rc<Vec<i32>>,
 }
 
 impl InplaceEditor {
@@ -116,6 +137,8 @@ impl InplaceEditor {
             dragging_selection: false,
             edit_accepted: Signal1::new(),
             edit_canceled: GenericSignal::new(),
+            advance_cache: RefCell::new(None),
+            composition: None,
         }
     }
 
@@ -563,26 +586,76 @@ impl InplaceEditor {
     /// The advance, in pixels, of the first `count` characters of the value.
     ///
     /// Accumulated with the **same per-character ruler** [`Self::char_index_at_x`] uses, so the
-    /// paint's caret and the pointer's caret land on the same boundary (I-P04).
+    /// paint's caret and the pointer's caret land on the same boundary (I-P04). The cumulative table
+    /// is cached by the value and the measured face (IN2-10), so the three calls per frame — the
+    /// caret and both selection edges — share one build.
     fn advance_of_prefix(&self, count: usize) -> i32 {
+        let cuts = self.advance_cuts();
+        cuts.get(count).copied().unwrap_or_else(|| cuts.last().copied().unwrap_or(0))
+    }
+
+    /// The cumulative advance of every character boundary of the value (IN2-10).
+    fn advance_cuts(&self) -> Rc<Vec<i32>> {
+        let style_font = self.base.style().font.clone();
+        let font_size_bits = self.font_size.to_bits();
+        if let Ok(cache) = self.advance_cache.try_borrow() {
+            if let Some(cache) = cache.as_ref() {
+                if cache.text == self.text
+                    && cache.style_font == style_font
+                    && cache.font_size_bits == font_size_bits
+                {
+                    return Rc::clone(&cache.cuts);
+                }
+            }
+        }
         let measured_font;
-        let font = match self.base.style().font.as_ref() {
+        let font = match style_font.as_ref() {
             Some(font) => font,
             None => {
                 measured_font = crate::core::Font::simple("sans-serif", self.font_size);
                 &measured_font
             }
         };
+        let mut cuts = Vec::with_capacity(self.text.chars().count() + 1);
+        cuts.push(0i32);
         let mut advance = 0i32;
         let mut buffer = [0u8; 4];
-        for ch in self.text.chars().take(count) {
+        for ch in self.text.chars() {
             advance = advance.saturating_add(crate::widget::metrics::estimate_text_width(
                 ch.encode_utf8(&mut buffer),
                 font,
                 1.0,
             ) as i32);
+            cuts.push(advance);
         }
-        advance
+        let cuts = Rc::new(cuts);
+        if let Ok(mut cache) = self.advance_cache.try_borrow_mut() {
+            *cache = Some(AdvanceCache {
+                text: self.text.clone(),
+                style_font,
+                font_size_bits,
+                cuts: Rc::clone(&cuts),
+            });
+        }
+        cuts
+    }
+
+    /// Starts or updates the input-method composition without changing the value (IN2-04).
+    ///
+    /// The value must not change while the user is still building a word — the accepted text is
+    /// what the caller acts on. An empty string clears the composition.
+    pub fn set_composition(&mut self, preedit: &str) {
+        let next = if preedit.is_empty() { None } else { Some(preedit.to_string()) };
+        if self.composition == next {
+            return;
+        }
+        self.composition = next;
+        self.base.request_redraw();
+    }
+
+    /// The uncommitted composition, or `None` when no IME session is active.
+    pub fn composition(&self) -> Option<&str> {
+        self.composition.as_deref()
     }
 }
 
@@ -898,6 +971,30 @@ impl Draw for InplaceEditor {
                     ink.with_alpha_f32(0.8),
                 );
             }
+
+            // The uncommitted composition is drawn at the caret, where it will land when it is
+            // committed, with an underline marking it as preedit (IN2-04). It is placed from the
+            // same advance the caret uses, so the preview cannot drift from the marker.
+            if let Some(preedit) = self.composition.as_deref() {
+                let preedit_x = (text_x + caret_advance - scroll)
+                    .min(text_x + text_box.width as i32 - 1)
+                    .max(text_x);
+                let preedit_width = context.measure_text(preedit, &font).width as i32;
+                context.push_clip(text_x, line.y, text_box.width, line.height.max(1));
+                context.draw_text(
+                    Point::new(preedit_x, line.y),
+                    preedit,
+                    &font,
+                    ink,
+                    HorizontalAlignment::Left,
+                );
+                context.draw_line(
+                    Point::new(preedit_x, line.y + line.height as i32),
+                    Point::new(preedit_x + preedit_width, line.y + line.height as i32),
+                    ink,
+                );
+                context.pop_clip();
+            }
         } else {
             // Draw display mode
             let style = self.base.style();
@@ -1094,8 +1191,19 @@ impl EventHandler for InplaceEditor {
             // drives `insert_char` — the same entry point the printable key arm uses. The editor only
             // accepts text while it is in edit mode, so a `TextInput` in display mode is ignored
             // exactly as the key path ignores keys outside edit mode.
-            Event::TextInput { text } | Event::ImeCommit { text } if self.is_editing => {
+            Event::TextInput { text } if self.is_editing => {
                 self.insert_committed_text(text);
+            }
+            // A commit ends the composition as well as inserting its text, so the preview cannot
+            // survive the string it previewed (IN2-04).
+            Event::ImeCommit { text } if self.is_editing => {
+                self.composition = None;
+                self.insert_committed_text(text);
+            }
+            // The uncommitted composition is shown inline at the caret while the user builds it;
+            // the value is untouched until the commit (IN2-04).
+            Event::ImePreedit { text, .. } if self.is_editing => {
+                self.set_composition(text);
             }
             _ => {
                 self.base.handle_event(event);
@@ -1528,5 +1636,37 @@ mod tests {
         assert_eq!(ie.cursor_position, 1);
         ie.cursor_position = 2;
         assert!(!ie.delete_forward(), "there is nothing after the end");
+    }
+
+    /// IN2-04: the composition is held apart from the value and cleared by the commit.
+    #[test]
+    fn an_ime_preedit_is_shown_without_changing_the_value() {
+        let mut ie = InplaceEditor::new("abc", Rect::new(0, 0, 200, 30));
+        ie.start_edit();
+        ie.handle_event(&Event::ImePreedit { text: "に".to_string(), cursor: 3 });
+        assert_eq!(ie.composition(), Some("に"));
+        assert_eq!(ie.text(), "abc", "an uncommitted composition leaves the value alone");
+
+        ie.handle_event(&Event::ImeCommit { text: "に".to_string() });
+        assert_eq!(ie.composition(), None, "the commit clears the preview");
+        assert!(ie.text().ends_with('に'), "the commit inserts the composed run");
+
+        // A preedit outside edit mode has nothing to compose into.
+        let mut idle = InplaceEditor::new("x", Rect::new(0, 0, 200, 30));
+        idle.handle_event(&Event::ImePreedit { text: "に".to_string(), cursor: 3 });
+        assert_eq!(idle.composition(), None);
+    }
+
+    /// IN2-10: the three per-frame prefix advances share one cached table.
+    #[test]
+    fn the_prefix_advance_table_is_cached() {
+        let ie = InplaceEditor::new("hello", Rect::new(0, 0, 200, 30));
+        let first = ie.advance_cuts();
+        let second = ie.advance_cuts();
+        assert!(Rc::ptr_eq(&first, &second), "an unchanged value reuses the table");
+        assert_eq!(first.len(), "hello".chars().count() + 1);
+        assert_eq!(ie.advance_of_prefix(0), 0);
+        assert_eq!(ie.advance_of_prefix(5), *first.last().expect("the last cut"));
+        assert_eq!(ie.advance_of_prefix(99), *first.last().expect("clamped to the value"));
     }
 }

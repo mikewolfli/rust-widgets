@@ -753,12 +753,12 @@ impl WidgetProperties for PlaylistPanel {
 
     fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
         match name {
-            // Every command this control publishes needs a track index or text.
-            "track_selected" | "set_tracks" | "set_filter" => {
-                Err(CapabilityAccessError::OutOfRange)
-            }
-            // `set_tracks` (and any future `set_foo`) resolves through the property route by the
-            // `default_command` convention, so the payload it needs is the property write.
+            // These two are published commands whose write is the property route, so a bare
+            // invocation needs the payload.
+            "set_tracks" | "set_filter" => Err(CapabilityAccessError::OutOfRange),
+            // CP2-1: `track_selected` is an *event* name, not a command, so it must not be
+            // answered as `OutOfRange` ("the command exists but needs a payload"). Falling
+            // through to `default_command` answers `UnknownCommand`, which is the truth.
             _ => self.default_command(name),
         }
     }

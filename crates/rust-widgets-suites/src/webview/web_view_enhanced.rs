@@ -278,8 +278,32 @@ impl Draw for WebViewEnhanced {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
         let enabled = self.base().is_enabled();
-        let border_color = Color::rgb(180, 180, 180);
-        let bg_color = Color::rgb(255, 255, 255);
+
+        // Same three-level resolution `WebEngineView::draw` uses: the control's explicit style
+        // first, then the theme's resolved style for this control, then the shared palette. The
+        // literal fallbacks are the pre-theme colours this draw used to hardcode, so a build with
+        // no theme at all paints exactly what it painted before.
+        let style = self.base().style();
+        let theme = rust_widgets::style::resolved_theme_style_shared("web_engine_view");
+        let palette = rust_widgets::style::palette_shared();
+        let window_fill = style
+            .background_color
+            .or_else(|| theme.as_ref().and_then(|resolved| resolved.background_color))
+            .or_else(|| palette.as_ref().map(|colors| colors.background))
+            .unwrap_or(Color::rgb(255, 255, 255));
+        let ink = style
+            .text_color
+            .or_else(|| theme.as_ref().and_then(|resolved| resolved.text_color))
+            .or_else(|| palette.as_ref().map(|colors| colors.foreground))
+            .unwrap_or(Color::rgb(60, 60, 60));
+        let border_color = style
+            .border_color
+            .or_else(|| theme.as_ref().and_then(|resolved| resolved.border_color))
+            .unwrap_or(Color::rgb(180, 180, 180));
+        let accent =
+            palette.as_ref().map(|colors| colors.primary).unwrap_or(Color::rgb(51, 153, 255));
+
+        let bg_color = window_fill;
 
         // ── Outer background & border ──
         context.fill_rect(rect, bg_color);
@@ -288,7 +312,9 @@ impl Draw for WebViewEnhanced {
         // ── Address bar area (30px at top) ──
         let addr_h = 30u32;
         let addr_rect = Rect::new(rect.x + 1, rect.y + 1, rect.width.saturating_sub(2), addr_h);
-        context.fill_rect(addr_rect, Color::rgb(245, 245, 245));
+        // The bar is the page fill eased toward the ink, which is the old 245/245/245 on a light
+        // theme and stays distinct from the page on a dark one.
+        context.fill_rect(addr_rect, window_fill.blend(&ink, 0.05));
         // Bottom border of address bar
         context.draw_line(
             Point::new(addr_rect.x, addr_rect.y + addr_rect.height as i32 - 1),
@@ -300,7 +326,7 @@ impl Draw for WebViewEnhanced {
         );
 
         // URL text centered in address bar
-        let url_color = if enabled { Color::rgb(60, 60, 60) } else { Color::rgb(180, 180, 180) };
+        let url_color = if enabled { ink } else { ink.blend(&window_fill, 0.6) };
         context.draw_text(
             Point::new(addr_rect.x + 6, addr_rect.y + 8),
             &self.core.url,
@@ -313,7 +339,7 @@ impl Draw for WebViewEnhanced {
         if self.core.loading {
             let bar_y = addr_rect.y + addr_rect.height as i32;
             let bar_w = (rect.width * self.core.load_progress as u32 / 100).max(1);
-            context.fill_rect(Rect::new(rect.x + 1, bar_y, bar_w, 3), Color::rgb(51, 153, 255));
+            context.fill_rect(Rect::new(rect.x + 1, bar_y, bar_w, 3), accent);
         }
 
         // ── Content area ──
@@ -328,8 +354,7 @@ impl Draw for WebViewEnhanced {
 
             // Title display
             if !self.core.title.is_empty() {
-                let title_color =
-                    if enabled { Color::rgb(20, 20, 20) } else { Color::rgb(170, 170, 170) };
+                let title_color = if enabled { ink } else { ink.blend(&window_fill, 0.55) };
                 context.draw_text(
                     Point::new(content_rect.x + 4, content_rect.y + 4),
                     &self.core.title,
@@ -365,8 +390,11 @@ impl Draw for WebViewEnhanced {
                 let snippet_guard = self.snippet_cache.borrow();
                 let snippet =
                     snippet_guard.as_ref().map(|(_, _, _, text)| text.as_str()).unwrap_or("");
-                let text_color =
-                    if enabled { Color::rgb(80, 80, 80) } else { Color::rgb(190, 190, 190) };
+                let text_color = if enabled {
+                    ink.blend(&window_fill, 0.1)
+                } else {
+                    ink.blend(&window_fill, 0.7)
+                };
                 let text_y = content_rect.y + (if self.core.title.is_empty() { 4 } else { 24 });
                 context.draw_text(
                     Point::new(content_rect.x + 4, text_y),
@@ -379,7 +407,7 @@ impl Draw for WebViewEnhanced {
 
             // Empty state: show "about:blank" placeholder
             if self.core.url == "about:blank" && self.core.content.is_empty() {
-                let placeholder_color = Color::rgb(200, 200, 200);
+                let placeholder_color = ink.blend(&window_fill, 0.75);
                 context.draw_text(
                     Point::new(content_rect.x + 4, content_rect.y + 4),
                     "about:blank",

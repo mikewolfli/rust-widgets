@@ -1391,7 +1391,7 @@ fn box_shadow_extreme_spread_and_offset_do_not_overflow() {
 /// opacity, so the fill after the bad command paints at full strength.
 #[test]
 fn batch_set_opacity_rejects_non_finite_and_keeps_colour() {
-    use crate::render::{BatchCommand, BatchRenderer};
+    use crate::render::backend::batch::{BatchCommand, BatchRenderer};
     let mut backend = SoftwarePaintBackend::new(Size { width: 8, height: 8 }, 1.0);
     backend.begin_frame(Color::TRANSPARENT);
     let batch = backend.begin_batch();

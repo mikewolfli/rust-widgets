@@ -19,7 +19,8 @@
 //!
 //! 菜单栏（File / Edit / View）由 `new_menu_bar` + `new_menu` 创建：每个 `new_menu`
 //! 会把标题加进菜单栏，点击标题时宿主用 `MenuHandle::open_at` 在对应条目下方展开
-//! 弹出菜单；菜单项的选择通过 `MenuHandle::on_triggered` 进入日志。
+//! 弹出菜单；菜单项的选择通过 `MenuHandle::on_triggered` 进入日志，View 的外观切换
+//! 则按行的 action id（`MenuHandle::on_item_action_triggered`）分发，标签只负责显示。
 //!
 //! 本 demo 只演示**平台普通控件**；自绘型控件（如 `CodeEditor`、`TreeView`）
 //! 需要挂载面，归 `demo/code_editor` 演示。
@@ -42,7 +43,7 @@ use std::sync::{Arc, Mutex};
 use rust_widgets::app::{App, AppConfig, LabelHandle, WidgetHandle, WindowHandle};
 use rust_widgets::core::{ObjectId, Orientation, Rect};
 use rust_widgets::layout::Layout as LayoutTrait;
-use rust_widgets::theme::{global_theme_manager, AppearanceMode, Theme};
+use rust_widgets::theme::global_theme_manager;
 use rust_widgets::widget::chart_widgets::bar_chart::{BarChart, BarEntry};
 use rust_widgets::widget::container_widgets::tabwidget::TabWidget;
 use rust_widgets::widget::nav_widgets::pagination::Pagination;
@@ -52,68 +53,11 @@ use rust_widgets::{collect_save_state, restore_save_state, SavedState};
 // ═══════════════════════════════════════════════════════════════════════════════
 // 外观（暗色）
 // ═══════════════════════════════════════════════════════════════════════════════
-
-/// Name of the dark palette this demo registers.
-const MACOS_DARK: &str = "macos-dark";
-/// Name of the light palette this demo registers.
-const MACOS_LIGHT: &str = "macos-light";
-
-/// Returns the palette for the requested appearance.
-///
-/// # Why the palette is not applied by default
-///
-/// The shipped themes are the library's default appearance: changing them would move every
-/// control the library draws, including the SVG snapshots the gates compare byte-for-byte.
-/// The palette is a public preset (`Theme::macos_dark` / `Theme::macos_light`) that a host
-/// registers and selects, which is exactly what this demo does — and it lets the finance and
-/// code-editor demos use the same two palettes without a private copy each.
-fn macos_palette(dark: bool) -> Theme {
-    // The palettes are library presets (`Theme::macos_dark` / `Theme::macos_light`), not a
-    // demo-local table: the finance and code-editor demos use the same ones, and a private
-    // copy in each demo would drift the moment a token changed.
-    if dark {
-        Theme::macos_dark()
-    } else {
-        Theme::macos_light()
-    }
-}
-
-/// Registers both palettes once, before any control is created.
-///
-/// Registration is idempotent (`register_theme` updates a name in place), so a second call
-/// after a theme reload refreshes the palette instead of accumulating copies.
-fn install_macos_themes() {
-    let mut manager = global_theme_manager();
-    manager.register_theme(macos_palette(true));
-    manager.register_theme(macos_palette(false));
-}
-
-/// Whether the active palette is dark.
-///
-/// Asked of the manager rather than mirrored in a `bool`: the theme is global state, another
-/// part of the process may change it, and a private copy would then point the toggle the
-/// wrong way.
-fn dark_active() -> bool {
-    global_theme_manager()
-        .current_theme()
-        .map(|theme| theme.appearance == AppearanceMode::Dark)
-        .unwrap_or(false)
-}
-
-/// Selects the requested palette and repaints the controls that are already mounted.
-///
-/// Both halves are required: `set_theme` changes what *newly created* controls use, and
-/// `reapply_active_theme` restyles what is already on screen. Without the second call the
-/// window keeps its old colours and the switch looks like it did nothing.
-fn switch_appearance(dark: bool) -> Option<String> {
-    let name = if dark { MACOS_DARK } else { MACOS_LIGHT };
-    let switched = global_theme_manager().set_theme(name);
-    if !switched {
-        return None;
-    }
-    rust_widgets::reapply_active_theme();
-    Some(name.to_string())
-}
+//
+// The demo registers and selects the library's macOS presets through
+// `preview_common::apply_appearance_mode` (DM3-1). The palette table, the registration order
+// and the `reapply_active_theme` half all live in that one function now: a private copy here
+// had already dropped the repaint, which made a theme switch after the first paint look inert.
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Log System — 线程安全的事件日志
@@ -983,12 +927,16 @@ fn build_all_controls(
     let tog = row!(0, 1, (180, 20, 150, 32), new_button("深色模式"));
     let l = Arc::clone(log);
     let tog_label = tog.clone();
-    tog.on_click(move || match switch_appearance(!dark_active()) {
-        Some(name) => {
-            l.append(format!("[Theme] switched to '{name}'"));
-            tog_label.set_text(if dark_active() { "浅色模式" } else { "深色模式" });
-        }
-        None => l.append("[Theme] that appearance is not registered in this build"),
+    tog.on_click(move || {
+        let dark = !preview_common::dark_active();
+        preview_common::apply_appearance_mode(dark);
+        let name = if dark { preview_common::MACOS_DARK } else { preview_common::MACOS_LIGHT };
+        l.append(format!("[Theme] switched to '{name}'"));
+        tog_label.set_text(if preview_common::dark_active() {
+            "浅色模式"
+        } else {
+            "深色模式"
+        });
     });
     // A `Button` that happens to toggle appearance, not a `ToggleButton`: this crate publishes
     // no `new_toggle_button`, and the log tag must name the control that is actually here so a
@@ -1512,24 +1460,30 @@ fn build_window_chrome(win: &WindowHandle, log: &Arc<EventLog>) -> Vec<Slot> {
     }
 
     // The popup follows the entry. `View` is the one menu with a real action: it flips
-    // the appearance, so the menu is not a row of inert labels.
+    // the appearance, so the menu is not a row of inert labels. The dispatch key is the row's
+    // **action id**, not its label: the `on_triggered` handler in the loop above still logs the
+    // visible text for every row, while this handler flips the appearance only for the row named
+    // below (DM3-2).
     let l = Arc::clone(log);
-    view.on_triggered(move |label: String| {
-        if label == "Toggle Appearance" {
-            match switch_appearance(!dark_active()) {
-                Some(name) => l.append(format!("[Menu] appearance '{name}'")),
-                None => l.append("[Menu] that appearance is not registered"),
-            }
+    view.on_item_action_triggered(move |action_id: String| {
+        if action_id == "view.toggle-appearance" {
+            let dark = !preview_common::dark_active();
+            preview_common::apply_appearance_mode(dark);
+            let name = if dark { preview_common::MACOS_DARK } else { preview_common::MACOS_LIGHT };
+            l.append(format!("[Menu] appearance '{name}'"));
         }
     });
-    // A View item that really does something. `on_triggered` connections are **appended** and
-    // every connection receives every trigger (see `MenuHandle::on_triggered`, which connects
-    // to the menu's `triggered` signal), so the two handlers registered above both run on a
-    // click: the logging one logs the label, and this one switches the appearance only when
-    // the label is `Toggle Appearance` (its own label test). The item's creation order relative
-    // to the handlers does not decide which of them runs — this comment previously claimed it
-    // did, which contradicted both the code order and the connection model.
-    win.new_menu_item(&view, "Toggle Appearance", Some("Ctrl+Shift+D"));
+    // A View item that really does something. The row's `on_triggered` and action-signal
+    // deliveries are independent: the loop above logs the label for every row, and this row's
+    // id is what the handler above switches on. The item's creation order relative to the
+    // handlers does not decide which of them runs — connections are appended and all of them
+    // fire.
+    win.new_menu_item_with_action_id(
+        &view,
+        "Toggle Appearance",
+        Some("Ctrl+Shift+D"),
+        Some("view.toggle-appearance"),
+    );
 
     let menus =
         [("File".to_string(), file), ("Edit".to_string(), edit), ("View".to_string(), view)];
@@ -1610,11 +1564,11 @@ fn build_window(app: &mut App, dark: bool, log: &Arc<EventLog>) -> WindowHandle 
 
     // Register the macOS-inspired palettes before any control exists: a control picks its
     // colours up at construction, and switching afterwards would need a full repaint pass.
-    install_macos_themes();
-    match switch_appearance(dark) {
-        Some(name) => log.append(format!("[Theme] appearance '{name}'")),
-        None => log.append("[Theme] that appearance is not registered; keeping the default"),
-    }
+    preview_common::apply_appearance_mode(dark);
+    log.append(format!(
+        "[Theme] appearance '{}'",
+        if dark { preview_common::MACOS_DARK } else { preview_common::MACOS_LIGHT }
+    ));
 
     // 创建窗口（必须在 init 之后，run 之前）
     let win = app.new_window("Controls Demo - rust_widgets", 100, 100, 1180, 760);
@@ -1768,8 +1722,7 @@ mod paint_tests {
         let log = Arc::new(EventLog::new());
         let mut app = App::with_config(AppConfig::default().with_app_name("probe"));
         app.init();
-        install_macos_themes();
-        switch_appearance(true);
+        preview_common::apply_appearance_mode(true);
         let win = app.new_window("probe", 100, 100, 1180, 760);
         let slots = build_window_chrome(&win, &log);
         let mut followers = Vec::new();

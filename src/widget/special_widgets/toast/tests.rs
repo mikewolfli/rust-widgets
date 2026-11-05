@@ -496,3 +496,30 @@ fn a_host_stack_offset_moves_the_rows_without_changing_the_anchor() {
         "the offset must lift the rows by its own value:\n{shifted}"
     );
 }
+
+/// The action-label width cache follows the rows: it is cleared with the stack and
+/// evicted with a toast that leaves it (SP2-01).
+#[test]
+fn the_action_width_cache_follows_the_live_rows() {
+    let mut stack = ToastStack::new(Rect::new(0, 0, 360, 180));
+    stack.push(ToastItem::new("t1", "Saved", ToastLevel::Success, 2500).with_action("Undo"));
+    stack.push(ToastItem::new("t2", "Removed", ToastLevel::Info, 2500).with_action("Restore"));
+
+    // Drawing is what measures the labels, so a frame fills the cache.
+    let _ = crate::widget::svg::render_to_svg(&mut stack);
+    assert_eq!(stack.cached_action_widths(), 2, "both action labels were measured");
+    let _ = crate::widget::svg::render_to_svg(&mut stack);
+    assert_eq!(stack.cached_action_widths(), 2, "a second frame reuses them rather than adding");
+
+    stack.clear();
+    assert_eq!(stack.cached_action_widths(), 0, "clearing the stack drops the cached widths");
+
+    // The visible cap expires the oldest row; its label leaves the cache with it.
+    stack.set_max_visible(1);
+    stack.push(ToastItem::new("t3", "Saved", ToastLevel::Success, 2500).with_action("Undo"));
+    let _ = crate::widget::svg::render_to_svg(&mut stack);
+    assert_eq!(stack.cached_action_widths(), 1);
+    stack.push(ToastItem::new("t4", "Removed", ToastLevel::Info, 2500).with_action("Restore"));
+    let _ = crate::widget::svg::render_to_svg(&mut stack);
+    assert_eq!(stack.cached_action_widths(), 1, "the expired row's label was evicted with the row");
+}

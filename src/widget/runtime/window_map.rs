@@ -40,6 +40,19 @@ pub fn surface_window_for(surface: ObjectId) -> Option<ObjectId> {
     SURFACE_WINDOWS.try_with(|map| map.borrow().get(&surface).copied()).unwrap_or(None)
 }
 
+/// The rectangle of the mounted window that contains `id` (DL2-04).
+///
+/// A popup is painted outside its owner's geometry, so deciding whether it fits below the field
+/// needs the window's own extent rather than the control's. The root of the mounted parent chain
+/// is that rectangle: the widget layer has no window object of its own.
+///
+/// Returns `None` for an id that is not mounted, which is the honest answer a caller uses to skip
+/// the flip rather than guess a viewport.
+pub fn window_bounds_of(id: ObjectId) -> Option<Rect> {
+    let root = top_level_window_of(id)?;
+    with_widget(root, |widget| widget.geometry())
+}
+
 /// Every mounted surface recorded as belonging to `window`.
 ///
 /// A surface mounted through `mount_surface` is **not** a child in the widget tree: the

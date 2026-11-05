@@ -15,6 +15,7 @@ impl CodeEditor {
     /// Replaces the diagnostic markers.
     pub fn set_markers(&mut self, markers: Vec<DiagnosticMarker>) {
         self.markers = markers;
+        self.diagnostics_generation = self.diagnostics_generation.wrapping_add(1);
         self.bump_layout_generation();
         self.base.request_layout();
         self.base.request_redraw();
@@ -23,6 +24,7 @@ impl CodeEditor {
     /// Appends one diagnostic marker.
     pub fn add_marker(&mut self, marker: DiagnosticMarker) {
         self.markers.push(marker);
+        self.diagnostics_generation = self.diagnostics_generation.wrapping_add(1);
         self.bump_layout_generation();
         self.base.request_layout();
         self.base.request_redraw();
@@ -34,6 +36,7 @@ impl CodeEditor {
         self.markers.retain(|marker| marker.line != line);
         let removed = before - self.markers.len();
         if removed > 0 {
+            self.diagnostics_generation = self.diagnostics_generation.wrapping_add(1);
             self.bump_layout_generation();
             self.base.request_layout();
             self.base.request_redraw();

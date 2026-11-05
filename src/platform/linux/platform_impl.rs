@@ -1452,7 +1452,7 @@ impl Platform for LinuxPlatform {
                     modifiers: 0,
                 };
                 let target = crate::widget::runtime::hovered_widget().unwrap_or(window_widget);
-                if crate::widget::runtime::dispatch_event(target, &wheel) {
+                if crate::widget::runtime::dispatch_wheel_event(target, &wheel) {
                     wheel_area.queue_draw();
                     crate::platform::linux::canvas::note_canvas_redraw(target);
                 }

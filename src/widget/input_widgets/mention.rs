@@ -272,6 +272,11 @@ pub struct Mention {
     undo_stack: UndoStack,
     history_target: Rc<RefCell<String>>,
     restoring_history: bool,
+    /// The uncommitted input-method composition, or `None` when no IME session is active (IN2-04).
+    ///
+    /// Held apart from `text`: the mention popup is driven by the token before the caret, so
+    /// committing an unfinished composition would open the popup for text the user has not chosen.
+    composition: Option<String>,
 }
 
 impl Mention {
@@ -307,7 +312,26 @@ impl Mention {
             undo_stack: UndoStack::new(),
             history_target: Rc::new(RefCell::new(String::new())),
             restoring_history: false,
+            composition: None,
         }
+    }
+
+    /// Starts or updates the input-method composition without changing the value (IN2-04).
+    ///
+    /// An empty string clears the composition, which is what an input method sends when it
+    /// withdraws.
+    pub fn set_composition(&mut self, preedit: &str) {
+        let next = if preedit.is_empty() { None } else { Some(preedit.to_string()) };
+        if self.composition == next {
+            return;
+        }
+        self.composition = next;
+        self.base.request_redraw();
+    }
+
+    /// The uncommitted composition, or `None` when no IME session is active.
+    pub fn composition(&self) -> Option<&str> {
+        self.composition.as_deref()
     }
 
     /// The field's text.
@@ -1344,6 +1368,28 @@ impl Draw for Mention {
             );
         }
 
+        // The uncommitted composition is drawn inline at the caret — where it will land when it is
+        // committed — with an underline marking it as preedit (IN2-04). The underline reuses the
+        // mention accent, because both say "this run is not plain text yet".
+        if let Some(preedit) = self.composition.as_deref() {
+            let preedit_x = rect.x + 8 + width_at(self.caret.min(self.text.len())) as i32;
+            let preedit_width = context.measure_text(preedit, &field_font).width as i32;
+            context.draw_text(
+                Point::new(preedit_x, field_line.y),
+                preedit,
+                &field_font,
+                text_color,
+                HorizontalAlignment::Left,
+            );
+            let underline_y = field_line.y + field_line.height as i32;
+            context.draw_line_stroke(
+                Point::new(preedit_x, underline_y),
+                Point::new(preedit_x + preedit_width, underline_y),
+                mention_ink,
+                1,
+            );
+        }
+
         if self.is_popup_open() {
             // I-101: the caret is painted only during the visible half of its blink cycle.
             if self.cursor_blink.is_visible() {
@@ -1587,11 +1633,24 @@ impl EventHandler for Mention {
             // `ImeCommit` is the CJK path: an IME commits the composed string as one
             // event, not as `TextInput`, so without this arm every composed character
             // was dropped. Both spellings share one insertion path and one guard.
-            Event::TextInput { text } | Event::ImeCommit { text }
+            Event::TextInput { text }
                 if text.chars().all(|ch| !ch.is_control()) && !text.is_empty() =>
             {
                 // I-P66: one splice, one refresh and one signal for the whole committed run.
                 self.insert_str(text);
+            }
+            // A commit ends the composition as well as inserting its text, so the preview cannot
+            // survive the string it previewed (IN2-04).
+            Event::ImeCommit { text }
+                if text.chars().all(|ch| !ch.is_control()) && !text.is_empty() =>
+            {
+                self.composition = None;
+                self.insert_str(text);
+            }
+            // The uncommitted composition is shown inline at the caret; the value is untouched
+            // until the commit, so the popup does not open on half-built text (IN2-04).
+            Event::ImePreedit { text, .. } => {
+                self.set_composition(text);
             }
             Event::KeyDown((key, _)) | Event::KeyPress { key, .. } => {
                 let primary = match event {
@@ -2378,5 +2437,19 @@ mod tests {
         });
         m.insert_char('c');
         assert_eq!(m.text_revision, 2, "another edit advances the revision");
+    }
+
+    /// IN2-04: the preedit is held apart from the value and cleared by the commit.
+    #[test]
+    fn an_ime_preedit_is_held_apart_and_cleared_by_the_commit() {
+        let mut m = Mention::new(Rect::new(0, 0, 240, 30));
+        m.handle_event(&Event::ImePreedit { text: "に".to_string(), cursor: 3 });
+        assert_eq!(m.composition(), Some("に"));
+        assert_eq!(m.text(), "", "an uncommitted composition is not committed to the value");
+        assert!(!m.is_popup_open(), "half-built text must not open the candidate list");
+
+        m.handle_event(&Event::ImeCommit { text: "に".to_string() });
+        assert_eq!(m.composition(), None, "the commit clears the preview");
+        assert_eq!(m.text(), "に", "the commit inserts the composed run");
     }
 }

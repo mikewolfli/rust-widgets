@@ -557,11 +557,13 @@ impl EventHandler for Tag {
             Event::MouseEnter { .. } => self.set_hovered(true),
             Event::MouseLeave { .. } => self.set_hovered(false),
             // Both removal routes emit the same signal, so a host subscribes once. The tag is
-            // only removable when it is closable, and the key is ignored while disabled.
+            // only removable when it is closable, focused, and enabled — an unfocused tag must
+            // not eat the Delete/Backspace of whatever the user is editing.
             Event::KeyPress { key, .. }
                 if (*key == key_codes::DELETE || *key == key_codes::BACKSPACE)
                     && self.closable
-                    && self.base.is_enabled() =>
+                    && self.base.is_enabled()
+                    && self.base.focus_reason().is_some() =>
             {
                 self.closed.emit(self.text.clone());
                 self.base.request_redraw();
@@ -693,6 +695,7 @@ mod tests {
         });
 
         for key in [key_codes::DELETE, key_codes::BACKSPACE] {
+            tag.handle_event(&Event::FocusGained { reason: crate::event::FocusReason::Tab });
             tag.handle_event(&Event::KeyPress { key, modifiers: 0 });
         }
 
@@ -715,8 +718,33 @@ mod tests {
             move |value: &String| seen.lock().expect("lock").push(value.clone())
         });
 
+        tag.handle_event(&Event::FocusGained { reason: crate::event::FocusReason::Tab });
         tag.handle_event(&Event::KeyPress { key: key_codes::DELETE, modifiers: 0 });
         assert!(seen.lock().expect("lock").is_empty(), "a non-closable tag cannot be removed");
+    }
+
+    /// The removal keys are reachable only while the tag holds focus, so an unfocused tag cannot
+    /// close itself off another control's Delete key.
+    #[test]
+    fn the_delete_key_is_ignored_without_focus() {
+        let mut tag = Tag::new("draft", Rect::new(0, 0, 80, 24));
+        tag.set_closable(true);
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        tag.closed.connect_ref({
+            let seen = std::sync::Arc::clone(&seen);
+            move |value: &String| seen.lock().expect("lock").push(value.clone())
+        });
+
+        tag.handle_event(&Event::KeyPress { key: key_codes::DELETE, modifiers: 0 });
+        assert!(seen.lock().expect("lock").is_empty(), "an unfocused tag ignores the key");
+
+        tag.handle_event(&Event::FocusGained { reason: crate::event::FocusReason::Tab });
+        tag.handle_event(&Event::KeyPress { key: key_codes::DELETE, modifiers: 0 });
+        assert_eq!(seen.lock().expect("lock").as_slice(), ["draft".to_string()]);
+
+        tag.handle_event(&Event::FocusLost);
+        tag.handle_event(&Event::KeyPress { key: key_codes::DELETE, modifiers: 0 });
+        assert_eq!(seen.lock().expect("lock").len(), 1, "losing focus restores the gate");
     }
 
     /// A tag can carry a leading icon, and the slot grows the hint by exactly its own width.

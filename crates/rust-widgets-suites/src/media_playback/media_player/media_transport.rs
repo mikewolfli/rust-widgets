@@ -55,6 +55,12 @@ pub struct MediaTransportBar {
     duration_ms: u64,
     volume: f32,
     muted: bool,
+    /// The volume in force before the mute button zeroed it (MP-06).
+    ///
+    /// Muting emits `volume_changed(0.0)` and the player applies it, so `current_volume()` reads
+    /// `0.0` when the same button is pressed to un-mute. Remembering the pre-mute value is what
+    /// lets "unmute" actually restore something instead of re-sending `0.0`.
+    pre_mute_volume: Option<f32>,
     auto_hide_ms: u64,
     idle_ms: u64,
     visible: bool,
@@ -130,6 +136,7 @@ impl MediaTransportBar {
             duration_ms: 0,
             volume: 0.8,
             muted: false,
+            pre_mute_volume: None,
             auto_hide_ms: 3000,
             idle_ms: 0,
             visible: true,
@@ -596,18 +603,30 @@ impl Widget for MediaTransportBar {
     fn size_hint(&self) -> Size {
         Size::new(320, 40)
     }
-    /// Reports a frame when a followed player has changed the shown state.
-    fn tick(&mut self, _delta_ms: u32) -> bool {
+    /// Drives the auto-hide clock and reports a followed player's changes.
+    ///
+    /// `auto_hide_ms` is a published property, so it needs an execution site: this is the only
+    /// place a wall-clock delta reaches the bar, and [`Self::notify_pointer_activity`] is the
+    /// reset half. Once the countdown reaches the delay the bar hides and owes one repaint;
+    /// further ticks change nothing.
+    fn tick(&mut self, delta_ms: u32) -> bool {
+        let mut redrew = false;
+        self.idle_ms = self.idle_ms.saturating_add(u64::from(delta_ms));
+        if self.auto_hide_ms > 0 && self.idle_ms >= self.auto_hide_ms && self.visible {
+            self.visible = false;
+            self.base.request_redraw();
+            redrew = true;
+        }
         let dirty = self
             .binding
             .as_ref()
             .is_some_and(|binding| rust_widgets::compat::lock(&binding.mirror).dirty);
-        if !dirty {
-            return false;
+        if dirty {
+            self.write_mirror(|state| state.dirty = false);
+            self.base.request_redraw();
+            redrew = true;
         }
-        self.write_mirror(|state| state.dirty = false);
-        self.base.request_redraw();
-        true
+        redrew
     }
     fn event_signal_dyn(&self, name: &str) -> Option<EventSignalRef> {
         match name {
@@ -658,6 +677,8 @@ impl WidgetProperties for MediaTransportBar {
             "auto_hide_ms" => Ok(CapabilityValue::UInt(self.auto_hide_ms())),
             "show_volume" => Ok(CapabilityValue::Bool(self.show_volume)),
             "show_timecode" => Ok(CapabilityValue::Bool(self.show_timecode)),
+            "show_fullscreen" => Ok(CapabilityValue::Bool(self.show_fullscreen)),
+            "show_next_previous" => Ok(CapabilityValue::Bool(self.show_next_previous())),
             _ => base_property_get(self, name),
         }
     }
@@ -701,6 +722,22 @@ impl WidgetProperties for MediaTransportBar {
                 self.set_show_timecode(show);
                 Ok(())
             }
+            "show_fullscreen" => {
+                let show = match value {
+                    CapabilityValue::Bool(show) => show,
+                    _ => return Err(CapabilityAccessError::TypeMismatch),
+                };
+                self.set_show_fullscreen(show);
+                Ok(())
+            }
+            "show_next_previous" => {
+                let show = match value {
+                    CapabilityValue::Bool(show) => show,
+                    _ => return Err(CapabilityAccessError::TypeMismatch),
+                };
+                self.set_show_next_previous(show);
+                Ok(())
+            }
             // The clock belongs to the host; `set_position` exists for a Rust caller that owns it.
             "position_ms" | "duration_ms" => Err(CapabilityAccessError::ReadOnlyProperty),
             _ => base_property_set(self, name, value),
@@ -716,6 +753,8 @@ impl WidgetProperties for MediaTransportBar {
             "auto_hide_ms",
             "show_volume",
             "show_timecode",
+            "show_fullscreen",
+            "show_next_previous",
             BASE_PROPERTY_NAMES
         ]
     }
@@ -751,12 +790,31 @@ impl Draw for MediaTransportBar {
             return;
         }
         let style = self.base.style();
-        let muted_ink = style.text_color.unwrap_or(Color::rgba(200, 200, 200, 230));
-        let accent =
-            self.accent.or(style.background_color).unwrap_or(Color::rgba(80, 150, 230, 240));
+        // MP-02: this bar is chrome a host hangs *under* a media control, not the decoded picture
+        // the `video-surface` exemption covers. Resolve palette roles first (surface / outline /
+        // foreground / primary), let an explicit style colour win, and derive the icon ink from
+        // the strip it sits on — the same three-level precedence `MediaPlayer::draw` uses.
+        let themed = rust_widgets::style::palette_shared().map(|colors| {
+            (colors.surface_container, colors.outline, colors.foreground, colors.primary)
+        });
+        let (surface, outline, foreground, accent_default) = themed.unwrap_or((
+            // The old literals, kept as the no-theme fallback: the translucent dark strip, its
+            // grey track, the light timecode ink and the progress fill.
+            Color::rgba(0, 0, 0, 160),
+            Color::rgba(100, 100, 100, 200),
+            Color::rgba(200, 200, 200, 230),
+            Color::rgba(80, 150, 230, 240),
+        ));
+        let strip_fill = style.background_color.unwrap_or(surface);
+        let track_fill = style.border_color.unwrap_or(outline);
+        let muted_ink = style.text_color.unwrap_or(foreground);
+        let accent = self.accent.unwrap_or(accent_default);
+        // The icons are drawn on the strip, so their ink is the strip's own contrast colour; on
+        // the default dark strip this is the old `Color::WHITE`.
+        let icon_ink = strip_fill.contrast_color();
         let font = &role_font(style, 12.0);
 
-        context.fill_rect(strip, Color::rgba(0, 0, 0, 160));
+        context.fill_rect(strip, strip_fill);
         if !self.visible {
             return;
         }
@@ -767,7 +825,7 @@ impl Draw for MediaTransportBar {
         if self.show_next_previous {
             let previous = Rect::new(left, button_y, button, button);
             left = previous.right() + 6;
-            draw_icon_at(context, previous, Color::WHITE, IconName::ArrowLeft);
+            draw_icon_at(context, previous, icon_ink, IconName::ArrowLeft);
             self.previous_rect = Some(previous);
         } else {
             self.previous_rect = None;
@@ -778,12 +836,12 @@ impl Draw for MediaTransportBar {
         draw_icon_at(
             context,
             play,
-            Color::WHITE,
+            icon_ink,
             if self.current_playing() { IconName::Pause } else { IconName::Play },
         );
         if self.show_next_previous {
             let next = Rect::new(left, button_y, button, button);
-            draw_icon_at(context, next, Color::WHITE, IconName::ArrowRight);
+            draw_icon_at(context, next, icon_ink, IconName::ArrowRight);
             self.next_rect = Some(next);
         } else {
             self.next_rect = None;
@@ -799,7 +857,7 @@ impl Draw for MediaTransportBar {
                 button,
             );
             right = rect.x - 6;
-            draw_icon_at(context, rect, Color::WHITE, IconName::Fullscreen);
+            draw_icon_at(context, rect, icon_ink, IconName::Fullscreen);
             self.fullscreen_rect = Some(rect);
             Some(rect)
         } else {
@@ -820,7 +878,7 @@ impl Draw for MediaTransportBar {
             } else {
                 IconName::VolumeUp
             };
-            draw_icon_at(context, rect, Color::WHITE, icon);
+            draw_icon_at(context, rect, icon_ink, icon);
             self.volume_rect = Some(rect);
         } else {
             self.volume_rect = None;
@@ -853,7 +911,7 @@ impl Draw for MediaTransportBar {
         let track_y = strip.y + strip.height as i32 / 2 - 2;
         let track = Rect::new(track_x, track_y, track_width, 4);
         self.track_rect = Some(track);
-        context.fill_rounded_rect(track, 2, Color::rgba(100, 100, 100, 200));
+        context.fill_rounded_rect(track, 2, track_fill);
         let filled = (track.width as f32 * self.progress()) as u32;
         if filled > 0 {
             context.fill_rounded_rect(Rect::new(track.x, track.y, filled, track.height), 2, accent);
@@ -901,7 +959,17 @@ impl EventHandler for MediaTransportBar {
                     let muted = !self.current_muted();
                     self.muted = muted;
                     self.write_mirror(|state| state.muted = muted);
-                    let volume = if muted { 0.0 } else { self.current_volume() };
+                    // MP-06: the mute request is `volume_changed(0.0)`, which the player applies,
+                    // so `current_volume()` reads `0.0` by the time the same button is pressed
+                    // again. Remember the value being muted and restore it on un-mute; only a bar
+                    // with no remembered value falls back to the current volume.
+                    let volume = if muted {
+                        let current = self.current_volume();
+                        self.pre_mute_volume = Some(current);
+                        0.0
+                    } else {
+                        self.pre_mute_volume.take().unwrap_or_else(|| self.current_volume())
+                    };
                     self.volume_changed.emit(volume);
                     self.base.request_redraw();
                     return;
@@ -1004,6 +1072,70 @@ mod tests {
         });
         let last = *seen.lock().unwrap().last().expect("a seek was requested");
         assert!((last - 0.5).abs() < 0.05, "mid-track is half the timeline, got {last}");
+    }
+
+    /// MP-01: `auto_hide_ms` is published, so the tick must actually run the countdown.
+    ///
+    /// Before this the delta was discarded (`tick(&mut self, _delta_ms)`) and `idle_ms` had no
+    /// increment site, so a bar set to hide after 3000 ms stayed up forever.
+    #[test]
+    fn the_transport_bar_hides_itself_once_the_auto_hide_delay_elapses() {
+        let mut bar = MediaTransportBar::new(Rect::new(0, 0, 320, 40));
+        bar.set_auto_hide_ms(100);
+        assert!(bar.visible, "a fresh bar is up");
+
+        assert!(!bar.tick(40), "less than the delay changes nothing, so no frame is owed");
+        assert!(bar.visible);
+        assert!(bar.tick(60), "reaching the delay owes one repaint");
+        assert!(!bar.visible, "the bar hides once the delay has elapsed");
+        assert!(!bar.tick(1000), "a hidden bar has nothing left to change");
+
+        bar.notify_pointer_activity();
+        assert!(bar.visible, "pointer activity brings the bar back");
+        assert_eq!(bar.idle_ms, 0, "and resets the countdown");
+
+        bar.set_auto_hide_ms(0);
+        assert!(!bar.tick(10_000), "`0` keeps the bar up");
+        assert!(bar.visible);
+    }
+
+    /// MP-06: un-muting restores the volume that muting zeroed.
+    #[test]
+    fn the_mute_button_restores_the_volume_it_muted() {
+        use std::sync::{Arc, Mutex};
+
+        let mut bar = MediaTransportBar::new(Rect::new(0, 0, 320, 40));
+        bar.set_volume(0.8);
+        let seen = Arc::new(Mutex::new(Vec::<f32>::new()));
+        let sink = seen.clone();
+        bar.volume_changed.connect(move |value: Arc<f32>| {
+            sink.lock().unwrap().push(*value);
+        });
+
+        let mut backend = rust_widgets::render::SoftwarePaintBackend::new(Size::new(320, 40), 1.0);
+        backend.begin_frame(Color::BLACK);
+        bar.draw(&mut RenderContext::new(&mut backend));
+        backend.end_frame();
+        let volume = bar.volume_rect.expect("the volume button was painted");
+        let press = || Event::MousePress {
+            pos: Point::new(volume.center().x, volume.center().y),
+            button: 1,
+            modifiers: 0,
+        };
+
+        // Muting asks the player for 0.0 and remembers what it replaced.
+        bar.handle_event(&press());
+        assert_eq!(*seen.lock().unwrap(), vec![0.0]);
+        assert_eq!(bar.pre_mute_volume, Some(0.8));
+
+        // The player applied the request, which is what made `current_volume()` read 0.0.
+        bar.set_volume(0.0);
+        assert!((bar.volume() - 0.0).abs() < f32::EPSILON);
+
+        // Un-muting restores the remembered value instead of re-sending 0.0.
+        bar.handle_event(&press());
+        assert_eq!(*seen.lock().unwrap(), vec![0.0, 0.8]);
+        assert_eq!(bar.pre_mute_volume, None, "the remembered value is consumed once");
     }
 
     /// A followed player drives the bar through its signals rather than a one-time snapshot
