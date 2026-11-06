@@ -166,10 +166,13 @@ static RUNNING: AtomicBool = AtomicBool::new(false);
 
 /// Whether a backend registered its own lifecycle observers on top of this link.
 ///
-/// The registration decision is made in [`start`], which both backends call through their own
-/// thin wrapper; only the cocoa wrapper currently asks, so an `alloc_frugal` build (which has no
-/// macOS canvas to start a link for) reports neither as used.
-#[cfg_attr(alloc_frugal, allow(dead_code))]
+/// The registration is done by the **cocoa** backend's wrapper (`platform/macos/display_link.rs`),
+/// which is the only thing that asks: the objc2 backend has no AppKit observers to install and uses
+/// the shared stall recovery instead. The gate is therefore that wrapper's own gate
+/// (`cocoa-legacy` + `widgets_unstripped`), so the flag exists exactly where its one caller does —
+/// and an objc2-only build, which used to carry these three items as dead code, no longer names
+/// them at all.
+#[cfg(all(feature = "cocoa-legacy", widgets_unstripped))]
 static OBSERVERS_INSTALLED: AtomicBool = AtomicBool::new(false);
 
 /// The link pointer plus its running flag.
@@ -267,15 +270,15 @@ pub(crate) fn is_running() -> bool {
 
 /// Whether a backend has already registered its own lifecycle observers.
 ///
-/// Only the cocoa backend has any, but the flag lives here because the registration decision is
-/// made in [`start`], which both backends call through their own thin wrapper.
-#[cfg_attr(alloc_frugal, allow(dead_code))]
+/// Only the cocoa backend has any — see [`OBSERVERS_INSTALLED`] for why the gate is that backend's
+/// gate rather than a dead-code allowance.
+#[cfg(all(feature = "cocoa-legacy", widgets_unstripped))]
 pub(crate) fn observers_installed() -> bool {
     OBSERVERS_INSTALLED.load(Ordering::Relaxed)
 }
 
 /// Records that a backend registered its lifecycle observers.
-#[cfg_attr(alloc_frugal, allow(dead_code))]
+#[cfg(all(feature = "cocoa-legacy", widgets_unstripped))]
 pub(crate) fn mark_observers_installed() {
     OBSERVERS_INSTALLED.store(true, Ordering::Relaxed);
 }

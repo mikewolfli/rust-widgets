@@ -51,6 +51,18 @@ pub mod ios;
 pub mod linux;
 #[cfg(target_os = "macos")]
 pub mod macos;
+/// The frame heartbeat both macOS backends install, alive inside AppKit's modal loops.
+///
+/// A window drag or a live resize runs the run loop in `NSEventTrackingRunLoopMode` and never
+/// returns to the backend's own loop, so a heartbeat that lives only in `NSDefaultRunLoopMode`
+/// stops draining the trigger queue for the whole drag. Shared by the two backends because the
+/// mode rule and the cadence rule are the same rule; only the *scope* differs (see
+/// [`macos_heartbeat::HeartbeatScope`]).
+#[cfg(all(
+    target_os = "macos",
+    any(all(feature = "cocoa-legacy", widgets_unstripped), feature = "macos")
+))]
+pub(crate) mod macos_heartbeat;
 /// macOS objc2 migration preview backend (state-driven).
 ///
 /// The widget state machine is platform-independent, so the module is compiled

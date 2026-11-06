@@ -480,6 +480,74 @@ fn timeout_millis_ceil(timeout: Duration) -> u32 {
     u32::try_from(millis).unwrap_or(u32::MAX)
 }
 
+/// Whether a heartbeat that exists only to cover an **OS modal loop** may drive a frame now.
+///
+/// # The rule, and why it is a predicate rather than an `if` in a callback
+///
+/// Both macOS backends install a run-loop heartbeat (`platform::macos_heartbeat`) so that frames
+/// keep being driven while AppKit's tracking loop owns the process — a window drag or a live
+/// resize runs the run loop itself and never returns to the backend's own loop until the mouse is
+/// released. The cocoa backend has no other frame driver, so its heartbeat must fire in every
+/// mode. The objc2 backend drives frames from its own loop and would otherwise tick twice per
+/// interval whenever that loop is running, so its heartbeat fires only while the run loop is
+/// **not** in `kCFRunLoopDefaultMode` — the one state that means a modal or tracking loop has taken
+/// the process.
+///
+/// Stated here, cross-platform, because the branch it decides cannot be reached on a machine
+/// without AppKit and a rule that is only exercised on one OS is a rule nobody tests.
+///
+/// The allowance is the one [`VsyncPacing`] carries: only the macOS heartbeat has a mode to read,
+/// so every other target compiles this without a caller, while the tests below cover both answers.
+#[allow(dead_code)]
+pub(crate) fn heartbeat_may_drive(modal_loops_only: bool, current_mode_is_default: bool) -> bool {
+    !modal_loops_only || !current_mode_is_default
+}
+
+// The frame currently being driven on this thread, if any. See [`drive_once`].
+thread_local! {
+    static FRAME_IN_FLIGHT: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Clears [`FRAME_IN_FLIGHT`] when the frame it was set for unwinds, panicked or not.
+struct ClearFrameInFlight;
+
+impl Drop for ClearFrameInFlight {
+    fn drop(&mut self) {
+        FRAME_IN_FLIGHT.with(|in_flight| in_flight.set(false));
+    }
+}
+
+/// Runs `drive` as the only frame on this thread, skipping the call when one is already running.
+///
+/// # Why a nested pump needs this
+///
+/// A frame driven from an OS modal loop (Win32's `SC_SIZE` pump, AppKit's tracking run loop) runs
+/// [`crate::drain_triggers`], whose handlers are host code. A host that opens a modal dialog there
+/// starts a nested pump, and that pump delivers the next heartbeat tick straight back into the
+/// same frame: the animation bus would then advance twice for one wall-clock instant, and a host
+/// that keeps a dialog open inside a trigger handler would recurse without bound. `None` for the
+/// nested call is what makes the heartbeat mean "at most one frame in flight" rather than "one
+/// frame per tick message".
+///
+/// The `Drop` clear is not decoration: a trigger handler that panics would otherwise leave the flag
+/// set for the rest of the thread's life, freezing every later heartbeat.
+///
+/// # Why it lives here rather than in each backend
+///
+/// Two backends install a modal-loop heartbeat and both need the same guard; a second copy is the
+/// shape this crate's "one concept, one implementation" rule exists to prevent. The allowance is
+/// the same one [`VsyncPacing`] carries: a host whose backends never install a heartbeat compiles
+/// this without a caller, and the tests below cover it on every host.
+#[allow(dead_code)]
+pub(crate) fn drive_once<T>(drive: impl FnOnce() -> T) -> Option<T> {
+    if FRAME_IN_FLIGHT.with(Cell::get) {
+        return None;
+    }
+    FRAME_IN_FLIGHT.with(|in_flight| in_flight.set(true));
+    let _clear = ClearFrameInFlight;
+    Some(drive())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -842,5 +910,57 @@ mod tests {
         });
         assert!(next.get() > Duration::ZERO);
         assert!(next.get() <= interval());
+    }
+
+    // ── The OS-modal-loop heartbeat's two shared rules ───────────────────────
+
+    /// The scope decides which run-loop modes may drive a frame.
+    ///
+    /// This is the macOS heartbeat's whole policy table. It lives here, and is asserted here, so
+    /// the rule is exercised on hosts that have no AppKit to run it on.
+    #[test]
+    fn heartbeat_may_drive_follows_the_scope() {
+        assert!(
+            heartbeat_may_drive(false, true),
+            "a backend whose own loop does not drive frames must fire in the default mode too"
+        );
+        assert!(heartbeat_may_drive(false, false));
+        assert!(
+            heartbeat_may_drive(true, false),
+            "a modal loop is exactly the state the modal-only heartbeat exists for"
+        );
+        assert!(
+            !heartbeat_may_drive(true, true),
+            "a modal-only heartbeat must not tick while the backend's own loop is the driver"
+        );
+    }
+
+    /// A nested drive is skipped, and the guard is clear afterwards.
+    #[test]
+    fn drive_once_skips_a_nested_drive_and_clears_the_flag() {
+        let outer = drive_once(|| {
+            assert_eq!(
+                drive_once(|| 1u8),
+                None,
+                "a second frame from a nested pump must be skipped, not run"
+            );
+            2u8
+        });
+        assert_eq!(outer, Some(2));
+        assert_eq!(drive_once(|| 3u8), Some(3), "the guard must not stay set after a frame");
+    }
+
+    /// A panicking frame still clears the guard, so the heartbeat keeps working afterwards.
+    #[test]
+    fn drive_once_clears_the_flag_when_the_drive_panics() {
+        let panicked = std::panic::catch_unwind(|| {
+            let _ = drive_once(|| panic!("a trigger handler panicked"));
+        });
+        assert!(panicked.is_err());
+        assert_eq!(
+            drive_once(|| 4u8),
+            Some(4),
+            "a panicking frame must not wedge the heartbeat for the rest of the session"
+        );
     }
 }

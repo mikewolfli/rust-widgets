@@ -31,6 +31,31 @@ When the two disagree, this file is the one that ships; `tools/check_changelog_s
 - **Removing the current page of a `StackedWidget` selects its successor** (or the new last page),
   matching `StackLayout`'s documented rule. It used to select the predecessor.
 
+### Fixed
+
+- **A window drag or a live resize no longer stops the frame.** Both macOS backends drove frames
+  only from their own loop, and Win32 queued its `Resized` trigger only to drain it from
+  `Platform::run` — but a drag runs an OS **modal** loop of its own (AppKit pumps in
+  `NSEventTrackingRunLoopMode` and `sendEvent:` does not return; Win32 runs
+  `WM_ENTERSIZEMOVE`…`WM_EXITSIZEMOVE` inside `DefWindowProc`), so for the whole drag nothing
+  drained the trigger queue: the client area kept the layout it had when the drag began and no
+  animation advanced. The cocoa backend's heartbeat was an `NSTimer` in `NSDefaultRunLoopMode` — a
+  mode the tracking loop never runs — so even that did not fire. The heartbeat is now one shared
+  CoreFoundation timer enrolled in `kCFRunLoopCommonModes` (`platform::macos_heartbeat`), scoped so
+  the objc2 backend's own loop stays the only driver while it runs, and Win32 brackets its size/move
+  loop with a `SetTimer`/`KillTimer` pair whose `WM_TIMER` drives a frame. Both paths go through
+  `frame_wait::drive_once`, so a nested pump (a host's modal dialog opened from a trigger handler)
+  cannot start a second frame and double every animation.
+  `tools/check_modal_loop_frame_heartbeat.sh` is the gate.
+- **The cocoa-only observer accessors in `platform::display_link` exist only where they are used.**
+  `OBSERVERS_INSTALLED` / `observers_installed` / `mark_observers_installed` are asked for by the
+  cocoa backend's wrapper alone, so they are now gated on that wrapper's own condition instead of
+  being kept alive with a dead-code allowance. An objc2-only build (`--features macos`) no longer
+  carries three dead items and compiles warning-free, and `render/text/bidi.rs`'s no-`text-bidi`
+  branch allocates its level list with `vec!` rather than a `Vec::new` + `resize`. Both were found
+  by a clippy run that no gate performed, so `tools/check_macos_backends_clippy.sh` now lints the
+  objc2 backend, the cocoa backend and the combination of the two with `-D warnings`.
+
 ### Added
 
 - `UPSTREAM_ALIASES`, re-exported from `widget`: the `(alias, canonical)` pairs of tokens Material

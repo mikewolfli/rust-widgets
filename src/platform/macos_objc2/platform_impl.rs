@@ -1064,6 +1064,32 @@ impl Platform for MacOSObjc2Platform {
         }
         // Preview backend uses a deterministic polling loop to preserve trait-level parity.
         self.runtime.running.store(true, Ordering::SeqCst);
+        // The frame heartbeat, scoped to the modes this loop cannot see.
+        //
+        // This loop is the frame driver — except while AppKit owns the process. A window drag or a
+        // live resize runs the run loop in `NSEventTrackingRunLoopMode` and does not return from
+        // `sendEvent:` until the mouse is released, so for the whole drag nothing here runs: the
+        // `Resized` trigger `windowDidResize:` queues is never drained, the client area keeps the
+        // layout it had when the drag began, and no animation advances. The heartbeat fires only
+        // *outside* `kCFRunLoopDefaultMode`, which is exactly that window, so it cannot tick twice
+        // per interval while this loop is running. See `platform::macos_heartbeat`.
+        #[cfg(all(target_os = "macos", feature = "macos"))]
+        {
+            // SAFETY: `Platform::run` runs on the AppKit main thread -- `init` has already asked
+            // `bootstrap_ns_application` whether this is that thread -- and the heartbeat is added
+            // to that thread's main run loop, which is the precondition `install` documents.
+            let installed = unsafe {
+                crate::platform::macos_heartbeat::install(
+                    crate::platform::macos_heartbeat::HeartbeatScope::ModalLoopsOnly,
+                )
+            };
+            if !installed {
+                log::warn!(
+                    "[macos-objc2] no frame heartbeat; a drag or live resize will not drain until \
+                     the mouse is released"
+                );
+            }
+        }
         // The same loop drains the trigger queue, so a backend that reports a resize
         // behaves the same here as on a native one. See `crate::drain_triggers`.
         //

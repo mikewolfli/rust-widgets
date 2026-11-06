@@ -77,9 +77,12 @@ pub fn levels_for(text: &str, clusters: &[(usize, usize)]) -> Vec<u8> {
     #[cfg(not(feature = "text-bidi"))]
     {
         let _ = text;
-        let mut levels = Vec::new();
-        levels.resize(clusters.len(), 0u8);
-        levels
+        // One level per cluster, filled with the neutral base level. Written as `vec![…]` rather
+        // than `Vec::new()` + `resize` because this branch is compiled on the profiles whose
+        // clippy run is `-D warnings`, and `clippy::slow_vector_initialization` is right that the
+        // macro is one allocation with no first-pass over a zero-length buffer. The path form is
+        // required: this module is `no_std`, so `vec!` is not in the prelude.
+        crate::compat::vec![0u8; clusters.len()]
     }
 }
 

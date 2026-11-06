@@ -10,6 +10,34 @@ use winapi::um::winuser::{GetWindowLongPtrW, SetWindowLongPtrW, GWLP_ID, GWLP_US
 
 pub use crate::platform::windows_notify::WindowsHandleKind;
 
+/// The timer id of the frame heartbeat Win32's own move/size loop receives.
+///
+/// # Why a timer, and why only during a drag
+///
+/// `WM_ENTERSIZEMOVE` … `WM_EXITSIZEMOVE` bracket a **modal** loop: while the user drags a window's
+/// border or title bar, `DefWindowProcW` pumps messages itself and `Platform::run`'s loop body —
+/// the one that calls [`crate::drive_frame`] — is not reached until the mouse is released. The
+/// `Resized` trigger this file queues on `WM_SIZE` is therefore never drained for the whole drag:
+/// the client area keeps the layout it had when the drag began, and no animation advances.
+///
+/// A `WM_TIMER` is dispatched *by that modal loop* (it is synthesized on demand by the
+/// `PeekMessage` inside it), which is what makes it the way back in. The timer exists only between
+/// the two messages, so an idle window gains no wake-up while a drag gets one frame per
+/// [`crate::platform::types::FRAME_INTERVAL_MS`].
+const FRAME_HEARTBEAT_TIMER_ID: usize = 0x5257; // "RW"
+
+/// Drives one frame from inside Win32's modal move/size loop.
+///
+/// [`crate::platform::frame_wait::drive_once`] is what makes this safe to reach from a *nested*
+/// pump: a trigger dispatched by the frame may run a host's modal dialog, whose pump would deliver
+/// the next `WM_TIMER` straight back here, and two frames for one wall-clock instant would advance
+/// every animation at double speed.
+#[cfg(widgets_unstripped)]
+fn drive_frame_in_modal_loop() {
+    let interval = crate::platform::types::FRAME_INTERVAL_MS as u32;
+    let _ = crate::platform::frame_wait::drive_once(|| crate::drive_frame(interval));
+}
+
 /// The window procedure Win32 calls for the class this backend registers.
 ///
 /// Named `wnd_proc`, not `rw_wnd_proc`: the `rw_` prefix belongs to the C ABI
@@ -37,11 +65,11 @@ pub(crate) unsafe extern "system" fn wnd_proc(
     // route into the tree (paint, mouse, wheel, key, character).
     #[cfg(widgets_unstripped)]
     use winapi::um::winuser::{
-        GetClientRect, WA_INACTIVE, WM_ACTIVATE, WM_CHAR, WM_IME_COMPOSITION,
-        WM_IME_ENDCOMPOSITION, WM_IME_STARTCOMPOSITION, WM_KEYDOWN, WM_KEYUP, WM_KILLFOCUS,
-        WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEHWHEEL, WM_MOUSELEAVE,
-        WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_MOVE, WM_PAINT, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETFOCUS,
-        WM_SIZE, WM_UNICHAR,
+        GetClientRect, KillTimer, SetTimer, WA_INACTIVE, WM_ACTIVATE, WM_CHAR, WM_ENTERSIZEMOVE,
+        WM_EXITSIZEMOVE, WM_IME_COMPOSITION, WM_IME_ENDCOMPOSITION, WM_IME_STARTCOMPOSITION,
+        WM_KEYDOWN, WM_KEYUP, WM_KILLFOCUS, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_LBUTTONUP,
+        WM_MOUSEHWHEEL, WM_MOUSELEAVE, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_MOVE, WM_PAINT,
+        WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETFOCUS, WM_SIZE, WM_TIMER, WM_UNICHAR,
     };
     match msg {
         // The window's own painting: every control the window owns, drawn as one frame.
@@ -407,6 +435,38 @@ pub(crate) unsafe extern "system" fn wnd_proc(
                 }
             }
             DefWindowProcW(hwnd, msg, wparam, lparam)
+        }
+        // ── The OS modal move/size loop ───────────────────────────────────────
+        //
+        // See `FRAME_HEARTBEAT_TIMER_ID` for why the heartbeat exists and why it is a timer. The
+        // pair brackets the modal loop, and the timer is created *for the window being dragged*, so
+        // the loop's own pump delivers its `WM_TIMER` to this procedure.
+        #[cfg(widgets_unstripped)]
+        WM_ENTERSIZEMOVE => {
+            let interval = crate::platform::types::FRAME_INTERVAL_MS as u32;
+            // SAFETY: `hwnd` is the window this procedure was called for, and a null callback asks
+            // Win32 for the message-based timer whose `WM_TIMER` arrives here.
+            let started = unsafe { SetTimer(hwnd, FRAME_HEARTBEAT_TIMER_ID, interval, None) };
+            if started == 0 {
+                log::warn!(
+                    "[windows] could not start the frame heartbeat for hwnd {hwnd:?}; a drag will \
+                     not drain until the mouse is released"
+                );
+            }
+            DefWindowProcW(hwnd, msg, wparam, lparam)
+        }
+        #[cfg(widgets_unstripped)]
+        WM_EXITSIZEMOVE => {
+            // SAFETY: `hwnd` is the window the timer was created for, so this kills the timer this
+            // procedure started. Killing an id that is not running is a documented no-op.
+            unsafe { KillTimer(hwnd, FRAME_HEARTBEAT_TIMER_ID) };
+            DefWindowProcW(hwnd, msg, wparam, lparam)
+        }
+        // Any other timer id belongs to somebody else and falls through to `DefWindowProcW`.
+        #[cfg(widgets_unstripped)]
+        WM_TIMER if wparam == FRAME_HEARTBEAT_TIMER_ID => {
+            drive_frame_in_modal_loop();
+            0
         }
         WM_COMMAND => {
             let command_id = (wparam & 0xFFFF) as u32;

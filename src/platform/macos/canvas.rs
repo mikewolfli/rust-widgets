@@ -48,7 +48,6 @@ use objc::{class, msg_send, sel, sel_impl};
 use std::collections::HashMap;
 use std::os::raw::c_void;
 use std::sync::{Mutex, OnceLock};
-use std::time::{Duration, Instant};
 
 mod canvas_views;
 pub(crate) use canvas_views::{forget_window_canvas, release_canvas_view};
@@ -1762,63 +1761,41 @@ fn window_delegate_class() -> *const Class {
     })) as *const Class
 }
 
-/// The class AppKit's frame heartbeat targets.
-///
-/// # Why the heartbeat is its own class rather than the window delegate
-///
-/// The heartbeat must exist for the whole session, including before any window is created and for a
-/// session that never creates one. It used to be a repeating `NSTimer` installed *per window* in
-/// [`install_resize_delegate`], so a session with no window had no frame tick at all: a stop request
-/// (or any queued main-thread work) had no reader, and the session could not end itself — the
-/// designer feedback `docs/issues/feedback-20261015.md` §十.2. Moving the timer to its own class, and
-/// installing it once in `run()`, makes the tick a property of the loop rather than of a window.
-///
-/// # Why this is the *only* frame timer
-///
-/// `install_resize_delegate` no longer starts a timer, so there is exactly one heartbeat per process
-/// (principle #101: one implementation path). Two timers would call `crate::drive_frame` twice per
-/// interval and advance every animation at double speed.
-fn frame_tick_class() -> *const Class {
-    static CLASS: OnceLock<usize> = OnceLock::new();
-    (*CLASS.get_or_init(|| {
-        let superclass = class!(NSObject);
-        let mut decl = ClassDecl::new("RustWidgetsFrameTimer", superclass)
-            .expect("the Objective-C runtime refused to declare RustWidgetsFrameTimer");
-        // SAFETY: `tick:` takes no argument beyond the selector's implicit ones, so the ABI is
-        // `(self, _cmd)` plus the timer the selector carries. The registered implementation is the
-        // safe `extern "C"` form `add_method` accepts.
-        unsafe {
-            decl.add_method(sel!(tick:), drain_triggers_impl as extern "C" fn(&Object, Sel, id));
-        }
-        (decl.register() as *const Class) as usize
-    })) as *const Class
-}
-
-/// Installs the process-wide frame heartbeat on the current run loop.
+/// Installs the process-wide frame heartbeat.
 ///
 /// Called once from `MacOSPlatform::run()` before `-[NSApplication run]`, so the tick exists for the
-/// whole session regardless of how many windows are created (including none). The timer repeats
-/// unconditionally: an `NSTimer` cannot be told to stop without invalidating it, and invalidating it
-/// would also stop the drain that reads resize triggers — see [`drain_triggers_impl`].
+/// whole session regardless of how many windows are created (including none). The heartbeat itself
+/// lives in [`crate::platform::macos_heartbeat`], because the rule it encodes — which run-loop
+/// modes may drive a frame — is the same rule the objc2 backend needs.
+///
+/// # Why this backend asks for every mode
+///
+/// `-[NSApplication run]` only pumps AppKit; this heartbeat **is** the frame loop, so it has to fire
+/// in the default mode as well as inside AppKit's tracking loops. The objc2 backend drives frames
+/// from its own loop and asks for the narrower scope.
+///
+/// # The defect this replaced
+///
+/// The heartbeat used to be an `NSTimer` installed with `scheduledTimerWithTimeInterval:…`, which
+/// puts it in `NSDefaultRunLoopMode` only. AppKit runs a window drag / live resize in
+/// `NSEventTrackingRunLoopMode` and never returns to the process's own loop until the mouse is
+/// released, so for the whole drag nothing drained the trigger queue: the `Resized` trigger
+/// `windowDidResize:` queues was never dispatched, the client area kept the layout it had when the
+/// drag began, and no animation advanced. See the shared module's docs for the fix and the
+/// measurements.
 ///
 /// # Safety
 ///
 /// Must be called on the AppKit main thread with an active run loop (i.e. from `run()`), because
-/// `scheduledTimerWithTimeInterval:…` adds the timer to the current thread's run loop.
+/// the timer is added to that thread's main run loop.
 pub(crate) unsafe fn install_frame_heartbeat() {
     // Start the display link before the timer so the first tick already has a presented-time
-    // deadline. A host where CoreVideo is unavailable answers `false`; the timer below then keeps
-    // its fixed interval and `supports_vsync_frame` stays `false`.
+    // deadline. A host where CoreVideo is unavailable answers `false`; the heartbeat then keeps its
+    // fixed interval and `supports_vsync_frame` stays `false`.
     let _ = super::display_link::start();
-    let target: id = msg_send![frame_tick_class(), new];
-    let _timer: id = msg_send![
-        class!(NSTimer),
-        scheduledTimerWithTimeInterval: (FRAME_INTERVAL_MS as f64) / 1000.0f64
-        target: target
-        selector: sel!(tick:)
-        userInfo: nil
-        repeats: YES
-    ];
+    let _ = crate::platform::macos_heartbeat::install(
+        crate::platform::macos_heartbeat::HeartbeatScope::EveryMode,
+    );
 }
 
 /// Safe-ABI trampoline registered as the `windowDidResize:` implementation.
@@ -1937,95 +1914,6 @@ unsafe fn window_did_resize(this: &Object, _cmd: Sel, notification: id) {
     // whose result was discarded.
     crate::queue_resize_trigger(widget_id, width, height);
 }
-
-/// Safe-ABI trampoline for the frame timer implementation.
-///
-/// Same reason as [`window_did_resize_impl`]: `add_method` accepts only the safe
-/// `extern "C"` form.
-///
-/// # Why it drives a frame rather than draining the queue
-///
-/// The selector is still `tick:` and the timer is unchanged, but the body used to be
-/// `crate::drain_triggers()` alone -- half a frame. Emptying the trigger queue re-runs
-/// layout after a resize and does nothing else, so on macOS every hover fade, caret
-/// blink and toggle transition was unreachable: nothing advanced the animation bus
-/// (BLUE24 §0A.1 measurement 1). `crate::drive_frame` is that missing half, and it
-/// drains as well, so this is strictly the same queue handling plus the animation step.
-///
-/// The timer is left repeating unconditionally. A `ControlFlow`-style stop is not
-/// available to `NSTimer` without invalidating it, and doing so would stop the drain
-/// too -- so a still window would stop hearing the resizes that could start it moving.
-/// A still frame is only a lookup plus an `is_animating()` sweep, which is what makes
-/// the unconditional heartbeat affordable; see [`crate::drive_frame`].
-extern "C" fn drain_triggers_impl(_this: &Object, _cmd: Sel, timer: id) {
-    // The display link publishes the instant the next frame is presented. When it has one, the
-    // animation clock advances by the measured presented-time delta instead of the fixed
-    // assumption; without one the helper answers the nominal interval and resets its phase.
-    let deadline = super::display_link::next_deadline();
-    let delta = crate::platform::frame_wait::presented_delta_ms(deadline);
-    let outcome = crate::drive_frame(delta);
-    // Tell the display link whether this frame owed another one; an idle window's callback then
-    // skips its present-time bookkeeping and its wake (PL-04). The demand flag lives in the shared
-    // module, which the cocoa backend shares with the objc2 one.
-    crate::platform::display_link::note_frame_demand(outcome.needs_another_frame);
-    if outcome.needs_another_frame {
-        if let Some(deadline) = deadline {
-            retarget_heartbeat(timer, deadline);
-        }
-    } else {
-        // Nothing is animating and nothing is queued (G-503): a still window does not need 60
-        // wakeups a second. The tick is moved out to the idle backstop, which still drains the
-        // resize triggers and notices a host that changed state without a wake, and the next
-        // animated frame moves it back to the display deadline.
-        retarget_heartbeat_in(
-            timer,
-            Duration::from_millis(crate::platform::types::IDLE_FRAME_INTERVAL_MS),
-        );
-    }
-}
-
-/// Moves the repeating heartbeat's next fire to `deadline` so the loop follows the display.
-///
-/// The timer stays repeating and is never invalidated: invalidating it would also stop the
-/// resize drain that shares this tick. `setFireDate:` only moves the next fire; the follow-up
-/// iterations are retargeted the same way, so the cadence tracks the display rather than drifting
-/// against it. A deadline that is already at hand is left alone so a missed presentation cannot
-/// turn the timer into a busy loop.
-fn retarget_heartbeat(timer: id, deadline: Instant) {
-    let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
-        return;
-    };
-    retarget_heartbeat_in(timer, remaining);
-}
-
-/// Moves the repeating heartbeat's next fire to `delay` from now.
-///
-/// Shared by the presented-deadline path and the idle backstop (G-503). A delay below one
-/// millisecond is left alone so a missed presentation cannot turn the timer into a busy loop.
-fn retarget_heartbeat_in(timer: id, delay: Duration) {
-    if timer == nil {
-        return;
-    }
-    if delay < Duration::from_millis(1) {
-        return;
-    }
-    // SAFETY: `timer` is the live `NSTimer` AppKit passed to the tick selector, and `NSDate` is
-    // the class `setFireDate:` takes. Both messages run on the AppKit main thread, which is where
-    // the timer fires.
-    unsafe {
-        let date: id = msg_send![class!(NSDate), dateWithTimeIntervalSinceNow: delay.as_secs_f64()];
-        if date != nil {
-            let _: () = msg_send![timer, setFireDate: date];
-        }
-    }
-}
-
-/// The frame interval this backend's timer runs at, in milliseconds.
-///
-/// The timer's interval and the delta handed to [`crate::drive_frame`] must be the same
-/// number, or every transition runs at the ratio between them; naming it once keeps
-/// them from drifting apart (see `platform/linux/platform_impl.rs`'s twin).
-const FRAME_INTERVAL_MS: u64 = crate::platform::types::FRAME_INTERVAL_MS;
 
 /// Association key holding the resize delegate on its window.
 ///
