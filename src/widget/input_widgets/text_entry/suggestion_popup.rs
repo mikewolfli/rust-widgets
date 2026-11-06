@@ -788,7 +788,7 @@ impl Draw for SuggestionPopup {
         if self.visible.is_empty() {
             let row = Rect::new(popup.x, popup.y, popup.width, self.row_height());
             let line = context.text_line(row, font);
-            context.draw_text_fitted_cow(
+            context.draw_text_fitted_ellipsis(
                 Rect::new(
                     row.x + ROW_INSET,
                     line.y,
@@ -837,7 +837,7 @@ impl Draw for SuggestionPopup {
             } else {
                 ink.with_alpha(230)
             };
-            context.draw_text_fitted_cow(
+            context.draw_text_fitted_ellipsis(
                 Rect::new(rect.x + ROW_INSET, line.y, label_width.max(1), line.height.max(1)),
                 label,
                 font,
@@ -845,7 +845,7 @@ impl Draw for SuggestionPopup {
                 self.alignment,
             );
             if hint_width > 0 {
-                context.draw_text_fitted_cow(
+                context.draw_text_fitted_ellipsis(
                     Rect::new(rect.x + ROW_INSET, line.y, text_width, line.height.max(1)),
                     hint,
                     font,

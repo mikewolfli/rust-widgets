@@ -883,19 +883,24 @@ pub trait ControlBackend {
 
 ## 圖示資料路徑（`icons`，預設開啟）
 
-`Icon` 透過 `IconName` 命名 75 個圖示。`icons` 特性 —— **預設開啟** —— 每個都按**真實輪廓**繪製，
-輪廓來自固定在某個上游修訂的路徑資料。不開啟該特性時 `Icon` 回退到**生成的幾何**，它由**同一批**輪廓
-展平而來 —— 所以兩條路徑不可能對同一個圖示給出不同形狀。
+`Icon` 透過 `IconName` 命名 4,323 個圖示：本倉自己命名的 75 個令牌，加上完整的 Material Symbols
+目錄。`icons` 特性 —— **預設開啟** —— 每個都按**真實輪廓**繪製，輪廓來自固定在某個上游修訂的
+路徑資料。不開啟該特性時 `Icon` 對那 75 個令牌回退到**生成的幾何**，它由**同一批**輪廓展平而來
+—— 所以兩條路徑不可能對同一個命名圖示給出不同形狀；目錄裡的其餘令牌在這種建置中沒有回退幾何，
+會如實回報，而不是畫出錯誤的形狀。
 
-token 集在 `tools/icon_tokens.txt` 中**只宣告一次**，`tools/gen_icon_names.py` 由它生成 `IconName`
-型別，所以新增一個圖示是兩行編輯加一次生成器執行，而不再需要改列舉、兩個 match 分支和三個陣列。
-宿主若需要本倉沒有的圖示，用 `register_icon` 註冊自己的，它走下面完全相同的程式碼。
+token 集拆成兩個檔案：`crates/rust-widgets-icons/tools/icon_tokens.txt` 放人工編寫的令牌，
+`crates/rust-widgets-icons/tools/icon_catalog.txt` 放目錄部分，由
+`crates/rust-widgets-icons/tools/gen_icon_catalog.py` 從上游 codepoint 清單生成。人工檔案在前，
+所以它的變體永遠不會移動；`crates/rust-widgets-icons/tools/gen_icon_names.py` 由這兩個檔案生成
+整個 `IconName` 型別，所以新增一個圖示是兩行編輯加一次生成器執行，而不再需要改列舉、兩個 match
+分支和三個陣列。宿主若需要本倉沒有的圖示，用 `register_icon` 註冊自己的，它走下面完全相同的程式碼。
 
 從一個名字到像素經過三個階段，而中間那一階段**刻意不是**任何東西的第二份實作：
 
 ```mermaid
 graph LR
-    ENUM["IconName<br/>（75 個變體）"]
+    ENUM["IconName<br/>（4,323 個變體）"]
     DATA["IconData<br/>name, grid, paths"]
     PARSE["render::path::parser<br/>SVG d -> Segment"]
     FLAT["render::path::flatten<br/>Segment -> 折線"]
@@ -909,7 +914,7 @@ graph LR
 
 | 階段 | 模組 | 做什麼 |
 |---|---|---|
-| 資料 | `widget::icon_data` | 生成表：每個 token 一筆 `IconData` |
+| 資料 | `rust_widgets_icons::icon_data` | 生成表：每個 token 一筆 `IconData` |
 | 解析 | `render::path::parser` | 讀取完整 SVG 命令集，產出曲線段 |
 | 展平 | `render::path::flatten` | 設計單位對應到裝置像素，產出多邊形 |
 | 填色 | `RenderContext::fill_path_non_zero` | 與其他向量繪製共用同一條路徑填色 |

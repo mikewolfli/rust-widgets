@@ -1273,7 +1273,13 @@ impl CandlestickChart {
                 let line_height = context.measure_text(text, &font).height.max(1);
                 let band =
                     Rect::new(label_left, y - line_height as i32 / 2, label_width, line_height);
-                context.draw_text_fitted_cow(band, text, &font, ink, HorizontalAlignment::Right);
+                context.draw_text_fitted_ellipsis(
+                    band,
+                    text,
+                    &font,
+                    ink,
+                    HorizontalAlignment::Right,
+                );
             });
         }
     }
@@ -1302,7 +1308,7 @@ impl CandlestickChart {
         );
         let font = role_font(self.style(), 12.0);
         let line = context.text_line(area.rect, &font);
-        context.draw_text_fitted_cow(
+        context.draw_text_fitted_ellipsis(
             line,
             "No data",
             &font,

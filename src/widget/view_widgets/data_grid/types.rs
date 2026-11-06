@@ -565,7 +565,7 @@ impl Draw for DataGridCellEditor {
         context.fill_rect(rect, Color::WHITE);
         context.draw_rect(rect, ink);
         let font = effective_font(self.base.style());
-        context.draw_text_fitted_cow(
+        context.draw_text_fitted_ellipsis(
             context.text_line(rect, font),
             &self.text,
             font,

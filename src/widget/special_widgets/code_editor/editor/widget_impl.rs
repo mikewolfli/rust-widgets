@@ -293,6 +293,7 @@ impl WidgetProperties for CodeEditor {
                 )))
             }
             "text" => Ok(CapabilityValue::String(self.text().to_string())),
+            "read_only" => Ok(CapabilityValue::Bool(self.is_read_only())),
             "line_count" => Ok(CapabilityValue::UInt(self.line_count() as u64)),
             "cursor_line" => Ok(CapabilityValue::UInt(self.cursor().0 as u64)),
             "cursor_column" => Ok(CapabilityValue::UInt(self.cursor().1 as u64)),
@@ -309,6 +310,11 @@ impl WidgetProperties for CodeEditor {
         match name {
             "text" => {
                 self.set_text(expect_string(value)?);
+                Ok(())
+            }
+            "read_only" => {
+                let read_only = crate::widget::capability::coercion::expect_bool(value)?;
+                self.set_read_only(read_only);
                 Ok(())
             }
             // Position, size and diagnostic count are derived from the buffer and
@@ -381,6 +387,7 @@ impl WidgetProperties for CodeEditor {
         property_names_of![
             "markers",
             "text",
+            "read_only",
             "line_count",
             "cursor_line",
             "cursor_column",
@@ -477,14 +484,11 @@ impl CodeEditor {
     /// Answers the commands that take their value through the property route.
     fn command_with_payload(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
         match name {
-            "append_line" | "set_text" | "set_markers" | "set_cursor" => {
-                Err(CapabilityAccessError::OutOfRange)
-            }
-            // Any other `set_foo` name carries its value through the property route,
-            // so the shared default reports that a payload is needed rather than
-            // claiming the control has never heard of it.
-            _ if name.starts_with("set_") => Err(CapabilityAccessError::OutOfRange),
-            _ => Err(CapabilityAccessError::UnknownCommand),
+            "set_text" | "set_markers" => Err(CapabilityAccessError::OutOfRange),
+            // Any other `set_foo` name carries its value through the property route, so the
+            // shared default reports that a payload is needed rather than claiming the control
+            // has never heard of it. An unpublished suffix still answers `UnknownCommand`.
+            _ => self.default_command(name),
         }
     }
 }

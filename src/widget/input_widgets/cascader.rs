@@ -1506,7 +1506,7 @@ impl Cascader {
         let font = crate::widget::metrics::role_font(self.style(), 12.0);
         let text_h = context.measure_text(display, &font).height as i32;
         let label_width = ((rect.width as i32) - 8 - 22).max(0) as u32;
-        context.draw_text_fitted_cow(
+        context.draw_text_fitted_ellipsis(
             Rect::new(
                 rect.x + 8,
                 rect.y + (rect.height as i32 - text_h) / 2,
@@ -1641,7 +1641,7 @@ impl Cascader {
             } else {
                 row_ink
             };
-            context.draw_text_fitted_cow(
+            context.draw_text_fitted_ellipsis(
                 Rect::new(row_rect.x + 8, row_line.y, label_width, row_line.height.max(1)),
                 &option.label,
                 &row_font,
@@ -1704,7 +1704,7 @@ impl Cascader {
         if visible.is_empty() && !self.filter.is_empty() && level == self.expanded_path.len() {
             let row_rect = Rect::new(column.x, column.y, column.width, ROW_HEIGHT);
             let row_line = context.text_line(row_rect, &row_font);
-            context.draw_text_fitted_cow(
+            context.draw_text_fitted_ellipsis(
                 Rect::new(
                     row_rect.x + 8,
                     row_line.y,

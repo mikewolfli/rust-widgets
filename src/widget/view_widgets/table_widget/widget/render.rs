@@ -112,7 +112,7 @@ impl Draw for TableWidget {
                     // The title precedence lives in one accessor: explicit structure, then a
                     // host label, then the model/source's own column name (RW-5).
                     if let Some(label) = self.column_title(column) {
-                        context.draw_text_fitted_cow(
+                        context.draw_text_fitted_ellipsis(
                             context.text_line(band, font),
                             &label,
                             font,
@@ -265,7 +265,7 @@ impl Draw for TableWidget {
                         // column.
                         let cell = crate::core::Rect::new(x, y, col_w, row_h as u32);
                         if !self.cell_text.is_empty() {
-                            context.draw_text_fitted_cow(
+                            context.draw_text_fitted_ellipsis(
                                 context.text_line(cell, font),
                                 &self.cell_text,
                                 font,

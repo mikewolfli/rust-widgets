@@ -98,6 +98,9 @@ thread_local! {
     /// The last reason a recorded frame was refused per window, so a repeated one is not re-logged.
     static SMOOTH_FALLBACKS: RefCell<HashMap<ObjectId, String>> = RefCell::new(HashMap::new());
 
+    /// The allocation-free identity of that reason, compared before the sentence is built.
+    static SMOOTH_FALLBACK_KEYS: RefCell<HashMap<ObjectId, u64>> = RefCell::new(HashMap::new());
+
     /// The last refusal reason per window, so a repeated one is not re-logged.
     static REFUSALS: RefCell<HashMap<ObjectId, String>> = RefCell::new(HashMap::new());
 
@@ -206,7 +209,40 @@ fn clear_refusal(window: ObjectId) {
 /// A host that asked for `Smooth` and silently stayed on the reference rasteriser is the kind of
 /// degradation principle #45 says must be visible. The reason is stable per frame in practice (the
 /// same commands force the CPU), so a one-line-per-change log is both quiet and complete.
-fn note_smooth_fallback(window: ObjectId, reason: &str) {
+fn note_smooth_fallback(window: ObjectId, audit: &super::FrameCensus) {
+    // Compare a cheap key first: a window whose frame keeps forcing the CPU (a rounded clip, a
+    // layer pop) had `format!` + `join` run on every frame only to discover the sentence was the
+    // same as last frame's. The sentence is now built only when the key moves.
+    let key = audit.fallback_key();
+    let changed = SMOOTH_FALLBACK_KEYS.with(|keys| {
+        let mut keys = keys.borrow_mut();
+        if keys.get(&window).copied() == Some(key) {
+            return false;
+        }
+        keys.insert(window, key);
+        true
+    });
+    if changed {
+        let reason = format!(
+            "{} command(s) force the CPU ({})",
+            audit.forces_cpu,
+            audit.forces_cpu_names.join(", ")
+        );
+        SMOOTH_FALLBACKS.with(|reasons| {
+            reasons.borrow_mut().insert(window, reason.clone());
+        });
+        log::info!(
+            "[present] window {window}: the recorded frame is not drawable on the GPU ({reason}); \
+             the frame is delivered byte-exactly instead"
+        );
+    }
+}
+
+/// Records a fallback whose reason came from the bridge rather than the census.
+///
+/// Bridge failures are not the steady state the census key covers, so the sentence is compared
+/// directly; they remain one string comparison per frame, not two allocations.
+fn note_smooth_fallback_reason(window: ObjectId, reason: &str) {
     let changed = SMOOTH_FALLBACKS.with(|reasons| {
         let mut reasons = reasons.borrow_mut();
         if reasons.get(&window).map(String::as_str) == Some(reason) {
@@ -216,6 +252,11 @@ fn note_smooth_fallback(window: ObjectId, reason: &str) {
         true
     });
     if changed {
+        // A bridge reason supersedes a census key; drop the stale key so a later census fallback
+        // with the same key as before is still logged when it becomes the reason again.
+        SMOOTH_FALLBACK_KEYS.with(|keys| {
+            keys.borrow_mut().remove(&window);
+        });
         log::info!(
             "[present] window {window}: the recorded frame is not drawable on the GPU ({reason}); \
              the frame is delivered byte-exactly instead"
@@ -226,6 +267,9 @@ fn note_smooth_fallback(window: ObjectId, reason: &str) {
 fn clear_smooth_fallback(window: ObjectId) {
     SMOOTH_FALLBACKS.with(|reasons| {
         reasons.borrow_mut().remove(&window);
+    });
+    SMOOTH_FALLBACK_KEYS.with(|keys| {
+        keys.borrow_mut().remove(&window);
     });
 }
 
@@ -355,6 +399,21 @@ pub(crate) fn smooth_commands_into(
     background: crate::core::Color,
 ) -> Result<(), SmoothGap> {
     let audit = super::census(commands);
+    smooth_commands_into_audited(out, commands, &audit, text_scale, target, background)
+}
+
+/// [`smooth_commands_into`] with a census the caller already computed.
+///
+/// The present path needs the audit before deciding whether to log a fallback, so it takes the
+/// census once and passes it here; recomputing it would scan the whole command stream twice.
+fn smooth_commands_into_audited(
+    out: &mut Vec<crate::wgpu_backend::WgpuDrawCommand>,
+    commands: &[crate::render::RenderCommand],
+    audit: &super::FrameCensus,
+    text_scale: f32,
+    target: (u32, u32),
+    background: crate::core::Color,
+) -> Result<(), SmoothGap> {
     if !audit.can_draw_on_gpu() {
         out.clear();
         return Err(SmoothGap {
@@ -428,8 +487,18 @@ pub fn present_recorded_commands(
     // The stream is bridged into this thread's reusable buffer (RD-02) and presented before the
     // borrow ends: `present_commands` only reads it, so nothing outlives the frame.
     let outcome = with_drawn_commands(|drawn| {
-        if let Err(gap) = smooth_commands_into(drawn, commands, scale, size, background) {
-            note_smooth_fallback(window, &gap.reason);
+        let audit = super::census(commands);
+        if !audit.can_draw_on_gpu() {
+            // The sentence is only built when the fallback reason actually changes; the steady
+            // state compares an allocation-free key instead (R12 follow-up).
+            drawn.clear();
+            note_smooth_fallback(window, &audit);
+            return record_outcome(window, WindowPresentOutcome::Skipped);
+        }
+        if let Err(gap) =
+            smooth_commands_into_audited(drawn, commands, &audit, scale, size, background)
+        {
+            note_smooth_fallback_reason(window, &gap.reason);
             return record_outcome(window, WindowPresentOutcome::Skipped);
         }
         let outcome = with_presenter(
@@ -532,6 +601,10 @@ fn with_presenter<R>(
 /// and **before** the native window goes away. Presenting after this call simply creates a new
 /// target, so a forgotten call costs a re-creation rather than a dangling surface.
 pub fn forget_window(window: ObjectId) {
+    // The recorded presentation intent is per-window state too. Without this the map is only
+    // pruned by an explicit `Default` request, so a window that chose `Exact`/`Smooth` and was
+    // then destroyed would leave its entry behind for the life of the process.
+    super::intent::forget(window);
     TARGETS.with(|targets| {
         targets.borrow_mut().remove(&window);
     });
@@ -540,6 +613,9 @@ pub fn forget_window(window: ObjectId) {
     });
     SMOOTH_FALLBACKS.with(|reasons| {
         reasons.borrow_mut().remove(&window);
+    });
+    SMOOTH_FALLBACK_KEYS.with(|keys| {
+        keys.borrow_mut().remove(&window);
     });
     PRESENTED_COMMANDS.with(|counts| {
         counts.borrow_mut().remove(&window);

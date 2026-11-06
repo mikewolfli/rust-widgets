@@ -377,7 +377,7 @@ impl Draw for StickyHeader {
             };
             // A custom content control owns the band; the title is only the built-in content.
             let band = Rect::new(text_x, line.y, text_width.max(1), line.height.max(1));
-            context.draw_text_fitted_cow(band, &self.title, font, ink, alignment);
+            context.draw_text_fitted_ellipsis(band, &self.title, font, ink, alignment);
         }
     }
 }

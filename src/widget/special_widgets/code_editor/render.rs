@@ -127,10 +127,12 @@ impl Draw for CodeEditor {
         self.draw_tab_strip(context, rect, &chrome);
         self.draw_find_bar(context, rect, &chrome);
         self.draw_gutter(context, rect, &chrome);
-        let mut visible = self.draw_source_rows(context, rect, row_height, &chrome);
+        self.draw_source_rows(context, rect, row_height, &chrome);
         self.draw_column_ruler(context, rect, &chrome);
-        self.draw_diagnostics(context, &visible, &chrome);
-        visible.clear();
+        {
+            let visible = self.painted_scratch.borrow();
+            self.draw_diagnostics(context, &visible, &chrome);
+        }
         self.draw_scrollbar(context, rect, &chrome);
         self.draw_minimap(context, rect, &chrome);
         self.draw_status_bar(context, rect, &chrome);

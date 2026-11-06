@@ -813,7 +813,7 @@ impl Draw for DropZone {
         let font = crate::widget::metrics::effective_font(style);
         if rect.width > 40 && rect.height > 24 {
             let inner = Rect::new(rect.x + 10, rect.y, rect.width.saturating_sub(20), rect.height);
-            context.draw_text_fitted_cow(
+            context.draw_text_fitted_ellipsis(
                 inner,
                 &self.hint_text,
                 font,
@@ -829,7 +829,7 @@ impl Draw for DropZone {
                     rect.width.saturating_sub(20),
                     16,
                 );
-                context.draw_text_fitted_cow(
+                context.draw_text_fitted_ellipsis(
                     line,
                     &self.files_text,
                     font,
@@ -855,7 +855,7 @@ impl Draw for DropZone {
                 radius * 2,
                 radius * 2,
             );
-            context.draw_text_fitted_cow(
+            context.draw_text_fitted_ellipsis(
                 band,
                 &self.count_text,
                 &badge_font,

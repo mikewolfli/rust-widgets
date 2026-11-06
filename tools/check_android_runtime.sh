@@ -38,8 +38,14 @@
 # without them prints `unsupported host` so the runner classifies it as skipped rather than failed
 # — a limitation of the machine, not a defect in the code.
 #
+# The system image must also match the **host** architecture: `emulator` refuses anything else
+# (`Avd's CPU Architecture 'arm64' is not supported by the QEMU2 emulator on x86_64 host`). An
+# installed AVD of the wrong architecture is therefore not a usable target, and this gate now
+# rules it out before building anything — see the AVD selection below.
+#
 #   ANDROID_SDK_ROOT   SDK root (default: whatever the scripts resolve)
-#   ANDROID_AVD        AVD to boot (default: the first installed one, else created)
+#   ANDROID_AVD        AVD to boot (default: the first installed AVD this host can boot)
+#   ANDROID_ABI        APK ABI (default: the selected AVD's architecture)
 #   ANDROID_SERIAL     attached device; skips emulator boot entirely
 #
 # rw-gate-budget: 2400
@@ -78,14 +84,74 @@ ANDROID_PROBE_TIMEOUT=2400
 
 # If no device is attached, pick an installed AVD rather than letting the runner invent a name and
 # then fail to find a system image for it. `ANDROID_AVD` still wins when set.
+#
+# # Why the AVD is chosen by architecture rather than by name
+#
+# This used to take `emulator -list-avds | head -1`. On this repository's own host that was an
+# `arm64-v8a` AVD ahead of a bootable `x86_64` one, and the emulator rejects it on the spot:
+#
+#   FATAL | Avd's CPU Architecture 'arm64' is not supported by the QEMU2 emulator on x86_64
+#           host. System image must match the host architecture.
+#
+# Nothing read that verdict. The boot step waited its full 180 s for a device that was never going
+# to register, so the gate spent 238 s (APK build + dead wait) to end in `unsupported host` — on a
+# host that could run it, with a perfectly good `x86_64` AVD sitting right next to the bad one.
+# Reading `abi.type` from each AVD's `config.ini` answers the question in milliseconds and makes
+# the AVD the gate actually boots one this host can boot.
+host_abi_preferences() {
+  case "$(uname -m)" in
+    x86_64|amd64) printf 'x86_64\nx86\n' ;;
+    aarch64|arm64) printf 'arm64-v8a\n' ;;
+    *) : ;;
+  esac
+}
+
+# `abi.type` is what the emulator itself reads to decide whether it can boot an AVD.
+avd_abi() {
+  local config="$HOME/.android/avd/$1.avd/config.ini"
+  [[ -f "$config" ]] || return 0
+  sed -n 's/^abi\.type=//p' "$config" | head -1
+}
+
 if [[ -z "${ANDROID_SERIAL:-}" && -z "${ANDROID_AVD:-}" ]]; then
-  EXISTING="$("$SDK_ROOT/emulator/emulator" -list-avds 2>/dev/null | head -1 || true)"
+  AVD_LIST="$("$SDK_ROOT/emulator/emulator" -list-avds 2>/dev/null || true)"
+  EXISTING=""
+  while IFS= read -r wanted; do
+    [[ -n "$wanted" ]] || continue
+    while IFS= read -r candidate; do
+      [[ -n "$candidate" ]] || continue
+      if [[ "$(avd_abi "$candidate")" == "$wanted" ]]; then
+        EXISTING="$candidate"
+        break
+      fi
+    done <<< "$AVD_LIST"
+    [[ -n "$EXISTING" ]] && break
+  done <<< "$(host_abi_preferences)"
+
   if [[ -z "$EXISTING" ]]; then
-    echo "check_android_runtime: unsupported host (no AVD installed and no ANDROID_SERIAL)" >&2
-    echo "  create one with: sdkmanager 'system-images;android-34;google_apis;\$(uname -m)'" >&2
+    echo "check_android_runtime: unsupported host (no AVD whose architecture this host can boot)" >&2
+    echo "  host architecture: $(uname -m)" >&2
+    if [[ -n "$AVD_LIST" ]]; then
+      echo "  installed AVDs (name: abi.type):" >&2
+      while IFS= read -r candidate; do
+        [[ -n "$candidate" ]] || continue
+        echo "    - $candidate: $(avd_abi "$candidate")" >&2
+      done <<< "$AVD_LIST"
+    else
+      echo "  no AVD installed" >&2
+    fi
+    echo "  set ANDROID_AVD or ANDROID_SERIAL to a bootable target, or create one with:" >&2
+    echo "    sdkmanager 'system-images;android-34;google_apis;\$(uname -m)'" >&2
     exit 2
   fi
   export ANDROID_AVD="$EXISTING"
+  # Build the APK for the architecture the chosen AVD can install. Only when the caller did not
+  # ask for a specific ABI — an explicit `ANDROID_ABI` stays authoritative.
+  if [[ -z "${ANDROID_ABI:-}" ]]; then
+    ANDROID_ABI="$(avd_abi "$EXISTING")"
+    [[ -n "$ANDROID_ABI" ]] && export ANDROID_ABI
+  fi
+  echo "      selected AVD $EXISTING (abi ${ANDROID_ABI:-default}) for host $(uname -m)"
 fi
 
 echo "=== [1/2] Build + run the Android JNI integration probe ==="

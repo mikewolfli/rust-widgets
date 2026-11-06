@@ -6,13 +6,12 @@
 //!
 //! # Reachability
 //!
-//! **State:** Enabling API. No in-repo production caller builds a `DesignerHistory`: the designer
-//! shell this repository does not yet contain is its caller, and the generator's own entry point
-//! (`artifact::regenerate_into`) does not edit a document. The types are exercised by this module's
-//! tests and are documented as an integration point rather than presented as wired. Removal
-//! condition: when the designer shell lands and adopts it, or when undo integration is confirmed
-//! unwanted. BD-04 asked for exactly this statement in place of the previous unlabelled public
-//! surface.
+//! **State:** Production caller: `tools/designer_generate.rs`, which opens the project document
+//! through [`DesignerSession`] and generates from the session's text. The session is the
+//! document-plus-history pair a designer shell drives; the CLI is the in-repo shell that reaches
+//! it today, so the undo API is constructed by real code rather than only by tests. Removal
+//! condition: when the CLI stops holding its document in a session, or when no caller wants undo
+//! integration. BD-04 asked for a reachable path instead of an unlabelled public surface.
 //!
 //! # Why it wraps the existing undo stack
 //!
@@ -20,7 +19,6 @@
 //! failed-undo restore rule. A designer-specific stack would be a second implementation of those
 //! rules and would drift. This module only adapts a document edit into an
 //! [`UndoCommand`](crate::undo::UndoCommand) and forwards the operations the designer exposes.
-
 
 // ── Undo integration (DSG-010) ───────────────────────────────
 
@@ -162,6 +160,94 @@ impl Default for DesignerHistory {
     }
 }
 
+/// An editing session: one document plus the undo history over it.
+///
+/// # What this adds over [`DesignerHistory`]
+///
+/// [`DesignerHistory`] records an edit over a document the caller owns. A session owns both, so a
+/// caller that loads, edits and undoes a document does not have to keep the `Rc<RefCell<_>>` and
+/// the history in step itself — the two cannot point at different documents. That is the shape the
+/// generator CLI uses: it opens the project through the session and reads [`Self::text`] to
+/// generate, so the document it generates from is the one the history edits.
+///
+/// The session deliberately keeps the same edit contract as [`DesignerHistory::record`]: an edit is
+/// applied **before** it is recorded, which is why [`Self::apply`] writes the document and then
+/// records the before/after pair.
+pub struct DesignerSession {
+    document: crate::compat::Rc<crate::compat::RefCell<crate::compat::String>>,
+    history: DesignerHistory,
+}
+
+impl DesignerSession {
+    /// Opens an empty session.
+    pub fn new() -> Self {
+        Self::open(crate::compat::String::new())
+    }
+
+    /// Opens a session over `document`.
+    pub fn open(document: impl Into<crate::compat::String>) -> Self {
+        Self {
+            document: crate::compat::Rc::new(crate::compat::RefCell::new(document.into())),
+            history: DesignerHistory::new(),
+        }
+    }
+
+    /// The session's current document text.
+    pub fn text(&self) -> crate::compat::String {
+        self.document.borrow().clone()
+    }
+
+    /// The shared document cell, for a caller that needs to observe it in place.
+    pub fn document(&self) -> &crate::compat::Rc<crate::compat::RefCell<crate::compat::String>> {
+        &self.document
+    }
+
+    /// The undo history over the session's document.
+    pub fn history(&self) -> &DesignerHistory {
+        &self.history
+    }
+
+    /// Replaces the document with `after`, recording the transition as an undoable edit.
+    ///
+    /// A no-op edit (the text is unchanged) is not recorded: an undo step that reverses nothing
+    /// would make the first Ctrl+Z appear to do nothing.
+    pub fn apply(&mut self, after: impl Into<crate::compat::String>, description: &'static str) {
+        let after = after.into();
+        let before = self.document.borrow().clone();
+        if before == after {
+            return;
+        }
+        *self.document.borrow_mut() = after.clone();
+        self.history.record(&self.document, &before, &after, description);
+    }
+
+    /// Reverses the most recent edit.
+    pub fn undo(&mut self) -> Result<(), crate::compat::String> {
+        self.history.undo()
+    }
+
+    /// Re-applies the most recently undone edit.
+    pub fn redo(&mut self) -> Result<(), crate::compat::String> {
+        self.history.redo()
+    }
+
+    /// Whether there is an edit to reverse.
+    pub fn can_undo(&self) -> bool {
+        self.history.can_undo()
+    }
+
+    /// Whether there is an undone edit to re-apply.
+    pub fn can_redo(&self) -> bool {
+        self.history.can_redo()
+    }
+}
+
+impl Default for DesignerSession {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(test)]
 mod undo_tests {
     use super::*;
@@ -200,5 +286,26 @@ mod undo_tests {
         history.undo().expect("undo targets the recorded document");
         assert_eq!(*first.borrow(), "first");
         assert_eq!(*second.borrow(), "second", "the other document is untouched");
+    }
+
+    /// A session owns its document, so an applied edit is both visible through `text` and undoable.
+    #[test]
+    fn a_session_applies_and_undoes_its_own_document() {
+        let mut session = DesignerSession::open("before");
+        session.apply("after", "Set text");
+        assert_eq!(session.text(), "after");
+        assert!(session.can_undo());
+        session.undo().expect("the edit is undoable");
+        assert_eq!(session.text(), "before");
+        session.redo().expect("the edit is redoable");
+        assert_eq!(session.text(), "after");
+    }
+
+    /// An edit that changes nothing is not recorded, so the first undo is a real change.
+    #[test]
+    fn a_no_op_session_edit_is_not_recorded() {
+        let mut session = DesignerSession::open("same");
+        session.apply("same", "No change");
+        assert!(!session.can_undo());
     }
 }

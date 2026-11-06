@@ -628,7 +628,7 @@ impl Draw for DepthChart {
             super::volume_chart::with_axis_label(|text| {
                 let _ = core::fmt::Write::write_fmt(&mut *text, format_args!("{value:.0}"));
                 let line_height = context.measure_text(text, &axis_font).height.max(1);
-                context.draw_text_fitted_cow(
+                context.draw_text_fitted_ellipsis(
                     Rect::new(label_left, y - line_height as i32 / 2, label_width, line_height),
                     text,
                     &axis_font,
@@ -702,7 +702,7 @@ impl Draw for DepthChart {
                 // fresh `String` (FIN-10).
                 super::volume_chart::with_axis_label(|text| {
                     let _ = core::fmt::Write::write_fmt(&mut *text, format_args!("{price:.2}"));
-                    context.draw_text_fitted_cow(
+                    context.draw_text_fitted_ellipsis(
                         Rect::new(band_left, y, band, 12),
                         text,
                         &font,

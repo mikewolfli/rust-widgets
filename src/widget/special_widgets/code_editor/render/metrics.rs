@@ -59,7 +59,12 @@ impl CodeEditor {
         // Interned rather than `Font::new(..clone()..)`: this runs for the body, the gutter, the
         // caret and every measurement in a paint, and cloning the family name allocated one
         // `String` per call, i.e. several per frame on the editor's hot path.
-        crate::core::Font::new_interned(&self.config.font_family, self.config.font_size, false, false)
+        crate::core::Font::new_interned(
+            &self.config.font_family,
+            self.config.font_size,
+            false,
+            false,
+        )
     }
 
     /// Re-measures the character cell with the backend's own font metrics.

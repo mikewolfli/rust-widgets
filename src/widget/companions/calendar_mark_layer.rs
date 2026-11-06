@@ -10,10 +10,18 @@ use crate::render::RenderContext;
 use crate::signal::{EventSignalRef, Signal1};
 use crate::widget::capability::coercion::{expect_i32_saturating, expect_u32, expect_usize};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::records::{RecordField, RecordList, RecordSchema, RecordValue};
+use crate::widget::capability::types::PropertyValueKind;
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::effective_font;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+
+thread_local! {
+    /// Reused day-number label buffer (repainted per cell).
+    static DAY_TEXT_SCRATCH: crate::compat::RefCell<String> =
+        const { crate::compat::RefCell::new(String::new()) };
+}
 
 use super::helpers::{accent_color, surface_ink};
 
@@ -84,6 +92,78 @@ pub struct CalendarMark {
     pub shape: CalendarMarkShape,
     /// Short text painted inside a badge; empty for the other shapes.
     pub badge_text: String,
+}
+
+/// The record form of one mark, so the whole overlay is writable through the property contract.
+///
+/// The identity field is optional: a mark's position in the list is not an identity a host needs
+/// to preserve, and a write replaces the whole overlay. `ids_unique`/`ids_required` are off for the
+/// same reason — a read still supplies a stable `date#index` id for a designer to address a row.
+pub const CALENDAR_MARK_SCHEMA: RecordSchema = RecordSchema {
+    fields: &[
+        RecordField::optional("id", PropertyValueKind::String),
+        RecordField::required("year", PropertyValueKind::Int),
+        RecordField::required("month", PropertyValueKind::UInt),
+        RecordField::required("day", PropertyValueKind::UInt),
+        RecordField::required("color", PropertyValueKind::Color),
+        RecordField::required("shape", PropertyValueKind::String),
+        RecordField::optional("badge_text", PropertyValueKind::String),
+    ],
+    id_field: "id",
+    ids_unique: false,
+    ids_required: false,
+};
+
+/// Encodes one mark as the schema's record.
+fn mark_record(year: i32, month: u32, day: u32, index: usize, mark: &CalendarMark) -> RecordValue {
+    let mut record = RecordValue::new()
+        .with(
+            "id",
+            CapabilityValue::String(crate::compat::format!("{year}-{month:02}-{day:02}-{index}")),
+        )
+        .with("year", CapabilityValue::Int(i64::from(year)))
+        .with("month", CapabilityValue::UInt(u64::from(month)))
+        .with("day", CapabilityValue::UInt(u64::from(day)))
+        .with("color", CapabilityValue::Color(mark.color))
+        .with("shape", CapabilityValue::String(mark.shape.as_str().to_string()));
+    if !mark.badge_text.is_empty() {
+        record = record.with("badge_text", CapabilityValue::String(mark.badge_text.clone()));
+    }
+    record
+}
+
+/// Reads one record as `(year, month, day, mark)`.
+fn mark_from_record(
+    record: &RecordValue,
+) -> Result<(i32, u32, u32, CalendarMark), CapabilityAccessError> {
+    let int = |name: &str| match record.get(name) {
+        Some(CapabilityValue::Int(value)) => Ok(*value),
+        _ => Err(CapabilityAccessError::TypeMismatch),
+    };
+    let unsigned = |name: &str| match record.get(name) {
+        Some(CapabilityValue::UInt(value)) => Ok(*value),
+        _ => Err(CapabilityAccessError::TypeMismatch),
+    };
+    let year = i32::try_from(int("year")?).map_err(|_| CapabilityAccessError::TypeMismatch)?;
+    let month =
+        u32::try_from(unsigned("month")?).map_err(|_| CapabilityAccessError::TypeMismatch)?;
+    let day = u32::try_from(unsigned("day")?).map_err(|_| CapabilityAccessError::TypeMismatch)?;
+    let color = match record.get("color") {
+        Some(CapabilityValue::Color(color)) => *color,
+        _ => return Err(CapabilityAccessError::TypeMismatch),
+    };
+    let shape = match record.get("shape") {
+        Some(CapabilityValue::String(token)) => {
+            CalendarMarkShape::from_name(token).ok_or(CapabilityAccessError::TypeMismatch)?
+        }
+        _ => return Err(CapabilityAccessError::TypeMismatch),
+    };
+    let badge_text = match record.get("badge_text") {
+        None | Some(CapabilityValue::Null) => crate::compat::String::new(),
+        Some(CapabilityValue::String(text)) => text.clone(),
+        Some(_) => return Err(CapabilityAccessError::TypeMismatch),
+    };
+    Ok((year, month, day, CalendarMark { color, shape, badge_text }))
 }
 
 impl CalendarMark {
@@ -340,35 +420,36 @@ impl Draw for CalendarMarkLayer {
         }
 
         let days = days_in_month(self.year, self.month);
-        // One reused buffer for the day numbers: `format!` built a fresh `String` per cell.
-        let mut day_text = String::new();
-        for day in 1..=days {
-            let Some(cell) = self.day_rect(day) else {
-                continue;
-            };
-            day_text.clear();
-            let _ = core::fmt::Write::write_fmt(&mut day_text, format_args!("{day}"));
-            let label_rect = Rect::new(
-                cell.x + 3,
-                cell.y + 1,
-                cell.width.saturating_sub(6),
-                DAY_LABEL_HEIGHT.min(cell.height),
-            );
-            context.draw_text_fitted_cow(
-                label_rect,
-                &day_text,
-                font,
-                surface.blend(&ink, 0.65),
-                HorizontalAlignment::Left,
-            );
-            let Some(marks) = self.marks.get(&(self.year, self.month, day)) else {
-                continue;
-            };
-            let count = marks.len().min(self.max_per_cell);
-            for (index, mark) in marks.iter().take(count).enumerate() {
-                draw_mark(context, mark_lane_rect(cell, index, count), mark, font, accent);
+        DAY_TEXT_SCRATCH.with(|cell| {
+            let mut day_text = cell.borrow_mut();
+            for day in 1..=days {
+                let Some(cell) = self.day_rect(day) else {
+                    continue;
+                };
+                day_text.clear();
+                let _ = core::fmt::Write::write_fmt(&mut *day_text, format_args!("{day}"));
+                let label_rect = Rect::new(
+                    cell.x + 3,
+                    cell.y + 1,
+                    cell.width.saturating_sub(6),
+                    DAY_LABEL_HEIGHT.min(cell.height),
+                );
+                context.draw_text_fitted_ellipsis(
+                    label_rect,
+                    &day_text,
+                    font,
+                    surface.blend(&ink, 0.65),
+                    HorizontalAlignment::Left,
+                );
+                let Some(marks) = self.marks.get(&(self.year, self.month, day)) else {
+                    continue;
+                };
+                let count = marks.len().min(self.max_per_cell);
+                for (index, mark) in marks.iter().take(count).enumerate() {
+                    draw_mark(context, mark_lane_rect(cell, index, count), mark, font, accent);
+                }
             }
-        }
+        });
     }
 }
 
@@ -414,6 +495,15 @@ impl WidgetProperties for CalendarMarkLayer {
             "year" => Ok(CapabilityValue::Int(i64::from(self.year))),
             "month" => Ok(CapabilityValue::UInt(u64::from(self.month))),
             "max_per_cell" => Ok(CapabilityValue::UInt(self.max_per_cell as u64)),
+            "marks" => {
+                let mut items = Vec::new();
+                for (&(year, month, day), marks) in &self.marks {
+                    for (index, mark) in marks.iter().enumerate() {
+                        items.push(mark_record(year, month, day, index, mark));
+                    }
+                }
+                Ok(CapabilityValue::Records(RecordList::from_items(&CALENDAR_MARK_SCHEMA, items)))
+            }
             "mark_count" => Ok(CapabilityValue::UInt(self.mark_count() as u64)),
             _ => base_property_get(self, name),
         }
@@ -440,12 +530,64 @@ impl WidgetProperties for CalendarMarkLayer {
                 self.set_max_per_cell(expect_usize(value)?);
                 Ok(())
             }
+            "marks" => {
+                let CapabilityValue::Records(list) = value else {
+                    return Err(CapabilityAccessError::TypeMismatch);
+                };
+                list.validate_against(&CALENDAR_MARK_SCHEMA).map_err(|violation| {
+                    CapabilityAccessError::ConstraintViolation {
+                        property: crate::compat::String::from("marks"),
+                        reason: crate::compat::format!("{violation}"),
+                    }
+                })?;
+                // Parse and validate the whole list before touching the overlay: a refused write
+                // must not leave a half-replaced set of marks behind.
+                let mut parsed = Vec::with_capacity(list.items().len());
+                for record in list.items() {
+                    let (year, month, day, mark) = mark_from_record(record)?;
+                    if day == 0 || day > days_in_month(year, month) {
+                        return Err(CapabilityAccessError::ConstraintViolation {
+                            property: crate::compat::String::from("marks"),
+                            reason: crate::compat::format!(
+                                "{year}-{month:02}-{day:02} is not a real date"
+                            ),
+                        });
+                    }
+                    parsed.push((year, month, day, mark));
+                }
+                // Per-date counts are part of the input's validity: checking them before the
+                // clear keeps the write atomic when one date carries more marks than the cap.
+                let mut counts: BTreeMap<(i32, u32, u32), usize> = BTreeMap::new();
+                for (year, month, day, _) in &parsed {
+                    let count = counts.entry((*year, *month, *day)).or_insert(0);
+                    *count += 1;
+                    if *count > self.max_per_cell {
+                        return Err(CapabilityAccessError::ConstraintViolation {
+                            property: crate::compat::String::from("marks"),
+                            reason: crate::compat::String::from("a date exceeds max_per_cell"),
+                        });
+                    }
+                }
+                self.clear_all();
+                for (year, month, day, mark) in parsed {
+                    // The counts above proved each date fits, so this cannot fail for capacity.
+                    let _ = self.set_mark(year, month, day, mark);
+                }
+                Ok(())
+            }
             "mark_count" => Err(CapabilityAccessError::ReadOnlyProperty),
             _ => base_property_set(self, name, value),
         }
     }
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["year", "month", "max_per_cell", "mark_count", BASE_PROPERTY_NAMES]
+        property_names_of![
+            "year",
+            "month",
+            "max_per_cell",
+            "marks",
+            "mark_count",
+            BASE_PROPERTY_NAMES
+        ]
     }
 }
 
@@ -507,7 +649,7 @@ fn draw_mark(
             if !mark.badge_text.is_empty() {
                 let text_rect =
                     Rect::new(lane.x + 2, lane.y, lane.width.saturating_sub(4), lane.height);
-                context.draw_text_fitted_cow(
+                context.draw_text_fitted_ellipsis(
                     text_rect,
                     mark.badge_text.as_str(),
                     font,

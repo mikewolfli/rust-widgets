@@ -907,7 +907,7 @@ impl Draw for Snackbar {
             // Compensate the fitted draw's own inset, so the message starts at the padding and may
             // use the whole band instead of losing six pixels to the fit margin.
             let fit_inset = crate::render::TEXT_FIT_MARGIN as i32;
-            context.draw_text_fitted_cow(
+            context.draw_text_fitted_ellipsis(
                 Rect::new(
                     message_x - fit_inset,
                     bar.y + (bar.height as i32 - message_h as i32) / 2,
@@ -926,7 +926,7 @@ impl Draw for Snackbar {
             context.draw_rect(action_rect, action_border);
             if let Some(label) = &self.action_label {
                 if !label.is_empty() {
-                    context.draw_text_fitted_cow(
+                    context.draw_text_fitted_ellipsis(
                         Rect::new(
                             action_rect.x + 4,
                             action_rect.y + (action_rect.height as i32 - message_h as i32) / 2,

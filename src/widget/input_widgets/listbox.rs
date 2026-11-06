@@ -2048,7 +2048,7 @@ impl Draw for ListBox {
                             } else {
                                 cell_width
                             };
-                            context.draw_text_fitted_cow(
+                            context.draw_text_fitted_ellipsis(
                                 Rect::new(cell_x, line.y, width, line.height),
                                 part,
                                 row_font,
@@ -2057,7 +2057,7 @@ impl Draw for ListBox {
                             );
                         }
                     } else {
-                        context.draw_text_fitted_cow(
+                        context.draw_text_fitted_ellipsis(
                             Rect::new(left, line.y, inner_width, line.height),
                             text,
                             row_font,

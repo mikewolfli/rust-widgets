@@ -25,9 +25,10 @@ use crate::compat::{Rc, RefCell};
 use crate::core::{Color, HorizontalAlignment, ObjectId, Point, Rect, Size};
 use crate::event::key_codes;
 use crate::event::{Event, EventHandler};
+use crate::i18n::RetranslatorHandle;
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
-use crate::{tr, tr_into};
+use crate::tr;
 
 use crate::impl_widget_property_hooks;
 use crate::property_names_of;
@@ -368,6 +369,23 @@ struct VisibleRowsKey {
 pub struct FileDialog {
     base: BaseWidget,
     mode: FileDialogMode,
+    /// The catalogue key behind `title` while the title is still the default one.
+    ///
+    /// `None` once the host calls `set_title`: a custom title is not translated. While it is
+    /// `Some`, a language switch re-resolves `title` (RT2-03).
+    title_key: Option<&'static str>,
+    /// Bumped by the retranslator registered below, so `draw` knows the stored title is stale.
+    label_generation: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    /// The generation `title` was last resolved at.
+    title_generation: u64,
+    /// Keeps the retranslator registered for exactly as long as the dialog lives.
+    _retranslator: RetranslatorHandle,
+    /// The action labels, keyed by mode and catalogue generation.
+    ///
+    /// The row is asked for its labels by `draw`, `intrinsic_size` and the press hit test; each
+    /// call used to translate both labels into fresh strings. The key is complete: the accept
+    /// label depends on the mode, and both depend on the active catalogue.
+    action_label_cache: RefCell<Option<(FileDialogMode, u64, Rc<Vec<String>>)>>,
     title: String,
     directory: String,
     selected_files: Vec<String>,
@@ -472,9 +490,19 @@ impl FileDialog {
     pub fn new(geometry: Rect) -> Self {
         let name_filters = vec![FileFilter::all_files()];
         let filter_suffixes = name_filters.iter().map(normalized_filter_suffixes).collect();
+        let label_generation = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let retranslator_generation = std::sync::Arc::clone(&label_generation);
+        let retranslator = crate::i18n::register_retranslator(move || {
+            retranslator_generation.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        });
         Self {
             base: BaseWidget::new(WidgetKind::FileDialog, geometry, "FileDialog"),
             mode: FileDialogMode::OpenFile,
+            title_key: Some("dialog.file_dialog.open_file"),
+            label_generation: std::sync::Arc::clone(&label_generation),
+            title_generation: 0,
+            _retranslator: retranslator,
+            action_label_cache: RefCell::new(None),
             title: tr!("dialog.file_dialog.open_file"),
             directory: String::new(),
             selected_files: Vec::new(),
@@ -542,6 +570,7 @@ impl FileDialog {
     pub fn open_file(geometry: Rect) -> Self {
         let mut d = Self::new(geometry);
         d.mode = FileDialogMode::OpenFile;
+        d.title_key = Some("dialog.file_dialog.open_file");
         d.title = tr!("dialog.file_dialog.open_file");
         d
     }
@@ -552,6 +581,7 @@ impl FileDialog {
     pub fn save_file(geometry: Rect) -> Self {
         let mut d = Self::new(geometry);
         d.mode = FileDialogMode::SaveFile;
+        d.title_key = Some("dialog.file_dialog.save_file");
         d.title = tr!("dialog.file_dialog.save_file");
         d
     }
@@ -621,6 +651,12 @@ impl FileDialog {
     /// afterwards with [`FileDialog::set_title`].
     pub fn set_mode(&mut self, mode: FileDialogMode) {
         self.mode = mode;
+        let key = match mode {
+            FileDialogMode::OpenFile | FileDialogMode::OpenFiles => "dialog.file_dialog.open_file",
+            FileDialogMode::SaveFile => "dialog.file_dialog.save_file",
+            FileDialogMode::SelectDirectory => "dialog.file_dialog.select_directory",
+        };
+        self.title_key = Some(key);
         self.title = tr!(match mode {
             FileDialogMode::OpenFile | FileDialogMode::OpenFiles => "dialog.file_dialog.open_file",
             FileDialogMode::SaveFile => "dialog.file_dialog.save_file",
@@ -632,8 +668,10 @@ impl FileDialog {
     pub fn set_title(&mut self, title: impl Into<String>) {
         let title = title.into();
         if self.title == title {
+            self.title_key = None;
             return;
         }
+        self.title_key = None;
         self.title = title;
         self.base.request_redraw();
     }
@@ -2021,7 +2059,13 @@ impl FileDialog {
     ///
     /// The accept label is mode-dependent, which is why `draw` and the hit test share this
     /// function rather than each spelling the conditional out.
-    fn action_labels(&self) -> Vec<String> {
+    fn action_labels(&self) -> Rc<Vec<String>> {
+        let generation = crate::i18n::language_generation();
+        if let Some((mode, cached_generation, labels)) = self.action_label_cache.borrow().as_ref() {
+            if *mode == self.mode && *cached_generation == generation {
+                return Rc::clone(labels);
+            }
+        }
         // One buffer per label, moved into the row: the label is appended by the catalogue
         // instead of being materialised twice by `localized_label` (LYT-X04).
         let mut labels = Vec::with_capacity(2);
@@ -2036,6 +2080,8 @@ impl FileDialog {
         let mut label = crate::compat::String::new();
         super::localized_label_into("common.button.cancel", "Cancel", &mut label);
         labels.push(label);
+        let labels = Rc::new(labels);
+        *self.action_label_cache.borrow_mut() = Some((self.mode, generation, Rc::clone(&labels)));
         labels
     }
 
@@ -2044,7 +2090,7 @@ impl FileDialog {
     /// The press path has no render context of its own, so it borrows the module's measurement-only
     /// one — the pattern `MessageBox::action_button_at` established. Rebuilding rather than caching
     /// is deliberate: a cached rect is a second copy of the geometry that a resize can leave stale.
-    fn action_buttons(&self) -> Vec<Rect> {
+    fn action_buttons(&self) -> Rc<Vec<Rect>> {
         let rect = self.frame_rect();
         let button_band = super::message_box::inset_action_band(
             ControlMetrics::bottom_band(rect, dimensions::DIALOG_BUTTON_HEIGHT),
@@ -2071,6 +2117,16 @@ impl FileDialog {
 
 impl Draw for FileDialog {
     fn draw(&mut self, context: &mut RenderContext) {
+        // A language switch runs the retranslator registered in `new`; that is the signal this
+        // stored title is stale. Resolving here keeps the key in one place and the painted title
+        // current without a per-frame translation (RT2-03).
+        if let Some(key) = self.title_key {
+            let generation = self.label_generation.load(std::sync::atomic::Ordering::Relaxed);
+            if generation != self.title_generation {
+                self.title = crate::translate_key(key);
+                self.title_generation = generation;
+            }
+        }
         // A modal dialog dims the page behind it: that dimming is the whole visual difference
         // between "this dialog is up and the page is inert" and "a panel was drawn on the page".
         // The `modal` flag was recorded and enforced by the modal stack, and nothing painted it.
@@ -2158,11 +2214,12 @@ impl Draw for FileDialog {
         crate::widget::draw_icon_centered(context, folder_button, 12, ink, IconName::Folder);
         let trailing = folder_button.width + 12;
         let title_width = rect.width.saturating_sub(16 + trailing);
-        let caption = match (&self.new_folder_error, &self.new_folder_name) {
-            (Some(error), _) => error.clone(),
-            (None, Some(name)) => format!("New folder: {name}"),
-            (None, None) => self.title.clone(),
-        };
+        let caption: crate::compat::Cow<'_, str> =
+            match (&self.new_folder_error, &self.new_folder_name) {
+                (Some(error), _) => crate::compat::Cow::Borrowed(error.as_str()),
+                (None, Some(name)) => crate::compat::Cow::Owned(format!("New folder: {name}")),
+                (None, None) => crate::compat::Cow::Borrowed(self.title.as_str()),
+            };
         if !caption.is_empty() {
             let title_font = font;
             let title_line = context.text_line(title_bar_band, title_font);
@@ -2171,7 +2228,7 @@ impl Draw for FileDialog {
             } else {
                 ink
             };
-            context.draw_text_fitted_cow(
+            context.draw_text_fitted_ellipsis(
                 Rect::new(rect.x + 8, title_line.y, title_width, title_line.height.max(1)),
                 &caption,
                 title_font,
@@ -2211,7 +2268,13 @@ impl Draw for FileDialog {
                     break;
                 }
                 let band = Rect::new(row.x + 6, row.y, row.width.saturating_sub(12), row.height);
-                context.draw_text_fitted_cow(band, favorite, font, ink, HorizontalAlignment::Left);
+                context.draw_text_fitted_ellipsis(
+                    band,
+                    favorite,
+                    font,
+                    ink,
+                    HorizontalAlignment::Left,
+                );
             }
             context.pop_clip();
         }
@@ -2271,7 +2334,7 @@ impl Draw for FileDialog {
                             band.width.saturating_sub(if active { 12 } else { 0 }).max(1),
                             header_line.height.max(1),
                         );
-                        context.draw_text_fitted_cow(
+                        context.draw_text_fitted_ellipsis(
                             text_band,
                             &label,
                             font,
@@ -2326,7 +2389,7 @@ impl Draw for FileDialog {
                 let text_band = Rect::new(band.x, line.y, band.width.max(1), line.height.max(1));
                 match self.view_mode {
                     ViewMode::List => {
-                        context.draw_text_fitted_cow(
+                        context.draw_text_fitted_ellipsis(
                             text_band,
                             &entry.name,
                             font,
@@ -2349,7 +2412,7 @@ impl Draw for FileDialog {
                                     name_col.width.saturating_sub(icon_pad),
                                     name_col.height,
                                 );
-                                context.draw_text_fitted_cow(
+                                context.draw_text_fitted_ellipsis(
                                     Rect::new(
                                         name_col.x,
                                         line.y,
@@ -2365,7 +2428,7 @@ impl Draw for FileDialog {
                                 let modified =
                                     entry.modified.map(format_modified).unwrap_or_default();
                                 let kind = entry.kind.label();
-                                context.draw_text_fitted_cow(
+                                context.draw_text_fitted_ellipsis(
                                     Rect::new(
                                         size_col.x,
                                         line.y,
@@ -2377,7 +2440,7 @@ impl Draw for FileDialog {
                                     ink.with_alpha_f32(0.75),
                                     HorizontalAlignment::Right,
                                 );
-                                context.draw_text_fitted_cow(
+                                context.draw_text_fitted_ellipsis(
                                     Rect::new(
                                         modified_col.x,
                                         line.y,
@@ -2389,7 +2452,7 @@ impl Draw for FileDialog {
                                     ink.with_alpha_f32(0.75),
                                     HorizontalAlignment::Left,
                                 );
-                                context.draw_text_fitted_cow(
+                                context.draw_text_fitted_ellipsis(
                                     Rect::new(
                                         type_col.x,
                                         line.y,
@@ -2403,7 +2466,7 @@ impl Draw for FileDialog {
                                 );
                             }
                             None => {
-                                context.draw_text_fitted_cow(
+                                context.draw_text_fitted_ellipsis(
                                     text_band,
                                     &entry.name,
                                     font,
@@ -2443,9 +2506,9 @@ impl Draw for FileDialog {
             // from y=44 to 58 inside a list ending at 46 — twelve pixels of the text that
             // explains the empty list were outside the well it belongs to. Drawn only when the
             // list is non-empty, so a squeezed dialog emits no `<text …></text>`.
-            // One buffer for the placeholder instead of a fresh `String` per frame (LYT-X04).
-            let mut placeholder = crate::compat::String::new();
-            tr_into!("dialog.file_dialog.file_list_placeholder", &mut placeholder);
+            // The placeholder is resolved once per catalogue generation (LYT-X04).
+            let placeholder =
+                super::localized_label_for_key("dialog.file_dialog.file_list_placeholder");
             let placeholder_font = font;
             if list_rect.height > 0 && !placeholder.is_empty() {
                 let placeholder_band = Rect::new(
@@ -2455,7 +2518,7 @@ impl Draw for FileDialog {
                     list_rect.height,
                 );
                 let placeholder_line = context.text_line(placeholder_band, placeholder_font);
-                context.draw_text_fitted_cow(
+                context.draw_text_fitted_ellipsis(
                     Rect::new(
                         placeholder_band.x,
                         placeholder_line.y,
@@ -2486,18 +2549,19 @@ impl Draw for FileDialog {
             // The translated caption is appended into the buffer the painter already needs;
             // the caller's own caption is copied into it instead of being cloned first
             // (LYT-X04).
-            let mut sel_label = crate::compat::String::new();
-            if self.label_text.is_empty() {
-                tr_into!("dialog.file_dialog.file_name", &mut sel_label);
+            let localized_label;
+            let sel_label: &str = if self.label_text.is_empty() {
+                localized_label = super::localized_label_for_key("dialog.file_dialog.file_name");
+                localized_label.as_str()
             } else {
-                sel_label.push_str(&self.label_text);
-            }
+                self.label_text.as_str()
+            };
             let sel_label_font = font;
             let sel_band = Rect::new(rect.x + 10, sel_y, 66, sel_h as u32);
             let sel_line = context.text_line(sel_band, sel_label_font);
-            context.draw_text_fitted_cow(
+            context.draw_text_fitted_ellipsis(
                 Rect::new(sel_band.x, sel_line.y, sel_band.width, sel_line.height.max(1)),
-                &sel_label,
+                sel_label,
                 sel_label_font,
                 ink,
                 HorizontalAlignment::Left,
@@ -2517,7 +2581,7 @@ impl Draw for FileDialog {
                     fname_rect.height,
                 );
                 let fname_line = context.text_line(fname_band, fname_font);
-                context.draw_text_fitted_cow(
+                context.draw_text_fitted_ellipsis(
                     fname_line,
                     fname,
                     fname_font,
@@ -2554,7 +2618,7 @@ impl Draw for FileDialog {
             );
             if !fname.is_empty() && band.height > 0 {
                 let line = context.text_line(band, fname_font);
-                context.draw_text_fitted_cow(
+                context.draw_text_fitted_ellipsis(
                     line,
                     fname,
                     fname_font,
@@ -2576,7 +2640,7 @@ impl Draw for FileDialog {
         // contrast colour as the label — the same pairing `WidgetRole::Primary` uses.
         let ok_rect = row.buttons[0];
         context.fill_rect(ok_rect, accent);
-        context.draw_text_line_cow(
+        context.draw_text_line_ellipsis(
             ok_rect,
             &labels[0],
             font,
@@ -2586,7 +2650,13 @@ impl Draw for FileDialog {
         let cancel_rect = row.buttons[1];
         context.fill_rect(cancel_rect, surface.blend(&ink, 0.1));
         context.draw_rect(cancel_rect, border);
-        context.draw_text_line_cow(cancel_rect, &labels[1], font, ink, HorizontalAlignment::Center);
+        context.draw_text_line_ellipsis(
+            cancel_rect,
+            &labels[1],
+            font,
+            ink,
+            HorizontalAlignment::Center,
+        );
         if let Some(focused) = self.focus.and_then(|index| row.buttons.get(index)) {
             context.draw_rounded_rect_stroke(*focused, 2, accent, 2);
         }

@@ -319,7 +319,7 @@ impl Draw for GridFindBar {
             *cache = Some((self.query.clone(), text));
         }
         let label = cache.as_ref().map(|(_, text)| text.as_str()).unwrap_or_default();
-        context.draw_text_fitted_cow(
+        context.draw_text_fitted_ellipsis(
             Rect::new(rect.x + 6, rect.y, rect.width.saturating_sub(12), rect.height),
             label,
             font,

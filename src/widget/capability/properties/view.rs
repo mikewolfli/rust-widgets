@@ -397,6 +397,8 @@ pub(crate) fn pagination_capability() -> WidgetCapability {
             "set_show_nav_buttons",
             "set_sibling_count",
             "set_wheel_paging_enabled",
+            "set_show_jump_input",
+            "set_show_page_size_selector",
         ],
     }
 }
@@ -470,6 +472,9 @@ pub(crate) fn image_view_capability() -> WidgetCapability {
             "set_rotation",
             "set_zoom_level",
             "set_pan_offset",
+            "set_aspect",
+            "set_image_alignment",
+            "set_margin",
         ],
     }
 }

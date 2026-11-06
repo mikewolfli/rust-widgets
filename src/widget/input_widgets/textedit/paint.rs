@@ -665,7 +665,7 @@ impl TextEdit {
         if pen_y + line_height > bottom {
             return pen_y;
         }
-        context.draw_text_fitted_cow(
+        context.draw_text_fitted_ellipsis(
             Rect::new(interior.x, pen_y, interior.width, line_height as u32),
             row,
             font,

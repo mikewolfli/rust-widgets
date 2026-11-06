@@ -163,10 +163,11 @@ ships nor compiles it.
   committed; tab widths are measured, tabs carry a close affordance and a hover wash; a press on a
   line number selects that line; `Ctrl`+click adds a caret; soft-wrapped continuation rows keep the
   line's indentation; and `relative_line_numbers` switches the gutter to caret-relative numbering.
-- `Icon` ships **75** `IconName` tokens. The three capable profiles draw the real **Material
-  Symbols** outlines by default; `mini` / `embedded` draw geometry derived from the same outlines,
-  so the two paths cannot disagree. Hosts can add icons with `register_icon` or
-  `register_icon_on_grid`.
+- `Icon` ships **4,323** `IconName` tokens: the 75 this crate names itself, plus the whole Material
+  Symbols catalogue. The three capable profiles draw the real **Material Symbols** outlines by
+  default; `mini` / `embedded` draw geometry derived from the same outlines for the 75 named
+  tokens, and a catalogue token in such a build reports that it has no fallback rather than
+  drawing a wrong picture. Hosts can add icons with `register_icon` or `register_icon_on_grid`.
 
 ## Rendering backends
 

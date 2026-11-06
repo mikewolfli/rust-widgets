@@ -670,7 +670,7 @@ impl Draw for Badge {
         // a coincidence of two separate constants rather than a fact about the pill.
         let text_color = faded(bg_color.contrast_color(), opacity);
         let line = context.text_line(pill_rect, &font);
-        context.draw_text_fitted_cow(
+        context.draw_text_fitted_ellipsis(
             Rect::new(line.x, line.y, line.width.max(1), line.height.max(1)),
             self.label_cache.text.as_str(),
             &font,

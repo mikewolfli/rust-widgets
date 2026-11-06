@@ -1016,7 +1016,7 @@ impl Draw for SearchBox {
             // The value (and the placeholder, which shares this run) is fitted into the field's
             // text box so a centred or right-aligned value is positioned against the box it is
             // aligned within rather than against a fixed inset.
-            context.draw_text_fitted_cow(
+            context.draw_text_fitted_ellipsis(
                 Rect::new(text_rect.x, text_line.y, text_rect.width, text_line.height),
                 display_text,
                 font,

@@ -744,7 +744,10 @@ impl Tooltip {
     /// (D09-STYLE-02). The theme body font reaches a tooltip through `style.font`, so a text-scale
     /// preference now enlarges the bubble as well as its ink.
     fn bubble_font(&self) -> Font {
-        self.style().font.clone().unwrap_or_else(|| Font::simple_interned("sans-serif", self.font_size))
+        self.style()
+            .font
+            .clone()
+            .unwrap_or_else(|| Font::simple_interned("sans-serif", self.font_size))
     }
 }
 
@@ -1103,7 +1106,7 @@ impl Draw for Tooltip {
                         remaining.saturating_add((2 * fit_inset) as u32),
                         measured_line_height,
                     );
-                    context.draw_text_fitted_cow(
+                    context.draw_text_fitted_ellipsis(
                         band,
                         &run.text,
                         &run_font,
@@ -1131,7 +1134,7 @@ impl Draw for Tooltip {
                         + dimensions::TOOLTIP_PADDING_V as i32
                         + index as i32 * measured_line_height as i32
                 };
-                context.draw_text_fitted_cow(
+                context.draw_text_fitted_ellipsis(
                     Rect::new(text_x - fit_inset, line_y, band_width, band_height),
                     text,
                     &font,

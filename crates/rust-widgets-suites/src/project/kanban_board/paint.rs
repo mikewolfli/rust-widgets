@@ -258,7 +258,10 @@ impl KanbanBoard {
         let header_line = context.text_line(header_rect, header_font);
         // The badge is measured first so the title knows where to stop: an unbounded
         // title ran underneath the count on the right.
-        let mut badge = String::new();
+        // Taken out of the field and put back below, so the mutable borrow ends before any
+        // `&self` helper runs while the badge text is still in use.
+        let mut badge = core::mem::take(&mut self.badge_scratch);
+        badge.clear();
         if collapsed {
             let _ = write!(badge, "({})", cards.len());
         } else if let Some(limit) = wip_limit {
@@ -271,7 +274,7 @@ impl KanbanBoard {
         let badge_x =
             header_rect.x + header_rect.width as i32 - CARD_PADDING - badge_metrics.width as i32;
         let title_width = ((badge_x - 6) - title_left).max(0) as u32;
-        context.draw_text_fitted_cow(
+        context.draw_text_fitted_ellipsis(
             Rect::new(title_left, header_line.y, title_width, header_line.height.max(1)),
             title,
             header_font,
@@ -288,6 +291,7 @@ impl KanbanBoard {
             chrome.muted_text(),
             HorizontalAlignment::Left,
         );
+        self.badge_scratch = badge;
 
         if collapsed {
             return;
@@ -342,7 +346,7 @@ impl KanbanBoard {
         let rect = self.geometry();
         let caption = Rect::new(rect.x, rect.y, LANE_HEADER_WIDTH, HEADER_HEIGHT);
         context.fill_rounded_rect(caption, 8, chrome.header());
-        context.draw_text_line_cow(
+        context.draw_text_line_ellipsis(
             Rect::new(
                 caption.x + CARD_PADDING,
                 caption.y,
@@ -369,7 +373,7 @@ impl KanbanBoard {
                 };
                 rust_widgets::widget::draw_icon_at(context, icon_rect, chrome.text(), icon);
             }
-            context.draw_text_line_cow(
+            context.draw_text_line_ellipsis(
                 Rect::new(
                     header.x + CARD_PADDING + HEADER_ICON,
                     header.y,

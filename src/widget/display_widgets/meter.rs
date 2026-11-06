@@ -25,7 +25,7 @@
 use crate::compat::{format, String, ToString, Vec};
 use crate::core::{deg_to_rad, Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler, WheelScroll};
-use crate::render::{RenderCommand, RenderContext};
+use crate::render::RenderContext;
 use crate::widget::capability::coercion::{expect_bool, expect_string, expect_u32};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
@@ -622,16 +622,9 @@ impl Meter {
                 center.y + (radius as f32 * angle.sin()).round() as i32,
             ));
         }
-        // The command shares an immutable snapshot of the vertices (G-02), while `points` stays the
-        // control's reusable buffer for the next arc.
-        let command = RenderCommand::DrawPath {
-            points: points.as_slice().into(),
-            closed: false,
-            color,
-            filled: false,
-            width: 1,
-        };
-        context.execute_command_ref(&command);
+        // The vertex slice is cached by its complete geometry inside `draw_path`, so a steady
+        // gauge reuses the same arc instead of rebuilding it each frame.
+        context.draw_path(points.as_slice(), false, color, false, 1);
     }
 
     /// Snaps `angle` onto the vertex grid that starts at `origin`.

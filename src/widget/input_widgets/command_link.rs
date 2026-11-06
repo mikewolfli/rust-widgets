@@ -436,7 +436,7 @@ impl Draw for CommandLink {
                 stroke,
             );
         }
-        context.draw_text_fitted_cow(
+        context.draw_text_fitted_ellipsis(
             line,
             &self.text,
             &text_font,
@@ -458,7 +458,7 @@ impl Draw for CommandLink {
             };
             let desc_line =
                 context.text_line(Rect { y: text_y + line.height as i32, ..text_band }, &desc_font);
-            context.draw_text_fitted_cow(
+            context.draw_text_fitted_ellipsis(
                 desc_line,
                 &self.description,
                 &desc_font,

@@ -479,7 +479,7 @@ impl Draw for CupertinoAlertDialog {
         if !self.title.is_empty() {
             let title_metrics = context.measure_text("M", &title_font);
             let title_y = dialog_rect.y + ((dialog_height as i32 * 24) / 100).max(0);
-            context.draw_text_fitted_cow(
+            context.draw_text_fitted_ellipsis(
                 Rect::new(
                     dialog_rect.x + 12,
                     title_y,
@@ -498,7 +498,7 @@ impl Draw for CupertinoAlertDialog {
         if !self.message.is_empty() {
             let msg_metrics = context.measure_text("M", &msg_font);
             let msg_y = dialog_rect.y + ((dialog_height as i32 * 46) / 100).max(0);
-            context.draw_text_fitted_cow(
+            context.draw_text_fitted_ellipsis(
                 Rect::new(
                     dialog_rect.x + 12,
                     msg_y,
@@ -552,7 +552,7 @@ impl Draw for CupertinoAlertDialog {
 
             // Cancel button. Centred inside its own half of the row, which is both where the
             // user reads it and the box that keeps its label inside the panel.
-            context.draw_text_fitted_cow(
+            context.draw_text_fitted_ellipsis(
                 Rect::new(dialog_rect.x, label_y, cell_width.max(0) as u32, label_height as u32),
                 &self.cancel_text,
                 &button_font,
@@ -561,7 +561,7 @@ impl Draw for CupertinoAlertDialog {
             );
 
             // Confirm button
-            context.draw_text_fitted_cow(
+            context.draw_text_fitted_ellipsis(
                 Rect::new(mid_x, label_y, cell_width.max(0) as u32, label_height as u32),
                 &self.confirm_text,
                 &button_font,
@@ -570,7 +570,7 @@ impl Draw for CupertinoAlertDialog {
             );
         } else {
             // Single confirm button centered
-            context.draw_text_fitted_cow(
+            context.draw_text_fitted_ellipsis(
                 Rect::new(dialog_rect.x, label_y, dialog_width, label_height as u32),
                 &self.confirm_text,
                 &button_font,

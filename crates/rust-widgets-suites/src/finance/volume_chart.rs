@@ -537,7 +537,7 @@ impl Draw for VolumeChart {
             with_axis_label(|text| {
                 let _ = core::fmt::Write::write_fmt(&mut *text, format_args!("{value:.0}"));
                 let line_height = context.measure_text(text, &axis_font).height.max(1);
-                context.draw_text_fitted_cow(
+                context.draw_text_fitted_ellipsis(
                     Rect::new(label_left, y - line_height as i32 / 2, label_width, line_height),
                     text,
                     &axis_font,
@@ -656,7 +656,7 @@ pub(crate) fn draw_index_ticks(
         let x = axis.center_for(index - start);
         with_axis_label(|text| {
             label_at(index, text);
-            context.draw_text_fitted_cow(
+            context.draw_text_fitted_ellipsis(
                 Rect::new(x - band_width as i32 / 2, y, band_width, height),
                 text,
                 font,
@@ -694,7 +694,7 @@ pub(crate) fn draw_empty_pane(
         chrome.grid,
     );
     let line = context.text_line(area.rect, font);
-    context.draw_text_fitted_cow(
+    context.draw_text_fitted_ellipsis(
         line,
         "No data",
         font,

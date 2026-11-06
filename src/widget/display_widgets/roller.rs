@@ -781,7 +781,7 @@ impl Draw for Roller {
                     item_rect.width.saturating_sub(12),
                     item_rect.height,
                 );
-                context.draw_text_line_cow(
+                context.draw_text_line_ellipsis(
                     text_band,
                     &self.options[idx],
                     &font,

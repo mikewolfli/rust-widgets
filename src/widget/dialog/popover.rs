@@ -11,7 +11,7 @@
 use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
 use crate::event::key_codes;
 use crate::event::{Event, EventHandler};
-use crate::render::{RenderCommand, RenderContext};
+use crate::render::RenderContext;
 use crate::signal::GenericSignal;
 use crate::style::{MotionSlot, PropertyDriver};
 use crate::widget::capability::coercion::expect_bool;
@@ -943,7 +943,13 @@ impl Draw for Popover {
         // fit/ellipsis behaviour is unchanged (the box is 224 px wide at the census geometry
         // and `Popover (empty)` is wider than that).
         let line = context.text_line(content_rect, font);
-        context.draw_text_fitted_cow(line, label, font, muted_ink, HorizontalAlignment::Center);
+        context.draw_text_fitted_ellipsis(
+            line,
+            label,
+            font,
+            muted_ink,
+            HorizontalAlignment::Center,
+        );
     }
 }
 
@@ -998,22 +1004,10 @@ impl Popover {
         };
 
         // Draw filled triangle using DrawPath
-        let points = vec![tip, base_left, base_right];
-        context.execute_command(RenderCommand::DrawPath {
-            points: points.as_slice().into(),
-            closed: true,
-            color: fill,
-            filled: true,
-            width: 1,
-        });
+        let points = [tip, base_left, base_right];
+        context.draw_path(&points, true, fill, true, 1);
         // Draw triangle outline
-        context.execute_command(RenderCommand::DrawPath {
-            points: points.into(),
-            closed: true,
-            color: outline,
-            filled: false,
-            width: 1,
-        });
+        context.draw_path(&points, true, outline, false, 1);
     }
 }
 

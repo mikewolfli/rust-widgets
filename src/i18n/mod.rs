@@ -21,7 +21,9 @@
 //!
 //! # Reachability
 //!
-//! **State:** Production callers: `src/widget/base.rs:252` (`crate::i18n::translate` via the `tr!()` macro), `src/platform/profile.rs:436` (`crate::i18n::init`).
+//! **State:** Production callers: `src/widget/base.rs:1175` (`crate::translate_key`, the
+//! capability-correct entry point behind built-in tooltips), `src/widget/dialog/file_dialog.rs`
+//! (`tr!()` for built-in strings), `src/platform/profile.rs:586` (`crate::i18n::init`).
 mod global;
 mod macros;
 mod manager;
@@ -32,10 +34,11 @@ mod tests;
 mod types;
 mod watcher;
 pub use global::{
-    check_and_reload_all, get_manager, init, init_with_options, on_language_changed,
-    register_retranslator, retranslate, set_language, translate, translate_into,
-    translate_into_with_args, translate_into_with_context, translate_into_with_typed_args,
-    translate_with_args, translate_with_context, translate_with_typed_args, RetranslatorHandle,
+    check_and_reload_all, get_manager, init, init_with_options, language_generation,
+    on_language_changed, register_retranslator, retranslate, set_language, translate,
+    translate_into, translate_into_with_args, translate_into_with_context,
+    translate_into_with_typed_args, translate_with_args, translate_with_context,
+    translate_with_typed_args, RetranslatorHandle,
 };
 #[cfg(test)]
 pub(crate) use global::{global_i18n_test_lock, init_call_count, GLOBAL_I18N};

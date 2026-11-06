@@ -1456,7 +1456,7 @@ impl Draw for Heatmap {
                     let box_rect = Rect::new(x, y, width.max(1) as u32, height.max(1) as u32);
                     context.fill_rect(box_rect, background);
                     context.draw_rect(box_rect, border);
-                    context.draw_text_line_cow(
+                    context.draw_text_line_ellipsis(
                         box_rect,
                         text,
                         font,
@@ -1508,7 +1508,7 @@ impl Heatmap {
             // left edge, so the room available is the gutter itself — not the distance to
             // the grid, which is the same number and would drift if the two ever stopped
             // being equal.
-            context.draw_text_fitted_cow(
+            context.draw_text_fitted_ellipsis(
                 Rect::new(grid.x - LABEL_GUTTER, y, LABEL_GUTTER as u32, font_height.max(1) as u32),
                 label,
                 font,
@@ -1537,7 +1537,7 @@ impl Heatmap {
             // is clamped to the control so the first row of text cannot start above it.
             let top = (grid.y - font_height).max(full.y);
             let height = (grid.y - top).max(1) as u32;
-            context.draw_text_fitted_cow(
+            context.draw_text_fitted_ellipsis(
                 Rect::new(cell_x, top, width.max(1) as u32, height),
                 label,
                 font,
@@ -1646,14 +1646,14 @@ impl Heatmap {
         // and `LEGEND_HEIGHT` reserves the line box the font actually has.
         let label_top = y + strip_height + RAMP_GAP;
         let label_band_height = (*label_height).max(1);
-        context.draw_text_fitted_cow(
+        context.draw_text_fitted_ellipsis(
             Rect::new(strip_x, label_top, strip_width.max(1) as u32, label_band_height),
             low_text,
             font,
             text_color,
             HorizontalAlignment::Left,
         );
-        context.draw_text_fitted_cow(
+        context.draw_text_fitted_ellipsis(
             Rect::new(strip_x, label_top, strip_width.max(1) as u32, label_band_height),
             high_text,
             font,

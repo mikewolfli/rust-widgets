@@ -321,6 +321,11 @@ pub struct TreeTable {
     delegate: Option<Arc<dyn ItemDelegate>>,
     /// The `(visible row, column)` an in-place edit is open on, if any (RW-18).
     editing: Option<(usize, usize)>,
+    /// The cell-text buffer the paint loop fills per cell.
+    ///
+    /// Reused across rows and frames: a fresh `String` per paint allocated on the first cell it
+    /// wrote, which is exactly the steady-state cost this buffer removes.
+    cell_text_scratch: std::cell::RefCell<String>,
 }
 
 impl TreeTable {
@@ -370,6 +375,7 @@ impl TreeTable {
             saved_expansion: Vec::new(),
             delegate: None,
             editing: None,
+            cell_text_scratch: std::cell::RefCell::new(String::new()),
         }
     }
 
@@ -1854,7 +1860,7 @@ impl Draw for TreeTable {
         let row_h = self.row_height as i32;
         // One font and one text buffer for the whole grid (see the cell loop below).
         let cell_font = effective_font(style);
-        let mut cell_text = String::new();
+        let mut cell_text = self.cell_text_scratch.borrow_mut();
 
         if self.show_header {
             let columns = self.column_count();
@@ -1884,7 +1890,7 @@ impl Draw for TreeTable {
                         band.width.saturating_sub(sort_slot),
                         band.height,
                     );
-                    context.draw_text_fitted_cow(
+                    context.draw_text_fitted_ellipsis(
                         context.text_line(label_band, cell_font),
                         label,
                         cell_font,
@@ -2003,7 +2009,7 @@ impl Draw for TreeTable {
                         (x + width as i32 - text_x).max(0) as u32,
                         self.row_height,
                     );
-                    context.draw_text_fitted_cow(
+                    context.draw_text_fitted_ellipsis(
                         context.text_line(band, cell_font),
                         &cell_text,
                         cell_font,
@@ -2041,7 +2047,7 @@ impl Draw for TreeTable {
                         (rect.right() - text_x).max(0) as u32,
                         self.row_height,
                     );
-                    context.draw_text_fitted_cow(
+                    context.draw_text_fitted_ellipsis(
                         context.text_line(text_band, cell_font),
                         "Loading...",
                         cell_font,

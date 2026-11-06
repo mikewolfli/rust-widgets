@@ -1,0 +1,33 @@
+rust-widgets-icons
+==================
+
+This crate carries two kinds of material under two licences.
+
+1. The crate's Rust code — the `IconName` table, its accessors, and this crate's own
+   source — is MIT, copyright Mike Li/Mikewolfli/Wei Li. The repository-root `LICENSE`
+   is that licence.
+
+2. The icon geometry — the `d` strings in `src/data.rs` and the flattened polygons in
+   `src/fallback.rs` — is a derivative of **Material Symbols**, by Google LLC, and is
+   licensed under the **Apache License, Version 2.0**. The required licence copy ships
+   beside this file as `LICENSE-APACHE` (Apache-2.0 §4(a)).
+
+Origin
+    Material Symbols, by Google LLC.
+    Project:  https://github.com/google/material-design-icons
+    Pin:      commit bd8cb85bd4bad964fe6918f79665bb40c3a8efef (master @ 2026-09-25)
+    Style:    symbols/web/<name>/materialsymbolsoutlined/<name>_24px.svg
+    SHA-256 of the upstream LICENSE at the pinned commit:
+        58d1e17ffe5109a7ae296caafcadfdbe6a7d176f0bc4ab01e12a689b0499d8bd
+
+Modification statement (Apache-2.0 §4(b))
+    Each `d` in `src/data.rs` is upstream's outline **copied verbatim**; no outline was
+    redrawn, simplified or re-encoded. `src/fallback.rs` is a mechanical flattening of the
+    same outlines (curves sampled to polygons on the same 960-unit grid), generated from the
+    vendored SVGs. The generated files name their source and the pinned revision in their own
+    headers.
+
+Upstream NOTICE
+    The pinned upstream tree ships no `NOTICE` file; the repository records that probe at
+    `tools/material_symbols/UPSTREAM_HAS_NO_NOTICE` (Apache-2.0 §4(d) is therefore not
+    triggered by an upstream notice).

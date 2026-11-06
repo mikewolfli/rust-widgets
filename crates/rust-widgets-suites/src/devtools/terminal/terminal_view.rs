@@ -1368,6 +1368,16 @@ impl EventHandler for TerminalView {
             self.cursor.start();
         }
 
+        // Typed input and keys belong to the focused terminal; without this an unfocused view
+        // still appends text and runs its key bindings.
+        if matches!(
+            event,
+            Event::KeyPress { .. } | Event::TextInput { .. } | Event::ImeCommit { .. }
+        ) && self.base.focus_reason().is_none()
+        {
+            return;
+        }
+
         match event {
             // Platform text — a printable string or an IME commit — appends to the same line.
             //
@@ -2952,6 +2962,8 @@ mod tests {
     #[test]
     fn history_recall_works_with_arrow_keys() {
         let mut terminal = TerminalView::new(Rect::new(0, 0, 500, 260));
+        terminal
+            .handle_event(&Event::FocusGained { reason: rust_widgets::event::FocusReason::Tab });
         terminal.set_input_line("first");
         assert!(terminal.submit());
         terminal.set_input_line("second");
@@ -3050,6 +3062,8 @@ mod tests {
     #[test]
     fn history_recall_bounds() {
         let mut terminal = TerminalView::new(Rect::new(0, 0, 800, 600));
+        terminal
+            .handle_event(&Event::FocusGained { reason: rust_widgets::event::FocusReason::Tab });
         // No history yet
         terminal.handle_event(&Event::key_press(38, 0));
         assert_eq!(terminal.input_line(), "");
@@ -3079,6 +3093,8 @@ mod tests {
     #[test]
     fn text_input_appends_unicode_to_the_line() {
         let mut terminal = TerminalView::new(Rect::new(0, 0, 500, 260));
+        terminal
+            .handle_event(&Event::FocusGained { reason: rust_widgets::event::FocusReason::Tab });
         terminal.handle_event(&Event::text_input("你好"));
         terminal.handle_event(&Event::text_input(" ls"));
         assert_eq!(terminal.input_line(), "你好 ls");
@@ -3091,6 +3107,8 @@ mod tests {
     #[test]
     fn ime_commit_appends_to_the_input_line() {
         let mut terminal = TerminalView::new(Rect::new(0, 0, 500, 260));
+        terminal
+            .handle_event(&Event::FocusGained { reason: rust_widgets::event::FocusReason::Tab });
         terminal.handle_event(&Event::ime_commit("你好"));
         assert_eq!(terminal.input_line(), "你好", "an IME commit must reach the prompt");
         terminal.handle_event(&Event::ime_commit(" ls"));
@@ -3100,6 +3118,8 @@ mod tests {
     #[test]
     fn backspace_deletes_one_character_not_one_byte() {
         let mut terminal = TerminalView::new(Rect::new(0, 0, 500, 260));
+        terminal
+            .handle_event(&Event::FocusGained { reason: rust_widgets::event::FocusReason::Tab });
         terminal.set_input_line("ab");
         terminal.handle_event(&Event::key_press(8, 0));
         assert_eq!(terminal.input_line(), "a");
@@ -3113,6 +3133,8 @@ mod tests {
     #[test]
     fn enter_submits_text_entered_via_text_input() {
         let mut terminal = TerminalView::new(Rect::new(0, 0, 500, 260));
+        terminal
+            .handle_event(&Event::FocusGained { reason: rust_widgets::event::FocusReason::Tab });
         terminal.handle_event(&Event::text_input("ls -la"));
         terminal.handle_event(&Event::key_press(13, 0));
         assert_eq!(terminal.input_line(), "");
@@ -3122,6 +3144,8 @@ mod tests {
     #[test]
     fn history_recall_then_editing_starts_a_fresh_line() {
         let mut terminal = TerminalView::new(Rect::new(0, 0, 500, 260));
+        terminal
+            .handle_event(&Event::FocusGained { reason: rust_widgets::event::FocusReason::Tab });
         terminal.set_input_line("cmd1");
         assert!(terminal.submit());
         terminal.set_input_line("cmd2");
@@ -3205,6 +3229,8 @@ mod tests {
     #[test]
     fn page_keys_page_the_scrollback() {
         let mut terminal = TerminalView::new(Rect::new(0, 0, 400, 140));
+        terminal
+            .handle_event(&Event::FocusGained { reason: rust_widgets::event::FocusReason::Tab });
         for n in 0..60 {
             terminal.append_output(format!("line{n}"));
         }
@@ -3313,6 +3339,8 @@ mod tests {
     #[test]
     fn the_ime_anchor_follows_the_caret() {
         let mut terminal = TerminalView::new(Rect::new(0, 0, 500, 260));
+        terminal
+            .handle_event(&Event::FocusGained { reason: rust_widgets::event::FocusReason::Tab });
         terminal.set_input_line("ab");
         terminal.handle_event(&Event::ime_preedit("你", 0));
         let at_end = terminal.preedit_screen_point().expect("a composition has an anchor");

@@ -2463,6 +2463,29 @@ pub fn advance_default_animation_clock(delta_ms: u32) -> FrameStep {
     with_default_animation_clock(|clock| clock.advance_delta(delta_ms))
 }
 
+/// Advances the default clock if one already exists and still has work, and reports whether it
+/// still needs frames.
+///
+/// This is the frame loop's entry point (RD2-05): `drive_frame` calls it once per frame with the
+/// same delta the controls get, so a host that choreographs named [`AnimationGroup`]s through
+/// [`with_default_animation_clock`] moves in step with controls that animate themselves. A host
+/// that never created a clock — the common case for an app that animates through controls — pays
+/// one thread-local read and nothing else; a clock with nothing running is skipped without
+/// advancing.
+pub fn tick_default_animation_clock(delta_ms: u32) -> bool {
+    DEFAULT_CLOCK.with(|cell| {
+        let mut slot = cell.borrow_mut();
+        let Some(clock) = slot.as_mut() else {
+            return false;
+        };
+        if !clock.is_running() {
+            return false;
+        }
+        clock.advance_delta(delta_ms);
+        clock.is_running()
+    })
+}
+
 #[cfg(test)]
 mod property_driver_tests {
     use super::{MotionCurve, MotionSlot, PropertyDriver, SpringPreset, Transition};

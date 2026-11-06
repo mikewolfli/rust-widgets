@@ -873,7 +873,7 @@ impl Draw for AppBar {
                 // and then draw the full width, so a long localised title still ran under the
                 // trailing action. The band is widened by the fitted draw's own inset so a title
                 // that fits starts at its computed x instead of three pixels to its right.
-                context.draw_text_fitted_cow(
+                context.draw_text_fitted_ellipsis(
                     Rect::new(
                         line_x(title_width) - fit_inset,
                         title_y,
@@ -899,7 +899,7 @@ impl Draw for AppBar {
 
                 if !self.title.is_empty() {
                     let title_width = metrics.width as i32;
-                    context.draw_text_fitted_cow(
+                    context.draw_text_fitted_ellipsis(
                         Rect::new(
                             line_x(title_width) - fit_inset,
                             top,
@@ -918,7 +918,7 @@ impl Draw for AppBar {
                 let subtitle_color =
                     if is_enabled { text_color.blend(&background, 0.35) } else { text_color };
                 let subtitle_width = subtitle_metrics.width as i32;
-                context.draw_text_fitted_cow(
+                context.draw_text_fitted_ellipsis(
                     Rect::new(
                         line_x(subtitle_width) - fit_inset,
                         top + title_height as i32,
@@ -964,7 +964,7 @@ impl Draw for AppBar {
                     crate::widget::BaseWidget::disabled_ink_weight(),
                 )
             };
-            context.draw_text_fitted_cow(
+            context.draw_text_fitted_ellipsis(
                 Rect::new(
                     action_x - fit_inset,
                     action_y,
@@ -1017,7 +1017,7 @@ impl Draw for AppBar {
                     continue;
                 }
                 if let Some(label) = self.actions.get(*index) {
-                    context.draw_text_fitted_cow(
+                    context.draw_text_fitted_ellipsis(
                         context.text_line(*box_rect, &action_font),
                         label,
                         &action_font,
@@ -1027,7 +1027,7 @@ impl Draw for AppBar {
                 }
             }
             if let Some(box_rect) = boxes.overflow {
-                context.draw_text_fitted_cow(
+                context.draw_text_fitted_ellipsis(
                     context.text_line(box_rect, &action_font),
                     "\u{2026}",
                     &action_font,

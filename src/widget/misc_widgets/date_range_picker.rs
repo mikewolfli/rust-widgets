@@ -1154,7 +1154,7 @@ impl Draw for DateRangePicker {
                     continue;
                 };
                 context.fill_rounded_rect(chip, 4, surface.blend(&text_color, 0.08));
-                context.draw_text_fitted_cow(
+                context.draw_text_fitted_ellipsis(
                     chip,
                     self.presets[index].label.as_str(),
                     &preset_font,
@@ -1174,7 +1174,7 @@ impl Draw for DateRangePicker {
             let header_band =
                 Rect::new(panel_x + 20, header_top + 6, panel_width.saturating_sub(40), 18);
             let header_text = self.header_text(panel);
-            context.draw_text_fitted_cow(
+            context.draw_text_fitted_ellipsis(
                 header_band,
                 &header_text,
                 &header_font,
@@ -1243,7 +1243,7 @@ fn draw_month_panel(
     for (i, day_name) in picker.weekday_header().iter().enumerate() {
         let cell_x = grid_left + (i as u32 * column_pitch) as i32;
         let cell_y = grid_top - DAY_HEADER_HEIGHT as i32;
-        context.draw_text_fitted_cow(
+        context.draw_text_fitted_ellipsis(
             Rect::new(cell_x - margin, cell_y + 4, cell_width + 2 * margin as u32, dow_height),
             day_name,
             dow_font,
@@ -1330,7 +1330,7 @@ fn draw_month_panel(
         } else {
             text_color
         };
-        context.draw_text_fitted_cow(
+        context.draw_text_fitted_ellipsis(
             Rect::new(
                 cell_x - TEXT_FIT_MARGIN as i32,
                 day_y,

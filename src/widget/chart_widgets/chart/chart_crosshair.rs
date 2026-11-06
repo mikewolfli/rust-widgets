@@ -359,6 +359,35 @@ impl Widget for ChartCrosshair {
     fn size_hint(&self) -> crate::core::Size {
         crate::core::Size::new(120, 120)
     }
+
+    /// Joins each published name to the signal the overlay actually emits.
+    ///
+    /// The capability publishes `crosshair_moved` (an optional data coordinate) and
+    /// `position_changed` (the painted point as its `"x,y"` spelling, the same carrier the canvas
+    /// uses for point events). Without these arms a subscription would validate and never fire.
+    fn event_signal_dyn(&self, name: &str) -> Option<crate::signal::EventSignalRef> {
+        use crate::signal::EventSignalRef;
+        match name {
+            "position_changed" => {
+                Some(EventSignalRef::mapped("position_changed", &self.position_changed, |v| {
+                    CapabilityValue::String(crate::compat::format!("{},{}", v.x, v.y))
+                }))
+            }
+            "crosshair_moved" => Some(EventSignalRef::mapped(
+                "crosshair_moved",
+                &self.crosshair_moved,
+                |v| match v {
+                    Some((x, y)) => CapabilityValue::Tuple(crate::compat::Vec::from([
+                        CapabilityValue::Float(*x),
+                        CapabilityValue::Float(*y),
+                    ])),
+                    None => CapabilityValue::Null,
+                },
+            )),
+            _ => None,
+        }
+    }
+
     crate::impl_draw_bridge!();
     impl_widget_property_hooks!();
 }

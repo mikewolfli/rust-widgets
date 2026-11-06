@@ -78,6 +78,40 @@ mkdir -p "$RW_CACHE_DIR" 2>/dev/null || true
 # Set RW_GATE_NO_CACHE=1 to bypass (debugging a step whose result you distrust).
 RW_GATE_NO_CACHE="${RW_GATE_NO_CACHE:-0}"
 
+# The `cargo` this cache drives. `check_profile_builds.sh` documents a `CARGO`
+# override, so the cache must honour it rather than quietly running the default
+# binary on a cache miss and replaying it on a hit.
+RW_CACHE_CARGO="${CARGO:-cargo}"
+
+# Exported variables the *gate harness* owns, which must not take part in the key.
+#
+# # Why this exists — the measured failure
+#
+# The environment digest used to cover every exported variable, which is correct
+# but made the key depend on things no compiler ever reads. `run_all_gates.sh`
+# explicitly tells a developer to raise its budgets from the environment
+# (`RW_GATE_TIMEOUT`, `RW_RUN_TIMEOUT`), so following that advice invalidated
+# **every** cached step: a repeat run recompiled the whole tree and looked like a
+# hang. Measured on this tree, with an identical argv digest and an identical
+# source digest, `_rw_cache_key check --lib` returned
+#
+#   9ba3…/c93b…/5e3e…   no override
+#   9ba3…/e50e…/5e3e…   RW_RUN_TIMEOUT=7200
+#   9ba3…/8668…/5e3e…   RW_GATE_TIMEOUT=1200
+#
+# — three keys for one compilation. Only the middle line differed, and it is the
+# *environment* line. That is the whole reason a warm tree still took an hour.
+#
+# # Why the list is exact names rather than `RW_*`
+#
+# A prefix match would also drop variables a test legitimately reads
+# (`RW_PRINT_BACKEND` in `src/print/print_impl.rs`, `RW_WL_COPY` in the Wayland
+# tests), and would make an unrelated export silently reuse a verdict it should
+# not. `RW_CACHE_HARNESS_ENV` below is unexported, so it never appears in the
+# digest itself; `tools/test_cargo_cache.sh` pins both halves of the rule — a
+# harness knob must *not* change the key, an arbitrary exported variable must.
+RW_CACHE_HARNESS_ENV=" RW_GATE_TIMEOUT RW_RUN_TIMEOUT RW_CACHE_DIR RW_GATE_NO_CACHE "
+
 # The digest of everything that can change a compilation's verdict.
 #
 # `git hash-object` is not used: the tree is often dirty while gates run, and a cache that only
@@ -161,11 +195,18 @@ _rw_cache_key() {
   local toolchain
   # `rustc -Vv` rather than `cargo -V`: the compiler is what produces the artifacts.
   toolchain="$(rustc -Vv 2>/dev/null | tr '\n' ' ')"
+  # The cargo binary is part of the identity: a different one can resolve a
+  # different compiler, wrapper or default profile even when `rustc -Vv` matches.
   local argv_digest
-  argv_digest="$(printf '%s\n%s\n' "$toolchain" "$*" | _rw_digest_stream)"
+  argv_digest="$(printf '%s\n%s\n%s\n' "$RW_CACHE_CARGO" "$toolchain" "$*" | _rw_digest_stream)"
   local environment_digest
   environment_digest="$(
     while IFS= read -r name; do
+      # Harness-owned knobs do not affect a compilation's verdict; see
+      # `RW_CACHE_HARNESS_ENV` above for what including them cost.
+      case "$RW_CACHE_HARNESS_ENV" in
+        *" $name "*) continue ;;
+      esac
       printf '%s=%q\n' "$name" "${!name}"
     done < <(compgen -e) | LC_ALL=C sort | _rw_digest_stream
   )"
@@ -187,14 +228,14 @@ rw_cargo_cached() {
   fi
 
   if [ "$RW_GATE_NO_CACHE" = "1" ]; then
-    rw_run_bounded "$budget" cargo "$@"
+    rw_run_bounded "$budget" "$RW_CACHE_CARGO" "$@"
     return $?
   fi
 
   local key
   if ! key="$(_rw_cache_key "$@")"; then
     echo "rw_cargo_cached: could not compute a cache key; running uncached" >&2
-    rw_run_bounded "$budget" cargo "$@"
+    rw_run_bounded "$budget" "$RW_CACHE_CARGO" "$@"
     return $?
   fi
   # A key is three lines (argv, environment, and source digests); join it for the filename.
@@ -210,7 +251,7 @@ rw_cargo_cached() {
     [ -f "$entry.err" ] && cat "$entry.err" >&2
     local cached_status
     cached_status="$(cat "$entry.status")"
-    echo "  (cargo result reused from cache: cargo $*)" >&2
+    echo "  (cargo result reused from cache: $RW_CACHE_CARGO $*)" >&2
     return "$cached_status"
   fi
 
@@ -228,7 +269,7 @@ rw_cargo_cached() {
   tmp_err="$(mktemp "$RW_CACHE_DIR/.pending-err.XXXXXX")"
 
   local status=0
-  rw_run_bounded "$budget" cargo "$@" >"$tmp_out" 2>"$tmp_err" || status=$?
+  rw_run_bounded "$budget" "$RW_CACHE_CARGO" "$@" >"$tmp_out" 2>"$tmp_err" || status=$?
 
   cat "$tmp_out"
   cat "$tmp_err" >&2

@@ -271,7 +271,7 @@ impl Draw for CupertinoNavigationStack {
             );
             x += dot * 3;
         }
-        context.draw_text_fitted_cow(
+        context.draw_text_fitted_ellipsis(
             Rect::new(
                 x + 4,
                 rect.y + 2,

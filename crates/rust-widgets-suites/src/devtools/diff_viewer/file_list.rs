@@ -479,6 +479,10 @@ impl EventHandler for DiffFileList {
         if !self.base.is_enabled() {
             return;
         }
+        // An unfocused file list must not steal the arrow keys from the focused control.
+        if matches!(event, Event::KeyPress { .. }) && self.base.focus_reason().is_none() {
+            return;
+        }
         match event {
             Event::MousePress { pos, button: 1, .. } => {
                 if let Some(index) = self.row_at(*pos) {

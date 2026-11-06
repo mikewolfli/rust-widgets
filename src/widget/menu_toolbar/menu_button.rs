@@ -11,7 +11,7 @@
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::key_codes;
 use crate::event::{Event, EventHandler};
-use crate::render::{RenderCommand, RenderContext};
+use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
 use crate::widget::capability::coercion::{expect_bool, expect_string};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
@@ -408,7 +408,7 @@ pub(crate) fn draw_menu_panel_range(
         // the check glyph on checked rows (and past the popup edge on long ones).
         let item_text_right = item_rect.x + item_rect.width as i32 - PADDING - trailing as i32;
         let item_text_width = (item_text_right - item_x).max(0) as u32;
-        context.draw_text_fitted_cow(
+        context.draw_text_fitted_ellipsis(
             Rect::new(item_x, item_line.y, item_text_width, item_line.height.max(1)),
             &item.text,
             item_font,
@@ -422,7 +422,7 @@ pub(crate) fn draw_menu_panel_range(
                 shortcut_width,
                 item_line.height.max(1),
             );
-            context.draw_text_fitted_cow(
+            context.draw_text_fitted_ellipsis(
                 shortcut_band,
                 &item.shortcut,
                 item_font,
@@ -456,18 +456,17 @@ pub(crate) fn draw_menu_panel_range(
         if branches_open && item.submenu.is_some() && item.enabled {
             let sub_x = item_rect.x + item_rect.width as i32 - PADDING - 8;
             let sub_y = item_rect.y + item_rect.height as i32 / 2 - 4;
-            context.execute_command(RenderCommand::DrawPath {
-                points: vec![
+            context.draw_path(
+                &[
                     Point::new(sub_x, sub_y),
                     Point::new(sub_x, sub_y + 8),
                     Point::new(sub_x + 5, sub_y + 4),
-                ]
-                .into(),
-                closed: true,
-                color: item_ink.blend(&panel_fill, 0.45),
-                filled: true,
-                width: 1,
-            });
+                ],
+                true,
+                item_ink.blend(&panel_fill, 0.45),
+                true,
+                1,
+            );
         }
 
         // A divider is drawn only by a separator row (see the loop head); the old adjacent-row
@@ -1367,7 +1366,7 @@ impl Draw for MenuButton {
             geom.x + geom.width as i32 - PADDING - 8
         };
         let text_band_width = ((arrow_x - 4) - text_offset_x).max(0) as u32;
-        context.draw_text_fitted_cow(
+        context.draw_text_fitted_ellipsis(
             Rect::new(text_offset_x, line.y, text_band_width, line.height.max(1)),
             &self.text,
             font,
@@ -1382,34 +1381,28 @@ impl Draw for MenuButton {
             // Triangle vertices per direction. `Down` is the historical shape, so the
             // default rendering is unchanged; the other three are opt-in.
             let points = match self.arrow_type {
-                MenuArrowType::Down | MenuArrowType::None => vec![
+                MenuArrowType::Down | MenuArrowType::None => [
                     Point::new(arrow_x, arrow_y),
                     Point::new(arrow_x + 8, arrow_y),
                     Point::new(arrow_x + 4, arrow_y + 6),
                 ],
-                MenuArrowType::Up => vec![
+                MenuArrowType::Up => [
                     Point::new(arrow_x, arrow_y + 6),
                     Point::new(arrow_x + 8, arrow_y + 6),
                     Point::new(arrow_x + 4, arrow_y),
                 ],
-                MenuArrowType::Left => vec![
+                MenuArrowType::Left => [
                     Point::new(arrow_x + 6, arrow_y),
                     Point::new(arrow_x + 6, arrow_y + 6),
                     Point::new(arrow_x, arrow_y + 3),
                 ],
-                MenuArrowType::Right => vec![
+                MenuArrowType::Right => [
                     Point::new(arrow_x, arrow_y),
                     Point::new(arrow_x, arrow_y + 6),
                     Point::new(arrow_x + 6, arrow_y + 3),
                 ],
             };
-            context.execute_command(RenderCommand::DrawPath {
-                points: points.into(),
-                closed: true,
-                color: arrow_color,
-                filled: true,
-                width: 1,
-            });
+            context.draw_path(&points, true, arrow_color, true, 1);
         }
         // A split button states the boundary between its two targets.
         if self.popup_mode == MenuButtonPopup::MenuButtonPopup && is_enabled {

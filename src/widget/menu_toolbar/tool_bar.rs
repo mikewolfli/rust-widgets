@@ -2451,7 +2451,6 @@ impl WidgetProperties for ToolBar {
                 self.clear();
                 Ok(())
             }
-            "add_action" => Err(CapabilityAccessError::OutOfRange),
             "set_items" => Err(CapabilityAccessError::OutOfRange),
             // `add_separator` takes no argument, so the command appends one through the
             // control's own builder instead of refusing a call it can honor.
@@ -2462,7 +2461,6 @@ impl WidgetProperties for ToolBar {
             // Any other `set_foo` name carries its value through the property route,
             // so the shared default reports that a payload is needed rather than
             // claiming the control has never heard of it.
-            _ if name.starts_with("set_") => Err(CapabilityAccessError::OutOfRange),
             _ => self.default_command(name),
         }
     }
@@ -2771,7 +2769,7 @@ impl Draw for ToolBar {
             match self.button_style {
                 // The historical path: one centred label, no icon, no second layout.
                 ToolBarButtonStyle::TextOnly => {
-                    context.draw_text_fitted_cow(
+                    context.draw_text_fitted_ellipsis(
                         line,
                         item.text(),
                         font,
@@ -2823,7 +2821,7 @@ impl Draw for ToolBar {
                             log::warn!("toolbar item icon could not be painted: {error:?}");
                         }
                     } else if let Some(icon) = icon {
-                        context.draw_text_fitted_cow(
+                        context.draw_text_fitted_ellipsis(
                             icon_box,
                             icon,
                             font,
@@ -2834,7 +2832,7 @@ impl Draw for ToolBar {
                     let label_x = item_band.x + icon_width as i32;
                     let label_width =
                         (item_band.x + item_band.width as i32 - label_x).max(0) as u32;
-                    context.draw_text_fitted_cow(
+                    context.draw_text_fitted_ellipsis(
                         Rect::new(label_x, line.y, label_width, line.height.max(1)),
                         item.text(),
                         font,
@@ -2864,7 +2862,7 @@ impl Draw for ToolBar {
                             log::warn!("toolbar item icon could not be painted: {error:?}");
                         }
                     } else if let Some(icon) = icon {
-                        context.draw_text_fitted_cow(
+                        context.draw_text_fitted_ellipsis(
                             icon_box,
                             icon,
                             font,
@@ -2873,7 +2871,7 @@ impl Draw for ToolBar {
                         );
                     }
                     let label_y = item_band.y + icon_side as i32;
-                    context.draw_text_fitted_cow(
+                    context.draw_text_fitted_ellipsis(
                         Rect::new(
                             item_band.x,
                             label_y,
@@ -3042,7 +3040,9 @@ mod tests {
             "the command appends the control's own separator"
         );
         // The payload-bearing sibling still needs its action list.
-        assert_eq!(tool_bar.command("add_action"), Err(CapabilityAccessError::OutOfRange));
+        // `add_action` is not a published command (a whole-list write goes through
+        // `set_items`), so the bare name is unknown rather than payload-needing.
+        assert_eq!(tool_bar.command("add_action"), Err(CapabilityAccessError::UnknownCommand));
     }
 
     #[test]

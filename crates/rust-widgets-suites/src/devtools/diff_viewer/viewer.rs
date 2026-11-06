@@ -10,6 +10,7 @@ const ROW_HEIGHT: i32 = 16;
 /// How much room below a row's top its height still needs.
 const ROW_BOTTOM_INSET: i32 = 14;
 
+use core::cell::RefCell;
 use rust_widgets::core::{Color, HorizontalAlignment, Point, Rect};
 use rust_widgets::event::wheel::WheelScroll;
 use rust_widgets::event::{Event, EventHandler};
@@ -79,7 +80,13 @@ pub struct DiffViewer {
     ///
     /// The spans themselves are resolved when the rows are built; only their pixel widths need the
     /// renderer, so they are measured once per row and reused by every still frame.
-    span_widths: SpanWidths,
+    span_widths: RefCell<SpanWidths>,
+    /// The font `span_widths` was measured with.
+    ///
+    /// The map is keyed by row only; a change of family, weight, style or spacing at the same
+    /// size clears it here, which is what keeps a theme change from reusing stale advances without
+    /// putting a heap `String` in every lookup key.
+    span_widths_font: RefCell<Option<rust_widgets::core::Font>>,
     /// Whether `display_rows` needs rebuilding before the next use.
     pub(super) display_dirty: bool,
     /// Whether the compared lines are syntax-highlighted.
@@ -177,7 +184,8 @@ impl DiffViewer {
             ignore_blank_lines: false,
             expanded_hunks: Vec::new(),
             display_rows: Vec::new(),
-            span_widths: HashMap::new(),
+            span_widths: RefCell::new(HashMap::new()),
+            span_widths_font: RefCell::new(None),
             display_dirty: true,
             syntax_highlight: false,
             language: LanguageId::PlainText,
@@ -710,7 +718,7 @@ impl DiffViewer {
         self.display_rows.clear();
         // Measured span widths below are keyed by display row, so they belong to the rows being
         // rebuilt.
-        self.span_widths.clear();
+        self.span_widths.borrow_mut().clear();
         let mut left_number = 1usize;
         let mut right_number = 1usize;
         let mut index = 0usize;
@@ -1387,6 +1395,9 @@ impl EventHandler for DiffViewer {
         }
 
         if let Event::KeyPress { key, modifiers } = event {
+            if self.base.focus_reason().is_none() {
+                return;
+            }
             match *key {
                 38 => {
                     if let Some(index) = self.selected_index {
@@ -1565,6 +1576,15 @@ impl Draw for DiffViewer {
         let start = self.visible_start();
         let visible = self.visible_line_count();
         let font = effective_font(style);
+        // A same-size font change (family, weight, italic, tracking) still invalidates the
+        // measured advances; the map is cleared once per font rather than keyed by a heap string.
+        {
+            let mut measured_with = self.span_widths_font.borrow_mut();
+            if measured_with.as_ref() != Some(font) {
+                *measured_with = Some(font.clone());
+                self.span_widths.borrow_mut().clear();
+            }
+        }
         let rows = &self.display_rows;
         for (offset, display) in rows.iter().enumerate().skip(start).take(visible) {
             let y = rect.y + ROW_TOP + ((offset - start) as i32) * ROW_HEIGHT;
@@ -1743,8 +1763,9 @@ impl Draw for DiffViewer {
                 let tint = changed.unwrap_or(background).with_alpha(90);
                 let draw_left = matches!(side, RowSide::Both | RowSide::Left);
                 let draw_right = matches!(side, RowSide::Both | RowSide::Right);
+                let mut span_widths = self.span_widths.borrow_mut();
                 let widths =
-                    self.span_widths.entry((offset, font.size().to_bits())).or_insert_with(|| {
+                    span_widths.entry((offset, font.size().to_bits())).or_insert_with(|| {
                         let measure = |text: &str, span: (usize, usize)| {
                             let prefix = context.measure_text(&text[..span.0], font).width as i32;
                             let run = context.measure_text(&text[span.0..span.1], font).width;

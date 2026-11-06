@@ -1926,7 +1926,7 @@ impl Draw for VideoPlayer {
             let metrics = context.measure_text(text, font);
             let text_y = rect.y + (rect.height as i32 - metrics.height as i32) / 2;
             let line = Rect::new(rect.x, text_y, rect.width, metrics.height);
-            context.draw_text_fitted_cow(
+            context.draw_text_fitted_ellipsis(
                 line,
                 text,
                 font,
@@ -2018,7 +2018,7 @@ impl Draw for VideoPlayer {
                             band.width.saturating_sub(12),
                             line_height,
                         );
-                        context.draw_text_fitted_cow(
+                        context.draw_text_fitted_ellipsis(
                             row,
                             text,
                             font,

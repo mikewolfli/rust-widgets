@@ -827,8 +827,7 @@ impl WidgetProperties for NavigationStack {
                     Err(CapabilityAccessError::OutOfRange)
                 }
             }
-            "push" => Err(CapabilityAccessError::OutOfRange),
-            _ if name.starts_with("set_") => Err(CapabilityAccessError::OutOfRange),
+
             _ => self.default_command(name),
         }
     }
@@ -924,7 +923,7 @@ impl Draw for NavigationStack {
         let title_centre = nav_rect.x + (nav_rect.width as i32 - actions_reserve) / 2;
         let title_x = title_centre - metrics.width as i32 / 2;
         let title_line = context.text_line(nav_rect, title_font);
-        context.draw_text_fitted_cow(
+        context.draw_text_fitted_ellipsis(
             Rect::new(
                 title_x.max(nav_rect.x + 4),
                 title_line.y,
@@ -943,7 +942,7 @@ impl Draw for NavigationStack {
         // button is tappable exactly where it is painted.
         for (index, box_rect) in self.action_boxes().iter() {
             let Some(label) = self.actions.get(*index) else { continue };
-            context.draw_text_fitted_cow(
+            context.draw_text_fitted_ellipsis(
                 context.text_line(*box_rect, title_font),
                 label,
                 title_font,

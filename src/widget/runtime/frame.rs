@@ -296,11 +296,18 @@ pub fn drive_frame(delta_ms: u32) -> FrameOutcome {
     // a suspended frame, where no sweep runs.
     flush_deferred_damage();
 
+    // Step 2b -- named animation groups driven through the crate's default [`AnimationClock`]
+    // advance on the same frame and by the same delta as the controls (RD2-05). Controls animate
+    // through the bus above; the clock is the group half. A host that never created a clock pays
+    // one thread-local read, and a suspended app advances nothing.
+    let clock_animating =
+        !suspended && crate::style::animation::tick_default_animation_clock(delta_ms);
+
     // Step 3 -- the bus answers for the *next* frame, so a settle is painted once more
     // and then scheduling stops. `sweep_animating` is this frame's answer from the sweep just
     // above; the host-owned fact and the settle latch are folded in by the helper.
     let needs_another_frame =
-        !suspended && animation_bus_needs_another_frame_given(sweep_animating);
+        !suspended && (animation_bus_needs_another_frame_given(sweep_animating) || clock_animating);
 
     // Step 4 -- translations that changed on disk, so an edited catalogue reaches the
     // screen without a restart. This runs *after* the animation step and before the

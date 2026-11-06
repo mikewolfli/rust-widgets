@@ -939,7 +939,7 @@ impl Draw for InplaceEditor {
                 }
             }
             if scroll == 0 {
-                context.draw_text_fitted_cow(
+                context.draw_text_fitted_ellipsis(
                     Rect::new(text_x, line.y, text_box.width, line.height.max(1)),
                     &self.text,
                     &font,
@@ -1019,7 +1019,7 @@ impl Draw for InplaceEditor {
             let line = context.text_line(text_box, &font);
             // Fitted to the field: the display value used to paint straight past the box edge
             // when it was wider than the field (I-19).
-            context.draw_text_fitted_cow(
+            context.draw_text_fitted_ellipsis(
                 Rect::new(text_x, line.y, text_box.width, line.height.max(1)),
                 &self.text,
                 &font,

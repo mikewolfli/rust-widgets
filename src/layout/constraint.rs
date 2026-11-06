@@ -9,15 +9,14 @@
 //!
 //! # Reachability
 //!
-//! **State:** Reserved public capability with no in-repo consumer, for the same reason
-//! [`AbsoluteLayout`](crate::layout::absolute::AbsoluteLayout) documents: the constraint data is
-//! one [`ConstraintRef`] list per *child*, which
-//! [`DeclarativeLayoutKind`](crate::json::layout::DeclarativeLayoutKind) cannot carry, and no
-//! widget builds one. Removal condition: when a JSON child-placement schema exists, or when the
-//! solver is confirmed redundant with [`AbsoluteLayout`](crate::layout::absolute::AbsoluteLayout).
-// A complete solver algebra: these tests exercise a subset of it (setters that no test
-// constructs are still part of the solver's contract). The module is `#[cfg(test)]`, so the
-// unused remainder produces no shipped code.
+//! **State:** Production caller: the declarative document path. A `"constraint"` layout node
+//! builds a [`ConstraintLayout`], and each child's `constraints` list is resolved against the
+//! document's node ids and stored on it through
+//! [`apply_constraints_to_layout`](crate::layout::declarative) (API2-01). The solver is therefore
+//! reachable from a saved document, not only from tests.
+//!
+//! A complete solver algebra: the public setters are the solver's contract even where a document
+//! does not exercise every one of them.
 #![allow(dead_code)]
 use super::types::ChildPlacements;
 use super::{ChildInfo, Layout, LayoutContext};
@@ -68,6 +67,55 @@ pub enum ConstraintType {
     Height,
     /// Width/height ratio is enforced (width = height * ratio).
     AspectRatio(f32),
+}
+
+impl ConstraintType {
+    /// The stable token this relationship travels as in a declarative document.
+    ///
+    /// [`ConstraintType::AspectRatio`] carries its ratio in the payload, so the token names only
+    /// the relationship; the document's `multiplier` supplies the ratio (see
+    /// [`Self::from_token`]).
+    pub const fn token(self) -> &'static str {
+        match self {
+            ConstraintType::LeftToLeft => "left_to_left",
+            ConstraintType::LeftToRight => "left_to_right",
+            ConstraintType::RightToLeft => "right_to_left",
+            ConstraintType::RightToRight => "right_to_right",
+            ConstraintType::TopToTop => "top_to_top",
+            ConstraintType::TopToBottom => "top_to_bottom",
+            ConstraintType::BottomToTop => "bottom_to_top",
+            ConstraintType::BottomToBottom => "bottom_to_bottom",
+            ConstraintType::CenterX => "center_x",
+            ConstraintType::CenterY => "center_y",
+            ConstraintType::Width => "width",
+            ConstraintType::Height => "height",
+            ConstraintType::AspectRatio(_) => "aspect_ratio",
+        }
+    }
+
+    /// The relationship a token names, with `ratio` supplying the payload of
+    /// [`ConstraintType::AspectRatio`].
+    ///
+    /// Returns `None` for a token this build does not name, so a document reader can report it
+    /// rather than guessing. `ratio` is ignored by every other variant.
+    pub fn from_token(token: &str, ratio: f32) -> Option<Self> {
+        Some(match token {
+            "left_to_left" => ConstraintType::LeftToLeft,
+            "left_to_right" => ConstraintType::LeftToRight,
+            "right_to_left" => ConstraintType::RightToLeft,
+            "right_to_right" => ConstraintType::RightToRight,
+            "top_to_top" => ConstraintType::TopToTop,
+            "top_to_bottom" => ConstraintType::TopToBottom,
+            "bottom_to_top" => ConstraintType::BottomToTop,
+            "bottom_to_bottom" => ConstraintType::BottomToBottom,
+            "center_x" => ConstraintType::CenterX,
+            "center_y" => ConstraintType::CenterY,
+            "width" => ConstraintType::Width,
+            "height" => ConstraintType::Height,
+            "aspect_ratio" => ConstraintType::AspectRatio(ratio),
+            _ => return None,
+        })
+    }
 }
 
 /// A single constraint entry linking a widget to a target with an offset and multiplier.

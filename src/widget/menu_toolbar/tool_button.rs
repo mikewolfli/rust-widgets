@@ -1315,7 +1315,13 @@ impl Draw for ToolButton {
             // an `x` here *and* asking for `Center` would centre twice: the renderer offsets by
             // `(free + 1) / 2` from the origin it is given, so a pre-shifted origin lands the ink
             // half a box to the leading side.
-            context.draw_text_line_cow(box_, &self.text, font, fg, HorizontalAlignment::Center);
+            context.draw_text_line_ellipsis(
+                box_,
+                &self.text,
+                font,
+                fg,
+                HorizontalAlignment::Center,
+            );
         }
         if let Some(arrow_box) = self.popup_arrow_rect() {
             // The arrow lives in the trailing strip `content_box` already removed from the content,

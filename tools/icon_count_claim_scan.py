@@ -40,16 +40,23 @@ DOCS = [
 
 
 def build_patterns() -> list[re.Pattern]:
-    """Every spelling the tree uses for "the number of `IconName` tokens"."""
+    """Every spelling the tree uses for "the number of `IconName` tokens".
+
+    The number is past a thousand now, so the digit width is `1..6` and a thousands separator is
+    part of the spelling: `4,323` is what the documents write and `4323` is what
+    `icon_tokens.txt` counts. `main` normalises the separator before comparing, so a document that
+    writes `4,323` and one that writes `4323` are both accepted.
+    """
+    count = r"(\d{1,6}(?:,\d{3})*)"
     return [
-        # 75 `IconName` tokens  /  **69** `IconName` tokens
-        re.compile(r"(\d{2,3})\D{0,4}`?IconName`?\s+tokens?\b"),
-        # 75 个 `IconName` token  /  75 個 `IconName` token
-        re.compile(r"(\d{2,3})\D{0,4}(?:个|個)\s*`?IconName`?\s*token"),
-        # `Icon` names 75 icons through `IconName`.
-        re.compile(r"(\d{2,3})\s+icons?\b(?=[^.]*IconName)"),
-        # ENUM["IconName<br/>(75 variants)"]
-        re.compile(r"IconName\D{0,30}\((\d{2,3})\s+variants?\)"),
+        # 75 `IconName` tokens  /  4,323 `IconName` tokens  /  **69** `IconName` tokens
+        re.compile(rf"{count}\D{{0,4}}`?IconName`?\s+tokens?\b"),
+        # 75 个 `IconName` token  /  4,323 個 `IconName` token
+        re.compile(rf"{count}\D{{0,4}}(?:个|個)\s*`?IconName`?\s*token"),
+        # `Icon` names 4,323 icons through `IconName`.
+        re.compile(rf"{count}\s+icons?\b(?=[^.]*IconName)"),
+        # ENUM["IconName<br/>(4,323 variants)"]
+        re.compile(rf"IconName\D{{0,30}}\({count}\s+variants?\)"),
     ]
 
 
@@ -71,7 +78,7 @@ def main(argv: list[str]) -> int:
         lines = text.splitlines()
         for pattern in patterns:
             for match in pattern.finditer(text):
-                if match.group(1) == actual:
+                if match.group(1).replace(",", "") == actual:
                     continue
                 lineno = text.count("\n", 0, match.start()) + 1
                 snippet = lines[lineno - 1].strip() if lineno <= len(lines) else ""

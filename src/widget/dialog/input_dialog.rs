@@ -85,6 +85,8 @@ fn mode_from_name(name: &str) -> Result<InputMode, CapabilityAccessError> {
 /// Input dialog for simple user input.
 pub struct InputDialog {
     base: BaseWidget,
+    /// The OK/Cancel labels, keyed by the catalogue generation.
+    action_label_cache: RefCell<Option<(u64, Rc<Vec<String>>)>>,
     modal: bool,
     title: String,
     label_text: String,
@@ -148,6 +150,7 @@ impl InputDialog {
     pub fn new(geometry: Rect) -> Self {
         Self {
             base: BaseWidget::new(WidgetKind::InputDialog, geometry, "InputDialog"),
+            action_label_cache: RefCell::new(None),
             modal: true,
             title: String::new(),
             label_text: String::new(),
@@ -1063,7 +1066,13 @@ impl InputDialog {
     ///
     /// `draw` and [`InputDialog::button_at`] both call this, so a press can never resolve
     /// against a different label set than the one that was measured and painted.
-    fn action_labels() -> Vec<String> {
+    fn action_labels(&self) -> Rc<Vec<String>> {
+        let generation = crate::i18n::language_generation();
+        if let Some((cached_generation, labels)) = self.action_label_cache.borrow().as_ref() {
+            if *cached_generation == generation {
+                return Rc::clone(labels);
+            }
+        }
         // One buffer per label, moved into the row: the label is appended by the catalogue
         // instead of being materialised twice by `localized_label` (LYT-X04).
         let mut labels = Vec::with_capacity(2);
@@ -1073,6 +1082,8 @@ impl InputDialog {
         let mut label = crate::compat::String::new();
         super::localized_label_into("common.button.cancel", "Cancel", &mut label);
         labels.push(label);
+        let labels = Rc::new(labels);
+        *self.action_label_cache.borrow_mut() = Some((generation, Rc::clone(&labels)));
         labels
     }
 
@@ -1081,13 +1092,13 @@ impl InputDialog {
     /// The press path has no render context of its own, so it borrows the module's measurement-only
     /// one — the pattern `MessageBox::action_button_at` established. Rebuilding rather than caching
     /// is deliberate: a cached rect is a second copy of the geometry that a resize can leave stale.
-    fn action_buttons(&self) -> Vec<Rect> {
+    fn action_buttons(&self) -> Rc<Vec<Rect>> {
         let rect = self.frame_rect();
         let button_band = super::message_box::inset_action_band(
             ControlMetrics::bottom_band(rect, dimensions::DIALOG_BUTTON_HEIGHT),
             rect.y,
         );
-        let labels = Self::action_labels();
+        let labels = self.action_labels();
         super::with_measurement_context(|context| {
             super::message_box::action_row_geometry(
                 context,
@@ -1107,7 +1118,7 @@ impl InputDialog {
 
     /// The focus-target count: the field plus the two action buttons.
     fn focus_count(&self) -> usize {
-        1 + Self::action_labels().len()
+        1 + self.action_labels().len()
     }
 
     /// Moves the focus ring and announces the move.
@@ -1215,7 +1226,7 @@ impl Draw for InputDialog {
         if !self.title.is_empty() {
             let title_font = font;
             let title_line = context.text_line(title_bar_band, title_font);
-            context.draw_text_fitted_cow(
+            context.draw_text_fitted_ellipsis(
                 Rect::new(
                     rect.x + 8,
                     title_line.y,
@@ -1241,7 +1252,7 @@ impl Draw for InputDialog {
         let label_band = ControlMetrics::top_band(body, label_line_h);
         if !self.label_text.is_empty() {
             let label_line = context.text_line(label_band, label_font);
-            context.draw_text_fitted_cow(
+            context.draw_text_fitted_ellipsis(
                 Rect::new(
                     body.x + 10,
                     label_line.y,
@@ -1282,7 +1293,7 @@ impl Draw for InputDialog {
                     if y + line_h as i32 > input_band.y + input_band.height as i32 {
                         break;
                     }
-                    context.draw_text_fitted_cow(
+                    context.draw_text_fitted_ellipsis(
                         Rect::new(input_band.x + 4, y, input_band.width.saturating_sub(8), line_h),
                         line_text,
                         input_font,
@@ -1292,7 +1303,7 @@ impl Draw for InputDialog {
                 }
             } else {
                 let input_line = context.text_line(input_band, input_font);
-                context.draw_text_fitted_cow(
+                context.draw_text_fitted_ellipsis(
                     Rect::new(
                         input_band.x + 4,
                         input_line.y,
@@ -1332,7 +1343,7 @@ impl Draw for InputDialog {
                 }
                 let label = self.items.get(index).map(|item| item.as_str()).unwrap_or("");
                 if !label.is_empty() {
-                    context.draw_text_fitted_cow(
+                    context.draw_text_fitted_ellipsis(
                         Rect::new(row.x + 6, row.y, row.width.saturating_sub(12), row.height),
                         label,
                         font,
@@ -1353,12 +1364,12 @@ impl Draw for InputDialog {
             ControlMetrics::bottom_band(rect, dimensions::DIALOG_BUTTON_HEIGHT),
             rect.y,
         );
-        let labels = Self::action_labels();
+        let labels = self.action_labels();
         let row =
             super::message_box::action_row_geometry(context, font, &labels, button_band, true);
         let ok_rect = row.buttons[0];
         context.fill_rect(ok_rect, accent);
-        context.draw_text_line_cow(
+        context.draw_text_line_ellipsis(
             ok_rect,
             &labels[0],
             font,
@@ -1368,7 +1379,13 @@ impl Draw for InputDialog {
         let cancel_rect = row.buttons[1];
         context.fill_rect(cancel_rect, surface.blend(&ink, 0.1));
         context.draw_rect(cancel_rect, border);
-        context.draw_text_line_cow(cancel_rect, &labels[1], font, ink, HorizontalAlignment::Center);
+        context.draw_text_line_ellipsis(
+            cancel_rect,
+            &labels[1],
+            font,
+            ink,
+            HorizontalAlignment::Center,
+        );
         if let Some(focused) = self
             .focus
             .and_then(|index| index.checked_sub(1))

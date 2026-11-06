@@ -6,15 +6,16 @@
 //! # Reachability
 //!
 //! **`tr!`:** live. The macro resolves at construction time and is used by built-in strings
-//! (file dialog, sample fill), so a catalogue change is only visible to labels built afterwards
-//! unless the widget registered a retranslator.
+//! (`src/widget/dialog/file_dialog.rs` in the widget layer, plus the JSON loader's declarative
+//! path), so a catalogue change is only visible to labels built afterwards unless the widget
+//! registered a retranslator.
 //!
-//! **`register_retranslator` / `retranslate`:** Reserved: the pump works and is tested, but no
-//! in-crate control registers a retranslator (RT2-03). Removal condition: when a built-in text
-//! control adopts the retranslator pattern, or when the declarative path (where labels are
-//! re-resolved from the catalogue on every build) makes it redundant. Until then
-//! [`set_language`] only promises to change the catalogue used by *subsequent* lookups — it does
-//! not re-resolve text already stored in a control.
+//! **`register_retranslator` / `retranslate`:** live. `FileDialog` registers a retranslator
+//! (`src/widget/dialog/file_dialog.rs`): a language switch bumps the generation the dialog stores,
+//! and its `draw` re-resolves the title and button labels from the new catalogue (RT2-03). A host
+//! that stores translated text in its own control registers its own callback the same way.
+//! [`set_language`] therefore reaches both the catalogue for subsequent lookups and the built-in
+//! dialog's already-built text.
 use crate::compat::{lock, MiniToString, Mutex, MutexGuard, OnceLock, String, Vec};
 use crate::i18n::manager::I18nManager;
 use crate::i18n::options::{InitOptions, InitReport};
@@ -26,6 +27,24 @@ use core::sync::atomic::{AtomicU64, Ordering};
 const EMBEDDED_EN_JSON: &str = include_str!("../../language/en.json");
 /// Global i18n manager instance using Mutex for thread-safe access
 pub(crate) static GLOBAL_I18N: Mutex<Option<I18nManager>> = Mutex::new(None);
+/// Bumped whenever the catalogue or the active language changes.
+///
+/// A control that caches a resolved label keys its cache on this number: the label is a pure
+/// function of (key, language, catalogue), so a newer generation means every cached resolution
+/// is stale. It is a counter rather than a lock so the paint path can read it for free.
+static LANGUAGE_GENERATION: AtomicU64 = AtomicU64::new(0);
+
+/// The current catalogue/language generation.
+///
+/// See [`LANGUAGE_GENERATION`]; controls that cache translated text compare this before reusing
+/// a label built under an older catalogue.
+pub fn language_generation() -> u64 {
+    LANGUAGE_GENERATION.load(Ordering::Relaxed)
+}
+
+fn bump_language_generation() {
+    LANGUAGE_GENERATION.fetch_add(1, Ordering::Relaxed);
+}
 
 /// Switch the active language at runtime.
 ///
@@ -56,8 +75,13 @@ pub fn set_language(language: &str) -> bool {
     if !changed {
         return false;
     }
+    bump_language_generation();
     signal.emit(event);
     arm_repaint_for_language_change();
+    // A language switch is exactly the event `register_retranslator` exists for: a control that
+    // stored translated text resolves it again here. The lock is already released, so a callback
+    // may call `translate` (RT2-03).
+    run_retranslators();
     true
 }
 
@@ -101,6 +125,7 @@ pub fn retranslate() {
         // Emitted after the global i18n lock is released, so a slot may call `translate`.
         signal.emit(event);
     }
+    bump_language_generation();
     arm_repaint_for_language_change();
     run_retranslators();
 }
@@ -177,6 +202,21 @@ std::thread_local! {
 #[cfg(test)]
 pub(crate) fn init_call_count() -> usize {
     INIT_CALLS.with(core::cell::Cell::get)
+}
+
+/// Drops the global manager so the next lookup re-initialises from the embedded catalogue.
+///
+/// # Why this exists
+///
+/// `init()` is idempotent by contract: it builds the default catalogue **if none exists** and
+/// otherwise leaves a host-installed manager alone. Several tests used it as a “reset”, so a
+/// test that installed a custom catalogue could leak it into a later test (observed as
+/// `calendar.month.1` / `common.button.cancel` translating to their keys in a parallel run).
+/// Test isolation needs the literal reset; production code keeps `init()`'s idempotence.
+#[cfg(test)]
+pub(crate) fn reset_for_tests() {
+    *crate::compat::lock(&GLOBAL_I18N) = None;
+    LANGUAGE_GENERATION.fetch_add(1, Ordering::Relaxed);
 }
 
 /// Initialize the i18n system, loading the embedded English translations.

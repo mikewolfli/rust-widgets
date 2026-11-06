@@ -28,6 +28,7 @@
 set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 . "$ROOT/tools/lib_timeout.sh"
+. "$ROOT/tools/lib_cargo_cache.sh"
 cd "$ROOT" || exit 1
 
 HOST_TARGET="$(rustc -vV | sed -n 's/^host: //p')"
@@ -45,7 +46,7 @@ run_cell() {
     fi
     RUN=$((RUN + 1))
     echo "RUN  $label ($expectation)"
-    if rw_run_bounded 900 cargo check --target "$target" --no-default-features --features "$features"; then
+    if rw_cargo_cached 900 check --target "$target" --no-default-features --features "$features"; then
         echo "PASS $label"
     else
         echo "FAIL $label (exit $?)"

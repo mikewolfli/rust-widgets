@@ -54,20 +54,42 @@ fn the_token_list_and_the_variant_list_are_the_same_length() {
 
 #[test]
 fn no_two_icons_share_one_outline() {
-    // The `Close == Cross` rule, checked on the shipped data rather than only at generation
-    // time: a build that vendored a second copy of one `d` under another token draws two names
-    // as one picture, and that is a defect no matter how it arrived.
+    // The `Close == Cross` rule, restated for a catalogue whose tokens are upstream's own names:
+    // two names may draw one picture **only** where `UPSTREAM_ALIASES` records that they do.
+    // Upstream publishes `star` / `grade` / `star_outline` as one outline on purpose, and this
+    // crate's curated spellings add `user` / `person`; refusing those would mean dropping real
+    // names. What must still fail is an *unrecorded* duplicate — the shape the original defect
+    // took, where two names shared one picture and nothing said so.
+    let aliases: std::collections::HashMap<&'static str, &'static str> =
+        rust_widgets::widget::UPSTREAM_ALIASES
+            .iter()
+            .map(|(alias, canonical)| (*alias, canonical.as_str()))
+            .collect();
+    let recorded = |a: &str, b: &str| {
+        aliases.get(a).is_some_and(|canonical| *canonical == b)
+            || aliases.get(b).is_some_and(|canonical| *canonical == a)
+    };
+
     let mut seen: Vec<(&'static str, &'static [&'static str])> = Vec::new();
+    let mut duplicates = 0usize;
     for variant in IconName::ALL {
         let data = variant.data();
         if let Some((other, _)) = seen.iter().find(|(_, paths)| *paths == data.paths) {
-            panic!(
-                "{variant:?} and {other} resolve to byte-identical outlines, so two distinct \
-                 icon names draw one picture"
+            assert!(
+                recorded(variant.as_str(), other),
+                "{variant:?} and {other} resolve to byte-identical outlines, and the data does \
+                 not record them as upstream aliases"
             );
+            duplicates += 1;
+            continue;
         }
         seen.push((data.name, data.paths));
     }
+    assert_eq!(
+        duplicates,
+        rust_widgets::widget::UPSTREAM_ALIASES.len(),
+        "the data has a different number of duplicate outlines than `UPSTREAM_ALIASES` records"
+    );
 }
 
 #[test]

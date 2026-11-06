@@ -1004,7 +1004,7 @@ impl Draw for ShortcutEditor {
             } else {
                 format!("Recording: {}", Self::format_keys(&self.capture_keys))
             };
-            context.draw_text_fitted_cow(
+            context.draw_text_fitted_ellipsis(
                 Rect::new(rect.x + margin, y, rect.width.saturating_sub(margin as u32 * 2), 18),
                 &prompt,
                 &capture_font,
@@ -1023,7 +1023,7 @@ impl Draw for ShortcutEditor {
         } else {
             Cow::Owned(format!("Filter: {}", self.filter_text))
         };
-        context.draw_text_fitted_cow(
+        context.draw_text_fitted_ellipsis(
             Rect::new(rect.x + margin, y, rect.width.saturating_sub((margin * 2) as u32), 16),
             filter_label.as_ref(),
             &filter_font,
@@ -1123,7 +1123,7 @@ impl Draw for ShortcutEditor {
                 // The fitted draw insets its band by `TEXT_FIT_MARGIN`, so the band is widened and
                 // shifted back: a name or key that fits is not shifted right or elided early.
                 let fit_inset = crate::render::TEXT_FIT_MARGIN as i32;
-                context.draw_text_fitted_cow(
+                context.draw_text_fitted_ellipsis(
                     Rect::new(
                         name_x - fit_inset,
                         y,
@@ -1135,7 +1135,7 @@ impl Draw for ShortcutEditor {
                     ink,
                     HorizontalAlignment::Left,
                 );
-                context.draw_text_fitted_cow(
+                context.draw_text_fitted_ellipsis(
                     Rect::new(
                         key_x - fit_inset,
                         y,

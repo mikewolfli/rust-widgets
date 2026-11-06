@@ -22,7 +22,7 @@
 //! reported through the same [`HeaderMenu::sort_requested`] signal as ascending and descending so
 //! the grid has one path for all three.
 
-use crate::compat::{lock, Arc, Mutex, String, ToString, Vec};
+use crate::compat::{lock, Arc, Mutex, Rc, RefCell, String, ToString, Vec};
 use crate::core::{HorizontalAlignment, Point, Rect, Size};
 use crate::event::{key_codes, Event, EventHandler};
 use crate::impl_draw_bridge;
@@ -113,6 +113,9 @@ impl HeaderMenuAction {
     }
 }
 
+/// The cached row list and the three flags it depends on.
+type HeaderMenuItemsCache = (bool, bool, SortState, Rc<Vec<HeaderMenuAction>>);
+
 /// The menu a header cell opens for sort, filter, hide and column-chooser intents.
 pub struct HeaderMenu {
     base: BaseWidget,
@@ -141,6 +144,12 @@ pub struct HeaderMenu {
     pub column_chooser_requested: Signal1<String>,
     /// Emitted when the menu is dismissed without choosing a row.
     pub cancelled: GenericSignal,
+    /// The derived row list, keyed by the three flags it depends on.
+    ///
+    /// `items()` is asked for the count by the paint, the hit test and the size hint; each call
+    /// rebuilt the same six-entry `Vec`. The key is complete: the list is a pure function of
+    /// `sortable`, `filterable` and `sort_state`.
+    items_cache: RefCell<Option<HeaderMenuItemsCache>>,
 }
 
 impl HeaderMenu {
@@ -168,6 +177,7 @@ impl HeaderMenu {
             hide_column_requested: Signal1::new(),
             column_chooser_requested: Signal1::new(),
             cancelled: GenericSignal::new(),
+            items_cache: RefCell::new(None),
         }
     }
 
@@ -289,6 +299,19 @@ impl HeaderMenu {
     /// state, the filter row on `filterable`, and Hide/Choose are always available. A host that
     /// needs to mirror the menu in another surface calls this rather than reconstructing it.
     pub fn items(&self) -> Vec<HeaderMenuAction> {
+        self.items_shared().as_ref().clone()
+    }
+
+    /// [`Self::items`] as a shared list, rebuilt only when a flag it names changes.
+    pub(crate) fn items_shared(&self) -> Rc<Vec<HeaderMenuAction>> {
+        if let Some((sortable, filterable, state, items)) = self.items_cache.borrow().as_ref() {
+            if *sortable == self.sortable
+                && *filterable == self.filterable
+                && *state == self.sort_state
+            {
+                return Rc::clone(items);
+            }
+        }
         let mut items = Vec::new();
         if self.sortable {
             items.push(HeaderMenuAction::SortAscending);
@@ -302,6 +325,9 @@ impl HeaderMenu {
         }
         items.push(HeaderMenuAction::HideColumn);
         items.push(HeaderMenuAction::ChooseColumns);
+        let items = Rc::new(items);
+        *self.items_cache.borrow_mut() =
+            Some((self.sortable, self.filterable, self.sort_state, Rc::clone(&items)));
         items
     }
 
@@ -312,7 +338,7 @@ impl HeaderMenu {
 
     /// Moves the selection one row in `direction`, wrapping at the ends.
     pub fn move_selection(&mut self, direction: Direction) {
-        let count = self.items().len();
+        let count = self.items_shared().len();
         if count == 0 {
             return;
         }
@@ -334,7 +360,7 @@ impl HeaderMenu {
         if !self.open {
             return false;
         }
-        let items = self.items();
+        let items = self.items_shared();
         let Some(action) = items.get(self.selected_index).copied() else {
             return false;
         };
@@ -366,7 +392,7 @@ impl HeaderMenu {
     /// The rectangle the menu occupies, flipped and clamped into the viewport.
     pub fn panel_rect(&self) -> Rect {
         let viewport = self.geometry();
-        let rows = self.items().len().max(1) as u32;
+        let rows = self.items_shared().len().max(1) as u32;
         let requested_width = self.anchor_rect.width.max(HEADER_MENU_MIN_WIDTH);
         let width = if viewport.width == 0 { 0 } else { requested_width.min(viewport.width) };
         let requested_height = rows * HEADER_ROW_HEIGHT;
@@ -395,7 +421,7 @@ impl HeaderMenu {
 
     /// Keeps the selection inside the current row list.
     fn clamp_selection(&mut self) {
-        let count = self.items().len();
+        let count = self.items_shared().len();
         if count == 0 {
             self.selected_index = 0;
         } else if self.selected_index >= count {
@@ -422,7 +448,7 @@ impl HeaderMenu {
             return None;
         }
         let row = ((pos.y - rect.y) as u32 / HEADER_ROW_HEIGHT) as usize;
-        (row < self.items().len()).then_some(row)
+        (row < self.items_shared().len()).then_some(row)
     }
 
     /// Dismisses the menu and reports the cancellation.
@@ -474,7 +500,7 @@ impl EventHandler for HeaderMenu {
                     self.base.request_redraw();
                 }
                 key_codes::END => {
-                    self.selected_index = self.items().len().saturating_sub(1);
+                    self.selected_index = self.items_shared().len().saturating_sub(1);
                     self.base.request_redraw();
                 }
                 key_codes::ENTER | key_codes::LINE_FEED => {
@@ -501,7 +527,7 @@ impl Draw for HeaderMenu {
         let (surface, ink) = surface_ink(style);
         let accent = accent_color();
         let font = effective_font(style);
-        let items = self.items();
+        let items = self.items_shared();
         let highlight = surface.blend(&accent, 0.18);
 
         context.fill_rect(rect, surface);
@@ -552,7 +578,7 @@ impl Draw for HeaderMenu {
                     (row.x + row.width as i32 - HEADER_INSET as i32 - text_x).max(0) as u32
                 };
             if text_width > 0 {
-                context.draw_text_fitted_cow(
+                context.draw_text_fitted_ellipsis(
                     Rect::new(text_x, row.y, text_width, row.height),
                     action.label(),
                     font,
@@ -569,7 +595,7 @@ impl Draw for HeaderMenu {
                         width,
                         row.height,
                     );
-                    context.draw_text_fitted_cow(
+                    context.draw_text_fitted_ellipsis(
                         hint,
                         &self.filter_text,
                         font,
@@ -598,7 +624,10 @@ impl Widget for HeaderMenu {
         crate::widget::metrics::ControlMetrics::implicit_size(
             Size::new(0, 0),
             crate::style::EdgeOffsets::all(0),
-            Size::new(HEADER_MENU_MIN_WIDTH, self.items().len().max(1) as u32 * HEADER_ROW_HEIGHT),
+            Size::new(
+                HEADER_MENU_MIN_WIDTH,
+                self.items_shared().len().max(1) as u32 * HEADER_ROW_HEIGHT,
+            ),
         )
     }
     impl_draw_bridge!();

@@ -190,7 +190,13 @@ impl Draw for GridStatusBar {
             rect.height,
         );
         let color = if self.filter_active { accent_color() } else { surface.blend(&ink, 0.7) };
-        context.draw_text_fitted_cow(text_rect, summary, font, color, HorizontalAlignment::Left);
+        context.draw_text_fitted_ellipsis(
+            text_rect,
+            summary,
+            font,
+            color,
+            HorizontalAlignment::Left,
+        );
     }
 }
 

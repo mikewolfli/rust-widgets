@@ -372,7 +372,7 @@ impl Draw for SummaryRow {
         if self.aggregates.is_empty() {
             let empty_text_rect =
                 Rect::new(rect.x + 8, rect.y, rect.width.saturating_sub(16), rect.height);
-            context.draw_text_fitted_cow(
+            context.draw_text_fitted_ellipsis(
                 empty_text_rect,
                 "No summary columns",
                 font,
@@ -390,7 +390,7 @@ impl Draw for SummaryRow {
             let border = if index == 0 { accent } else { surface.blend(&ink, 0.22) };
             context.draw_rect(cell, border);
             let text = &self.cell_texts[index];
-            context.draw_text_fitted_cow(cell, text, font, ink, HorizontalAlignment::Left);
+            context.draw_text_fitted_ellipsis(cell, text, font, ink, HorizontalAlignment::Left);
         }
     }
 }
@@ -471,6 +471,26 @@ fn format_value(value: f64) -> String {
 }
 
 /// Encodes one aggregate as `[column_token, kind, label]`.
+/// The record form of one aggregate value: its column token and the number painted.
+///
+/// The token is the identity, so a value is addressable even when the aggregate order changes.
+pub const SUMMARY_VALUE_SCHEMA: crate::widget::capability::RecordSchema =
+    crate::widget::capability::RecordSchema {
+        fields: &[
+            crate::widget::capability::RecordField::required(
+                "token",
+                crate::widget::capability::PropertyValueKind::String,
+            ),
+            crate::widget::capability::RecordField::required(
+                "value",
+                crate::widget::capability::PropertyValueKind::Float,
+            ),
+        ],
+        id_field: "token",
+        ids_unique: true,
+        ids_required: true,
+    };
+
 fn aggregate_value(aggregate: &ColumnAggregate) -> CapabilityValue {
     CapabilityValue::Tuple(vec![
         CapabilityValue::String(aggregate.column_token.clone()),
@@ -512,6 +532,21 @@ impl WidgetProperties for SummaryRow {
                 Ok(CapabilityValue::Tuple(self.aggregates.iter().map(aggregate_value).collect()))
             }
             "sticky" => Ok(CapabilityValue::Bool(self.sticky)),
+            "values" => {
+                let items = self
+                    .values()
+                    .iter()
+                    .map(|(token, value)| {
+                        crate::widget::capability::RecordValue::new()
+                            .with("token", CapabilityValue::String(token.clone()))
+                            .with("value", CapabilityValue::Float(*value))
+                    })
+                    .collect();
+                Ok(CapabilityValue::Records(crate::widget::capability::RecordList::from_items(
+                    &SUMMARY_VALUE_SCHEMA,
+                    items,
+                )))
+            }
             _ => base_property_get(self, name),
         }
     }
@@ -526,12 +561,45 @@ impl WidgetProperties for SummaryRow {
                 self.set_sticky(expect_bool(value)?);
                 Ok(())
             }
+            "values" => {
+                let CapabilityValue::Records(list) = value else {
+                    return Err(CapabilityAccessError::TypeMismatch);
+                };
+                list.validate_against(&SUMMARY_VALUE_SCHEMA).map_err(|violation| {
+                    CapabilityAccessError::ConstraintViolation {
+                        property: crate::compat::String::from("values"),
+                        reason: crate::compat::format!("{violation}"),
+                    }
+                })?;
+                // Parse every pair first, so a rejected write cannot leave half the cells updated.
+                let mut updates = crate::compat::Vec::with_capacity(list.items().len());
+                for record in list.items() {
+                    let token = match record.get("token") {
+                        Some(CapabilityValue::String(token)) => token.clone(),
+                        _ => return Err(CapabilityAccessError::TypeMismatch),
+                    };
+                    let value = match record.get("value") {
+                        Some(CapabilityValue::Float(value)) => *value,
+                        _ => return Err(CapabilityAccessError::TypeMismatch),
+                    };
+                    updates.push((token, value));
+                }
+                for (token, value) in updates {
+                    if !self.set_value(&token, value) {
+                        return Err(CapabilityAccessError::ConstraintViolation {
+                            property: crate::compat::String::from("values"),
+                            reason: crate::compat::format!("{token} is not a configured aggregate"),
+                        });
+                    }
+                }
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["aggregates", "sticky", BASE_PROPERTY_NAMES]
+        property_names_of!["aggregates", "sticky", "values", BASE_PROPERTY_NAMES]
     }
 }
 

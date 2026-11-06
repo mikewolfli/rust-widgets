@@ -485,7 +485,7 @@ impl Chip {
         let close_band = if self.removable { self.close_radius * 2 + 12 } else { 0 };
         let text_width = rect.width.saturating_sub(12 + close_band);
         if text_width > 0 {
-            context.draw_text_line_cow(
+            context.draw_text_line_ellipsis(
                 Rect::new(rect.x + 6, rect.y, text_width, rect.height),
                 &self.label,
                 &font,
@@ -1348,7 +1348,7 @@ impl FormatToolbar {
             let color = if active { accent } else { ink };
             match action {
                 FormatAction::Bold => {
-                    context.draw_text_line_cow(
+                    context.draw_text_line_ellipsis(
                         cell,
                         "B",
                         &font.with_bold(true),
@@ -1357,7 +1357,7 @@ impl FormatToolbar {
                     );
                 }
                 FormatAction::Italic => {
-                    context.draw_text_line_cow(
+                    context.draw_text_line_ellipsis(
                         cell,
                         "I",
                         &font.with_italic(true),
@@ -1366,7 +1366,7 @@ impl FormatToolbar {
                     );
                 }
                 FormatAction::Underline => {
-                    context.draw_text_line_cow(
+                    context.draw_text_line_ellipsis(
                         cell,
                         "U",
                         &font,
@@ -1386,7 +1386,7 @@ impl FormatToolbar {
                     context.fill_circle(center, (cell.height / 5).max(3), accent);
                 }
                 FormatAction::ClearFormat => {
-                    context.draw_text_line_cow(
+                    context.draw_text_line_ellipsis(
                         cell,
                         "Tx",
                         &font,

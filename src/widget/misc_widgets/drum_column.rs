@@ -431,6 +431,23 @@ impl Widget for DrumColumn {
     fn is_animating(&self) -> bool {
         self.drag_y.is_none() && self.drag_offset != 0.0
     }
+
+    /// Joins the published `selection_changed` name to the signal the column emits.
+    ///
+    /// The capability declares a `UInt` payload while the control stores the row as `usize`, so
+    /// the conversion widens it; without the arm the subscription would never reach the signal.
+    fn event_signal_dyn(&self, name: &str) -> Option<crate::signal::EventSignalRef> {
+        use crate::signal::EventSignalRef;
+        match name {
+            "selection_changed" => {
+                Some(EventSignalRef::mapped("selection_changed", &self.selection_changed, |v| {
+                    CapabilityValue::UInt(*v as u64)
+                }))
+            }
+            _ => None,
+        }
+    }
+
     impl_draw_bridge!();
     impl_widget_property_hooks!();
 }
@@ -541,7 +558,7 @@ impl Draw for DrumColumn {
             // The value is painted in the column minus the arrow gutter; the up/down hints below
             // used to be drawn over the first and last row because a full drum leaves no spare
             // band for them.
-            context.draw_text_fitted_cow(
+            context.draw_text_fitted_ellipsis(
                 Rect::new(
                     drum_rect.x + ARROW_GUTTER as i32,
                     text_y,

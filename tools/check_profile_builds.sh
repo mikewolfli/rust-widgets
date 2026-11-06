@@ -31,6 +31,7 @@
 # Usage: tools/check_profile_builds.sh
 # Exit 0 = every profile checks and tests clean.
 # Exit 1 = at least one profile failed (the failing command is echoed).
+# rw-gate-budget: 1800
 # ============================================================================
 
 set -euo pipefail
@@ -38,28 +39,48 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
-CARGO="${CARGO:-cargo}"
+. "$ROOT_DIR/tools/lib_timeout.sh"
+. "$ROOT_DIR/tools/lib_cargo_cache.sh"
+
+# # Why every step is bounded and cached
+#
+# The steps used to run bare. Two consequences, both fixed here:
+#
+#   * **No bound.** Run through `run_all_gates.sh` this gate was protected by that
+#     runner's per-gate timeout, but `bash tools/check_profile_builds.sh` — the way
+#     a developer runs it — was unbounded: a `cargo` waiting on another process's
+#     target-dir lock would hang forever with no output, exactly the failure mode
+#     `tools/lib_timeout.sh` exists to prevent (principle #58).
+#   * **Repeated work.** Several of these feature sets are compiled by other gates
+#     too, and cargo treats each feature set as a separate compilation unit, so the
+#     sweep paid for them more than once. `rw_cargo_cached` makes the second caller
+#     reuse the first caller's successful result, keyed on argv + toolchain +
+#     environment + source digest.
+#
+# The `CARGO` override still applies: `lib_cargo_cache.sh` resolves `${CARGO:-cargo}`
+# once and drives that binary on both the cached and uncached paths.
+PROFILE_BUDGET="${RW_GATE_TIMEOUT:-900}"
 
 run() {
     local label="$1"
     shift
     echo "── $label"
-    if ! "$@"; then
-        echo "❌ $label failed: $*" >&2
+    if ! rw_cargo_cached "$PROFILE_BUDGET" "$@"; then
+        echo "❌ $label failed: cargo $*" >&2
         exit 1
     fi
 }
 
 # The device profile is the reference point: it must stay green first, so a
 # failure below is attributable to the reduced profile rather than to the tree.
-run "desktop: check" "$CARGO" check --lib
-run "desktop: test" "$CARGO" test --lib
+run "desktop: check" check --lib
+run "desktop: test" test --lib
 
 for profile in tablet mobile embedded mini; do
     run "$profile: check" \
-        "$CARGO" check --lib --no-default-features --features "$profile"
+        check --lib --no-default-features --features "$profile"
     run "$profile: test" \
-        "$CARGO" test --lib --no-default-features --features "$profile"
+        test --lib --no-default-features --features "$profile"
 done
 
 # The second macOS backend (`macos_objc2`) is an *add-on* feature, not a profile, so it is checked
@@ -67,8 +88,8 @@ done
 # (`NSAppearanceNameAqua` read outside `unsafe`, and a chart test asserting engine-only geometry),
 # which is what this arm exists to catch.
 if [ "$(uname -s)" = "Darwin" ]; then
-    run "macos (objc2 backend): check" "$CARGO" check --lib --features macos
-    run "macos (objc2 backend): test" "$CARGO" test --lib --features macos
+    run "macos (objc2 backend): check" check --lib --features macos
+    run "macos (objc2 backend): test" test --lib --features macos
 fi
 
 echo "✅ every device profile builds and tests: desktop, tablet, mobile, embedded, mini"

@@ -981,7 +981,7 @@ impl Draw for NavigationDrawer {
             // The origin is the glyph box's top edge, so centring on the header is half the line
             // box; the old `+ ascent/2` sat the title half a line below the header's middle.
             let header_line = context.text_line(header_rect, &font);
-            context.draw_text_fitted_cow(
+            context.draw_text_fitted_ellipsis(
                 Rect::new(
                     header_text_x,
                     header_line.y,
@@ -1110,7 +1110,7 @@ impl Draw for NavigationDrawer {
             let label_band_width = ((rect.x + panel_width as i32 - 8) - label_x).max(0) as u32;
             if label_band_width > 0 {
                 if let Some(item) = self.items.get(*item_index) {
-                    context.draw_text_fitted_cow(
+                    context.draw_text_fitted_ellipsis(
                         Rect::new(
                             label_x,
                             label_line.y,

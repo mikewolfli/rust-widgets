@@ -594,6 +594,13 @@ pub struct ListView {
     editor_delegate: Option<Arc<dyn TableItemDelegate>>,
     /// The row an in-place edit is open on, if any (RW-18).
     editing_row: Option<usize>,
+    /// The label buffer the paint loop fills per row.
+    ///
+    /// Held on the control so a steady-state frame reuses its capacity; a fresh `String` per paint
+    /// allocated on the first row it wrote.
+    cell_text_scratch: std::cell::RefCell<String>,
+    /// The icon-token buffer the paint loop fills per row (V2-01).
+    icon_scratch: std::cell::RefCell<String>,
 }
 
 /// The live link between a [`ListView`] and a [`ListStateHost`].
@@ -646,6 +653,8 @@ impl ListView {
             placeholder: CollectionPlaceholder::new(),
             editor_delegate: None,
             editing_row: None,
+            cell_text_scratch: std::cell::RefCell::new(String::new()),
+            icon_scratch: std::cell::RefCell::new(String::new()),
         }
     }
     /// Binds an external list model.
@@ -1706,9 +1715,9 @@ impl Draw for ListView {
             // back to the row's number is to make the whole grid arithmetic `u32`, so the sole cast is
             // at the two ends. `index / columns` reports the line, `index % columns` the column within
             // it, and truncating division is what makes the two agree for the last partial line.
-            let mut cell_text = String::new();
+            let mut cell_text = self.cell_text_scratch.borrow_mut();
             // One buffer for every row's icon token, so a long list allocates once (V2-01).
-            let mut icon_scratch = String::new();
+            let mut icon_scratch = self.icon_scratch.borrow_mut();
             let delegate = self.item_delegate.as_deref();
             let start = self.scroll_row.saturating_mul(layout.columns.max(1) as usize);
             for i in start..row_count {
@@ -1802,7 +1811,7 @@ impl Draw for ListView {
                         )
                     };
                     let row_ink = delegate.map_or(ink, |delegate| delegate.text_color(i, ink));
-                    context.draw_text_fitted_cow(
+                    context.draw_text_fitted_ellipsis(
                         context.text_line(band, font),
                         &cell_text,
                         font,
@@ -1825,7 +1834,7 @@ impl Draw for ListView {
                                     width,
                                     cell.height,
                                 );
-                                context.draw_text_fitted_cow(
+                                context.draw_text_fitted_ellipsis(
                                     context.text_line(band, font),
                                     &trailing,
                                     font,
@@ -1871,7 +1880,7 @@ impl Draw for ListView {
                         Rect::new(band.x, tip_y, band.width.max(80).min(rect.width), tip_height);
                     context.fill_rect(tip, surface.blend(&ink, 0.06));
                     context.draw_rect(tip, surface.blend(&ink, 0.2));
-                    context.draw_text_fitted_cow(
+                    context.draw_text_fitted_ellipsis(
                         context.text_line(tip, font),
                         &text,
                         font,

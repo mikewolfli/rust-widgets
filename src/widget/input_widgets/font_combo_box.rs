@@ -1020,6 +1020,18 @@ impl Widget for FontComboBox {
     fn base(&self) -> &BaseWidget {
         &self.base
     }
+
+    /// Hides the field **and** closes the popup it owns.
+    ///
+    /// The popup is painted outside the control's rectangle and owns the press grab while open.
+    /// A hidden combo box that kept it would leave the grab pointing at an invisible field, so a
+    /// host hiding the control must not have to remember to call `hide_popup` first (IN2-03).
+    fn hide(&mut self) {
+        if self.expanded {
+            self.hide_popup();
+        }
+        self.base_mut().hide();
+    }
     fn scrollable_rows(&self) -> Option<&dyn crate::widget::container_widgets::ScrollableRows> {
         Some(self)
     }
@@ -1584,7 +1596,7 @@ impl Draw for FontComboBox {
         let value_line = ctx.text_line(geometry.value_box, &value_font);
         // Fitted, so a long family name is elided rather than drawn under the indicator — the box
         // it is given is the one the indicator left.
-        ctx.draw_text_fitted_cow(
+        ctx.draw_text_fitted_ellipsis(
             Rect::new(
                 geometry.value_box.x,
                 value_line.y,
@@ -1698,7 +1710,7 @@ impl Draw for FontComboBox {
                     let original = self.original_index_at(offset + row);
                     if original == Some(self.current_index as usize) {
                         ctx.fill_rect(item_rect, highlight);
-                        ctx.draw_text_fitted_cow(
+                        ctx.draw_text_fitted_ellipsis(
                             Rect::new(
                                 name_x,
                                 item_line.y,
@@ -1711,7 +1723,7 @@ impl Draw for FontComboBox {
                             HorizontalAlignment::Left,
                         );
                     } else {
-                        ctx.draw_text_fitted_cow(
+                        ctx.draw_text_fitted_ellipsis(
                             Rect::new(
                                 name_x,
                                 item_line.y,
@@ -1733,7 +1745,7 @@ impl Draw for FontComboBox {
                             (name_width as i32 / 2).max(1) as u32,
                             item_line.height.max(1),
                         );
-                        ctx.draw_text_fitted_cow(
+                        ctx.draw_text_fitted_ellipsis(
                             sample_box,
                             sample,
                             display_font,

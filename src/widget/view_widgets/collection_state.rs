@@ -163,7 +163,7 @@ pub fn paint_collection_placeholder(
         return false;
     }
     let color = if placeholder.is_error() { Color::ERROR } else { ink.with_alpha_f32(0.65) };
-    context.draw_text_fitted_cow(
+    context.draw_text_fitted_ellipsis(
         context.text_line(band, font),
         text,
         font,

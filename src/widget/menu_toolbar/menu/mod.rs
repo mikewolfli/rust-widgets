@@ -26,6 +26,7 @@ pub mod popup_reveal;
 
 // Re-export the item surface that `menu_toolbar/mod.rs` exposed directly.
 pub use dropdown_menu::{DropdownItem, DropdownMenu};
+pub(crate) use menu::strip_menu_mnemonic_cow;
 pub use menu::{
     menu_mnemonic, strip_menu_mnemonic, Menu, MenuEntry, PopupDirection, MAX_SUBMENU_DEPTH,
     MENU_ITEM_SCHEMA,

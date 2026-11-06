@@ -93,7 +93,7 @@ impl WindowChromeGeometry {
         if !title.is_empty() {
             let font =
                 crate::widget::metrics::role_font(&crate::style::WidgetStyle::default(), 13.0);
-            context.draw_text_fitted_cow(
+            context.draw_text_fitted_ellipsis(
                 context.text_line(self.title_bar, &font),
                 title,
                 &font,

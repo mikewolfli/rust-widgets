@@ -86,7 +86,7 @@ const BREAKPOINTS_KEY: &str = "breakpoints";
 /// and [`JsonViewSession::engine`]'s `id_at` use. It is deliberately not the project parser's path:
 /// a breakpoint-excluded sibling or a flattened `layout` node shifts the view child index, and
 /// mixing the two numberings is how a layout would place the wrong control.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct JsonViewLayoutChild {
     /// Index in the owning node's converted child list.
     pub index: usize,
@@ -921,11 +921,15 @@ impl JsonViewSession {
                     parent,
                 );
                 let child_type = self.child_widget_name(&layout.path, child.index);
+                // The incremental session's placement facts are paths, not document ids, so a
+                // constraint `target` name cannot be resolved here; absolute placement does not
+                // need one. The full loader resolves names through its own map (API2-01).
                 crate::json::layout::apply_child_layout_placement(
                     child_id,
                     &child.attrs,
                     &child_type,
                     parent,
+                    &|_| None,
                 );
             }
             installed.push(InstalledLayout { layout, parent, child_ids });

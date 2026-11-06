@@ -1797,7 +1797,7 @@ impl Draw for DateEdit {
         // The renderer is the only component that can measure text, so the section boxes are
         // refreshed here, from the same run the value is painted into (ADV-003).
         self.refresh_section_zones(context, rect, font);
-        context.draw_text_fitted_cow(
+        context.draw_text_fitted_ellipsis(
             Rect { x: rect.x + 6, y: line.y, width: text_width, height: line.height },
             text.as_str(),
             font,

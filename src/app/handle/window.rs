@@ -1587,9 +1587,31 @@ impl WindowHandle {
             position.y,
         );
         if applied {
-            crate::platform::window_control::record_window_position(self.raw_id(), position);
+            // A host-driven move is a real move notification on every backend, including the
+            // ones whose protocol cannot observe OS-initiated moves (wayland/redox). Routing it
+            // through the same notification the backends use updates the mirror and emits the
+            // window's `moved` signal, so `position()` never disagrees with the request (PL2-01).
+            crate::platform::window_control::notify_window_moved(self.raw_id(), position);
         }
         applied
+    }
+
+    /// Reports that the window's top-left corner is now `position`.
+    ///
+    /// # Why a host needs this
+    ///
+    /// A backend whose window protocol cannot report OS-initiated moves (a Wayland toplevel, a
+    /// Redox orbclient window) has no event to translate, so its `moved` signal and the position
+    /// mirror would otherwise never change when the user drags the window. A host that *does* learn
+    /// the new position — from its own compositor integration, a platform channel, or a toolkit
+    /// callback — reports it here. The call routes through the same
+    /// [`notify_window_moved`](crate::platform::window_control) every backend uses, so the mirror
+    /// and the window's `moved` signal agree regardless of how the fact arrived.
+    ///
+    /// This is the counterpart of [`Self::set_position`] for a move the library did not request:
+    /// `set_position` asks the platform and notifies on success, this one takes the fact as given.
+    pub fn report_moved(&self, position: Point) {
+        crate::platform::window_control::notify_window_moved(self.raw_id(), position);
     }
 
     /// The control inside this window that currently owns keyboard focus.

@@ -405,6 +405,30 @@ pub struct CodeEditor {
     /// re-shaping every visible segment. Keyed by `(line, segment)`, kept sorted so the
     /// lookup is a binary search and pruning is a retain over the painted lines.
     pub(crate) segment_layouts: RefCell<Vec<((usize, usize), RowLayout)>>,
+    /// Reused document-line window for the paint passes.
+    ///
+    /// `viewport_document_lines` used to return a freshly collected `Vec` (or an `IntoIter`
+    /// built from one) twice per frame — once for the rows and once for the gutter. The
+    /// window is derived state, so it lives in one buffer that both passes refill.
+    pub(crate) viewport_lines_scratch: RefCell<Vec<usize>>,
+    /// Reused token-run buffer for `draw_source_rows`.
+    pub(crate) row_run_scratch: RefCell<Vec<(usize, usize, TokenKind)>>,
+    /// Reused painted-line list for `draw_source_rows`.
+    pub(crate) painted_scratch: RefCell<Vec<usize>>,
+    /// Reused occurrence list for `draw_source_rows`.
+    ///
+    /// The cache itself is keyed and current; the paint loop only needs to read it, but it
+    /// calls `&self` helpers that re-borrow the editor, so the matches are copied into this
+    /// buffer (whose capacity survives) instead of cloning a fresh `Vec` every frame.
+    pub(crate) occurrences_scratch: RefCell<Vec<SearchMatch>>,
+    /// Reused status-row text for `draw_status_bar`.
+    pub(crate) status_text_scratch: RefCell<String>,
+    /// Reused gutter line-number buffer.
+    pub(crate) gutter_number_scratch: RefCell<String>,
+    /// Reused sorted fold list for `draw_gutter`.
+    pub(crate) gutter_folds_scratch: RefCell<Vec<FoldRegion>>,
+    /// Reused severity list for `draw_gutter`.
+    pub(crate) gutter_severities_scratch: RefCell<Vec<(usize, MarkerSeverity)>>,
     /// Everything the cached [`Self::row_layouts`] were measured against.
     ///
     /// A layout's `xs` are a statement about one line's text, shaped with one font at one
@@ -793,6 +817,14 @@ impl CodeEditor {
             bracket_cache: RefCell::new(None),
             row_layouts: RefCell::new(Vec::new()),
             segment_layouts: RefCell::new(Vec::new()),
+            viewport_lines_scratch: RefCell::new(Vec::new()),
+            row_run_scratch: RefCell::new(Vec::new()),
+            painted_scratch: RefCell::new(Vec::new()),
+            occurrences_scratch: RefCell::new(Vec::new()),
+            status_text_scratch: RefCell::new(String::new()),
+            gutter_number_scratch: RefCell::new(String::new()),
+            gutter_folds_scratch: RefCell::new(Vec::new()),
+            gutter_severities_scratch: RefCell::new(Vec::new()),
             row_layout_key: core::cell::Cell::new((
                 0,
                 0,
@@ -1693,6 +1725,26 @@ impl CodeEditor {
     /// reflected here rather than the bare language family name.
     pub fn language_name(&self) -> String {
         self.highlighter_name_for(self.active_language())
+    }
+
+    /// Appends the active language name to `out`, reusing its capacity.
+    ///
+    /// The status row asks for this name once per frame; [`Self::language_name`] returns an
+    /// owned `String` (the public contract), so the paint path writes into its own buffer
+    /// instead of paying for a fresh string per paint.
+    pub(crate) fn write_language_name(&self, out: &mut String) {
+        let language = self.active_language();
+        if let Some((_, highlighter)) =
+            self.language_highlighters.iter().find(|(registered, _)| *registered == language)
+        {
+            out.push_str(highlighter.language_name());
+            return;
+        }
+        if let Some(highlighter) = &self.highlighter {
+            out.push_str(highlighter.language_name());
+            return;
+        }
+        out.push_str(language.name());
     }
 
     /// Returns the language in force for the active buffer.

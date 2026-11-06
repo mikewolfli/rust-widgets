@@ -2285,7 +2285,7 @@ impl Draw for SpinBox {
             );
         }
         if !value_text.is_empty() {
-            context.draw_text_fitted_cow(value_box, value_text, font, text_color, align);
+            context.draw_text_fitted_ellipsis(value_box, value_text, font, text_color, align);
         }
         if let Some(origin) = entry_origin {
             if self.cursor_blink.is_visible() {

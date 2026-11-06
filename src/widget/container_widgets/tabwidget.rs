@@ -2322,19 +2322,12 @@ impl WidgetProperties for TabWidget {
 
     /// Runs one of the commands `tab_widget` publishes.
     ///
-    /// `add_tab` takes the title and the optional page widget and `remove_tab`
-    /// takes the index to remove, so neither can complete without a payload: they
-    /// are refused as [`CapabilityAccessError::OutOfRange`], meaning the name is
-    /// valid and the argument is what is missing.
+    /// `add_tab` / `remove_tab` are not published (a tab carries a mounted page widget, which no
+    /// property value can express), so they answer `UnknownCommand`. Every published `set_*` command
+    /// carries its value through the property route, which the shared default reports as needing a
+    /// payload.
     fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
-        match name {
-            "add_tab" | "remove_tab" => Err(CapabilityAccessError::OutOfRange),
-            // Any other `set_foo` name carries its value through the property route,
-            // so the shared default reports that a payload is needed rather than
-            // claiming the control has never heard of it.
-            _ if name.starts_with("set_") => Err(CapabilityAccessError::OutOfRange),
-            _ => self.default_command(name),
-        }
+        self.default_command(name)
     }
 }
 
@@ -2787,7 +2780,7 @@ impl Draw for TabWidget {
                             }
                         }
                     };
-                    context.draw_text_fitted_cow(
+                    context.draw_text_fitted_ellipsis(
                         title_band,
                         &title_text,
                         font,

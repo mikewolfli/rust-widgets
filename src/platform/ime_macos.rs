@@ -163,8 +163,6 @@ pub struct MacOsImeBridge {
     selected_range: Mutex<(usize, usize)>,
     /// Last insertion-point rectangle in screen coordinates.
     cursor_rect: Mutex<(i32, i32, u32, u32)>,
-    /// Last requested candidate window position.
-    candidate_position: Mutex<ImeCandidatePosition>,
 
     // ── Native platform token ──
     /// Opaque handle to the `NSTextInputContext` (only used on macOS with the
@@ -185,7 +183,6 @@ impl MacOsImeBridge {
             marked_range: Mutex::new((0, 0)),
             selected_range: Mutex::new((0, 0)),
             cursor_rect: Mutex::new((0, 0, 0, 0)),
-            candidate_position: Mutex::new(ImeCandidatePosition { x: 0, y: 0 }),
             native_token: Mutex::new(None),
         }
     }
@@ -553,7 +550,9 @@ impl ImeBridge for MacOsImeBridge {
 
     fn set_candidate_window_position(&self, position: ImeCandidatePosition) {
         log::debug!("[macOS IME] set_candidate_window_position: ({}, {})", position.x, position.y,);
-        *lock(&self.candidate_position) = position;
+        // AppKit owns the candidate window: it re-queries the caret when the character
+        // coordinates are invalidated below. Storing the supplied position as well would be a
+        // write-only mirror — the defect PL2-02 removed from the other three backends.
 
         #[cfg(all(target_os = "macos", feature = "macos"))]
         {
@@ -881,10 +880,10 @@ mod tests {
     }
 
     #[test]
-    fn test_candidate_position_is_retained() {
+    fn setting_the_candidate_position_does_not_panic() {
         let bridge = MacOsImeBridge::new();
+        // AppKit owns the window; the call must be a safe no-op for the stored state.
         bridge.set_candidate_window_position(ImeCandidatePosition { x: 42, y: 84 });
-        assert_eq!(*lock(&bridge.candidate_position), ImeCandidatePosition { x: 42, y: 84 });
     }
 
     #[test]

@@ -220,6 +220,10 @@ impl WidgetProperties for MediaScrubber {
         match name {
             "value" => Ok(CapabilityValue::Float(self.value())),
             "buffered" => Ok(CapabilityValue::Float(self.buffered())),
+            "chapters" => Ok(CapabilityValue::Tuple(
+                self.chapters().iter().map(|chapter| CapabilityValue::Float(*chapter)).collect(),
+            )),
+            "step_ms" => Ok(CapabilityValue::UInt(self.step_ms())),
             "chapter_count" => Ok(CapabilityValue::UInt(self.chapters().len() as u64)),
             "thumb_style" => Ok(CapabilityValue::String(
                 match self.thumb_style() {
@@ -244,6 +248,20 @@ impl WidgetProperties for MediaScrubber {
                 self.set_buffered(buffered);
                 Ok(())
             }
+            "chapters" => {
+                let chapters =
+                    rust_widgets::widget::capability::coercion::expect_number_list(value)?;
+                self.set_chapters(chapters);
+                Ok(())
+            }
+            "step_ms" => {
+                let step = match value {
+                    CapabilityValue::UInt(step) => step,
+                    _ => return Err(CapabilityAccessError::TypeMismatch),
+                };
+                self.set_step_ms(step);
+                Ok(())
+            }
             "thumb_style" => {
                 let token = rust_widgets::widget::capability::coercion::expect_string(value)?;
                 let style = match token.to_ascii_lowercase().as_str() {
@@ -260,7 +278,15 @@ impl WidgetProperties for MediaScrubber {
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["value", "buffered", "chapter_count", "thumb_style", BASE_PROPERTY_NAMES]
+        property_names_of![
+            "value",
+            "buffered",
+            "chapters",
+            "step_ms",
+            "chapter_count",
+            "thumb_style",
+            BASE_PROPERTY_NAMES
+        ]
     }
 }
 

@@ -1360,7 +1360,7 @@ impl Draw for DateTimeEdit {
                 0
             })
             .saturating_sub(if self.spin_buttons { 24 } else { 0 });
-        context.draw_text_fitted_cow(
+        context.draw_text_fitted_ellipsis(
             Rect { x: rect.x + 6, y: line.y, width: text_width, height: line.height },
             text.as_str(),
             font,

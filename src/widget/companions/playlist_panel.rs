@@ -521,7 +521,7 @@ impl Draw for PlaylistPanel {
                 // index, not the filtered row: the number a reader sees is the one the player
                 // reports.
                 let number = format_row_number(track_index + 1, &mut number_buffer);
-                context.draw_text_fitted_cow(
+                context.draw_text_fitted_ellipsis(
                     Rect::new(label_x, row_rect.y, PLAYLIST_NUMBER_WIDTH as u32, row_rect.height),
                     number,
                     font,
@@ -549,7 +549,7 @@ impl Draw for PlaylistPanel {
             let label = self.track_label(track);
             let line = context
                 .text_line(Rect::new(label_x, row_rect.y, label_width, row_rect.height), font);
-            context.draw_text_fitted_cow(
+            context.draw_text_fitted_ellipsis(
                 Rect::new(label_x, line.y, label_width, line.height),
                 label,
                 font,

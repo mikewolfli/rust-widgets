@@ -30,6 +30,7 @@ mod popup;
 mod tests;
 
 pub use crate::widget::menu_toolbar::MAX_SUBMENU_DEPTH;
+pub(crate) use model::strip_menu_mnemonic_cow;
 pub use model::{
     menu_mnemonic, strip_menu_mnemonic, Menu, MenuEntry, PopupDirection, MENU_ITEM_SCHEMA,
 };

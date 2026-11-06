@@ -7,7 +7,7 @@
 //! every modal dims the page behind it, so these bodies live in one file rather than being
 //! repeated — which is how six of them came to differ in the first place.
 
-use crate::compat::{RefCell, Vec};
+use crate::compat::{Rc, RefCell, Vec};
 use crate::core::{Color, ObjectId, Rect};
 use crate::render::RenderContext;
 
@@ -61,6 +61,82 @@ pub(crate) fn localized_label(key: &str, english: &str) -> crate::compat::String
     let mut out = crate::compat::String::new();
     localized_label_into(key, english, &mut out);
     out
+}
+
+/// The number of translated labels kept between paints.
+///
+/// A dialog paints a handful of fixed captions; 32 covers every built-in dialog in the crate
+/// several times over while keeping the table bounded if a host adds its own.
+const LABEL_CACHE_CAPACITY: usize = 32;
+
+thread_local! {
+    /// `(key, catalogue generation, label)` for the labels `draw` asks for every frame.
+    static LABEL_CACHE: RefCell<Vec<(&'static str, u64, Rc<crate::compat::String>)>> =
+        const { RefCell::new(Vec::new()) };
+}
+
+/// [`localized_label`] as a shared handle, keyed by the key and the catalogue generation.
+///
+/// Dialog draw paths ask for the same fixed captions on every frame. The label is a pure
+/// function of (key, fallback, catalogue), so it is resolved once per generation and handed
+/// out by handle; a fresh `String` per paint is what this removes. The generation is the key's
+/// completeness guarantee: switching language or reloading the catalogue invalidates every
+/// cached label.
+pub(crate) fn localized_label_shared(
+    key: &'static str,
+    english: &'static str,
+) -> Rc<crate::compat::String> {
+    let generation = crate::i18n::language_generation();
+    if let Some(hit) = LABEL_CACHE.with(|cache| {
+        cache
+            .borrow()
+            .iter()
+            .find(|(cached_key, cached_generation, _)| {
+                *cached_key == key && *cached_generation == generation
+            })
+            .map(|(_, _, label)| Rc::clone(label))
+    }) {
+        return hit;
+    }
+    let mut label = crate::compat::String::new();
+    localized_label_into(key, english, &mut label);
+    let label = Rc::new(label);
+    LABEL_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if cache.len() >= LABEL_CACHE_CAPACITY {
+            cache.remove(0);
+        }
+        cache.push((key, generation, Rc::clone(&label)));
+    });
+    label
+}
+
+/// FNV-1a over label text, with a separator between entries.
+///
+/// A cache key that names a set of labels needs their content, not their addresses. Collisions
+/// only cost a recomputation (two different label sets sharing a geometry is harmless once the
+/// remaining key fields are equal), so a hash is the compact form.
+pub(crate) fn hash_label_texts<'a>(labels: impl IntoIterator<Item = &'a str>) -> u64 {
+    const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const PRIME: u64 = 0x0000_0100_0000_01b3;
+    let mut hash = OFFSET;
+    for label in labels {
+        for byte in label.as_bytes() {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(PRIME);
+        }
+        hash ^= 0xff;
+        hash = hash.wrapping_mul(PRIME);
+    }
+    hash
+}
+
+/// [`localized_label_shared`] for a `tr_into!` call site whose only fallback is the key.
+///
+/// `tr!` answers the key itself when the catalogue has no entry, and this preserves exactly
+/// that: the caller passes the key as its own English fallback.
+pub(crate) fn localized_label_for_key(key: &'static str) -> Rc<crate::compat::String> {
+    localized_label_shared(key, key)
 }
 
 /// Appends the display label for `key` to `out`; the zero-allocation counterpart of

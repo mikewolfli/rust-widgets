@@ -691,6 +691,10 @@ impl WidgetProperties for MediaTransportBar {
             "show_timecode" => Ok(CapabilityValue::Bool(self.show_timecode)),
             "show_fullscreen" => Ok(CapabilityValue::Bool(self.show_fullscreen)),
             "show_next_previous" => Ok(CapabilityValue::Bool(self.show_next_previous())),
+            "accent" => Ok(match self.accent {
+                Some(color) => CapabilityValue::Color(color),
+                None => CapabilityValue::Null,
+            }),
             _ => base_property_get(self, name),
         }
     }
@@ -750,6 +754,15 @@ impl WidgetProperties for MediaTransportBar {
                 self.set_show_next_previous(show);
                 Ok(())
             }
+            "accent" => {
+                let accent = match value {
+                    CapabilityValue::Color(color) => Some(color),
+                    CapabilityValue::Null => None,
+                    _ => return Err(CapabilityAccessError::TypeMismatch),
+                };
+                self.set_accent(accent);
+                Ok(())
+            }
             // The clock belongs to the host; `set_position` exists for a Rust caller that owns it.
             "position_ms" | "duration_ms" => Err(CapabilityAccessError::ReadOnlyProperty),
             _ => base_property_set(self, name, value),
@@ -767,6 +780,7 @@ impl WidgetProperties for MediaTransportBar {
             "show_timecode",
             "show_fullscreen",
             "show_next_previous",
+            "accent",
             BASE_PROPERTY_NAMES
         ]
     }

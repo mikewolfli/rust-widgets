@@ -648,10 +648,16 @@ impl Draw for ChapterListPanel {
             let time_x = row.x + row.width as i32 - CHAPTER_TIME_WIDTH as i32 - CHAPTER_PADDING;
             let title_width = (time_x - text_x - CHAPTER_PADDING).max(0) as u32;
             let title = Rect::new(text_x, row.y, title_width, row.height);
-            context.draw_text_line_cow(title, &chapter.title, font, ink, HorizontalAlignment::Left);
+            context.draw_text_line_ellipsis(
+                title,
+                &chapter.title,
+                font,
+                ink,
+                HorizontalAlignment::Left,
+            );
             let time = self.times.get(index).map(String::as_str).unwrap_or("");
             let time_band = Rect::new(time_x, row.y, CHAPTER_TIME_WIDTH, row.height);
-            context.draw_text_line_cow(time_band, time, font, ink, HorizontalAlignment::Right);
+            context.draw_text_line_ellipsis(time_band, time, font, ink, HorizontalAlignment::Right);
             context.draw_line(
                 Point::new(row.x, row.bottom()),
                 Point::new(row.x + row.width as i32, row.bottom()),

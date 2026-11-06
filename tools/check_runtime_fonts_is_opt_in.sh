@@ -35,6 +35,8 @@ cd "$(dirname "$0")/.." || exit 1
 
 # shellcheck source=tools/lib_timeout.sh
 source tools/lib_timeout.sh
+# shellcheck source=tools/lib_cargo_cache.sh
+source tools/lib_cargo_cache.sh
 
 MANIFEST="Cargo.toml"
 
@@ -48,12 +50,12 @@ fi
 echo "  PASS"
 
 echo "[2/3] the crate builds with the feature on and off"
-rw_run_bounded 900 cargo check --no-default-features \
+rw_cargo_cached 900 check --no-default-features \
     --features "desktop,fonts-vector-latin,runtime-fonts" --lib || {
     echo "  FAIL  the build with \`runtime-fonts\` does not compile"
     exit 1
 }
-rw_run_bounded 900 cargo check --no-default-features \
+rw_cargo_cached 900 check --no-default-features \
     --features "desktop,fonts-vector-latin" --lib || {
     echo "  FAIL  the build without \`runtime-fonts\` does not compile"
     exit 1

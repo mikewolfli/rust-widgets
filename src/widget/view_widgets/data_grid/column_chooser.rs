@@ -280,7 +280,7 @@ impl Draw for ColumnChooser {
             if row.visible {
                 context.fill_rounded_rect(row_rect, 2, surface.blend(&accent, 0.12));
             }
-            context.draw_text_fitted_cow(
+            context.draw_text_fitted_ellipsis(
                 row_rect,
                 &row.label,
                 font,

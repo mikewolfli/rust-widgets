@@ -1306,7 +1306,7 @@ impl Draw for TimelineWidget {
             if let Some(cached) = cache.as_ref() {
                 for tick in &cached.ticks {
                     let band = Rect::new((tick.x - 24).max(rect.x), header.y, 48, header.height);
-                    context.draw_text_line_cow(
+                    context.draw_text_line_ellipsis(
                         band,
                         &tick.text,
                         font,
@@ -1376,7 +1376,7 @@ impl Draw for TimelineWidget {
                         dimensions::CHART_LABEL_GUTTER as u32,
                         self.row_height,
                     );
-                    context.draw_text_line_cow(
+                    context.draw_text_line_ellipsis(
                         label_band,
                         &item.label,
                         effective_font(style),
@@ -1425,7 +1425,7 @@ impl Draw for TimelineWidget {
                     };
                     if label_w > 0 {
                         let line_height = 14u32.min(self.row_height);
-                        context.draw_text_fitted_cow(
+                        context.draw_text_fitted_ellipsis(
                             Rect::new(
                                 label_x,
                                 y + ((self.row_height.saturating_sub(line_height)) / 2) as i32,
@@ -1460,7 +1460,7 @@ impl Draw for TimelineWidget {
                 1,
             );
             let label_band = Rect::new((x - 18).max(rect.x), rect.y, 36, 12);
-            context.draw_text_line_cow(
+            context.draw_text_line_ellipsis(
                 label_band,
                 "now",
                 effective_font(style),

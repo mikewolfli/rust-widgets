@@ -384,9 +384,7 @@ pub fn published_property_names() -> Vec<(&'static str, Vec<&'static str>)> {
         ("map_attribution", MAP_ATTRIBUTION_PROPERTIES.iter().map(|schema| schema.name).collect()),
         ("tile_loader", TILE_LOADER_PROPERTIES.iter().map(|schema| schema.name).collect()),
         ("zoom_control", ZOOM_CONTROL_PROPERTIES.iter().map(|schema| schema.name).collect()),
-        // `scale_bar` publishes no events: it is a distance legend with no interaction of its
-        // own.
-        ("scale_bar", Vec::new()),
+        ("scale_bar", SCALE_BAR_PROPERTIES.iter().map(|schema| schema.name).collect()),
         ("compass", COMPASS_PROPERTIES.iter().map(|schema| schema.name).collect()),
     ]
 }
@@ -398,6 +396,8 @@ pub fn published_event_names() -> Vec<(&'static str, Vec<&'static str>)> {
         ("map_overview", MAP_OVERVIEW_EVENTS.iter().map(|schema| schema.name).collect()),
         ("map_attribution", MAP_ATTRIBUTION_EVENTS.iter().map(|schema| schema.name).collect()),
         ("tile_loader", TILE_LOADER_EVENTS.iter().map(|schema| schema.name).collect()),
+        // `scale_bar` is a distance legend with no interaction of its own, so it publishes none.
+        ("scale_bar", Vec::new()),
         ("zoom_control", ZOOM_CONTROL_EVENTS.iter().map(|schema| schema.name).collect()),
         ("compass", COMPASS_EVENTS.iter().map(|schema| schema.name).collect()),
     ]

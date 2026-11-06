@@ -340,7 +340,7 @@ fn paint_wrapper(
     // Bounded text: the label is fitted to the content area, so a long one is truncated with
     // an ellipsis instead of running past the control.
     let label_ink = tint.contrast_color();
-    ctx.draw_text_line_cow(
+    ctx.draw_text_line_ellipsis(
         content,
         content_box.label(),
         &palette.font,
@@ -2351,7 +2351,7 @@ fn paint_ratio_guides(
         content.width.saturating_sub(8),
         line_height,
     );
-    ctx.draw_text_line_cow(
+    ctx.draw_text_line_ellipsis(
         caption_rect,
         label,
         &palette.font,
@@ -2408,7 +2408,7 @@ mod shared {
             return;
         }
         let ink = tint.contrast_color();
-        ctx.draw_text_line_cow(rect, label, &palette.font, ink, HorizontalAlignment::Center);
+        ctx.draw_text_line_ellipsis(rect, label, &palette.font, ink, HorizontalAlignment::Center);
     }
 }
 

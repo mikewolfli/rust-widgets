@@ -24,6 +24,7 @@
 //! window, which defeats the point of a level that is supposed to be comparable.
 
 use alloc::vec::Vec;
+use core::fmt::Write as _;
 
 use crate::finance::indicators;
 use crate::finance::layout::{
@@ -497,20 +498,20 @@ impl IndicatorChart {
     }
 
     /// The colour of each drawn series for the active mode.
-    fn series_colors(&self) -> Vec<Color> {
+    ///
+    /// Returned as a slice over constants: this ran in every draw and built a `Vec` for a palette
+    /// that is already fixed per mode.
+    fn series_colors(&self) -> &'static [Color] {
+        const MACD: [Color; 3] =
+            [Color::rgb(33, 150, 243), Color::rgb(255, 193, 7), Color::rgb(120, 144, 156)];
+        const SINGLE: [Color; 1] = [Color::rgb(33, 150, 243)];
+        const STOCHASTIC: [Color; 2] = [Color::rgb(33, 150, 243), Color::rgb(255, 193, 7)];
+        const VOLUME: [Color; 1] = [Color::rgb(156, 39, 176)];
         match self.mode {
-            IndicatorMode::Macd => alloc::vec![
-                Color::rgb(33, 150, 243),
-                Color::rgb(255, 193, 7),
-                Color::rgb(120, 144, 156),
-            ],
-            IndicatorMode::Rsi | IndicatorMode::MoneyFlowIndex | IndicatorMode::Atr => {
-                alloc::vec![Color::rgb(33, 150, 243)]
-            }
-            IndicatorMode::Stochastic => {
-                alloc::vec![Color::rgb(33, 150, 243), Color::rgb(255, 193, 7)]
-            }
-            IndicatorMode::OnBalanceVolume => alloc::vec![Color::rgb(156, 39, 176)],
+            IndicatorMode::Macd => &MACD,
+            IndicatorMode::Rsi | IndicatorMode::MoneyFlowIndex | IndicatorMode::Atr => &SINGLE,
+            IndicatorMode::Stochastic => &STOCHASTIC,
+            IndicatorMode::OnBalanceVolume => &VOLUME,
         }
     }
 
@@ -708,7 +709,13 @@ impl IndicatorChart {
                 let line_height = context.measure_text(text, &font).height.max(1);
                 let band =
                     Rect::new(label_left, y - line_height as i32 / 2, label_width, line_height);
-                context.draw_text_fitted_cow(band, text, &font, ink, HorizontalAlignment::Right);
+                context.draw_text_fitted_ellipsis(
+                    band,
+                    text,
+                    &font,
+                    ink,
+                    HorizontalAlignment::Right,
+                );
             });
         }
     }
@@ -736,7 +743,7 @@ impl IndicatorChart {
         context.draw_rect(area.rect, chrome.grid);
         let font = role_font(self.style(), 12.0);
         let line = context.text_line(area.rect, &font);
-        context.draw_text_fitted_cow(
+        context.draw_text_fitted_ellipsis(
             line,
             "No data",
             &font,
@@ -1003,7 +1010,7 @@ impl Draw for IndicatorChart {
                     if !text.is_empty() {
                         text.push_str("  ");
                     }
-                    text.push_str(&alloc::format!("{:.2}", value));
+                    let _ = write!(text, "{value:.2}");
                 }
             }
             if !text.is_empty() {

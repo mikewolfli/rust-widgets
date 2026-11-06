@@ -860,7 +860,13 @@ impl Draw for Gauge {
             (inner / 2.0).round().max(1.0) as u32,
         );
         if let Some((_, readout)) = cache.as_ref() {
-            ctx.draw_text_line_cow(readout_band, readout, &font, ink, HorizontalAlignment::Center);
+            ctx.draw_text_line_ellipsis(
+                readout_band,
+                readout,
+                &font,
+                ink,
+                HorizontalAlignment::Center,
+            );
         }
 
         if !self.label.is_empty() {
@@ -870,7 +876,7 @@ impl Draw for Gauge {
                 readout_band.width,
                 (radius / 3.0).round().max(1.0) as u32,
             );
-            ctx.draw_text_line_cow(
+            ctx.draw_text_line_ellipsis(
                 label_band,
                 &self.label,
                 &font,

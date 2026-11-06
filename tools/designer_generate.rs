@@ -41,6 +41,7 @@
 use rust_widgets::designer::artifact::{
     is_generated, plan_artifacts, regenerate_into, ArtifactOutcome,
 };
+use rust_widgets::designer::DesignerSession;
 use std::process::ExitCode;
 
 /// The exit status for "a committed artifact does not match its project document".
@@ -172,6 +173,11 @@ fn parse_dimension(flag: &str, value: Option<String>) -> Result<u32, String> {
 fn run(options: &Options) -> Result<bool, String> {
     let json = std::fs::read_to_string(&options.project)
         .map_err(|error| format!("could not read `{}`: {error}", options.project))?;
+    // The project is held in a designer session rather than a bare string: the session is the
+    // document-plus-undo-history object a designer shell edits, and the text generation reads is
+    // the text that history covers (BD-04). The CLI is the in-repo shell that reaches it.
+    let session = DesignerSession::open(json);
+    let json = session.text();
     let (width, height) = options.solve_size(&json);
 
     if options.check {

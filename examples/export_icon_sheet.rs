@@ -1,22 +1,27 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
 // SPDX-License-Identifier: MIT
 
-//! BLUE25 ICON-7 — the reviewable picture of the whole icon set, in two files.
+//! BLUE25 ICON-7 — the reviewable picture of the icon vocabulary, in two files.
 //!
 //! # Why a *sheet* and not one file per icon
 //!
 //! The control snapshots give each control its own SVG because there are 188 of them and one
-//! picture per control is the unit a reviewer judges. Icons are different: there are 31, they are
-//! small, and the question a person actually has is comparative — "is `close` distinguishable from
-//! `cross`?", "do the arrows point the way their names say?". Answering that from 62 separate files
-//! means opening 62 files. Two sheets, one per appearance, answer it at a glance, and they are what
-//! the census digest cannot show: the census proves the pictures *differ*, the sheet shows *how*.
+//! picture per control is the unit a reviewer judges. Icons are different: they are small, and the
+//! question a person actually has is comparative — "is `close` distinguishable from `cross`?", "do
+//! the arrows point the way their names say?". Answering that from dozens of separate files means
+//! opening dozens of files. Two sheets, one per appearance, answer it at a glance, and they are
+//! what the census digest cannot show: the census proves the pictures *differ*, the sheet shows
+//! *how*.
 //!
-//! # What is drawn
+//! # Why the sheet covers the curated tokens, not the whole catalogue
 //!
-//! A grid of every [`IconName`], four per row, each labelled with its token. The label matters: the
-//! whole class of defect this round is about is a name and a picture disagreeing, and an unlabelled
-//! sheet cannot show that.
+//! `IconName::ALL` is now 4,323 tokens: 75 the crate names itself plus the whole Material Symbols
+//! catalogue. A sheet of all of them is 541 rows, ~13 MB of SVG per appearance, and nobody reviews
+//! 4,323 labelled cells by eye. The question this file exists to answer — "does the name match the
+//! picture, for the tokens this crate's own controls use?" — is about the curated 75, so that is
+//! what it draws. The catalogue is reviewed through `tools/icon_census.txt`, which carries a
+//! committed digest per token: a change in what any catalogue icon draws is still a diff, and the
+//! digest is what makes 4,323 of them reviewable at all.
 //!
 //! # Regenerating
 //!
@@ -75,16 +80,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// Renders every icon into one grid, over `backdrop` with `ink` for the labels.
+/// Renders the curated icons into one grid, over `backdrop` with `ink` for the labels.
+///
+/// The curated set is a prefix of [`IconName::ALL`] ([`IconName::CURATED_TOKENS`]), which is why
+/// the slice is the whole filter: the catalogue's entries are covered by the census, not here.
 fn render_sheet(backdrop: Color, ink: Color) -> String {
-    let rows = IconName::ALL.len().div_ceil(COLUMNS);
+    let tokens = &IconName::ALL[..IconName::CURATED_TOKENS];
+    let rows = tokens.len().div_ceil(COLUMNS);
     let width = PADDING + COLUMNS as u32 * (CELL + PADDING);
     let height = PADDING + rows as u32 * (CELL + LABEL_HEIGHT + PADDING);
     let mut backend = SvgPaintBackend::new(rust_widgets::core::Size::new(width, height));
     backend.begin_frame(backdrop);
     {
         let mut ctx = RenderContext::new(&mut backend);
-        for (index, name) in IconName::ALL.into_iter().enumerate() {
+        for (index, name) in tokens.iter().copied().enumerate() {
             let column = (index % COLUMNS) as u32;
             let row = (index / COLUMNS) as u32;
             let x = PADDING + column * (CELL + PADDING);

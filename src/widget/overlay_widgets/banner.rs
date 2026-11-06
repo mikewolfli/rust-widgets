@@ -944,7 +944,7 @@ impl Draw for Banner {
             // per frame was paying for the same answer (OV2-01). The key names every input the
             // ranges depend on, so `set_text`, a resize or a font change simply misses.
             let limit = self.max_text_lines.max(1) as usize;
-            let fitted_lines = {
+            {
                 let key = WrapKey {
                     revision: self.text_revision,
                     text_width,
@@ -965,43 +965,51 @@ impl Draw for Banner {
                     Some((_, ranges)) => ranges.as_slice(),
                     None => &[],
                 };
-                let mut measure = |text: &str| context.measure_text(text, &font).width;
-                let mut lines: Vec<crate::compat::Cow<'_, str>> = Vec::new();
+                // Centred through the shared primitive. A wrapped message is centred as a block,
+                // so the first line is not pinned to the banner's middle line. The lines are drawn
+                // straight from the cached ranges instead of being collected into a `Vec<Cow>`:
+                // the only line that needs an owned form is a truncated last line.
+                let line_count = ranges.len().min(limit);
+                let line = context.text_line(rect, &font);
+                let line_height = line.height.max(1);
+                let block_height = line_height.saturating_mul(line_count as u32);
+                let block_top = rect.y + (rect.height.saturating_sub(block_height) / 2) as i32;
                 for (index, range) in ranges.iter().take(limit).enumerate() {
-                    if index + 1 == limit && ranges.len() > limit {
-                        // The tail of the message does not fit: elide the remaining text on the
-                        // last permitted line, keeping the head of what would have been there.
-                        let tail = self.text[range.start..].split('\n').next().unwrap_or("");
-                        lines.push(crate::widget::text_utils::elide_to_width(
-                            tail,
-                            text_width,
-                            &mut measure,
-                        ));
-                    } else {
-                        lines.push(crate::compat::Cow::Borrowed(&self.text[range.clone()]));
-                    }
-                }
-                lines
-            };
-            // Centred through the shared primitive. A wrapped message is centred as a block, so
-            // the first line is not pinned to the banner's middle line.
-            let line = context.text_line(rect, &font);
-            let line_height = line.height.max(1);
-            let block_height = line_height.saturating_mul(fitted_lines.len() as u32);
-            let block_top = rect.y + (rect.height.saturating_sub(block_height) / 2) as i32;
-            for (index, text) in fitted_lines.iter().enumerate() {
-                context.draw_text_fitted_cow(
-                    Rect {
+                    let band = Rect {
                         x: text_left,
                         y: block_top + line_height as i32 * index as i32,
                         width: text_width,
                         height: line_height,
-                    },
-                    text,
-                    &font,
-                    text_color,
-                    HorizontalAlignment::Left,
-                );
+                    };
+                    if index + 1 == limit && ranges.len() > limit {
+                        // The tail of the message does not fit: elide the remaining text on the
+                        // last permitted line, keeping the head of what would have been there.
+                        let tail = self.text[range.start..].split('\n').next().unwrap_or("");
+                        let fitted = {
+                            let mut measure = |text: &str| context.measure_text(text, &font).width;
+                            crate::widget::text_utils::elide_to_width(
+                                tail,
+                                text_width,
+                                &mut measure,
+                            )
+                        };
+                        context.draw_text_fitted_ellipsis(
+                            band,
+                            &fitted,
+                            &font,
+                            text_color,
+                            HorizontalAlignment::Left,
+                        );
+                    } else {
+                        context.draw_text_fitted_ellipsis(
+                            band,
+                            &self.text[range.clone()],
+                            &font,
+                            text_color,
+                            HorizontalAlignment::Left,
+                        );
+                    }
+                }
             }
         }
 
@@ -1020,7 +1028,7 @@ impl Draw for Banner {
             // the button was.
             let action_font = role_font(style, 12.0);
             let action_line = context.text_line(action_rect, &action_font);
-            context.draw_text_fitted_cow(
+            context.draw_text_fitted_ellipsis(
                 action_line,
                 label,
                 &action_font,

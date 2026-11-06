@@ -882,19 +882,24 @@ pub trait ControlBackend {
 
 ## 图标数据路径（`icons`，默认开启）
 
-`Icon` 通过 `IconName` 命名 75 个图标。`icons` 特性 —— **默认开启** —— 每个都按**真实轮廓**绘制，
-轮廓来自固定在某个上游修订的路径数据。不开该特性时 `Icon` 回退到**生成的几何**，它由**同一批**轮廓
-展平而来 —— 所以两条路径不可能对同一个图标给出不同形状。
+`Icon` 通过 `IconName` 命名 4,323 个图标：本仓自己命名的 75 个令牌，加上完整的 Material Symbols
+目录。`icons` 特性 —— **默认开启** —— 每个都按**真实轮廓**绘制，轮廓来自固定在某个上游修订的
+路径数据。不开该特性时 `Icon` 对那 75 个令牌回退到**生成的几何**，它由**同一批**轮廓展平而来
+—— 所以两条路径不可能对同一个命名图标给出不同形状；目录里的其余令牌在这种构建中没有回退几何，
+会如实报告，而不是画出错误的形状。
 
-token 集在 `tools/icon_tokens.txt` 中**只声明一次**，`tools/gen_icon_names.py` 由它生成 `IconName`
-类型，所以新增一个图标是两行编辑加一次生成器运行，而不再需要改枚举、两个 match 分支和三个数组。
-宿主若需要本仓没有的图标，用 `register_icon` 注册自己的，它走下面完全相同的代码。
+token 集拆成两个文件：`crates/rust-widgets-icons/tools/icon_tokens.txt` 放人工编写的令牌，
+`crates/rust-widgets-icons/tools/icon_catalog.txt` 放目录部分，由
+`crates/rust-widgets-icons/tools/gen_icon_catalog.py` 从上游 codepoint 列表生成。人工文件在前，
+所以它的变体永远不会移动；`crates/rust-widgets-icons/tools/gen_icon_names.py` 由这两个文件生成
+整个 `IconName` 类型，所以新增一个图标是两行编辑加一次生成器运行，而不再需要改枚举、两个 match
+分支和三个数组。宿主若需要本仓没有的图标，用 `register_icon` 注册自己的，它走下面完全相同的代码。
 
 从一个名字到像素经过四个阶段，每个阶段只有一份实现：
 
 ```mermaid
 graph LR
-    ENUM["IconName<br/>（75 个变体）"]
+    ENUM["IconName<br/>（4,323 个变体）"]
     DATA["IconData<br/>name, grid, paths"]
     PARSE["render::path::parser<br/>SVG d -> Segment"]
     FLAT["render::path::flatten<br/>Segment -> 折线"]
@@ -908,7 +913,7 @@ graph LR
 
 | 阶段 | 模块 | 做什么 |
 |---|---|---|
-| 数据 | `widget::icon_data` | 生成表：每个 token 一条 `IconData` |
+| 数据 | `rust_widgets_icons::icon_data` | 生成表：每个 token 一条 `IconData` |
 | 解析 | `render::path::parser` | 读完整 SVG 命令集，产出曲线段 |
 | 展平 | `render::path::flatten` | 设计单位映射到设备像素，产出多边形 |
 | 填充 | `RenderContext::fill_path_non_zero` | 与其他矢量绘制同一条路径填充 |

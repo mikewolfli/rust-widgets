@@ -17,7 +17,16 @@ pub(crate) fn group_box_capability() -> WidgetCapability {
         aliases: &[],
         properties: GROUP_BOX_PROPERTIES,
         events: events_of!("group_box"),
-        commands: &["set_title", "set_checkable", "set_checked", "toggle", "set_alignment"],
+        commands: &[
+            "set_title",
+            "set_checkable",
+            "set_checked",
+            "toggle",
+            "set_alignment",
+            "set_collapsible",
+            "set_collapsed",
+            "set_flat",
+        ],
     }
 }
 
@@ -45,7 +54,16 @@ pub(crate) fn panel_capability() -> WidgetCapability {
         aliases: &[],
         properties: GROUP_BOX_PROPERTIES,
         events: events_of!("panel"),
-        commands: &["set_title", "set_checkable", "set_checked", "toggle", "set_alignment"],
+        commands: &[
+            "set_title",
+            "set_checkable",
+            "set_checked",
+            "toggle",
+            "set_alignment",
+            "set_collapsible",
+            "set_collapsed",
+            "set_flat",
+        ],
     }
 }
 
@@ -77,7 +95,7 @@ pub(crate) fn splitter_capability() -> WidgetCapability {
         aliases: &["pane_splitter"],
         properties: SPLITTER_PROPERTIES,
         events: events_of!("splitter"),
-        commands: &["set_orientation"],
+        commands: &["set_orientation", "set_handle_width"],
     }
 }
 
@@ -125,6 +143,9 @@ pub(crate) fn scroll_area_capability() -> WidgetCapability {
             "set_widget_resizable",
             "set_horizontal_scroll_bar_policy",
             "set_vertical_scroll_bar_policy",
+            "set_inertia",
+            "set_alignment",
+            "set_content_margins",
         ],
     }
 }
@@ -147,6 +168,7 @@ pub(crate) fn tab_widget_capability() -> WidgetCapability {
             "set_tab_position",
             "set_tab_shape",
             "set_document_mode",
+            "set_show_overflow_buttons",
         ],
     }
 }
@@ -174,7 +196,7 @@ pub(crate) fn collapsible_pane_capability() -> WidgetCapability {
         aliases: &["collapsible"],
         properties: COLLAPSIBLE_PANE_PROPERTIES,
         events: events_of!("collapsible_pane"),
-        commands: &["set_title", "set_collapsed", "toggle"],
+        commands: &["set_title", "set_collapsed", "toggle", "set_header_height"],
     }
 }
 
@@ -186,10 +208,17 @@ pub(crate) fn dock_widget_capability() -> WidgetCapability {
         aliases: &["dock"],
         properties: DOCK_WIDGET_PROPERTIES,
         events: events_of!("dock_widget"),
-        // Audit 20261026: `set_features`, `set_allowed_areas` stay unpublished — each assigns a
-        // bit-flag set (`DockFeatures` / `DockAreas`) and the control publishes no property that
-        // carries one; the control's own setters are the write path (principle #18).
-        commands: &["set_title", "set_floating", "set_docked"],
+        // `features` / `allowed_areas` are published as `StringList` properties, and
+        // `dock_location` as an enumerated one, so these commands resolve through the shared
+        // `set_<property>` convention rather than staying Rust-only.
+        commands: &[
+            "set_title",
+            "set_floating",
+            "set_docked",
+            "set_dock_location",
+            "set_features",
+            "set_allowed_areas",
+        ],
     }
 }
 
@@ -212,7 +241,7 @@ pub(crate) fn dock_area_capability() -> WidgetCapability {
         aliases: &["dock_host"],
         properties: DOCK_WIDGET_PROPERTIES,
         events: events_of!("dock_area"),
-        commands: &["set_docked", "set_floating", "set_title"],
+        commands: &["set_docked", "set_floating", "set_title", "set_dock_location"],
     }
 }
 
@@ -229,7 +258,12 @@ pub(crate) fn mdi_area_capability() -> WidgetCapability {
         // publishes `active_subwindow` as read-only; `set_view_mode` stays published — the
         // property route runs the control's real `set_view_mode` (principle #18).
         // writes the control's real view mode.
-        commands: &["set_view_mode"],
+        commands: &[
+            "set_view_mode",
+            "set_tab_strip_position",
+            "set_activation_order",
+            "set_scroll_offset",
+        ],
     }
 }
 
@@ -454,7 +488,7 @@ pub(crate) fn split_layout_capability() -> WidgetCapability {
         aliases: &["split_view"],
         properties: SPLITTER_PROPERTIES,
         events: events_of!("splitter"),
-        commands: &["set_orientation"],
+        commands: &["set_orientation", "set_handle_width"],
     }
 }
 
@@ -466,7 +500,7 @@ pub(crate) fn accordion_capability() -> WidgetCapability {
         aliases: &["collapsible_list"],
         properties: ACCORDION_PROPERTIES,
         events: events_of!("accordion"),
-        commands: &["set_single_expand"],
+        commands: &["set_single_expand", "set_animated"],
     }
 }
 

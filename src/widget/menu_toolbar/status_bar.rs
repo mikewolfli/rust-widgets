@@ -816,7 +816,7 @@ impl Draw for StatusBar {
         // side, so the text yields to them; with no children the box is unchanged.
         let message_box = self.text_area(message_box, false);
         if !self.message.is_empty() {
-            context.draw_text_fitted_cow(
+            context.draw_text_fitted_ellipsis(
                 context.text_line(message_box, font),
                 &self.message,
                 font,
@@ -838,7 +838,7 @@ impl Draw for StatusBar {
             // The box is the column's own interior, panned to the right within it: the column is at
             // least as wide as the grip's reserve, and the text is anchored to the column's
             // trailing edge rather than to the strip's.
-            context.draw_text_fitted_cow(
+            context.draw_text_fitted_ellipsis(
                 context.text_line(permanent_box, font),
                 &self.permanent_message,
                 font,

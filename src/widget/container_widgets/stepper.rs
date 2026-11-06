@@ -496,7 +496,7 @@ impl Draw for Stepper {
         let gap_width = ((gap_right - gap_left).max(0)) as u32;
         let value_line = context.text_line(band, &font);
         let value_color = if !is_enabled { disabled_text } else { text_color };
-        context.draw_text_fitted_cow(
+        context.draw_text_fitted_ellipsis(
             Rect::new(gap_left, value_line.y, gap_width.max(1), value_line.height.max(1)),
             value_text,
             &font,

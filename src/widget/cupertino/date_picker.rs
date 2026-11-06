@@ -1082,7 +1082,7 @@ impl Draw for CupertinoDatePicker {
                     muted.legible_on(wheel, 4.5)
                 };
 
-                context.draw_text_fitted_cow(
+                context.draw_text_fitted_ellipsis(
                     Rect::new(col_x, text_y, col_width, metrics.height),
                     text,
                     &font,

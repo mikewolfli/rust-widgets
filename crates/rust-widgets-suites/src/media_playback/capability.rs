@@ -150,6 +150,10 @@ pub const MEDIA_TRANSPORT_BAR_PROPERTIES: &[PropertySchema] = &[
     PropertySchema::new("auto_hide_ms", PropertyValueKind::UInt, true, true),
     PropertySchema::new("show_volume", PropertyValueKind::Bool, true, true),
     PropertySchema::new("show_timecode", PropertyValueKind::Bool, true, true),
+    PropertySchema::new("show_fullscreen", PropertyValueKind::Bool, true, true),
+    PropertySchema::new("show_next_previous", PropertyValueKind::Bool, true, true),
+    // The host may tint the bar; `None` follows the theme accent.
+    PropertySchema::new("accent", PropertyValueKind::Color, true, true),
     PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
     PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
     PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
@@ -161,6 +165,10 @@ pub const MEDIA_TRANSPORT_BAR_PROPERTIES: &[PropertySchema] = &[
 pub const MEDIA_SCRUBBER_PROPERTIES: &[PropertySchema] = &[
     PropertySchema::new("value", PropertyValueKind::Float, true, true),
     PropertySchema::new("buffered", PropertyValueKind::Float, true, true),
+    // The chapter marks are the control's reason to exist; the count alone could not be written
+    // (the same lesson `chapter_list_panel.chapters` records).
+    PropertySchema::new("chapters", PropertyValueKind::NumberList, true, true),
+    PropertySchema::new("step_ms", PropertyValueKind::UInt, true, true),
     PropertySchema::new("chapter_count", PropertyValueKind::UInt, true, false),
     PropertySchema::enumerated("thumb_style", true, true, &["dot", "handle"]),
     PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
@@ -375,9 +383,9 @@ pub fn media_player_capability() -> WidgetCapability {
 ///
 /// A borrowed kind is the honest choice: the bar *is* the player's control surface, and this crate's
 /// kind table has no separate variant for a companion chrome strip. The canonical name is what
-/// distinguishes the row from `video_player`. It publishes no events because its signals
-/// (`play_toggled`, `seek_requested`, ...) are consumed by the host directly and are not part of a
-/// generated wire.
+/// distinguishes the row from `video_player`. Its six request/state signals
+/// (`play_toggled`, `seek_requested`, `volume_changed`, ...) are published as events; the bar
+/// emits them itself and a host may subscribe either directly or through the capability.
 pub fn media_transport_bar_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::VideoPlayer,
@@ -390,6 +398,12 @@ pub fn media_transport_bar_capability() -> WidgetCapability {
         commands: &[
             "set_playing",
             "set_volume",
+            "set_auto_hide_ms",
+            "set_show_volume",
+            "set_show_timecode",
+            "set_show_fullscreen",
+            "set_show_next_previous",
+            "set_accent",
             "previous_track",
             "next_track",
             "toggle_fullscreen",
@@ -558,10 +572,14 @@ pub fn default_property_value(kind: &str, name: &str) -> Option<CapabilityValue>
         ("media_transport_bar", "show_volume" | "show_timecode") => {
             Some(CapabilityValue::Bool(true))
         }
-        ("media_transport_bar", "show_fullscreen" | "show_next_previous") => {
-            Some(CapabilityValue::Bool(true))
-        }
+        // `show_fullscreen` constructs `true`, `show_next_previous` constructs `false`; the
+        // manifest defaults must describe the controls, not a sibling's choice.
+        ("media_transport_bar", "show_fullscreen") => Some(CapabilityValue::Bool(true)),
+        ("media_transport_bar", "show_next_previous") => Some(CapabilityValue::Bool(false)),
+        ("media_transport_bar", "accent") => Some(CapabilityValue::Null),
         ("media_scrubber", "value" | "buffered") => Some(CapabilityValue::Float(0.0)),
+        ("media_scrubber", "chapters") => Some(CapabilityValue::Tuple(Vec::new())),
+        ("media_scrubber", "step_ms") => Some(CapabilityValue::UInt(0)),
         ("media_scrubber", "chapter_count") => Some(CapabilityValue::UInt(0)),
         ("media_scrubber", "thumb_style") => Some(CapabilityValue::String("dot".to_string())),
         ("subtitle_bar", "text") => Some(CapabilityValue::String(String::new())),

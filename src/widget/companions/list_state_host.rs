@@ -298,7 +298,13 @@ impl ListStateHost {
         };
         let title_rect =
             Rect::new(rect.x.saturating_add(16), top, rect.width.saturating_sub(32), 22);
-        context.draw_text_fitted_cow(title_rect, title, font, ink, HorizontalAlignment::Center);
+        context.draw_text_fitted_ellipsis(
+            title_rect,
+            title,
+            font,
+            ink,
+            HorizontalAlignment::Center,
+        );
 
         if !self.empty_hint.is_empty() {
             let hint_rect = Rect::new(
@@ -307,7 +313,7 @@ impl ListStateHost {
                 rect.width.saturating_sub(32),
                 18,
             );
-            context.draw_text_fitted_cow(
+            context.draw_text_fitted_ellipsis(
                 hint_rect,
                 &self.empty_hint,
                 font,
@@ -335,7 +341,7 @@ impl ListStateHost {
             rect.width.saturating_sub(32),
             24,
         );
-        context.draw_text_fitted_cow(
+        context.draw_text_fitted_ellipsis(
             text_rect,
             text,
             font,
@@ -349,7 +355,7 @@ impl ListStateHost {
             rect.width.saturating_sub(32),
             18,
         );
-        context.draw_text_fitted_cow(
+        context.draw_text_fitted_ellipsis(
             hint_rect,
             "Press Enter or click to retry",
             font,

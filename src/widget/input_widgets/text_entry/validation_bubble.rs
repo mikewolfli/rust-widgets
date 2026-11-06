@@ -330,7 +330,7 @@ impl Draw for ValidationBubble {
             let Some(text) = self.message.get(range.clone()) else {
                 continue;
             };
-            context.draw_text_fitted_cow(
+            context.draw_text_fitted_ellipsis(
                 Rect::new(bubble.x + BUBBLE_INSET, y, inner_width, line.height.max(1)),
                 text,
                 font,

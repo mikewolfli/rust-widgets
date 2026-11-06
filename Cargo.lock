@@ -3247,6 +3247,10 @@ name = "rust-widgets-font"
 version = "4.1.0"
 
 [[package]]
+name = "rust-widgets-icons"
+version = "4.1.0"
+
+[[package]]
 name = "rust_widgets"
 version = "4.1.0"
 dependencies = [
@@ -3288,6 +3292,7 @@ dependencies = [
  "raw-window-handle",
  "resvg",
  "rust-widgets-font",
+ "rust-widgets-icons",
  "rustybuzz",
  "serde",
  "serde_json",

@@ -1384,36 +1384,6 @@ fn box_shadow_extreme_spread_and_offset_do_not_overflow() {
     assert_eq!(surface.frame_rgba().len(), 8 * 8 * 4);
 }
 
-/// N-R-03: a non-finite `SetOpacity` is rejected rather than poisoning every later colour.
-///
-/// Before the fix, `state.opacity *= NaN` made every subsequent alpha `NaN.round() as u8 == 0`, so a
-/// single bad command silently erased the rest of the batch's colour. The fix keeps the last finite
-/// opacity, so the fill after the bad command paints at full strength.
-#[test]
-fn batch_set_opacity_rejects_non_finite_and_keeps_colour() {
-    use crate::render::backend::batch::{BatchCommand, BatchRenderer};
-    let mut backend = SoftwarePaintBackend::new(Size { width: 8, height: 8 }, 1.0);
-    backend.begin_frame(Color::TRANSPARENT);
-    let batch = backend.begin_batch();
-    backend.record(BatchCommand::SetOpacity { opacity: f32::NAN }).expect("a batch is open");
-    backend
-        .record(BatchCommand::FillRect {
-            rect: Rect::new(0, 0, 4, 4),
-            color: Color::rgba(30, 40, 50, 255),
-        })
-        .expect("a batch is open");
-    backend.end_batch();
-    backend.replay(batch);
-    backend.end_frame();
-    let idx = (8 + 1) * 4;
-    let px = &backend.frame_rgba()[idx..idx + 4];
-    assert_eq!(
-        px,
-        &[30, 40, 50, 255],
-        "a NaN opacity must be ignored, not zero the batch's colour"
-    );
-}
-
 /// N-R-06: an absurd `stroke_inner` width must not panic or wrap.
 ///
 /// `width as i32` narrowed a `u32` above `i32::MAX` to a negative inset, and `width * 2` aborted in

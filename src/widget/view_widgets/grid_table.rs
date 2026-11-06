@@ -178,6 +178,12 @@ pub struct GridTableWidget {
     column_alignments: std::collections::HashMap<usize, HorizontalAlignment>,
     /// The cached column run shared by the painter and the hit tests (F-P05).
     span_cache: RefCell<Option<ColumnSpanCache>>,
+    /// Reused header-label buffer for the paint pass.
+    header_scratch: RefCell<String>,
+    /// Reused row-number buffer for the paint pass.
+    row_scratch: RefCell<String>,
+    /// Reused cell-text buffer for the paint pass.
+    cell_text_scratch: RefCell<String>,
 
     // Sort
     sort_specs: Vec<GridTableSortSpec>,
@@ -277,6 +283,9 @@ impl GridTableWidget {
             column_width_revision: 0,
             column_alignments: std::collections::HashMap::new(),
             span_cache: RefCell::new(None),
+            header_scratch: RefCell::new(String::new()),
+            row_scratch: RefCell::new(String::new()),
+            cell_text_scratch: RefCell::new(String::new()),
             sort_specs: Vec::new(),
             sorting_enabled: true,
             sort_role: DataRole::Display,
@@ -808,8 +817,11 @@ impl GridTableWidget {
         }
         let rect = self.base.geometry();
         let extent = (rect.width as i32 - self.row_number_width as i32).max(1);
-        let visible = self.visible_column_spans(extent);
-        if !visible.iter().any(|(candidate, _, _)| *candidate == column) {
+        let mut visible = false;
+        self.with_visible_column_spans(extent, |spans| {
+            visible = spans.iter().any(|(candidate, _, _)| *candidate == column);
+        });
+        if !visible {
             // Touch the boundary: the column becomes the leading scrolling column. Scrolling
             // forward by one would need a per-column pass just to reach the same place.
             self.set_scroll_column(column);
@@ -1247,7 +1259,8 @@ impl GridTableWidget {
     /// as the extent, so a 100 px column would be "not in the run" for every offset below 100 and the
     /// first column would stop answering at all. The painter wants the same rule: a column that starts
     /// on screen is drawn and clipped, not skipped.
-    fn visible_column_spans(&self, extent: i32) -> Vec<(usize, i32, i32)> {
+    /// Borrows the cached column run, rebuilding it when any key moved.
+    fn span_run(&self, extent: i32) -> std::cell::Ref<'_, ColumnSpanCache> {
         let count = self.column_count();
         let rect = self.base.geometry();
         let data_width = (rect.width as i32 - self.row_number_width as i32).max(1);
@@ -1287,14 +1300,32 @@ impl GridTableWidget {
                 spans,
             });
         }
-        cache
-            .as_ref()
-            .expect("the span run was just built")
-            .spans
-            .iter()
-            .copied()
-            .filter(|(_, x, _)| *x < extent)
-            .collect()
+        drop(cache);
+        std::cell::Ref::map(self.span_cache.borrow(), |cache| {
+            cache.as_ref().expect("the span run was just built")
+        })
+    }
+
+    /// Runs `f` over the column run visible inside `extent`, borrowing the cached run.
+    ///
+    /// The cache stores the run out to the widest extent any caller asks for; a narrower extent
+    /// (a pointer hit test) sees a prefix of it. Handing the slice to a closure keeps that filter
+    /// allocation-free — the previous form collected a filtered `Vec` on every call, including
+    /// every mouse move and every paint.
+    fn with_visible_column_spans<R>(
+        &self,
+        extent: i32,
+        f: impl FnOnce(&[(usize, i32, i32)]) -> R,
+    ) -> R {
+        let run = self.span_run(extent);
+        let visible = run.spans.iter().take_while(|(_, x, _)| *x < extent).count();
+        f(&run.spans[..visible])
+    }
+
+    /// The visible run as an owned `Vec` (tests and callers that need to keep it).
+    #[cfg(test)]
+    fn visible_column_spans(&self, extent: i32) -> Vec<(usize, i32, i32)> {
+        self.with_visible_column_spans(extent, <[(usize, i32, i32)]>::to_vec)
     }
 
     /// The data column occupying `x_offset` pixels into the data area, as `(column, x, width)`.
@@ -1312,9 +1343,9 @@ impl GridTableWidget {
         if x_offset < 0 {
             return None;
         }
-        self.visible_column_spans(x_offset.saturating_add(1))
-            .into_iter()
-            .find(|(_, x, w)| x_offset >= *x && x_offset < x + w)
+        self.with_visible_column_spans(x_offset.saturating_add(1), |spans| {
+            spans.iter().copied().find(|(_, x, w)| x_offset >= *x && x_offset < x + w)
+        })
     }
 
     // -----------------------------------------------------------------------
@@ -1400,12 +1431,14 @@ impl GridTableWidget {
 
         let extent = (rect.x + rect.width as i32) - (rect.x + rnw);
         let handle_width = Self::RESIZE_HANDLE_WIDTH as i32;
-        for (ci, x, cw) in self.visible_column_spans(extent) {
-            if (point.x - (rect.x + rnw + x + cw)).abs() <= handle_width {
-                return Some(ci);
+        self.with_visible_column_spans(extent, |spans| {
+            for (ci, x, cw) in spans.iter().copied() {
+                if (point.x - (rect.x + rnw + x + cw)).abs() <= handle_width {
+                    return Some(ci);
+                }
             }
-        }
-        None
+            None
+        })
     }
 }
 
@@ -1804,7 +1837,13 @@ impl Draw for GridTableWidget {
         // The visible column spans depend only on the control's width and the column widths,
         // not on the row being painted. Computing them per row rebuilt the same `Vec` (and
         // re-summed every width) once per visible row per frame.
-        let spans = self.visible_column_spans(rect.x + rect.width as i32 - data_left);
+        let span_guard = self.span_run(rect.x + rect.width as i32 - data_left);
+        let visible_span_count = span_guard
+            .spans
+            .iter()
+            .take_while(|(_, x, _)| *x < rect.x + rect.width as i32 - data_left)
+            .count();
+        let spans = &span_guard.spans[..visible_span_count];
         // The effective font is borrowed from the style, so resolving it once is also what
         // keeps the header and the cell rows on the same face.
         let cell_font = effective_font(self.style());
@@ -1812,13 +1851,13 @@ impl Draw for GridTableWidget {
         // ── Draw column headers ──
         {
             use core::fmt::Write as _;
-            let mut header_scratch = String::new();
+            let mut header_scratch = self.header_scratch.borrow_mut();
             let header_rect = Rect::new(rect.x, rect.y, rect.width, self.header_height);
             context.fill_rect(header_rect, header_bg);
             context.draw_rect(header_rect, grid_color);
 
             let mut hx = data_left;
-            for &(ci, _, cw) in &spans {
+            for &(ci, _, cw) in spans {
                 let cell_rect = Rect::new(hx, rect.y, cw as u32, self.header_height);
                 context.draw_rect(cell_rect, grid_color);
 
@@ -1864,7 +1903,7 @@ impl Draw for GridTableWidget {
                         header_scratch.as_str()
                     }
                 };
-                context.draw_text_fitted_cow(
+                context.draw_text_fitted_ellipsis(
                     context.text_line(cell_rect, cell_font),
                     header_text,
                     cell_font,
@@ -1899,7 +1938,7 @@ impl Draw for GridTableWidget {
         // ── Draw row numbers ──
         {
             use core::fmt::Write as _;
-            let mut row_scratch = String::new();
+            let mut row_scratch = self.row_scratch.borrow_mut();
             for ri in 0..self.visible_rows.min(rows.saturating_sub(self.scroll_row)) {
                 let abs_row = self.scroll_row + ri;
                 let y = data_top + (ri as i32) * rh;
@@ -1917,7 +1956,7 @@ impl Draw for GridTableWidget {
 
                 // The row-number cell is the band; centring by hand drew the digits half a line
                 // low. Right alignment keeps the numbers flush with the gutter's inner edge.
-                context.draw_text_fitted_cow(
+                context.draw_text_fitted_ellipsis(
                     context.text_line(cell_rect, cell_font),
                     row_scratch.as_str(),
                     cell_font,
@@ -1937,7 +1976,7 @@ impl Draw for GridTableWidget {
         // cell text is written into one reusable buffer: `data()` allocated a `String` per cell
         // per frame, which the fill path avoids for sources that override `fill_cell`.
         let font = cell_font;
-        let mut cell_text = String::new();
+        let mut cell_text = self.cell_text_scratch.borrow_mut();
         for ri in 0..self.visible_rows.min(rows.saturating_sub(self.scroll_row)) {
             let abs_row = self.scroll_row + ri;
             if cy + rh > rect.y + rect.height as i32 {
@@ -1945,7 +1984,7 @@ impl Draw for GridTableWidget {
             }
 
             let mut cx = data_left;
-            for &(ci, _, cw) in &spans {
+            for &(ci, _, cw) in spans {
                 let cell_rect = Rect::new(cx, cy, cw as u32, self.row_height);
 
                 // Selection highlight
@@ -1969,7 +2008,7 @@ impl Draw for GridTableWidget {
                     // box's *top* edge on the cell's middle line, drawing every value half a line
                     // low; `text_line` derives the centred box, and fitting keeps a long value
                     // inside its column instead of running under the next one.
-                    context.draw_text_fitted_cow(
+                    context.draw_text_fitted_ellipsis(
                         context.text_line(cell_rect, font),
                         &cell_text,
                         font,

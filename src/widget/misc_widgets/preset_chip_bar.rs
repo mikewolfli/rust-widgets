@@ -441,6 +441,26 @@ impl Widget for PresetChipBar {
     fn is_focusable(&self) -> bool {
         true
     }
+
+    /// Joins the two published names to the signals the bar emits.
+    ///
+    /// `preset_selected` carries the preset id as a `UInt`; `preset_reselected` is a unit event.
+    /// Without these arms `connect_event` would accept a name and drop the wire.
+    fn event_signal_dyn(&self, name: &str) -> Option<crate::signal::EventSignalRef> {
+        use crate::signal::EventSignalRef;
+        match name {
+            "preset_selected" => {
+                Some(EventSignalRef::mapped("preset_selected", &self.preset_selected, |v| {
+                    CapabilityValue::UInt(*v)
+                }))
+            }
+            "preset_reselected" => {
+                Some(EventSignalRef::unit("preset_reselected", &self.preset_reselected))
+            }
+            _ => None,
+        }
+    }
+
     impl_draw_bridge!();
     impl_widget_property_hooks!();
 }
@@ -557,7 +577,13 @@ impl Draw for PresetChipBar {
                 chip.width.saturating_sub(self.chip_padding * 2),
                 chip.height,
             );
-            context.draw_text_line_cow(band, label, &font, text_color, HorizontalAlignment::Center);
+            context.draw_text_line_ellipsis(
+                band,
+                label,
+                &font,
+                text_color,
+                HorizontalAlignment::Center,
+            );
         }
     }
 }

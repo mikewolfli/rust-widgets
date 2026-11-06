@@ -311,7 +311,8 @@ fn the_add_separator_command_appends_through_the_command_channel() {
         "the command appends the control's own separator"
     );
     // The payload-bearing sibling still needs its list.
-    assert_eq!(menu.command("add_action"), Err(CapabilityAccessError::OutOfRange));
+    // Unpublished: the whole-list write is `set_items`.
+    assert_eq!(menu.command("add_action"), Err(CapabilityAccessError::UnknownCommand));
 }
 
 /// A context menu must appear where the pointer was, and report that origin.

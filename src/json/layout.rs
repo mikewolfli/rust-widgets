@@ -10,6 +10,8 @@ use serde_json::Value;
 #[cfg(test)]
 use crate::core::Rect;
 use crate::core::{ObjectId, Orientation};
+use crate::layout::absolute::Anchor;
+use crate::layout::constraint::ConstraintType;
 use crate::layout::{
     AspectRatioLayout, BorderLayout, BorderRegion, BoxLayout, CenterLayout, FormLayout, GridLayout,
     KeyboardAwareLayout, Layout, SplitterLayout, StackLayout,
@@ -147,6 +149,16 @@ pub enum DeclarativeLayoutKind {
         /// what a host with no frame loop wants.
         animation_duration: u64,
     },
+    /// Absolute positioning: each child carries its own `x`/`y`/`width`/`height`/`anchor`.
+    ///
+    /// The per-child data lives on the child's placement object, so the kind itself carries
+    /// nothing. See [`ChildLayoutAttrs`] for the keys.
+    Absolute,
+    /// Constraint layout: each child carries a `constraints` list naming its relationships.
+    ///
+    /// As with [`Self::Absolute`], the per-child data lives on the child. A constraint's
+    /// `target` names another node's document `id`.
+    Constraint,
 }
 
 impl DeclarativeLayoutKind {
@@ -173,6 +185,8 @@ impl DeclarativeLayoutKind {
         "aspect_ratio",
         "dock_area",
         "keyboard_aware",
+        "absolute",
+        "constraint",
     ];
 }
 
@@ -185,9 +199,10 @@ impl DeclarativeLayoutKind {
 // loader and the ABI would then lay out the same tree differently.
 
 pub use crate::layout::declarative::{
-    add_spacer_to_layout, add_widget_to_layout, apply_layout, forget_layout,
-    place_widget_in_layout, place_widget_in_region_layout, preview_layout, store_layout,
-    ChildPlacement,
+    add_spacer_to_layout, add_widget_to_layout, apply_constraints_to_layout, apply_layout,
+    forget_layout, place_widget_in_absolute_layout, place_widget_in_layout,
+    place_widget_in_region_layout, preview_layout, store_layout, ChildPlacement,
+    LayoutConstraintSpec,
 };
 
 // ── Parsing ─────────────────────────────────────────────────
@@ -299,6 +314,8 @@ pub fn parse_layout_kind(value: &Value) -> Result<DeclarativeLayoutKind, String>
                     .unwrap_or(0),
             })
         }
+        "absolute" | "Absolute" => Ok(DeclarativeLayoutKind::Absolute),
+        "constraint" | "Constraint" => Ok(DeclarativeLayoutKind::Constraint),
         _ => Err(format!(
             "unknown layout type '{type_str}'; supported types are {}",
             DeclarativeLayoutKind::SUPPORTED_TYPES.join(", ")
@@ -499,6 +516,10 @@ pub fn create_layout_from_kind(kind: &DeclarativeLayoutKind) -> Box<dyn Layout> 
                 animation_duration,
             ))
         }
+        DeclarativeLayoutKind::Absolute => Box::new(crate::layout::absolute::AbsoluteLayout::new()),
+        DeclarativeLayoutKind::Constraint => {
+            Box::new(crate::layout::constraint::ConstraintLayout::new())
+        }
     }
 }
 
@@ -507,7 +528,7 @@ pub fn create_layout_from_kind(kind: &DeclarativeLayoutKind) -> Box<dyn Layout> 
 /// Every field is optional in the JSON sense; see
 /// [`ChildLayoutAttrs::from_value`] for the defaults applied when a key is
 /// absent.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ChildLayoutAttrs {
     /// Stretch factor (0 = default).
     ///
@@ -542,6 +563,37 @@ pub struct ChildLayoutAttrs {
     /// The child's overflow policy. Parsed so a document can state it and be diagnosed; this
     /// build has no per-node overflow carrier, so it is reported as a dropped field.
     pub overflow: Option<ChildOverflow>,
+    /// For absolute layouts: the child's horizontal offset.
+    pub x: Option<i32>,
+    /// For absolute layouts: the child's vertical offset.
+    pub y: Option<i32>,
+    /// For absolute layouts: an explicit width, overriding the child's size hint.
+    pub width: Option<u32>,
+    /// For absolute layouts: an explicit height, overriding the child's size hint.
+    pub height: Option<u32>,
+    /// For absolute layouts: which part of the child `(x, y)` places.
+    pub anchor: Option<Anchor>,
+    /// For constraint layouts: the relationships this child declares.
+    pub constraints: crate::compat::Vec<ConstraintSpec>,
+}
+
+/// One constraint declared on a child of a `"constraint"` layout.
+///
+/// `target` is the document `id` of the node the relationship refers to. It stays a name here
+/// because the parser has no view of mounted controls; the loader resolves it through its name
+/// map before the layout receives it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ConstraintSpec {
+    /// The document `id` of the target node.
+    pub target: crate::compat::String,
+    /// The spatial relationship.
+    pub kind: ConstraintType,
+    /// Pixel offset applied after resolution.
+    pub offset: i32,
+    /// Scale multiplier; for `aspect_ratio` it is the ratio.
+    pub multiplier: f32,
+    /// Resolution strength; higher wins on a shared edge.
+    pub priority: i32,
 }
 
 /// A child's declared overflow policy (RW-109).
@@ -635,8 +687,45 @@ impl ChildLayoutAttrs {
                 .and_then(|o| o.get("overflow"))
                 .and_then(|v| v.as_str())
                 .and_then(ChildOverflow::from_token),
+            x: obj.and_then(|o| o.get("x")).and_then(Value::as_i64).map(clamp_i64_to_i32),
+            y: obj.and_then(|o| o.get("y")).and_then(Value::as_i64).map(clamp_i64_to_i32),
+            width: json_optional_u32(obj, "width"),
+            height: json_optional_u32(obj, "height"),
+            anchor: obj
+                .and_then(|o| o.get("anchor"))
+                .and_then(|v| v.as_str())
+                .and_then(Anchor::from_token),
+            constraints: obj
+                .and_then(|o| o.get("constraints"))
+                .and_then(Value::as_array)
+                .map(|items| items.iter().filter_map(parse_constraint_spec).collect())
+                .unwrap_or_default(),
         }
     }
+}
+
+/// Clamps a JSON integer into `i32`, preserving the direction of an overflow.
+fn clamp_i64_to_i32(raw: i64) -> i32 {
+    let clamp = if raw > 0 { i32::MAX } else { i32::MIN };
+    i32::try_from(raw).unwrap_or(clamp)
+}
+
+/// Parses one entry of a child's `constraints` array.
+///
+/// A missing `target` or `kind`, or a `kind` this build does not name, drops the entry rather
+/// than inventing a relationship: the schema validator reports the malformed entry separately.
+fn parse_constraint_spec(value: &Value) -> Option<ConstraintSpec> {
+    let obj = value.as_object()?;
+    let target = obj.get("target")?.as_str()?;
+    let token = obj.get("kind")?.as_str()?;
+    let multiplier = json_f32(obj.get("multiplier"), 1.0);
+    Some(ConstraintSpec {
+        target: crate::compat::String::from(target),
+        kind: ConstraintType::from_token(token, multiplier)?,
+        offset: json_i32(obj.get("offset"), 0),
+        multiplier,
+        priority: json_i32(obj.get("priority"), 0),
+    })
 }
 
 /// Places `child_id` in the cell or region its declared attributes name.
@@ -652,7 +741,64 @@ pub(crate) fn apply_child_layout_placement(
     attrs: &ChildLayoutAttrs,
     child_type: &str,
     parent_id: ObjectId,
+    resolve_target: &dyn Fn(&str) -> Option<ObjectId>,
 ) {
+    // Absolute layouts take one position per child. A document may omit `x`/`y` and rely on the
+    // anchor, so any of the five keys is enough to route here.
+    let has_absolute = attrs.x.is_some()
+        || attrs.y.is_some()
+        || attrs.width.is_some()
+        || attrs.height.is_some()
+        || attrs.anchor.is_some();
+    if has_absolute {
+        if place_widget_in_absolute_layout(
+            child_id,
+            attrs.x.unwrap_or(0),
+            attrs.y.unwrap_or(0),
+            attrs.width,
+            attrs.height,
+            attrs.anchor,
+            parent_id,
+        ) {
+            return;
+        }
+        log::warn!(
+            "JSON layout: '{child_type}' declares x/y/width/height/anchor but its parent has no \
+             absolute layout; the child was placed by the parent's own rule instead"
+        );
+        return;
+    }
+
+    // Constraint layouts take a list per child, with each target resolved from the document id
+    // the child named to the control that id mounts.
+    if !attrs.constraints.is_empty() {
+        let mut resolved = crate::compat::Vec::with_capacity(attrs.constraints.len());
+        for spec in &attrs.constraints {
+            match resolve_target(spec.target.as_str()) {
+                Some(target) => resolved.push(LayoutConstraintSpec {
+                    target,
+                    kind: spec.kind,
+                    offset: spec.offset,
+                    multiplier: spec.multiplier,
+                    priority: spec.priority,
+                }),
+                None => log::warn!(
+                    "JSON layout: '{child_type}' constrains to '{}' but no mounted node has that \
+                     id; the constraint was dropped",
+                    spec.target
+                ),
+            }
+        }
+        if apply_constraints_to_layout(child_id, &resolved, parent_id) {
+            return;
+        }
+        log::warn!(
+            "JSON layout: '{child_type}' declares constraints but its parent has no constraint \
+             layout; the child was placed by the parent's own rule instead"
+        );
+        return;
+    }
+
     if let Some(region) = attrs.region {
         if !place_widget_in_region_layout(child_id, region, attrs.extent.unwrap_or(0), parent_id) {
             log::warn!(

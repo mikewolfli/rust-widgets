@@ -338,7 +338,7 @@ impl Draw for SpeedDial {
                     ),
                     &label_font,
                 );
-                context.draw_text_fitted_cow(
+                context.draw_text_fitted_ellipsis(
                     Rect::new(center.x - radius as i32, line.y, radius * 2, line.height.max(1)),
                     &action.icon_text,
                     &label_font,
@@ -371,7 +371,7 @@ impl Draw for SpeedDial {
                     )
                 };
                 if label_rect.width > 0 {
-                    context.draw_text_fitted_cow(
+                    context.draw_text_fitted_ellipsis(
                         label_rect,
                         &action.label,
                         &label_font,

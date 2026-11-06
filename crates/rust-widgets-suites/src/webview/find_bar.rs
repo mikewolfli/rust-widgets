@@ -405,7 +405,7 @@ impl Draw for WebFindBar {
         let actions = 84u32;
         let text_width = rect.width.saturating_sub(actions + 12);
         let shown = if self.query.is_empty() { "Find in page" } else { &self.query };
-        context.draw_text_fitted_cow(
+        context.draw_text_fitted_ellipsis(
             Rect::new(rect.x + 8, rect.y + 8, text_width, rect.height.saturating_sub(16)),
             shown,
             font,
@@ -415,7 +415,7 @@ impl Draw for WebFindBar {
         // Match counter and the action controls, laid out from the trailing edge: case toggle,
         // next, previous, then the counter.
         let right = rect.right();
-        context.draw_text_fitted_cow(
+        context.draw_text_fitted_ellipsis(
             Rect::new(right - 112, rect.y + 8, 36, rect.height.saturating_sub(16)),
             &self.counter_text,
             font,
@@ -431,7 +431,7 @@ impl Draw for WebFindBar {
                 icon,
             );
         }
-        context.draw_text_fitted_cow(
+        context.draw_text_fitted_ellipsis(
             Rect::new(right - 24, rect.y + 8, 16, rect.height.saturating_sub(16)),
             "Aa",
             font,

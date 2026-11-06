@@ -1347,8 +1347,15 @@ impl JsonLoader {
         attrs: &ChildLayoutAttrs,
         child_type: &str,
         parent_id: ObjectId,
+        binding: &BoundJsonLayout,
     ) {
-        crate::json::layout::apply_child_layout_placement(child_id, attrs, child_type, parent_id);
+        crate::json::layout::apply_child_layout_placement(
+            child_id,
+            attrs,
+            child_type,
+            parent_id,
+            &|name| binding.id(name),
+        );
     }
 
     /// Whether `widget_type` publishes `event_name`.
@@ -1478,6 +1485,7 @@ impl JsonLoader {
                                     &attrs,
                                     child_type,
                                     layout_parent,
+                                    binding,
                                 );
                             }
                         }
@@ -1782,7 +1790,7 @@ impl JsonLoader {
                                     // nothing.
                                     add_widget_to_layout(child_id, attrs.stretch, widget_id);
                                     Self::apply_child_placement(
-                                        child_id, &attrs, child_type, widget_id,
+                                        child_id, &attrs, child_type, widget_id, binding,
                                     );
                                 }
                             }
@@ -2429,6 +2437,9 @@ pub fn is_loader_owned_key(key: &str) -> bool {
         // Per-child region placement for `border` layouts, consumed by
         // `apply_child_placement` through `place_widget_in_region_layout`.
         | "region" | "extent"
+        // Per-child absolute placement (`anchor`) and constraint relationships (`constraints`),
+        // consumed by `apply_child_placement` (API2-01).
+        | "anchor" | "constraints"
         // Construction-time scalar keys a `create_widget` arm reads directly, under
         // a spelling that is deliberately *not* the control's property name (an arm
         // may need to translate a JSON word into an enum, or set two fields from
@@ -3470,6 +3481,99 @@ mod tests {
             c.x + c.width as i32,
             "the span must reach the right edge of the third column"
         );
+    }
+
+    /// An `absolute` layout must place each child at the position its own object declares.
+    ///
+    /// API2-01: the absolute solver used to be unreachable from a document. This drives the real
+    /// loader and asserts the applied geometry, so a regression that stops routing `x`/`y`/
+    /// `width`/`height` to the solver fails here rather than only in the test-only module.
+    #[test]
+    fn an_absolute_layout_places_a_child_where_the_document_declared() {
+        let json = r#"{
+            "window": {
+                "title": "T",
+                "children": [
+                    { "layout": {
+                        "type": "absolute",
+                        "children": [
+                            { "label": { "id": "a", "text": "A",
+                                          "x": 10, "y": 20, "width": 40, "height": 16 } },
+                            { "label": { "id": "b", "text": "B", "x": 100, "y": 50 } }
+                        ]
+                    } }
+                ]
+            }
+        }"#;
+
+        let binding = JsonLoader::load(json).expect("the absolute document must load");
+        let window = binding.root().expect("the window is the root");
+        let geometries = crate::json::preview_layout(window, Rect::new(0, 0, 320, 200));
+        let rect_of = |name: &str| {
+            let declared = binding.id(name).expect("the node is bound by its declared id");
+            let mounted = crate::widget::runtime::registry_id_of(declared).unwrap_or(declared);
+            geometries
+                .iter()
+                .find(|(placed, _)| *placed == mounted)
+                .map(|(_, rect)| *rect)
+                .unwrap_or_else(|| panic!("'{name}' was not placed; placed: {geometries:?}"))
+        };
+
+        let a = rect_of("a");
+        // `width`/`height` are the explicit size the child declared.
+        assert_eq!(
+            (a.x, a.y, a.width, a.height),
+            (10, 20, 40, 16),
+            "the absolute position and size must be the declared ones"
+        );
+        let b = rect_of("b");
+        assert_eq!((b.x, b.y), (100, 50), "x/y alone must place the second child");
+    }
+
+    /// A `constraint` layout must apply the relationships a child declares.
+    ///
+    /// API2-01: the target is a document `id`, resolved through the loader's name map. This
+    /// asserts the applied geometry, so dropping the resolution would leave the child at the
+    /// parent origin and fail the offset check.
+    #[test]
+    fn a_constraint_layout_applies_the_relationship_the_document_declared() {
+        let json = r#"{
+            "window": {
+                "title": "T",
+                "children": [
+                    { "layout": {
+                        "type": "constraint",
+                        "children": [
+                            { "label": { "id": "a", "text": "A" } },
+                            { "label": { "id": "b", "text": "B",
+                                          "constraints": [
+                                            { "target": "a", "kind": "right_to_right",
+                                              "offset": 5 }
+                                          ] } }
+                        ]
+                    } }
+                ]
+            }
+        }"#;
+
+        let binding = JsonLoader::load(json).expect("the constraint document must load");
+        let window = binding.root().expect("the window is the root");
+        let geometries = crate::json::preview_layout(window, Rect::new(0, 0, 320, 200));
+        let rect_of = |name: &str| {
+            let declared = binding.id(name).expect("the node is bound by its declared id");
+            let mounted = crate::widget::runtime::registry_id_of(declared).unwrap_or(declared);
+            geometries
+                .iter()
+                .find(|(placed, _)| *placed == mounted)
+                .map(|(_, rect)| *rect)
+                .unwrap_or_else(|| panic!("'{name}' was not placed; placed: {geometries:?}"))
+        };
+
+        let b = rect_of("b");
+        // Without the constraint `b` would stay at the parent origin; `right_to_right` measures
+        // both right edges, so the offset is the only difference from zero.
+        assert_eq!(b.x, 5, "the declared right_to_right offset must be applied: {b:?}");
+        assert!(binding.id("a").is_some(), "the target node is bound by its declared id");
     }
 
     /// A `border` layout must place a child in the region and track the document declared.

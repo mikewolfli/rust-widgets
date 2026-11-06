@@ -53,6 +53,7 @@ fn compared_signal_emits_change_count() {
 fn arrow_keys_move_selected_line() {
     let mut viewer = DiffViewer::new(Rect::new(0, 0, 640, 300));
     viewer.set_texts("a\nb", "a\nb\nc");
+    viewer.handle_event(&Event::FocusGained { reason: rust_widgets::event::FocusReason::Tab });
     assert_eq!(viewer.selected_index(), Some(0));
 
     viewer.handle_event(&Event::key_press(40, 0));

@@ -1670,7 +1670,7 @@ impl Draw for ChartWidget {
             self.draw_value_axis(context, &plot, ink, surface, (0.0, 1.0));
             let font = role_font(style, 12.0);
             let line = context.text_line(rect, &font);
-            context.draw_text_fitted_cow(
+            context.draw_text_fitted_ellipsis(
                 line,
                 "No data",
                 &font,
@@ -1867,7 +1867,7 @@ impl Draw for ChartWidget {
                         let box_rect = Rect::new(x, y, width.max(1) as u32, height.max(1) as u32);
                         context.fill_rect(box_rect, surface);
                         context.draw_rect(box_rect, border);
-                        context.draw_text_line_cow(
+                        context.draw_text_line_ellipsis(
                             box_rect,
                             text,
                             font,
@@ -2319,7 +2319,7 @@ impl ChartWidget {
             AXIS_LABEL.with(|label| {
                 let mut label = label.borrow_mut();
                 write_axis_value(value, &mut label);
-                context.draw_text_fitted_cow(
+                context.draw_text_fitted_ellipsis(
                     line,
                     &label,
                     &font,

@@ -23,11 +23,11 @@ import re
 import sys
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
-VENDOR_DIR = REPO_ROOT / "tools" / "material_symbols"
-GENERATED = REPO_ROOT / "src" / "widget" / "icon_data.rs"
+VENDOR_DIR = REPO_ROOT / "crates" / "rust-widgets-icons" / "tools" / "material_symbols"
+GENERATED = REPO_ROOT / "crates" / "rust-widgets-icons" / "src" / "data.rs"
 
 # The pinned upstream revision and licence digest. These are literals here *and* in
-# tools/vendor_material_symbols.py. Two copies is deliberate: this gate must be able to fail when
+# crates/rust-widgets-icons/tools/vendor_material_symbols.py. Two copies is deliberate: this gate must be able to fail when
 # the vendor script's pin is edited without the record being updated, and a shared import would
 # make the two agree by construction.
 UPSTREAM_SHA = "bd8cb85bd4bad964fe6918f79665bb40c3a8efef"
@@ -52,17 +52,29 @@ def sha256(path: pathlib.Path) -> str:
 
 
 def icon_tokens() -> list[str]:
-    """The vendor map's keys, read from the vendor script so the two cannot drift.
+    """The declared token columns, read from the two declaration files.
 
-    The map is the single statement of "which icons this crate ships"; reading it here means a
-    token added to the map but not vendored is caught, and the count in this gate is always the
-    count the generator would produce.
+    This used to regex the `ICONS` literal out of the vendor script. The map is no longer a
+    literal — the catalogue's 4,248 entries are `token -> token`, derived from `icon_catalog.txt`
+    — so the scan reads the same two files the generator reads. It still does not *import* the
+    vendor module: importing it would make this gate agree with the generator by construction,
+    and the point of a second reading is that it can disagree.
     """
-    source = (REPO_ROOT / "tools" / "vendor_material_symbols.py").read_text(encoding="utf-8")
-    match = re.search(r"^ICONS:[^=]*=\s*\{(.*?)^\}", source, re.MULTILINE | re.DOTALL)
-    if match is None:
-        raise Finding("tools/vendor_material_symbols.py has no `ICONS` map to read")
-    return re.findall(r'^\s*"([a-z_]+)":', match.group(1), re.MULTILINE)
+    tools = REPO_ROOT / "crates" / "rust-widgets-icons" / "tools"
+    tokens: list[str] = []
+    for name in ("icon_tokens.txt", "icon_catalog.txt"):
+        path = tools / name
+        if not path.is_file():
+            raise Finding(f"{path.relative_to(REPO_ROOT)} is missing; there is no token set to scan")
+        for raw in path.read_text(encoding="utf-8").splitlines():
+            line = raw.split("#", 1)[0].strip()
+            if not line:
+                continue
+            token = line.split("|", 1)[0].strip()
+            if not re.fullmatch(r"[a-z0-9_]+(?:[a-z0-9_]*)+", token):
+                raise Finding(f"{path.relative_to(REPO_ROOT)} declares a non-token {token!r}")
+            tokens.append(token)
+    return tokens
 
 
 def check_vendor_tree() -> int:
@@ -83,14 +95,14 @@ def check_vendor_tree() -> int:
 
     for token in tokens:
         if not (VENDOR_DIR / f"{token}.svg").exists():
-            raise Finding(f"tools/material_symbols/{token}.svg is missing; {token} has no source")
+            raise Finding(f"crates/rust-widgets-icons/tools/material_symbols/{token}.svg is missing; {token} has no source")
 
     # §4(d): upstream ships no NOTICE, so the obligation is not triggered. The marker is the
     # evidence, and its absence means either the probe was never run or upstream added a NOTICE —
     # both need a human, so both are findings rather than a silent pass.
     if not (VENDOR_DIR / "UPSTREAM_HAS_NO_NOTICE").exists():
         raise Finding(
-            "tools/material_symbols/UPSTREAM_HAS_NO_NOTICE is missing; upstream may now ship a "
+            "crates/rust-widgets-icons/tools/material_symbols/UPSTREAM_HAS_NO_NOTICE is missing; upstream may now ship a "
             "NOTICE (Apache-2.0 §4(d)), which must be vendored rather than dropped"
         )
 
@@ -134,7 +146,7 @@ def check_generated_table(tokens: int) -> None:
     if entries != tokens:
         raise Finding(
             f"{GENERATED.relative_to(REPO_ROOT)} declares {entries} icons but the vendor tree has "
-            f"{tokens}; regenerate with `tools/gen_icon_data.py --license=apache-2.0`"
+            f"{tokens}; regenerate with `crates/rust-widgets-icons/tools/gen_icon_data.py --license=apache-2.0`"
         )
 
 
@@ -151,9 +163,9 @@ def check_notice(path: pathlib.Path, tokens: int) -> None:
         raise Finding("NOTICE: does not repeat the upstream LICENSE digest")
     if "Apache License, Version 2.0" not in notice:
         raise Finding("NOTICE: the icon record does not state the licence")
-    if "src/widget/icon_data.rs" not in notice:
+    if "crates/rust-widgets-icons/src/data.rs" not in notice:
         raise Finding("NOTICE: does not name the generated file the licence covers")
-    if "tools/material_symbols/LICENSE" not in notice:
+    if "crates/rust-widgets-icons/tools/material_symbols/LICENSE" not in notice:
         raise Finding("NOTICE: does not name the licence copy §4(a) requires")
     if str(tokens) not in notice:
         # The record states the icon count, so a vendor refresh that adds icons must update it —

@@ -1162,7 +1162,7 @@ impl Draw for ColorPicker {
             // Editable form: a field, so the readout can be typed into rather than only read.
             context.fill_rect(hex_band, panel.blend(&ink, 0.08));
             context.draw_rect(hex_band, ink.with_alpha(120));
-            context.draw_text_fitted_cow(
+            context.draw_text_fitted_ellipsis(
                 hex_band,
                 if self.hex_buffer.is_empty() { "#" } else { &self.hex_buffer },
                 hex_font,
@@ -1186,7 +1186,7 @@ impl Draw for ColorPicker {
                     HorizontalAlignment::Left,
                 );
             } else {
-                context.draw_text_fitted_cow(
+                context.draw_text_fitted_ellipsis(
                     hex_band,
                     hex_text,
                     hex_font,
@@ -1203,7 +1203,7 @@ impl Draw for ColorPicker {
             let button_border = panel.blend(&ink, 0.28);
             context.fill_rect(cancel, button_face);
             context.draw_rect(cancel, button_border);
-            context.draw_text_line_cow(
+            context.draw_text_line_ellipsis(
                 cancel,
                 "Cancel",
                 hex_font,
@@ -1216,7 +1216,7 @@ impl Draw for ColorPicker {
                 .unwrap_or(Color::PRIMARY);
             context.fill_rect(ok, ok_face);
             context.draw_rect(ok, button_border);
-            context.draw_text_line_cow(
+            context.draw_text_line_ellipsis(
                 ok,
                 "OK",
                 hex_font,

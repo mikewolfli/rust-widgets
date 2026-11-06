@@ -34,6 +34,12 @@ use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::{focus_ring_color, FocusRing, FOCUS_RING_WIDTH};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+
+thread_local! {
+    /// Reused value-label buffer for the wheel rows.
+    static LABEL_SCRATCH: crate::compat::RefCell<String> =
+        const { crate::compat::RefCell::new(String::new()) };
+}
 use crate::{impl_widget_property_hooks, property_names_of};
 
 /// Height of one wheel row, in logical pixels.
@@ -870,54 +876,56 @@ impl Draw for NumberPicker {
         // A settling drag shifts the whole reel by the sub-row remainder, which is what
         // turns the release from a one-frame snap into a short decelerating finish.
         let settle = (self.settle_offset * row_h as f32).round() as i32;
-        let mut label = String::new();
-        for offset in -visible..=visible {
-            let row_center = centre + (offset as i32) * row_h as i32 + settle;
-            let text_top = row_center - text_h / 2;
-            if text_top < rect.y || text_top + text_h > frame_bottom {
-                continue;
+        LABEL_SCRATCH.with(|cell| {
+            let mut label = cell.borrow_mut();
+            for offset in -visible..=visible {
+                let row_center = centre + (offset as i32) * row_h as i32 + settle;
+                let text_top = row_center - text_h / 2;
+                if text_top < rect.y || text_top + text_h > frame_bottom {
+                    continue;
+                }
+                let value = self.value_at_offset(offset);
+                let Some(value) = value else {
+                    continue;
+                };
+                let faded = offset != 0;
+                let color = if faded {
+                    // The neighbours are *deliberately* dimmer than the selection, but "dimmer"
+                    // is a relation to the surface, not a blend toward a fixed colour: the old
+                    // 45% blend toward the ink produced `rgb(111,111,111)` on the dark surface,
+                    // which is 3.73:1 — a neighbour that is hard to read while *also* failing to
+                    // look secondary. Dimming the resolved ink by alpha keeps it below the
+                    // selection's contrast while staying above the legibility floor.
+                    text_color.legible_on(background, 4.5).with_alpha(191)
+                } else {
+                    selected_text_color
+                };
+                // One buffer reused across the rows: `to_string`/`format!` per row per frame
+                // was a fresh allocation for a label a `write!` renders in place.
+                label.clear();
+                if !faded && self.entering {
+                    // While a value is typed, the centre row shows the entry buffer verbatim so
+                    // the user can see the digits they are building, including a bare sign.
+                    label.push_str(&self.entry_buffer);
+                } else if !faded {
+                    // I-P68: render into the reused buffer instead of allocating a label.
+                    self.write_display_text(&mut label, value);
+                } else {
+                    let _ = write!(label, "{value}");
+                }
+                // The row's centre is where the glyph *box* centres, not where its top edge goes:
+                // the renderer paints downward from the origin, so using `row_center` directly put
+                // a 14 px value in a 15 px row spanning `centre .. centre + 14` — half a row below
+                // the band it belongs to.
+                context.draw_text_fitted_ellipsis(
+                    Rect::new(rect.x, text_top, rect.width, text_h.max(1) as u32),
+                    label.as_str(),
+                    font,
+                    color,
+                    HorizontalAlignment::Center,
+                );
             }
-            let value = self.value_at_offset(offset);
-            let Some(value) = value else {
-                continue;
-            };
-            let faded = offset != 0;
-            let color = if faded {
-                // The neighbours are *deliberately* dimmer than the selection, but "dimmer"
-                // is a relation to the surface, not a blend toward a fixed colour: the old
-                // 45% blend toward the ink produced `rgb(111,111,111)` on the dark surface,
-                // which is 3.73:1 — a neighbour that is hard to read while *also* failing to
-                // look secondary. Dimming the resolved ink by alpha keeps it below the
-                // selection's contrast while staying above the legibility floor.
-                text_color.legible_on(background, 4.5).with_alpha(191)
-            } else {
-                selected_text_color
-            };
-            // One buffer reused across the rows: `to_string`/`format!` per row per frame
-            // was a fresh allocation for a label a `write!` renders in place.
-            label.clear();
-            if !faded && self.entering {
-                // While a value is typed, the centre row shows the entry buffer verbatim so
-                // the user can see the digits they are building, including a bare sign.
-                label.push_str(&self.entry_buffer);
-            } else if !faded {
-                // I-P68: render into the reused buffer instead of allocating a label.
-                self.write_display_text(&mut label, value);
-            } else {
-                let _ = write!(label, "{value}");
-            }
-            // The row's centre is where the glyph *box* centres, not where its top edge goes:
-            // the renderer paints downward from the origin, so using `row_center` directly put
-            // a 14 px value in a 15 px row spanning `centre .. centre + 14` — half a row below
-            // the band it belongs to.
-            context.draw_text_fitted_cow(
-                Rect::new(rect.x, text_top, rect.width, text_h.max(1) as u32),
-                label.as_str(),
-                font,
-                color,
-                HorizontalAlignment::Center,
-            );
-        }
+        });
 
         crate::widget::draw::stroke_surface_border(
             context,

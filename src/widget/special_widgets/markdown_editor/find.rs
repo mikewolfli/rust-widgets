@@ -828,7 +828,7 @@ impl Draw for FindBar {
                     if enabled { surface.blend(&accent, 0.25) } else { surface },
                 );
                 context.draw_rect(cell, if enabled { accent } else { border });
-                context.draw_text_fitted_cow(
+                context.draw_text_fitted_ellipsis(
                     cell,
                     label,
                     font,

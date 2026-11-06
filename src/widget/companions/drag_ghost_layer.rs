@@ -294,7 +294,7 @@ impl Draw for DragGhostLayer {
             rect.width.saturating_sub(GHOST_INSET * 2),
             rect.height,
         );
-        context.draw_text_fitted_cow(
+        context.draw_text_fitted_ellipsis(
             title_rect,
             self.title.as_str(),
             font,

@@ -14,19 +14,17 @@ macro_rules! impl_base_widgets {
         fn create_window(&self, title: &str, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
             let id = self.mount_widget_of_kind(WidgetKind::Window, 0, title, x, y, width, height);
             if id != 0 {
-                // A widget id is *reusable*: `widget::runtime` counts ids per thread from a
-                // fixed start, so a window created after another was dropped (or created by a
-                // different, earlier test on the same thread) can be handed the same id. The
-                // recorded client size is keyed by id, so without this the new window would
-                // answer `window_client_size` with the *previous* window's size — a stale
-                // value that beats the correct geometry fallback and lays the new window's
-                // children out at the wrong size.
+                // An id can be registered again: runtime-minted ids are never reused
+                // (`state::reserve_id_block` says so explicitly), but a declarative or C-ABI
+                // caller may pass the same explicit id twice. The recorded client size is keyed
+                // by id, so without this a re-registered window would answer
+                // `window_client_size` with the *previous* window's size — a stale value that
+                // beats the correct geometry fallback and lays the new window's children out at
+                // the wrong size.
                 //
                 // Clearing on creation makes "was this window resized?" a property of the
                 // window rather than of the integer that names it.
-                lock(&self.state)
-                    .window_client_sizes
-                    .remove(&id);
+                lock(&self.state).window_client_sizes.remove(&id);
             }
             id
         }

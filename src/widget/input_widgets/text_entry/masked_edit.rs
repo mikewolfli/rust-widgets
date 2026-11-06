@@ -1267,7 +1267,7 @@ impl Draw for MaskedEdit {
             // halves of the control consistent rather than leaving one of them emitting nothing
             // that looks like something.
             if !self.raw_text.is_empty() {
-                context.draw_text_fitted_cow(
+                context.draw_text_fitted_ellipsis(
                     text_bounds,
                     &self.raw_text,
                     font,

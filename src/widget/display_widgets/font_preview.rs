@@ -377,8 +377,14 @@ impl FontPreview {
 
     /// The info line and the inputs that produced it.
     fn ensure_info_text(&mut self) {
-        let key = (self.font_family.clone(), self.font_size.to_bits(), self.bold, self.italic);
-        if self.info_key.as_ref() == Some(&key) {
+        // Compare against the stored key without rebuilding it: the old form cloned the family
+        // name into a fresh tuple first, so an unchanged font paid one allocation per frame.
+        if self.info_key.as_ref().is_some_and(|(family, size_bits, bold, italic)| {
+            family == &self.font_family
+                && *size_bits == self.font_size.to_bits()
+                && *bold == self.bold
+                && *italic == self.italic
+        }) {
             return;
         }
         self.info_text.clear();
@@ -390,7 +396,8 @@ impl FontPreview {
             if self.bold { ", Bold" } else { "" },
             if self.italic { ", Italic" } else { "" },
         );
-        self.info_key = Some(key);
+        self.info_key =
+            Some((self.font_family.clone(), self.font_size.to_bits(), self.bold, self.italic));
     }
 
     /// The weight-axis rows and the inputs that produced them.
@@ -587,7 +594,7 @@ impl Draw for FontPreview {
         // any style suffix, so it grows with the caller's own inputs and can outrun the panel
         // just as the samples can. It painted in the same grey as a sample row, so the two
         // overflows were indistinguishable in the snapshot.
-        context.draw_text_fitted_cow(
+        context.draw_text_fitted_ellipsis(
             Rect::new(rect.x + margin as i32, y, text_w, info_font.size() as u32),
             self.info_text.as_str(),
             info_font,
@@ -604,7 +611,7 @@ impl Draw for FontPreview {
             // than the size the panel's own info line reports would be a worse lie than an
             // ellipsis. Fitting is therefore the correct fix here, not scaling.
             let preview_font = self.cached_font(self.font_size);
-            context.draw_text_fitted_cow(
+            context.draw_text_fitted_ellipsis(
                 Rect::new(rect.x + margin as i32, y, text_w, preview_font.size() as u32),
                 &self.preview_text,
                 &preview_font,
@@ -642,7 +649,7 @@ impl Draw for FontPreview {
             if y + SAMPLE_STEP >= rect.y {
                 // The alphabet and the pangram are longer than any panel this widget is sized
                 // for, so each row is fitted to the same inner width as the preview above it.
-                context.draw_text_fitted_cow(
+                context.draw_text_fitted_ellipsis(
                     Rect::new(rect.x + margin as i32, y, text_w, sample_font.size() as u32),
                     text,
                     &sample_font,
@@ -668,7 +675,7 @@ impl Draw for FontPreview {
                 let weight = self.font_weights()[first_visible + offset];
                 let font = weight_base_font.clone().with_weight_value(weight);
                 if y + SAMPLE_STEP >= rect.y {
-                    context.draw_text_fitted_cow(
+                    context.draw_text_fitted_ellipsis(
                         Rect::new(rect.x + margin as i32, y, text_w, font.size() as u32),
                         line,
                         &font,

@@ -22,6 +22,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 . "$ROOT_DIR/tools/lib_timeout.sh"
+. "$ROOT_DIR/tools/lib_cargo_cache.sh"
 
 PROFILE="${PROFILE:-desktop}"
 fail=0
@@ -38,7 +39,7 @@ done
 
 echo
 echo "[2/3] fixtures round-trip (test/theme_fixture_test.rs)"
-if ! rw_run_bounded "${RW_GATE_TIMEOUT:-900}" cargo test --no-default-features --features "$PROFILE" --test theme_fixture_test; then
+if ! rw_cargo_cached "${RW_GATE_TIMEOUT:-900}" test --no-default-features --features "$PROFILE" --test theme_fixture_test; then
     echo "FAIL: a theme fixture does not round-trip."
     fail=1
 fi

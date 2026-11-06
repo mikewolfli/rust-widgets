@@ -53,6 +53,10 @@ pub enum ParamKind {
     Overflow,
     /// A dock edge token (`"left"`, `"right"`, `"top"`, `"bottom"`).
     DockEdge,
+    /// An absolute anchor token (`"top_left"`, `"center"`, …).
+    Anchor,
+    /// A list of constraint objects (`[{"target": …, "kind": …}]`).
+    Constraints,
 }
 
 impl ParamKind {
@@ -68,6 +72,8 @@ impl ParamKind {
             Self::Inset => "inset",
             Self::Overflow => "overflow",
             Self::DockEdge => "dock_edge",
+            Self::Anchor => "anchor",
+            Self::Constraints => "constraints",
         }
     }
 }
@@ -264,6 +270,20 @@ pub static LAYOUT_KIND_SCHEMAS: &[LayoutKindSchema] = &[
             param("animation_duration", ParamKind::UInt, false, true),
         ],
     },
+    LayoutKindSchema {
+        type_token: "absolute",
+        aliases: &["Absolute"],
+        // The per-child position lives on the child's placement object (`x`/`y`/`width`/
+        // `height`/`anchor`), so the kind itself declares no parameters.
+        params: &[],
+    },
+    LayoutKindSchema {
+        type_token: "constraint",
+        aliases: &["Constraint"],
+        // The relationships live on each child's `constraints` list, so the kind itself declares
+        // no parameters.
+        params: &[],
+    },
 ];
 
 /// The child-side parameters a declarative layout accepts on a child entry.
@@ -310,6 +330,16 @@ pub static CHILD_ATTR_SCHEMA: &[LayoutParam] = &[
     // There is no per-node overflow carrier in this build: the field is declared so a document
     // that states it can be diagnosed rather than silently ignored (see `honoured`).
     param("overflow", ParamKind::Overflow, false, false),
+    // Absolute layouts (API2-01): the child's own position. `honoured` is false in the base table
+    // because only an `absolute` parent consumes them; `child_attrs_honoured_by` turns them on
+    // for that kind.
+    param("x", ParamKind::Int, false, false),
+    param("y", ParamKind::Int, false, false),
+    param("width", ParamKind::UInt, false, false),
+    param("height", ParamKind::UInt, false, false),
+    param("anchor", ParamKind::Anchor, false, false),
+    // Constraint layouts (API2-01): the child's relationships. Only a `constraint` parent reads it.
+    param("constraints", ParamKind::Constraints, false, false),
 ];
 
 /// The child-placement keys a layout **kind** actually honours.
@@ -324,6 +354,8 @@ pub fn child_attrs_honoured_by(type_token: &str) -> Vec<&'static str> {
     // `ChildInfo::params.margins`. Reporting them as honoured under a box would let a document
     // set a margin the box never subtracts.
     let flex = matches!(type_token, "flex" | "Flex");
+    let absolute = matches!(type_token, "absolute" | "Absolute");
+    let constraint = matches!(type_token, "constraint" | "Constraint");
     CHILD_ATTR_SCHEMA
         .iter()
         .filter(|attr| {
@@ -331,6 +363,8 @@ pub fn child_attrs_honoured_by(type_token: &str) -> Vec<&'static str> {
                 || (grid && matches!(attr.key, "col" | "row" | "col_span" | "row_span"))
                 || (border && matches!(attr.key, "region" | "extent"))
                 || (flex && attr.key == "margin")
+                || (absolute && matches!(attr.key, "x" | "y" | "width" | "height" | "anchor"))
+                || (constraint && attr.key == "constraints")
         })
         .map(|attr| attr.key)
         .collect()
@@ -578,6 +612,11 @@ fn value_matches_kind(value: &str, kind: ParamKind) -> bool {
         ParamKind::DockEdge => {
             matches!(value.to_ascii_lowercase().as_str(), "left" | "right" | "top" | "bottom")
         }
+        ParamKind::Anchor => crate::layout::absolute::Anchor::from_token(value).is_some(),
+        // The constraint list reaches this validator as the document's text; an array is the only
+        // shape that can hold the relationship objects, so the check is structural and the
+        // per-entry rules are enforced by `parse_constraint_spec`.
+        ParamKind::Constraints => value.trim_start().starts_with('['),
     }
 }
 
@@ -736,6 +775,10 @@ mod tests {
                 "stretch" => serde_json::json!({ "stretch": 7 }),
                 "region" => serde_json::json!({ "region": "north" }),
                 "overflow" => serde_json::json!({ "overflow": "clip" }),
+                "anchor" => serde_json::json!({ "anchor": "top_left" }),
+                "constraints" => serde_json::json!({
+                    "constraints": [{ "target": "title", "kind": "width" }]
+                }),
                 key => serde_json::json!({ key: 3 }),
             };
             let attrs = ChildLayoutAttrs::from_value(&json);
@@ -758,6 +801,17 @@ mod tests {
                         == Some(crate::style::EdgeOffsets { top: 3, right: 3, bottom: 3, left: 3 })
                 }
                 "overflow" => attrs.overflow == Some(crate::json::ChildOverflow::Clip),
+                "x" => attrs.x == Some(3),
+                "y" => attrs.y == Some(3),
+                "width" => attrs.width == Some(3),
+                "height" => attrs.height == Some(3),
+                "anchor" => attrs.anchor == Some(crate::layout::absolute::Anchor::TopLeft),
+                "constraints" => {
+                    attrs.constraints.len() == 1
+                        && attrs.constraints[0].target == "title"
+                        && attrs.constraints[0].kind
+                            == crate::layout::constraint::ConstraintType::Width
+                }
                 other => panic!("`{other}` is declared by the schema but this test cannot read it"),
             };
             assert!(read, "the schema declares `{}` but the parser did not read it", attr.key);

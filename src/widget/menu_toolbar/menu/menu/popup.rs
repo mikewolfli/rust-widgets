@@ -446,7 +446,7 @@ impl Menu {
                 }
                 if child.is_section() {
                     let band = Rect::new(row.x + 8, row.y, row.width.saturating_sub(8), row.height);
-                    context.draw_text_fitted_cow(
+                    context.draw_text_fitted_ellipsis(
                         context.text_line(band, font),
                         child.text(),
                         font,
@@ -494,7 +494,7 @@ impl Menu {
                     );
                     crate::widget::draw_icon_at(context, tick, fg, IconName::Check);
                 }
-                context.draw_text_fitted_cow(
+                context.draw_text_fitted_ellipsis(
                     context.text_line(label, font),
                     child.text(),
                     font,
@@ -872,7 +872,7 @@ impl Draw for Menu {
                     // secondary ink and never takes the highlight fill.
                     let band =
                         Rect::new(row.x + 10, row.y, row.width.saturating_sub(20), row.height);
-                    context.draw_text_fitted_cow(
+                    context.draw_text_fitted_ellipsis(
                         context.text_line(band, font),
                         item.text(),
                         font,
@@ -950,7 +950,13 @@ impl Draw for Menu {
                 None => item.text(),
             };
             let line = context.text_line(label, font);
-            context.draw_text_fitted_cow(line, label_text, font, fg, HorizontalAlignment::Left);
+            context.draw_text_fitted_ellipsis(
+                line,
+                label_text,
+                font,
+                fg,
+                HorizontalAlignment::Left,
+            );
             if let Some((_, prefix, width)) =
                 mnemonic_rows.as_ref().and_then(|rows| rows.get(i)).and_then(|row| row.underline)
             {
@@ -974,7 +980,7 @@ impl Draw for Menu {
                     self.trailing_width(),
                     row.height,
                 );
-                context.draw_text_fitted_cow(
+                context.draw_text_fitted_ellipsis(
                     context.text_line(trailing, font),
                     item.shortcut(),
                     font,

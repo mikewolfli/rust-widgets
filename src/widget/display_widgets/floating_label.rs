@@ -487,7 +487,7 @@ impl FloatingLabel {
             let float_y = inline_line.y
                 + ((floating_line.y - inline_line.y) as f32 * self.travel.value()) as i32;
             let label_width = ((rect.width as i32) - 2 * LABEL_PADDING).max(0) as u32;
-            context.draw_text_fitted_cow(
+            context.draw_text_fitted_ellipsis(
                 Rect::new(label_x, float_y, label_width, floating_line.height.max(1)),
                 &self.label,
                 font,
@@ -507,7 +507,7 @@ impl FloatingLabel {
                 self.base.disabled_ink_on(ink, field_background)
             };
             let label_width = ((rect.width as i32) - 2 * LABEL_PADDING).max(0) as u32;
-            context.draw_text_fitted_cow(
+            context.draw_text_fitted_ellipsis(
                 Rect::new(label_x, inline_line.y, label_width, inline_line.height.max(1)),
                 &self.label,
                 &input_font,
@@ -710,7 +710,7 @@ impl Draw for FloatingLabel {
         if show_placeholder && !self.placeholder.is_empty() {
             // Fitted to the field so a long hint cannot paint past its edge.
             let band_width = ((rect.width as i32) - 2 * LABEL_PADDING).max(0) as u32;
-            context.draw_text_fitted_cow(
+            context.draw_text_fitted_ellipsis(
                 Rect::new(
                     rect.x + LABEL_PADDING,
                     input_line.y,
@@ -730,7 +730,7 @@ impl Draw for FloatingLabel {
             // appearance; a fixed `rgba(160,160,160,255)` did not move with the theme.
             let text_color = self.base.disabled_ink_on(ink, bg_color);
             let band_width = ((rect.width as i32) - 2 * LABEL_PADDING).max(0) as u32;
-            context.draw_text_fitted_cow(
+            context.draw_text_fitted_ellipsis(
                 Rect::new(
                     rect.x + LABEL_PADDING,
                     input_line.y,

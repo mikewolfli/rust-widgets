@@ -1195,7 +1195,7 @@ impl Draw for NotificationCenter {
         if let Some(button) = self.clear_all_rect() {
             context.fill_rect(button, background.blend(&text_color, 0.10));
             context.draw_rect(button, separator);
-            context.draw_text_line_cow(
+            context.draw_text_line_ellipsis(
                 button,
                 "Clear all",
                 effective_font(style),
@@ -1206,7 +1206,7 @@ impl Draw for NotificationCenter {
         if let Some(button) = self.mark_all_read_rect() {
             context.fill_rect(button, background.blend(&text_color, 0.10));
             context.draw_rect(button, separator);
-            context.draw_text_line_cow(
+            context.draw_text_line_ellipsis(
                 button,
                 "Mark all read",
                 effective_font(style),
@@ -1227,7 +1227,7 @@ impl Draw for NotificationCenter {
             // with the row layout, so a still frame does not format it again (SP-P68).
             if let Some(label) = row.day_label.as_deref() {
                 let header = Rect::new(row_rect.x + 4, row_rect.y - 14, row_rect.width, 12);
-                context.draw_text_line_cow(
+                context.draw_text_line_ellipsis(
                     header,
                     label,
                     effective_font(style),
@@ -1298,7 +1298,7 @@ impl Draw for NotificationCenter {
                 (rect.width as i32 - (text_x - rect.x) - trailing).max(0) as u32,
                 line_height,
             );
-            context.draw_text_fitted_cow(
+            context.draw_text_fitted_ellipsis(
                 title_band,
                 &item.title,
                 effective_font(style),
@@ -1312,7 +1312,7 @@ impl Draw for NotificationCenter {
                     (rect.width as i32 - (text_x - rect.x) - trailing).max(0) as u32,
                     line_height,
                 );
-                context.draw_text_fitted_cow(
+                context.draw_text_fitted_ellipsis(
                     message_band,
                     &item.message,
                     effective_font(style),
@@ -1352,7 +1352,7 @@ impl Draw for NotificationCenter {
                     36,
                     row_rect.height,
                 );
-                context.draw_text_line_cow(
+                context.draw_text_line_ellipsis(
                     band,
                     stamp,
                     effective_font(style),

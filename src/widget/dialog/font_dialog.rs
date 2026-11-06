@@ -9,7 +9,6 @@ use crate::event::{Event, EventHandler};
 use crate::platform::SystemFont;
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
-use crate::tr_into;
 
 use crate::impl_widget_property_hooks;
 use crate::property_names_of;
@@ -19,6 +18,12 @@ use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::{dimensions, effective_font, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+
+thread_local! {
+    /// Reused size-column label buffer.
+    static SIZE_LABEL_SCRATCH: crate::compat::RefCell<String> =
+        const { crate::compat::RefCell::new(String::new()) };
+}
 
 /// Orders two font-family names by their case-folded form without allocating.
 ///
@@ -1026,11 +1031,10 @@ impl Draw for FontDialog {
         let title_bar_band = ControlMetrics::top_band(rect, dimensions::DIALOG_TITLE_BAR_HEIGHT);
         context.fill_rect(title_bar_band, accent);
         let title_font = font;
-        // One buffer for the painted title instead of a fresh `String` per frame (LYT-X04).
-        let mut title_label = String::new();
-        tr_into!("dialog.font.select_font", &mut title_label);
+        // The painted title is resolved once per catalogue generation (LYT-X04).
+        let title_label = super::localized_label_for_key("dialog.font.select_font");
         let title_line = context.text_line(title_bar_band, title_font);
-        context.draw_text_fitted_cow(
+        context.draw_text_fitted_ellipsis(
             Rect::new(
                 rect.x + 8,
                 title_line.y,
@@ -1062,12 +1066,10 @@ impl Draw for FontDialog {
             ["dialog.font.font_family", "dialog.font.style", "dialog.font.size"];
         let header_band = Rect::new(rect.x, header_top, rect.width, header_h as u32);
         let header_line = context.text_line(header_band, font);
-        let mut col_label = String::new();
         for (column, key) in COLUMN_KEYS.iter().enumerate() {
-            col_label.clear();
-            tr_into!(*key, &mut col_label);
+            let col_label = super::localized_label_for_key(key);
             let col_x = rect.x + 4 + column as i32 * (col_w as i32 + COL_GAP);
-            context.draw_text_fitted_cow(
+            context.draw_text_fitted_ellipsis(
                 Rect::new(col_x, header_line.y, col_w, header_line.height.max(1)),
                 col_label.as_str(),
                 font,
@@ -1093,71 +1095,73 @@ impl Draw for FontDialog {
             // One reused buffer for the size column: the labels were collected into a
             // fresh `Vec<String>` every frame for values that are one or two digits.
             use core::fmt::Write as _;
-            let mut size_label = String::new();
-            for column in 0..3 {
-                let col_x = rect.x + 4 + column as i32 * (col_w as i32 + COL_GAP);
-                let start = self.scroll(column);
-                let selected = self.selected(column);
-                context.push_clip(col_x, list_y, col_w, list_h);
-                for row in 0..rows {
-                    let index = start + row;
-                    let label = match column {
-                        0 => self.families.get(index).map(String::as_str),
-                        1 => self.styles.get(index).map(|style| style.label.as_str()),
-                        _ => match self.sizes.get(index) {
-                            Some(size) => {
-                                size_label.clear();
-                                let _ = write!(size_label, "{size}");
-                                Some(size_label.as_str())
-                            }
-                            None => None,
-                        },
-                    };
-                    let label = match label {
-                        Some(label) => label,
-                        None => break,
-                    };
-                    let row_rect = Rect::new(
-                        col_x,
-                        list_y + row as i32 * ROW_HEIGHT,
-                        col_w,
-                        ROW_HEIGHT as u32,
-                    );
-                    let row_ink = if index == selected {
-                        context.fill_rect(row_rect, accent);
-                        accent_ink
-                    } else {
-                        ink
-                    };
-                    context.draw_text_line_cow(
-                        Rect::new(
-                            row_rect.x + 4,
-                            row_rect.y,
-                            row_rect.width.saturating_sub(8),
-                            row_rect.height,
-                        ),
-                        label,
-                        font,
-                        row_ink,
-                        HorizontalAlignment::Left,
-                    );
+            SIZE_LABEL_SCRATCH.with(|cell| {
+                let mut size_label = cell.borrow_mut();
+                for column in 0..3 {
+                    let col_x = rect.x + 4 + column as i32 * (col_w as i32 + COL_GAP);
+                    let start = self.scroll(column);
+                    let selected = self.selected(column);
+                    context.push_clip(col_x, list_y, col_w, list_h);
+                    for row in 0..rows {
+                        let index = start + row;
+                        let label = match column {
+                            0 => self.families.get(index).map(String::as_str),
+                            1 => self.styles.get(index).map(|style| style.label.as_str()),
+                            _ => match self.sizes.get(index) {
+                                Some(size) => {
+                                    size_label.clear();
+                                    let _ = write!(&mut *size_label, "{size}");
+                                    Some(size_label.as_str())
+                                }
+                                None => None,
+                            },
+                        };
+                        let label = match label {
+                            Some(label) => label,
+                            None => break,
+                        };
+                        let row_rect = Rect::new(
+                            col_x,
+                            list_y + row as i32 * ROW_HEIGHT,
+                            col_w,
+                            ROW_HEIGHT as u32,
+                        );
+                        let row_ink = if index == selected {
+                            context.fill_rect(row_rect, accent);
+                            accent_ink
+                        } else {
+                            ink
+                        };
+                        context.draw_text_line_ellipsis(
+                            Rect::new(
+                                row_rect.x + 4,
+                                row_rect.y,
+                                row_rect.width.saturating_sub(8),
+                                row_rect.height,
+                            ),
+                            label,
+                            font,
+                            row_ink,
+                            HorizontalAlignment::Left,
+                        );
+                    }
+                    // A scroll indicator on the column's trailing edge: its thumb is sized by
+                    // visible/total and positioned by the scroll offset, so the user can see how
+                    // much of the list is above or below (DLG-19).
+                    let total = self.column_len(column);
+                    if total > rows && col_w > 4 && list_h > 0 {
+                        let track = Rect::new(col_x + col_w as i32 - 3, list_y, 3, list_h);
+                        context.fill_rect(track, border.with_alpha_f32(0.35));
+                        let thumb_h = ((list_h as usize * rows) / total).max(8) as u32;
+                        let max_scroll = total.saturating_sub(rows);
+                        let travel = list_h.saturating_sub(thumb_h) as usize;
+                        let thumb_y =
+                            list_y + (travel * start).checked_div(max_scroll).unwrap_or(0) as i32;
+                        context.fill_rect(Rect::new(track.x, thumb_y, 3, thumb_h), accent);
+                    }
+                    context.pop_clip();
                 }
-                // A scroll indicator on the column's trailing edge: its thumb is sized by
-                // visible/total and positioned by the scroll offset, so the user can see how
-                // much of the list is above or below (DLG-19).
-                let total = self.column_len(column);
-                if total > rows && col_w > 4 && list_h > 0 {
-                    let track = Rect::new(col_x + col_w as i32 - 3, list_y, 3, list_h);
-                    context.fill_rect(track, border.with_alpha_f32(0.35));
-                    let thumb_h = ((list_h as usize * rows) / total).max(8) as u32;
-                    let max_scroll = total.saturating_sub(rows);
-                    let travel = list_h.saturating_sub(thumb_h) as usize;
-                    let thumb_y =
-                        list_y + (travel * start).checked_div(max_scroll).unwrap_or(0) as i32;
-                    context.fill_rect(Rect::new(track.x, thumb_y, 3, thumb_h), accent);
-                }
-                context.pop_clip();
-            }
+            });
         }
         // Preview area: the sample is drawn in the user's selected font, not the theme's, and
         // the well has zero height exactly when `layout()` decided there was no room for it.
@@ -1171,7 +1175,7 @@ impl Draw for FontDialog {
             // larger than the well, and the sample must be cut off rather than drawn over the
             // button row.
             context.push_clip(well.x, well.y, well.width, well.height);
-            context.draw_text_line_cow(
+            context.draw_text_line_ellipsis(
                 Rect::new(well.x + 6, well.y, well.width.saturating_sub(12), well.height),
                 &self.preview_text,
                 &self.current_font,
@@ -1206,7 +1210,7 @@ impl Draw for FontDialog {
             super::message_box::action_row_geometry(context, font, &labels, button_band, true);
         let ok_rect = row.buttons[0];
         context.fill_rect(ok_rect, accent);
-        context.draw_text_line_cow(
+        context.draw_text_line_ellipsis(
             ok_rect,
             &labels[0],
             font,
@@ -1216,7 +1220,13 @@ impl Draw for FontDialog {
         let cancel_rect = row.buttons[1];
         context.fill_rect(cancel_rect, surface.blend(&ink, 0.1));
         context.draw_rect(cancel_rect, border);
-        context.draw_text_line_cow(cancel_rect, &labels[1], font, ink, HorizontalAlignment::Center);
+        context.draw_text_line_ellipsis(
+            cancel_rect,
+            &labels[1],
+            font,
+            ink,
+            HorizontalAlignment::Center,
+        );
         // Cached for hit-testing only; assigned after the last use of the borrowed style/font so
         // the read-only borrow can end instead of forcing a `WidgetStyle` clone.
         self.ok_button = ok_rect;

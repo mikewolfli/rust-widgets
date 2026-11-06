@@ -367,9 +367,11 @@ impl MapAttributionOverlay {
             .collect()
     }
 
-    /// The background panel around the visible rows.
-    fn panel_rect(&self) -> Option<Rect> {
-        let rows = self.layout_rows();
+    /// The background panel around an already-computed row layout.
+    ///
+    /// Takes the rows rather than recomputing them: `draw` needs both the panel and the rows, and
+    /// calling `layout_rows` twice per frame built and measured the same list twice.
+    fn panel_rect(rows: &[(usize, Rect)]) -> Option<Rect> {
         let first = rows.first()?.1;
         let last = rows.last()?.1;
         Some(Rect::new(
@@ -525,7 +527,8 @@ impl EventHandler for MapAttributionOverlay {
 
 impl Draw for MapAttributionOverlay {
     fn draw(&mut self, context: &mut RenderContext) {
-        let Some(panel) = self.panel_rect() else {
+        let rows = self.layout_rows();
+        let Some(panel) = Self::panel_rect(&rows) else {
             return;
         };
         let style = self.base.style();
@@ -546,14 +549,20 @@ impl Draw for MapAttributionOverlay {
             1,
         );
 
-        for (index, rect) in self.layout_rows() {
+        for (index, rect) in rows {
             let Some(entry) = self.entries.get(index) else {
                 continue;
             };
             // A linked entry is painted in the accent so the one actionable line is distinguishable
             // from a plain licence notice.
             let color = if entry.url.is_some() { accent } else { ink };
-            context.draw_text_line(rect, &entry.text, &font, color, HorizontalAlignment::Left);
+            context.draw_text_line_ellipsis(
+                rect,
+                &entry.text,
+                &font,
+                color,
+                HorizontalAlignment::Left,
+            );
         }
     }
 }

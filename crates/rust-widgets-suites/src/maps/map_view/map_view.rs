@@ -344,6 +344,9 @@ pub struct MapView {
     compass: Compass,
     /// Whether the three overlay controls are painted and hit-tested.
     show_map_controls: bool,
+    /// Fallback tile parents already painted this frame, reused across frames so the tile sweep
+    /// does not build a `Vec` per paint.
+    painted_parents_scratch: RefCell<Vec<TileKey>>,
     /// Whether a paint asks the host for the tiles the viewport touches.
     ///
     /// The sweep itself runs from the camera writers ([`Self::set_center`], [`Self::set_zoom`]),
@@ -414,6 +417,7 @@ impl MapView {
             scale_bar: ScaleBar::new(Rect::new(0, 0, 0, 0)),
             compass: Compass::new(Rect::new(0, 0, 0, 0)),
             show_map_controls: true,
+            painted_parents_scratch: RefCell::new(Vec::new()),
             prefetch_on_paint: true,
             markers_revision: 1,
             cluster_cache: RefCell::new(None),
@@ -886,8 +890,10 @@ impl MapView {
         let cols = (viewport.width as f64 / tile_size).ceil() as i64 + 2;
         let rows = (viewport.height as f64 / tile_size).ceil() as i64 + 2;
         // Parents already painted this frame, so a fallback tile is blitted once rather than once
-        // per child that needs it.
-        let mut painted_parents: Vec<TileKey> = Vec::new();
+        // per child that needs it. The buffer is a field: allocating it per frame was a steady
+        // cost for every painted map.
+        let mut painted_parents = self.painted_parents_scratch.borrow_mut();
+        painted_parents.clear();
 
         for row in 0..rows {
             for col in 0..cols {
@@ -1189,7 +1195,7 @@ impl MapView {
         let label_left = (sx as i32) + half + 3;
         let label_width = (rect.x + rect.width as i32 - label_left).max(0) as u32;
         if label_width > 0 {
-            context.draw_text_fitted_cow(
+            context.draw_text_fitted_ellipsis(
                 Rect::new(label_left, sy as i32 - half, label_width, 14),
                 &marker.label,
                 effective_font(style),
@@ -1647,7 +1653,7 @@ impl Draw for MapView {
         // Scoped so the cache borrow is released before the overlay controls take `&mut self`.
         {
             let status = self.status_line();
-            context.draw_text_fitted_cow(
+            context.draw_text_fitted_ellipsis(
                 Rect::new(rect.x + 8, rect.y + 4, rect.width.saturating_sub(16), 14),
                 &status,
                 effective_font(style),

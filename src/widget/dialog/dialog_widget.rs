@@ -146,7 +146,7 @@ pub struct Dialog {
     /// The index of the button Escape activates (DLG-004); `None` keeps the reject fallback.
     cancel_button: Option<usize>,
     /// The action row's painted rectangles, cached for the press path (DLG-01).
-    button_rects: RefCell<Vec<Rect>>,
+    button_rects: RefCell<Rc<Vec<Rect>>>,
     /// Whether the dialog paints a bottom-right resize grip and honours the gesture.
     ///
     /// Off by default: a dialog has no resize path to reuse unless the caller asks for one, so
@@ -205,7 +205,7 @@ impl Dialog {
             buttons: Vec::new(),
             default_button: None,
             cancel_button: None,
-            button_rects: RefCell::new(Vec::new()),
+            button_rects: RefCell::new(Rc::new(Vec::new())),
             resizable: false,
             resize_origin: None,
             resize_geometry: None,
@@ -1195,7 +1195,7 @@ impl Draw for Dialog {
                 let text_ink = if is_default { surface } else { ink };
                 context.fill_rect(*button, fill);
                 context.draw_rect(*button, border);
-                context.draw_text_line_cow(
+                context.draw_text_line_ellipsis(
                     *button,
                     &labels[index],
                     action_font,
@@ -1208,7 +1208,7 @@ impl Draw for Dialog {
             }
             *self.button_rects.borrow_mut() = row.buttons;
         } else {
-            self.button_rects.borrow_mut().clear();
+            *self.button_rects.borrow_mut() = Rc::new(Vec::new());
         }
 
         // The resize grip is painted before the title-bar early return so a titleless dialog
@@ -1265,7 +1265,7 @@ impl Draw for Dialog {
             self.title_bar_actions.len() as u32 * (DIALOG_CLOSE_BUTTON + 4)
         };
         let title_width = rect.width.saturating_sub(16).saturating_sub(reserved);
-        context.draw_text_fitted_cow(
+        context.draw_text_fitted_ellipsis(
             Rect::new(rect.x + 8, title_line.y, title_width, title_line.height.max(1)),
             &self.title,
             title_font,

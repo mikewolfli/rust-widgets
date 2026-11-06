@@ -129,6 +129,12 @@ thread_local! {
     /// A process-wide value would make one test's pin leak into every other test in the binary.
     static TODAY_OVERRIDE: crate::compat::RefCell<Option<chrono::NaiveDate>> =
         const { crate::compat::RefCell::new(None) };
+    /// Reused week-number label buffer (repainted once per visible week).
+    static WEEK_TEXT_SCRATCH: crate::compat::RefCell<String> =
+        const { crate::compat::RefCell::new(String::new()) };
+    /// Reused day-number label buffer (repainted for each of the 42 cells).
+    static DAY_TEXT_SCRATCH: crate::compat::RefCell<String> =
+        const { crate::compat::RefCell::new(String::new()) };
     /// An injected [`DateClock`] for the calling thread, or `None` to use [`SystemDateClock`].
     ///
     /// Checked after [`TODAY_OVERRIDE`], so a single-day pin wins over a whole clock. A simulating
@@ -2203,7 +2209,7 @@ impl Draw for Calendar {
                 if self.dropdown_navigation {
                     let month_box = self.month_title_rect();
                     let month_text = self.month_name(self.display_month.month());
-                    context.draw_text_fitted_cow(
+                    context.draw_text_fitted_ellipsis(
                         Rect::new(month_box.x, title_line.y, month_box.width, title_line.height),
                         month_text,
                         &title_font,
@@ -2214,7 +2220,7 @@ impl Draw for Calendar {
                         // The year segment is the cached year-menu window's first label offset by
                         // two: the window starts at `year - 2`, so the displayed year is slot 2.
                         let year_text = self.year_menu_label(2);
-                        context.draw_text_fitted_cow(
+                        context.draw_text_fitted_ellipsis(
                             Rect::new(year_box.x, title_line.y, year_box.width, title_line.height),
                             &year_text,
                             &title_font,
@@ -2225,7 +2231,7 @@ impl Draw for Calendar {
                 } else {
                     let title = self.month_title_text();
                     let span = self.nav_content_span();
-                    context.draw_text_fitted_cow(
+                    context.draw_text_fitted_ellipsis(
                         Rect::new(span.x, title_line.y, span.width, title_line.height),
                         title.as_str(),
                         &title_font,
@@ -2234,7 +2240,7 @@ impl Draw for Calendar {
                     );
                 }
                 if let Some(today_rect) = self.today_button_rect() {
-                    context.draw_text_fitted_cow(
+                    context.draw_text_fitted_ellipsis(
                         Rect::new(today_rect.x, title_line.y, today_rect.width, title_line.height),
                         "Today",
                         &role_font(style, 11.0),
@@ -2244,7 +2250,7 @@ impl Draw for Calendar {
                 }
             } else {
                 let title = self.month_title_text();
-                context.draw_text_fitted_cow(
+                context.draw_text_fitted_ellipsis(
                     title_bounds,
                     title.as_str(),
                     &title_font,
@@ -2315,7 +2321,7 @@ impl Draw for Calendar {
                 // the reading and keeps the truncation guard where it belongs, on a genuinely
                 // narrow column.
                 let label_bounds = Rect::new(cell_x, hdr.y + 6, cell_w as u32, 11);
-                context.draw_text_fitted_cow(
+                context.draw_text_fitted_ellipsis(
                     label_bounds,
                     self.weekday_name(*weekday),
                     &role_font(style, 11.0).with_bold(true),
@@ -2353,32 +2359,38 @@ impl Draw for Calendar {
             let gutter = self.week_gutter_rect();
             if gutter.width > 0 {
                 let font = role_font(style, 10.0);
-                let mut week_text = String::new();
-                for row in 0..6u32 {
-                    let Some(start) = self.week_row_start(row) else {
-                        continue;
-                    };
-                    let band =
-                        Rect::new(gutter.x, grid.y + (row * cell_h) as i32, gutter.width, cell_h);
-                    if band.y + band.height as i32 > rect.y + rect.height as i32 {
-                        break;
+                WEEK_TEXT_SCRATCH.with(|cell| {
+                    let mut week_text = cell.borrow_mut();
+                    for row in 0..6u32 {
+                        let Some(start) = self.week_row_start(row) else {
+                            continue;
+                        };
+                        let band = Rect::new(
+                            gutter.x,
+                            grid.y + (row * cell_h) as i32,
+                            gutter.width,
+                            cell_h,
+                        );
+                        if band.y + band.height as i32 > rect.y + rect.height as i32 {
+                            break;
+                        }
+                        // A step quieter than the day numbers: a week number is an index into the
+                        // calendar, not a selectable day, and drawing it at full strength made it read
+                        // as one more date in the row.
+                        week_text.clear();
+                        let _ = core::fmt::Write::write_fmt(
+                            &mut *week_text,
+                            format_args!("{}", Self::iso_week_of(start)),
+                        );
+                        context.draw_text_line_ellipsis(
+                            band,
+                            &week_text,
+                            &font,
+                            text_color.blend(&calendar_bg, 0.45),
+                            HorizontalAlignment::Center,
+                        );
                     }
-                    // A step quieter than the day numbers: a week number is an index into the
-                    // calendar, not a selectable day, and drawing it at full strength made it read
-                    // as one more date in the row.
-                    week_text.clear();
-                    let _ = core::fmt::Write::write_fmt(
-                        &mut week_text,
-                        format_args!("{}", Self::iso_week_of(start)),
-                    );
-                    context.draw_text_line_cow(
-                        band,
-                        &week_text,
-                        &font,
-                        text_color.blend(&calendar_bg, 0.45),
-                        HorizontalAlignment::Center,
-                    );
-                }
+                });
                 // The gutter's right rule is what separates the index from the dates, and it is the
                 // grid's own line so the two cannot drift apart in a light or dark appearance.
                 if style.border_width.unwrap_or(1) > 0 {
@@ -2421,9 +2433,8 @@ impl Draw for Calendar {
             // inside the 42-cell loop, so a calendar repaint asked the theme for the role font 42
             // times a frame.
             let day_font = role_font(style, 11.0);
-            // One reused buffer for the day numbers: `format!` built a fresh `String` for each of
-            // the 42 cells, and the text is at most two digits.
-            let mut day_text = String::new();
+            // The day numbers are written into one thread-local buffer: `format!` built a fresh
+            // `String` for each of the 42 cells.
 
             for row in 0..6 {
                 for col in 0..7 {
@@ -2569,15 +2580,19 @@ impl Draw for Calendar {
                         &day_font,
                         context,
                     );
-                    day_text.clear();
-                    let _ = core::fmt::Write::write_fmt(&mut day_text, format_args!("{day_num}"));
-                    context.draw_text_fitted_cow(
-                        day_line,
-                        &day_text,
-                        &day_font,
-                        day_color,
-                        HorizontalAlignment::Center,
-                    );
+                    DAY_TEXT_SCRATCH.with(|cell| {
+                        let mut day_text = cell.borrow_mut();
+                        day_text.clear();
+                        let _ =
+                            core::fmt::Write::write_fmt(&mut *day_text, format_args!("{day_num}"));
+                        context.draw_text_fitted_ellipsis(
+                            day_line,
+                            &day_text,
+                            &day_font,
+                            day_color,
+                            HorizontalAlignment::Center,
+                        );
+                    });
                 }
             }
             if revealing {
@@ -2602,7 +2617,7 @@ impl Draw for Calendar {
                     context.fill_rect(band, calendar_bg.blend(&text_color, 0.14));
                 }
                 let label = self.month_name(option.month());
-                context.draw_text_fitted_cow(
+                context.draw_text_fitted_ellipsis(
                     Rect::new(band.x + 6, band.y, band.width - 8, band.height),
                     label,
                     &font,
@@ -2622,7 +2637,7 @@ impl Draw for Calendar {
                     context.fill_rect(band, calendar_bg.blend(&text_color, 0.14));
                 }
                 let label = self.year_menu_label(row as usize);
-                context.draw_text_fitted_cow(
+                context.draw_text_fitted_ellipsis(
                     Rect::new(band.x + 6, band.y, band.width - 8, band.height),
                     &label,
                     &font,

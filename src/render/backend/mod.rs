@@ -1,8 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
 // SPDX-License-Identifier: MIT
 
-//! Rendering backends: software surface, paint, batch, and scene.
-pub(crate) mod batch;
+//! Rendering backends: software surface, paint, and scene.
 /// Resampling blits shared by [`paint::PaintBackend::draw_image_scaled`] and its software path.
 pub(crate) mod image_scale;
 pub(crate) mod paint;
@@ -19,10 +18,9 @@ pub(crate) mod surface;
 pub(crate) use paint_blur::{box_blur_region, box_blur_widths};
 
 // Public re-exports consumed by downstream — suppress intra-crate unused warning.
-// RD2-04: the batch *recording* surface (`BatchRenderer`, `BatchId`, `BatchError`,
-// `BatchCommand`) has no production consumer — its only caller is the render test suite. It is
-// `cfg(test)`-only now, so only the image registration type stays on the public surface.
-pub use batch::BatchImage;
+// RD2-04: the batch recording surface (`BatchRenderer`, `BatchId`, `BatchError`, `BatchCommand`)
+// and its image registry were removed — they had no production consumer, and replaying a second
+// command vocabulary on the compose path would be a negative optimisation.
 pub use paint::{PaintBackend, SoftwarePaintBackend};
 
 #[cfg(feature = "quality-management")]

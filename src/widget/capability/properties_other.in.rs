@@ -50,6 +50,8 @@ macro_rules! impl_properties_other {
                 &crate::widget::special_widgets::code_editor::DIAGNOSTIC_MARKER_SCHEMA,
             ),
             PropertySchema::new("text", PropertyValueKind::String, true, true).user_input(),
+            // Every sibling text editor publishes this; the editor's own gate already reads it.
+            PropertySchema::new("read_only", PropertyValueKind::Bool, true, true),
             PropertySchema::new("line_count", PropertyValueKind::UInt, true, false),
             // The caret is writable state: a document may place it, and each component's
             // setter supplies the other live one to the control's own `set_cursor`.
@@ -1528,6 +1530,8 @@ macro_rules! impl_properties_other {
         #[cfg(not(alloc_frugal))]
         pub(crate) const TOAST_HOST_PROPERTIES: &[PropertySchema] = &[
             PropertySchema::new("max_visible", PropertyValueKind::UInt, true, true),
+            // The host-assigned offset that clears a control stacked before it (SP-124).
+            PropertySchema::new("overlay_offset", PropertyValueKind::Int, true, true),
             PropertySchema::new("max_queued", PropertyValueKind::UInt, true, true),
             PropertySchema::new("default_duration_ms", PropertyValueKind::UInt, true, true),
             PropertySchema::enumerated(
@@ -1954,6 +1958,12 @@ macro_rules! impl_properties_other {
         #[cfg(not(alloc_frugal))]
         pub(crate) const SUMMARY_ROW_PROPERTIES: &[PropertySchema] = &[
             PropertySchema::new("aggregates", PropertyValueKind::StringList, true, true),
+            PropertySchema::records(
+                "values",
+                true,
+                true,
+                &crate::widget::companions::SUMMARY_VALUE_SCHEMA,
+            ),
             PropertySchema::new("sticky", PropertyValueKind::Bool, true, true),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
@@ -2014,12 +2024,19 @@ macro_rules! impl_properties_other {
         /// Per-date mark overlay for a calendar (`COMP-28`).
         ///
         /// `mark_count` is the derived total across every date the layer holds, so it is reported
-        /// only; the marks themselves are written through the control's Rust-side `set_mark`.
+        /// only; the marks themselves are a records property, so a declarative caller can populate
+        /// the overlay instead of leaving it empty.
         #[cfg(not(alloc_frugal))]
         pub(crate) const CALENDAR_MARK_LAYER_PROPERTIES: &[PropertySchema] = &[
             PropertySchema::new("year", PropertyValueKind::Int, true, true),
             PropertySchema::new("month", PropertyValueKind::UInt, true, true),
             PropertySchema::new("max_per_cell", PropertyValueKind::UInt, true, true),
+            PropertySchema::records(
+                "marks",
+                true,
+                true,
+                &crate::widget::companions::CALENDAR_MARK_SCHEMA,
+            ),
             PropertySchema::new("mark_count", PropertyValueKind::UInt, true, false),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),

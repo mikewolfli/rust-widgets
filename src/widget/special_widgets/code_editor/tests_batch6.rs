@@ -705,11 +705,7 @@ fn render_labels_are_reused_until_their_inputs_change() {
     )]);
     let _ = render_to_svg(&mut editor);
     assert!(
-        editor
-            .diagnostic_labels
-            .borrow()
-            .iter()
-            .any(|cached| cached.text == "error new message"),
+        editor.diagnostic_labels.borrow().iter().any(|cached| cached.text == "error new message"),
         "a marker rewrite bumps the generation and reformats the label"
     );
 
@@ -746,8 +742,7 @@ fn render_labels_are_reused_until_their_inputs_change() {
         assert!(
             labels
                 .iter()
-                .any(|cached| cached.text == fold_text
-                    && cached.text.as_ptr() == fold_pointer),
+                .any(|cached| cached.text == fold_text && cached.text.as_ptr() == fold_pointer),
             "a still fold reuses the summary string instead of reformatting it"
         );
     }

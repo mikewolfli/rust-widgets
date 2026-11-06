@@ -52,6 +52,12 @@ use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::role_font;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+
+thread_local! {
+    /// Reused ring-value label buffer (one label per ring per frame).
+    static RING_VALUE_SCRATCH: crate::compat::RefCell<String> =
+        const { crate::compat::RefCell::new(String::new()) };
+}
 use crate::{impl_widget_property_hooks, property_names_of};
 
 /// The angular start of the first axis, in degrees measured clockwise from
@@ -188,6 +194,8 @@ pub struct RadarChart {
     data_revision: u64,
     /// The cached data maximum and per-vertex projection ratios (SP-101).
     projection: RefCell<RadarProjection>,
+    /// Reused polygon-vertex buffer for the paint pass.
+    vertices_scratch: RefCell<Vec<Point>>,
 }
 
 impl RadarChart {
@@ -217,6 +225,7 @@ impl RadarChart {
             series_visibility_changed: Signal1::new(),
             data_revision: 0,
             projection: RefCell::new(RadarProjection::default()),
+            vertices_scratch: RefCell::new(Vec::new()),
         }
     }
 
@@ -913,9 +922,9 @@ impl Draw for RadarChart {
         if self.show_axis_labels {
             self.draw_axis_labels(context, center, radius, axis_count, &font, &chrome);
         }
-        // One vertex buffer for every series: each series cleared it, so the paint allocated a
-        // fresh vector per series per frame for a fixed number of points.
-        let mut vertices: Vec<Point> = Vec::with_capacity(axis_count);
+        // One vertex buffer for every series, owned by the control so its capacity survives
+        // between frames.
+        let mut vertices = self.vertices_scratch.borrow_mut();
         for series_index in 0..self.series.len() {
             if !self.is_series_visible(series_index) {
                 continue;
@@ -1005,7 +1014,7 @@ impl RadarChart {
         font: &crate::core::Font,
         chrome: &RadarChrome,
     ) {
-        context.draw_text_fitted_cow(
+        context.draw_text_fitted_ellipsis(
             rect,
             "No data",
             font,
@@ -1071,12 +1080,15 @@ impl RadarChart {
                 }
                 let ring_radius = radius * ring / rings;
                 let value = max * f64::from(ring) / f64::from(rings);
-                let text = format_ring_value(value);
-                let point = Point::new(
+                let text_point = Point::new(
                     center.x + (ring_radius as f32 * angle.cos()) as i32 + 3,
                     center.y + (ring_radius as f32 * angle.sin()) as i32 - 10,
                 );
-                context.draw_text(point, &text, font, ink, HorizontalAlignment::Left);
+                RING_VALUE_SCRATCH.with(|cell| {
+                    let mut text = cell.borrow_mut();
+                    format_ring_value_into(value, &mut text);
+                    context.draw_text(text_point, &text, font, ink, HorizontalAlignment::Left);
+                });
             }
         }
     }
@@ -1129,7 +1141,13 @@ impl RadarChart {
                 metrics.height as i32,
                 rect,
             );
-            context.draw_text_fitted_cow(bounds, label, font, label_ink, HorizontalAlignment::Left);
+            context.draw_text_fitted_ellipsis(
+                bounds,
+                label,
+                font,
+                label_ink,
+                HorizontalAlignment::Left,
+            );
         }
     }
 
@@ -1226,7 +1244,7 @@ impl RadarChart {
             let text_x = x + SWATCH as i32 + 6;
             let row =
                 Rect::new(text_x, y, (rect.x + rect.width as i32 - text_x).max(0) as u32, SWATCH);
-            context.draw_text_fitted_cow(
+            context.draw_text_fitted_ellipsis(
                 row,
                 label.as_str(),
                 font,
@@ -1445,15 +1463,18 @@ impl RadarChart {
 ///
 /// Whole numbers stay whole and fractional values keep one decimal, so a scale from `0` to `1`
 /// reads `0.25`/`0.5`/`0.75` while a scale from `0` to `100` reads `25`/`50`/`75`.
-fn format_ring_value(value: f64) -> String {
+fn format_ring_value_into(value: f64, out: &mut String) {
+    use core::fmt::Write as _;
+    out.clear();
     if !value.is_finite() {
-        return String::from("-");
+        out.push('-');
+        return;
     }
     let magnitude = value.abs();
     if magnitude >= 100.0 || (magnitude - magnitude.round()).abs() < 0.05 {
-        format!("{}", magnitude.round() as i64)
+        let _ = write!(out, "{}", magnitude.round() as i64);
     } else {
-        format!("{magnitude:.1}")
+        let _ = write!(out, "{magnitude:.1}");
     }
 }
 

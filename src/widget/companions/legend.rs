@@ -289,7 +289,7 @@ impl Draw for Legend {
                 cell.width.saturating_sub(LEGEND_MARKER + 8),
                 cell.height,
             );
-            context.draw_text_fitted_cow(
+            context.draw_text_fitted_ellipsis(
                 label,
                 &entry.label,
                 font,

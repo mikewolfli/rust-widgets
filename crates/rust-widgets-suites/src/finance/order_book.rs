@@ -1050,7 +1050,7 @@ impl Draw for OrderBookWidget {
                     BookSide::Ask => geometry.x + geometry.width as i32 - 2,
                 };
                 let price_width = ((price_right - price_x).max(0)) as u32;
-                context.draw_text_fitted_cow(
+                context.draw_text_fitted_ellipsis(
                     Rect::new(price_x, text_y, price_width.max(1), 12),
                     &price_text,
                     &level_font,
@@ -1062,7 +1062,7 @@ impl Draw for OrderBookWidget {
                     // literal stored at construction, so on a light theme the ladder's
                     // sizes were painted in a colour barely distinguishable from the panel.
                     let quantity_width = (quantity_right - quantity_x) as u32;
-                    context.draw_text_fitted_cow(
+                    context.draw_text_fitted_ellipsis(
                         Rect::new(quantity_x, text_y, quantity_width.max(1), 12),
                         &quantity_text,
                         &level_font,

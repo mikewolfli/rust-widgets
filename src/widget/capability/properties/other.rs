@@ -61,6 +61,7 @@ pub(crate) fn code_editor_capability() -> WidgetCapability {
         // — its two components are the honest route.
         commands: &[
             "set_text",
+            "set_read_only",
             "set_markers",
             "set_cursor_line",
             "set_cursor_column",
@@ -422,6 +423,7 @@ pub(crate) fn meter_capability() -> WidgetCapability {
             "set_show_tick_labels",
             "set_tick_count",
             "set_unit",
+            "set_interactive",
         ],
     }
 }
@@ -589,6 +591,7 @@ pub(crate) fn cascader_capability() -> WidgetCapability {
             "set_placeholder",
             "set_separator",
             "set_max_visible",
+            "set_multi_select",
         ],
     }
 }
@@ -705,7 +708,7 @@ pub(crate) fn bottom_navigation_bar_capability() -> WidgetCapability {
         aliases: &["bottom_nav", "bottomnav"],
         properties: BOTTOM_NAVIGATION_BAR_PROPERTIES,
         events: events_of!("bottom_navigation_bar"),
-        commands: &["set_selected_index"],
+        commands: &["set_selected_index", "set_hide_on_scroll", "set_show_unselected_labels"],
     }
 }
 
@@ -717,7 +720,7 @@ pub(crate) fn navigation_drawer_capability() -> WidgetCapability {
         aliases: &["nav_drawer", "drawer"],
         properties: NAVIGATION_DRAWER_PROPERTIES,
         events: events_of!("navigation_drawer"),
-        commands: &["set_open", "set_width", "set_section_separator_visible"],
+        commands: &["set_open", "set_width", "set_section_separator_visible", "set_title"],
     }
 }
 
@@ -731,7 +734,13 @@ pub(crate) fn app_bar_capability() -> WidgetCapability {
         // The widget emits both of these (`app_bar.rs`); advertising an empty
         // list made a by-name subscriber unable to discover them.
         events: events_of!("app_bar"),
-        commands: &["set_title", "set_direction"],
+        commands: &[
+            "set_title",
+            "set_direction",
+            "set_subtitle",
+            "set_show_back",
+            "set_action_text",
+        ],
     }
 }
 
@@ -767,7 +776,13 @@ pub(crate) fn rating_capability() -> WidgetCapability {
         aliases: &["rating_widget", "star_rating"],
         properties: RATING_PROPERTIES,
         events: events_of!("rating"),
-        commands: &["set_value", "set_max", "set_allow_half_step", "set_star_size"],
+        commands: &[
+            "set_value",
+            "set_max",
+            "set_allow_half_step",
+            "set_star_size",
+            "set_read_only",
+        ],
     }
 }
 
@@ -799,7 +814,13 @@ pub(crate) fn empty_state_capability() -> WidgetCapability {
         aliases: &["empty_placeholder"],
         properties: EMPTY_STATE_PROPERTIES,
         events: events_of!("empty_state"),
-        commands: &["set_message", "set_description", "set_secondary_action_text"],
+        commands: &[
+            "set_message",
+            "set_description",
+            "set_secondary_action_text",
+            "set_icon",
+            "set_action_text",
+        ],
     }
 }
 
@@ -873,6 +894,8 @@ pub(crate) fn adaptive_scaffold_capability() -> WidgetCapability {
             "set_drawer_animated",
             "set_scrim_opacity",
             "set_page_transition",
+            "set_show_bottom_nav",
+            "set_bottom_nav_style",
         ],
     }
 }
@@ -952,7 +975,13 @@ pub(crate) fn font_preview_capability() -> WidgetCapability {
         aliases: &["font_viewer"],
         properties: FONT_PREVIEW_PROPERTIES,
         events: &[],
-        commands: &["set_font_family", "set_font_size", "set_preview_text"],
+        commands: &[
+            "set_font_family",
+            "set_font_size",
+            "set_preview_text",
+            "set_bold",
+            "set_italic",
+        ],
     }
 }
 
@@ -1018,7 +1047,13 @@ pub(crate) fn tab_view_capability() -> WidgetCapability {
         aliases: &["page_tab_view"],
         properties: TAB_VIEW_PROPERTIES,
         events: events_of!("tab_view"),
-        commands: &["set_selected_index", "set_keyboard_navigation_enabled"],
+        commands: &[
+            "set_selected_index",
+            "set_keyboard_navigation_enabled",
+            "set_closable",
+            "set_movable",
+            "set_strip_scrollable",
+        ],
     }
 }
 

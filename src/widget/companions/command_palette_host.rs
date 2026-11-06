@@ -524,7 +524,7 @@ impl Draw for CommandPaletteHost {
         } else {
             (self.filter.as_str(), ink)
         };
-        context.draw_text_fitted_cow(text, label, font, color, HorizontalAlignment::Left);
+        context.draw_text_fitted_ellipsis(text, label, font, color, HorizontalAlignment::Left);
         if header.height > 0 {
             let divider = Rect::new(rect.x, header.y + header.height as i32 - 1, rect.width, 1);
             context.fill_rect(divider, accent);
@@ -558,7 +558,7 @@ impl Draw for CommandPaletteHost {
                 }
                 let title_width = (row.width / 2).saturating_sub(PALETTE_INSET);
                 let title = Rect::new(row.x + PALETTE_INSET as i32, row.y, title_width, row.height);
-                context.draw_text_fitted_cow(
+                context.draw_text_fitted_ellipsis(
                     title,
                     &entry.title,
                     font,
@@ -573,7 +573,7 @@ impl Draw for CommandPaletteHost {
                         hint_width,
                         row.height,
                     );
-                    context.draw_text_fitted_cow(
+                    context.draw_text_fitted_ellipsis(
                         hint,
                         &entry.hint,
                         font,
@@ -590,7 +590,7 @@ impl Draw for CommandPaletteHost {
                     rect.width.saturating_sub(PALETTE_INSET * 2),
                     PALETTE_ROW_HEIGHT,
                 );
-                context.draw_text_fitted_cow(
+                context.draw_text_fitted_ellipsis(
                     empty,
                     "No matching commands",
                     font,

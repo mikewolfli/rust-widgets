@@ -125,7 +125,7 @@ impl Draw for DrawerSectionHeader {
         let x = rect.x + self.inset as i32;
         let width = (rect.x + rect.width as i32 - x).max(0) as u32;
         if width > 0 {
-            context.draw_text_fitted_cow(
+            context.draw_text_fitted_ellipsis(
                 Rect::new(x, line.y, width, line.height.max(1)),
                 &self.displayed,
                 &font,

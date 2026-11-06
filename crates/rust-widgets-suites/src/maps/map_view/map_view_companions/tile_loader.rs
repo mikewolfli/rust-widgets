@@ -526,7 +526,7 @@ impl Draw for TileLoader {
             1,
         );
         let status = self.status_cache.as_ref().map(|(_, _, _, text)| text.as_str()).unwrap_or("");
-        context.draw_text_fitted_cow(
+        context.draw_text_fitted_ellipsis(
             Rect::new(rect.x + 4, rect.y + 2, rect.width.saturating_sub(8), 14),
             status,
             effective_font(style),

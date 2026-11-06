@@ -1216,7 +1216,7 @@ impl Draw for QuoteBoard {
                     (*width).max(1) as u32,
                     heading_font.size().max(1.0) as u32,
                 );
-                context.draw_text_fitted_cow(
+                context.draw_text_fitted_ellipsis(
                     band,
                     title,
                     &heading_font,
@@ -1356,7 +1356,7 @@ impl Draw for QuoteBoard {
                         HorizontalAlignment::Left,
                     );
                 } else {
-                    context.draw_text_fitted_cow(
+                    context.draw_text_fitted_ellipsis(
                         line,
                         text,
                         font,

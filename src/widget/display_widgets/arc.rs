@@ -29,6 +29,12 @@ const DEFAULT_SPIN_PERIOD_MS: u32 = 1400;
 /// How many `slow` tokens one revolution is worth.
 const SPIN_SLOW_MULTIPLE: u32 = 5;
 
+thread_local! {
+    /// Reused annulus contour buffer.
+    static ANNULUS_SCRATCH: crate::compat::RefCell<Vec<Point>> =
+        const { crate::compat::RefCell::new(Vec::new()) };
+}
+
 /// Fills the annulus between `inner` and `outer` over `start..end` as one contour.
 ///
 /// The contour runs along the outer edge and back along the inner edge, so the hole is real
@@ -49,25 +55,29 @@ fn fill_annulus(
     }
     let sweep = end - start;
     let steps = (((sweep.abs() * outer as f32) / 3.0).ceil() as u32).clamp(8, 256) as usize;
-    let mut points = Vec::with_capacity(steps * 2 + 2);
-    for index in 0..=steps {
-        let t = index as f32 / steps as f32;
-        let angle = start + sweep * t;
-        points.push(Point::new(
-            center.x + (outer as f32 * angle.cos()) as i32,
-            center.y + (outer as f32 * angle.sin()) as i32,
-        ));
-    }
-    for index in (0..=steps).rev() {
-        let t = index as f32 / steps as f32;
-        let angle = start + sweep * t;
-        points.push(Point::new(
-            center.x + (inner as f32 * angle.cos()) as i32,
-            center.y + (inner as f32 * angle.sin()) as i32,
-        ));
-    }
-    let contours = [(0usize, points.len())];
-    let _ = context.fill_path_non_zero(&points, &contours, color);
+    ANNULUS_SCRATCH.with(|cell| {
+        let mut points = cell.borrow_mut();
+        points.clear();
+        points.reserve(steps * 2 + 2);
+        for index in 0..=steps {
+            let t = index as f32 / steps as f32;
+            let angle = start + sweep * t;
+            points.push(Point::new(
+                center.x + (outer as f32 * angle.cos()) as i32,
+                center.y + (outer as f32 * angle.sin()) as i32,
+            ));
+        }
+        for index in (0..=steps).rev() {
+            let t = index as f32 / steps as f32;
+            let angle = start + sweep * t;
+            points.push(Point::new(
+                center.x + (inner as f32 * angle.cos()) as i32,
+                center.y + (inner as f32 * angle.sin()) as i32,
+            ));
+        }
+        let contours = [(0usize, points.len())];
+        let _ = context.fill_path_non_zero(&points, &contours, color);
+    });
 }
 
 /// Arc widget for displaying circular progress or angular values.

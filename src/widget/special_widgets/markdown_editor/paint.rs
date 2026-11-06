@@ -111,7 +111,7 @@ impl Draw for MarkdownEditor {
             // Fitted to the control's width: the header is a long line of counts, and a narrow
             // editor previously drew it straight past its own right edge.
             let header_band = Rect::new(rect.x + 8, rect.y + 4, rect.width.saturating_sub(16), 14);
-            context.draw_text_fitted_cow(
+            context.draw_text_fitted_ellipsis(
                 header_band,
                 &header,
                 effective_font(style),
@@ -207,7 +207,7 @@ impl Draw for MarkdownEditor {
                 } else {
                     // Fitted to the pane, so a long line ends in an ellipsis inside the control
                     // instead of painting over the widget beside it.
-                    context.draw_text_fitted_cow(
+                    context.draw_text_fitted_ellipsis(
                         band,
                         line,
                         font,

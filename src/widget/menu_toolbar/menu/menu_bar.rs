@@ -13,7 +13,7 @@ use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::companions::TooltipManager;
 use crate::widget::menu_toolbar::action::{Action, MenuRole};
-use crate::widget::menu_toolbar::menu::{menu_mnemonic, strip_menu_mnemonic, Menu};
+use crate::widget::menu_toolbar::menu::{menu_mnemonic, strip_menu_mnemonic_cow, Menu};
 use crate::widget::menu_toolbar::tool_bar::child_hover_id;
 use crate::widget::metrics::{dimensions, effective_font, estimate_text_width, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, IconSource, Widget, WidgetKind};
@@ -953,7 +953,7 @@ impl MenuBar {
                 return false;
             }
             let first = menu_mnemonic(entry.title()).or_else(|| {
-                let stripped = strip_menu_mnemonic(entry.title());
+                let stripped = strip_menu_mnemonic_cow(entry.title());
                 // A literal `&&` leaves no marker; the historical answer is the first
                 // character a key can name, which keeps Alt+F working for `"&&File"`.
                 stripped.chars().find(|ch| ch.is_ascii_alphanumeric())
@@ -1249,11 +1249,10 @@ impl WidgetProperties for MenuBar {
                 self.clear();
                 Ok(())
             }
-            "add_menu" | "remove_menu" | "set_entries" => Err(CapabilityAccessError::OutOfRange),
+            "set_entries" => Err(CapabilityAccessError::OutOfRange),
             // Any other `set_foo` name carries its value through the property route,
             // so the shared default reports that a payload is needed rather than
             // claiming the control has never heard of it.
-            _ if name.starts_with("set_") => Err(CapabilityAccessError::OutOfRange),
             _ => self.default_command(name),
         }
     }
@@ -1532,9 +1531,15 @@ impl Draw for MenuBar {
             }
             // `&` markers strip from the painted title and the marked letter is underlined, the
             // same derivation `Menu` uses for its rows (M-03).
-            let stripped = strip_menu_mnemonic(entry.title());
+            let stripped = strip_menu_mnemonic_cow(entry.title());
             let line = context.text_line(label_rect, font);
-            context.draw_text_fitted_cow(line, &stripped, font, fg, HorizontalAlignment::Center);
+            context.draw_text_fitted_ellipsis(
+                line,
+                &stripped,
+                font,
+                fg,
+                HorizontalAlignment::Center,
+            );
             if let Some(mnemonic) = menu_mnemonic(entry.title()) {
                 if let Some((byte, ch)) =
                     stripped.char_indices().find(|(_, ch)| ch.eq_ignore_ascii_case(&mnemonic))

@@ -154,6 +154,8 @@ pub struct Form {
     reset_label: String,
     button_width: u32,
     fields: Vec<FormField>,
+    /// The label text painted on the current row, reused across fields and frames.
+    label_scratch: RefCell<String>,
     last_valid: bool,
     last_dirty: bool,
     /// Per-field rules installed by the host, keyed by field key.
@@ -246,6 +248,7 @@ impl Form {
             reset_label: "Reset".to_string(),
             button_width: BUTTON_MIN_W,
             fields: Vec::new(),
+            label_scratch: RefCell::new(String::new()),
             last_valid: true,
             last_dirty: false,
             validators: BTreeMap::new(),
@@ -1426,7 +1429,7 @@ impl Form {
         context.fill_rounded_rect(rect, 4, ink.with_alpha(fill_alpha));
         context.draw_rounded_rect_stroke(rect, 4, ink.with_alpha(stroke_alpha), 1);
         let font = role_font(self.base.style(), 12.0);
-        context.draw_text_fitted_cow(rect, label, &font, ink, HorizontalAlignment::Center);
+        context.draw_text_fitted_ellipsis(rect, label, &font, ink, HorizontalAlignment::Center);
     }
 }
 
@@ -1780,9 +1783,9 @@ impl WidgetProperties for Form {
                 self.clear_errors();
                 Ok(())
             }
-            // Payload-carrying assignments use the property route.
-            _ if name.starts_with("set_") => Err(CapabilityAccessError::OutOfRange),
-            _ => Err(CapabilityAccessError::UnknownCommand),
+            // Payload-carrying assignments use the property route; an unpublished suffix is
+            // honestly unknown.
+            _ => self.default_command(name),
         }
     }
 }
@@ -1815,7 +1818,7 @@ impl Draw for Form {
                 TITLE_H,
             );
             let title_font = role_font(style, 14.0);
-            context.draw_text_fitted_cow(
+            context.draw_text_fitted_ellipsis(
                 band,
                 &self.title,
                 &title_font,
@@ -1836,11 +1839,13 @@ impl Draw for Form {
                     continue;
                 };
                 if self.show_labels {
-                    let mut label = field.label().to_string();
+                    let mut label = self.label_scratch.borrow_mut();
+                    label.clear();
+                    label.push_str(field.label());
                     if field.is_required() && !self.required_mark.is_empty() {
                         label.push_str(&self.required_mark);
                     }
-                    context.draw_text_fitted_cow(
+                    context.draw_text_fitted_ellipsis(
                         layout.label,
                         &label,
                         &label_font,
@@ -1850,7 +1855,7 @@ impl Draw for Form {
                 }
                 if let Some(error) = field.error() {
                     if self.show_errors {
-                        context.draw_text_fitted_cow(
+                        context.draw_text_fitted_ellipsis(
                             layout.error,
                             error,
                             &label_font,
@@ -1859,7 +1864,7 @@ impl Draw for Form {
                         );
                     }
                 } else if !field.help().is_empty() {
-                    context.draw_text_fitted_cow(
+                    context.draw_text_fitted_ellipsis(
                         layout.error,
                         field.help(),
                         &label_font,

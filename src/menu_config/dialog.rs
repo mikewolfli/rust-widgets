@@ -360,7 +360,7 @@ impl Draw for MenuConfigPanel {
                 context.fill_rect(row, surface.blend(&accent, 0.14));
             }
             let line = context.text_line(row, font);
-            context.draw_text_fitted_cow(
+            context.draw_text_fitted_ellipsis(
                 Rect::new(row.x + 10, line.y, row.width.saturating_sub(60), line.height.max(1)),
                 spec.label,
                 font,
@@ -368,7 +368,7 @@ impl Draw for MenuConfigPanel {
                 HorizontalAlignment::Left,
             );
             let on = (spec.read)(&self.config);
-            context.draw_text_fitted_cow(
+            context.draw_text_fitted_ellipsis(
                 Rect::new(row.x + row.width as i32 - 52, line.y, 42, line.height.max(1)),
                 if on { "On" } else { "Off" },
                 font,

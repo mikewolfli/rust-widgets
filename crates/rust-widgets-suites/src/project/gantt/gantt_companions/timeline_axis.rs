@@ -3,7 +3,7 @@
 //!
 //! The `TimelineAxis` control and its date-label vocabulary.
 
-use rust_widgets::core::{Color, HorizontalAlignment, Point, Rect};
+use rust_widgets::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use rust_widgets::event::{Event, EventHandler};
 use rust_widgets::render::RenderContext;
 use rust_widgets::signal::Signal1;
@@ -85,7 +85,7 @@ pub struct TimelineAxis {
     /// Every tick used to be formatted and measured on every frame, which made a scrub or a zoom
     /// pay for the whole axis per animation step.
     tick_entries: Vec<(i32, String, i32)>,
-    tick_key: Option<(i64, i64, u32, &'static str, u32, u32)>,
+    tick_key: Option<(i64, i64, u32, &'static str, Font, u32)>,
     /// Emitted with the new visible range after a range or zoom change.
     pub scale_changed: Signal1<(i64, i64)>,
 }
@@ -397,10 +397,10 @@ impl Draw for TimelineAxis {
             self.range.1,
             self.tick_density,
             self.date_format.token(),
-            font.size().to_bits(),
+            font.clone(),
             width,
         );
-        if self.tick_key != Some(key) {
+        if self.tick_key.as_ref() != Some(&key) {
             let entries = self
                 .ticks()
                 .into_iter()

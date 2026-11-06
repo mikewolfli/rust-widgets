@@ -218,6 +218,99 @@ pub fn place_widget_in_region_layout(
     })
 }
 
+/// Places `child_id` at an explicit absolute position of the layout stored for `parent_id`.
+///
+/// This is the declarative door to [`AbsoluteLayout`](crate::layout::absolute::AbsoluteLayout):
+/// a `"absolute"` layout document carries one position per child
+/// (`x`/`y`/`width`/`height`/`anchor`), and this call stores it. The child must already be a
+/// member (the caller's `add_widget_to_layout` does that), so this only replaces the position.
+///
+/// Returns `true` when the stored layout is an absolute layout and holds the child.
+pub fn place_widget_in_absolute_layout(
+    child_id: ObjectId,
+    x: i32,
+    y: i32,
+    width: Option<u32>,
+    height: Option<u32>,
+    anchor: Option<crate::layout::absolute::Anchor>,
+    parent_id: ObjectId,
+) -> bool {
+    LAYOUT_MAP.with(|map| {
+        let mut map = map.borrow_mut();
+        let Some(layout) = map.get_mut(&parent_id) else {
+            return false;
+        };
+        match layout.as_any_mut().downcast_mut::<crate::layout::absolute::AbsoluteLayout>() {
+            Some(absolute) => {
+                let mut position = crate::layout::absolute::AbsolutePosition::new(x, y);
+                position.width = width;
+                position.height = height;
+                if let Some(anchor) = anchor {
+                    position.anchor = anchor;
+                }
+                absolute.set_position_for(child_id, position)
+            }
+            None => false,
+        }
+    })
+}
+
+/// One declarative constraint, with its target already resolved to a control id.
+///
+/// The JSON reader resolves the document's `target` name through its own name map, because the
+/// layout module has no view of the document; this type is the resolved form the layout accepts.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LayoutConstraintSpec {
+    /// The control the relationship refers to.
+    pub target: ObjectId,
+    /// The spatial relationship.
+    pub kind: crate::layout::constraint::ConstraintType,
+    /// Pixel offset applied after resolution.
+    pub offset: i32,
+    /// Scale multiplier (also the ratio for `AspectRatio`).
+    pub multiplier: f32,
+    /// Resolution strength; higher wins on a shared edge.
+    pub priority: i32,
+}
+
+/// Records `child_id`'s resolved constraints on the layout stored for `parent_id`.
+///
+/// Returns `true` when the stored layout is a
+/// [`ConstraintLayout`](crate::layout::constraint::ConstraintLayout) and the child is a member.
+/// Existing constraints for the child are replaced, so re-applying a declaration is idempotent.
+pub fn apply_constraints_to_layout(
+    child_id: ObjectId,
+    specs: &[LayoutConstraintSpec],
+    parent_id: ObjectId,
+) -> bool {
+    LAYOUT_MAP.with(|map| {
+        let mut map = map.borrow_mut();
+        let Some(layout) = map.get_mut(&parent_id) else {
+            return false;
+        };
+        let Some(constraints) =
+            layout.as_any_mut().downcast_mut::<crate::layout::constraint::ConstraintLayout>()
+        else {
+            return false;
+        };
+        if !constraints.has_child(child_id) {
+            return false;
+        }
+        constraints.remove_constraints(child_id);
+        for spec in specs {
+            constraints.add_constraint_with_priority(
+                child_id,
+                spec.target,
+                spec.kind,
+                spec.offset,
+                spec.multiplier,
+                spec.priority,
+            );
+        }
+        true
+    })
+}
+
 /// Removes a widget from the layout stored for `parent_id`.
 ///
 /// Returns `true` when a layout was found and told about the removal.

@@ -1968,9 +1968,12 @@ impl crate::event::EventHandler for RichEdit {
         if !self.base.is_enabled() {
             return;
         }
-        // Copying is the one edit gesture a read-only document still supports.
+        // Copying is the one edit gesture a read-only document still supports. It still belongs
+        // to the focused editor only: an unfocused editor that happens to hold a selection must
+        // not overwrite the host clipboard or swallow Ctrl+C on behalf of the focused control
+        // (GX-01's remaining arm).
         if let crate::event::Event::KeyPress { key: 67, modifiers } = event {
-            if crate::shortcut::event_carries_primary(*modifiers) {
+            if self.focused && crate::shortcut::event_carries_primary(*modifiers) {
                 let _ = self.copy_selection_to_clipboard();
                 return;
             }
@@ -2917,6 +2920,29 @@ mod tests {
         let mut target = focused(RichEdit::new(Rect::new(0, 0, 300, 200)));
         target.handle_event(&crate::event::Event::KeyPress { key: 86, modifiers: 0b1000 });
         assert_eq!(target.text(), "copy me");
+    }
+
+    /// The copy shortcut belongs to the focused editor only (GX-01's remaining arm).
+    #[test]
+    fn an_unfocused_editor_does_not_take_the_copy_shortcut() {
+        let _clipboard = crate::clipboard::clipboard_test_guard();
+        crate::set_clipboard_text("sentinel");
+        let mut unfocused = RichEdit::new(Rect::new(0, 0, 300, 200));
+        unfocused.set_text("mine".to_string());
+        unfocused.set_selection(0, unfocused.text().len());
+
+        unfocused.handle_event(&crate::event::Event::KeyPress { key: 67, modifiers: 0b1000 });
+        assert_eq!(
+            crate::get_clipboard_text(),
+            "sentinel",
+            "an unfocused editor must not overwrite the clipboard"
+        );
+
+        unfocused.handle_event(&crate::event::Event::FocusGained {
+            reason: crate::event::FocusReason::Tab,
+        });
+        unfocused.handle_event(&crate::event::Event::KeyPress { key: 67, modifiers: 0b1000 });
+        assert_eq!(crate::get_clipboard_text(), "mine", "the focused editor copies");
     }
 
     /// The wheel scrolls the viewport and clamps it to the document.

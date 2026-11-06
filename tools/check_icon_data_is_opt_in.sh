@@ -63,12 +63,13 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 . "$ROOT_DIR/tools/lib_timeout.sh"
+. "$ROOT_DIR/tools/lib_cargo_cache.sh"
 
 MANIFEST="Cargo.toml"
 
 echo "[1/5] \`icons\` is a declared feature"
-if ! grep -qE '^icons = \[\]' "$MANIFEST"; then
-    echo "  FAIL  Cargo.toml no longer declares \`icons = []\`"
+if ! grep -qE '^icons = \[' "$MANIFEST"; then
+    echo "  FAIL  Cargo.toml no longer declares the `icons` feature"
     echo "        The assertions below can only prove a feature that exists."
     exit 1
 fi
@@ -116,14 +117,14 @@ echo '  PASS  absent from default and the sized profiles'
 echo '[4/5] both build states compile'
 # The first command is a capable profile, which now carries `icons`; the second is a sized profile,
 # which does not — so this asserts the data is *reachable* and still *removable*.
-rw_run_bounded 900 cargo check --no-default-features --features desktop --lib
-rw_run_bounded 900 cargo check --no-default-features --features mini --lib
+rw_cargo_cached 900 check --no-default-features --features desktop --lib
+rw_cargo_cached 900 check --no-default-features --features mini --lib
 echo '  PASS  builds with the feature on (desktop) and off (mini)'
 
 echo '[5/5] a sized profile with `icons` enabled by hand compiles its tests and examples'
 # `--all-targets` and not `--lib`: the target that broke was a test, and a `--lib` check reported
 # the pair as healthy while `tests/icon_census_test.rs` could not resolve `Icon`.
-rw_run_bounded 900 cargo check --no-default-features --features embedded,icons --all-targets
+rw_cargo_cached 900 check --no-default-features --features embedded,icons --all-targets
 echo '  PASS  embedded,icons builds'
 
 echo

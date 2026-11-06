@@ -1187,19 +1187,11 @@ impl WidgetProperties for ToolBox {
 
     /// Runs one of the commands `tool_box` publishes.
     ///
-    /// `add_item` takes the item's label and `remove_item` takes the index to
-    /// remove, so neither can complete without a payload: they are refused as
-    /// [`CapabilityAccessError::OutOfRange`], meaning the name is valid and the
-    /// argument is what is missing.
+    /// `add_item` / `remove_item` are not published (a page carries a mounted widget), so they
+    /// answer `UnknownCommand`; published `set_*` commands route through the property API and the
+    /// shared default reports that a value is missing.
     fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
-        match name {
-            "add_item" | "remove_item" => Err(CapabilityAccessError::OutOfRange),
-            // Any other `set_foo` name carries its value through the property route,
-            // so the shared default reports that a payload is needed rather than
-            // claiming the control has never heard of it.
-            _ if name.starts_with("set_") => Err(CapabilityAccessError::OutOfRange),
-            _ => self.default_command(name),
-        }
+        self.default_command(name)
     }
 }
 
@@ -1471,7 +1463,7 @@ impl Draw for ToolBox {
                 // Fitted inside the item: horizontal tabs are a fixed width, so a long item name
                 // used to paint over the next tab (and, vertically, outside the control).
                 let text_width = (item_rect.x + item_rect.width as i32 - text_x).max(0) as u32;
-                context.draw_text_fitted_cow(
+                context.draw_text_fitted_ellipsis(
                     Rect::new(text_x, item_line.y, text_width, item_line.height.max(1)),
                     &item.text,
                     text_font,

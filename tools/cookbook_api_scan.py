@@ -21,6 +21,20 @@ import sys
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 COOKBOOKS = ["cookbook/en", "cookbook/zh-CN", "cookbook/zh-TW"]
 
+# Every source root a chapter's API claim may resolve against.
+#
+# The crate itself, plus the workspace members whose public surface the reference documents.
+# `rust-widgets-icons` is one: the icon geometry tables were extracted out of `src/widget/`, so a
+# chapter that names the generated table now names something that only exists there. The list is a
+# single constant because it is read in two places (the text corpus and the module-name set) and a
+# second hand-kept copy is how the two verdicts drift apart — the symptom being a `finding:` for a
+# name that the other lookup would have accepted.
+SOURCE_ROOTS = (
+    REPO_ROOT / "src",
+    REPO_ROOT / "crates/rust-widgets-suites/src",
+    REPO_ROOT / "crates/rust-widgets-icons/src",
+)
+
 # A claim is a `Owner::Member` pair, but not every such pair is a claim that the member *exists*.
 # Two forms are deliberately excluded, because the cookbook uses them to say the opposite:
 #
@@ -54,11 +68,12 @@ NON_RUST_FENCES = {
 def rust_sources():
     """Every `.rs` file's text, concatenated once so lookups are cheap.
 
-    The migrated suite groups are part of the public API surface now, so a cookbook claim
-    about one of their types must resolve against their sources too.
+    The migrated suite groups and the extracted icon resources are part of the public API
+    surface now, so a cookbook claim about one of their types must resolve against their
+    sources too.
     """
     blobs = []
-    for root in (REPO_ROOT / "src", REPO_ROOT / "crates/rust-widgets-suites/src"):
+    for root in SOURCE_ROOTS:
         for path in root.rglob("*.rs"):
             blobs.append(path.read_text(encoding="utf-8", errors="replace"))
     return "\n".join(blobs)
@@ -104,6 +119,33 @@ def main():
 
     checked = 0
     findings = []
+
+    # # Why an index instead of a regex per claim
+    #
+    # Every check below used to be `re.search(pattern, corpus)` — one scan of the **whole**
+    # corpus per claim, up to four of them. Measured on this tree with the icon resources
+    # included: the corpus is 42 MB and one such search costs ~0.8 s, so 391 claims made this
+    # scan alone cost ~268 s. That is not a property of the check (`is this name defined?` is a
+    # table lookup) but of how it was asked. One pass builds both tables and every claim is
+    # then O(1).
+    #
+    # The definitions are collected with the same shape the per-claim regexes used —
+    # `fn`/`const`/`type`/`struct`/`enum`/`trait`/`union`/`mod` followed by the name — so the
+    # verdict for each claim is unchanged.
+    #
+    # The match is a **zero-width lookahead** on purpose. A plain `(kind)\s+(name)` swallows
+    # the keyword that follows a modifier: on `pub const fn icon_data()` it captures
+    # `("const", "fn")` and then resumes *after* `fn`, so `fn icon_data` is never seen and a
+    # perfectly real function is reported as missing. The lookahead consumes nothing, so the
+    # same text yields both `("const", "fn")` and `("fn", "icon_data")`.
+    DEFINITION = re.compile(
+        r"\b(?=(fn|const|type|struct|enum|trait|union|mod)\s+([A-Za-z_][A-Za-z0-9_]*))"
+    )
+    defined_kinds = {}
+    for kind, name in DEFINITION.findall(corpus):
+        defined_kinds.setdefault(name, set()).add(kind)
+    # `\b{member}\s*:` — a field or struct-pattern member. Collected once for the same reason.
+    field_names = set(re.findall(r"\b([A-Za-z_][A-Za-z0-9_]*)\s*:", corpus))
 
     # A `Owner::Member` claim can be four different things, and only two of them are checkable
     # without inventing problems. Deciding which, from the corpus:
@@ -160,7 +202,7 @@ def main():
         enum_bodies.setdefault(match.group("name"), corpus[start : i + 1])
 
     module_dirs = set()
-    for root in (REPO_ROOT / "src", REPO_ROOT / "crates/rust-widgets-suites/src"):
+    for root in SOURCE_ROOTS:
         for path in root.rglob("*"):
             if path.is_dir():
                 module_dirs.add(path.name)
@@ -191,8 +233,9 @@ def main():
                     # looking for a type called `app` would always fail. Checked before the variant
                     # case because a module and a type can share a name in different scopes.
                     if owner in module_dirs and owner not in enum_bodies:
-                        if member in module_dirs or re.search(
-                            rf"\b(?:struct|enum|trait|type|union|fn|mod)\s+{member}\b", corpus
+                        if member in module_dirs or (
+                            defined_kinds.get(member, set())
+                            & {"struct", "enum", "trait", "type", "union", "fn", "mod"}
                         ):
                             continue
                         findings.append(
@@ -208,11 +251,13 @@ def main():
                     # chapter meant. Checking the definition first means a real method is never
                     # reported as a missing variant — which is what an earlier revision did for
                     # every method on an enum, and those were most of its remaining findings.
-                    if re.search(rf"\bfn\s+{member}\b", corpus):
+                    if "fn" in defined_kinds.get(member, set()):
                         continue
-                    if re.search(rf"\b(?:const|type|struct|enum|trait)\s+{member}\b", corpus):
+                    if defined_kinds.get(member, set()) & {
+                        "const", "type", "struct", "enum", "trait",
+                    }:
                         continue
-                    if re.search(rf"\b{member}\s*:", corpus):
+                    if member in field_names:
                         continue
 
                     # A **variant** (`WidgetKind::Button`): valid when the enum declares it.

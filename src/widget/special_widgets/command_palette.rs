@@ -1205,8 +1205,7 @@ impl WidgetProperties for CommandPalette {
                     Err(CapabilityAccessError::OutOfRange)
                 }
             }
-            "move_highlight" => Err(CapabilityAccessError::OutOfRange),
-            _ if name.starts_with("set_") => Err(CapabilityAccessError::OutOfRange),
+
             _ => self.default_command(name),
         }
     }
@@ -1327,7 +1326,7 @@ impl Draw for CommandPalette {
         // (D09-STYLE-01).
         let query_font = effective_font(style);
         let query_h = context.measure_text("M", query_font).height;
-        context.draw_text_fitted_cow(
+        context.draw_text_fitted_ellipsis(
             Rect::new(
                 header.x + 8,
                 header.y + (header.height as i32 - query_h as i32) / 2,
@@ -1348,7 +1347,7 @@ impl Draw for CommandPalette {
         if self.filtered_indices.is_empty() {
             // An empty result used to leave the list blank; the caption distinguishes "nothing
             // matched" from "nothing loaded" (SP-64).
-            context.draw_text_fitted_cow(
+            context.draw_text_fitted_ellipsis(
                 Rect::new(rect.x + 8, y, rect.width.saturating_sub(16), self.row_height),
                 &self.empty_text,
                 effective_font(style),
@@ -1367,7 +1366,7 @@ impl Draw for CommandPalette {
                 if let Some(entry) = self.filtered_entry(filtered_index) {
                     let band =
                         Rect::new(rect.x + 8, y, rect.width.saturating_sub(16), self.row_height);
-                    context.draw_text_fitted_cow(
+                    context.draw_text_fitted_ellipsis(
                         context.text_line(band, effective_font(style)),
                         &entry.category,
                         effective_font(style),
@@ -1434,7 +1433,7 @@ impl Draw for CommandPalette {
                     continue;
                 };
                 let text = self.display_texts.get(entry_index).map(String::as_str).unwrap_or("");
-                context.draw_text_fitted_cow(
+                context.draw_text_fitted_ellipsis(
                     line_box,
                     text,
                     font,
@@ -1464,7 +1463,7 @@ impl Draw for CommandPalette {
                         52,
                         self.row_height.saturating_sub(4),
                     );
-                    context.draw_text_line_cow(
+                    context.draw_text_line_ellipsis(
                         key_box,
                         shortcut,
                         font,
@@ -1498,7 +1497,7 @@ impl Draw for CommandPalette {
                 self.hint_text.as_str()
             };
             let font = effective_font(style);
-            context.draw_text_fitted_cow(
+            context.draw_text_fitted_ellipsis(
                 context.text_line(
                     Rect::new(
                         footer.x + 8,

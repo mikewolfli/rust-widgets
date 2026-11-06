@@ -58,6 +58,8 @@ pub(crate) fn progress_bar_capability() -> WidgetCapability {
             "set_minimum",
             "set_text_visible",
             "set_direction",
+            "set_format",
+            "set_busy_text",
         ],
     }
 }
@@ -105,6 +107,7 @@ pub(crate) fn list_box_capability() -> WidgetCapability {
             "set_scroll_row",
             "set_alignment",
             "set_item_height",
+            "set_columns",
         ],
     }
 }
@@ -418,7 +421,14 @@ pub(crate) fn roller_capability() -> WidgetCapability {
         aliases: &["roller_widget", "scroll_wheel"],
         properties: ROLLER_PROPERTIES,
         events: events_of!("roller"),
-        commands: &["set_options", "set_selected_index", "set_visible_count"],
+        commands: &[
+            "set_options",
+            "set_selected_index",
+            "set_visible_count",
+            "set_wrap",
+            "set_inertia",
+            "set_font_size",
+        ],
     }
 }
 
@@ -751,7 +761,14 @@ pub(crate) fn rich_edit_capability() -> WidgetCapability {
         aliases: &["rich_text_editor"],
         properties: RICH_EDIT_PROPERTIES,
         events: events_of!("rich_edit"),
-        commands: &["set_text", "set_line_wrap", "set_placeholder_text", "set_read_only"],
+        commands: &[
+            "set_text",
+            "set_line_wrap",
+            "set_placeholder_text",
+            "set_read_only",
+            "set_cursor_position",
+            "set_selection",
+        ],
     }
 }
 

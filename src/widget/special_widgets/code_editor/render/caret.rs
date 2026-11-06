@@ -158,8 +158,10 @@ impl CodeEditor {
         // Secondary carets first so the primary caret paints on top. A collapsed secondary caret is
         // the same blinking insertion point as the primary one, so it follows the same phase — two
         // carets flickering out of step would look like a rendering fault.
-        let all_carets = self.cursors();
-        for caret in all_carets.carets().iter().copied() {
+        //
+        // The extras are borrowed directly: `cursors()` builds a `MultiCursor` (and its `Vec`) for
+        // every frame the caret blinks, while this loop only needs to visit the sorted extras.
+        for caret in self.extra_cursors.iter().copied() {
             if caret == self.cursor {
                 continue;
             }

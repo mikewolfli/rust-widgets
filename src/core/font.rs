@@ -166,6 +166,17 @@ impl Font {
     pub fn family(&self) -> &str {
         &self.family
     }
+
+    /// The family name as the shared handle, without copying it.
+    ///
+    /// A cache key that names a font must include the family; cloning the handle is what keeps
+    /// that key allocation-free on the paint path. Only the full widget set builds those caches,
+    /// so the stripped profiles see no caller — the caller's existence is a feature fact, not a
+    /// target property.
+    #[cfg_attr(not(full_widgets), allow(dead_code))]
+    pub(crate) fn family_shared(&self) -> Arc<str> {
+        Arc::clone(&self.family)
+    }
     /// Returns the font point size.
     pub fn size(&self) -> f32 {
         self.size

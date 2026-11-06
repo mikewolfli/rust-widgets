@@ -3,12 +3,11 @@
 
 #![allow(clippy::chunks_exact_to_as_chunks)]
 //! Paint backend trait and software implementation.
-use super::batch::{BatchImage, BatchState};
 use super::paint_blur::{blur_rect_on_surface, box_blur_region};
 #[cfg(test)]
 use crate::compat::vec;
 use crate::compat::{Arc, Rc, RefCell, Vec};
-use crate::core::{Color, Font, HorizontalAlignment, ObjectId, Point, Rect, Size};
+use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::render::pipeline::{fill_conic_ramp, ramp_lut_for_stops, ConicWrite};
 use crate::render::{
     blend_pixel_with_mode, BlendMode, MatteMode, RenderCommand, ShapedText, SoftwareRenderConfig,
@@ -298,33 +297,17 @@ thread_local! {
 /// available.
 pub struct SoftwarePaintBackend {
     pub(crate) surface: SoftwareSurface,
-    pub(crate) batch_state: BatchState,
 }
 impl SoftwarePaintBackend {
     /// Creates a software paint backend with a target size and DPI scale.
     pub fn new(size: Size, dpi_scale: f32) -> Self {
-        Self { surface: SoftwareSurface::new(size, dpi_scale), batch_state: BatchState::new() }
+        Self { surface: SoftwareSurface::new(size, dpi_scale) }
     }
     /// Returns immutable access to the underlying software surface.
     pub fn surface(&self) -> &SoftwareSurface {
         &self.surface
     }
 
-    /// Registers RGBA8 pixels as the batch image `id`, together with the grid they are laid out in.
-    ///
-    /// A `BatchCommand::DrawImage` names an image by id,
-    /// and a replay needs both the bytes and their row stride: the command's rectangle is a
-    /// *destination* that may be any size. When it equals the registered grid the replay keeps the
-    /// zero-copy blit; otherwise it emits
-    /// [`RenderCommand::DrawImageScaled`], which carries both grids and resamples.
-    ///
-    /// Registering again under the same id replaces the entry, which is how a host streams video
-    /// frames or an animated image through one id without growing the cache. `pixels` must be
-    /// exactly `width * height * 4` bytes; a shorter buffer is dropped at replay with a warning
-    /// rather than painting a partial image.
-    pub fn register_image(&mut self, id: ObjectId, pixels: Arc<[u8]>, width: u32, height: u32) {
-        self.batch_state.images.insert(id, BatchImage::new(pixels, width, height));
-    }
     /// Returns mutable access to the underlying software surface.
     pub fn surface_mut(&mut self) -> &mut SoftwareSurface {
         &mut self.surface
@@ -642,15 +625,10 @@ fn take_gradient_owned_command_count() -> usize {
 
 /// Route one [`RenderCommand`] into a bare [`SoftwareSurface`].
 ///
-/// # Why this is a free function (D09-RENDER-05)
-///
-/// `PaintBackend::execute_command` for [`SoftwarePaintBackend`] is exactly this
-/// routing over `self.surface`. Batch replay has to paint while a *different* field
-/// of the backend (`batch_state`) is borrowed immutably, and the borrow checker
-/// rejects borrowing `self` both ways — which is why replay used to deep-`clone()`
-/// the whole batch state. Splitting the routing out lets the replay path paint
-/// through the surface alone. Both paths share this one function, so the command
-/// routing cannot drift between them.
+/// This is the single routing entry: [`PaintBackend::execute_command`] for
+/// [`SoftwarePaintBackend`] calls it over `self.surface`, and code that holds a surface directly
+/// can call it without constructing a backend. Keeping one function means the command vocabulary
+/// has one interpretation, so a command executed through either door paints the same pixels.
 pub(super) fn route_command_to_surface(surface: &mut SoftwareSurface, command: &RenderCommand) {
     // A cache hit suppresses the enclosed commands, but their push/pop pairs still have to be
     // counted so the matching `PopLayer` can be recognised. Only balancing commands are seen while

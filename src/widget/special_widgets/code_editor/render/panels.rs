@@ -176,7 +176,7 @@ impl CodeEditor {
                 (label_right - label_left + 2 * TEXT_FIT_MARGIN as i32).max(0) as u32,
                 line_box.max(1) as u32,
             );
-            context.draw_text_fitted_cow(
+            context.draw_text_fitted_ellipsis(
                 label_bounds,
                 label,
                 font,
@@ -308,7 +308,7 @@ impl CodeEditor {
             .min()
             .unwrap_or(rect.x + rect.width as i32 - 4);
         let query_width = (row0_left - 4 - query_x).max(1) as u32;
-        context.draw_text_fitted_cow(
+        context.draw_text_fitted_ellipsis(
             Rect::new(query_x, top + 4, query_width, MIN_TOUCH_TARGET as u32),
             if self.find.query.is_empty() {
                 if self.goto_mode {
@@ -340,7 +340,7 @@ impl CodeEditor {
                 .min()
                 .unwrap_or(rect.x + rect.width as i32 - 4);
             let replace_width = (row1_left - 4 - query_x).max(1) as u32;
-            context.draw_text_fitted_cow(
+            context.draw_text_fitted_ellipsis(
                 Rect::new(query_x, row_two + 2, replace_width, MIN_TOUCH_TARGET as u32),
                 if self.find.replacement.is_empty() {
                     "(replacement)"
@@ -420,30 +420,43 @@ impl CodeEditor {
         let numbers_right =
             rect.x + GUTTER_LEFT_PAD + self.breakpoint_slot() + self.line_number_slot();
         let fold_x = rect.x + self.fold_marker_offset();
+        // Refill the window once, before the borrows below: the paint loop only reads it.
+        self.fill_viewport_document_lines();
         // Folds are read **once**, not per painted row: `fold_regions()` clones the
         // model's list, and asking it inside the loop was one clone per line per frame.
         // Sorted here so the per-row lookup is a binary search rather than a scan of
-        // the whole fold list (O(rows × folds)); the clone is local, so sorting it is
-        // free of side effects.
-        let mut folds = self.fold_regions();
-        folds.sort_by_key(|region| region.start_line);
+        // the whole fold list (O(rows × folds)); the buffer owns its capacity between
+        // frames, so the sort is free of side effects.
+        {
+            let mut folds = self.gutter_folds_scratch.borrow_mut();
+            folds.clear();
+            folds.extend(self.folds.iter().cloned());
+            folds.sort_by_key(|region| region.start_line);
+        }
+        let folds = self.gutter_folds_scratch.borrow();
         // One pass over the markers, sorted by (line, severity rank): the per-row
         // severity lookup used to scan every marker for every visible row, which is
         // O(rows × markers) on a linted file. The first entry for a line has the
         // lowest rank, and the lowest rank is the highest severity — the same rule
         // the old per-row helper applied.
-        let mut severities: Vec<(usize, MarkerSeverity)> =
-            self.markers.iter().map(|marker| (marker.line, marker.severity)).collect();
-        severities.sort_by_key(|(line, severity)| (*line, severity.rank()));
+        {
+            let mut severities = self.gutter_severities_scratch.borrow_mut();
+            severities.clear();
+            severities.extend(self.markers.iter().map(|marker| (marker.line, marker.severity)));
+            severities.sort_by_key(|(line, severity)| (*line, severity.rank()));
+        }
+        let severities = self.gutter_severities_scratch.borrow();
         let active_line = self.cursor.head.line;
         let mut row = 0usize;
         // One reusable label buffer for the whole gutter pass: `line_number_label`
         // through `format!` was a fresh allocation per visible row per frame.
-        let mut number_buf = String::new();
-        // The windowed iterator, not `visible_document_lines`: the loop below
+        let mut number_buf = self.gutter_number_scratch.borrow_mut();
+        // The windowed window, not `visible_document_lines`: the loop below
         // stops early, but materialising the line list first would already have
         // walked the document, which is the cost this avoids.
-        for line in self.viewport_document_lines() {
+        let viewport_len = self.viewport_lines_scratch.borrow().len();
+        for viewport_index in 0..viewport_len {
+            let line = self.viewport_lines_scratch.borrow()[viewport_index];
             let segments = self.wrap_segments(line);
             if row >= self.scroll_visual_row + rows_budget {
                 break;

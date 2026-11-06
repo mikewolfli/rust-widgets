@@ -29,6 +29,12 @@ use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::role_font;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 
+thread_local! {
+    /// Reused step-number label buffer for the indicator strip.
+    static NUMBER_SCRATCH: crate::compat::RefCell<String> =
+        const { crate::compat::RefCell::new(String::new()) };
+}
+
 /// An option that hides or adds one of the wizard's navigation affordances.
 ///
 /// The three names are the visible parts of a wizard's option set: a help action, and the
@@ -493,7 +499,7 @@ impl WizardDialog {
 
     /// The label `action` paints: the caller's override or the localised default.
     pub fn button_text(&self, action: NavAction) -> String {
-        self.label_of_action(action)
+        self.label_of_action(action).as_ref().clone()
     }
 
     /// Adds a custom action to the navigation row and returns its index.
@@ -970,36 +976,28 @@ impl WizardDialog {
     /// A caller override wins; otherwise the label goes through the same
     /// [`localized_label`](super::localized_label) resolution every other dialog uses, so the
     /// wizard is no longer the one dialog whose buttons ignore the catalogue.
-    fn label_of_action(&self, action: NavAction) -> String {
+    fn label_of_action(&self, action: NavAction) -> Rc<String> {
         if let Some((_, text)) =
             self.button_texts.iter().find(|(candidate, _)| *candidate == action)
         {
-            return text.clone();
+            return Rc::new(text.clone());
         }
-        // Append the catalogue label into one buffer instead of allocating it twice through
-        // `localized_label` on every paint (LYT-X04).
-        let mut label = crate::compat::String::new();
-        match action {
-            NavAction::Cancel => {
-                super::localized_label_into("common.button.cancel", "Cancel", &mut label)
-            }
-            NavAction::Back => {
-                super::localized_label_into("dialog.wizard.back", "Back", &mut label)
-            }
-            NavAction::Next if self.is_last() => {
-                super::localized_label_into("dialog.wizard.finish", "Finish", &mut label)
-            }
-            NavAction::Next => {
-                super::localized_label_into("dialog.wizard.next", "Next", &mut label)
-            }
-            NavAction::Help => {
-                super::localized_label_into("dialog.wizard.help", "Help", &mut label)
-            }
+        // The default labels are resolved once per catalogue generation (LYT-X04).
+        let (key, english) = match action {
+            NavAction::Cancel => ("common.button.cancel", "Cancel"),
+            NavAction::Back => ("dialog.wizard.back", "Back"),
+            NavAction::Next if self.is_last() => ("dialog.wizard.finish", "Finish"),
+            NavAction::Next => ("dialog.wizard.next", "Next"),
+            NavAction::Help => ("dialog.wizard.help", "Help"),
             NavAction::Custom(index) => {
-                return self.custom_buttons.get(index).cloned().unwrap_or_default()
+                return self
+                    .custom_buttons
+                    .get(index)
+                    .map(|text| Rc::new(text.clone()))
+                    .unwrap_or_else(|| Rc::new(String::new()));
             }
-        }
-        label
+        };
+        super::localized_label_shared(key, english)
     }
 
     /// Moves the keyboard focus across the actions that are actually present.
@@ -1315,113 +1313,119 @@ impl Draw for WizardDialog {
             let title_font_plain = role_font(style, 9.0);
             let title_font_active = role_font(style, 9.0).with_bold(true);
             // One reusable buffer for the step numbers, cleared per step.
-            let mut number_scratch = String::new();
+            NUMBER_SCRATCH.with(|cell| {
+                let mut number_scratch = cell.borrow_mut();
 
-            for i in 0..total_steps {
-                let cx = start_x + (i as u32 * spacing + spacing / 2) as i32;
-                let cy = rect.y + step_indicator_height as i32 / 2;
+                for i in 0..total_steps {
+                    let cx = start_x + (i as u32 * spacing + spacing / 2) as i32;
+                    let cy = rect.y + step_indicator_height as i32 / 2;
 
-                // Determine circle state
-                let is_active = i == self.current_step;
-                let is_completed = self.steps[i].completed;
+                    // Determine circle state
+                    let is_active = i == self.current_step;
+                    let is_completed = self.steps[i].completed;
 
-                let (circle_color, text_color) = if !is_enabled {
-                    // The label is the ink receding from the surface it sits on; the circle is a
-                    // glyph, so both are derived from the surface rather than blended toward it.
-                    (ink.blend(&surface, 0.25), self.base.disabled_ink_on(ink, surface))
-                } else if is_active {
-                    (primary, primary_ink)
-                } else if is_completed {
-                    (complete, complete.contrast_color())
-                } else {
-                    (surface.blend(&ink, 0.15), ink)
-                };
+                    let (circle_color, text_color) = if !is_enabled {
+                        // The label is the ink receding from the surface it sits on; the circle is a
+                        // glyph, so both are derived from the surface rather than blended toward it.
+                        (ink.blend(&surface, 0.25), self.base.disabled_ink_on(ink, surface))
+                    } else if is_active {
+                        (primary, primary_ink)
+                    } else if is_completed {
+                        (complete, complete.contrast_color())
+                    } else {
+                        (surface.blend(&ink, 0.15), ink)
+                    };
 
-                // Draw circle. The step indicator is the wizard's primary chrome, so it is
-                // skipped — not clipped — when the frame is too short to hold it: a circle
-                // that is still painted while the boxes below it are omitted reads as a
-                // rendering fault rather than as a small dialog.
-                if rect.height < step_indicator_height {
-                    break;
-                }
-                context.fill_circle_aa(Point::new(cx, cy), circle_radius, circle_color);
+                    // Draw circle. The step indicator is the wizard's primary chrome, so it is
+                    // skipped — not clipped — when the frame is too short to hold it: a circle
+                    // that is still painted while the boxes below it are omitted reads as a
+                    // rendering fault rather than as a small dialog.
+                    if rect.height < step_indicator_height {
+                        break;
+                    }
+                    context.fill_circle_aa(Point::new(cx, cy), circle_radius, circle_color);
 
-                // Step number inside circle. Centred on the circle rather than offset by a
-                // fixed `-4 / -6` written for a one-digit label: the offset put a two-digit
-                // step to the right of centre, and the label was never fitted at all.
-                let label = {
-                    number_scratch.clear();
-                    use core::fmt::Write as _;
-                    let _ = write!(number_scratch, "{}", i + 1);
-                    number_scratch.as_str()
-                };
-                let label_metrics = context.measure_text(label, &number_font);
-                let label_box = Rect::new(
-                    cx - circle_radius as i32,
-                    cy - circle_radius as i32,
-                    circle_radius * 2,
-                    circle_radius * 2,
-                );
-                context.draw_text_fitted_cow(
-                    Rect::new(
-                        label_box.x,
-                        (label_box.y + (label_box.height as i32 - label_metrics.height as i32) / 2)
-                            .max(label_box.y),
-                        label_box.width,
-                        label_metrics.height.max(1),
-                    ),
-                    label,
-                    &number_font,
-                    text_color,
-                    HorizontalAlignment::Center,
-                );
-
-                // Step title below circle. Bounded by the step's own cell, so a long title
-                // truncates inside its column instead of over the neighbouring step; the
-                // former byte-slice truncation also panicked on a multi-byte character
-                // boundary, which a fitted draw cannot.
-                let title_font: &crate::core::Font =
-                    if is_active { &title_font_active } else { &title_font_plain };
-                let title_color = if !is_enabled {
-                    self.base.disabled_ink_on(ink, surface)
-                } else if is_active {
-                    primary
-                } else {
-                    ink
-                };
-                let title_metrics = context.measure_text("M", title_font);
-                let title_y = cy + circle_radius as i32 + 2;
-                context.draw_text_fitted_cow(
-                    Rect::new(
-                        cx - (spacing as i32 / 2),
-                        title_y,
-                        spacing,
-                        title_metrics.height.max(1),
-                    ),
-                    &self.steps[i].title,
-                    title_font,
-                    title_color,
-                    HorizontalAlignment::Center,
-                );
-
-                // Connect steps with lines
-                if i < total_steps - 1 {
-                    let next_cx = start_x + ((i + 1) as u32 * spacing + spacing / 2) as i32;
-                    let line_color =
-                        if self.steps[i].completed { complete } else { surface.blend(&ink, 0.15) };
-                    context.draw_line(
-                        Point::new(cx + circle_radius as i32 + 2, cy),
-                        Point::new(next_cx - circle_radius as i32 - 2, cy),
-                        line_color,
+                    // Step number inside circle. Centred on the circle rather than offset by a
+                    // fixed `-4 / -6` written for a one-digit label: the offset put a two-digit
+                    // step to the right of centre, and the label was never fitted at all.
+                    let label = {
+                        number_scratch.clear();
+                        use core::fmt::Write as _;
+                        let _ = write!(&mut *number_scratch, "{}", i + 1);
+                        number_scratch.as_str()
+                    };
+                    let label_metrics = context.measure_text(label, &number_font);
+                    let label_box = Rect::new(
+                        cx - circle_radius as i32,
+                        cy - circle_radius as i32,
+                        circle_radius * 2,
+                        circle_radius * 2,
                     );
+                    context.draw_text_fitted_ellipsis(
+                        Rect::new(
+                            label_box.x,
+                            (label_box.y
+                                + (label_box.height as i32 - label_metrics.height as i32) / 2)
+                                .max(label_box.y),
+                            label_box.width,
+                            label_metrics.height.max(1),
+                        ),
+                        label,
+                        &number_font,
+                        text_color,
+                        HorizontalAlignment::Center,
+                    );
+
+                    // Step title below circle. Bounded by the step's own cell, so a long title
+                    // truncates inside its column instead of over the neighbouring step; the
+                    // former byte-slice truncation also panicked on a multi-byte character
+                    // boundary, which a fitted draw cannot.
+                    let title_font: &crate::core::Font =
+                        if is_active { &title_font_active } else { &title_font_plain };
+                    let title_color = if !is_enabled {
+                        self.base.disabled_ink_on(ink, surface)
+                    } else if is_active {
+                        primary
+                    } else {
+                        ink
+                    };
+                    let title_metrics = context.measure_text("M", title_font);
+                    let title_y = cy + circle_radius as i32 + 2;
+                    context.draw_text_fitted_ellipsis(
+                        Rect::new(
+                            cx - (spacing as i32 / 2),
+                            title_y,
+                            spacing,
+                            title_metrics.height.max(1),
+                        ),
+                        &self.steps[i].title,
+                        title_font,
+                        title_color,
+                        HorizontalAlignment::Center,
+                    );
+
+                    // Connect steps with lines
+                    if i < total_steps - 1 {
+                        let next_cx = start_x + ((i + 1) as u32 * spacing + spacing / 2) as i32;
+                        let line_color = if self.steps[i].completed {
+                            complete
+                        } else {
+                            surface.blend(&ink, 0.15)
+                        };
+                        context.draw_line(
+                            Point::new(cx + circle_radius as i32 + 2, cy),
+                            Point::new(next_cx - circle_radius as i32 - 2, cy),
+                            line_color,
+                        );
+                    }
                 }
-            }
+            });
         } else if sidebar.is_none() {
             // No steps — draw placeholder. Confined to the band above the separator, which
             // is also where the navigation row begins when the frame is short.
             let empty_font = role_font(style, 14.0);
             let empty_metrics = context.measure_text("No steps configured", &empty_font);
-            context.draw_text_fitted_cow(
+            context.draw_text_fitted_ellipsis(
                 Rect::new(
                     rect.x + 10,
                     (rect.y + (step_indicator_height as i32 - empty_metrics.height as i32) / 2)
@@ -1478,7 +1482,7 @@ impl Draw for WizardDialog {
                 } else {
                     ink
                 };
-                context.draw_text_fitted_cow(
+                context.draw_text_fitted_ellipsis(
                     band_inset,
                     &step.title,
                     font,
@@ -1563,7 +1567,7 @@ impl Draw for WizardDialog {
             } as u32;
             let title_h = (title_natural as u32).min(title_room);
             if title_h > 2 {
-                context.draw_text_fitted_cow(
+                context.draw_text_fitted_ellipsis(
                     Rect::new(rect.x + 12, title_top, rect.width.saturating_sub(24), title_h),
                     &self.steps[self.current_step].title,
                     &title_font,
@@ -1579,7 +1583,7 @@ impl Draw for WizardDialog {
                     if next_row + subtitle_h_px
                         <= well_bottom - (if both_fit { info_h + 4 } else { 0 })
                     {
-                        context.draw_text_fitted_cow(
+                        context.draw_text_fitted_ellipsis(
                             Rect::new(
                                 rect.x + 12,
                                 next_row,
@@ -1603,7 +1607,7 @@ impl Draw for WizardDialog {
                     let opt_top = next_row;
                     let opt_h = opt_metrics.height.max(1) as i32;
                     if opt_top + opt_h <= well_bottom - (if both_fit { info_h + 4 } else { 0 }) {
-                        context.draw_text_fitted_cow(
+                        context.draw_text_fitted_ellipsis(
                             Rect::new(
                                 rect.x + 12,
                                 opt_top,
@@ -1624,7 +1628,7 @@ impl Draw for WizardDialog {
             // omitted when the well is too short to hold it without crossing the title.
             let info_y = (well_bottom - info_h).max(well_top);
             if both_fit && info_y >= title_top + title_h as i32 + 2 {
-                context.draw_text_fitted_cow(
+                context.draw_text_fitted_ellipsis(
                     Rect::new(rect.x + 12, info_y, rect.width.saturating_sub(24), info_h as u32),
                     info_text,
                     &info_font,
@@ -1637,7 +1641,7 @@ impl Draw for WizardDialog {
             // longer stacks this above the first navigation button.
             let empty_font = role_font(style, 14.0);
             let empty_metrics = context.measure_text("Add steps to begin", &empty_font);
-            context.draw_text_fitted_cow(
+            context.draw_text_fitted_ellipsis(
                 Rect::new(
                     rect.x + 12,
                     (content_rect.y + 8).min(content_rect.y + content_rect.height as i32),
@@ -1714,7 +1718,7 @@ impl Draw for WizardDialog {
             match action {
                 NavAction::Next => {
                     context.fill_rounded_rect(button, 4, btn_color);
-                    context.draw_text_fitted_cow(
+                    context.draw_text_fitted_ellipsis(
                         label_of(button),
                         &self.label_of_action(action),
                         &next_font,
@@ -1725,7 +1729,7 @@ impl Draw for WizardDialog {
                 NavAction::Back => {
                     context.fill_rounded_rect(button, 4, back_color);
                     context.draw_rounded_rect_stroke(button, 4, border, 1);
-                    context.draw_text_fitted_cow(
+                    context.draw_text_fitted_ellipsis(
                         label_of(button),
                         &self.label_of_action(action),
                         &nav_font,
@@ -1736,7 +1740,7 @@ impl Draw for WizardDialog {
                 NavAction::Cancel | NavAction::Help | NavAction::Custom(_) => {
                     context.fill_rounded_rect(button, 4, button_fill);
                     context.draw_rounded_rect_stroke(button, 4, border, 1);
-                    context.draw_text_fitted_cow(
+                    context.draw_text_fitted_ellipsis(
                         label_of(button),
                         &self.label_of_action(action),
                         &nav_font,

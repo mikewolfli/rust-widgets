@@ -206,6 +206,17 @@ pub trait TreeModel: Send + Sync {
     fn node(&self, index: usize) -> Option<NodeView> {
         self.node_path(index).map(NodeView::leaf)
     }
+    /// Borrows node `index`'s already-materialised shape.
+    ///
+    /// The paint and expansion paths ask for the shape of every visible row on every frame.
+    /// [`Self::node`] returns it by value, so a model that already stores `NodeView`s (the in-memory
+    /// [`VecTreeModel`], most hosts) paid one label clone per row per frame. A model that can lend
+    /// its node answers here and the view iterates the borrow instead; the default `None` keeps every
+    /// existing implementor working, and callers fall back to [`Self::node`].
+    fn node_ref(&self, index: usize) -> Option<&NodeView> {
+        let _ = index;
+        None
+    }
     /// Optional signal emitted when model data projection changes.
     fn data_changed_signal(&self) -> Option<&GenericSignal> {
         None
@@ -336,6 +347,9 @@ impl TreeModel for VecTreeModel {
     fn node(&self, index: usize) -> Option<NodeView> {
         self.nodes.get(index).cloned()
     }
+    fn node_ref(&self, index: usize) -> Option<&NodeView> {
+        self.nodes.get(index)
+    }
     fn node_icon(&self, index: usize) -> Option<&str> {
         self.nodes.get(index).and_then(|node| node.icon.as_deref())
     }
@@ -437,6 +451,11 @@ pub struct TreeView {
     /// row, once for the before-count, once for the after-count and once more on the next access).
     /// One state change now rebuilds this cache once and every reader slices it.
     projection_cache: Vec<usize>,
+    /// The viewport-sized slice of `projection_cache` the paint loop iterates.
+    ///
+    /// The loop only needs the rows it can show, so it fills this buffer each frame instead of
+    /// asking for a fresh `Vec<usize>`; the capacity survives between frames.
+    visible_rows_scratch: std::cell::RefCell<Vec<usize>>,
     /// Whether `projection_cache` still describes the model and the expansion state.
     projection_valid: bool,
     /// The data generation `projection_cache` was built from.
@@ -529,6 +548,7 @@ impl TreeView {
             animation_len: 0,
             show_scrollbar: false,
             projection_cache: Vec::new(),
+            visible_rows_scratch: std::cell::RefCell::new(Vec::new()),
             projection_positions: HashMap::new(),
             projection_valid: false,
             projection_generation: 0,
@@ -635,14 +655,28 @@ impl TreeView {
     /// deep scroll copied every row above the viewport into a fresh `Vec` each frame. This cursor
     /// starts at the first visible row: a current cache is sliced from `start`, and an uncached
     /// walk stops after `start + limit` rows instead of materialising the prefix (V-010).
+    #[cfg(test)]
     fn visible_indices_from(&self, start: usize, limit: usize) -> Vec<usize> {
+        let mut rows = Vec::new();
+        self.visible_indices_from_into(start, limit, &mut rows);
+        rows
+    }
+
+    /// [`Self::visible_indices_from`], writing into a caller-owned buffer.
+    ///
+    /// The paint loop runs once per frame and only iterates the rows, so asking for a fresh `Vec`
+    /// every frame allocated for a viewport's worth of `usize`s. A caller that keeps the buffer
+    /// (`TreeView::draw` does) pays for its capacity once.
+    fn visible_indices_from_into(&self, start: usize, limit: usize, out: &mut Vec<usize>) {
+        out.clear();
         if limit == 0 {
-            return Vec::new();
+            return;
         }
         if self.projection_is_current() {
-            return self.projection_cache.iter().skip(start).take(limit).copied().collect();
+            out.extend(self.projection_cache.iter().skip(start).take(limit).copied());
+            return;
         }
-        self.walk_visible_indices(start.saturating_add(limit)).into_iter().skip(start).collect()
+        self.walk_visible_indices_from_into(start, limit, out);
     }
 
     /// Whether the cached projection still describes the current model and expansion state.
@@ -664,35 +698,55 @@ impl TreeView {
 
     /// The one walk over the model, applying the ancestor-expansion rule.
     fn walk_visible_indices(&self, limit: usize) -> Vec<usize> {
+        let mut rows = Vec::new();
+        self.walk_visible_indices_from_into(0, limit, &mut rows);
+        rows
+    }
+
+    /// The one walk, emitting only rows `[start, start + limit)`.
+    ///
+    /// The stopped rows above the window are counted but never pushed, so a deep scroll does not
+    /// materialise its prefix just to discard it.
+    fn walk_visible_indices_from_into(&self, start: usize, limit: usize, rows: &mut Vec<usize>) {
         let Some(model) = self.model.as_ref() else {
-            return Vec::new();
+            return;
         };
         if limit == 0 {
-            return Vec::new();
+            return;
         }
         let count = model.node_count();
-        let mut rows = Vec::with_capacity(count.min(limit));
+        rows.reserve(limit.min(count));
+        let stop = start.saturating_add(limit);
         // `(depth, expanded)` of the open-able ancestors of the node being considered. The stack
         // holds only nodes that *have* children; a leaf can never hide anything.
         let mut ancestors: Vec<(usize, bool)> = Vec::new();
+        let mut visible = 0usize;
         for index in 0..count {
-            let Some(node) = model.node(index) else { continue };
+            let (depth, has_children) = match model.node_ref(index) {
+                Some(node) => (node.depth, node.has_children),
+                None => match model.node(index) {
+                    Some(node) => (node.depth, node.has_children),
+                    None => continue,
+                },
+            };
             // Everything at or below the node's own depth is a sibling or a previous subtree, so
             // it is no longer an ancestor.
-            while ancestors.last().is_some_and(|(depth, _)| *depth >= node.depth) {
+            while ancestors.last().is_some_and(|(ancestor, _)| *ancestor >= depth) {
                 ancestors.pop();
             }
             if ancestors.iter().all(|(_, expanded)| *expanded) {
-                rows.push(index);
-                if rows.len() >= limit {
-                    break;
+                visible += 1;
+                if visible > start {
+                    rows.push(index);
+                    if visible >= stop {
+                        break;
+                    }
                 }
             }
-            if node.has_children {
-                ancestors.push((node.depth, self.is_expanded(index)));
+            if has_children {
+                ancestors.push((depth, self.is_expanded(index)));
             }
         }
-        rows
     }
 
     /// The **model** index of visible row `target`, or `None` when the projection is shorter.
@@ -739,11 +793,13 @@ impl TreeView {
         if let Some(value) = self.expanded_override.get(&index) {
             return *value;
         }
-        self.model
-            .as_ref()
-            .and_then(|model| model.node(index))
-            .map(|node| node.expanded)
-            .unwrap_or(false)
+        let Some(model) = self.model.as_ref() else {
+            return false;
+        };
+        if let Some(node) = model.node_ref(index) {
+            return node.expanded;
+        }
+        model.node(index).is_some_and(|node| node.expanded)
     }
 
     /// Expands the node at **visible** index `index`.
@@ -2584,7 +2640,9 @@ impl Draw for TreeView {
                 + 1;
             // Start the cursor at the first visible row: the prefix above the viewport is never
             // materialised, however deep the scroll is (V-010).
-            let rows = self.visible_indices_from(self.scroll_row, row_capacity);
+            let rows = self.visible_rows_scratch.borrow_mut();
+            let mut rows = rows;
+            self.visible_indices_from_into(self.scroll_row, row_capacity, &mut rows);
             let font = effective_font(style);
             // The multi-column header band (V-003). It is painted before the rows and its height is
             // part of `node_row_rect`, so the rows below it cannot paint over it.
@@ -2597,7 +2655,7 @@ impl Draw for TreeView {
                         break;
                     }
                     let cell = Rect::new(x, band.y, width.min(band.width), band.height);
-                    context.draw_text_fitted_cow(
+                    context.draw_text_fitted_ellipsis(
                         context.text_line(cell, font),
                         &descriptor.title,
                         font,
@@ -2652,7 +2710,17 @@ impl Draw for TreeView {
                     // is a *preview* of the row a click would focus.
                     context.fill_rect(row, surface.blend(&accent, 0.12));
                 }
-                let Some(node) = model.node(model_index) else { continue };
+                let owned_node: NodeView;
+                let node: &NodeView = match model.node_ref(model_index) {
+                    Some(node) => node,
+                    None => match model.node(model_index) {
+                        Some(node) => {
+                            owned_node = node;
+                            &owned_node
+                        }
+                        None => continue,
+                    },
+                };
                 // One level of indent for a root, one more per depth below it. `saturating_mul`
                 // because a model is free to report an absurd depth, and a row that overflows
                 // `i32` must draw off-screen rather than wrap onto another row.
@@ -2727,7 +2795,7 @@ impl Draw for TreeView {
                             row.width.saturating_sub((indent + icon_allowance).max(0) as u32),
                             row.height,
                         );
-                        context.draw_text_fitted_cow(
+                        context.draw_text_fitted_ellipsis(
                             context.text_line(cell, font),
                             &node.label,
                             font,
@@ -2751,7 +2819,7 @@ impl Draw for TreeView {
                                     cell_width.saturating_sub(icon_allowance.max(0) as u32),
                                     row.height,
                                 );
-                                context.draw_text_fitted_cow(
+                                context.draw_text_fitted_ellipsis(
                                     context.text_line(cell, font),
                                     &node.label,
                                     font,
@@ -2767,7 +2835,7 @@ impl Draw for TreeView {
                                     width.min(row.width),
                                     row.height,
                                 );
-                                context.draw_text_fitted_cow(
+                                context.draw_text_fitted_ellipsis(
                                     context.text_line(cell, font),
                                     &text,
                                     font,
@@ -2807,7 +2875,7 @@ impl Draw for TreeView {
                             (band.right() - text_x).max(0) as u32,
                             TREE_ROW_HEIGHT as u32,
                         );
-                        context.draw_text_fitted_cow(
+                        context.draw_text_fitted_ellipsis(
                             context.text_line(text_band, font),
                             "Loading...",
                             font,
@@ -2846,7 +2914,7 @@ impl Draw for TreeView {
                     (band.right() - text_x).max(0) as u32,
                     TREE_ROW_HEIGHT as u32,
                 );
-                context.draw_text_fitted_cow(
+                context.draw_text_fitted_ellipsis(
                     context.text_line(text_band, font),
                     message,
                     font,
@@ -2900,7 +2968,7 @@ impl Draw for TreeView {
                             Rect::new(row.x, tip_y, row.width.max(80).min(rect.width), tip_height);
                         context.fill_rect(tip, surface.blend(&ink, 0.06));
                         context.draw_rect(tip, border);
-                        context.draw_text_fitted_cow(
+                        context.draw_text_fitted_ellipsis(
                             context.text_line(tip, font),
                             &text,
                             font,

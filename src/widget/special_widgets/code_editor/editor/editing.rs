@@ -248,6 +248,20 @@ impl CodeEditor {
         !self.extra_cursors.is_empty()
     }
 
+    /// Returns the number of carets without materialising the [`MultiCursor`] set.
+    ///
+    /// Equivalent to `self.cursors().len()` for the state this editor maintains (extras are
+    /// deduplicated and never repeat the primary), and allocation-free for the status row.
+    pub(crate) fn caret_count(&self) -> usize {
+        let mut count = 1usize;
+        for (index, caret) in self.extra_cursors.iter().enumerate() {
+            if *caret != self.cursor && !self.extra_cursors[..index].contains(caret) {
+                count += 1;
+            }
+        }
+        count
+    }
+
     /// Returns the number of secondary carets.
     pub fn extra_cursor_count(&self) -> usize {
         self.extra_cursors.len()

@@ -1406,7 +1406,7 @@ impl Draw for ToggleButton {
             let band_x = rect.x + leading;
             let band_width = (rect.width as i32 - leading - trailing).max(0) as u32;
             let text_band = Rect::new(band_x, line.y, band_width, line.height);
-            context.draw_text_fitted_cow(
+            context.draw_text_fitted_ellipsis(
                 text_band,
                 &self.text,
                 font,

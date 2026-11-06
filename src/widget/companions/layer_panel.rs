@@ -539,7 +539,7 @@ impl Draw for LayerPanel {
             };
             let line = context
                 .text_line(Rect::new(label_x, row_rect.y, label_width, row_rect.height), font);
-            context.draw_text_fitted_cow(
+            context.draw_text_fitted_ellipsis(
                 Rect::new(label_x, line.y, label_width, line.height),
                 label,
                 font,

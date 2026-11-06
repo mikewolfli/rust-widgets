@@ -44,6 +44,7 @@ cd "$ROOT_DIR"
 
 . "$ROOT_DIR/tools/lib_python.sh"
 . "$ROOT_DIR/tools/lib_timeout.sh"
+. "$ROOT_DIR/tools/lib_cargo_cache.sh"
 
 # `button_capability` (and the `btn` alias the reverse injection removes) lives in the
 # `base` family module after the capability table was split into a directory.
@@ -56,7 +57,7 @@ OUT1="$(mktemp)"
 OUT2="$(mktemp)"
 
 run_probe() {
-    rw_run_bounded 900 cargo test --no-default-features --features desktop \
+    rw_cargo_cached 900 test --no-default-features --features desktop \
         --test generator_agreement_probe -- --nocapture
 }
 

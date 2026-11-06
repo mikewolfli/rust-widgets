@@ -248,7 +248,7 @@ impl Draw for ValueSpinBox {
         } else {
             &self.display_cache
         };
-        context.draw_text_fitted_cow(
+        context.draw_text_fitted_ellipsis(
             Rect::new(
                 field.x + 6,
                 field.y + 2,

@@ -2888,7 +2888,13 @@ impl Draw for ComboBox {
         // the same alignment, so the field reads as one column whichever value it is showing.
         let value_align = self.alignment.to_horizontal().unwrap_or(HorizontalAlignment::Left);
         if !current_text.is_empty() {
-            context.draw_text_fitted_cow(text_box, current_text, font, text_color, value_align);
+            context.draw_text_fitted_ellipsis(
+                text_box,
+                current_text,
+                font,
+                text_color,
+                value_align,
+            );
         } else if self.items.is_empty() {
             // A host-supplied empty-state text wins; the historical literal is the fallback.
             let empty = if self.placeholder_text.is_empty() {
@@ -2896,7 +2902,7 @@ impl Draw for ComboBox {
             } else {
                 self.placeholder_text.as_str()
             };
-            context.draw_text_fitted_cow(text_box, empty, font, text_color, value_align);
+            context.draw_text_fitted_ellipsis(text_box, empty, font, text_color, value_align);
         }
 
         // ── Editable value: selection band and caret (I-06) ──
@@ -3009,7 +3015,7 @@ impl Draw for ComboBox {
                 } else {
                     self.placeholder_text.as_str()
                 };
-                context.draw_text_fitted_cow(
+                context.draw_text_fitted_ellipsis(
                     context.text_line(row, font),
                     empty,
                     font,
@@ -3062,7 +3068,7 @@ impl Draw for ComboBox {
                         (row.x + row.width as i32 - inset as i32 - label_x).max(1) as u32,
                         line.height,
                     );
-                    context.draw_text_fitted_cow(
+                    context.draw_text_fitted_ellipsis(
                         label,
                         label_text,
                         font,

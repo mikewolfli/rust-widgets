@@ -411,7 +411,7 @@ impl Draw for MarkdownToolbar {
             }
             let labels = self.labels();
             let text = &labels[index];
-            context.draw_text_fitted_cow(
+            context.draw_text_fitted_ellipsis(
                 cell,
                 text,
                 font,

@@ -533,7 +533,7 @@ impl Draw for LineEdit {
                 // The field's own line box. A glyph origin is the box's top-left edge, so the
                 // previous `rect.y + rect.height / 2` placed that edge on the field's middle line
                 // and drew the value half a line low.
-                context.draw_text_fitted_cow(
+                context.draw_text_fitted_ellipsis(
                     value_box,
                     display_text,
                     font,
@@ -607,7 +607,7 @@ impl Draw for LineEdit {
                 let message_width = layout
                     .counter
                     .map_or(row.width, |counter| (counter.x - row.x - 4).max(0) as u32);
-                context.draw_text_fitted_cow(
+                context.draw_text_fitted_ellipsis(
                     Rect::new(row.x, row_line.y, message_width, row_line.height.max(1)),
                     message,
                     font,

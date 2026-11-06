@@ -4,7 +4,7 @@
 //! GanttWidget for timeline task planning.
 
 use rust_widgets::compat::HashMap;
-use rust_widgets::core::{Color, HorizontalAlignment, Point, Rect};
+use rust_widgets::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use rust_widgets::event::{Event, EventHandler};
 use rust_widgets::render::RenderContext;
 use rust_widgets::signal::Signal1;
@@ -79,8 +79,8 @@ struct GanttReadoutCache {
     task: usize,
     /// [`GanttWidget::tasks_revision`] the text was formatted at.
     revision: u64,
-    /// The effective font size, as bits.
-    font_size_bits: u32,
+    /// The complete effective font (family, size, weight, style, spacing), not just its size.
+    font: Font,
     /// The formatted label and dates.
     text: String,
     /// The measured bubble width, padding included.
@@ -2064,7 +2064,7 @@ impl Draw for GanttWidget {
                 track_x.saturating_sub(rect.x + indent) as u32,
                 self.row_height,
             );
-            context.draw_text_line_cow(
+            context.draw_text_line_ellipsis(
                 label_band,
                 &task.label,
                 effective_font(style),
@@ -2308,13 +2308,10 @@ impl Draw for GanttWidget {
         if self.show_hover_readout {
             if let Some(index) = self.hovered_task {
                 let font = effective_font(style);
-                let font_size_bits = font.size().to_bits();
                 let revision = self.tasks_revision;
                 let mut cache = self.readout_cache.borrow_mut();
                 let stale = cache.as_ref().is_none_or(|cached| {
-                    cached.task != index
-                        || cached.revision != revision
-                        || cached.font_size_bits != font_size_bits
+                    cached.task != index || cached.revision != revision || cached.font != *font
                 });
                 if stale {
                     // The text and its measurement move only with the hovered task, the task data or
@@ -2326,7 +2323,7 @@ impl Draw for GanttWidget {
                         GanttReadoutCache {
                             task: index,
                             revision,
-                            font_size_bits,
+                            font: font.clone(),
                             text,
                             width: metrics.width as i32 + 10,
                             height: metrics.height.max(1) as i32 + 8,
@@ -2345,7 +2342,7 @@ impl Draw for GanttWidget {
                     let bubble = Rect::new(x, y, width.max(1) as u32, height.max(1) as u32);
                     context.fill_rect(bubble, background);
                     context.draw_rect(bubble, border);
-                    context.draw_text_line_cow(
+                    context.draw_text_line_ellipsis(
                         bubble,
                         &cached.text,
                         font,

@@ -3,6 +3,17 @@
 
 //! CSS file watcher — hot-reload a stylesheet into the global `StyleSheetManager`.
 //!
+//! # Reachability
+//!
+//! **State:** Enabling API. No in-crate control or runtime path constructs a `CssWatcher`; a host
+//! that wants stylesheet hot reload drives [`CssWatcher::poll`] from its own frame loop, which is
+//! what the example below shows. The module is public so that host can do so without a private
+//! module path.
+//!
+//! **Removal condition:** when a host-facing configuration path (an `App`/runtime hook) owns the
+//! watcher, this note becomes a production-reachability record; if no consumer appears by the next
+//! major release, remove the module and its tests.
+//!
 //! # OS notification first, bounded poll as the fallback
 //!
 //! The watcher consumes the platform's environment revision

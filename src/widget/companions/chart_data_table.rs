@@ -407,7 +407,7 @@ impl Draw for ChartDataTable {
             rect.height.saturating_sub(TABLE_INSET * 2),
         );
         if self.headers.is_empty() {
-            context.draw_text_fitted_cow(
+            context.draw_text_fitted_ellipsis(
                 inner,
                 "No series data",
                 font,
@@ -588,7 +588,7 @@ fn draw_table_row(
         };
         if let Some(text) = cells.get(index) {
             let text_rect = Rect::new(x + 6, rect.y, cell_width.saturating_sub(10), rect.height);
-            context.draw_text_fitted_cow(
+            context.draw_text_fitted_ellipsis(
                 text_rect,
                 text.as_str(),
                 font,

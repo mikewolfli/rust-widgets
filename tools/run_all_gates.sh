@@ -184,6 +184,17 @@ RUN_BUDGET="${RW_RUN_TIMEOUT:-3600}"
 # affects how the result is reported, never whether it counts as a failure.
 HOST_LIMITED_MARKER='unsupported host'
 
+# Where the output of a non-PASS gate is kept.
+#
+# The runner captures each gate into a temp file and deletes it, so a run had no
+# record of *why* a gate went red: with `--summary` it does not print the output
+# either. That made a transient failure undiagnosable after the fact — a full
+# sweep once reported three failures whose only surviving evidence was the gate
+# names, and re-running each one standalone passed. Keeping the output turns
+# "that gate is flaky" into an error message. Inside `target/` so it is build
+# output, not a committed artifact, and so `cargo clean` removes it too.
+GATE_LOG_DIR="${RW_GATE_LOG_DIR:-target/gate-logs}"
+
 PASS=0
 FAIL=0
 SKIPPED=0
@@ -283,6 +294,18 @@ for gate in tools/check_*.sh; do
   esac
 
   printf '%-52s %-7s %5ss\n' "$name" "$status" "$elapsed_s"
+  if [[ "$status" != "PASS" ]]; then
+    # Kept for diagnosis; see `GATE_LOG_DIR` above for why the temp file is not enough.
+    mkdir -p "$GATE_LOG_DIR" 2>/dev/null || true
+    saved_log="$GATE_LOG_DIR/${name%.sh}.log"
+    if cp "$log_file" "$saved_log" 2>/dev/null; then
+      printf '%-52s %s\n' "" "log: $saved_log"
+    fi
+  else
+    # Drop a log from an earlier failing run, so the directory always describes *this* run.
+    # A stale file left behind by a since-fixed gate is evidence that reads as still current.
+    rm -f "$GATE_LOG_DIR/${name%.sh}.log" 2>/dev/null || true
+  fi
   if [[ "$SUMMARY_ONLY" -eq 0 && "$status" != "PASS" ]]; then
     echo "───── output of $name ─────"
     cat "$log_file"
@@ -317,7 +340,7 @@ if [[ "${#TIMEOUT_GATES[@]}" -gt 0 ]]; then
 fi
 
 if [[ "${#FAILED_GATES[@]}" -gt 0 ]]; then
-  echo "failed:" >&2
+  echo "failed (output kept under $GATE_LOG_DIR/):" >&2
   for g in "${FAILED_GATES[@]}"; do
     echo "  - $g" >&2
   done

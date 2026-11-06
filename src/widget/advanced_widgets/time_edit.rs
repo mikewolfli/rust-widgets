@@ -1340,7 +1340,7 @@ impl Draw for TimeEdit {
         // body font and the user's text scale (D09-STYLE-01).
         let font = effective_font(style);
         let line = context.text_line(rect, font);
-        context.draw_text_fitted_cow(
+        context.draw_text_fitted_ellipsis(
             Rect {
                 x: rect.x + 6,
                 y: line.y,

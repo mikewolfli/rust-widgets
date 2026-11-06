@@ -655,6 +655,7 @@ fn the_form_set_walks_pages_with_the_arrow_keys_and_submits_with_enter() {
     let mut set = FormSet::new(Rect::new(0, 0, 480, 360));
     assert!(set.add_page(FormPage::new("a", "A")));
     assert!(set.add_page(FormPage::new("b", "B")));
+    set.handle_event(&Event::FocusGained { reason: rust_widgets::event::FocusReason::Tab });
 
     set.handle_event(&Event::KeyPress { key: rust_widgets::event::key_codes::RIGHT, modifiers: 0 });
     assert_eq!(set.current_index(), 1);

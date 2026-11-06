@@ -900,7 +900,7 @@ impl Draw for ProgressBar {
             if !text.is_empty() {
                 // The value label takes the **effective font** — the resolved theme/caller font — so the
                 // theme body font and the user's text scale reach it (D09-STYLE-01).
-                context.draw_text_line_cow(
+                context.draw_text_line_ellipsis(
                     rect,
                     text,
                     effective_font(style),

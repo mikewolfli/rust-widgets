@@ -870,7 +870,7 @@ impl Draw for ProgressDialog {
         if !self.title.is_empty() {
             let title_font = font;
             let title_line = context.text_line(title_bar_band, title_font);
-            context.draw_text_fitted_cow(
+            context.draw_text_fitted_ellipsis(
                 Rect::new(
                     rect.x + 8,
                     title_line.y,
@@ -898,7 +898,7 @@ impl Draw for ProgressDialog {
         if !self.label_text.is_empty() {
             let label_band = ControlMetrics::top_band(content, label_line_h);
             let label_line = context.text_line(label_band, label_font);
-            context.draw_text_fitted_cow(
+            context.draw_text_fitted_ellipsis(
                 Rect::new(
                     content.x + 10,
                     label_line.y,
@@ -963,7 +963,7 @@ impl Draw for ProgressDialog {
                 let pct = (fraction * 100.0) as i32;
                 self.percent_text.clear();
                 let _ = write!(self.percent_text, "{pct}%");
-                context.draw_text_line_cow(
+                context.draw_text_line_ellipsis(
                     bar_band,
                     &self.percent_text,
                     font,
@@ -986,7 +986,7 @@ impl Draw for ProgressDialog {
             self.cancel_rect_cache.set(Some((rect, btn_rect)));
             context.fill_rect(btn_rect, button_fill);
             context.draw_rect(btn_rect, border);
-            context.draw_text_line_cow(
+            context.draw_text_line_ellipsis(
                 btn_rect,
                 &labels[0],
                 font,

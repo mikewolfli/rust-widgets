@@ -12,7 +12,7 @@
 #
 # # The defect this exists to catch
 #
-# `src/widget/icon_fallback_data.rs` carried a `GENERATED FILE — DO NOT EDIT BY HAND` header and
+# `crates/rust-widgets-icons/src/fallback.rs` carried a `GENERATED FILE — DO NOT EDIT BY HAND` header and
 # then, three lines later, admitted: *"there is no generator for this table … A
 # `gen_icon_fallback.py` that removes the by-hand step is a known follow-up."* That state lived for
 # several rounds. Nothing went red, because **no gate asked the question** — a file can claim to be
@@ -56,9 +56,17 @@ cd "$ROOT_DIR"
 # `gen_icon_data.py --check` still demands the inbound licence claim, because the same flag drives
 # both its write and its verify path; passing it here keeps one contract rather than two.
 PAIRS=(
-    "src/widget/icon_data.rs|tools/gen_icon_data.py|--check --license=apache-2.0"
-    "src/widget/icon_fallback_data.rs|tools/gen_icon_fallback.py|--check"
-    "src/widget/display_widgets/icon_names.rs|tools/gen_icon_names.py|--check"
+    "crates/rust-widgets-icons/src/data.rs|crates/rust-widgets-icons/tools/gen_icon_data.py|--check --license=apache-2.0"
+    "crates/rust-widgets-icons/src/fallback.rs|crates/rust-widgets-icons/tools/gen_icon_fallback.py|--check"
+    "crates/rust-widgets-icons/src/names.rs|crates/rust-widgets-icons/tools/gen_icon_names.py|--check"
+    # The catalogue is the *input* to three of the generators above (`names`, `data`, `fallback`
+    # all read the declaration order from it), so it is checked here like any other derived
+    # artifact: a hand-edited catalogue would otherwise be the one file in the chain with no
+    # producer, and every downstream table would inherit the edit.
+    "crates/rust-widgets-icons/tools/icon_catalog.txt|crates/rust-widgets-icons/tools/gen_icon_catalog.py|--check"
+    # The same-picture relation. Generated from the shipped `d`, and the integrity tests compare it
+    # against the data, so it must not be the one generated file nobody re-derives.
+    "crates/rust-widgets-icons/src/upstream_aliases.rs|crates/rust-widgets-icons/tools/gen_icon_aliases.py|--check"
     # The capability event-payload table declares itself generated in its own header
     # ("The declared payload of every published capability event — **generated**") and is
     # re-derived by this script. It was absent from this list, so the gate's stated contract

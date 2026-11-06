@@ -1248,13 +1248,10 @@ impl WidgetProperties for PropertyGrid {
                 self.clear();
                 Ok(())
             }
-            "add_property" | "set_value" | "set_properties" => {
-                Err(CapabilityAccessError::OutOfRange)
-            }
+            "set_properties" => Err(CapabilityAccessError::OutOfRange),
             // Any other `set_foo` name carries its value through the property route,
             // so the shared default reports that a payload is needed rather than
             // claiming the control has never heard of it.
-            _ if name.starts_with("set_") => Err(CapabilityAccessError::OutOfRange),
             _ => self.default_command(name),
         }
     }
@@ -1348,7 +1345,7 @@ impl Draw for PropertyGrid {
         let header_rect = Rect::new(content.x, content.y, content.width, row_height);
         context.fill_rect(header_rect, header_bg);
         let header_line = context.text_line(header_rect, &header_font);
-        context.draw_text_fitted_cow(
+        context.draw_text_fitted_ellipsis(
             Rect::new(
                 header_rect.x + 4,
                 header_line.y,
@@ -1360,7 +1357,7 @@ impl Draw for PropertyGrid {
             header_ink,
             HorizontalAlignment::Left,
         );
-        context.draw_text_fitted_cow(
+        context.draw_text_fitted_ellipsis(
             Rect::new(
                 header_rect.x + name_col_width as i32 + 4,
                 header_line.y,
@@ -1418,7 +1415,7 @@ impl Draw for PropertyGrid {
                         8,
                     );
                     crate::widget::draw_icon_at(context, icon_rect, ink, icon);
-                    context.draw_text_fitted_cow(
+                    context.draw_text_fitted_ellipsis(
                         Rect::new(
                             row_rect.x + 14,
                             row_line.y,
@@ -1453,7 +1450,7 @@ impl Draw for PropertyGrid {
 
                     // Name text (bold)
                     let name_text_color = if !is_enabled { disabled_ink } else { ink };
-                    context.draw_text_fitted_cow(
+                    context.draw_text_fitted_ellipsis(
                         Rect::new(
                             name_rect.x + 4,
                             row_line.y,
@@ -1477,7 +1474,7 @@ impl Draw for PropertyGrid {
                     let item = &self.properties[i];
                     let editing_this_row = self.editing.as_ref().is_some_and(|edit| edit.row == i);
                     if let Some(message) = self.row_errors.get(&i) {
-                        context.draw_text_fitted_cow(
+                        context.draw_text_fitted_ellipsis(
                             Rect::new(
                                 row_rect.x + name_col_width as i32 + 4,
                                 row_line.y,
@@ -1513,7 +1510,7 @@ impl Draw for PropertyGrid {
                         } else {
                             std::borrow::Cow::Borrowed(item.value.as_str())
                         };
-                        context.draw_text_fitted_cow(
+                        context.draw_text_fitted_ellipsis(
                             Rect::new(
                                 row_rect.x + name_col_width as i32 + 4,
                                 row_line.y,
@@ -1545,7 +1542,7 @@ impl Draw for PropertyGrid {
                 let selected = self.properties.get(index).is_some_and(|item| item.value == option);
                 context.fill_rect(option_rect, if selected { selected_row } else { surface });
                 context.draw_rect(option_rect, separator);
-                context.draw_text_fitted_cow(
+                context.draw_text_fitted_ellipsis(
                     option_rect,
                     &option,
                     &value_font,

@@ -425,6 +425,20 @@ impl HolographicKeyboardDetector {
     }
 }
 
+/// Processes one depth frame through the process-wide detector.
+///
+/// This is the producer half the module previously documented but did not have: the runtime
+/// feeds every `Event::HolographicTouch` here, and a completed key press is turned into a
+/// synthetic `KeyPress` event. The detector is thread-local because it owns a `Vec` and is only
+/// ever driven from the UI thread's event loop.
+pub fn process_holographic_touch(pos: crate::core::Point, depth: f32) -> Option<KeyHit> {
+    thread_local! {
+        static DETECTOR: crate::compat::RefCell<HolographicKeyboardDetector> =
+            crate::compat::RefCell::new(HolographicKeyboardDetector::new());
+    }
+    DETECTOR.with(|detector| detector.borrow_mut().process_depth(pos, depth))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

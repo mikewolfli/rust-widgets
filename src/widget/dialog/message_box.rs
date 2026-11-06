@@ -18,7 +18,7 @@ use crate::widget::capability::coercion::{
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
-use crate::widget::dialog::alert_dialogs::wrap_words;
+use crate::widget::dialog::alert_dialogs::WrapCache;
 use crate::widget::metrics::{dimensions, effective_font, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, IconName, Widget, WidgetKind};
 /// Message box icon type.
@@ -234,6 +234,12 @@ pub struct MessageBox {
     /// strings; translating them once per button-set change instead of once per call keeps
     /// the catalogue lookup off every frame.
     label_cache: RefCell<Option<MessageBoxLabelCache>>,
+    /// Word-wrapped body/caption lines, keyed by text and column count.
+    ///
+    /// The three body blocks are re-wrapped on every paint; their input is the text and the
+    /// measured column budget, both stable frame to frame, so the result is cached like the
+    /// notice cards' (G-P15).
+    wrap_cache: WrapCache,
     /// The button Escape activates; `None` keeps the Cancel/No/Close fallback chain.
     escape_button: Option<StandardButton>,
     /// The action button under the pointer, for hover feedback.
@@ -321,6 +327,7 @@ impl MessageBox {
             button_texts: Vec::new(),
             button_text_revision: 0,
             label_cache: RefCell::new(None),
+            wrap_cache: WrapCache::default(),
             escape_button: None,
             hovered: None,
             pressed: None,
@@ -1406,7 +1413,7 @@ impl Draw for MessageBox {
         if !self.title.is_empty() {
             let title_font = font;
             let title_line = context.text_line(title_bar_band, title_font);
-            context.draw_text_fitted_cow(
+            context.draw_text_fitted_ellipsis(
                 Rect::new(
                     rect.x + 8,
                     title_line.y,
@@ -1513,7 +1520,7 @@ impl Draw for MessageBox {
         // The first line keeps the vertical centre the single-line paint used, so a short
         // message is byte-identical to the pre-wrap frame; wrapped lines then advance by the
         // measured line height.
-        let folded = wrap_words(&self.text, columns);
+        let folded = self.wrap_cache.lines(&self.text, columns);
         let mut text_y = context.text_line(message_band, body_font).y;
         for line in folded.iter() {
             if text_y + body_line_h > text_bottom {
@@ -1522,7 +1529,7 @@ impl Draw for MessageBox {
             let band =
                 Rect::new(message_band.x, text_y, message_band.width.max(1), body_line_h as u32);
             let line_box = context.text_line(band, body_font);
-            context.draw_text_fitted_cow(
+            context.draw_text_fitted_ellipsis(
                 Rect::new(band.x, line_box.y, band.width.max(1), line_box.height.max(1)),
                 line,
                 body_font,
@@ -1540,7 +1547,7 @@ impl Draw for MessageBox {
         for (text, color) in
             [(self.informative_text.as_str(), ink), (detail_text, ink.with_alpha_f32(0.75))]
         {
-            for line in wrap_words(text, columns).iter() {
+            for line in self.wrap_cache.lines(text, columns).iter() {
                 if line.is_empty() || extra_y + body_line_h > text_bottom {
                     continue;
                 }
@@ -1551,7 +1558,7 @@ impl Draw for MessageBox {
                     body_line_h as u32,
                 );
                 let line_box = context.text_line(band, body_font);
-                context.draw_text_fitted_cow(
+                context.draw_text_fitted_ellipsis(
                     Rect::new(band.x, line_box.y, band.width.max(1), line_box.height.max(1)),
                     line,
                     body_font,
@@ -1590,7 +1597,7 @@ impl Draw for MessageBox {
                 row.width.saturating_sub(box_side + 6),
                 row_h,
             );
-            context.draw_text_line_cow(
+            context.draw_text_line_ellipsis(
                 label_band,
                 &self.check_box_text,
                 body_font,
@@ -1604,7 +1611,7 @@ impl Draw for MessageBox {
         if let Some(toggle) = self.details_toggle_rect() {
             let toggle_band =
                 Rect::new(toggle.x + 2, toggle.y, toggle.width.saturating_sub(4), toggle.height);
-            context.draw_text_line_cow(
+            context.draw_text_line_ellipsis(
                 toggle_band,
                 &self.details_toggle_label(),
                 body_font,
@@ -1656,9 +1663,9 @@ impl Draw for MessageBox {
 
             context.draw_rect(*button_rect, border);
 
-            context.draw_text_line_cow(
+            context.draw_text_line_ellipsis(
                 *button_rect,
-                &button.translated_label(),
+                &labels[index],
                 font,
                 fg,
                 HorizontalAlignment::Center,
@@ -1733,10 +1740,21 @@ pub(crate) struct ActionRowGeometry {
     /// The row's rect: the union of the buttons, inset to the content edge and right-anchored.
     pub row: Rect,
     /// Each button's rect, in the caller's own order.
-    pub buttons: Vec<Rect>,
+    ///
+    /// Shared rather than owned: the nine dialogs call this geometry from `draw`, `frame_rect`
+    /// and `intrinsic_size` on every frame, and a fresh `Vec` for a two-button row was the
+    /// remaining steady-state allocation of the dialog family. The cached run is handed out by
+    /// handle and cloned for free.
+    pub buttons: Rc<Vec<Rect>>,
     /// The width from the row's leading edge to the content box's: the *derived* left inset the
     /// row leaves for whatever shares its band.
     pub leading_inset: u32,
+}
+
+impl Clone for ActionRowGeometry {
+    fn clone(&self) -> Self {
+        Self { row: self.row, buttons: Rc::clone(&self.buttons), leading_inset: self.leading_inset }
+    }
 }
 
 impl ActionRowGeometry {
@@ -1755,6 +1773,43 @@ impl ActionRowGeometry {
     pub fn hit(&self, pos: Point) -> Option<usize> {
         self.buttons.iter().position(|button| button.contains_point(pos))
     }
+}
+
+/// The complete cache key of an action row (G-P09 family).
+///
+/// Every input `action_row_geometry` reads is here: the labels' content and count, the whole
+/// font (family, size, weight, slant, letter and word spacing), the band it was offered, whether
+/// it is placed, and the DPI the measurements were taken at.
+#[derive(Clone, PartialEq, Eq)]
+struct ActionRowKey {
+    labels_hash: u64,
+    labels_len: usize,
+    family: crate::compat::Arc<str>,
+    size_bits: u32,
+    weight: u16,
+    italic: bool,
+    letter_bits: u32,
+    word_bits: u32,
+    dpi_bits: u32,
+    band: Rect,
+    place: bool,
+}
+
+/// How many action rows the process keeps at once.
+///
+/// Each open dialog asks for at most two bands (its intrinsic row and its painted row), and a
+/// handful can be open; four covers the steady state without becoming a per-address cache.
+const ACTION_ROW_CACHE_DEPTH: usize = 4;
+
+thread_local! {
+    static ACTION_ROW_CACHE: RefCell<Vec<(ActionRowKey, ActionRowGeometry)>> =
+        const { RefCell::new(Vec::new()) };
+    static EMPTY_BUTTONS: Rc<Vec<Rect>> = Rc::new(Vec::new());
+}
+
+/// The shared empty button list, so a dialog with no actions allocates nothing.
+fn empty_buttons() -> Rc<Vec<Rect>> {
+    EMPTY_BUTTONS.with(Rc::clone)
 }
 
 /// Lays `labels` out as a right-aligned row of action buttons inside `band`.
@@ -1814,7 +1869,36 @@ pub(crate) fn action_row_geometry(
     place: bool,
 ) -> ActionRowGeometry {
     if labels.is_empty() {
-        return ActionRowGeometry { row: band, buttons: Vec::new(), leading_inset: 0 };
+        return ActionRowGeometry {
+            row: band,
+            buttons: crate::compat::Rc::clone(&empty_buttons()),
+            leading_inset: 0,
+        };
+    }
+    // The row is a pure function of its labels, its font, the band it is offered and whether it is
+    // placed. All four are in the key, because a cache that forgot any of them would hand a
+    // dialog another dialog's geometry — the R12 class of "complete key" defect.
+    let key = ActionRowKey {
+        labels_hash: super::hash_label_texts(labels.iter().map(String::as_str)),
+        labels_len: labels.len(),
+        family: font.family_shared(),
+        size_bits: font.size().to_bits(),
+        weight: font.weight(),
+        italic: font.is_italic(),
+        letter_bits: font.letter_spacing().to_bits(),
+        word_bits: font.word_spacing().to_bits(),
+        dpi_bits: context.dpi_scale().to_bits(),
+        band,
+        place,
+    };
+    if let Some(hit) = ACTION_ROW_CACHE.with(|cache| {
+        cache
+            .borrow()
+            .iter()
+            .find(|(cached, _)| *cached == key)
+            .map(|(_, geometry)| geometry.clone())
+    }) {
+        return hit;
     }
     // Each button's own wish. `Hints::fixed` rather than the widget's `size_hint` because an
     // action button is a standard command of a standard width: it does not grow with its
@@ -1850,17 +1934,27 @@ pub(crate) fn action_row_geometry(
         buttons.push(Rect::new(cursor, band.y, width, band.height));
         cursor += width as i32 + DIALOG_BUTTON_SPACING as i32;
     }
-    let first = buttons.first().copied().unwrap_or(band);
-    let last = buttons.last().copied().unwrap_or(band);
-    let row_left = first.x;
-    let row_right = last.x.saturating_add(last.width as i32);
-    let row = Rect::new(row_left, band.y, (row_right - row_left).max(0) as u32, band.height);
-    // What the row leaves *before* it: the padding this dialog's own content must carry so its
-    // title, message and icon cannot overlap the buttons that share their band. This is the
-    // sibling-column relation — the text side's padding is the sibling column's width —
-    // and it is why the row reports it instead of leaving each call site to re-subtract.
-    let leading_inset = if place { (row_left - band.x).max(0) as u32 } else { 0 };
-    ActionRowGeometry { row, buttons, leading_inset }
+    let buttons = Rc::new(buttons);
+    let geometry = {
+        let first = buttons.first().copied().unwrap_or(band);
+        let last = buttons.last().copied().unwrap_or(band);
+        let row = Rect::new(
+            first.x,
+            first.y,
+            (last.x + last.width as i32 - first.x).max(1) as u32,
+            first.height,
+        );
+        let leading_inset = (row.x - band.x).max(0) as u32;
+        ActionRowGeometry { row, buttons, leading_inset }
+    };
+    ACTION_ROW_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if cache.len() >= ACTION_ROW_CACHE_DEPTH {
+            cache.remove(0);
+        }
+        cache.push((key, geometry.clone()));
+    });
+    geometry
 }
 
 #[cfg(test)]

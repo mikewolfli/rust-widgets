@@ -176,6 +176,8 @@ pub struct WebHistoryPanel {
     group_by_day: bool,
     /// Height of one entry row.
     row_height: u32,
+    /// Bumped by every write that can change the visible row set.
+    revision: u64,
     /// The laid-out rows and the inputs they were built from.
     row_cache: RefCell<RowCache>,
     /// Emitted with the entry's URL when a row is activated.
@@ -187,15 +189,19 @@ pub struct WebHistoryPanel {
 /// `layout_rows` is called by both the paint and the hit test, and each group header formats its
 /// date label, so rebuilding it every frame allocated a `Vec` and N label strings that a repaint
 /// could not observe. Comparing this key first means the rebuild happens only when one of the
-/// inputs actually moved. `visible` is the projection of `records` the layout reads (an index and
-/// its visit time), so a filter or record edit that changes nothing visible reuses the cache.
+/// inputs actually moved. `revision` stands for the projection of `records` the layout reads, so
+/// a filter or record edit that changes nothing visible still reuses the cache.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct LayoutKey {
     rect: Rect,
     row_height: u32,
     max_entries: usize,
     group_by_day: bool,
-    visible: Vec<(usize, Option<i64>)>,
+    /// Bumped by every write that can change the visible row set (`records` or `filter`).
+    ///
+    /// The previous key materialised `visible_indices()` into a `Vec` on every paint just to
+    /// compare it; the revision is the same information without the allocation.
+    revision: u64,
 }
 
 /// The cached row layout and the key it was built for; an empty key means "never built".
@@ -220,6 +226,8 @@ enum RowKind {
 struct HistoryRow {
     rect: Rect,
     kind: RowKind,
+    /// The `HH:MM` label for an entry row, built with the layout rather than every paint.
+    time_text: Option<String>,
 }
 
 impl WebHistoryPanel {
@@ -233,6 +241,7 @@ impl WebHistoryPanel {
             show_timestamps: false,
             group_by_day: false,
             row_height: DEFAULT_ROW_HEIGHT,
+            revision: 0,
             row_cache: RefCell::new(RowCache::default()),
             on_entry_activated: Signal1::new(),
         }
@@ -305,6 +314,7 @@ impl WebHistoryPanel {
     /// The engine stores history oldest first; the panel displays it newest first.
     pub fn set_entries(&mut self, entries: &[HistoryEntry]) {
         self.records = entries.iter().cloned().map(WebHistoryRecord::new).collect();
+        self.revision = self.revision.wrapping_add(1);
         self.base.request_layout();
         self.base.request_redraw();
     }
@@ -312,6 +322,7 @@ impl WebHistoryPanel {
     /// Replaces the list with records that carry their visit times.
     pub fn set_records(&mut self, records: &[WebHistoryRecord]) {
         self.records = records.to_vec();
+        self.revision = self.revision.wrapping_add(1);
         self.base.request_layout();
         self.base.request_redraw();
     }
@@ -336,6 +347,7 @@ impl WebHistoryPanel {
             return;
         }
         self.filter = prefix.to_string();
+        self.revision = self.revision.wrapping_add(1);
         self.base.request_layout();
         self.base.request_redraw();
     }
@@ -347,6 +359,7 @@ impl WebHistoryPanel {
         }
         self.records.clear();
         self.filter.clear();
+        self.revision = self.revision.wrapping_add(1);
         self.base.request_layout();
         self.base.request_redraw();
     }
@@ -438,11 +451,7 @@ impl WebHistoryPanel {
             row_height: self.row_height,
             max_entries: self.max_entries,
             group_by_day: self.group_by_day,
-            visible: self
-                .visible_indices()
-                .into_iter()
-                .map(|index| (index, self.records[index].visited_ms))
-                .collect(),
+            revision: self.revision,
         };
         if self.row_cache.borrow().key.as_ref() != Some(&key) {
             let rows = self.build_rows();
@@ -471,6 +480,7 @@ impl WebHistoryPanel {
                     rows.push(HistoryRow {
                         rect: Rect::new(rect.x, y, rect.width, GROUP_HEADER_HEIGHT),
                         kind: RowKind::Header(label),
+                        time_text: None,
                     });
                     y += GROUP_HEADER_HEIGHT as i32;
                     last_day = Some(day);
@@ -479,6 +489,7 @@ impl WebHistoryPanel {
             rows.push(HistoryRow {
                 rect: Rect::new(rect.x, y, rect.width, self.row_height),
                 kind: RowKind::Entry(index),
+                time_text: record.visited_ms.map(time_label),
             });
             y += self.row_height as i32;
         }
@@ -638,7 +649,7 @@ impl Draw for WebHistoryPanel {
                         row.rect.y + ((row.rect.height as i32 - metrics.height as i32) / 2).max(0);
                     let width = row.rect.width.saturating_sub(PANEL_INSET * 2);
                     if width > 0 {
-                        context.draw_text_fitted_cow(
+                        context.draw_text_fitted_ellipsis(
                             Rect::new(
                                 row.rect.x + PANEL_INSET as i32,
                                 top,
@@ -667,7 +678,7 @@ impl Draw for WebHistoryPanel {
                         row.rect.width.saturating_sub(PANEL_INSET * 2 + timestamp_room);
                     let top = row.rect.y + ROW_INSET as i32;
                     if text_width > 0 {
-                        context.draw_text_fitted_cow(
+                        context.draw_text_fitted_ellipsis(
                             Rect::new(row.rect.x + PANEL_INSET as i32, top, text_width, title_h),
                             title,
                             &title_font,
@@ -683,7 +694,7 @@ impl Draw for WebHistoryPanel {
                             .saturating_sub(url_top)
                             .max(0) as u32;
                         if url_room > 0 {
-                            context.draw_text_fitted_cow(
+                            context.draw_text_fitted_ellipsis(
                                 Rect::new(
                                     row.rect.x + PANEL_INSET as i32,
                                     url_top,
@@ -698,9 +709,8 @@ impl Draw for WebHistoryPanel {
                         }
                     }
                     if timestamp_room > 0 {
-                        if let Some(visited_ms) = record.visited_ms {
-                            let time = time_label(visited_ms);
-                            context.draw_text_fitted_cow(
+                        if let Some(time) = row.time_text.as_deref() {
+                            context.draw_text_fitted_ellipsis(
                                 Rect::new(
                                     row.rect.x + row.rect.width as i32
                                         - TIMESTAMP_WIDTH as i32
@@ -709,7 +719,7 @@ impl Draw for WebHistoryPanel {
                                     TIMESTAMP_WIDTH,
                                     title_h,
                                 ),
-                                &time,
+                                time,
                                 &secondary_font,
                                 ink.with_alpha(120),
                                 HorizontalAlignment::Right,

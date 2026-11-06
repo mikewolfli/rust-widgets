@@ -33,14 +33,27 @@ impl CodeEditor {
     /// at the line the viewport actually begins on (read off the row-prefix table) instead
     /// of filtering every line of the file into a `Vec` first — that allocation was the
     /// folded counterpart of the full-document scan `visible_document_lines` avoids (J-P04).
-    pub(crate) fn viewport_document_lines(&self) -> alloc::vec::IntoIter<usize> {
-        if self.folded_lines.is_empty() {
-            let slack = self.visible_rows.max(1) + 1;
-            let first = self.scroll_visual_row.saturating_sub(slack).min(self.line_count());
-            let last = (self.scroll_visual_row + slack * 2).min(self.line_count());
-            return (first..last).collect::<Vec<usize>>().into_iter();
-        }
+    /// Refills the viewport line window in the editor's reused buffer.
+    ///
+    /// This is the iterator the paint loop should use: it never materialises the
+    /// document, so its cost depends on the viewport. With folds present the walk starts
+    /// at the line the viewport actually begins on (read off the row-prefix table) instead
+    /// of filtering every line of the file into a `Vec` first — that allocation was the
+    /// folded counterpart of the full-document scan `visible_document_lines` avoids (J-P04).
+    ///
+    /// The window is written into a buffer the editor owns: a paint calls this for the rows
+    /// and again for the gutter, and the previous form allocated twice per frame for a
+    /// viewport-sized list whose shape rarely changes.
+    pub(crate) fn fill_viewport_document_lines(&self) {
+        let mut out = self.viewport_lines_scratch.borrow_mut();
+        out.clear();
         let slack = self.visible_rows.max(1) + 1;
+        let first = self.scroll_visual_row.saturating_sub(slack).min(self.line_count());
+        let last = (self.scroll_visual_row + slack * 2).min(self.line_count());
+        if self.folded_lines.is_empty() {
+            out.extend(first..last);
+            return;
+        }
         let first_row = self.scroll_visual_row.saturating_sub(slack);
         let last_row = self.scroll_visual_row + slack * 2;
         let count = self.line_count();
@@ -53,7 +66,6 @@ impl CodeEditor {
             0
         };
         let mut rows = self.line_to_visual_row(start_line);
-        let mut out = Vec::new();
         for line in start_line..count {
             if self.is_hidden(line) {
                 continue;
@@ -67,7 +79,6 @@ impl CodeEditor {
                 break;
             }
         }
-        out.into_iter()
     }
 
     /// Fills `line_states` / `line_tokens` for the rows about to be painted.

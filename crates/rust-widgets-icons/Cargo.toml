@@ -1,0 +1,28 @@
+[package]
+name = "rust-widgets-icons"
+version = "4.1.0"
+edition = "2021"
+description = "Material Symbols outlined icon data and name table for rust_widgets (generated geometry; Apache-2.0 path data)"
+license = "MIT"
+keywords = ["gui", "icons", "material-symbols", "widgets"]
+categories = ["gui", "graphics"]
+authors = ["Mike Li <mikewolfli@163.com>"]
+readme = "README.md"
+homepage = "https://github.com/mikewolfli/rust-widgets"
+repository = "https://github.com/mikewolfli/rust-widgets"
+rust-version = "1.88"
+include = [
+    "/src/**/*",
+    "/NOTICE",
+    "/LICENSE-APACHE",
+    "/README.md",
+    "/Cargo.toml",
+]
+
+[features]
+default = []
+# The SVG path table (`src/data.rs`). Off by default so a build that does not ask for the
+# outline data does not compile it; the flattened fallback table is always compiled.
+data = []
+
+[dependencies]

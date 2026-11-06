@@ -2647,7 +2647,7 @@ impl Draw for Button {
             match self.elide_mode {
                 // `ElideRight` is the historical fitted draw, byte for byte.
                 TextElideMode::ElideRight => {
-                    context.draw_text_fitted_cow(
+                    context.draw_text_fitted_ellipsis(
                         label_bounds,
                         &self.text,
                         font,

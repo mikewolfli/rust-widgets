@@ -75,7 +75,7 @@ pub use generator::{
 };
 // BD-04: the history moved to its own module with a Reachability statement; these re-exports
 // keep the `designer::DesignerHistory` path a host already imports unchanged.
-pub use history::{DesignerHistory, DocumentEditCommand};
+pub use history::{DesignerHistory, DesignerSession, DocumentEditCommand};
 
 #[cfg(all(test, declarative_view))]
 mod wire_prefix_agreement_tests {

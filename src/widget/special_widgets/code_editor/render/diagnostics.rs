@@ -158,7 +158,7 @@ impl CodeEditor {
                 let bubble = Rect::new(bubble_x, bubble_y, bubble_width, bubble_height);
                 context.fill_rect(bubble, chrome.chrome_background);
                 context.draw_rect(bubble, marker.severity.color());
-                context.draw_text_fitted_cow(
+                context.draw_text_fitted_ellipsis(
                     Rect::new(
                         bubble.x + 8,
                         bubble.y + 6,

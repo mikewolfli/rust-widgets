@@ -165,9 +165,11 @@ impl CodeEditor {
         // segment is appended here once and drawn as a slice, so a frame allocates
         // one small buffer instead of six.
         use core::fmt::Write as _;
-        let mut text = String::new();
+        let mut text = self.status_text_scratch.borrow_mut();
+        text.clear();
         let left_start = text.len();
-        let _ = write!(text, "{}  {} lines", self.language_name(), self.line_count());
+        self.write_language_name(&mut text);
+        let _ = write!(text, "  {} lines", self.line_count());
         // A reduced level is part of the editor's state, so it belongs on the
         // status row: a silently disabled feature reads as a bug, while a named
         // one reads as a decision the user can act on.
@@ -178,7 +180,7 @@ impl CodeEditor {
             let _ = write!(text, "  folded:{}", self.folded_line_count());
         }
         if self.has_multiple_cursors() {
-            let _ = write!(text, "  carets:{}", self.cursors().len());
+            let _ = write!(text, "  carets:{}", self.caret_count());
         }
         let diag_start = text.len();
         let _ = write!(
@@ -240,14 +242,14 @@ impl CodeEditor {
             let tally_x = (tally_right - tally_width as i32).max(status_band.x);
             let tally =
                 Rect::new(tally_x, status_band.y, (tally_right - tally_x).max(0) as u32, 12);
-            context.draw_text_fitted_cow(
+            context.draw_text_fitted_ellipsis(
                 tally,
                 diagnostics,
                 font,
                 chrome.dim_ink,
                 HorizontalAlignment::Right,
             );
-            context.draw_text_fitted_cow(
+            context.draw_text_fitted_ellipsis(
                 strip,
                 right_label,
                 font,
@@ -262,7 +264,7 @@ impl CodeEditor {
                 status_band.height,
             )
         };
-        context.draw_text_fitted_cow(
+        context.draw_text_fitted_ellipsis(
             caret_rect,
             left_label,
             font,

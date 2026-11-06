@@ -513,7 +513,7 @@ impl Draw for MobileDatePicker {
                     row_text_height,
                 );
 
-                context.draw_text_fitted_cow(
+                context.draw_text_fitted_ellipsis(
                     text_rect,
                     text,
                     &font,

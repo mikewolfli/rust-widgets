@@ -1028,12 +1028,10 @@ impl WidgetProperties for SplitButton {
                     Err(CapabilityAccessError::OutOfRange)
                 }
             }
-            "add_action" => Err(CapabilityAccessError::OutOfRange),
             "set_actions" => Err(CapabilityAccessError::OutOfRange),
             // Any other `set_foo` name carries its value through the property route,
             // so the shared default reports that a payload is needed rather than
             // claiming the control has never heard of it.
-            _ if name.starts_with("set_") => Err(CapabilityAccessError::OutOfRange),
             _ => self.default_command(name),
         }
     }
@@ -1223,7 +1221,7 @@ impl Draw for SplitButton {
         // (the content item is centred, as Material M3 centres its child) —
         // the previous `x + 8` origin left-aligned it against a literal.
         let primary_box = self.primary_label_box(primary_rect);
-        context.draw_text_fitted_cow(
+        context.draw_text_fitted_ellipsis(
             context.text_line(primary_box, font),
             &self.text,
             font,
@@ -1314,7 +1312,7 @@ impl Draw for SplitButton {
                         );
                         crate::widget::draw_icon_at(context, icon_rect, row_ink, icon);
                     }
-                    context.draw_text_fitted_cow(
+                    context.draw_text_fitted_ellipsis(
                         context.text_line(label_box, font),
                         &action.label,
                         font,
@@ -1338,7 +1336,7 @@ impl Draw for SplitButton {
                             (shortcut_gap - 4).max(0) as u32,
                             row_box.height,
                         );
-                        context.draw_text_line_cow(
+                        context.draw_text_line_ellipsis(
                             key_box,
                             shortcut,
                             font,

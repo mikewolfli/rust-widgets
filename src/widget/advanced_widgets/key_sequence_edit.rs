@@ -806,7 +806,7 @@ impl Draw for KeySequenceEdit {
         let font = effective_font(style);
         let line = context.text_line(rect, font);
         let display = self.display_text.as_str();
-        context.draw_text_fitted_cow(
+        context.draw_text_fitted_ellipsis(
             Rect {
                 x: rect.x + 6,
                 y: line.y,

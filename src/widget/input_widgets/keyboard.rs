@@ -1255,7 +1255,7 @@ impl Draw for Keyboard {
                     } else {
                         text_color
                     };
-                    context.draw_text_line_cow(
+                    context.draw_text_line_ellipsis(
                         inner,
                         &label,
                         font,
@@ -1279,7 +1279,7 @@ impl Draw for Keyboard {
             let cell_width = (strip.width as f32 / self.suggestions.len() as f32).max(1.0) as u32;
             let line = context.text_line(strip, font);
             for suggestion in &self.suggestions {
-                context.draw_text_fitted_cow(
+                context.draw_text_fitted_ellipsis(
                     Rect::new(cell_x + 4, line.y, cell_width.saturating_sub(8), line.height),
                     suggestion,
                     font,
@@ -1320,7 +1320,7 @@ impl Draw for Keyboard {
             context.draw_rect(popup, key_border);
             let line = context.text_line(popup, font);
             for (index, variant) in variants.iter().enumerate() {
-                context.draw_text_fitted_cow(
+                context.draw_text_fitted_ellipsis(
                     Rect::new(
                         popup_x + index as i32 * cell_width,
                         line.y,

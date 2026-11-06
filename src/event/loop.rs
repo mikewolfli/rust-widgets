@@ -831,6 +831,12 @@ impl EventLoop {
         let deferred_events = Arc::clone(&self.deferred_events);
         let [mut high_events, mut normal_events, mut idle_events] =
             core::mem::take(&mut *lock(&deferred_events));
+        // The holographic detector is a producer of key events: a completed press detected
+        // during dispatch is posted back to this loop. The sender is cloned here, before the
+        // thread starts, so the moved closure does not also capture `self` — which owns the
+        // thread handle it is about to store below.
+        #[cfg(feature = "holographic")]
+        let holographic_sender = self.sender.clone();
         let handle = thread::spawn(move || {
             while *lock(&running) {
                 // Phase 0: Pump native platform events (e.g., Wayland dispatch)
@@ -970,6 +976,24 @@ impl EventLoop {
                         let canonical_owned: Option<Event> =
                             event.is_legacy_alias().then(|| event.clone().into_canonical());
                         let canonical: &Event = canonical_owned.as_ref().unwrap_or(event);
+
+                        // API2-02: the detector now has a real producer. A depth frame is matched
+                        // against the projected keyboard; a completed press is posted as an
+                        // ordinary key event, while the original touch still reaches the
+                        // controls that consume it for 3D gestures.
+                        #[cfg(feature = "holographic")]
+                        if let Event::HolographicTouch { pos, depth, .. } = canonical {
+                            if let Some(hit) =
+                                crate::platform::holographic::process_holographic_touch(
+                                    *pos, *depth,
+                                )
+                            {
+                                let _ = holographic_sender.post(
+                                    target,
+                                    Event::KeyPress { key: u32::from(hit.character), modifiers: 0 },
+                                );
+                            }
+                        }
 
                         // C-10': the window's own key handler runs before the host accelerator
                         // hook and before control delivery. A window owns its local commands, so

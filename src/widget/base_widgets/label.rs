@@ -593,7 +593,7 @@ pub(crate) fn draw_elided_line(
         let mut measure = |candidate: &str| context.measure_text(candidate, font).width;
         elide_in_mode(text, available, mode, &mut measure)
     };
-    context.draw_text_fitted_cow(bounds, &fitted, font, color, alignment);
+    context.draw_text_fitted_ellipsis(bounds, &fitted, font, color, alignment);
 }
 
 /// Label widget for displaying text.

@@ -499,7 +499,7 @@ impl Draw for MapMarkerDetail {
         let mut y = window.y + DETAIL_PADDING;
         let text_width = window.width.saturating_sub((DETAIL_PADDING * 2) as u32);
         if !self.title.is_empty() {
-            context.draw_text_fitted_cow(
+            context.draw_text_fitted_ellipsis(
                 Rect::new(window.x + DETAIL_PADDING, y, text_width, DETAIL_LINE_HEIGHT as u32),
                 &self.title,
                 font,
@@ -512,7 +512,7 @@ impl Draw for MapMarkerDetail {
             // A line painted over the inverted surface needs its own colour to stay legible, so a
             // caller-supplied colour is used verbatim and a default line takes the paired ink.
             let color = line.color.unwrap_or(ink);
-            context.draw_text_fitted_cow(
+            context.draw_text_fitted_ellipsis(
                 Rect::new(window.x + DETAIL_PADDING, y, text_width, DETAIL_LINE_HEIGHT as u32),
                 &line.text,
                 font,
@@ -525,7 +525,7 @@ impl Draw for MapMarkerDetail {
         if let (Some(action), Some(label)) = (self.action_rect(), self.action_label.as_deref()) {
             context.fill_rect(action, accent.with_alpha(40));
             context.draw_rect(action, accent);
-            context.draw_text_line_cow(
+            context.draw_text_line_ellipsis(
                 action,
                 label,
                 font,

@@ -9,11 +9,9 @@
 /// Positions each child at explicit absolute coordinates, ignoring the parent
 /// rect apart from the origin it offsets from.
 ///
-/// API2-01: test-only. No widget or container builds this solver and the declarative JSON path
-/// cannot carry its per-child `AbsolutePosition`, so keeping it in the production build only
-/// maintained an unreachable public capability. Its own tests still run.
-#[cfg(test)]
-mod absolute;
+/// Reachable from a declarative document through the `"absolute"` layout kind and the
+/// per-child `x`/`y`/`width`/`height`/`anchor` attributes (API2-01).
+pub mod absolute;
 /// Derives a child's missing dimension from a fixed width:height ratio.
 pub mod aspect_ratio;
 /// Fixed edge tracks around an elastic center, for workbench-shaped windows.
@@ -25,10 +23,9 @@ pub mod box_layout;
 pub mod center;
 /// Min/max size limits and expansion weights attached to layout items.
 ///
-/// API2-01: test-only for the same reason as `absolute` — per-child `ConstraintRef` data is not
-/// expressible in a declarative layout document, and nothing in the crate builds the solver.
-#[cfg(test)]
-mod constraint;
+/// Reachable from a declarative document through the `"constraint"` layout kind and the
+/// per-child `constraints` list (API2-01).
+pub mod constraint;
 /// Runtime storage and application for declarative layouts, shared by the JSON
 /// loader and the C ABI. See the module docs for why it is separate from the
 /// `serde_json`-facing translation in `json::layout`.
@@ -69,10 +66,10 @@ pub mod uniform_grid;
 /// Line-breaking layout for a sequence of fixed-size items.
 pub mod wrap;
 pub use crate::core::Orientation;
-// API2-01: `absolute` and `constraint` are test-only modules — they have no production caller and
-// the declarative JSON path cannot describe their per-child data, so keeping them in the shipped
-// build only maintained an unreachable capability. Their tests still run; the modules are not
-// reachable from outside the crate.
+// API2-01: `absolute` and `constraint` are production modules, reachable from a declarative
+// document through the `"absolute"` / `"constraint"` layout kinds and their per-child attributes.
+// They are deliberately not glob re-exported: `absolute::Constraint` and the other solver-local
+// names would shadow the size-hint vocabulary at `crate::layout::*`.
 pub use aspect_ratio::*;
 pub use border::*;
 pub use box_layout::*;

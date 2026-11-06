@@ -1283,6 +1283,14 @@ fn build_all_controls(
     let mut chart = BarChart::new(Rect::new(20, 436, 680, 110));
     chart.set_animate_value_changes(true);
     chart.set_bars(shuffled_bars(0));
+    // Exercise the engine's headless SVG renderer from the chart the row actually shows: the
+    // file is written to the temp directory, so the demo leaves no artifact in the repository
+    // (CH2-06).
+    let svg_path = std::env::temp_dir().join("rust_widgets_demo_bar_chart.svg");
+    match chart.export_svg(&svg_path.to_string_lossy()) {
+        Ok(()) => log.append(format!("[BarChart] engine SVG export -> {}", svg_path.display())),
+        Err(error) => log.append(format!("[BarChart] engine SVG export failed: {error}")),
+    }
     let chart_id = match win.mount_surface(Box::new(chart), Rect::new(20, 436, 680, 110)) {
         Ok(surface) => {
             let id = surface.raw_id();
@@ -1378,6 +1386,10 @@ fn build_all_controls(
         let tab = selected_tab(tabs_target);
         l.append(format!("[SaveState] saved {} entries: [{}]", states.len(), keys));
         l.append(format!("[SaveState] snapshot page={page:?} tab={tab:?}"));
+        // The tab order is part of the UI state this button reports, and reading it here is the
+        // demo's real use of the runtime's focusable list (RT2-04).
+        let tab_order = rust_widgets::widget::runtime::focusable_widgets();
+        l.append(format!("[SaveState] tab order: {} focusable control(s)", tab_order.len()));
         SAVED_STATES.with(|slot| *slot.borrow_mut() = Some(states));
     });
 

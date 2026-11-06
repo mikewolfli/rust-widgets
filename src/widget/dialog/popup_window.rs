@@ -632,7 +632,7 @@ impl Draw for PopupWindow {
             Some(button) => button.x.saturating_sub(rect.x + 8).max(0) as u32,
             None => rect.width.saturating_sub(16),
         };
-        context.draw_text_fitted_cow(
+        context.draw_text_fitted_ellipsis(
             Rect::new(
                 rect.x + 8,
                 rect.y + (bar_height as i32 - title_h as i32) / 2,

@@ -30,13 +30,14 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
 . "$ROOT_DIR/tools/lib_timeout.sh"
+. "$ROOT_DIR/tools/lib_cargo_cache.sh"
 
 # The round trip is a library test, not a script, because it drives the capability factory — see
 # the header. `rw_run_bounded` gives it the same timeout discipline every other gate has.
 LOG="$(mktemp)"
 trap 'rm -f "$LOG"' EXIT
 
-if ! rw_run_bounded "${RW_GATE_TIMEOUT:-1800}" cargo test --no-default-features --features desktop \
+if ! rw_cargo_cached "${RW_GATE_TIMEOUT:-1800}" test --no-default-features --features desktop \
     --test designer_manifest_roundtrip_test >"$LOG" 2>&1; then
     echo "FAIL: the designer manifest does not round-trip"
     # The failing assertions are the whole value of this gate, so the log is printed rather than

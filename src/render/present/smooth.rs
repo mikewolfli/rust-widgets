@@ -416,6 +416,26 @@ impl FrameCensus {
     pub fn total(&self) -> usize {
         self.mapped + self.mapped_with_divergence + self.forces_cpu
     }
+
+    /// A cheap, allocation-free identity for the fallback reason.
+    ///
+    /// The present path logs a fallback once per distinct reason. Comparing the formatted sentence
+    /// every frame allocated it (`format!` + `join`) just to find it was the same sentence as last
+    /// frame. This key lets the caller skip that work: it hashes the count and the first-seen
+    /// names into one `u64` without building a string.
+    #[cfg(feature = "raw-window-handle")]
+    pub(crate) fn fallback_key(&self) -> u64 {
+        const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+        const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+        let mut key = FNV_OFFSET ^ self.forces_cpu as u64;
+        for name in &self.forces_cpu_names {
+            for byte in name.bytes() {
+                key = (key ^ u64::from(byte)).wrapping_mul(FNV_PRIME);
+            }
+            key = (key ^ u64::from(b'\x1f')).wrapping_mul(FNV_PRIME);
+        }
+        key
+    }
 }
 
 // The census's layer stack, reused across frames (issue-20261104 RD-02).

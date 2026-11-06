@@ -139,9 +139,11 @@ suites 包不是 workspace 成员：它依赖 `rust_widgets`，反过来不成�
   输入法的预编辑串在提交前绘制在光标处；标签页宽度按字体度量，带关闭按钮与悬停底色；
   点击行号选中整行；`Ctrl`+点击增加光标；软换行的续行沿用该行的缩进；
   `relative_line_numbers` 把行号槽切换为相对光标的编号。
-- `Icon` 提供 **75** 个 `IconName` 令牌。三个完整配置默认绘制真实的 **Material Symbols** 轮廓；
-  `mini` / `embedded` 绘制由同一份轮廓生成的几何图形，因此两条路径不会给出不同形状。宿主可以用
-  `register_icon` 或 `register_icon_on_grid` 添加自己的图标。
+- `Icon` 提供 **4,323** 个 `IconName` 令牌：其中 75 个由本仓自己命名，其余来自完整的 Material
+  Symbols 目录。三个完整配置默认绘制真实的 **Material Symbols** 轮廓；`mini` / `embedded` 只为
+  这 75 个命名令牌绘制由同一份轮廓生成的几何图形，目录里的其余令牌在这种构建中会如实报告
+  “没有回退几何”，而不是画出错误的形状。宿主可以用 `register_icon` 或 `register_icon_on_grid`
+  添加自己的图标。
 
 ## 渲染后端
 

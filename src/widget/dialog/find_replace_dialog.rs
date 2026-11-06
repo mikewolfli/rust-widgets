@@ -823,9 +823,9 @@ impl Draw for FindReplaceDialog {
         // the bar, rather than the fixed 12 px sans-serif this used to build (D09-STYLE-01).
         let font = effective_font(style);
         let label_line = self.text_line(label_rect, font, context);
-        context.draw_text_fitted_cow(
+        context.draw_text_fitted_ellipsis(
             label_line,
-            &super::localized_label("dialog.find_replace.find", "Find:"),
+            &super::localized_label_shared("dialog.find_replace.find", "Find:"),
             font,
             ink,
             HorizontalAlignment::Left,
@@ -846,7 +846,7 @@ impl Draw for FindReplaceDialog {
             let display_text = if self.find_text.is_empty() { "" } else { &self.find_text };
             if !display_text.is_empty() {
                 let input_line = self.text_line(input_rect, font, context);
-                context.draw_text_fitted_cow(
+                context.draw_text_fitted_ellipsis(
                     input_line,
                     display_text,
                     font,
@@ -890,7 +890,7 @@ impl Draw for FindReplaceDialog {
                     input_rect.height,
                 );
                 let status_line = self.text_line(status_band, font, context);
-                context.draw_text_fitted_cow(
+                context.draw_text_fitted_ellipsis(
                     status_line,
                     status,
                     font,
@@ -906,7 +906,7 @@ impl Draw for FindReplaceDialog {
         let mc_color = if self.match_case { accent } else { field.blend(&ink, 0.15) };
         context.fill_rect(mc_rect, mc_color);
         let mc_line = self.text_line(mc_rect, font, context);
-        context.draw_text_fitted_cow(
+        context.draw_text_fitted_ellipsis(
             mc_line,
             "Aa",
             font,
@@ -920,7 +920,7 @@ impl Draw for FindReplaceDialog {
         let ww_color = if self.whole_word { accent } else { field.blend(&ink, 0.15) };
         context.fill_rect(ww_rect, ww_color);
         let ww_line = self.text_line(ww_rect, font, context);
-        context.draw_text_fitted_cow(
+        context.draw_text_fitted_ellipsis(
             ww_line,
             "W",
             font,
@@ -934,7 +934,7 @@ impl Draw for FindReplaceDialog {
         let rx_color = if self.use_regex { accent } else { field.blend(&ink, 0.15) };
         context.fill_rect(rx_rect, rx_color);
         let rx_line = self.text_line(rx_rect, font, context);
-        context.draw_text_fitted_cow(
+        context.draw_text_fitted_ellipsis(
             rx_line,
             ".*",
             font,
@@ -948,7 +948,7 @@ impl Draw for FindReplaceDialog {
         let ha_color = if self.highlight_all { accent } else { field.blend(&ink, 0.15) };
         context.fill_rect(ha_rect, ha_color);
         let ha_line = self.text_line(ha_rect, font, context);
-        context.draw_text_fitted_cow(
+        context.draw_text_fitted_ellipsis(
             ha_line,
             "H",
             font,
@@ -997,9 +997,9 @@ impl Draw for FindReplaceDialog {
         // "Replace:" label
         let rl_rect = Rect::new(x2, replace_row.y, label_col, replace_row.height);
         let rl_line = self.text_line(rl_rect, font, context);
-        context.draw_text_fitted_cow(
+        context.draw_text_fitted_ellipsis(
             rl_line,
-            &super::localized_label("dialog.find_replace.replace", "Rpl:"),
+            &super::localized_label_shared("dialog.find_replace.replace", "Rpl:"),
             font,
             ink,
             HorizontalAlignment::Left,
@@ -1015,7 +1015,7 @@ impl Draw for FindReplaceDialog {
             let r_text = if self.replace_text.is_empty() { "" } else { &self.replace_text };
             if !r_text.is_empty() {
                 let r_input_line = self.text_line(r_input_rect, font, context);
-                context.draw_text_fitted_cow(
+                context.draw_text_fitted_ellipsis(
                     r_input_line,
                     r_text,
                     font,
@@ -1032,9 +1032,9 @@ impl Draw for FindReplaceDialog {
         let rep_rect = Rect::new(x2, replace_row.y, REPLACE_BTN, replace_row.height);
         context.fill_rect(rep_rect, muted);
         let rep_line = self.text_line(rep_rect, font, context);
-        context.draw_text_fitted_cow(
+        context.draw_text_fitted_ellipsis(
             rep_line,
-            &super::localized_label("dialog.find_replace.replace_short", "Rpl"),
+            &super::localized_label_shared("dialog.find_replace.replace_short", "Rpl"),
             font,
             muted_ink,
             HorizontalAlignment::Center,
@@ -1045,9 +1045,9 @@ impl Draw for FindReplaceDialog {
         let ra_rect = Rect::new(x2, replace_row.y, REPLACE_BTN, replace_row.height);
         context.fill_rect(ra_rect, muted);
         let ra_line = self.text_line(ra_rect, font, context);
-        context.draw_text_fitted_cow(
+        context.draw_text_fitted_ellipsis(
             ra_line,
-            &super::localized_label("dialog.find_replace.replace_all", "Rpl All"),
+            &super::localized_label_shared("dialog.find_replace.replace_all", "Rpl All"),
             font,
             muted_ink,
             HorizontalAlignment::Center,

@@ -1300,7 +1300,7 @@ impl Draw for MediaPlayer {
         // The title and status lines take the **effective font** — the resolved theme/caller font —
         // so the theme body font and the user's text scale reach them (D09-STYLE-01).
         let font = effective_font(style);
-        context.draw_text_fitted_cow(
+        context.draw_text_fitted_ellipsis(
             Rect::new(
                 rect.x + MEDIA_PLAYER_PADDING,
                 rect.y + MEDIA_PLAYER_PADDING / 2,
@@ -1312,7 +1312,7 @@ impl Draw for MediaPlayer {
             ink,
             HorizontalAlignment::Left,
         );
-        context.draw_text_fitted_cow(
+        context.draw_text_fitted_ellipsis(
             Rect::new(
                 rect.x + MEDIA_PLAYER_PADDING,
                 rect.y + MEDIA_PLAYER_PADDING / 2 + 18,
@@ -1378,7 +1378,7 @@ impl Draw for MediaPlayer {
                     1,
                 );
                 let band = Rect::new((x - 24).max(bar_rect.x), bar_rect.y - 20, 48, 12);
-                context.draw_text_fitted_cow(
+                context.draw_text_fitted_ellipsis(
                     band,
                     &Self::format_time(position),
                     font,
@@ -1434,7 +1434,7 @@ impl Draw for MediaPlayer {
                 96.min(bar_rect.width),
                 16,
             );
-            context.draw_text_fitted_cow(
+            context.draw_text_fitted_ellipsis(
                 band,
                 &self.readout_cache,
                 font,
@@ -1445,7 +1445,13 @@ impl Draw for MediaPlayer {
         // An active subtitle is painted over the picture area, centred above the transport rule.
         if let Some(subtitle) = self.active_subtitle() {
             let band = Rect::new(bar_rect.x, bar_rect.y - 38, bar_rect.width, 16);
-            context.draw_text_fitted_cow(band, subtitle, font, ink, HorizontalAlignment::Center);
+            context.draw_text_fitted_ellipsis(
+                band,
+                subtitle,
+                font,
+                ink,
+                HorizontalAlignment::Center,
+            );
         }
         // The rate is shown only when it is not real time, so the ordinary view stays uncluttered.
         if (self.rate - 1.0).abs() > f32::EPSILON {
@@ -1462,7 +1468,13 @@ impl Draw for MediaPlayer {
         // transport rule, so "waiting for data" is distinguishable from "paused" (SP-58).
         if self.buffering {
             let area = Rect::new(bar_rect.x, bar_rect.y - 22, bar_rect.width, 16);
-            context.draw_text_fitted_cow(area, "Loading…", font, accent, HorizontalAlignment::Left);
+            context.draw_text_fitted_ellipsis(
+                area,
+                "Loading…",
+                font,
+                accent,
+                HorizontalAlignment::Left,
+            );
         }
 
         // ── Transport buttons ──

@@ -12,6 +12,10 @@ impl EventHandler for KanbanBoard {
         if !self.base.is_enabled() {
             return;
         }
+        // The board is focusable; an unfocused board must not consume navigation keys.
+        if matches!(event, Event::KeyPress { .. }) && self.base.focus_reason().is_none() {
+            return;
+        }
         match event {
             Event::MousePress { pos, button, modifiers } if *button == 1 => {
                 // The collapse chevron is a header target, checked before any card hit: a press on

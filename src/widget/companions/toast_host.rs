@@ -604,7 +604,7 @@ impl Draw for ToastHost {
                 row.width.saturating_sub(stripe.width + 16),
                 row.height,
             );
-            context.draw_text_fitted_cow(
+            context.draw_text_fitted_ellipsis(
                 text,
                 &toast.message,
                 font,
@@ -656,6 +656,7 @@ impl WidgetProperties for ToastHost {
     fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
         match name {
             "max_visible" => Ok(CapabilityValue::UInt(self.max_visible as u64)),
+            "overlay_offset" => Ok(CapabilityValue::Int(i64::from(self.overlay_offset))),
             "max_queued" => Ok(CapabilityValue::UInt(self.max_queued as u64)),
             "default_duration_ms" => Ok(CapabilityValue::UInt(u64::from(self.default_duration_ms))),
             "anchor" => Ok(CapabilityValue::String(self.anchor.as_str().to_string())),
@@ -676,6 +677,18 @@ impl WidgetProperties for ToastHost {
             }
             "max_queued" => {
                 self.set_max_queued(expect_usize(value)?);
+                Ok(())
+            }
+            "overlay_offset" => {
+                let offset =
+                    match value {
+                        CapabilityValue::Int(offset) => i32::try_from(offset)
+                            .map_err(|_| CapabilityAccessError::TypeMismatch)?,
+                        CapabilityValue::UInt(offset) => i32::try_from(offset)
+                            .map_err(|_| CapabilityAccessError::TypeMismatch)?,
+                        _ => return Err(CapabilityAccessError::TypeMismatch),
+                    };
+                self.set_overlay_offset(offset);
                 Ok(())
             }
             "default_duration_ms" => {
@@ -704,6 +717,7 @@ impl WidgetProperties for ToastHost {
         property_names_of![
             "max_visible",
             "max_queued",
+            "overlay_offset",
             "default_duration_ms",
             "anchor",
             "stacking_direction",

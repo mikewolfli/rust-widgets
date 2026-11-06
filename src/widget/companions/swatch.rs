@@ -227,7 +227,7 @@ impl Draw for Swatch {
         context.draw_rect(rect, surface.blend(&ink, 0.18));
 
         if self.colors.is_empty() {
-            context.draw_text_fitted_cow(
+            context.draw_text_fitted_ellipsis(
                 rect,
                 "No colors",
                 font,

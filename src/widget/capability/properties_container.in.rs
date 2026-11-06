@@ -220,6 +220,18 @@ macro_rules! impl_properties_container {
             // declaration/implementation disagreement `check_declaration_implementation_alignment`
             // exists to catch; the declaration is the half that was wrong.
             PropertySchema::new("docked", PropertyValueKind::Bool, true, true),
+            // The state `dock_location_changed` reports is readable and writable: without a
+            // carrier the event described a fact no declarative caller could set or read.
+            PropertySchema::enumerated(
+                "dock_location",
+                true,
+                true,
+                &["left", "right", "top", "bottom", "none"],
+            ),
+            // The two bitflag sets the control's own setters take (`features_changed` reports the
+            // first). `StringList` is the same carrier `accepted_types` uses for a token set.
+            PropertySchema::new("features", PropertyValueKind::StringList, true, true),
+            PropertySchema::new("allowed_areas", PropertyValueKind::StringList, true, true),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),

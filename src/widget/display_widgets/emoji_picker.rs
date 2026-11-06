@@ -1171,7 +1171,7 @@ impl EmojiPicker {
         // Fitted to the field so a long query cannot paint past the box (and under the
         // underline that closes it).
         let search_width = ((rect.width as i32) - 28 - 8).max(0) as u32;
-        context.draw_text_fitted_cow(
+        context.draw_text_fitted_ellipsis(
             Rect::new(
                 rect.x + 28,
                 rect.y + (rect.height as i32 - text_h as i32) / 2,
@@ -1239,7 +1239,7 @@ impl EmojiPicker {
             let label_font = Self::sans_font_11();
             let label_line = context.text_line(tab_rect, label_font);
             let label_width = tab_rect.width.saturating_sub(16).max(1);
-            context.draw_text_fitted_cow(
+            context.draw_text_fitted_ellipsis(
                 Rect::new(tab_rect.x + 8, label_line.y, label_width, label_line.height.max(1)),
                 label,
                 label_font,
@@ -1283,7 +1283,7 @@ impl EmojiPicker {
         );
         let font = Self::sans_font_11();
         let line = context.text_line(footer, font);
-        context.draw_text_fitted_cow(
+        context.draw_text_fitted_ellipsis(
             Rect::new(
                 footer.x + 10,
                 line.y,

@@ -265,6 +265,7 @@ pub(crate) fn toast_host_capability() -> WidgetCapability {
             "set_stacking_direction",
             "set_max_queued",
             "set_max_visible",
+            "set_overlay_offset",
         ],
     }
 }
@@ -506,7 +507,7 @@ pub(crate) fn summary_row_capability() -> WidgetCapability {
         aliases: &[],
         properties: SUMMARY_ROW_PROPERTIES,
         events: events_of!("summary_row"),
-        commands: &["set_sticky"],
+        commands: &["set_sticky", "set_values"],
     }
 }
 
@@ -565,7 +566,7 @@ pub(crate) fn calendar_mark_layer_capability() -> WidgetCapability {
         aliases: &[],
         properties: CALENDAR_MARK_LAYER_PROPERTIES,
         events: events_of!("calendar_mark_layer"),
-        commands: &["set_max_per_cell", "set_month"],
+        commands: &["set_max_per_cell", "set_month", "set_marks"],
     }
 }
 

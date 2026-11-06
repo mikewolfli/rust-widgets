@@ -320,7 +320,7 @@ impl Draw for AxisPicker {
         if self.series_names.is_empty() {
             let empty_text_rect =
                 Rect::new(rect.x + 8, rect.y, rect.width.saturating_sub(16), rect.height);
-            context.draw_text_fitted_cow(
+            context.draw_text_fitted_ellipsis(
                 empty_text_rect,
                 "No series",
                 font,
@@ -355,7 +355,13 @@ impl Draw for AxisPicker {
                 row.width.saturating_sub(token_width.saturating_add(12)),
                 row.height,
             );
-            context.draw_text_fitted_cow(name_rect, name, font, ink, HorizontalAlignment::Left);
+            context.draw_text_fitted_ellipsis(
+                name_rect,
+                name,
+                font,
+                ink,
+                HorizontalAlignment::Left,
+            );
 
             let edge = self.assignments.get(index).copied().unwrap_or(AxisEdge::Left);
             let token_x = row.x.saturating_add(
@@ -364,7 +370,7 @@ impl Draw for AxisPicker {
             let token_rect = Rect::new(token_x, row.y, token_width, row.height);
             context.fill_rect(token_rect, accent.with_alpha(28));
             context.draw_rect(token_rect, accent);
-            context.draw_text_fitted_cow(
+            context.draw_text_fitted_ellipsis(
                 token_rect,
                 edge.token(),
                 font,

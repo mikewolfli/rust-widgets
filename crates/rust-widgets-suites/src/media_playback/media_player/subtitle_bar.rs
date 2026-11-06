@@ -350,7 +350,7 @@ impl Draw for SubtitleBar {
             let Some(line) = text.get(range) else {
                 continue;
             };
-            context.draw_text_fitted_cow(
+            context.draw_text_fitted_ellipsis(
                 Rect::new(
                     band.x + 8,
                     band.y + 4 + index as i32 * line_height as i32,

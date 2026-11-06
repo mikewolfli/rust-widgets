@@ -334,9 +334,10 @@ pub fn unregister(id: ObjectId) -> bool {
     // profile, so the call is gated to the profile that owns both.
     #[cfg(full_widgets)]
     let _ = crate::event::timer::stop_timers_for_target_everywhere(id);
-    // Object ids are reused (see `create_widgets_base`): a tracker that still holds the dead
-    // widget's last press at the same position would turn a fresh widget's first click into a
-    // double-click (EV-X03). Same registry pattern as the timer purge above.
+    // An explicit id may be registered again (runtime ids are not reused, but a declarative or
+    // C-ABI caller can pass the same id twice; see `create_widgets_base`): a tracker that still
+    // holds the dead widget's last press at the same position would turn a fresh widget's first
+    // click into a double-click (EV-X03). Same registry pattern as the timer purge above.
     #[cfg(full_widgets)]
     crate::event::double_click::forget_double_click_for_target_everywhere(id);
     // And it must not keep pointer capture: routing would send every subsequent

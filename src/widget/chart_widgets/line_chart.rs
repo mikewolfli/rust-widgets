@@ -1986,6 +1986,13 @@ impl Widget for LineChart {
                     ]))
                 }))
             }
+            // The capability publishes this name; without an arm `connect_event` would accept the
+            // subscription and the hub slot would never fire (the `bar_chart` precedent).
+            "data_changed" => {
+                Some(EventSignalRef::mapped("data_changed", &self.data_changed, |_| {
+                    CapabilityValue::Null
+                }))
+            }
             _ => None,
         }
     }
@@ -2188,7 +2195,7 @@ impl Draw for LineChart {
             if let Some(title) = self.title.as_deref() {
                 let font =
                     crate::widget::metrics::role_font(self.base.style(), 12.0).with_bold(true);
-                context.draw_text_fitted_cow(
+                context.draw_text_fitted_ellipsis(
                     Rect::new(rect.x, rect.y, rect.width, 16),
                     title,
                     &font,
@@ -2204,7 +2211,7 @@ impl Draw for LineChart {
                     plot_area.width,
                     12,
                 );
-                context.draw_text_fitted_cow(
+                context.draw_text_fitted_ellipsis(
                     band,
                     label,
                     &font,
@@ -2215,7 +2222,7 @@ impl Draw for LineChart {
             if let Some(label) = self.y_axis_label.as_deref() {
                 let font = crate::widget::metrics::role_font(self.base.style(), 10.0);
                 let band = Rect::new(rect.x + 2, rect.y + 16, rect.width.min(120), 12);
-                context.draw_text_fitted_cow(
+                context.draw_text_fitted_ellipsis(
                     band,
                     label,
                     &font,
@@ -2568,7 +2575,7 @@ impl LineChart {
         };
         context.fill_rect(box_rect, surface);
         context.draw_rect(box_rect, ink.with_alpha_f32(0.35));
-        context.draw_text_line_cow(box_rect, text, &font, ink, HorizontalAlignment::Center);
+        context.draw_text_line_ellipsis(box_rect, text, &font, ink, HorizontalAlignment::Center);
     }
 }
 

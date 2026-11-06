@@ -2397,8 +2397,7 @@ impl WidgetProperties for WebEngineView {
                 Ok(())
             }
             "load_url" => Err(CapabilityAccessError::OutOfRange),
-            _ if name.starts_with("set_") => Err(CapabilityAccessError::OutOfRange),
-            _ => Err(CapabilityAccessError::UnknownCommand),
+            _ => self.default_command(name),
         }
     }
 }
@@ -2607,7 +2606,7 @@ impl Draw for WebEngineView {
                 bar.width.saturating_sub(8),
                 url_h,
             );
-            ctx.draw_text_fitted_cow(
+            ctx.draw_text_fitted_ellipsis(
                 line,
                 url_text,
                 &url_font,
@@ -2636,7 +2635,7 @@ impl Draw for WebEngineView {
             let hint_h = ctx.measure_text("M", &hint_font).height;
             let content = ControlMetrics::content_below_top_band(g, dimensions::WEB_URL_BAR_HEIGHT);
             if content.height > 0 {
-                ctx.draw_text_fitted_cow(
+                ctx.draw_text_fitted_ellipsis(
                     Rect::new(
                         content.x + 4,
                         content.y + (content.height as i32 - hint_h as i32) / 2,
@@ -2712,7 +2711,7 @@ impl Draw for WebEngineView {
                         Rect::new(content.x + 8, y, text_width.min(180), (line_h * 3) as u32);
                     ctx.fill_rect(image_rect, secondary.with_alpha(40));
                     ctx.draw_rect_stroke(image_rect, secondary.with_alpha(120), 1);
-                    ctx.draw_text_fitted_cow(
+                    ctx.draw_text_fitted_ellipsis(
                         image_rect,
                         &block.text,
                         &page_font,
@@ -2732,7 +2731,7 @@ impl Draw for WebEngineView {
                 for (start, end) in ranges {
                     if y + line_h >= content.y && y < content.y + content.height as i32 {
                         if let Some(text) = block.text.get(*start..*end) {
-                            ctx.draw_text_fitted_cow(
+                            ctx.draw_text_fitted_ellipsis(
                                 Rect::new(content.x + 8, y, text_width, line_h as u32),
                                 text,
                                 font,

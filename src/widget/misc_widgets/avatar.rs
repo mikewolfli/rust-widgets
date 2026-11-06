@@ -469,7 +469,7 @@ impl Draw for Avatar {
         if !painted && !self.text.is_empty() {
             // Use a bold font sized relative to the avatar size
             let font_size = (size as f32 * 0.45).max(8.0);
-            let font = Font::bold("Arial", font_size);
+            let font = Font::with_weight_interned("Arial", font_size, Font::BOLD_WEIGHT, false);
 
             // The initials are bounded to the disc less a fixed inset on each side, so a long
             // "placeholder" (a file name, a mis-set property) is ellipsised inside the shape
@@ -486,7 +486,7 @@ impl Draw for Avatar {
                 budget,
                 line.height,
             );
-            context.draw_text_fitted_cow(
+            context.draw_text_fitted_ellipsis(
                 bounds,
                 &self.text,
                 &font,
@@ -506,7 +506,12 @@ impl Draw for Avatar {
             context.fill_circle(badge_center, radius + 1, disc_color);
             context.fill_circle(badge_center, radius, badge.color);
             if !badge.text.is_empty() {
-                let badge_font = Font::bold("Arial", (radius as f32 * 0.9).max(7.0));
+                let badge_font = Font::with_weight_interned(
+                    "Arial",
+                    (radius as f32 * 0.9).max(7.0),
+                    Font::BOLD_WEIGHT,
+                    false,
+                );
                 let line = context.text_line(
                     Rect::new(
                         badge_center.x - radius as i32,
@@ -516,7 +521,7 @@ impl Draw for Avatar {
                     ),
                     &badge_font,
                 );
-                context.draw_text_fitted_cow(
+                context.draw_text_fitted_ellipsis(
                     line,
                     badge.text.as_str(),
                     &badge_font,
@@ -892,9 +897,14 @@ impl GroupAvatar {
             self.overflow_text.clear();
             use core::fmt::Write as _;
             let _ = write!(self.overflow_text, "+{count}");
-            self.overflow_font = Font::bold("Arial", (slot.width as f32 * 0.38).max(8.0));
+            self.overflow_font = crate::core::Font::with_weight_interned(
+                "Arial",
+                (slot.width as f32 * 0.38).max(8.0),
+                crate::core::Font::BOLD_WEIGHT,
+                false,
+            );
         }
-        context.draw_text_fitted_cow(
+        context.draw_text_fitted_ellipsis(
             slot,
             &self.overflow_text,
             &self.overflow_font,

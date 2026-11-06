@@ -1065,7 +1065,7 @@ impl PieChart {
         context.draw_rect(rect, surface.blend(&ink, 0.2));
         let font = role_font(style, 12.0);
         let line = context.text_line(rect, &font);
-        context.draw_text_fitted_cow(
+        context.draw_text_fitted_ellipsis(
             line,
             "No data",
             &font,
@@ -1242,6 +1242,12 @@ impl Widget for PieChart {
                         CapabilityValue::UInt(v.0 as u64),
                         CapabilityValue::Bool(v.1),
                     ]))
+                }))
+            }
+            // Published by the capability; see the `bar_chart` arm of the same name.
+            "data_changed" => {
+                Some(EventSignalRef::mapped("data_changed", &self.data_changed, |_| {
+                    CapabilityValue::Null
                 }))
             }
             _ => None,
@@ -1450,7 +1456,7 @@ impl Draw for PieChart {
                         // on the dark appearance and 2.57:1 on the light one).
                         let ink =
                             if clamped { slice_color.contrast_color() } else { slice_label_color };
-                        context.draw_text_fitted_cow(
+                        context.draw_text_fitted_ellipsis(
                             bounds,
                             &slice.label,
                             &label_font,
@@ -1490,7 +1496,7 @@ impl Draw for PieChart {
                     // the slice was the least readable thing on it. The slice colour is still
                     // data and is untouched — only the ink over it is decided per slice, which
                     // is how a chart keeps both the encoding and the label.
-                    context.draw_text_fitted_cow(
+                    context.draw_text_fitted_ellipsis(
                         bounds,
                         &pct_text,
                         &pct_font,
@@ -1561,7 +1567,7 @@ impl Draw for PieChart {
                         let tooltip_ink = surface.contrast_color();
                         context.fill_rect(box_rect, surface);
                         context.draw_rect(box_rect, tooltip_ink.with_alpha_f32(0.35));
-                        context.draw_text_line_cow(
+                        context.draw_text_line_ellipsis(
                             box_rect,
                             text,
                             &font,
@@ -1589,7 +1595,7 @@ impl Draw for PieChart {
             for slice in self.slices.iter().skip(start).take(visible_rows) {
                 let color = if slice.visible { slice.color } else { slice.color.with_alpha(70) };
                 context.fill_rect(Rect::new(legend_x, y + 3, 10, 10), color);
-                context.draw_text_fitted_cow(
+                context.draw_text_fitted_ellipsis(
                     Rect::new(
                         legend_x + 14,
                         y,
@@ -1636,7 +1642,7 @@ impl Draw for PieChart {
         let chrome = crate::widget::chart_widgets::charts::axis_chrome_color(0.85);
         if let Some(title) = self.title.as_deref() {
             let font = role_font(self.base.style(), 12.0).with_bold(true);
-            context.draw_text_fitted_cow(
+            context.draw_text_fitted_ellipsis(
                 Rect::new(rect.x, rect.y, rect.width, 16),
                 title,
                 &font,
@@ -1646,7 +1652,7 @@ impl Draw for PieChart {
         }
         if let Some(label) = self.x_axis_label.as_deref() {
             let font = role_font(self.base.style(), 10.0);
-            context.draw_text_fitted_cow(
+            context.draw_text_fitted_ellipsis(
                 Rect::new(rect.x, rect.y + rect.height as i32 - 14, rect.width, 12),
                 label,
                 &font,
@@ -1656,7 +1662,7 @@ impl Draw for PieChart {
         }
         if let Some(label) = self.y_axis_label.as_deref() {
             let font = role_font(self.base.style(), 10.0);
-            context.draw_text_fitted_cow(
+            context.draw_text_fitted_ellipsis(
                 Rect::new(rect.x + 2, rect.y + 16, rect.width.min(120), 12),
                 label,
                 &font,

@@ -1242,7 +1242,7 @@ impl Draw for MaterialNavigationRail {
                 }
             } else if !crate::widget::draw_icon_named(context, icon_rect, icon_color, &item.icon) {
                 // A character rather than a registered name: draw it as a mark in the same box.
-                context.draw_text_fitted_cow(
+                context.draw_text_fitted_ellipsis(
                     icon_rect,
                     &item.icon,
                     &icon_font,
@@ -1274,7 +1274,7 @@ impl Draw for MaterialNavigationRail {
                     height,
                 );
                 context.fill_rounded_rect(badge_rect, height / 2, primary);
-                context.draw_text_fitted_cow(
+                context.draw_text_fitted_ellipsis(
                     badge_rect,
                     text,
                     &label_font,
@@ -1299,7 +1299,7 @@ impl Draw for MaterialNavigationRail {
                     rail_width.saturating_sub(8),
                     label_metrics.height.max(1),
                 );
-                context.draw_text_fitted_cow(
+                context.draw_text_fitted_ellipsis(
                     label_band,
                     &item.label,
                     &label_font,

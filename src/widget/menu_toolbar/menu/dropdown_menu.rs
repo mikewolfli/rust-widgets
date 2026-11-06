@@ -363,7 +363,7 @@ fn draw_item_list(
             item_line.height,
         );
         let label_align = paint.alignment.to_horizontal().unwrap_or(HorizontalAlignment::Left);
-        context.draw_text_fitted_cow(
+        context.draw_text_fitted_ellipsis(
             label_band,
             &item.label,
             item_font,
@@ -380,7 +380,7 @@ fn draw_item_list(
                 shortcut_width,
                 item_line.height,
             );
-            context.draw_text_fitted_cow(
+            context.draw_text_fitted_ellipsis(
                 shortcut_band,
                 &item.shortcut,
                 item_font,
@@ -1640,7 +1640,7 @@ impl Draw for DropdownMenu {
         // Fitted rather than drawn at a point, because an anchor alone cannot express centre/right
         // over a width.
         let value_align = self.alignment.to_horizontal().unwrap_or(HorizontalAlignment::Left);
-        context.draw_text_fitted_cow(
+        context.draw_text_fitted_ellipsis(
             Rect::new(
                 geom.x + PADDING,
                 line.y,
@@ -1660,32 +1660,30 @@ impl Draw for DropdownMenu {
             if !is_enabled { disabled_text_color } else { text_color.blend(&background, 0.25) };
         if self.expanded {
             // Upward-pointing triangle when expanded
-            context.execute_command(RenderCommand::DrawPath {
-                points: vec![
+            context.draw_path(
+                &[
                     Point::new(arrow_x, arrow_y + 6),
                     Point::new(arrow_x + 10, arrow_y + 6),
                     Point::new(arrow_x + 5, arrow_y),
-                ]
-                .into(),
-                closed: true,
-                color: arrow_color,
-                filled: true,
-                width: 1,
-            });
+                ],
+                true,
+                arrow_color,
+                true,
+                1,
+            );
         } else {
             // Downward-pointing triangle when collapsed
-            context.execute_command(RenderCommand::DrawPath {
-                points: vec![
+            context.draw_path(
+                &[
                     Point::new(arrow_x, arrow_y),
                     Point::new(arrow_x + 10, arrow_y),
                     Point::new(arrow_x + 5, arrow_y + 6),
-                ]
-                .into(),
-                closed: true,
-                color: arrow_color,
-                filled: true,
-                width: 1,
-            });
+                ],
+                true,
+                arrow_color,
+                true,
+                1,
+            );
         }
 
         // ── Draw dropdown list when expanded ──

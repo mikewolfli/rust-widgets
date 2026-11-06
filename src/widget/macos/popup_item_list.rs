@@ -238,7 +238,7 @@ impl Draw for PopupItemList {
                 crate::widget::draw_icon_at(context, icon_rect, row_ink, icon);
                 text_x += 18;
             }
-            context.draw_text_fitted_cow(
+            context.draw_text_fitted_ellipsis(
                 Rect::new(
                     text_x,
                     row.y + 4,

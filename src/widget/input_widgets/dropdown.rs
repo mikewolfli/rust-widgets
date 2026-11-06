@@ -1292,7 +1292,7 @@ impl Draw for Dropdown {
         };
         // Fitted, so a selection longer than the field is elided rather than drawn under the
         // indicator — the box it is given is the one the indicator left.
-        context.draw_text_fitted_cow(
+        context.draw_text_fitted_ellipsis(
             Rect::new(
                 geometry.label_box.x,
                 label_line.y,
@@ -1384,7 +1384,7 @@ impl Draw for Dropdown {
             }
             // Fitted to the row: the collapsed value was fitted but the expanded rows were not,
             // so a long item label painted past the popup (which is not clipped).
-            context.draw_text_fitted_cow(
+            context.draw_text_fitted_ellipsis(
                 Rect::new(
                     item_x + icon_cell as i32,
                     item_line.y,

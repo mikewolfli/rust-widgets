@@ -345,7 +345,7 @@ impl SwipeActions {
                 }
             }
             let line = context.text_line(rect, &font);
-            context.draw_text_fitted_cow(
+            context.draw_text_fitted_ellipsis(
                 Rect::new(rect.x + 4, line.y, rect.width.saturating_sub(8), line.height.max(1)),
                 &action.text,
                 &font,

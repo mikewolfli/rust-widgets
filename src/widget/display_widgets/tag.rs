@@ -505,7 +505,7 @@ impl Draw for Tag {
         let label_band = Rect::new(label_left, rect.y, label_width, rect.height);
         // Bounded text: a long label is fitted with an ellipsis rather than running past the
         // tag (and, in the SVG backend, past the control's own rectangle).
-        ctx.draw_text_line_cow(label_band, &self.text, &font, ink, HorizontalAlignment::Left);
+        ctx.draw_text_line_ellipsis(label_band, &self.text, &font, ink, HorizontalAlignment::Left);
 
         if let Some(close) = close {
             // An "x" drawn as two strokes rather than a glyph: a font-dependent glyph would

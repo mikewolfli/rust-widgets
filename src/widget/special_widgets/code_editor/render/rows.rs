@@ -23,7 +23,7 @@ impl CodeEditor {
         rect: Rect,
         row_height: f32,
         chrome: &EditorChrome,
-    ) -> Vec<usize> {
+    ) {
         let left = rect.x + self.text_origin_x();
         let right = rect.x + rect.width as i32 - self.scrollbar_width() - self.minimap_width();
         let width = (right - left).max(1) as u32;
@@ -31,7 +31,7 @@ impl CodeEditor {
         let bottom = rect.y + rect.height as i32 - self.status_bar_height();
         let height = (bottom - top).max(0) as u32;
         if height == 0 || width == 0 {
-            return Vec::new();
+            return;
         }
 
         context.push_clip(left, top, width, height);
@@ -40,35 +40,43 @@ impl CodeEditor {
         let rows_budget = (height as f32 / row_height).ceil() as usize + 1;
         let wrapped = self.config.word_wrap;
         let columns = self.text_columns().max(1);
-        let font = self.font();
-        let palette = self.palette.clone();
+        let font = self.editor_font();
+        let palette = &self.palette;
         let active_line = self.cursor.head.line;
         let brackets = self.matching_brackets();
         // The occurrence list is prepared once per frame by `prepare_occurrences`
         // (which rescans the document only when the selection or text changed).
-        // Cloning the short result here is one small allocation per frame; the old
-        // call rescanned every line of the file on every frame.
-        let occurrences: Vec<SearchMatch> = self
-            .occurrence_cache
-            .as_ref()
-            .filter(|cache| cache.bounds == self.cursor.bounds())
-            .map(|cache| cache.matches.clone())
-            .unwrap_or_default();
+        // The view copies it into a buffer it owns; cloning a fresh `Vec` here was
+        // one allocation per frame.
+        {
+            let mut occurrences = self.occurrences_scratch.borrow_mut();
+            occurrences.clear();
+            if let Some(cache) = self.occurrence_cache.as_ref() {
+                if cache.bounds == self.cursor.bounds() {
+                    occurrences.extend_from_slice(&cache.matches);
+                }
+            }
+        }
+        let occurrences = self.occurrences_scratch.borrow();
         let current_match = self.find.matches.get(self.find.current).cloned();
         let (selection_start, selection_end) = self.cursor.bounds();
-        let mut painted: Vec<usize> = Vec::new();
+        let mut painted = self.painted_scratch.borrow_mut();
+        painted.clear();
         // One run buffer for the whole viewport. `row_runs` used to allocate a `Vec` per line per
         // frame for a list that is usually two or three entries long and almost always the same
         // shape; the row loop clears and refills this one instead (G-316).
-        let mut row_run_buffer: Vec<(usize, usize, TokenKind)> = Vec::new();
+        let mut row_run_buffer = self.row_run_scratch.borrow_mut();
 
         let mut row = 0usize;
         // An empty document shows its placeholder instead of an empty box. The
         // placeholder is chrome, so it uses the chrome font and the dim ink.
-        if self.line_count() == 1
-            && self.line_text(0).as_deref() == Some("")
-            && self.config.placeholder_text.is_some()
-        {
+        let placeholder_shown = {
+            let empty_line = self.line_text_borrowed(0);
+            self.line_count() == 1
+                && empty_line.is_empty()
+                && self.config.placeholder_text.is_some()
+        };
+        if placeholder_shown {
             if let Some(placeholder) = &self.config.placeholder_text {
                 let font = self.chrome_font();
                 let band = Rect::new(left, top, width, row_height.ceil() as u32);
@@ -82,7 +90,10 @@ impl CodeEditor {
                 );
             }
         }
-        for line in self.viewport_document_lines() {
+        self.fill_viewport_document_lines();
+        let viewport_len = self.viewport_lines_scratch.borrow().len();
+        for viewport_index in 0..viewport_len {
+            let line = self.viewport_lines_scratch.borrow()[viewport_index];
             let segments = self.wrap_segments(line);
             if row + segments <= self.scroll_visual_row {
                 row += segments;
@@ -230,7 +241,7 @@ impl CodeEditor {
                     left,
                     y,
                     &font,
-                    &palette,
+                    palette,
                     line,
                     text,
                     &geom,
@@ -347,7 +358,6 @@ impl CodeEditor {
         // the viewport, not by the document.
         self.prune_row_layouts(&painted);
         self.prune_segment_layouts(&painted);
-        painted
     }
 
     /// The screen x of a measured offset inside the line.

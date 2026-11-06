@@ -726,7 +726,7 @@ impl Draw for Window {
                 let line = context.text_line(chrome.title_bar, &font);
                 // Borrow the title: the fitted helper returns a `Cow`, so cloning the `String`
                 // here was an allocation per frame for a value that is only read (G-320).
-                context.draw_text_fitted_cow(
+                context.draw_text_fitted_ellipsis(
                     line,
                     &self.title,
                     &font,

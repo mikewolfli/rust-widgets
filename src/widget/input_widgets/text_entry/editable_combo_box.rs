@@ -894,7 +894,7 @@ impl Draw for EditableComboBox {
                 border.with_alpha(70),
             );
         }
-        context.draw_text_fitted_cow(
+        context.draw_text_fitted_ellipsis(
             Rect::new(
                 geometry.text_box.x,
                 value_line.y,
@@ -989,7 +989,7 @@ impl Draw for EditableComboBox {
                 EDITABLE_ROW_HEIGHT,
             );
             let line = context.text_line(row, font);
-            context.draw_text_fitted_cow(
+            context.draw_text_fitted_ellipsis(
                 Rect::new(row.x + 8, line.y, row.width.saturating_sub(16), line.height),
                 "(No matches)",
                 font,
@@ -1031,7 +1031,7 @@ impl Draw for EditableComboBox {
             let item_text_x = item_rect.x + 8;
             let item_line = context.text_line(item_rect, font);
             let item_color = self.base.disabled_ink_on(ink, field);
-            context.draw_text_fitted_cow(
+            context.draw_text_fitted_ellipsis(
                 Rect::new(
                     item_text_x,
                     item_line.y,

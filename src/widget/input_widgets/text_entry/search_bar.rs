@@ -997,7 +997,7 @@ impl Draw for SearchBar {
             let metrics = context.measure_text(&self.placeholder, font);
             if text_width >= metrics.width {
                 let text_y = rect.y + (rect.height as i32 - metrics.height as i32) / 2;
-                context.draw_text_fitted_cow(
+                context.draw_text_fitted_ellipsis(
                     Rect::new(text_left, text_y, text_width.max(1), metrics.height.max(1)),
                     &self.placeholder,
                     font,
@@ -1041,7 +1041,7 @@ impl Draw for SearchBar {
                         chip_x += chip_width as i32 + 4;
                     }
                 } else {
-                    context.draw_text_fitted_cow(
+                    context.draw_text_fitted_ellipsis(
                         Rect::new(
                             text_left,
                             text_y,

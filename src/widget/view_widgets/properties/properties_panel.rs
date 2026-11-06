@@ -1368,7 +1368,7 @@ impl PropertiesPanel {
                 context.fill_rect(row, background.blend(&accent, 0.24));
             }
             let line = context.text_line(row, font);
-            context.draw_text_fitted_cow(
+            context.draw_text_fitted_ellipsis(
                 Rect::new(row.x + 4, line.y, row.width.saturating_sub(8), line.height),
                 label,
                 font,
@@ -1451,7 +1451,7 @@ impl PropertiesPanel {
                 let text =
                     self.description_of(self.hovered_entry.or(self.focused_entry)).unwrap_or("");
                 if !text.is_empty() {
-                    context.draw_text_fitted_cow(
+                    context.draw_text_fitted_ellipsis(
                         Rect::new(
                             bar.x + 6,
                             context.text_line(bar, font).y,
@@ -1494,7 +1494,7 @@ impl PropertiesPanel {
                     border,
                     1,
                 );
-                context.draw_text_fitted_cow(
+                context.draw_text_fitted_ellipsis(
                     Rect::new(
                         box_rect.x + TOOLTIP_PADDING,
                         context.text_line(box_rect, font).y,
@@ -1784,7 +1784,7 @@ impl Draw for PropertiesPanel {
             // origin but only halved the error, so a 12 px label in a 26 px row occupied
             // `17..29` and its descenders crossed the divider drawn at `y + ROW_HEIGHT - 1`.
             let header_line = context.text_line(header_rect, font);
-            context.draw_text_fitted_cow(
+            context.draw_text_fitted_ellipsis(
                 Rect {
                     x: header_rect.x + CATEGORY_PADDING,
                     y: header_line.y,
@@ -1821,7 +1821,7 @@ impl Draw for PropertiesPanel {
                 // emits no `<text …></text>`.
                 let name_x = content.x + NAME_COL_LEFT;
                 if !entry.name.is_empty() {
-                    context.draw_text_fitted_cow(
+                    context.draw_text_fitted_ellipsis(
                         Rect {
                             x: name_x,
                             y: row_line.y,
@@ -1904,7 +1904,7 @@ impl Draw for PropertiesPanel {
                     PropertyValue::File(_) => {
                         let browse = file_browse_rect(value_rect);
                         context.draw_rect_stroke(browse, border, 1);
-                        context.draw_text_fitted_cow(
+                        context.draw_text_fitted_ellipsis(
                             Rect::new(browse.x + 2, browse.y, browse.width.saturating_sub(4), 18),
                             "...",
                             font,
@@ -1918,7 +1918,7 @@ impl Draw for PropertiesPanel {
 
                 let value_line = context.text_line(value_rect, font);
                 if !display.is_empty() {
-                    context.draw_text_fitted_cow(
+                    context.draw_text_fitted_ellipsis(
                         Rect {
                             x: text_x,
                             y: value_line.y,

@@ -524,7 +524,6 @@ pub fn published_event_names() -> Vec<(&'static str, Vec<&'static str>)> {
             "kanban_column_header",
             KANBAN_COLUMN_HEADER_EVENTS.iter().map(|schema| schema.name).collect(),
         ),
-        // `dependency_editor` publishes no events: it edits through the property contract.
-        ("dependency_editor", Vec::new()),
+        ("dependency_editor", DEPENDENCY_EDITOR_EVENTS.iter().map(|schema| schema.name).collect()),
     ]
 }

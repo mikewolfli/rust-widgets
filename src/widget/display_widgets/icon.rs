@@ -31,126 +31,12 @@ use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 #[cfg(widgets_unstripped)]
 use crate::{impl_widget_property_hooks, property_names_of};
 
-// The `IconName` type is generated from `tools/icon_tokens.txt` — see
-// `tools/gen_icon_names.py`. It is a module rather than an inline `include!` so its public
-// items are named by their real path and rustdoc documents them as the type's own. The `#[path]`
-// is required because this file is itself a module, so a bare `mod icon_names;` would be looked
-// for under an `icon/` directory.
-#[path = "icon_names.rs"]
-mod icon_names;
-pub use icon_names::IconName;
+// The icon resources live in `crates/rust-widgets-icons`: the name table, the SVG path table and
+// the flattened fallback polygons. This control draws them; it does not define them.
+pub use rust_widgets_icons::{IconData, IconName};
 
-/// Designer semantic names that an existing, truthful glyph can stand in for.
-///
-/// # Why these are aliases and not enum variants
-///
-/// Every `IconName` variant indexes a row of `ICON_DATA` and `ICON_FALLBACK`; adding a variant
-/// without a vendored outline is exactly the "invent SVG data silently" failure the icon pipeline
-/// is built to prevent, and the generator refuses two tokens that resolve to one picture. The
-/// designer vocabulary contains names this crate has no distinct outline for. For the entries
-/// below, one of the shipped glyphs *is* the same idea, so accepting the designer spelling and
-/// drawing that glyph is honest. The six names whose real outline was added in RW-36
-/// (`debug-bug`, `design-component`, `design-event`, `test-flask`, `tools-terminal`,
-/// `tools-translate`) resolve to their own variant instead of a stand-in.
-///
-/// Aliases are **input-only**: [`IconName::from_name_or_alias`] accepts them, while
-/// [`IconName::from_name`], [`IconName::as_str`], [`IconName::all_tokens`] and [`IconName::ALL`]
-/// continue to describe the glyph-bearing variants exactly. That keeps the generated tables
-/// one-to-one with the enum while letting a host's designer JSON resolve, and it keeps
-/// `tools/gen_icon_names.py --check` byte-identical.
-pub const DESIGNER_ALIASES: [(&str, IconName); 19] = [
-    // A library of assets is a folder of files.
-    ("assets-library", IconName::Folder),
-    // A pipeline is a connected graph; `share` is this crate's node-and-branches glyph.
-    ("build-pipeline", IconName::Share),
-    // A build target is something that runs.
-    ("build-target", IconName::Play),
-    // A source map is a file that describes a source document.
-    ("code-source-map", IconName::File),
-    // The conventional debugger breakpoint mark is a filled square.
-    ("debug-breakpoint", IconName::Stop),
-    // A canvas is an editable surface.
-    ("design-canvas", IconName::Edit),
-    // A flow is a connected graph.
-    ("design-flow", IconName::Share),
-    // Inspecting is searching.
-    ("design-inspect", IconName::Search),
-    // A layout is a grid.
-    ("design-layout", IconName::Table),
-    // A theme is configured with a gear.
-    ("design-theme", IconName::Settings),
-    // A preview matrix is a grid of cells.
-    ("preview-matrix", IconName::Table),
-    // The AI/sparkle convention is a star in this vocabulary.
-    ("tools-ai", IconName::Star),
-    // Version-control branches are a connected graph.
-    ("vcs-branch", IconName::Share),
-    // RW-36: the six designer names now have their own real outlines.
-    ("debug-bug", IconName::DebugBug),
-    ("design-component", IconName::DesignComponent),
-    ("design-event", IconName::DesignEvent),
-    ("test-flask", IconName::TestFlask),
-    ("tools-terminal", IconName::ToolsTerminal),
-    ("tools-translate", IconName::ToolsTranslate),
-];
-
-/// Resolves a designer semantic name to the truthful glyph that stands in for it.
-///
-/// Matching is ASCII case-sensitive and accepts both the hyphenated designer spelling and the
-/// underscore spelling used by `IconName` tokens (`vcs-branch` / `vcs_branch`), because a host
-/// may have written either. A name that is not in [`DESIGNER_ALIASES`] returns `None`; no fuzzy
-/// or prefix matching is performed, since guessing at an icon is worse than drawing the
-/// documented question-mark placeholder. This is the resolver behind
-/// [`IconName::from_name_or_alias`]; [`IconName::from_name`] itself stays token-only.
-pub fn designer_alias(name: &str) -> Option<IconName> {
-    DESIGNER_ALIASES.iter().find_map(|(alias, target)| {
-        if alias_spelling_matches(name, alias) {
-            Some(*target)
-        } else {
-            None
-        }
-    })
-}
-
-/// Whether `name` is a designer alias this crate understands.
-pub fn is_designer_alias(name: &str) -> bool {
-    designer_alias(name).is_some()
-}
-
-/// Compares an input spelling to a table alias, treating `-` and `_` as the same separator.
-///
-/// Byte-wise rather than `to_ascii_lowercase`/`replace` so a draw-time lookup allocates nothing.
-fn alias_spelling_matches(input: &str, alias: &str) -> bool {
-    input.len() == alias.len()
-        && input.bytes().zip(alias.bytes()).all(|(input, alias)| {
-            input == alias || (input == b'_' && alias == b'-') || (input == b'-' && alias == b'_')
-        })
-}
-
-impl IconName {
-    /// Resolves a canonical token **or** a designer alias to a glyph-bearing variant.
-    ///
-    /// [`IconName::from_name`] is generated from `tools/icon_tokens.txt` and consequently knows
-    /// only the enum's own tokens. This method adds the alias table on top without editing that
-    /// generated file, so `gen_icon_names.py --check` stays byte-identical while the icon widget
-    /// and the inline-drawing helpers still accept a designer name. A caller that wants strict
-    /// token-only parsing keeps using `from_name`.
-    pub fn from_name_or_alias(name: &str) -> Option<IconName> {
-        IconName::from_name(name).or_else(|| designer_alias(name))
-    }
-
-    /// The designer semantic names accepted by [`IconName::from_name_or_alias`], with their
-    /// glyphs.
-    pub fn designer_aliases() -> &'static [(&'static str, IconName)] {
-        &DESIGNER_ALIASES
-    }
-
-    /// The canonical token of the glyph a designer alias reuses, or `None` when the name is not
-    /// an alias.
-    pub fn canonical_token_for_alias(name: &str) -> Option<&'static str> {
-        designer_alias(name).map(|icon| icon.as_str())
-    }
-}
+pub use rust_widgets_icons::UPSTREAM_ALIASES;
+pub use rust_widgets_icons::{designer_alias, is_designer_alias, DESIGNER_ALIASES};
 
 /// Draws `name`'s icon outline into `rect`, in `color`.
 ///
@@ -331,7 +217,7 @@ enum SourceGeometry {
     ///
     /// Borrowed, not copied: the table is `&'static`, and its grid travels with it so the extent a
     /// caller measures and the grid a draw scales by come from the same entry.
-    Fallback(&'static crate::widget::icon_fallback_data::IconFallback),
+    Fallback(&'static rust_widgets_icons::IconFallback),
 }
 
 /// Which geometry a source resolves to, or why it resolves to none.
@@ -546,8 +432,7 @@ pub fn draw_icon_named(ctx: &mut RenderContext, rect: Rect, color: Color, name: 
             true
         }
         Some(NamedIcon::Fallback(token)) => {
-            draw_fallback_in(ctx, rect, color, token, IconTransform::IDENTITY);
-            true
+            draw_fallback_in(ctx, rect, color, token, IconTransform::IDENTITY)
         }
         None => false,
     }
@@ -660,16 +545,25 @@ fn resolve_named_icon(name: &str) -> Option<NamedIcon> {
 
 /// The fallback geometry for `token`, reached through the enum's declaration index.
 ///
-/// `ICON_FALLBACK` is indexed by `IconName`'s declaration order, so a token that parses to a
+/// `fallback` is indexed by `IconName`'s declaration order, so a token that parses to a
 /// variant is one integer index away (G-38). A linear scan compared the token against all 69
 /// entries per icon per frame; the index lookup is what replaces it. The name comparison keeps
 /// that ordering a checked invariant rather than an assumption: a table that drifted out of order
 /// answers `None` here and the caller draws the placeholder rather than the wrong icon.
-fn fallback_entry(token: &str) -> Option<&'static crate::widget::icon_fallback_data::IconFallback> {
+///
+/// # Why an empty entry answers `None`
+///
+/// The table is **dense** but layered: only the curated tokens a control in this crate names
+/// carry polygons, and a catalogue token's entry is empty (see `rust-widgets-icons`'s
+/// `fallback.rs` header for why the other 4,248 outlines are not duplicated into every build).
+/// Answering `Some` for an entry with no contours would claim there is geometry to draw and then
+/// paint nothing, which is the one outcome §19.4 forbids: "nothing was drawn" must not be
+/// reported as "an icon was drawn".
+fn fallback_entry(token: &str) -> Option<&'static rust_widgets_icons::IconFallback> {
     let name = IconName::from_name(token)?;
-    crate::widget::icon_fallback_data::ICON_FALLBACK
+    rust_widgets_icons::icon_fallback()
         .get(name as usize)
-        .filter(|entry| entry.name == token)
+        .filter(|entry| entry.name == token && !entry.contours.is_empty())
 }
 
 /// Draws `name` as a **square** icon centred within `box_rect`, `side` device pixels across.
@@ -811,14 +705,14 @@ impl IconTransform {
 /// contours are counted even though the draw skips them, because the buffer's bound must hold
 /// for every entry, not just the ones drawn today.
 const MAX_FALLBACK_POINTS: usize = {
-    use crate::widget::icon_fallback_data::ICON_FALLBACK;
+    let fallback = rust_widgets_icons::icon_fallback();
     let mut entry = 0;
     let mut max = 0;
-    while entry < ICON_FALLBACK.len() {
+    while entry < fallback.len() {
         let mut contour = 0;
         let mut total = 0;
-        while contour < ICON_FALLBACK[entry].contours.len() {
-            total += ICON_FALLBACK[entry].contours[contour].len();
+        while contour < fallback[entry].contours.len() {
+            total += fallback[entry].contours[contour].len();
             contour += 1;
         }
         if total > max {
@@ -831,12 +725,12 @@ const MAX_FALLBACK_POINTS: usize = {
 
 /// The largest contour count one fallback icon expands to, taken from the table itself.
 const MAX_FALLBACK_CONTOURS: usize = {
-    use crate::widget::icon_fallback_data::ICON_FALLBACK;
+    let fallback = rust_widgets_icons::icon_fallback();
     let mut entry = 0;
     let mut max = 0;
-    while entry < ICON_FALLBACK.len() {
-        if ICON_FALLBACK[entry].contours.len() > max {
-            max = ICON_FALLBACK[entry].contours.len();
+    while entry < fallback.len() {
+        if fallback[entry].contours.len() > max {
+            max = fallback[entry].contours.len();
         }
         entry += 1;
     }
@@ -894,37 +788,18 @@ fn draw_fallback_in(
         rect.y.saturating_add((rect.height / 2) as i32),
     );
     transform.apply(&mut points[..point_count], centre);
+    if point_count == 0 {
+        // `fallback_entry` already refuses an empty entry; this covers a table whose contours
+        // exist but flatten to nothing after the short-contour filter above, so "drew nothing"
+        // is never reported as a draw.
+        return false;
+    }
     if let Err(error) =
         ctx.fill_path_non_zero(&points[..point_count], &contours[..contour_count], color)
     {
         log::error!("fallback icon '{}' could not be submitted: {error:?}", fallback.name);
     }
     true
-}
-
-/// One icon's outline, as SVG path data on a square design grid.
-///
-/// # Why this type is defined here and not in the generated file
-///
-/// The table (`crate::widget::icon_data`) is behind the opt-in `icons` feature, but a caller
-/// that wants to *name* an icon's data — a signature, a struct field, `Option<IconData>` —
-/// must compile in a build without it. Defining the type unconditionally and gating only the
-/// table keeps one definition of the shape (`principle #54`) while still compiling the payload
-/// out.
-///
-/// # Coordinates
-///
-/// Material Symbols draws on a 960-unit grid with **negative y upward** (its own `viewBox`
-/// is `0 -960 960 960`). This keeps upstream's numbers verbatim; `Icon` scales and flips the
-/// axis when drawing, so the data stays a copy rather than a re-encoding.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct IconData {
-    /// The canonical token, matching [`IconName::as_str`].
-    pub name: &'static str,
-    /// The design grid: `x` spans `0..grid`, `y` spans `-grid..0`.
-    pub grid: u16,
-    /// The SVG path data (`d`), one entry per `<path>` in the upstream file.
-    pub paths: &'static [&'static str],
 }
 
 /// How long one animation frame is shown before [`Icon`] advances, in milliseconds.
@@ -1549,7 +1424,7 @@ impl Icon {
     ///
     /// The fallback used to be 31 hand-written `draw_*` methods — a second source of truth that
     /// could disagree with the SVG data. It did: `Close` and `Cross` were drawn by one method while
-    /// the data held two distinct outlines. [`ICON_FALLBACK`](crate::widget::icon_fallback_data::ICON_FALLBACK)
+    /// the data held two distinct outlines. [`ICON_FALLBACK`](rust_widgets_icons::icon_fallback())
     /// is generated from the **same** `tools/material_symbols/<token>.svg` files as `ICON_DATA`, so
     /// the two paths cannot describe different shapes for one token.
     fn draw_icon(&self, ctx: &mut RenderContext) {
@@ -1590,9 +1465,9 @@ impl Icon {
     }
 
     /// Draws an icon from the generated fallback geometry
-    /// ([`IconFallback`](crate::widget::icon_fallback_data::IconFallback)).
+    /// ([`IconFallback`](rust_widgets_icons::IconFallback)).
     ///
-    /// The token's geometry is looked up in [`ICON_FALLBACK`](crate::widget::icon_fallback_data::ICON_FALLBACK);
+    /// The token's geometry is looked up in [`ICON_FALLBACK`](rust_widgets_icons::icon_fallback());
     /// all contours are filled together, so oppositely-wound counters remain empty. A name that is
     /// not a token draws the question mark.
     fn draw_fallback(&self, ctx: &mut RenderContext) {
@@ -2331,9 +2206,28 @@ mod tests {
     #[test]
     fn every_tokened_icon_draws_a_distinct_outline() {
         use crate::widget::svg::render_to_svg;
+        use std::collections::HashMap;
 
-        let mut outlines: Vec<String> = Vec::new();
-        for token in IconName::ALL {
+        // Two things are asked here, because the catalogue makes them different questions.
+        //
+        // 1. **Every** token draws its data. A token whose data never reached the draw renders no
+        //    `<path>` at all, which is the failure this half exists to catch.
+        // 2. The **curated** tokens draw distinct pictures. That is the `Close == Cross` rule, and
+        //    it belongs to the vocabulary this crate names itself. It cannot be asked of the whole
+        //    catalogue: upstream's own families differ by a unit at most (`keyboard_arrow_down` vs
+        //    `expand_more`, which `chevron_down` resolves to) and render as one picture, which is
+        //    upstream's choice rather than a defect here. `tests/icon_data_integrity_test.rs`
+        //    checks the catalogue's *data* for unrecorded duplicates, which is where a misrouted
+        //    token would show.
+        let aliases: HashMap<&'static str, rust_widgets_icons::IconName> =
+            rust_widgets_icons::UPSTREAM_ALIASES.iter().copied().collect();
+        let declared_alias = |a: &str, b: &str| {
+            aliases.get(a).is_some_and(|canonical| canonical.as_str() == b)
+                || aliases.get(b).is_some_and(|canonical| canonical.as_str() == a)
+        };
+
+        let mut seen: HashMap<String, &'static str> = HashMap::new();
+        for (index, token) in IconName::ALL.into_iter().enumerate() {
             let mut icon = Icon::new(Rect::new(0, 0, 24, 24));
             icon.set_icon_enum(token);
             let svg = render_to_svg(&mut icon);
@@ -2342,12 +2236,19 @@ mod tests {
                 svg.contains("<path"),
                 "{token:?} rendered no outline path, so the data did not reach the draw: {svg}"
             );
-            for other in &outlines {
-                assert_ne!(other, &svg, "{token:?} draws the same picture as another icon");
+            if index >= IconName::CURATED_TOKENS {
+                continue;
             }
-            outlines.push(svg);
+            if let Some(other) = seen.get(&svg) {
+                assert!(
+                    declared_alias(token.as_str(), other),
+                    "{token:?} draws the same picture as {other}, and the data does not record \
+                     them as upstream aliases"
+                );
+            } else {
+                seen.insert(svg, token.as_str());
+            }
         }
-        assert_eq!(outlines.len(), IconName::ALL.len());
     }
 
     /// With the feature off, a tokened icon still draws — through the generated fallback.
@@ -2383,30 +2284,61 @@ mod tests {
 
     // ── The generated fallback table (BLUE25 follow-up: fallback shares the data's source) ──
 
-    /// The fallback table lines up with `IconName` and every entry has real geometry.
+    /// The fallback table lines up with `IconName`, and its geometry is the curated prefix.
     ///
     /// # Why this is a source-level test and not a rendering one
     ///
     /// `every_tokened_icon_draws_a_distinct_outline` renders through the *data* path; the fallback
-    /// is a different table, so it needs its own check that it is complete and distinct. Running in
-    /// `cfg(test)` of the widget module is what makes it run on a build **without** `icons` too,
-    /// where `ICON_FALLBACK` is the only geometry the icon has.
+    /// is a different table, so it needs its own check. Running in `cfg(test)` of the widget module
+    /// is what makes it run on a build **without** `data` too, where the fallback is the only
+    /// geometry an icon has.
+    ///
+    /// # Why the table is layered, and what this asserts about it
+    ///
+    /// The table is dense — one entry per `IconName`, because it is indexed by the variant's
+    /// discriminant — but only the first [`FALLBACK_GEOMETRY_ENTRIES`] carry polygons: the curated
+    /// tokens a control in this crate names directly. Flattening the catalogue's 4,248 outlines
+    /// here would add ~12 MB of constants to every build without `data`, `mini` and `embedded`
+    /// included, for geometry those profiles never draw.
+    ///
+    /// So the assertions are: the order matches the enum, every entry has a usable grid, the
+    /// entries **inside** the prefix are real polygons, the entries outside it are empty, and no
+    /// two prefix entries draw one picture. That last one is the `Close == Cross` rule, and it is
+    /// why the catalogue's entries must stay empty: upstream aliases its own names, so a complete
+    /// table could not satisfy it.
     #[test]
     fn the_fallback_table_is_complete_and_distinct() {
-        use crate::widget::icon_fallback_data::ICON_FALLBACK;
+        let fallback = rust_widgets_icons::icon_fallback();
 
         assert_eq!(
-            ICON_FALLBACK.len(),
+            fallback.len(),
             IconName::ALL.len(),
             "the fallback table and the IconName variants disagree on how many icons exist"
         );
-        for (entry, variant) in ICON_FALLBACK.iter().zip(IconName::ALL.iter()) {
+        let geometry = rust_widgets_icons::FALLBACK_GEOMETRY_ENTRIES;
+        assert!(geometry > 0, "the fallback table carries no geometry at all");
+        assert!(
+            geometry <= fallback.len(),
+            "the fallback geometry prefix ({geometry}) is longer than the table ({})",
+            fallback.len()
+        );
+
+        for (index, (entry, variant)) in fallback.iter().zip(IconName::ALL.iter()).enumerate() {
             assert_eq!(
                 entry.name,
                 variant.as_str(),
                 "the fallback table's order has drifted from IconName's declaration order"
             );
             assert!(entry.grid > 0, "{:?} has a zero grid, so it cannot be scaled", entry.name);
+            if index >= geometry {
+                assert!(
+                    entry.contours.is_empty(),
+                    "{:?} is outside the curated prefix but carries fallback geometry, which \
+                     puts a per-icon constant into every build without `data`",
+                    entry.name
+                );
+                continue;
+            }
             assert!(!entry.contours.is_empty(), "{:?} has no fallback geometry", entry.name);
             let mut points = 0usize;
             for contour in entry.contours {
@@ -2420,10 +2352,13 @@ mod tests {
             }
             assert!(points > 0, "{:?} flattened to geometry with no points", entry.name);
         }
-        // No two entries share their whole geometry: the `Close == Cross` rule, applied to the
-        // fallback, since both tables are derived from the same source and must stay distinct.
-        for (index, entry) in ICON_FALLBACK.iter().enumerate() {
-            for other in &ICON_FALLBACK[index + 1..] {
+
+        // No two *drawn* entries share their whole geometry: the `Close == Cross` rule, applied to
+        // the fallback, since both tables are derived from the same source and must stay distinct.
+        let drawn: Vec<&rust_widgets_icons::IconFallback> =
+            fallback.iter().filter(|entry| !entry.contours.is_empty()).collect();
+        for (index, entry) in drawn.iter().enumerate() {
+            for other in &drawn[index + 1..] {
                 let same = entry.contours.len() == other.contours.len()
                     && entry.contours.iter().zip(other.contours.iter()).all(|(a, b)| a == b);
                 assert!(
@@ -2434,6 +2369,28 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// A catalogue token draws no fallback geometry, and says so instead of painting nothing.
+    ///
+    /// # Why this is asserted rather than assumed
+    ///
+    /// The dense layered table makes "this token has an entry" and "this token has geometry" two
+    /// different questions. Reporting the second as the first is exactly the outcome §19.4 forbids:
+    /// `draw_fallback_in` answers `false`, so `Icon` draws its "unknown" mark and `draw_icon_at`
+    /// reports `EmptyGeometry` — visible failures rather than an invisible no-op.
+    #[cfg(not(feature = "icons"))]
+    #[test]
+    fn a_catalogue_token_has_no_fallback_geometry_and_says_so() {
+        use crate::widget::svg::render_to_svg;
+
+        let mut icon = Icon::new(Rect::new(0, 0, 24, 24));
+        icon.set_icon_enum(IconName::Alarm);
+        let svg = render_to_svg(&mut icon);
+        assert!(
+            !svg.contains("<path"),
+            "a catalogue token must not paint fallback geometry it does not carry: {svg}"
+        );
     }
 
     // ── Measure / validate: one box rule, two honest stages ───────────────────

@@ -455,7 +455,7 @@ impl Draw for MenuPanel {
             let text_width =
                 (rect.x + rect.width as i32 - MENU_INSET as i32 - text_x).max(0) as u32;
             if text_width > 0 {
-                context.draw_text_fitted_cow(
+                context.draw_text_fitted_ellipsis(
                     Rect::new(text_x, line.y, text_width, line.height.max(1)),
                     &item.text,
                     font,

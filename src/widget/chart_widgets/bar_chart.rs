@@ -59,6 +59,11 @@ use crate::widget::metrics::role_font;
 use crate::widget::chart_widgets::charts::{axis_chrome, axis_chrome_color};
 #[cfg(feature = "chart")]
 use crate::widget::chart_widgets::types::ChartContext;
+
+thread_local! {
+    /// Reused bar value-label buffer for the paint pass.
+    static LABEL_SCRATCH: RefCell<String> = const { RefCell::new(String::new()) };
+}
 use crate::widget::companions::{
     AxisEdge, AxisPicker, ChartDataTable, ChartSeriesSnapshot, Legend, LegendEntry, ZoomStrip,
 };
@@ -1644,6 +1649,70 @@ impl BarChart {
         &self.bars
     }
 
+    /// Writes the chart as a standalone SVG file at `path`.
+    ///
+    /// # Why this exists
+    ///
+    /// The chart family has two layers: this control, which paints through a
+    /// [`RenderContext`], and the engine renderers in `chart_widgets::charts`, which paint through
+    /// a [`ChartContext`](crate::widget::chart_widgets::types::ChartContext) and therefore need no
+    /// window at all. The engine layer's export entry point
+    /// ([`render_chart_to_svg_file`](crate::widget::chart_widgets::svg::render_chart_to_svg_file))
+    /// is what turns it into a file, and this method is the control-side door to it: a host that has
+    /// a live chart can write the same picture to disk without rendering the window (CH2-06).
+    ///
+    /// The control's own mapping is used rather than the values cast to a line: the engine renders
+    /// bars, and each series' colour and per-bar label are carried over so the file matches the
+    /// control. A chart with no data still writes a valid document with empty axes.
+    #[cfg(widgets_unstripped)]
+    pub fn export_svg(&self, path: &str) -> Result<(), std::io::Error> {
+        use crate::widget::chart_widgets::svg::render_chart_to_svg_file;
+        use crate::widget::chart_widgets::types::{
+            ChartSeries, ChartType as EngineChartType, DataPoint,
+        };
+
+        let mut engine = EngineChartType::Bar.create_chart();
+        if self.series.is_empty() {
+            engine.add_series(ChartSeries {
+                name: String::new(),
+                data: self
+                    .bars
+                    .iter()
+                    .enumerate()
+                    .map(|(index, bar)| DataPoint {
+                        x: index as f64,
+                        y: bar.value,
+                        label: Some(bar.label.clone()),
+                    })
+                    .collect(),
+                color: self.bar_color,
+                visible: true,
+            });
+        } else {
+            for (index, entry) in self.series.iter().enumerate() {
+                engine.add_series(ChartSeries {
+                    name: entry.name.clone(),
+                    data: entry
+                        .values
+                        .iter()
+                        .enumerate()
+                        .map(|(position, value)| DataPoint {
+                            x: position as f64,
+                            y: *value,
+                            label: self.bars.get(position).map(|bar| bar.label.clone()),
+                        })
+                        .collect(),
+                    color: self.series_color(index),
+                    visible: entry.visible,
+                });
+            }
+        }
+
+        let geometry = self.base.geometry();
+        let rect = Rect::new(0, 0, geometry.width.max(1), geometry.height.max(1));
+        render_chart_to_svg_file(engine.as_ref(), rect, path)
+    }
+
     /// Sets the default bar color for all bars (used when BarEntry.color is None).
     pub fn set_bar_color(&mut self, color: Color) {
         if self.bar_color == color {
@@ -2129,7 +2198,7 @@ impl Draw for BarChart {
             let centred = crate::core::HorizontalAlignment::Center;
             if let Some(title) = self.title.as_deref() {
                 let font = role_font(self.base.style(), 12.0).with_bold(true);
-                context.draw_text_fitted_cow(
+                context.draw_text_fitted_ellipsis(
                     Rect::new(rect.x, rect.y, rect.width, 16),
                     title,
                     &font,
@@ -2139,7 +2208,7 @@ impl Draw for BarChart {
             }
             if let Some(label) = self.x_axis_label.as_deref() {
                 let font = role_font(self.base.style(), 10.0);
-                context.draw_text_fitted_cow(
+                context.draw_text_fitted_ellipsis(
                     Rect::new(
                         plot_area.x,
                         plot_area.y + plot_area.height as i32 + 14,
@@ -2154,7 +2223,7 @@ impl Draw for BarChart {
             }
             if let Some(label) = self.y_axis_label.as_deref() {
                 let font = role_font(self.base.style(), 10.0);
-                context.draw_text_fitted_cow(
+                context.draw_text_fitted_ellipsis(
                     Rect::new(rect.x + 2, rect.y + 16, rect.width.min(120), 12),
                     label,
                     &font,
@@ -2214,70 +2283,72 @@ impl Draw for BarChart {
         let category_font = role_font(self.base.style(), CATEGORY_FONT_SIZE);
         let category_line_height = context.measure_text("M", &category_font).height.max(1) as i32;
         // Reused across bars so a value label costs no heap allocation per frame.
-        let mut label = String::with_capacity(16);
+        LABEL_SCRATCH.with(|cell| {
+            let mut label = cell.borrow_mut();
 
-        for (i, bar) in self.bars.iter().enumerate().take(last_visible).skip(first_visible) {
-            let Some(value) = self.rendered_bar_value(i) else {
-                continue;
-            };
-            let slot_index = i - first_visible;
-            let draw_index =
-                if self.category_reversed { slots - 1 - slot_index } else { slot_index };
-            let bar_color = bar.color.unwrap_or(self.bar_color);
-            let effective_color = if is_enabled { bar_color } else { disabled_color };
-
-            let bar_x = plot_area.x
-                + (spacing_pixels * (draw_index as f32 + 1.0) + bar_slot_width * draw_index as f32)
-                    as i32;
-            let start = y_min;
-            let end = start + (value - start) * growth;
-            let bar_y = self.value_pixel(end.max(start), y_min, y_max, plot_area);
-            let bottom = self.value_pixel(end.min(start), y_min, y_max, plot_area);
-            let bar_height = (bottom - bar_y).max(0);
-
-            if bar_height > 0 {
-                context.fill_rect(
-                    Rect::new(bar_x, bar_y, bar_width as u32, bar_height as u32),
-                    effective_color,
-                );
-            }
-
-            // ── Value label on top of the bar ──
-            //
-            // Placed as a **line box sitting above the bar**, not at `bar_y - 4`. The literal
-            // gap had no relation to the label's own height, so a 10 px line began 4 px above
-            // the bar's top with its glyph box still overlapping the bar, which the vertical
-            // audit reads as PUSHED-DOWN. Building the box from the measured line height and
-            // anchoring its bottom edge to the bar's top is what makes the gap actually four
-            // pixels, and it scales with the label font.
-            if self.show_values && is_enabled {
-                label.clear();
-                let _ = core::fmt::Write::write_fmt(&mut label, format_args!("{:.1}", value));
-                let label_x = bar_x.max(plot_area.x) + (bar_width as i32 / 2).min(12);
-                let label_band = Rect {
-                    x: label_x,
-                    y: (bar_y - LABEL_GAP - label_line_height).max(plot_area.y),
-                    width: bar_width as u32,
-                    height: label_line_height as u32,
+            for (i, bar) in self.bars.iter().enumerate().take(last_visible).skip(first_visible) {
+                let Some(value) = self.rendered_bar_value(i) else {
+                    continue;
                 };
-                draw_label(context, &label, label_band, &label_font);
-            }
+                let slot_index = i - first_visible;
+                let draw_index =
+                    if self.category_reversed { slots - 1 - slot_index } else { slot_index };
+                let bar_color = bar.color.unwrap_or(self.bar_color);
+                let effective_color = if is_enabled { bar_color } else { disabled_color };
 
-            // ── Category label below the axis ──
-            if is_enabled {
-                let label_x = bar_x.max(plot_area.x) + (bar_width as i32 / 2).min(12);
-                // Same treatment, anchored below the baseline: the line box starts where the
-                // axis label row starts, so the gap under the axis is `LABEL_ROW_TOP`, not a
-                // second hand-tuned offset that happened to equal it.
-                let label_band = Rect {
-                    x: label_x,
-                    y: baseline_y + LABEL_ROW_TOP,
-                    width: (plot_area.width as i32 - (label_x - plot_area.x)).max(0) as u32,
-                    height: category_line_height as u32,
-                };
-                draw_label(context, &bar.label, label_band, &category_font);
+                let bar_x = plot_area.x
+                    + (spacing_pixels * (draw_index as f32 + 1.0)
+                        + bar_slot_width * draw_index as f32) as i32;
+                let start = y_min;
+                let end = start + (value - start) * growth;
+                let bar_y = self.value_pixel(end.max(start), y_min, y_max, plot_area);
+                let bottom = self.value_pixel(end.min(start), y_min, y_max, plot_area);
+                let bar_height = (bottom - bar_y).max(0);
+
+                if bar_height > 0 {
+                    context.fill_rect(
+                        Rect::new(bar_x, bar_y, bar_width as u32, bar_height as u32),
+                        effective_color,
+                    );
+                }
+
+                // ── Value label on top of the bar ──
+                //
+                // Placed as a **line box sitting above the bar**, not at `bar_y - 4`. The literal
+                // gap had no relation to the label's own height, so a 10 px line began 4 px above
+                // the bar's top with its glyph box still overlapping the bar, which the vertical
+                // audit reads as PUSHED-DOWN. Building the box from the measured line height and
+                // anchoring its bottom edge to the bar's top is what makes the gap actually four
+                // pixels, and it scales with the label font.
+                if self.show_values && is_enabled {
+                    label.clear();
+                    let _ = core::fmt::Write::write_fmt(&mut *label, format_args!("{:.1}", value));
+                    let label_x = bar_x.max(plot_area.x) + (bar_width as i32 / 2).min(12);
+                    let label_band = Rect {
+                        x: label_x,
+                        y: (bar_y - LABEL_GAP - label_line_height).max(plot_area.y),
+                        width: bar_width as u32,
+                        height: label_line_height as u32,
+                    };
+                    draw_label(context, &label, label_band, &label_font);
+                }
+
+                // ── Category label below the axis ──
+                if is_enabled {
+                    let label_x = bar_x.max(plot_area.x) + (bar_width as i32 / 2).min(12);
+                    // Same treatment, anchored below the baseline: the line box starts where the
+                    // axis label row starts, so the gap under the axis is `LABEL_ROW_TOP`, not a
+                    // second hand-tuned offset that happened to equal it.
+                    let label_band = Rect {
+                        x: label_x,
+                        y: baseline_y + LABEL_ROW_TOP,
+                        width: (plot_area.width as i32 - (label_x - plot_area.x)).max(0) as u32,
+                        height: category_line_height as u32,
+                    };
+                    draw_label(context, &bar.label, label_band, &category_font);
+                }
             }
-        }
+        });
         self.draw_hover_overlay(context, plot_area);
         if let Some(crosshair) = self.crosshair.as_mut() {
             crosshair.base_mut().set_geometry(plot_area);
@@ -2554,7 +2625,13 @@ impl BarChart {
                 box_rect.width.saturating_sub(8),
                 line_height.max(1) as u32,
             );
-            context.draw_text_fitted_cow(line_rect, line, &font, *color, HorizontalAlignment::Left);
+            context.draw_text_fitted_ellipsis(
+                line_rect,
+                line,
+                &font,
+                *color,
+                HorizontalAlignment::Left,
+            );
         }
     }
 
@@ -2595,7 +2672,7 @@ fn draw_label(context: &mut RenderContext, text: &str, band: Rect, font: &Font) 
     // Fitted to the band, so a long category name cannot run into the bar beside it — the
     // caller already knows each label's column, which is why the band is passed rather than a
     // point.
-    context.draw_text_fitted_cow(
+    context.draw_text_fitted_ellipsis(
         band,
         text,
         font,

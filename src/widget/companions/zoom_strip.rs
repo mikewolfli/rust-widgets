@@ -21,7 +21,7 @@
 //! contains `1.0`, and to `min` otherwise. Infinite values take the normal clamp path (`+inf`
 //! becomes `max`, `-inf` becomes `min`). Invalid bounds or steps are refused rather than stored.
 
-use crate::compat::{format, lock, Arc, Mutex, String, ToString};
+use crate::compat::{lock, Arc, Mutex, String, ToString};
 use crate::core::{HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::impl_draw_bridge;
@@ -52,6 +52,12 @@ const STRIP_PADDING_V: u32 = 4;
 const STRIP_PADDING_H: u32 = 6;
 /// Extra air a minus/plus/Fit segment needs beyond one text line.
 const SEGMENT_AIR: u32 = 16;
+
+thread_local! {
+    /// Reused middle-segment label buffer.
+    static LABEL_SCRATCH: crate::compat::RefCell<String> =
+        const { crate::compat::RefCell::new(String::new()) };
+}
 
 /// A three- or four-segment zoom control.
 ///
@@ -235,10 +241,18 @@ impl ZoomStrip {
     ///
     /// Whole numbers lose their decimal tail, so 100% is `100%` rather than `100.00%`.
     pub fn label(&self) -> String {
+        let mut out = String::new();
+        self.write_label(&mut out);
+        out
+    }
+
+    /// Appends the middle-segment label to `out`, reusing its capacity.
+    fn write_label(&self, out: &mut String) {
+        out.clear();
         if self.show_percentage {
-            format!("{}%", trim_number(self.zoom_level * 100.0))
+            trim_number_into(self.zoom_level * 100.0, out, "%");
         } else {
-            format!("{}x", trim_number(self.zoom_level))
+            trim_number_into(self.zoom_level, out, "x");
         }
     }
 
@@ -338,22 +352,25 @@ impl Draw for ZoomStrip {
             context.draw_rect(cell, surface.blend(&ink, 0.16));
         }
 
-        context.draw_text_fitted_cow(
+        context.draw_text_fitted_ellipsis(
             self.segment_rect(0),
             "-",
             font,
             ink,
             HorizontalAlignment::Center,
         );
-        let label = self.label();
-        context.draw_text_fitted_cow(
-            self.segment_rect(1),
-            &label,
-            font,
-            accent,
-            HorizontalAlignment::Center,
-        );
-        context.draw_text_fitted_cow(
+        LABEL_SCRATCH.with(|cell| {
+            let mut label = cell.borrow_mut();
+            self.write_label(&mut label);
+            context.draw_text_fitted_ellipsis(
+                self.segment_rect(1),
+                &label,
+                font,
+                accent,
+                HorizontalAlignment::Center,
+            );
+        });
+        context.draw_text_fitted_ellipsis(
             self.segment_rect(2),
             "+",
             font,
@@ -361,7 +378,7 @@ impl Draw for ZoomStrip {
             HorizontalAlignment::Center,
         );
         if self.fit_actions {
-            context.draw_text_fitted_cow(
+            context.draw_text_fitted_ellipsis(
                 self.segment_rect(3),
                 "Fit",
                 font,
@@ -426,16 +443,27 @@ fn constraint_violation(property: &str, reason: &str) -> CapabilityAccessError {
 }
 
 /// Formats a float without a pointless decimal tail, keeping at most two decimals.
-fn trim_number(value: f32) -> String {
+fn trim_number_into(value: f32, out: &mut String, suffix: &str) {
+    use core::fmt::Write as _;
+    out.clear();
     if !value.is_finite() {
-        return "-".to_string();
+        out.push('-');
+        out.push_str(suffix);
+        return;
     }
     let rounded = (value * 100.0).round() / 100.0;
     if rounded.abs() < 1.0e15 && (rounded - rounded.round()).abs() < f32::EPSILON {
-        return format!("{}", rounded.round() as i64);
+        let _ = write!(out, "{}{suffix}", rounded.round() as i64);
+    } else {
+        let _ = write!(out, "{rounded:.2}");
+        while out.ends_with('0') {
+            out.pop();
+        }
+        if out.ends_with('.') {
+            out.pop();
+        }
+        out.push_str(suffix);
     }
-    let text = format!("{rounded:.2}");
-    text.trim_end_matches('0').trim_end_matches('.').to_string()
 }
 
 impl WidgetProperties for ZoomStrip {

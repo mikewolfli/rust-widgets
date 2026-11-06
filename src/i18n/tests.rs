@@ -497,7 +497,7 @@ fn i18n_global_init() {
     assert_eq!(global::translate("missing"), "missing");
 
     // Reset global state
-    global::init();
+    global::reset_for_tests();
 }
 
 #[test]
@@ -543,7 +543,7 @@ fn tr_macro_basic() {
     assert_eq!(crate::tr!("formal_greet", "casual", 1), "formal_greet");
 
     // Reset global state
-    global::init();
+    global::reset_for_tests();
 }
 
 #[test]
@@ -743,7 +743,7 @@ fn process_reload_events_does_not_feed_its_own_channel() {
     let second = process_reload_events(&receiver);
     assert!(second.is_empty(), "applying a reload must not queue another reload; got {second:?}");
 
-    global::init();
+    global::reset_for_tests();
 }
 
 /// A burst of platform events for one logical save must collapse to one reload.
@@ -778,7 +778,7 @@ fn process_reload_events_deduplicates_a_burst_for_one_language() {
     assert_eq!(applied.len(), 1, "three events for one language are one reload");
     assert_eq!(global::translate("k"), "v");
 
-    global::init();
+    global::reset_for_tests();
 }
 
 /// Two languages announced in one drain must each be applied once. This is the
@@ -823,7 +823,7 @@ fn process_reload_events_applies_each_language_once() {
     // Nothing left over: neither reload may have re-announced itself.
     assert!(process_reload_events(&receiver).is_empty());
 
-    global::init();
+    global::reset_for_tests();
 }
 
 /// The property the quiet path uniquely guarantees: applying a reload that a
@@ -920,7 +920,7 @@ fn init_with_options_loads_embedded_english_fallback() {
     assert!(report.translations_count >= 1, "embedded English must be loaded, got {report:?}");
     assert!(report.errors.is_empty(), "no errors expected, got {:?}", report.errors);
     assert_eq!(global::translate("common.button.ok"), "OK");
-    global::init();
+    global::reset_for_tests();
 }
 
 /// A directory with one good and one malformed file must report the bad file,
@@ -959,7 +959,7 @@ fn init_with_options_reports_missing_dir_and_bad_file() {
         "a missing directory must be reported, got {:?}",
         missing.errors
     );
-    global::init();
+    global::reset_for_tests();
 }
 
 // ── S-32: a backward mtime must not hide a content change ──

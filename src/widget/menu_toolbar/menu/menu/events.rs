@@ -278,7 +278,6 @@ impl WidgetProperties for Menu {
                 self.clear();
                 Ok(())
             }
-            "add_action" => Err(CapabilityAccessError::OutOfRange),
             "set_items" => Err(CapabilityAccessError::OutOfRange),
             // `add_separator` takes no argument, so the command appends one through the
             // control's own builder instead of refusing a call it can honor.
@@ -289,7 +288,6 @@ impl WidgetProperties for Menu {
             // Any other `set_foo` name carries its value through the property route,
             // so the shared default reports that a payload is needed rather than
             // claiming the control has never heard of it.
-            _ if name.starts_with("set_") => Err(CapabilityAccessError::OutOfRange),
             _ => self.default_command(name),
         }
     }

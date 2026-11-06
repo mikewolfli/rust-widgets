@@ -76,6 +76,8 @@ pub struct KanbanBoard {
     pub cards_moved: Signal1<Vec<String>>,
     /// The drag proxy this board keeps in step, when one is attached.
     pub(super) drag_ghost: Option<DragGhostBinding>,
+    /// The per-column count badge, reused across columns and frames.
+    pub(super) badge_scratch: String,
 }
 
 impl Widget for KanbanBoard {
@@ -186,6 +188,7 @@ impl KanbanBoard {
             selection_changed: Signal1::new(),
             cards_moved: Signal1::new(),
             drag_ghost: None,
+            badge_scratch: String::new(),
         }
     }
 

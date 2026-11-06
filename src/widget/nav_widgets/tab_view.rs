@@ -1234,7 +1234,7 @@ impl Draw for TabView {
             // The line box is what `text_line` derives from the same font, so the caption cannot
             // sit half a line off; `draw_text_fitted` with `Center` then bounds it to the tab, so
             // a long title is elided rather than running over its neighbour.
-            context.draw_text_fitted_cow(
+            context.draw_text_fitted_ellipsis(
                 context.text_line(label, font),
                 display_text,
                 font,

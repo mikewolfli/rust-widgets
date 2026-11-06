@@ -127,7 +127,7 @@ impl Draw for DataGrid {
                     let band = Rect::new(x, y, width, GRID_HEADER_HEIGHT);
                     context.fill_rect(band, surface.blend(&ink, 0.05));
                     if let Some(label) = labels.get(column).filter(|label| !label.is_empty()) {
-                        context.draw_text_fitted_cow(
+                        context.draw_text_fitted_ellipsis(
                             context.text_line(band, header_font),
                             label,
                             header_font,
@@ -193,7 +193,7 @@ impl Draw for DataGrid {
                         band.width.saturating_sub(4 + arrow),
                         band.height,
                     );
-                    context.draw_text_fitted_cow(
+                    context.draw_text_fitted_ellipsis(
                         context.text_line(text_band, header_font),
                         name.as_str(),
                         header_font,
@@ -368,7 +368,7 @@ impl Draw for DataGrid {
             context.draw_rect(band, cell_border);
             if let Some(text) = self.row_detail_text(global_row).filter(|text| !text.is_empty()) {
                 let font = effective_font(self.style());
-                context.draw_text_fitted_cow(
+                context.draw_text_fitted_ellipsis(
                     context.text_line(band, font),
                     &text,
                     font,
@@ -408,7 +408,7 @@ impl Draw for DataGrid {
                 context.fill_rect(tip, surface.blend(&ink, 0.06));
                 context.draw_rect(tip, cell_border);
                 let font = effective_font(self.style());
-                context.draw_text_fitted_cow(
+                context.draw_text_fitted_ellipsis(
                     context.text_line(tip, font),
                     &text,
                     font,
@@ -525,7 +525,7 @@ impl DataGrid {
         // `text_line` derives the real centred box. Fitting as well keeps a long value inside its
         // own column instead of bleeding right.
         let font = effective_font(self.style());
-        context.draw_text_fitted_cow(
+        context.draw_text_fitted_ellipsis(
             context.text_line(cell_rect, font),
             text,
             font,

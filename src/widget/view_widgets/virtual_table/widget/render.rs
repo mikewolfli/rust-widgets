@@ -106,7 +106,7 @@ impl Draw for VirtualTable {
                     // cached, so an unnamed column no longer formats its fallback per frame
                     // (VP-007).
                     let name = self.header_name(global, source.as_ref());
-                    context.draw_text_fitted_cow(
+                    context.draw_text_fitted_ellipsis(
                         context.text_line(band, font),
                         name.as_str(),
                         font,
@@ -246,7 +246,7 @@ impl Draw for VirtualTable {
                     // the glyph box's *top* edge on the cell's middle line, so the value drew half
                     // a line low; `text_line` derives the centred box. Fitting keeps a wide value
                     // from spilling into the next column.
-                    context.draw_text_fitted_cow(
+                    context.draw_text_fitted_ellipsis(
                         context.text_line(cell_rect, cell_font),
                         value.as_str(),
                         cell_font,

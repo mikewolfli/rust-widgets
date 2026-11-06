@@ -13,7 +13,10 @@
 //!
 //! # Reachability
 //!
-//! **State:** Reserved: the asset watcher is exercised only by its own tests; `CssWatcher` covers the one production hot-reload need. The `resource` half is the logical-identity seam a host may adopt; it has no in-repo caller yet.
+//! **State:** Reserved: the asset watcher is exercised only by its own tests. `CssWatcher` is the
+//! host-driven stylesheet reload entry (see its own Reachability note) and has no in-crate caller
+//! either; neither module backs a production hot-reload path today. The `resource` half is the
+//! logical-identity seam a host may adopt; it has no in-repo caller yet.
 //!
 //! **Removal condition:** delete `asset` when a consumer needs asset invalidation (then the watcher is production) or when the identity seam is adopted by `image::cache`/the icon resolver (then it stops being reserved). If neither happens by the next major release, remove the module and its tests together.
 

@@ -1875,11 +1875,10 @@ impl WidgetProperties for TabBar {
     /// its rows travel through the `tabs` property (B26.03).
     fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
         match name {
-            "add_tab" | "remove_tab" | "set_tabs" => Err(CapabilityAccessError::OutOfRange),
+            "set_tabs" => Err(CapabilityAccessError::OutOfRange),
             // Any other `set_foo` name carries its value through the property route,
             // so the shared default reports that a payload is needed rather than
             // claiming the control has never heard of it.
-            _ if name.starts_with("set_") => Err(CapabilityAccessError::OutOfRange),
             _ => self.default_command(name),
         }
     }

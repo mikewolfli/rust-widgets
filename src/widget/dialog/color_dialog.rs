@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 //! Color dialog widget.
+use crate::compat::Rc;
 use crate::core::{Color, HorizontalAlignment, ObjectId, Point, Rect, Size};
 use crate::event::key_codes;
 use crate::event::{Event, EventHandler};
@@ -163,6 +164,8 @@ fn color_from_hsv(hue: f32, saturation: f32, value: f32, alpha: u8) -> Color {
 /// fact rather than two mappings that happen to disagree.
 pub struct ColorDialog {
     base: BaseWidget,
+    /// The OK/Cancel labels, keyed by the catalogue generation.
+    action_label_cache: crate::compat::RefCell<Option<(u64, crate::compat::Rc<Vec<String>>)>>,
     current_color: Color,
     /// The colour the dialog opened with, restored by [`ColorDialog::reject`].
     initial_color: Color,
@@ -312,6 +315,7 @@ impl ColorDialog {
     pub fn new(geometry: Rect) -> Self {
         Self {
             base: BaseWidget::new(WidgetKind::ColorDialog, geometry, "ColorDialog"),
+            action_label_cache: crate::compat::RefCell::new(None),
             current_color: Color::rgb(255, 255, 255),
             initial_color: Color::rgb(255, 255, 255),
             options_alpha: false,
@@ -748,7 +752,13 @@ impl ColorDialog {
     ///
     /// `draw` and [`ColorDialog::button_at`] both call this, so a press can never resolve
     /// against a different label set than the one that was measured and painted.
-    fn action_labels() -> Vec<String> {
+    fn action_labels(&self) -> Rc<Vec<String>> {
+        let generation = crate::i18n::language_generation();
+        if let Some((cached_generation, labels)) = self.action_label_cache.borrow().as_ref() {
+            if *cached_generation == generation {
+                return Rc::clone(labels);
+            }
+        }
         // One buffer per label, moved into the row: the label is appended by the catalogue
         // instead of being materialised twice by `localized_label` (LYT-X04).
         let mut labels = Vec::with_capacity(2);
@@ -758,6 +768,8 @@ impl ColorDialog {
         let mut label = crate::compat::String::new();
         super::localized_label_into("common.button.cancel", "Cancel", &mut label);
         labels.push(label);
+        let labels = Rc::new(labels);
+        *self.action_label_cache.borrow_mut() = Some((generation, Rc::clone(&labels)));
         labels
     }
 
@@ -767,13 +779,13 @@ impl ColorDialog {
     /// one — the pattern `MessageBox::action_button_at` established. The rects themselves are never
     /// cached: a cache is a second copy of the geometry that a resize can leave stale, which is
     /// exactly how a hit region drifts away from the ink it is meant to describe.
-    fn action_buttons(&self) -> Vec<Rect> {
+    fn action_buttons(&self) -> Rc<Vec<Rect>> {
         let rect = self.frame_rect();
         let band = super::message_box::inset_action_band(
             Rect::new(rect.x, self.button_row_top(), rect.width, Self::BUTTON_HEIGHT as u32),
             rect.y,
         );
-        let labels = Self::action_labels();
+        let labels = self.action_labels();
         super::with_measurement_context(|context| {
             super::message_box::action_row_geometry(
                 context,
@@ -793,7 +805,7 @@ impl ColorDialog {
 
     /// Moves the focus ring across the action buttons and announces the move.
     fn move_focus(&mut self) {
-        let count = Self::action_labels().len();
+        let count = self.action_labels().len();
         let next = super::move_focus(self.focus, count, true);
         if next != self.focus {
             self.focus = next;
@@ -1256,7 +1268,7 @@ impl Draw for ColorDialog {
         // The screen-picker button shares the title band, so its width is subtracted from the
         // title's fitted line rather than letting a long title run underneath it.
         let title_reserve = if self.show_screen_picker { 48 } else { 0 };
-        context.draw_text_fitted_cow(
+        context.draw_text_fitted_ellipsis(
             Rect::new(
                 rect.x + 8,
                 title_line.y,
@@ -1279,7 +1291,7 @@ impl Draw for ColorDialog {
             };
             context.fill_rounded_rect(button, 4, fill);
             context.draw_rounded_rect_stroke(button, 4, border, 1);
-            context.draw_text_fitted_cow(
+            context.draw_text_fitted_ellipsis(
                 button,
                 "PICK",
                 title_font,
@@ -1379,7 +1391,7 @@ impl Draw for ColorDialog {
                     &self.current_color.to_hex_rgba()
                 };
                 let line = context.text_line(field, preview_font);
-                context.draw_text_fitted_cow(
+                context.draw_text_fitted_ellipsis(
                     Rect::new(
                         field.x + 4,
                         line.y,
@@ -1405,7 +1417,7 @@ impl Draw for ColorDialog {
                     Self::PREVIEW_HEIGHT as u32,
                 );
                 let line = context.text_line(band, preview_font);
-                context.draw_text_fitted_cow(
+                context.draw_text_fitted_ellipsis(
                     Rect::new(band.x, line.y, band.width.max(1), line.height.max(1)),
                     preview_text,
                     preview_font,
@@ -1426,11 +1438,11 @@ impl Draw for ColorDialog {
             Rect::new(rect.x, self.button_row_top(), rect.width, Self::BUTTON_HEIGHT as u32),
             rect.y,
         );
-        let labels = Self::action_labels();
+        let labels = self.action_labels();
         let row = super::message_box::action_row_geometry(context, font, &labels, band, true);
         let ok_rect = row.buttons[0];
         context.fill_rect(ok_rect, accent);
-        context.draw_text_line_cow(
+        context.draw_text_line_ellipsis(
             ok_rect,
             &labels[0],
             font,
@@ -1440,7 +1452,13 @@ impl Draw for ColorDialog {
         let cancel_rect = row.buttons[1];
         context.fill_rect(cancel_rect, surface);
         context.draw_rect(cancel_rect, border);
-        context.draw_text_line_cow(cancel_rect, &labels[1], font, ink, HorizontalAlignment::Center);
+        context.draw_text_line_ellipsis(
+            cancel_rect,
+            &labels[1],
+            font,
+            ink,
+            HorizontalAlignment::Center,
+        );
         if let Some(focused) = self.focus.and_then(|index| row.buttons.get(index)) {
             context.draw_rounded_rect_stroke(*focused, 2, accent, 2);
         }

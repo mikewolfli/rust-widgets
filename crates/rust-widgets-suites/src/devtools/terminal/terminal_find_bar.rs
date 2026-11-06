@@ -634,7 +634,7 @@ impl Draw for TerminalFindBar {
         let query_rect = self.query_rect();
         if self.query.is_empty() {
             // A muted prompt rather than an empty field, so an open bar says what it wants.
-            context.draw_text_line(
+            context.draw_text_line_ellipsis(
                 query_rect,
                 "Find in scrollback",
                 font,
@@ -642,13 +642,25 @@ impl Draw for TerminalFindBar {
                 HorizontalAlignment::Left,
             );
         } else {
-            context.draw_text_line(query_rect, &self.query, font, ink, HorizontalAlignment::Left);
+            context.draw_text_line_ellipsis(
+                query_rect,
+                &self.query,
+                font,
+                ink,
+                HorizontalAlignment::Left,
+            );
         }
 
         let counter_rect = self.counter_rect();
         let counts = (self.match_count, self.current_match);
         let counter = self.counter_cache.label(counts);
-        context.draw_text_line(counter_rect, counter, font, accent, HorizontalAlignment::Right);
+        context.draw_text_line_ellipsis(
+            counter_rect,
+            counter,
+            font,
+            accent,
+            HorizontalAlignment::Right,
+        );
     }
 }
 

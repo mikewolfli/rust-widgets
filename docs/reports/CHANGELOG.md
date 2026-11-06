@@ -9,6 +9,20 @@ When the two disagree, this file is the one that ships; `tools/check_changelog_s
 
 ### Changed
 
+- **Icon resources live in `crates/rust-widgets-icons`, and the set is the whole Material Symbols
+  catalogue.** The generated `IconName` table, the SVG path table, the flattened fallback polygons,
+  the vendored upstream sources and the generators now live in a nested package; the main crate
+  re-exports `IconName`/`IconData` and its `icons` feature enables that package's `data` feature.
+  The `Icon` control, its draw path and the runtime icon registry stay in the main crate.
+  `IconName` grows from 75 tokens to **4,323**: the 75 hand-curated spellings plus the 4,248-name
+  catalogue, generated from upstream's own codepoint list. The fallback table is now layered — still
+  one entry per token, but only the curated tokens carry polygons, so a build without `data` (the
+  sized `mini`/`embedded` profiles) does not link ~12 MB of geometry it never draws; a catalogue
+  token in such a build reports that it has no fallback rather than painting nothing. 146 of the
+  outlines come from the Material Symbols release tree instead of the pinned commit (73 names are
+  absent from it, and 73 exist there only in upstream's legacy 24-unit encoding), and the generator
+  now refuses an off-grid vendor file, which is what keeps an icon from collapsing into a sliver.
+  The package ships at 735 KiB compressed.
 - **The runtime tree is the only container composition mechanism.** `widget::registry`,
   `SimpleRegistry` and every container's `set_registry` are removed; content is a mounted child,
   painted and hit-tested by the tree painter. Repo-internal callers were audited to zero before
@@ -19,6 +33,33 @@ When the two disagree, this file is the one that ships; `tools/check_changelog_s
 
 ### Added
 
+- `UPSTREAM_ALIASES`, re-exported from `widget`: the `(alias, canonical)` pairs of tokens Material
+  Symbols draws with one picture (`star` / `grade` / `star_outline`, `close` / `clear`), plus this
+  crate's own translations (`user` / `person`). `rust-widgets-icons` derives it from the shipped
+  geometry, and the integrity tests require the data's duplicate outlines to be exactly this set —
+  the `Close == Cross` rule, restated for a catalogue whose names are upstream's own.
+- `IconName::CURATED_TOKENS`: how many leading variants are the hand-written tokens. The order puts
+  the curated set first, so its discriminants never move when the catalogue is refreshed.
+- **Declarative `absolute` and `constraint` layouts.** A document may now use `{"type":
+  "absolute", ...}` with per-child `x`/`y`/`width`/`height`/`anchor`, and `{"type":
+  "constraint", ...}` with per-child `constraints` naming a target node id and a relationship. Both
+  solvers were reachable only from tests before; the loader now builds and fills them.
+- `BarChart::export_svg` writes the chart through the engine's headless SVG renderer, giving the
+  `charts` layer a production call path.
+- `designer::DesignerSession` pairs a document with its undo history; `designer_generate` holds its
+  project document in one.
+- `WindowHandle::report_moved` lets a host report an OS-initiated move on a backend whose protocol
+  cannot observe it.
+- The frame loop advances the default `AnimationClock` each frame, so named `AnimationGroup`s move
+  in step with controls.
+- `RenderContext::draw_text_fitted_ellipsis` and `draw_text_line_ellipsis` draw a fitted label
+  through a bounded content-keyed cache, so an elided caption no longer builds its `prefix…`
+  string on every frame. The `Cow` forms are unchanged and draw byte-identical text.
+- `TreeModel::node_ref` lends an already-materialised `NodeView`; the default returns `None`, so
+  every existing implementor keeps working. `TreeView` uses it to paint and expand without
+  cloning a label per visible row per frame.
+- `i18n::language_generation()` reports a counter bumped by `set_language`/`retranslate`, so a
+  control that caches a resolved label can key it completely.
 - `Platform::reports_window_moves()` reports whether a backend delivers window-manager moves.
   It is `true` for the AppKit, GTK and Win32 backends and `false` for Wayland and Redox, whose
   protocols expose no absolute position. `WindowHandle::position` documents that its answer is
@@ -30,6 +71,14 @@ When the two disagree, this file is the one that ships; `tools/check_changelog_s
 
 ### Performance
 
+- **Every constructible control now paints a steady-state frame with zero heap allocations.**
+  `tests/key_normalization_allocations.rs` sweeps all 241 controls (create → sample data →
+  settle → warm-up → four counted frames) and fails with the control's name if one regresses.
+  The sweep replaced per-frame buffers in data-source windows (`tree_view`, `list_view`,
+  `tree_table`, `grid_table`), dialogs (action-label and action-row caches keyed by labels, font,
+  band and DPI), calendars/number pickers/query builder/image gallery/zoom strip/radar readouts,
+  banner word-wrap output, the code editor's viewport/status/gutter buffers, and path vertices
+  (arrows, chevrons, gauge sweeps) via a bounded translated-path cache in `RenderContext`.
 - A steady-state paint of a `carousel`, `pagination`, `navigation_stack` or `navigation_drawer` no
   longer allocates: the carousel's indicator slot list is derived per index instead of built as a
   `Vec`, its counter face is interned, the pager reuses its label buffer, and the navigation
@@ -120,6 +169,11 @@ container content model, the handle layer, and the GPU subsystem's disposal. The
 - `src/app/wiring.rs`, `src/settings.rs`, `compat::MiniArena`, `App::poll_event`/`poll_triggered`/
   `run_async`, `open_path`/`save_path`/`select_directory`, and the image cache's zero-caller decode
   entry family.
+- `src/render/backend/batch.rs` (2554 lines) and the `BatchRenderer`/`BatchId`/`BatchError`/
+  `BatchCommand` recording surface, including its image registry (`BatchImage`,
+  `SoftwarePaintBackend::register_image`). It had no production consumer, and replaying a second
+  command vocabulary on the compose path would have been a negative optimisation: `SceneLayer`
+  already stores and executes `RenderCommand`s directly.
 
 ### Verification
 

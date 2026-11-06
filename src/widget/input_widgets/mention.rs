@@ -1535,7 +1535,7 @@ impl Mention {
             // at the row's right padding. Neither ran out of room before, so a long pair
             // overlapped or painted past the popup edge.
             let display_width = ((row.x + 112) - (row.x + 8)).max(0) as u32;
-            context.draw_text_fitted_cow(
+            context.draw_text_fitted_ellipsis(
                 Rect::new(row.x + 8, row_line.y, display_width.max(1), row_line.height.max(1)),
                 &candidate.display,
                 &popup_font,
@@ -1545,7 +1545,7 @@ impl Mention {
             if !candidate.description.is_empty() {
                 let description_width =
                     ((row.x + row.width as i32 - 8) - (row.x + 120)).max(0) as u32;
-                context.draw_text_fitted_cow(
+                context.draw_text_fitted_ellipsis(
                     Rect::new(
                         row.x + 120,
                         row_line.y,

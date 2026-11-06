@@ -916,21 +916,27 @@ between.
 
 ## The Icon Data Path (`icons`, on by default)
 
-`Icon` names 75 icons through `IconName`. The `icons` feature — **on by default** — draws each one
-from the **real outline**, read from path data vendored at a pinned upstream revision. Without the
-feature `Icon` falls back to generated geometry, derived by flattening *the same* outlines — so the
-two paths cannot describe different shapes for one icon.
+`Icon` names 4,323 icons through `IconName`: the 75 tokens this crate names itself, plus the whole
+Material Symbols catalogue. The `icons` feature — **on by default** — draws each one from the **real
+outline**, read from path data vendored at a pinned upstream revision. Without the feature `Icon`
+falls back to generated geometry, derived by flattening *the same* outlines for those 75 tokens, so
+the two paths cannot describe different shapes for one named icon; a catalogue token in such a build
+has no fallback and reports that rather than drawing a wrong picture.
 
-The token set is declared once in `tools/icon_tokens.txt`; `tools/gen_icon_names.py` generates the
-`IconName` type from it, so adding an icon is a two-line edit plus a generator run rather than edits
-spread across the enum, two match arms and three arrays. A host that needs an icon the crate does
-not ship registers its own with `register_icon`, which draws through exactly the code below.
+The declaration is split in two: `crates/rust-widgets-icons/tools/icon_tokens.txt` holds the tokens a
+human wrote, and `crates/rust-widgets-icons/tools/icon_catalog.txt` holds the catalogue, generated
+from upstream's codepoint list by `crates/rust-widgets-icons/tools/gen_icon_catalog.py`. The curated
+file comes first, so its variants never move; `crates/rust-widgets-icons/tools/gen_icon_names.py`
+generates the whole `IconName` type from the two, so adding an icon is a two-line edit plus a
+generator run rather than edits spread across the enum, two match arms and three arrays. A host that
+needs an icon the crate does not ship registers its own with `register_icon`, which draws through
+exactly the code below.
 
 The path from a name to pixels has four stages, each with one implementation:
 
 ```mermaid
 graph LR
-    ENUM["IconName<br/>(75 variants)"]
+    ENUM["IconName<br/>(4,323 variants)"]
     DATA["IconData<br/>name, grid, paths"]
     PARSE["render::path::parser<br/>SVG d -> Segment"]
     FLAT["render::path::flatten<br/>Segment -> polyline"]
@@ -944,7 +950,7 @@ graph LR
 
 | Stage | Module | What it does |
 |---|---|---|
-| Data | `widget::icon_data` | the generated table: one `IconData` per token |
+| Data | `rust_widgets_icons::icon_data` | the generated table: one `IconData` per token |
 | Parse | `render::path::parser` | reads the full SVG command set into curve segments |
 | Flatten | `render::path::flatten` | maps design units to device pixels and emits polygons |
 | Fill | `RenderContext::fill_path_non_zero` | the same path fill every other vector draw uses |

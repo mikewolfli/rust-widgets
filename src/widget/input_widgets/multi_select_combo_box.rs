@@ -854,7 +854,7 @@ impl Draw for MultiSelectComboBox {
         // the box's top edge, so the old `padding + 13` put a 13 px font's origin on the field's
         // middle line and drew the summary half a line low.
         let summary_line = context.text_line(geometry.text_box, font);
-        context.draw_text_fitted_cow(
+        context.draw_text_fitted_ellipsis(
             Rect::new(
                 geometry.text_box.x,
                 summary_line.y,
@@ -953,7 +953,7 @@ impl Draw for MultiSelectComboBox {
             let item_color = if item.enabled { ink } else { ink.blend(&field, 0.6) };
             let text_band_width =
                 ((item_rect.x + item_rect.width as i32 - 8) - item_text_x).max(0) as u32;
-            context.draw_text_fitted_cow(
+            context.draw_text_fitted_ellipsis(
                 Rect::new(item_text_x, item_line.y, text_band_width, item_line.height.max(1)),
                 &item.text,
                 font,

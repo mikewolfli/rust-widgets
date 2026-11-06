@@ -4,10 +4,24 @@
 #
 # Exercises `tools/lib_cargo_cache.sh`: a cold run compiles, a warm run replays successful output,
 # and changed source/environment inputs or failures cannot reuse a stale result.
+#
+# # Why the cache directory is private to this test
+#
+# The checks below need a *cold* first step, and the real cache (`target/gate-cache`) is normally
+# warm — running against it made the "must compile, not replay" assertion depend on whether some
+# earlier gate had already built this exact feature set. A private directory makes the run
+# deterministic and keeps the probe from evicting or polluting entries a real gate run will reuse.
 set -uo pipefail
-cd /Users/mikewolfli/Desktop/workspace/rust-widgets
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT_DIR" || exit 1
+
+RW_CACHE_DIR="$(mktemp -d)"
+export RW_CACHE_DIR
 . tools/lib_timeout.sh
 . tools/lib_cargo_cache.sh
+cleanup() { rm -rf "$RW_CACHE_DIR"; }
+trap cleanup EXIT
 failures=0
 
 echo "── cold run (must compile, not replay) ──"
@@ -52,20 +66,26 @@ else
   failures=$((failures + 1))
 fi
 
-echo "── a source edit must force a recompile ──"
-cp src/widget/metrics.rs /tmp/metrics.keep
-printf '\n// cache invalidate probe\n' >> src/widget/metrics.rs
+echo "── a source change must force a real run ──"
+# A *new* file, not an edit to a tracked source file. This test can run while another writer is
+# active in the same tree, and rewriting someone else's source file to prove a point is a good
+# way to destroy their edit. Every file under the tree is part of the digest (`_rw_source_digest`
+# hashes the whole build surface, minus build output), so adding one invalidates the key exactly
+# as an edit does — and a `.txt` file can never be picked up by the build.
+PROBE="src/rw_cache_invalidate_probe.txt"
+rm -f "$PROBE"
+printf 'first\n' > "$PROBE"
 start=$(date +%s)
 rw_cargo_cached 600 check --no-default-features --features mini --lib >/tmp/c3.out 2>/tmp/c3.err
 rc_edit=$?
 echo "  rc=$rc_edit  elapsed=$(( $(date +%s) - start ))s"
 if [ "$rc_edit" != "0" ] || grep -q "reused from cache" /tmp/c3.err; then
-  echo "  FAIL edited-source check failed or reused a cached result ($rc_edit)"
+  echo "  FAIL changed-source check failed or reused a cached result ($rc_edit)"
   failures=$((failures + 1))
 else
-  echo "  PASS source edit forced a real run"
+  echo "  PASS a source change forced a real run"
 fi
-cp /tmp/metrics.keep src/widget/metrics.rs
+rm -f "$PROBE"
 
 echo "── an exported environment change must change the key ──"
 export RW_CARGO_CACHE_TEST_INPUT=first
@@ -79,6 +99,26 @@ else
   failures=$((failures + 1))
 fi
 unset RW_CARGO_CACHE_TEST_INPUT
+
+# The harness's own knobs are not compiler inputs. `run_all_gates.sh` documents raising them from
+# the environment, and while they took part in the key that advice invalidated every cached step:
+# a warm tree recompiled from scratch and read as a hang. Guard the exclusion here so it cannot
+# regress into that.
+echo "── harness budget knobs must NOT change the key ──"
+key_plain="$(_rw_cache_key check --no-default-features --features mini --lib)"
+key_gate="$(RW_GATE_TIMEOUT=1200 _rw_cache_key check --no-default-features --features mini --lib)"
+key_run="$(RW_RUN_TIMEOUT=7200 _rw_cache_key check --no-default-features --features mini --lib)"
+key_nocache="$(RW_GATE_NO_CACHE=1 _rw_cache_key check --no-default-features --features mini --lib)"
+if [ "$key_plain" = "$key_gate" ] && [ "$key_plain" = "$key_run" ] && [ "$key_plain" = "$key_nocache" ]; then
+  echo "  PASS RW_GATE_TIMEOUT / RW_RUN_TIMEOUT / RW_GATE_NO_CACHE leave the key unchanged"
+else
+  echo "  FAIL a harness knob changed the key:"
+  echo "    plain   $(printf '%s' "$key_plain" | tr '\n' '/')"
+  echo "    gate    $(printf '%s' "$key_gate" | tr '\n' '/')"
+  echo "    run     $(printf '%s' "$key_run" | tr '\n' '/')"
+  echo "    nocache $(printf '%s' "$key_nocache" | tr '\n' '/')"
+  failures=$((failures + 1))
+fi
 
 echo "── a failing step must run again instead of caching its failure ──"
 rw_cargo_cached 600 check --no-default-features --features no_such_feature_xyz >/tmp/c4.out 2>/tmp/c4.err
@@ -114,11 +154,11 @@ else
   failures=$((failures + 1))
 fi
 
-echo "── tree restored ──"
-if diff -q /tmp/metrics.keep src/widget/metrics.rs >/dev/null; then
+echo "── probe file removed ──"
+if [ ! -e "$PROBE" ]; then
   echo "  PASS"
 else
-  echo "  FAIL tree dirty"
+  echo "  FAIL probe file left in the tree: $PROBE"
   failures=$((failures + 1))
 fi
 if [ "$failures" -eq 0 ]; then

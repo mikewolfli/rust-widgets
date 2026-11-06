@@ -7,7 +7,7 @@
 //! layout, paint and hit testing are in `popup`; the trait implementations that connect
 //! this model to the runtime are in `events`.
 
-use crate::compat::{lock, Arc, Mutex, Rc, RefCell, Vec};
+use crate::compat::{lock, Arc, Cow, Mutex, Rc, RefCell, Vec};
 use crate::core::{ObjectId, Point, Rect};
 use crate::signal::{GenericSignal, Signal1};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
@@ -64,6 +64,19 @@ pub fn strip_menu_mnemonic(text: &str) -> String {
         }
     }
     stripped
+}
+
+/// [`strip_menu_mnemonic`] without copying a label that has no marker.
+///
+/// The paint loops strip every title on every frame; most titles carry no `&`, so the common
+/// answer can borrow the stored string. The owned form is kept for the public API and callers
+/// that need storage.
+pub(crate) fn strip_menu_mnemonic_cow(text: &str) -> Cow<'_, str> {
+    if text.contains('&') {
+        Cow::Owned(strip_menu_mnemonic(text))
+    } else {
+        Cow::Borrowed(text)
+    }
 }
 
 /// The first character a mnemonic label shows, skipping its `&` marker.

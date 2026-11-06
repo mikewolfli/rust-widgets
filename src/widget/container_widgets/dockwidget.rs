@@ -8,7 +8,7 @@ use crate::event::{DragPayload, Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
 
-use crate::widget::capability::coercion::{expect_bool, expect_string};
+use crate::widget::capability::coercion::{expect_bool, expect_string, expect_string_list};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
@@ -134,6 +134,39 @@ impl Default for DockWidgetFeatures {
 }
 
 impl DockWidgetFeatures {
+    /// The enabled flags as the tokens the property table publishes.
+    fn tokens(self) -> Vec<&'static str> {
+        let mut tokens = Vec::new();
+        if self.dock_widget_closable {
+            tokens.push("closable");
+        }
+        if self.dock_widget_movable {
+            tokens.push("movable");
+        }
+        if self.dock_widget_floatable {
+            tokens.push("floatable");
+        }
+        if self.dock_widget_vertical_title_bar {
+            tokens.push("vertical_title_bar");
+        }
+        tokens
+    }
+
+    /// Builds a feature set from the published tokens; omitted flags are off.
+    fn from_tokens(tokens: &[String]) -> Result<Self, CapabilityAccessError> {
+        let mut features = Self::none();
+        for token in tokens {
+            match token.as_str() {
+                "closable" => features.dock_widget_closable = true,
+                "movable" => features.dock_widget_movable = true,
+                "floatable" => features.dock_widget_floatable = true,
+                "vertical_title_bar" => features.dock_widget_vertical_title_bar = true,
+                _ => return Err(CapabilityAccessError::TypeMismatch),
+            }
+        }
+        Ok(features)
+    }
+
     /// Returns true when all features are enabled.
     pub fn all_enabled(&self) -> bool {
         self.dock_widget_closable
@@ -226,6 +259,63 @@ impl DockWidgetAreas {
             }
         }
     }
+    /// The permitted edges as the tokens the property table publishes.
+    fn tokens(self) -> Vec<&'static str> {
+        if self.left_dock_widget_area
+            && self.right_dock_widget_area
+            && self.top_dock_widget_area
+            && self.bottom_dock_widget_area
+        {
+            return vec!["all"];
+        }
+        let mut tokens = Vec::new();
+        if self.left_dock_widget_area {
+            tokens.push("left");
+        }
+        if self.right_dock_widget_area {
+            tokens.push("right");
+        }
+        if self.top_dock_widget_area {
+            tokens.push("top");
+        }
+        if self.bottom_dock_widget_area {
+            tokens.push("bottom");
+        }
+        if tokens.is_empty() {
+            tokens.push("none");
+        }
+        tokens
+    }
+
+    /// Builds an area set from the published tokens; omitted edges are off.
+    fn from_tokens(tokens: &[String]) -> Result<Self, CapabilityAccessError> {
+        let mut areas = Self::none();
+        for token in tokens {
+            match token.as_str() {
+                "all" => areas = Self::all(),
+                "none" => areas = Self::none(),
+                "left" => {
+                    areas.left_dock_widget_area = true;
+                    areas.no_dock_widget_areas = false;
+                }
+                "right" => {
+                    areas.right_dock_widget_area = true;
+                    areas.no_dock_widget_areas = false;
+                }
+                "top" => {
+                    areas.top_dock_widget_area = true;
+                    areas.no_dock_widget_areas = false;
+                }
+                "bottom" => {
+                    areas.bottom_dock_widget_area = true;
+                    areas.no_dock_widget_areas = false;
+                }
+                _ => return Err(CapabilityAccessError::TypeMismatch),
+            }
+        }
+        Ok(areas)
+    }
+
     /// Creates areas with all flags set.
     pub fn all() -> Self {
         Self {
@@ -356,6 +446,29 @@ enum TitleBarAxis {
 }
 
 impl DockWidgetArea {
+    /// The token the property table publishes for this edge.
+    fn as_token(self) -> &'static str {
+        match self {
+            DockWidgetArea::LeftDockWidgetArea => "left",
+            DockWidgetArea::RightDockWidgetArea => "right",
+            DockWidgetArea::TopDockWidgetArea => "top",
+            DockWidgetArea::BottomDockWidgetArea => "bottom",
+            DockWidgetArea::NoDockWidgetArea => "none",
+        }
+    }
+
+    /// Parses the published token; unknown tokens are refused.
+    fn from_token(token: &str) -> Option<Self> {
+        match token {
+            "left" => Some(DockWidgetArea::LeftDockWidgetArea),
+            "right" => Some(DockWidgetArea::RightDockWidgetArea),
+            "top" => Some(DockWidgetArea::TopDockWidgetArea),
+            "bottom" => Some(DockWidgetArea::BottomDockWidgetArea),
+            "none" => Some(DockWidgetArea::NoDockWidgetArea),
+            _ => None,
+        }
+    }
+
     /// The axis a title bar on this edge runs along.
     ///
     /// A floating or undocked widget has no edge, so its title bar is horizontal -- the form every
@@ -1005,6 +1118,23 @@ impl WidgetProperties for DockWidget {
             "title" => Ok(CapabilityValue::String(self.title().to_string())),
             "floating" => Ok(CapabilityValue::Bool(self.is_floating())),
             "docked" => Ok(CapabilityValue::Bool(self.is_docked())),
+            "dock_location" => {
+                Ok(CapabilityValue::String(self.dock_location().as_token().to_string()))
+            }
+            "features" => Ok(CapabilityValue::Tuple(
+                self.features()
+                    .tokens()
+                    .into_iter()
+                    .map(|token| CapabilityValue::String(token.to_string()))
+                    .collect(),
+            )),
+            "allowed_areas" => Ok(CapabilityValue::Tuple(
+                self.allowed_areas()
+                    .tokens()
+                    .into_iter()
+                    .map(|token| CapabilityValue::String(token.to_string()))
+                    .collect(),
+            )),
             _ => base_property_get(self, name),
         }
     }
@@ -1028,28 +1158,38 @@ impl WidgetProperties for DockWidget {
                 self.set_docked(expect_bool(value)?);
                 Ok(())
             }
+            "dock_location" => {
+                let token = expect_string(value)?;
+                let area = DockWidgetArea::from_token(token.as_str())
+                    .ok_or(CapabilityAccessError::TypeMismatch)?;
+                self.set_dock_location(area);
+                Ok(())
+            }
+            "features" => {
+                let tokens = expect_string_list(value)?;
+                self.set_features(DockWidgetFeatures::from_tokens(&tokens)?);
+                Ok(())
+            }
+            "allowed_areas" => {
+                let tokens = expect_string_list(value)?;
+                self.set_allowed_areas(DockWidgetAreas::from_tokens(&tokens)?);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
         // Mirrors `DOCK_WIDGET_PROPERTIES`.
-        property_names_of!["title", "floating", "docked", BASE_PROPERTY_NAMES]
-    }
-
-    /// Reports the two published commands that name no property.
-    ///
-    /// `set_features` and `set_allowed_areas` take a feature set and an area set —
-    /// bitflag enums, not [`CapabilityValue`] scalars — through the control's own
-    /// [`Self::set_features`] / [`Self::set_allowed_areas`]. `DOCK_WIDGET_PROPERTIES`
-    /// does not publish either as a property, so the default `set_foo` convention
-    /// could not resolve them and reported both commands unknown against a control
-    /// that implements them. `OutOfRange` reports that they need a payload.
-    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
-        match name {
-            "set_features" | "set_allowed_areas" => Err(CapabilityAccessError::OutOfRange),
-            _ => self.default_command(name),
-        }
+        property_names_of![
+            "title",
+            "floating",
+            "docked",
+            "dock_location",
+            "features",
+            "allowed_areas",
+            BASE_PROPERTY_NAMES
+        ]
     }
 }
 
@@ -1201,7 +1341,7 @@ impl Draw for DockWidget {
             };
             match self.dock_location.title_bar_axis() {
                 TitleBarAxis::Horizontal => {
-                    context.draw_text_fitted_cow(
+                    context.draw_text_fitted_ellipsis(
                         Rect::new(
                             title_bar.x + TITLE_BUTTON_GAP as i32,
                             title_bar.y + (title_bar.height as i32 - title_h) / 2,

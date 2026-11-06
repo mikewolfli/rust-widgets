@@ -1787,7 +1787,7 @@ impl Draw for PieMenu {
                     box_w,
                     box_h,
                 );
-                context.draw_text_fitted_cow(
+                context.draw_text_fitted_ellipsis(
                     label_box,
                     label_text,
                     font,
@@ -1801,7 +1801,7 @@ impl Draw for PieMenu {
                 let hint_r = (outer_r - 10.0).max(inner_r);
                 let hx = cx + hint_r * mid_angle.cos();
                 let hy = cy + hint_r * mid_angle.sin();
-                context.draw_text_fitted_cow(
+                context.draw_text_fitted_ellipsis(
                     Rect::new((hx - 24.0) as i32, (hy - 8.0) as i32, 48, 16),
                     shortcut,
                     font,
@@ -1821,7 +1821,7 @@ impl Draw for PieMenu {
             .map(|item| item.text());
         if let Some(label) = hub_label {
             let label_box = hub_label_box(cx, cy, inner_r);
-            context.draw_text_fitted_cow(
+            context.draw_text_fitted_ellipsis(
                 label_box,
                 label,
                 font,

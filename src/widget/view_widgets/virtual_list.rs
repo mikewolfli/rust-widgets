@@ -1153,7 +1153,13 @@ impl Draw for VirtualList {
                 .as_ref()
                 .is_some_and(|delegate| delegate.paint(context, row_box, row_index, text));
             if !painted {
-                context.draw_text_line_cow(row_box, text, row_font, ink, HorizontalAlignment::Left);
+                context.draw_text_line_ellipsis(
+                    row_box,
+                    text,
+                    row_font,
+                    ink,
+                    HorizontalAlignment::Left,
+                );
             }
         }
 

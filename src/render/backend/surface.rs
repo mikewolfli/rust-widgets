@@ -4,7 +4,7 @@
 //! Software rendering surface: back buffer, surface, and configuration.
 use crate::compat::Arc;
 use crate::compat::Rc;
-use crate::compat::{lock, vec, Cow, MiniToString, Mutex, OnceLock, RefCell, String, Vec};
+use crate::compat::{lock, vec, Cow, Mutex, OnceLock, RefCell, String, Vec};
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::render::core::command::{LayerEffect, MatteMode};
 use crate::render::pixel_bytes_len;
@@ -701,13 +701,62 @@ pub(crate) fn dash_line_segments(
 }
 
 thread_local! {
+    /// Fitted (elided) labels reused by the paint path.
+    ///
+    /// A label that genuinely truncates has to be assembled once — that is the content of the
+    /// ellipsised line — but it is usually the same label, at the same width, in the same face,
+    /// on every frame. This cache keeps the assembled form so a steady frame borrows it instead
+    /// of rebuilding it. The key is complete: the source text, the available width, the whole
+    /// font and the DPI the fit was computed at. Bounded by [`FITTED_LABEL_CACHE_DEPTH`].
+    #[allow(clippy::missing_const_for_thread_local)]
+    static FITTED_LABEL_CACHE: RefCell<Vec<FittedLabelEntry>> =
+        const { RefCell::new(Vec::new()) };
     /// Dash segments reused by the per-frame dash call sites (ENG-B1).
     ///
     /// A dashed border expands four straight edges and a dashed path command expands once per
     /// frame; both used to allocate two `Vec`s per call. `try_borrow_mut` keeps a re-entrant call
     /// from panicking — the busy path below falls back to a local buffer.
     #[allow(clippy::missing_const_for_thread_local)]
-    static DASH_SEGMENT_SCRATCH: RefCell<Vec<(Point, Point)>> = RefCell::new(Vec::new());
+    static DASH_SEGMENT_SCRATCH: RefCell<Vec<(Point, Point)>> =
+        const { RefCell::new(Vec::new()) };
+    /// Paths whose translated vertex slice was built recently.
+    ///
+    /// `RenderCommand::DrawPath` carries an `Arc<[Point]>`, so a polygon painted every frame
+    /// allocated its vertices again on every frame even when nothing moved — an arrow, a chevron,
+    /// a gauge polyline. The key is the complete geometry: the translation, the vertex contents
+    /// and whether the path is closed. Colour/fill/width are command fields, not part of the
+    /// shared slice, so a fill and its outline share one arc. Bounded by
+    /// [`PATH_POINT_CACHE_DEPTH`].
+    #[allow(clippy::missing_const_for_thread_local)]
+    static PATH_POINT_CACHE: RefCell<Vec<PathPointCacheEntry>> =
+        const { RefCell::new(Vec::new()) };
+}
+
+/// How many elided labels the process keeps at once.
+///
+/// A screen paints a bounded number of distinct truncated captions; sixty-four covers a dense
+/// table while keeping the cache from becoming a label store.
+const FITTED_LABEL_CACHE_DEPTH: usize = 64;
+
+/// How many translated paths the process keeps at once.
+///
+/// A frame paints a handful of small static polygons (arrows, chevrons, gauge arcs); sixteen
+/// covers them without the cache becoming an unbounded vertex store.
+const PATH_POINT_CACHE_DEPTH: usize = 16;
+
+/// One cached translated path: translation, original vertices, closed flag and shared slice.
+type PathPointCacheEntry = (i32, i32, Vec<Point>, bool, Arc<[Point]>);
+
+/// One cached fitted label and the complete inputs it was built from.
+struct FittedLabelEntry {
+    source: String,
+    available_bits: u32,
+    font: Font,
+    dpi_bits: u32,
+    /// The assembled `prefix…` string.
+    fitted: String,
+    /// The advance the fitted string occupies, used to place it by alignment.
+    advance: i32,
 }
 
 /// [`dash_line_segments`] writing into a caller-held buffer.
@@ -915,22 +964,51 @@ fn fit_text_to_width_measured<'a>(
     font: &Font,
     backend: &dyn PaintBackend,
 ) -> (Cow<'a, str>, Option<f32>) {
+    let parts = fit_text_parts(text, max_width, font, backend);
+    if !parts.ellipsis {
+        return (Cow::Borrowed(parts.prefix), parts.advance);
+    }
+    let mut kept = crate::compat::String::with_capacity(parts.prefix.len() + 3);
+    kept.push_str(parts.prefix);
+    kept.push('\u{2026}');
+    (Cow::Owned(kept), parts.advance)
+}
+
+/// The fitted form of `text`, borrowed from the caller's string.
+///
+/// Splitting the answer into "the prefix that fits" and "is an ellipsis appended" is what lets a
+/// painter draw the two runs without building the concatenated string. The `Cow` form above still
+/// has to assemble one, because that is its contract; the paint path only needs the pixels.
+struct FittedText<'a> {
+    /// The prefix of `text` that is drawn.
+    prefix: &'a str,
+    /// Whether an ellipsis is drawn after `prefix`.
+    ellipsis: bool,
+    /// The advance of the drawn text when it is already known (the text fit, or it is a lone
+    /// ellipsis); `None` when the caller must measure the prefix and add the ellipsis.
+    advance: Option<f32>,
+}
+
+/// [`fit_text_to_width_measured`] without assembling the elided string.
+fn fit_text_parts<'a>(
+    text: &'a str,
+    max_width: f32,
+    font: &Font,
+    backend: &dyn PaintBackend,
+) -> FittedText<'a> {
     if text.is_empty() || max_width <= 0.0 {
-        return (Cow::Borrowed(""), Some(0.0));
+        return FittedText { prefix: "", ellipsis: false, advance: Some(0.0) };
     }
     let measured = backend.measure_text(text, font).width as f32;
     if measured <= max_width {
-        return (Cow::Borrowed(text), Some(measured));
+        return FittedText { prefix: text, ellipsis: false, advance: Some(measured) };
     }
     // A single ellipsis stands in when the budget cannot hold any glyph at all: an empty
     // label would read as "this control has no text", which is a different statement.
-    const ELLIPSIS: char = '\u{2026}';
-    // The same mark as a `&str`, for the one call that measures it: `ELLIPSIS.to_string()`
-    // allocated a `String` on every elided label just to hand the backend one character.
     const ELLIPSIS_TEXT: &str = "\u{2026}";
     let ellipsis_width = backend.measure_text(ELLIPSIS_TEXT, font).width as f32;
     if ellipsis_width > max_width {
-        return (Cow::Owned(ELLIPSIS.to_string()), Some(ellipsis_width));
+        return FittedText { prefix: "", ellipsis: true, advance: Some(ellipsis_width) };
     }
     let budget = max_width - ellipsis_width;
 
@@ -940,18 +1018,10 @@ fn fit_text_to_width_measured<'a>(
 
     // # Why the order is checked before the linear pass (D09-RENDER-03)
     //
-    // The accumulation below walks the shaped clusters in the order `shape_text` returned them,
-    // which is **visual** order. For a left-to-right line (every Latin, CJK and combined-script
-    // label) visual order equals logical order, so the accepted prefix is a string prefix.
-    // Bidirectional reordering permutes the clusters, so a visual prefix is not a string prefix
-    // there; the concatenation of the shaped clusters reproduces `text` exactly when no reorder
-    // happened, and that comparison leaves the rare reordered line on the original per-prefix
-    // walk — same behaviour, no quadratic cost paid where the reorder does not occur.
+    // See the historical note above: a visual prefix is not a string prefix for a reordered line,
+    // so that case keeps the per-prefix walk. The check itself is a prefix chain over the shaped
+    // clusters and needs no rebuilt string.
     let shaped_matches_text = {
-        // "Concatenating the clusters reproduces `text`" is checked by walking the source as a
-        // prefix chain: each cluster must be the next slice, and nothing may be left over. The
-        // old form built the concatenation first — a `String` that grew twice per elided label —
-        // only to compare it.
         let mut rest = text;
         let mut matches = true;
         for cluster in clusters {
@@ -966,27 +1036,17 @@ fn fit_text_to_width_measured<'a>(
         matches && rest.is_empty()
     };
     if !shaped_matches_text {
-        return (
-            Cow::Owned(fit_text_to_width_by_prefix(text, budget, font, backend, ELLIPSIS)),
-            None,
-        );
+        let bytes = fit_text_prefix_bytes(text, budget, font, backend);
+        return FittedText { prefix: &text[..bytes], ellipsis: true, advance: None };
     }
 
     // Tracking adds one inter-cluster gap per adjacent pair, so a run of `n` clusters carries
-    // `n - 1` gaps; it is part of the shaped *total* but not of any single cluster's advance
-    // (see `shape_line`), so an accumulated prefix has to add it the same way.
+    // `n - 1` gaps; it is part of the shaped *total* but not of any single cluster's advance.
     let tracking = font.letter_spacing() * backend.dpi_scale();
 
-    // # Why the candidates are re-checked (D09-RENDER-03)
-    //
-    // A cluster's advance comes from shaping the **whole** string, and with a real face the
-    // shaper is context-sensitive: shaping a prefix in isolation can differ by a sub-pixel
-    // amount (a kern pair, a boundary rounding). So the running sum is a very good *estimate* of
-    // where the split falls, not a proof of it. Only the prefixes near that estimate are then
-    // confirmed with the renderer's own `measure_text`, which is the same call the old loop made
-    // and therefore the ground truth for the result. The estimate is within a rounding step, so
-    // the confirmed window is a couple of clusters wide; the number of shaping *passes* is one
-    // for the whole string plus a constant for the confirmation, not one per kept cluster.
+    // A cluster's advance comes from shaping the **whole** string, so the running sum is a very
+    // good *estimate* of where the split falls, not a proof of it. Only the prefixes near that
+    // estimate are confirmed with the renderer's own `measure_text`.
     let mut estimated = 0usize;
     {
         let mut advance = 0.0f32;
@@ -1001,18 +1061,12 @@ fn fit_text_to_width_measured<'a>(
         }
     }
 
-    // True measure of a prefix of `length` clusters, matching `measure_text`'s contract.
-    //
-    // The prefix is a **slice of `text`**, not a rebuilt string: the cluster-order check above
-    // just proved the clusters concatenate to `text`, so the first `length` clusters are exactly
-    // `text`'s first `prefix_bytes` bytes. The old form rebuilt every candidate into a reused
-    // `String`; that allocation was the remaining per-frame cost of an elided label (measured:
-    // 2 growth allocations per candidate after the earlier fixes).
+    // True measure of a prefix of `length` clusters, matching `measure_text`'s contract. The
+    // prefix is a **slice of `text`**, not a rebuilt string: the cluster-order check above just
+    // proved the clusters concatenate to `text`.
     let prefix_bytes_at = |length: usize| -> usize {
         clusters[..length].iter().map(|cluster| cluster.text.len()).sum()
     };
-    // Takes the byte count rather than the cluster count: the loop advances both, and a closure
-    // capturing the moving byte count would borrow it for its whole lifetime.
     let prefix_fits = |bytes: usize| -> bool {
         if bytes == 0 {
             return true;
@@ -1020,14 +1074,7 @@ fn fit_text_to_width_measured<'a>(
         backend.measure_text(&text[..bytes], font).width as f32 <= budget
     };
 
-    // Confirm the estimate by finding the **first** prefix that does not fit, which is exactly
-    // what the old cluster-by-cluster loop returned (`kept` was the prefix just before the first
-    // failure). The estimate comes from whole-string advances and can differ from the isolated
-    // prefix measurement by a sub-pixel amount, so the search starts a couple of clusters below
-    // it and walks forward. Two clusters of slack cover the rounding; if the true boundary is
-    // further than that — which a context-sensitive shaper could in principle produce — the short
-    // walk does not reach a failure and the exact per-prefix walk is used instead, so the result
-    // is always the one the old code produced.
+    // Confirm the estimate by finding the **first** prefix that does not fit.
     const CONFIRM_SLACK: usize = 2;
     let search_from = estimated.saturating_sub(CONFIRM_SLACK);
     let mut prefix_bytes = prefix_bytes_at(search_from.min(clusters.len()));
@@ -1038,7 +1085,6 @@ fn fit_text_to_width_measured<'a>(
             confirmed = Some(length - 1);
             break;
         }
-        // The next candidate adds exactly the next cluster's bytes; the slice stays contiguous.
         if let Some(cluster) = clusters.get(length) {
             prefix_bytes += cluster.text.len();
         }
@@ -1046,59 +1092,37 @@ fn fit_text_to_width_measured<'a>(
     }
     let confirmed = match confirmed {
         Some(value) => value,
-        // No failure within the window: only trust it when the window actually reached the end
-        // (every prefix fit), otherwise the estimate was off by more than the slack and the
-        // guaranteed-exact walk takes over.
         None if length > clusters.len() => clusters.len(),
         None => {
-            return (
-                Cow::Owned(fit_text_to_width_by_prefix(text, budget, font, backend, ELLIPSIS)),
-                None,
-            )
+            let bytes = fit_text_prefix_bytes(text, budget, font, backend);
+            return FittedText { prefix: &text[..bytes], ellipsis: true, advance: None };
         }
     };
-
-    // Reserved once at the exact size the accepted clusters need, so the assembly is one
-    // allocation rather than a growing `String`. The accepted text is `text`'s own prefix (the
-    // cluster-order check proved the two agree), so it is copied in one `push_str`.
     let accepted_bytes = prefix_bytes_at(confirmed);
-    let mut kept = crate::compat::String::with_capacity(accepted_bytes + ELLIPSIS_TEXT.len());
-    kept.push_str(&text[..accepted_bytes]);
-
-    kept.push(ELLIPSIS);
-    (Cow::Owned(kept), None)
+    FittedText { prefix: &text[..accepted_bytes], ellipsis: true, advance: None }
 }
 
-/// The pre-D09-RENDER-03 prefix walk, kept for the bidi order the linear pass cannot use.
+/// The byte length of the longest character prefix of `text` that fits in `budget`.
 ///
-/// # Why this is retained rather than deleted
-///
-/// The single-pass fitter above assumes the shaped clusters are in logical order. A
-/// bidirectionally reordered line breaks that assumption, and the honest answer is to keep the
-/// per-prefix search that is correct for it rather than to silently assemble the wrong string.
-/// The quadratic cost only applies to the reordered line, which is a small minority of labels;
-/// the common case never reaches here.
-fn fit_text_to_width_by_prefix(
+/// The pre-D09-RENDER-03 walk, returning an index rather than an assembled string so the caller
+/// can borrow the prefix it already has.
+fn fit_text_prefix_bytes(
     text: &str,
     budget: f32,
     font: &Font,
     backend: &dyn PaintBackend,
-    ellipsis: char,
-) -> crate::compat::String {
-    let mut kept = crate::compat::String::new();
-    // One candidate buffer, swapped with `kept` on success instead of cloning the kept prefix for
-    // every character (G-20). The measured string is byte-identical to the old per-character clone.
+) -> usize {
+    let mut kept = 0usize;
     let mut candidate = crate::compat::String::new();
     for ch in text.chars() {
         candidate.clear();
-        candidate.push_str(&kept);
+        candidate.push_str(&text[..kept]);
         candidate.push(ch);
         if backend.measure_text(&candidate, font).width as f32 > budget {
             break;
         }
-        core::mem::swap(&mut kept, &mut candidate);
+        kept += ch.len_utf8();
     }
-    kept.push(ellipsis);
     kept
 }
 
@@ -2326,8 +2350,38 @@ impl<'a> RenderContext<'a> {
             }
         }
         // Collect straight into the shared slice the command now carries, so the immediate path
-        // does not allocate an intermediate `Vec` (G-02).
-        let points: Arc<[Point]> = points.iter().map(|point| self.offset_point(*point)).collect();
+        // does not allocate an intermediate `Vec` (G-02). The translated slice is cached by its
+        // complete geometry, so a polygon that did not move this frame reuses its arc instead of
+        // rebuilding the vertices.
+        let offset_x = self.offset_x;
+        let offset_y = self.offset_y;
+        let cached = PATH_POINT_CACHE.with(|cache| {
+            cache
+                .borrow()
+                .iter()
+                .find(|(x, y, vertices, cached_closed, _)| {
+                    *x == offset_x
+                        && *y == offset_y
+                        && *cached_closed == closed
+                        && vertices.as_slice() == points
+                })
+                .map(|(_, _, _, _, arc)| Arc::clone(arc))
+        });
+        let points = match cached {
+            Some(arc) => arc,
+            None => {
+                let arc: Arc<[Point]> =
+                    points.iter().map(|point| self.offset_point(*point)).collect();
+                PATH_POINT_CACHE.with(|cache| {
+                    let mut cache = cache.borrow_mut();
+                    if cache.len() >= PATH_POINT_CACHE_DEPTH {
+                        cache.remove(0);
+                    }
+                    cache.push((offset_x, offset_y, points.to_vec(), closed, Arc::clone(&arc)));
+                });
+                arc
+            }
+        };
         self.dispatch_owned(RenderCommand::DrawPath { points, closed, color, filled, width });
     }
     /// Strokes a polyline with a repeating dash pattern (G-014).
@@ -2547,6 +2601,72 @@ impl<'a> RenderContext<'a> {
         fitted
     }
 
+    /// Draws `text` fitted inside `bounds`, without building the elided string.
+    ///
+    /// [`Self::draw_text_fitted_cow`] must return what it drew, so the truncated case assembles
+    /// `prefix + `…`` into an owned string. Paint loops that only want the pixels paid that
+    /// allocation on every elided label, every frame. This form draws the prefix and the ellipsis
+    /// as two adjacent runs and allocates nothing; the fitted origin is computed from the two
+    /// advances, so alignment matches the `Cow` form.
+    pub fn draw_text_fitted_ellipsis(
+        &mut self,
+        bounds: Rect,
+        text: &str,
+        font: &Font,
+        color: Color,
+        alignment: HorizontalAlignment,
+    ) {
+        let inset = TEXT_FIT_MARGIN as i32;
+        let available = (bounds.width as i32 - 2 * inset).max(0) as f32;
+        let parts = fit_text_parts(text, available, font, self.backend);
+        if !parts.ellipsis {
+            // The label fits: draw the caller's own slice and allocate nothing to do it.
+            let advance = parts.advance.unwrap_or(0.0) as i32;
+            let origin = fitted_origin(bounds, advance, alignment);
+            self.draw_text(origin, parts.prefix, font, color, HorizontalAlignment::Left);
+            return;
+        }
+        let available_bits = available.to_bits();
+        let dpi_bits = self.dpi_scale().to_bits();
+        FITTED_LABEL_CACHE.with(|cache| {
+            let mut cache = cache.borrow_mut();
+            if let Some(index) = cache.iter().position(|entry| {
+                entry.source == text
+                    && entry.available_bits == available_bits
+                    && entry.font == *font
+                    && entry.dpi_bits == dpi_bits
+            }) {
+                let entry = &cache[index];
+                let origin = fitted_origin(bounds, entry.advance, alignment);
+                self.draw_text(origin, &entry.fitted, font, color, HorizontalAlignment::Left);
+                return;
+            }
+            // A truncated label is assembled once. The parts already name the prefix that fits;
+            // the ellipsis is the one character appended to it, exactly as the `Cow` form builds
+            // the answer.
+            let mut fitted = String::with_capacity(parts.prefix.len() + 3);
+            fitted.push_str(parts.prefix);
+            fitted.push('\u{2026}');
+            let advance = match parts.advance {
+                Some(width) => width as i32,
+                None => self.measure_text(&fitted, font).width as i32,
+            };
+            let origin = fitted_origin(bounds, advance, alignment);
+            self.draw_text(origin, &fitted, font, color, HorizontalAlignment::Left);
+            if cache.len() >= FITTED_LABEL_CACHE_DEPTH {
+                cache.remove(0);
+            }
+            cache.push(FittedLabelEntry {
+                source: String::from(text),
+                available_bits,
+                font: font.clone(),
+                dpi_bits,
+                fitted,
+                advance,
+            });
+        });
+    }
+
     /// Draws a single line of `text` fitted inside `bounds` and centred vertically in it.
     ///
     /// The vertical half of what [`Self::draw_text_fitted`] deliberately does not do. That
@@ -2585,6 +2705,22 @@ impl<'a> RenderContext<'a> {
     ) -> Cow<'t, str> {
         let line = self.text_line(bounds, font);
         self.draw_text_fitted_cow(line, text, font, color, alignment)
+    }
+
+    /// [`Self::draw_text_line`] without building the elided string.
+    ///
+    /// See [`Self::draw_text_fitted_ellipsis`]; the vertical half is identical to
+    /// [`Self::draw_text_line_cow`].
+    pub fn draw_text_line_ellipsis(
+        &mut self,
+        bounds: Rect,
+        text: &str,
+        font: &Font,
+        color: Color,
+        alignment: HorizontalAlignment,
+    ) {
+        let line = self.text_line(bounds, font);
+        self.draw_text_fitted_ellipsis(line, text, font, color, alignment);
     }
     /// Splits `text` into visual clusters (grapheme-like units) with per-cluster
     /// advances, as used for hit testing and caret placement.
@@ -3520,7 +3656,13 @@ mod tests {
         {
             let mut ctx = RenderContext::new(&mut backend);
             line_y = ctx.text_line(band, &font).y;
-            ctx.draw_text_line(band, "MMMM", &font, Color::BLACK, HorizontalAlignment::Left);
+            ctx.draw_text_line_ellipsis(
+                band,
+                "MMMM",
+                &font,
+                Color::BLACK,
+                HorizontalAlignment::Left,
+            );
         }
         backend.end_frame();
 

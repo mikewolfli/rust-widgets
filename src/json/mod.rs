@@ -135,10 +135,11 @@ pub use events::{
     reset_cross_thread_skips, EventHandlerContext, EventHandlerMap,
 };
 pub use layout::{
-    add_spacer_to_layout, add_widget_to_layout, apply_layout, create_layout_from_kind,
-    forget_layout, insets_from_value, parse_layout_kind, place_widget_in_layout,
-    place_widget_in_region_layout, preview_layout, store_layout, ChildLayoutAttrs, ChildOverflow,
-    ChildPlacement, DeclarativeLayoutKind,
+    add_spacer_to_layout, add_widget_to_layout, apply_constraints_to_layout, apply_layout,
+    create_layout_from_kind, forget_layout, insets_from_value, parse_layout_kind,
+    place_widget_in_absolute_layout, place_widget_in_layout, place_widget_in_region_layout,
+    preview_layout, store_layout, ChildLayoutAttrs, ChildOverflow, ChildPlacement, ConstraintSpec,
+    DeclarativeLayoutKind, LayoutConstraintSpec,
 };
 pub use layout_schema::{
     child_attrs_honoured_by, schema_for_type as layout_schema_for_type,

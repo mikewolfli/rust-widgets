@@ -1349,10 +1349,6 @@ impl WidgetProperties for GridWidget {
                 self.clear_selection();
                 Ok(())
             }
-            // `select_cell` needs the cell to select, which a bare command cannot carry; the
-            // `selected_cell` property is the value-carrying spelling.
-            "select_cell" => Err(CapabilityAccessError::OutOfRange),
-            _ if name.starts_with("set_") => Err(CapabilityAccessError::OutOfRange),
             _ => self.default_command(name),
         }
     }
@@ -1475,7 +1471,7 @@ impl Draw for GridWidget {
                 if !text.is_empty() {
                     let line = context.text_line(cell, &cell_font);
                     let inset = 3u32.min(cell.width / 2);
-                    context.draw_text_fitted_cow(
+                    context.draw_text_fitted_ellipsis(
                         Rect::new(
                             cell.x + inset as i32,
                             line.y,
@@ -1545,7 +1541,7 @@ impl Draw for GridWidget {
                 }
                 let width = self.column_width(column);
                 let line = context.text_line(Rect::new(x, band.y, width, band.height), &font);
-                context.draw_text_fitted_cow(
+                context.draw_text_fitted_ellipsis(
                     Rect::new(x + 3, line.y, width.saturating_sub(6).max(1), line.height),
                     title,
                     &font,
@@ -1589,7 +1585,7 @@ impl Draw for GridWidget {
                     Rect::new(band_x + 3, y, row_header_width.saturating_sub(6), height),
                     &font,
                 );
-                context.draw_text_fitted_cow(
+                context.draw_text_fitted_ellipsis(
                     Rect::new(
                         band_x + 3,
                         line.y,

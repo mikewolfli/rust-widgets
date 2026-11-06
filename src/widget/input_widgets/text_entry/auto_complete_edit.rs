@@ -1381,7 +1381,7 @@ impl Draw for AutoCompleteEdit {
                 // Fitted to the row: a long suggestion used to paint past the popup's
                 // own edge.
                 let item_text_width = item_rect.width.saturating_sub(8).max(1);
-                context.draw_text_fitted_cow(
+                context.draw_text_fitted_ellipsis(
                     Rect::new(item_text_x, item_line.y, item_text_width, item_line.height.max(1)),
                     suggestion,
                     font,

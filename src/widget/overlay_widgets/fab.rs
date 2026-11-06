@@ -587,7 +587,7 @@ impl Draw for FAB {
                 capsule.width.saturating_sub(radius),
                 radius * 2,
             );
-            context.draw_text_fitted_cow(
+            context.draw_text_fitted_ellipsis(
                 label_band,
                 label,
                 &font,
@@ -641,7 +641,7 @@ impl Draw for FAB {
                 (half_side * 2).max(0) as u32,
                 metrics.height,
             );
-            context.draw_text_fitted_cow(
+            context.draw_text_fitted_ellipsis(
                 band,
                 &self.icon_text,
                 &font,

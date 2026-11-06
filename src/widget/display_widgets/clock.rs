@@ -701,7 +701,13 @@ impl Clock {
                 box_width,
                 height,
             );
-            ctx.draw_text_line_cow(band, label, font, numeral_ink, HorizontalAlignment::Center);
+            ctx.draw_text_line_ellipsis(
+                band,
+                label,
+                font,
+                numeral_ink,
+                HorizontalAlignment::Center,
+            );
         }
     }
 

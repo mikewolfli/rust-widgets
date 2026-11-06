@@ -986,7 +986,7 @@ impl Draw for Breadcrumb {
             // Keep the caret at least one glyph inside the field: the text is shifted left by
             // whatever the prefix overflows, which is the minimal scroll a line editor needs.
             let overflow = (prefix_width - (inner.width as i32 - 2)).max(0);
-            context.draw_text_fitted_cow(
+            context.draw_text_fitted_ellipsis(
                 Rect::new(
                     inner.x - overflow,
                     inner.y,
@@ -1015,7 +1015,7 @@ impl Draw for Breadcrumb {
                 // Collapsed middle: one marker standing in for the hidden segments.
                 let rect = Rect::new(slot_x, band.y, *width as u32, band.height);
                 let line = context.text_line(rect, font);
-                context.draw_text_fitted_cow(
+                context.draw_text_fitted_ellipsis(
                     Rect::new(rect.x, line.y, rect.width, line.height),
                     "…",
                     font,
@@ -1062,7 +1062,7 @@ impl Draw for Breadcrumb {
                 (segment_rect.width as i32 - self.segment_padding).max(0) as u32,
                 line.height,
             );
-            context.draw_text_fitted_cow(
+            context.draw_text_fitted_ellipsis(
                 label_box,
                 &segment.label,
                 font,
@@ -1115,7 +1115,7 @@ impl Draw for Breadcrumb {
                     context.fill_rect(rect, selected_background);
                 }
                 let line = context.text_line(rect, font);
-                context.draw_text_fitted_cow(
+                context.draw_text_fitted_ellipsis(
                     Rect::new(
                         rect.x + self.segment_padding,
                         line.y,

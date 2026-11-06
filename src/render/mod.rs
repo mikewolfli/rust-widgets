@@ -30,7 +30,7 @@
 //! |-------|------|---------|
 //! | **gpu** | `gpu/` | GPU-accelerated rendering traits and capability enums (gated behind `gpu-wgpu`) |
 //! | **core** | `core/` | Data types (`TextMetrics`, `TextCluster`, `ShapedText`) and commands (`RenderCommand`) |
-//! | **backend** | `backend/` | Rendering backends: software surface (`BackBuffer`, `SoftwareSurface`, `RenderContext`), paint trait (`PaintBackend`, `SoftwarePaintBackend`), batch image registration (`BatchImage`), scene (`SceneLayer`, `RenderScene`) |
+//! | **backend** | `backend/` | Rendering backends: software surface (`BackBuffer`, `SoftwareSurface`, `RenderContext`), paint trait (`PaintBackend`, `SoftwarePaintBackend`), scene (`SceneLayer`, `RenderScene`) |
 //! | **pipeline** | `pipeline/` | Visual command pipeline for all widget types (controls, containers, dialogs, special, etc.) |
 //! | **web** | `web/` | Web engine and web view rendering |
 //! | **quality** | `quality/` | Adaptive rendering quality management |
@@ -62,8 +62,8 @@ pub mod gpu;
 // SVG rendering backend
 pub mod svg;
 
-// Matrix maths and the batch transform stack. Compiled only with the `3d` feature so the
-// default 2D build carries none of it.
+// Matrix maths for the `3d` feature. Compiled only with that feature so the default 2D build
+// carries none of it.
 #[cfg(feature = "3d")]
 pub mod math3d;
 
@@ -111,8 +111,8 @@ pub(crate) use backend::fitted_origin;
 pub use backend::{average_frame_time, current_fps, current_quality_level, set_quality_level};
 pub use backend::{
     default_software_render_config, last_auto_render_backend, set_default_software_render_config,
-    text_line, AutoRenderBackend, BackBuffer, BatchImage, PaintBackend, RenderContext, RenderScene,
-    SceneLayer, SoftwarePaintBackend, SoftwareRenderConfig, SoftwareSurface, VerticalAlignment,
+    text_line, AutoRenderBackend, BackBuffer, PaintBackend, RenderContext, RenderScene, SceneLayer,
+    SoftwarePaintBackend, SoftwareRenderConfig, SoftwareSurface, VerticalAlignment,
     TEXT_FIT_MARGIN,
 };
 

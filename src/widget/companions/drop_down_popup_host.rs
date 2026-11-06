@@ -595,7 +595,7 @@ impl Draw for DropDownPopupHost {
         context.draw_rect(rect, border);
 
         if self.items.is_empty() {
-            context.draw_text_fitted_cow(
+            context.draw_text_fitted_ellipsis(
                 rect,
                 "No options",
                 font,
@@ -628,7 +628,7 @@ impl Draw for DropDownPopupHost {
                 row.width.saturating_sub(POPUP_INSET * 2),
                 row.height,
             );
-            context.draw_text_fitted_cow(
+            context.draw_text_fitted_ellipsis(
                 text,
                 &item.label,
                 font,

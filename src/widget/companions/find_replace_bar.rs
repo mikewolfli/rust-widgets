@@ -494,7 +494,7 @@ fn paint_field(
         if text.is_empty() { (placeholder, surface.blend(&ink, 0.50)) } else { (text, ink) };
     let inner =
         Rect::new(rect.x.saturating_add(6), rect.y, rect.width.saturating_sub(12), rect.height);
-    context.draw_text_fitted_cow(inner, label, font, color, HorizontalAlignment::Left);
+    context.draw_text_fitted_ellipsis(inner, label, font, color, HorizontalAlignment::Left);
 }
 
 /// Paints one button.
@@ -507,7 +507,7 @@ fn paint_button(
     ink: Color,
 ) {
     context.fill_rounded_rect(rect, 3, surface.blend(&ink, 0.08));
-    context.draw_text_fitted_cow(rect, label, font, ink, HorizontalAlignment::Center);
+    context.draw_text_fitted_ellipsis(rect, label, font, ink, HorizontalAlignment::Center);
 }
 
 impl Draw for FindReplaceBar {

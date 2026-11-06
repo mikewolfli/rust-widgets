@@ -1611,7 +1611,7 @@ impl RibbonBar {
         let font = effective_font(self.style());
         let line = context.text_line(tab_rect, font);
         let title_band = Rect::new(tab_rect.x, line.y, tab_rect.width, line.height);
-        context.draw_text_fitted_cow(
+        context.draw_text_fitted_ellipsis(
             title_band,
             text,
             font,
@@ -1751,7 +1751,7 @@ impl RibbonBar {
                             let icon_text = icon_char.encode_utf8(&mut icon_buf);
                             let icon_band =
                                 Rect::new(ir.x, ir.y + 2, ir.width, LARGE_ICON_SIZE as u32);
-                            context.draw_text_fitted_cow(
+                            context.draw_text_fitted_ellipsis(
                                 context.text_line(icon_band, item_font),
                                 icon_text,
                                 item_font,
@@ -1762,7 +1762,7 @@ impl RibbonBar {
                         }
                         let label_band =
                             Rect::new(ir.x + 2, label_y, ir.width.saturating_sub(4), 16);
-                        context.draw_text_fitted_cow(
+                        context.draw_text_fitted_ellipsis(
                             context.text_line(label_band, item_font),
                             item.text(),
                             item_font,
@@ -1812,7 +1812,7 @@ impl RibbonBar {
                             (ir.x + ir.width as i32 - label_x).max(0) as u32,
                             item_line.height.max(1),
                         );
-                        context.draw_text_fitted_cow(
+                        context.draw_text_fitted_ellipsis(
                             label_band,
                             item.text(),
                             item_font,
@@ -1839,7 +1839,7 @@ impl RibbonBar {
             // connects `group_overflow_clicked` to show the rest in a menu.
             if let Some(rect) = self.group_overflow_rect(*gi) {
                 context.fill_rect(rect, palette.item_hover);
-                context.draw_text_fitted_cow(
+                context.draw_text_fitted_ellipsis(
                     rect,
                     "…",
                     font,
@@ -2097,13 +2097,10 @@ impl WidgetProperties for RibbonBar {
                 self.clear();
                 Ok(())
             }
-            "add_tab" | "add_group" | "add_item" | "add_large_item" | "set_tabs" => {
-                Err(CapabilityAccessError::OutOfRange)
-            }
+            "set_tabs" => Err(CapabilityAccessError::OutOfRange),
             // Any other `set_foo` name carries its value through the property route,
             // so the shared default reports that a payload is needed rather than
             // claiming the control has never heard of it.
-            _ if name.starts_with("set_") => Err(CapabilityAccessError::OutOfRange),
             _ => self.default_command(name),
         }
     }
@@ -2381,7 +2378,7 @@ impl Draw for RibbonBar {
                 context.draw_rect(rect, palette.border);
                 let font = effective_font(self.style());
                 let line = context.text_line(rect, font);
-                context.draw_text_fitted_cow(
+                context.draw_text_fitted_ellipsis(
                     Rect::new(rect.x + 2, line.y, rect.width.saturating_sub(4), line.height),
                     label,
                     font,
@@ -2397,7 +2394,7 @@ impl Draw for RibbonBar {
                 if let Some(rect) = self.quick_access_rect(index) {
                     let font = effective_font(self.style());
                     let line = context.text_line(rect, font);
-                    context.draw_text_fitted_cow(
+                    context.draw_text_fitted_ellipsis(
                         rect,
                         self.quick_access[index].as_str(),
                         font,
@@ -2426,7 +2423,7 @@ impl Draw for RibbonBar {
                 let mut x = rect.x + QUICK_ACCESS_PADDING;
                 let line = context.text_line(rect, font);
                 if !item.icon.is_empty() {
-                    context.draw_text_fitted_cow(
+                    context.draw_text_fitted_ellipsis(
                         Rect::new(x, line.y, 14, line.height),
                         item.icon.as_str(),
                         font,
@@ -2437,7 +2434,7 @@ impl Draw for RibbonBar {
                 }
                 if item.checkable {
                     let ink = if item.checked { palette.accent } else { palette.muted };
-                    context.draw_text_fitted_cow(
+                    context.draw_text_fitted_ellipsis(
                         Rect::new(x, line.y, 12, line.height),
                         if item.checked { "✓" } else { " " },
                         font,
@@ -2446,7 +2443,7 @@ impl Draw for RibbonBar {
                     );
                     x += 12;
                 }
-                context.draw_text_fitted_cow(
+                context.draw_text_fitted_ellipsis(
                     Rect::new(
                         x,
                         line.y,
@@ -2461,7 +2458,7 @@ impl Draw for RibbonBar {
             }
             if let Some(marker) = self.quick_access_overflow_rect() {
                 context.fill_rect(marker, palette.tab);
-                context.draw_text_fitted_cow(
+                context.draw_text_fitted_ellipsis(
                     marker,
                     "»",
                     font,
@@ -2490,7 +2487,7 @@ impl Draw for RibbonBar {
                             palette.border,
                         );
                     } else {
-                        context.draw_text_fitted_cow(
+                        context.draw_text_fitted_ellipsis(
                             band,
                             item.label.as_str(),
                             font,

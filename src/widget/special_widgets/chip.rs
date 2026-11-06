@@ -1536,7 +1536,7 @@ impl Draw for Chip {
                             side / 2,
                             label_ink.with_alpha(60),
                         );
-                        context.draw_text_fitted_cow(
+                        context.draw_text_fitted_ellipsis(
                             avatar_rect,
                             text,
                             font,
@@ -1567,7 +1567,7 @@ impl Draw for Chip {
             // chip's *box* is already clamped to the band (`(width as u32).min(band.width)`), so
             // the ink is fitted into that same clamped box: a long label now elides inside its
             // chip instead of running past the box the chip was drawn as.
-            context.draw_text_line_cow(
+            context.draw_text_line_ellipsis(
                 label_box,
                 &item.label,
                 font,
@@ -1608,7 +1608,13 @@ impl Draw for Chip {
             // The caption was built with the layout: the hidden count is a layout product, so
             // formatting it here made the paint path recompute a layout answer.
             let text = self.cached_layout().overflow_label.as_str();
-            context.draw_text_line_cow(cell, text, font, text_color, HorizontalAlignment::Center);
+            context.draw_text_line_ellipsis(
+                cell,
+                text,
+                font,
+                text_color,
+                HorizontalAlignment::Center,
+            );
         }
 
         // ── Drag insertion marker ──

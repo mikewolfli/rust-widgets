@@ -42,6 +42,8 @@ cd "$(dirname "$0")/.." || exit 1
 
 # shellcheck source=tools/lib_timeout.sh
 source tools/lib_timeout.sh
+# shellcheck source=tools/lib_cargo_cache.sh
+source tools/lib_cargo_cache.sh
 # `$PYTHON` (validated, and itself probed under `rw_run_bounded`) replaces the bare `python3`. On
 # Windows `python3` is often the Microsoft Store alias, which *blocks* rather than runs the script,
 # turning this gate into a hang — see tools/lib_python.sh. The two inline heredocs below are still
@@ -166,7 +168,7 @@ fi
 echo "  PASS"
 
 echo "[4/4] the crate builds with the shards on"
-if ! rw_run_bounded 900 cargo check --no-default-features \
+if ! rw_cargo_cached 900 check --no-default-features \
         --features desktop,fonts-cjk-shards,runtime-fonts --lib; then
     echo "  FAIL  the sharded build does not compile"
     exit 1

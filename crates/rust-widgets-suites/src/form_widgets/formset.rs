@@ -30,6 +30,7 @@
 //! `current_changed`, `page_added`, `page_removed`, `completed_changed`, `validity_changed`,
 //! `dirty_changed`, `submitted`, `submit_failed` and `reset`.
 
+use core::fmt::Write as _;
 use rust_widgets::core::{Color, HorizontalAlignment, ObjectId, Point, Rect, Size};
 use rust_widgets::event::{Event, EventHandler};
 use rust_widgets::impl_draw_bridge;
@@ -93,6 +94,8 @@ pub struct FormSet {
     next_label: String,
     last_valid: bool,
     last_dirty: bool,
+    /// The step number painted on the current header cell, reused across pages and frames.
+    step_scratch: String,
     /// Emitted with the new zero-based current index.
     pub current_changed: Signal1<usize>,
     /// Emitted with the key of an added page.
@@ -131,6 +134,7 @@ impl FormSet {
             next_label: "Next".to_string(),
             last_valid: true,
             last_dirty: false,
+            step_scratch: String::new(),
             current_changed: Signal1::new(),
             page_added: Signal1::new(),
             page_removed: Signal1::new(),
@@ -713,7 +717,7 @@ impl FormSet {
         context.fill_rounded_rect(rect, 4, ink.with_alpha(fill_alpha));
         context.draw_rounded_rect_stroke(rect, 4, ink.with_alpha(stroke_alpha), 1);
         let font = role_font(self.base.style(), 12.0);
-        context.draw_text_fitted_cow(rect, label, &font, ink, HorizontalAlignment::Center);
+        context.draw_text_fitted_ellipsis(rect, label, &font, ink, HorizontalAlignment::Center);
     }
 }
 
@@ -974,8 +978,7 @@ impl WidgetProperties for FormSet {
                 self.mark_current_completed();
                 Ok(())
             }
-            _ if name.starts_with("set_") => Err(CapabilityAccessError::OutOfRange),
-            _ => Err(CapabilityAccessError::UnknownCommand),
+            _ => self.default_command(name),
         }
     }
 }
@@ -1014,7 +1017,7 @@ impl Draw for FormSet {
                         if active {
                             context.fill_rounded_rect(cell, 4, ink.with_alpha(20));
                         }
-                        context.draw_text_fitted_cow(
+                        context.draw_text_fitted_ellipsis(
                             cell,
                             page.title(),
                             &font,
@@ -1032,11 +1035,13 @@ impl Draw for FormSet {
                     FormSetHeaderStyle::Steps => {
                         let center_y = cell.y + cell.height as i32 / 2;
                         let center_x = cell.x + STEP_RADIUS as i32 + 4;
-                        let number = if page.is_completed() {
-                            "✓".to_string()
+                        let mut number = core::mem::take(&mut self.step_scratch);
+                        number.clear();
+                        if page.is_completed() {
+                            number.push('✓');
                         } else {
-                            (index + 1).to_string()
-                        };
+                            let _ = write!(number, "{}", index + 1);
+                        }
                         let circle_fill = if invalid {
                             error_ink.with_alpha(60)
                         } else if active || page.is_completed() {
@@ -1054,7 +1059,7 @@ impl Draw for FormSet {
                             STEP_RADIUS,
                             circle_fill,
                         );
-                        context.draw_text_fitted_cow(
+                        context.draw_text_fitted_ellipsis(
                             Rect::new(
                                 center_x - STEP_RADIUS as i32,
                                 center_y - STEP_RADIUS as i32,
@@ -1066,13 +1071,14 @@ impl Draw for FormSet {
                             if invalid { error_ink } else { ink },
                             HorizontalAlignment::Center,
                         );
+                        self.step_scratch = number;
                         let title = Rect::new(
                             center_x + STEP_RADIUS as i32 + 6,
                             cell.y,
                             cell.width.saturating_sub(STEP_RADIUS * 2 + 10),
                             cell.height,
                         );
-                        context.draw_text_fitted_cow(
+                        context.draw_text_fitted_ellipsis(
                             title,
                             page.title(),
                             &font,
@@ -1110,6 +1116,10 @@ impl EventHandler for FormSet {
         if !self.base.is_enabled() {
             return;
         }
+        // An unfocused formset owns no keys: the arrows and Enter belong to the focused control.
+        if matches!(event, Event::KeyPress { .. }) && self.base.focus_reason().is_none() {
+            return;
+        }
         if let Event::MousePress { pos, button: 1, .. } = event {
             if self.show_header {
                 if let Some(index) = (0..self.pages.len()).find(|index| {
@@ -1137,15 +1147,12 @@ impl EventHandler for FormSet {
         match event {
             Event::KeyPress { key, .. } if *key == rust_widgets::event::key_codes::LEFT => {
                 let _ = self.previous_page();
-                return;
             }
             Event::KeyPress { key, .. } if *key == rust_widgets::event::key_codes::RIGHT => {
                 let _ = self.next_page();
-                return;
             }
             Event::KeyPress { key, .. } if *key == rust_widgets::event::key_codes::ENTER => {
                 let _ = self.submit();
-                return;
             }
             _ => {}
         }

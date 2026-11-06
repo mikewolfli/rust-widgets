@@ -34,6 +34,12 @@ pub(crate) fn place_content_child(slot: Option<ObjectId>, rect: Rect) {
             return;
         }
         crate::set_widget_geometry(widget_id, rect.x, rect.y, rect.width, rect.height);
+        // Keep the tab order's spatial positions in step with layout, so a `RowMajor` or
+        // `ColumnMajor` traversal strategy sorts by where the controls actually are rather than
+        // by stale coordinates only a host that feeds them manually would ever update (RT2-04).
+        // The call ignores ids that are not registered focusable, so a plain content child costs
+        // one registration lookup and nothing else.
+        crate::widget::runtime::set_focusable_position(widget_id, rect.x, rect.y);
     }
     // A sized profile has no mounted surfaces and no platform geometry entry. The rectangle
     // is still the container's model, so it is accepted and not turned into a write there.

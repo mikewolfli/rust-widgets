@@ -429,7 +429,7 @@ impl Draw for DependencyEditor {
         let (surface, border, ink) = chart_chrome_palette(style, "dependency_editor");
         context.face_with_gradient(rect, surface, None, Default::default(), 0, Color::BLACK);
         let font = effective_font(style);
-        context.draw_text_fitted_cow(
+        context.draw_text_fitted_ellipsis(
             Rect::new(rect.x + DEPENDENCY_PADDING, rect.y + 2, rect.width.saturating_sub(16), 14),
             "Dependencies",
             font,
@@ -437,7 +437,7 @@ impl Draw for DependencyEditor {
             HorizontalAlignment::Left,
         );
         if self.dependencies.is_empty() {
-            context.draw_text_fitted_cow(
+            context.draw_text_fitted_ellipsis(
                 Rect::new(
                     rect.x + DEPENDENCY_PADDING,
                     rect.y + DEPENDENCY_PADDING + DEPENDENCY_HEADER,
@@ -459,7 +459,7 @@ impl Draw for DependencyEditor {
                 context.draw_rect(row, ink);
             }
             let label = self.labels.get(index).map(String::as_str).unwrap_or("");
-            context.draw_text_fitted_cow(
+            context.draw_text_fitted_ellipsis(
                 Rect::new(row.x + 4, row.y + 4, row.width.saturating_sub(52), 14),
                 label,
                 font,

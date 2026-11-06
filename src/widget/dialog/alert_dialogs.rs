@@ -176,9 +176,52 @@ fn advance(font: &Font) -> u32 {
 /// the row by its own button index cannot be off by a mirror. Each button's width comes from
 /// the renderer's own measurement, so a CJK or other wide label is sized by the ink it will
 /// paint instead of by a character count that treats every glyph as one Latin advance.
-fn button_rects(context: &RenderContext, rect: Rect, labels: &[&str], font: &Font) -> Vec<Rect> {
+#[derive(Clone, PartialEq, Eq)]
+struct ButtonRowKey {
+    labels_hash: u64,
+    labels_len: usize,
+    family: crate::compat::Arc<str>,
+    size_bits: u32,
+    weight: u16,
+    italic: bool,
+    letter_bits: u32,
+    word_bits: u32,
+    dpi_bits: u32,
+    rect: Rect,
+}
+
+const BUTTON_ROW_CACHE_DEPTH: usize = 4;
+
+thread_local! {
+    static BUTTON_ROW_CACHE: RefCell<Vec<(ButtonRowKey, Rc<Vec<Rect>>)>> =
+        const { RefCell::new(Vec::new()) };
+}
+
+fn button_rects(
+    context: &RenderContext,
+    rect: Rect,
+    labels: &[&str],
+    font: &Font,
+) -> Rc<Vec<Rect>> {
     if labels.is_empty() || rect.width == 0 || rect.height == 0 {
-        return Vec::new();
+        return Rc::new(Vec::new());
+    }
+    let key = ButtonRowKey {
+        labels_hash: super::hash_label_texts(labels.iter().copied()),
+        labels_len: labels.len(),
+        family: font.family_shared(),
+        size_bits: font.size().to_bits(),
+        weight: font.weight(),
+        italic: font.is_italic(),
+        letter_bits: font.letter_spacing().to_bits(),
+        word_bits: font.word_spacing().to_bits(),
+        dpi_bits: context.dpi_scale().to_bits(),
+        rect,
+    };
+    if let Some(hit) = BUTTON_ROW_CACHE.with(|cache| {
+        cache.borrow().iter().find(|(cached, _)| *cached == key).map(|(_, rects)| Rc::clone(rects))
+    }) {
+        return hit;
     }
     let height = BUTTON_HEIGHT.min(rect.height);
     let y = rect
@@ -196,6 +239,14 @@ fn button_rects(context: &RenderContext, rect: Rect, labels: &[&str], font: &Fon
         rects[index] = Rect::new(x, y, width, height);
         right = x.saturating_sub(BUTTON_GAP as i32);
     }
+    let rects = Rc::new(rects);
+    BUTTON_ROW_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if cache.len() >= BUTTON_ROW_CACHE_DEPTH {
+            cache.remove(0);
+        }
+        cache.push((key, Rc::clone(&rects)));
+    });
     rects
 }
 
@@ -261,13 +312,13 @@ pub(crate) fn wrap_words(text: &str, columns: usize) -> Vec<String> {
 /// splitter and allocate a fresh line list. The result is a pure function of (text, columns),
 /// so it is cached per card and reused until the text changes (G-P15).
 #[derive(Default)]
-struct WrapCache {
+pub(crate) struct WrapCache {
     entries: RefCell<HashMap<(u64, usize), Rc<Vec<String>>>>,
 }
 
 impl WrapCache {
     /// The wrapped lines of `text` at `columns`, from the cache when possible.
-    fn lines(&self, text: &str, columns: usize) -> Rc<Vec<String>> {
+    pub(crate) fn lines(&self, text: &str, columns: usize) -> Rc<Vec<String>> {
         let mut hasher = DefaultHasher::new();
         text.hash(&mut hasher);
         let key = (hasher.finish(), columns);
@@ -347,7 +398,7 @@ fn paint_block(
             content_width,
             style.line_height as u32,
         );
-        ctx.draw_text_line_cow(band, line, style.font, style.ink, HorizontalAlignment::Left);
+        ctx.draw_text_line_ellipsis(band, line, style.font, style.ink, HorizontalAlignment::Left);
         *y += style.line_height;
     }
 }
@@ -358,11 +409,11 @@ fn paint_card(
     ctx: &mut RenderContext,
     base: &BaseWidget,
     card: &CardContent<'_>,
-) -> (Rect, Vec<Rect>, Option<Rect>) {
+) -> (Rect, Rc<Vec<Rect>>, Option<Rect>) {
     let geometry = base.geometry();
     let reveal = card.reveal.clamp(0.0, 1.0);
     if reveal <= 0.0 {
-        return (Rect::new(0, 0, 0, 0), Vec::new(), None);
+        return (Rect::new(0, 0, 0, 0), Rc::new(Vec::new()), None);
     }
     if card.modal {
         super::draw_modal_scrim_scaled(ctx, base.id(), geometry, base.parent(), reveal);
@@ -372,7 +423,7 @@ fn paint_card(
         super::REVEAL_MIN_SCALE + (1.0 - super::REVEAL_MIN_SCALE) * reveal,
     );
     if rect.width == 0 || rect.height == 0 {
-        return (rect, Vec::new(), None);
+        return (rect, Rc::new(Vec::new()), None);
     }
     let palette = card_palette(base, card.role);
     // The card is a raised surface: a fill a hair off the window's own, over a border, which is
@@ -413,7 +464,7 @@ fn paint_card(
     }
     if !card.title.is_empty() {
         let band = Rect::new(text_left, y, text_width, advance(&palette.title_font) + 4);
-        ctx.draw_text_line_cow(
+        ctx.draw_text_line_ellipsis(
             band,
             card.title,
             &palette.title_font,
@@ -442,7 +493,7 @@ fn paint_card(
             content_width,
             line_height as u32,
         );
-        ctx.draw_text_line_cow(band, line, &palette.font, body_ink, HorizontalAlignment::Left);
+        ctx.draw_text_line_ellipsis(band, line, &palette.font, body_ink, HorizontalAlignment::Left);
         y = y.saturating_add(line_height);
     }
 
@@ -532,7 +583,7 @@ fn paint_card(
             row.width.saturating_sub(box_side + BUTTON_GAP),
             row_h,
         );
-        ctx.draw_text_line_cow(
+        ctx.draw_text_line_ellipsis(
             label_band,
             label,
             &palette.font,
@@ -554,7 +605,7 @@ fn paint_card(
         };
         ctx.fill_rounded_rect(*rect, 4, fill);
         ctx.draw_rounded_rect_stroke(*rect, 4, border, 1);
-        ctx.draw_text_line_cow(
+        ctx.draw_text_line_ellipsis(
             *rect,
             card.buttons[index],
             &palette.font,
@@ -656,7 +707,12 @@ impl CardState {
 }
 
 /// Builds the buttons for a card on the press path, where there is no render context.
-fn measured_buttons(geometry: Rect, role: &str, base: &BaseWidget, labels: &[&str]) -> Vec<Rect> {
+fn measured_buttons(
+    geometry: Rect,
+    role: &str,
+    base: &BaseWidget,
+    labels: &[&str],
+) -> Rc<Vec<Rect>> {
     let font = card_palette(base, role).font;
     // `geometry` is deliberately not a backend size: this is a measurement, and a window-sized
     // backend would allocate and zero two full RGBA buffers on every pointer move (DL2-01).
@@ -744,7 +800,7 @@ impl AlertDialog {
     }
 
     /// The action row's rects.
-    fn buttons(&self) -> Vec<Rect> {
+    fn buttons(&self) -> Rc<Vec<Rect>> {
         measured_buttons(self.geometry(), "alert_dialog", &self.base, &[self.button_text.as_str()])
     }
 
@@ -1331,7 +1387,7 @@ impl ConfirmDialog {
     }
 
     /// The action row's rects, in [`Self::labels`] order.
-    fn buttons(&self) -> Vec<Rect> {
+    fn buttons(&self) -> Rc<Vec<Rect>> {
         let labels = self.labels();
         measured_buttons(self.geometry(), "confirm_dialog", &self.base, &labels)
     }
@@ -1603,6 +1659,8 @@ pub struct AboutDialog {
     title: String,
     application_name: String,
     version: String,
+    /// The derived identity lines, keyed by the two fields they name.
+    identity_cache: RefCell<Option<(String, String, Rc<Vec<String>>)>>,
     message: String,
     hovered: Option<usize>,
     /// Shared notice-card state.
@@ -1619,6 +1677,7 @@ impl AboutDialog {
             title: "About".to_string(),
             application_name: application_name.to_string(),
             version: version.to_string(),
+            identity_cache: RefCell::new(None),
             message: String::new(),
             hovered: None,
             card: CardState::new(Size::new(360, 200)),
@@ -1799,7 +1858,12 @@ impl AboutDialog {
     }
 
     /// The two identity lines painted above the message.
-    fn identity_lines(&self) -> Vec<String> {
+    fn identity_lines(&self) -> Rc<Vec<String>> {
+        if let Some((name, version, lines)) = self.identity_cache.borrow().as_ref() {
+            if *name == self.application_name && *version == self.version {
+                return Rc::clone(lines);
+            }
+        }
         let mut lines = Vec::with_capacity(2);
         if !self.application_name.is_empty() {
             lines.push(self.application_name.clone());
@@ -1807,11 +1871,14 @@ impl AboutDialog {
         if !self.version.is_empty() {
             lines.push(std::format!("Version {}", self.version));
         }
+        let lines = Rc::new(lines);
+        *self.identity_cache.borrow_mut() =
+            Some((self.application_name.clone(), self.version.clone(), Rc::clone(&lines)));
         lines
     }
 
     /// The action row's rects.
-    fn buttons(&self) -> Vec<Rect> {
+    fn buttons(&self) -> Rc<Vec<Rect>> {
         measured_buttons(self.geometry(), "about_dialog", &self.base, &["Close"])
     }
 
@@ -2117,7 +2184,7 @@ mod tests {
         let rects = dialog.buttons();
         assert!(rects[0].x < rects[1].x, "reject is left of accept: {rects:?}");
         // Both buttons are inside the card.
-        for rect in &rects {
+        for rect in rects.iter() {
             assert!(rect.x >= 0 && rect.x + rect.width as i32 <= 360);
         }
     }
@@ -2127,8 +2194,8 @@ mod tests {
         let mut dialog = AboutDialog::new("Widgets", "2.9.0", Rect::new(0, 0, 360, 200));
         let fired = counter(&dialog.closed);
         assert_eq!(
-            dialog.identity_lines(),
-            vec!["Widgets".to_string(), "Version 2.9.0".to_string()]
+            dialog.identity_lines().as_ref(),
+            &vec!["Widgets".to_string(), "Version 2.9.0".to_string()]
         );
         let rect = dialog.buttons()[0];
         dialog.handle_event(&Event::MousePress {

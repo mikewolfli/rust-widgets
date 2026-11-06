@@ -141,6 +141,6 @@ pub(crate) fn line_capability() -> WidgetCapability {
         aliases: &["line_widget"],
         properties: LINE_PROPERTIES,
         events: &[],
-        commands: &["set_orientation", "set_thickness", "set_color"],
+        commands: &["set_orientation", "set_thickness", "set_color", "set_line_style"],
     }
 }

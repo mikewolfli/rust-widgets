@@ -703,7 +703,7 @@ impl Draw for CupertinoNavigationBar {
                     &prompt_font,
                 );
                 let prompt_y = bar_rect.y + 4;
-                context.draw_text_fitted_cow(
+                context.draw_text_fitted_ellipsis(
                     Rect::new(
                         bar_rect.x + 16,
                         prompt_y,

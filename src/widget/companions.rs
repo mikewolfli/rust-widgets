@@ -121,6 +121,8 @@ pub use axis_picker::{AxisEdge, AxisPicker};
 // spelling inside `axis_picker` (`axis_picker::AxisSpec`) rather than part of this module's
 // public surface. `AxisEdge` is the shared enum the chart family consumes, which is why it is
 // exported here.
+/// The record schema that lets the overlay's marks be written through the property contract.
+pub(crate) use calendar_mark_layer::CALENDAR_MARK_SCHEMA;
 pub use calendar_mark_layer::{CalendarMark, CalendarMarkLayer, CalendarMarkShape};
 pub use chart_data_table::{ChartDataMode, ChartDataTable, ChartSeriesSnapshot};
 pub use chart_tooltip::{ChartTooltip, TooltipLine};
@@ -143,6 +145,8 @@ pub use list_state_host::{ListState, ListStateHost};
 pub use menu_panel::{MenuPanel, MenuPanelItem, MENU_PANEL_ITEM_SCHEMA};
 pub use playlist_panel::{PlaylistPanel, PLAYLIST_TRACK_SCHEMA};
 pub use speed_dial::{SpeedDial, SpeedDialAction, SpeedDialDirection, SPEED_DIAL_ACTION_SCHEMA};
+/// The record schema for a summary row's per-column values.
+pub(crate) use summary_row::SUMMARY_VALUE_SCHEMA;
 pub use summary_row::{ColumnAggregate, ColumnAggregateKind, SummaryRow};
 pub use swatch::Swatch;
 pub use swipe_actions::{SwipeAction, SwipeActions, SwipeSide, SWIPE_ACTION_SCHEMA};

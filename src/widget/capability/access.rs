@@ -450,6 +450,33 @@ pub fn default_widget_property_default_value(
         // property route reports `Null` and writes an empty string back as `Null` too.
         (WidgetKind::NumberPicker, "special_value_text") => Some(CapabilityValue::Null),
         (WidgetKind::NumberPicker, "decimals") => Some(CapabilityValue::UInt(0)),
+        // The dock's stored state, mirroring `DockWidget::new`: undocked, the three default
+        // features, and every edge permitted.
+        (WidgetKind::DockWidget, "dock_location") => {
+            Some(CapabilityValue::String("none".to_string()))
+        }
+        (WidgetKind::DockWidget, "features") => {
+            Some(CapabilityValue::Tuple(crate::compat::Vec::from([
+                CapabilityValue::String("closable".to_string()),
+                CapabilityValue::String("movable".to_string()),
+                CapabilityValue::String("floatable".to_string()),
+            ])))
+        }
+        (WidgetKind::DockWidget, "allowed_areas") => Some(CapabilityValue::Tuple(
+            crate::compat::Vec::from([CapabilityValue::String("all".to_string())]),
+        )),
+        (WidgetKind::Panel, "marks") => {
+            Some(CapabilityValue::Records(crate::widget::capability::RecordList::from_items(
+                &crate::widget::companions::CALENDAR_MARK_SCHEMA,
+                crate::compat::Vec::new(),
+            )))
+        }
+        (WidgetKind::Table, "values") => {
+            Some(CapabilityValue::Records(crate::widget::capability::RecordList::from_items(
+                &crate::widget::companions::SUMMARY_VALUE_SCHEMA,
+                crate::compat::Vec::new(),
+            )))
+        }
         _ => None,
     };
     if let Some(value) = contract_default {
@@ -2821,6 +2848,7 @@ pub fn default_widget_property_default_value(
         WidgetKind::ToastHost => match property_name {
             "max_visible" => CapabilityValue::UInt(5),
             "max_queued" => CapabilityValue::UInt(10),
+            "overlay_offset" => CapabilityValue::Int(0),
             "default_duration_ms" => CapabilityValue::UInt(3000),
             "anchor" => CapabilityValue::String("bottom_left".to_string()),
             "stacking_direction" => CapabilityValue::String("newest_at_top".to_string()),

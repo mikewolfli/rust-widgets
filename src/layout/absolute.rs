@@ -5,18 +5,13 @@
 //!
 //! # Reachability
 //!
-//! **State:** Reserved public capability with no in-repo consumer. Either form of reachability is
-//! absent and stated as such: no widget or container builds an [`AbsoluteLayout`], and the
-//! declarative JSON path cannot express it — [`DeclarativeLayoutKind`](crate::json::layout::DeclarativeLayoutKind)
-//! is one struct per layout, while this solver's data is one [`AbsolutePosition`] per *child*,
-//! which that type has nowhere to carry. Removal condition: when a JSON child-placement schema
-//! exists, or when the solver is confirmed redundant with per-widget geometry writes.
+//! **State:** Production caller: the declarative document path. A `"absolute"` layout node
+//! builds an [`AbsoluteLayout`], and each child's `x`/`y`/`width`/`height`/`anchor` attributes are
+//! stored on it through [`place_widget_in_absolute_layout`](crate::layout::declarative)
+//! (API2-01). The solver is therefore reachable from a saved document, not only from tests.
 //!
-//! The short `crate::layout::AbsoluteLayout` path was removed in API2-01 for the same reason: a
-//! re-export implied the declarative path could reach it.
-// A complete solver algebra: these tests exercise a subset of it (anchor variants and setters
-// that no test constructs are still part of the solver's contract). The module is
-// `#[cfg(test)]`, so the unused remainder produces no shipped code.
+//! A complete solver algebra: the public setters are the solver's contract even where a document
+//! does not exercise every one of them.
 #![allow(dead_code)]
 use super::{ChildInfo, Layout, LayoutContext};
 use crate::compat::{Any, Box, HashMap, Vec};
@@ -450,6 +445,43 @@ impl Anchor {
                 VerticalAnchor::Baseline
             }
         }
+    }
+
+    /// The stable token this anchor travels as in a declarative document.
+    pub const fn token(self) -> &'static str {
+        match self {
+            Anchor::TopLeft => "top_left",
+            Anchor::TopCenter => "top_center",
+            Anchor::TopRight => "top_right",
+            Anchor::CenterLeft => "center_left",
+            Anchor::Center => "center",
+            Anchor::CenterRight => "center_right",
+            Anchor::BottomLeft => "bottom_left",
+            Anchor::BottomCenter => "bottom_center",
+            Anchor::BottomRight => "bottom_right",
+            Anchor::BaselineLeft => "baseline_left",
+            Anchor::BaselineCenter => "baseline_center",
+            Anchor::BaselineRight => "baseline_right",
+        }
+    }
+
+    /// The inverse of [`Self::token`], or `None` for a token this build does not name.
+    pub fn from_token(token: &str) -> Option<Self> {
+        Some(match token {
+            "top_left" => Anchor::TopLeft,
+            "top_center" => Anchor::TopCenter,
+            "top_right" => Anchor::TopRight,
+            "center_left" => Anchor::CenterLeft,
+            "center" => Anchor::Center,
+            "center_right" => Anchor::CenterRight,
+            "bottom_left" => Anchor::BottomLeft,
+            "bottom_center" => Anchor::BottomCenter,
+            "bottom_right" => Anchor::BottomRight,
+            "baseline_left" => Anchor::BaselineLeft,
+            "baseline_center" => Anchor::BaselineCenter,
+            "baseline_right" => Anchor::BaselineRight,
+            _ => return None,
+        })
     }
 }
 

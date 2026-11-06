@@ -21,7 +21,7 @@ use crate::style::WidgetStyle;
 pub const ITEM_PERSPECTIVE_DISTANCE: f32 = 1024.0;
 
 /// Composes the affine item transform and the optional pseudo-3D rotation into the matrix the
-/// batch replay records.
+/// control pushes as a projective transform.
 ///
 /// The order is fixed and documented on the setters: the affine is applied first, then the
 /// rotation about `origin`, both in the control's local coordinates. With no rotation the result
@@ -100,7 +100,7 @@ pub struct BaseWidget {
     /// [`BaseWidget::item_projective_transform`].
     #[cfg(feature = "3d")]
     pub(crate) item_rotation: Option<(crate::render::math3d::Axis, f32, Point)>,
-    /// The composed affine + pseudo-3D matrix recorded by the batch replay.
+    /// The composed affine + pseudo-3D matrix.
     ///
     /// Identity until either setter is called. This is what a control records as a projective
     /// push when the rotation is not the identity; the affine-only path keeps using
@@ -471,7 +471,7 @@ impl BaseWidget {
         self.item_rotation
     }
 
-    /// The composed affine + pseudo-3D matrix, ready for the batch replay's projective push.
+    /// The composed affine + pseudo-3D matrix, ready to push as a projective transform.
     ///
     /// It is the affine alone when no rotation is set, so the identity case maps every point to
     /// itself exactly.
@@ -480,11 +480,10 @@ impl BaseWidget {
         self.item_projective
     }
 
-    /// The settled item matrix, in the representation the batch replay's affine push accepts.
+    /// The settled item matrix, in the affine representation.
     ///
-    /// Recording it on the batch replay stack applies the control's own rotation and scale to
-    /// every primitive in the batch. It is the identity until [`Self::set_item_transform`] is
-    /// called.
+    /// Applying it to every primitive maps the control's own rotation and scale onto the drawing.
+    /// It is the identity until [`Self::set_item_transform`] is called.
     #[cfg(feature = "3d")]
     pub fn item_transform(&self) -> crate::render::math3d::Mat3 {
         self.item_transform
@@ -2125,6 +2124,7 @@ mod tests {
     #[cfg(feature = "i18n")]
     #[test]
     fn test_translated_tooltip_stores_the_translation_not_the_key() {
+        let _lock = crate::i18n::global_i18n_test_lock();
         crate::i18n::init();
         let mut bw = make_base();
         bw.set_translated_tooltip("common.button.cancel");

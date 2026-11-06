@@ -1152,7 +1152,7 @@ impl Draw for RadioButton {
                     if y + line.height as i32 > bottom {
                         break;
                     }
-                    context.draw_text_fitted_cow(
+                    context.draw_text_fitted_ellipsis(
                         Rect::new(label_x, y, label_width, line.height),
                         &self.text[range],
                         font,
@@ -1162,7 +1162,7 @@ impl Draw for RadioButton {
                     y += line.height as i32;
                 }
             } else {
-                context.draw_text_fitted_cow(
+                context.draw_text_fitted_ellipsis(
                     Rect::new(label_x, line.y, label_width, line.height),
                     &self.text,
                     font,

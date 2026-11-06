@@ -233,7 +233,13 @@ impl KeyTipBadge {
             .font
             .clone()
             .unwrap_or_else(|| Font::bold("Arial", (rect.height as f32 * 0.8).clamp(7.0, 12.0)));
-        context.draw_text_fitted_cow(rect, &self.tip_text, &font, ink, HorizontalAlignment::Center);
+        context.draw_text_fitted_ellipsis(
+            rect,
+            &self.tip_text,
+            &font,
+            ink,
+            HorizontalAlignment::Center,
+        );
     }
 
     /// The chip fill and the tip ink.

@@ -508,7 +508,7 @@ impl Draw for RecentValuesPopup {
         if self.entries.is_empty() {
             let row = Rect::new(popup.x, popup.y, popup.width, self.row_height());
             let line = context.text_line(row, font);
-            context.draw_text_fitted_cow(
+            context.draw_text_fitted_ellipsis(
                 Rect::new(
                     row.x + ROW_INSET,
                     line.y,
@@ -533,7 +533,7 @@ impl Draw for RecentValuesPopup {
             }
             let Some(entry) = self.entries.get(row) else { continue };
             let line = context.text_line(rect, font);
-            context.draw_text_fitted_cow(
+            context.draw_text_fitted_ellipsis(
                 Rect::new(
                     rect.x + ROW_INSET,
                     line.y,

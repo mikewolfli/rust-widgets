@@ -1013,7 +1013,7 @@ impl Draw for ToastStack {
                 .map(|label| self.action_rect_for(row, label, font, trailing_right));
             let message_right =
                 action.map(|rect| rect.x - row.x - 4).unwrap_or(trailing_right - row.x - 4).max(0);
-            context.draw_text_fitted_cow(
+            context.draw_text_fitted_ellipsis(
                 Rect::new(row.x + 20, row.y, message_right as u32, row.height),
                 &item.message,
                 font,
@@ -1023,7 +1023,7 @@ impl Draw for ToastStack {
             if let (Some(label), Some(action)) = (item.action_label.as_deref(), action) {
                 // The action sits in the measured trailing band, right-aligned so its label
                 // ends where the row's padding does.
-                context.draw_text_line_cow(
+                context.draw_text_line_ellipsis(
                     action,
                     label,
                     font,

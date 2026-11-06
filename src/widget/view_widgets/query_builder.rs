@@ -45,6 +45,12 @@ use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::view_widgets::filter_expr::{FilterCondition, FilterExpr, FilterOperator};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+
+thread_local! {
+    /// Reused header count-label buffer.
+    static COUNT_TEXT_SCRATCH: crate::compat::RefCell<String> =
+        const { crate::compat::RefCell::new(String::new()) };
+}
 use crate::{impl_widget_property_hooks, property_names_of};
 
 /// How the builder's rows are combined.
@@ -1667,7 +1673,7 @@ impl QueryBuilder {
         static CHIP_FONT: crate::compat::OnceLock<Font> = crate::compat::OnceLock::new();
         let chip_font = CHIP_FONT.get_or_init(|| Font::simple("Sans", 11.0));
         let chip_text_h = context.measure_text("M", chip_font).height;
-        context.draw_text_fitted_cow(
+        context.draw_text_fitted_ellipsis(
             Rect::new(
                 chip.x + 6,
                 chip.y + (chip.height as i32 - chip_text_h as i32) / 2,
@@ -1688,21 +1694,24 @@ impl QueryBuilder {
         );
 
         // Rendered in place: the count is drawn once per frame and never leaves this
-        // scope, so it writes into the buffer rather than through `format!`'s copy.
-        let mut count_text = String::new();
-        let _ = write!(count_text, "{} condition(s)", self.rows.len());
-        context.draw_text_fitted_cow(
-            Rect::new(
-                chip.x + chip.width as i32 + 10,
-                rect.y + (HEADER_HEIGHT as i32 - chip_text_h as i32) / 2,
-                (rect.width as i32 - (chip.x + chip.width as i32 + 10) - 38).max(1) as u32,
-                chip_text_h,
-            ),
-            count_text.as_str(),
-            chip_font,
-            chrome.placeholder_text(),
-            HorizontalAlignment::Left,
-        );
+        // scope, so it writes into the reused buffer rather than through `format!`'s copy.
+        COUNT_TEXT_SCRATCH.with(|cell| {
+            let mut count_text = cell.borrow_mut();
+            count_text.clear();
+            let _ = write!(count_text, "{} condition(s)", self.rows.len());
+            context.draw_text_fitted_ellipsis(
+                Rect::new(
+                    chip.x + chip.width as i32 + 10,
+                    rect.y + (HEADER_HEIGHT as i32 - chip_text_h as i32) / 2,
+                    (rect.width as i32 - (chip.x + chip.width as i32 + 10) - 38).max(1) as u32,
+                    chip_text_h,
+                ),
+                count_text.as_str(),
+                chip_font,
+                chrome.placeholder_text(),
+                HorizontalAlignment::Left,
+            );
+        });
 
         // The add button, at the right.
         let add = Rect::new(rect.x + rect.width as i32 - 30, rect.y + 7, 22, 20);
@@ -1710,7 +1719,7 @@ impl QueryBuilder {
         static ADD_FONT: crate::compat::OnceLock<Font> = crate::compat::OnceLock::new();
         let add_font = ADD_FONT.get_or_init(|| Font::simple("Sans", 14.0));
         let add_text_h = context.measure_text("+", add_font).height;
-        context.draw_text_fitted_cow(
+        context.draw_text_fitted_ellipsis(
             Rect::new(
                 add.x,
                 add.y + (add.height as i32 - add_text_h as i32) / 2,
@@ -1783,7 +1792,7 @@ impl QueryBuilder {
         // the press arm hit-tests.
         let field_label: &str =
             self.fields.get(row.field).map_or("(field)", |field| field.label.as_str());
-        context.draw_text_fitted_cow(
+        context.draw_text_fitted_ellipsis(
             Rect::new(field_box.x, field_box.y + 19, field_box.width.saturating_sub(4), 11),
             field_label,
             fonts.small,
@@ -1811,7 +1820,7 @@ impl QueryBuilder {
             };
             // The operand is host-supplied too, and it is the value most likely to be long, so it
             // is fitted to its own input box instead of painting over the row's remove button.
-            context.draw_text_fitted_cow(
+            context.draw_text_fitted_ellipsis(
                 Rect::new(
                     operand_box.x + 5,
                     operand_box.y + 13,

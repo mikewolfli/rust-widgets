@@ -541,7 +541,7 @@ impl Draw for TooltipManager {
             let fill = ink.blend(&surface, 0.10);
             context.fill_rect(bubble, fill);
             context.draw_rect(bubble, fill.contrast_color().with_alpha(60));
-            context.draw_text_fitted_cow(
+            context.draw_text_fitted_ellipsis(
                 bubble,
                 text,
                 font,

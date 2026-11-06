@@ -510,7 +510,7 @@ impl Draw for HeroAnimation {
             let metrics = context.measure_text("Hg", font);
             let first_y = rect.y + (rect.height as i32 - metrics.height as i32 * 2) / 2;
             for (index, line) in lines.iter().enumerate() {
-                context.draw_text_fitted_cow(
+                context.draw_text_fitted_ellipsis(
                     Rect::new(
                         rect.x,
                         first_y + index as i32 * metrics.height as i32,
@@ -613,7 +613,13 @@ impl Draw for HeroAnimation {
             (false, false) => None,
         };
         if let Some((text, color)) = label {
-            context.draw_text_fitted_cow(label_band, text, font, color, HorizontalAlignment::Left);
+            context.draw_text_fitted_ellipsis(
+                label_band,
+                text,
+                font,
+                color,
+                HorizontalAlignment::Left,
+            );
         }
     }
 }

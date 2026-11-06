@@ -168,27 +168,6 @@ pub mod display_widgets;
 #[cfg(full_widgets)]
 pub mod macos;
 
-/// Material Symbols icon data, compiled only under the opt-in `icons` feature.
-///
-/// Gated here rather than inside the module so a build without the feature does not compile
-/// the table at all: the payload is upstream's outlines (see `NOTICE`), and a sized profile
-/// should not carry data it did not ask for. `Icon::draw` falls back to its hand-drawn shapes
-/// when this is absent, which is what keeps the default build's icon output byte-identical.
-#[cfg(feature = "icons")]
-pub(crate) mod icon_data;
-
-/// The generated hand-drawn fallback geometry, derived from the same Material Symbols outlines.
-///
-/// Compiled whenever `Icon` is (`widgets_unstripped`), not only under `icons`: this *is* the
-/// fallback — the geometry a build without the icon data draws. Gating it on `icons` would leave
-/// the fallback with nothing to draw from, which is the situation the hand-written `draw_*`
-/// methods used to fill. Gating it on the same condition as `icon.rs` keeps a stripped profile
-/// (`mini`/`embedded`, where `Icon` is not compiled at all) from linking a table nothing reads.
-///
-/// It *is* compiled there now: a control on a stripped profile still paints its disclosure chevron
-/// and its star through `draw_icon_at`, which reads this table when the `icons` feature is off.
-pub(crate) mod icon_fallback_data;
-
 /// Host-registered icons: a name and its outline, added at runtime (`register_icon`).
 ///
 /// The crate's own set is the closed `IconName` enum; this is the open extension point a host uses
@@ -403,7 +382,7 @@ pub use display_widgets::icon::Icon;
 pub use display_widgets::icon::{
     draw_icon_at, draw_icon_centered, draw_icon_named, icon_token_is_drawable, measure_icon,
     paint_icon, validate_icon, IconData, IconMetrics, IconName, IconPaintError, IconPaintOutcome,
-    IconRef, IconSourceMetadata,
+    IconRef, IconSourceMetadata, UPSTREAM_ALIASES,
 };
 #[cfg(all(feature = "image", not(alloc_frugal)))]
 pub use icon_source::SharedIconPixels;

@@ -337,7 +337,7 @@ impl Draw for LineNumberGutter {
                 rect.width.saturating_sub(GUTTER_INSET * 2 + MARKER_BAR_WIDTH),
                 height,
             );
-            context.draw_text_fitted_cow(
+            context.draw_text_fitted_ellipsis(
                 text_bounds,
                 &label,
                 font,

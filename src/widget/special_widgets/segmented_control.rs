@@ -1189,7 +1189,7 @@ impl Draw for SegmentedControl {
                             HorizontalAlignment::Left,
                         );
                     } else if label_width > 0 {
-                        context.draw_text_fitted_cow(
+                        context.draw_text_fitted_ellipsis(
                             visible,
                             &item.label,
                             font,

@@ -1599,7 +1599,7 @@ impl Draw for TagInput {
                 Color::rgba(60, 140, 255, 70),
             );
         }
-        let _ = context.draw_text_fitted_cow(
+        context.draw_text_fitted_ellipsis(
             input_line,
             display_text,
             font,

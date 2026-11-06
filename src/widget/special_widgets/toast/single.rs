@@ -456,7 +456,7 @@ impl Draw for Toast {
                     (line.height + 6).min(action.height),
                 );
                 context.fill_rect(button, text_color.with_alpha(18));
-                context.draw_text_line_cow(
+                context.draw_text_line_ellipsis(
                     button,
                     label,
                     font,
@@ -466,7 +466,7 @@ impl Draw for Toast {
             }
         }
         if !self.message.is_empty() && text_width > 0 {
-            context.draw_text_fitted_cow(
+            context.draw_text_fitted_ellipsis(
                 Rect { x: text_x, y: line.y, width: text_width, height: line.height },
                 &self.message,
                 font,

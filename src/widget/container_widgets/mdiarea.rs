@@ -1666,13 +1666,7 @@ impl WidgetProperties for MdiArea {
     /// non-`set_` commands dropped the trait default's `set_` acceptance, which is
     /// what the final arm restores.
     fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
-        match name {
-            "add_subwindow" | "remove_subwindow" | "activate_subwindow" => {
-                Err(CapabilityAccessError::OutOfRange)
-            }
-            _ if name.starts_with("set_") => Err(CapabilityAccessError::OutOfRange),
-            _ => self.default_command(name),
-        }
+        self.default_command(name)
     }
 }
 
@@ -2218,7 +2212,7 @@ impl Draw for MdiArea {
                     title_width =
                         title_width.saturating_sub(SUBWINDOW_ICON_SIDE + SUBWINDOW_ICON_GAP);
                 }
-                context.draw_text_fitted_cow(
+                context.draw_text_fitted_ellipsis(
                     Rect {
                         x: title_x,
                         y: title_line.y,
@@ -2360,7 +2354,7 @@ impl MdiArea {
             if subwindow.closable {
                 label.width = label.width.saturating_sub(CLOSE_SIZE_SUM);
             }
-            context.draw_text_fitted_cow(
+            context.draw_text_fitted_ellipsis(
                 context.text_line(label, font),
                 &subwindow.title,
                 font,

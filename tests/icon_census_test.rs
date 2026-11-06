@@ -11,7 +11,7 @@
 //! | # | Assertion | The defect it catches |
 //! |---|---|---|
 //! | C1 | every token draws at least one subpath | a token whose data never reached the draw (the census would be blank for it) |
-//! | C2 | no two tokens draw byte-identical pictures | the `Close == Cross` class: two names, one picture |
+//! | C2 | no two *curated* tokens draw byte-identical pictures | the `Close == Cross` class: two names, one picture |
 //! | C3 | the committed `tools/icon_census.txt` matches a fresh run | a data change nobody regenerated the census for |
 //! | C4 | every token has a row, and every row names a token | a token that escapes the census, or a stale row for one that is gone |
 //! | C5 | the counters of a compound icon stay transparent | a compound outline whose inner contour is painted as a separate solid polygon |
@@ -33,12 +33,18 @@
 //! expected picture from the geometry the *other* backends receive, so it also fails if the SVG
 //! backend and the software backend ever disagree about which contours an icon has.
 //!
-//! # Why C2 is a *rendering* comparison and not a data one
+//! # Why C2 is a *rendering* comparison, and why it stops at the curated tokens
 //!
 //! `tests/icon_data_integrity_test.rs` already proves the `d` strings differ. That is necessary and
 //! not sufficient: two different `d` values can still flatten to one polygon set — through a
 //! transform, a scale, or a flattening bug — and the user would see one picture under two names.
 //! C2 compares the emitted SVG, which is the picture.
+//!
+//! It compares the **curated** tokens. The catalogue's entries are upstream's name set, and upstream
+//! ships near-identical drawings under several names (`keyboard_arrow_down` vs `expand_more`, which
+//! `chevron_down` resolves to; `crop_din` vs `check_box_outline_blank`): at any practical size they
+//! render as one picture, and that is upstream's data rather than a defect here. The catalogue is
+//! guarded by the data-level duplicate check instead, and by C3's committed digests.
 //!
 //! # Why the census is committed
 //!
@@ -78,27 +84,36 @@ struct Row {
     painted: Vec<bool>,
 }
 
-/// Renders every token and measures it.
-fn census() -> Vec<Row> {
-    IconName::ALL
-        .into_iter()
-        .map(|token| {
-            let mut icon = Icon::new(Rect::new(0, 0, SIDE, SIDE));
-            icon.set_icon_enum(token);
-            let svg = render_to_svg(&mut icon);
-            let contours = svg.matches("M ").count();
-            let (ink, runs, painted) = measure_ink(&mut icon);
-            Row {
-                token: token.as_str(),
-                contours,
-                ink,
-                runs,
-                digest: sha256_hex(svg.as_bytes()),
-                svg,
-                painted,
-            }
-        })
-        .collect()
+/// Renders every token and measures it, once per test binary.
+///
+/// # Why the result is cached
+///
+/// Six tests read the same measurement, and the measurement is 4,323 renders plus a rasterisation
+/// each. Recomputing it per test cost six times the work for the same numbers; a `OnceLock` makes
+/// "the census" one value the whole file reads, which is also what its name says it is.
+fn census() -> &'static [Row] {
+    static CENSUS: std::sync::OnceLock<Vec<Row>> = std::sync::OnceLock::new();
+    CENSUS.get_or_init(|| {
+        IconName::ALL
+            .into_iter()
+            .map(|token| {
+                let mut icon = Icon::new(Rect::new(0, 0, SIDE, SIDE));
+                icon.set_icon_enum(token);
+                let svg = render_to_svg(&mut icon);
+                let contours = svg.matches("M ").count();
+                let (ink, runs, painted) = measure_ink(&mut icon);
+                Row {
+                    token: token.as_str(),
+                    contours,
+                    ink,
+                    runs,
+                    digest: sha256_hex(svg.as_bytes()),
+                    svg,
+                    painted,
+                }
+            })
+            .collect()
+    })
 }
 
 /// Draws `icon` into a fresh software frame and measures the ink it laid down.
@@ -149,11 +164,26 @@ fn c1_every_icon_draws_an_outline() {
     }
 }
 
-/// C2 — two distinct names must not draw one picture.
+/// C2 — two distinct names in this crate's own vocabulary must not draw one picture.
+///
+/// # Why the catalogue is not included
+///
+/// The census renders all 4,323 tokens, but picture-level distinctness is a property of the
+/// **curated** set — the tokens a control in this crate names directly, where one glyph serving
+/// two names is the `Close == Cross` defect. The catalogue's entries are upstream's own name set,
+/// and upstream publishes near-duplicates on purpose: `keyboard_arrow_down` and `expand_more`
+/// (which `chevron_down` resolves to) differ by one design unit and render as one picture, as do
+/// `crop_din` / `check_box_outline_blank`. Asserting distinctness over the catalogue would fail on
+/// upstream's data rather than on ours.
+///
+/// What still guards the catalogue is a *data* check: `tests/icon_data_integrity_test.rs` refuses
+/// two tokens sharing one outline unless `UPSTREAM_ALIASES` records them as aliases, and C3's
+/// committed digests make any change to any catalogue icon visible in review.
 #[test]
 fn c2_no_two_icons_draw_one_picture() {
+    let curated = &census()[..IconName::CURATED_TOKENS];
     let mut seen: BTreeMap<String, &'static str> = BTreeMap::new();
-    for row in census() {
+    for row in curated {
         if let Some(other) = seen.insert(row.digest.clone(), row.token) {
             panic!(
                 "{other} and {} render byte-identical pictures, so two distinct icon names draw \
@@ -268,7 +298,10 @@ fn c6_painted_pixels_are_the_non_zero_winding_fill() {
 
     let mut erasing_tokens = 0usize;
     let mut erased_pixels = 0usize;
-    for row in census() {
+    // The curated set: this test measures the *renderer's* fill rule over a representative set of
+    // outlines, and its floors were calibrated on these. The catalogue would multiply the run time
+    // by ~58 without adding evidence about the renderer.
+    for row in &census()[..IconName::CURATED_TOKENS] {
         let contours = compound_contours(&row.svg);
         assert_eq!(
             contours.len(),

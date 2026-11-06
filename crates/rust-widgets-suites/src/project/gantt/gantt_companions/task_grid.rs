@@ -90,6 +90,10 @@ pub struct GanttTaskGrid {
     pub on_task_selected: Signal1<String>,
     /// Emitted with the column index a header press hit.
     pub on_header_clicked: Signal1<usize>,
+    /// Column bands reused by the paint path.
+    column_bounds_scratch: Vec<(usize, i32, u32)>,
+    /// Visible task indices reused by the paint path.
+    visible_indices_scratch: Vec<usize>,
 }
 
 impl GanttTaskGrid {
@@ -109,6 +113,8 @@ impl GanttTaskGrid {
             binding: None,
             on_task_selected: Signal1::new(),
             on_header_clicked: Signal1::new(),
+            column_bounds_scratch: Vec::new(),
+            visible_indices_scratch: Vec::new(),
         }
     }
 
@@ -362,12 +368,21 @@ impl GanttTaskGrid {
 
     /// The task indices that pass the depth filter, in display order.
     fn visible_indices(&self) -> Vec<usize> {
-        self.tasks
-            .iter()
-            .enumerate()
-            .filter(|(index, _)| self.depth_of(*index) <= self.max_depth)
-            .map(|(index, _)| index)
-            .collect()
+        let mut out = Vec::new();
+        self.fill_visible_indices(&mut out);
+        out
+    }
+
+    /// [`Self::visible_indices`] into a caller-held buffer, for the paint path.
+    fn fill_visible_indices(&self, out: &mut Vec<usize>) {
+        out.clear();
+        out.extend(
+            self.tasks
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| self.depth_of(*index) <= self.max_depth)
+                .map(|(index, _)| index),
+        );
     }
 
     /// How many ancestors task `index` has.
@@ -413,10 +428,17 @@ impl GanttTaskGrid {
 
     /// Column bands in paint order, with the final column absorbing the remainder.
     fn column_bounds(&self) -> Vec<(usize, i32, u32)> {
+        let mut out = Vec::new();
+        self.fill_column_bounds(&mut out);
+        out
+    }
+
+    /// [`Self::column_bounds`] into a caller-held buffer, for the paint path.
+    fn fill_column_bounds(&self, out: &mut Vec<(usize, i32, u32)>) {
+        out.clear();
         let rect = self.geometry();
         let right = rect.x + rect.width as i32;
         let mut x = rect.x;
-        let mut bounds = Vec::with_capacity(self.columns.len());
         for (index, column) in self.columns.iter().enumerate() {
             if x >= right {
                 break;
@@ -427,10 +449,9 @@ impl GanttTaskGrid {
             } else {
                 (column.width.max(1) as i32).min(remaining) as u32
             };
-            bounds.push((index, x, width));
+            out.push((index, x, width));
             x += width as i32;
         }
-        bounds
     }
 
     /// The column containing `x`, using the same bands [`Self::column_bounds`] returns.
@@ -591,7 +612,8 @@ impl Draw for GanttTaskGrid {
         let (surface, border, ink) = chart_chrome_palette(style, "gantt_task_grid");
         context.face_with_gradient(rect, surface, None, Default::default(), 0, Color::BLACK);
         let font = effective_font(style);
-        let bounds = self.column_bounds();
+        let mut bounds = core::mem::take(&mut self.column_bounds_scratch);
+        self.fill_column_bounds(&mut bounds);
 
         if self.header_visible {
             let header = Rect::new(rect.x, rect.y, rect.width, GRID_HEADER_HEIGHT.min(rect.height));
@@ -606,7 +628,7 @@ impl Draw for GanttTaskGrid {
                     width.saturating_sub((2 * GRID_PADDING) as u32),
                     header.height,
                 );
-                context.draw_text_line_cow(band, &column.title, font, ink, column.alignment);
+                context.draw_text_line_ellipsis(band, &column.title, font, ink, column.alignment);
             }
             context.draw_line(
                 Point::new(rect.x, header.bottom()),
@@ -625,7 +647,8 @@ impl Draw for GanttTaskGrid {
             );
         }
 
-        let indices = self.visible_indices();
+        let mut indices = core::mem::take(&mut self.visible_indices_scratch);
+        self.fill_visible_indices(&mut indices);
         let scroll = self.current_scroll_offset();
         let first_column = bounds.first().copied();
         let indent_step = self.indent_step as i32;
@@ -658,8 +681,10 @@ impl Draw for GanttTaskGrid {
             let available =
                 (first_width as i32 - GRID_PADDING - indent - GRID_PADDING).max(0) as u32;
             let band = Rect::new(label_x, row.y, available, row.height);
-            context.draw_text_line_cow(band, &task.label, font, ink, column.alignment);
+            context.draw_text_line_ellipsis(band, &task.label, font, ink, column.alignment);
         }
+        self.column_bounds_scratch = bounds;
+        self.visible_indices_scratch = indices;
     }
 }
 
