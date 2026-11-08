@@ -156,7 +156,10 @@ if [ -f "$tokens_file" ] && [ -f "$catalog_file" ]; then
   # tokens, and a per-token grep made this gate minutes long for the same answer.
   grep -oE '^[[:space:]]*"[a-z0-9_]+" =>' crates/rust-widgets-icons/src/names.rs \
     | sed -E 's/^[[:space:]]*"([a-z0-9_]+)".*/\1/' | sort -u > "$arms_list"
-  declared="$(wc -l < "$declared_list")"
+  # BSD `wc -l` (macOS) pads its count with leading spaces, and the scanner rejects a non-digit
+  # argument with a usage error. Stripping the padding here keeps the number usable on every host;
+  # the count itself is unchanged.
+  declared="$(wc -l < "$declared_list" | tr -d '[:space:]')"
   missing="$(sort -u "$declared_list" | comm -23 - "$arms_list")"
   if [ -n "$missing" ]; then
     while IFS= read -r token; do

@@ -523,3 +523,16 @@ anchored before the successful injection).
 > otherwise the injection is reported as proving nothing), and both were re-run green immediately
 > after the capture: `setter census: OK (controls=240, ledger=777, unclassified=0)` and
 > `scrollable census: candidates=48 rows=31 pixels=2 excluded=15 gaps=0` (after round 9 closed the row-unit gaps).
+
+## Round 15 (2026-11-08) — modal-loop heartbeat and macOS backends clippy
+
+| gate | injected | reported |
+|---|---|---|
+| `check_modal_loop_frame_heartbeat.sh` | changed the shared heartbeat's enrolment from `kCFRunLoopCommonModes` to `kCFRunLoopDefaultMode` in `src/platform/macos_heartbeat.rs` (the exact regression the module was written to prevent) | `[1/5] the macOS heartbeat lives in the run-loop modes AppKit's modal loops run` / `  ❌ src/platform/macos_heartbeat.rs does not add its timer in kCFRunLoopCommonModes; a drag would not drain` / `check_modal_loop_frame_heartbeat: 1 finding(s)` (exit 1) |
+| `check_macos_backends_clippy.sh` | added `let injection_probe_unused = 1;` to `MacOSObjc2Platform::backend_name` in `src/platform/macos_objc2/platform_impl.rs` | `error: unused variable: 'injection_probe_unused'` / `error: could not compile 'rust_widgets' (lib) due to 1 previous error` / `  ❌ both (macos,macos-legacy) has a clippy finding; reproduce with:` / `check_macos_backends_clippy: 3 finding(s)` (exit 1) |
+
+> Both injections were reverted immediately and the gates re-run green in the same round:
+> `modal-loop frame heartbeat: OK (macOS common modes + Win32 size/move loop, both guarded)` and
+> `macOS backends clippy: OK (objc2, cocoa and the two-backend combination are warning-free)`.
+> The clippy record shows three findings because the `desktop` cell also compiles the objc2 module
+> on an Apple target, so the injected warning is visible in every configuration that includes it.

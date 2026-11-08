@@ -48,18 +48,23 @@ echo
 echo "[3/3] fixtures are in sync with the built-in presets"
 # Snapshot, regenerate, diff. `themes/generate.sh` writes through the library's own
 # `save_theme`, so an in-sync fixture is byte-identical by construction.
+#
+# # Why every theme file is snapshotted, while only two are compared
+#
+# The generator writes **all** presets, and two of them (`macos-*.json`) carry the host's system UI
+# family — `SF Pro` on macOS, a fallback elsewhere — so comparing them would make this gate fail on
+# one host and pass on another. They are therefore not compared. They *are* snapshotted and
+# restored: without that, running the gate on macOS rewrote them (`Arial` → `SF Pro`) and left the
+# working tree dirty, which is a check that changes what it checks. Restoring every file the
+# generator touches is what lets the gate be read-only from the caller's point of view.
 snapshot_dir="$(mktemp -d)"
 trap 'rm -rf "$snapshot_dir"' EXIT
-for preset in default dark; do
-    cp "themes/${preset}.json" "${snapshot_dir}/${preset}.json"
+for file in themes/*.json; do
+    cp "$file" "${snapshot_dir}/$(basename "$file")"
 done
 
 if ! bash themes/generate.sh > /dev/null 2>&1; then
     echo "FAIL: themes/generate.sh failed; cannot verify the fixtures are in sync."
-    # Restore before failing so the working tree is left as it was found.
-    for preset in default dark; do
-        cp "${snapshot_dir}/${preset}.json" "themes/${preset}.json"
-    done
     fail=1
 else
     for preset in default dark; do
@@ -72,6 +77,12 @@ else
         fi
     done
 fi
+
+# Put back every file the generator wrote, so the gate leaves the tree exactly as it found it —
+# both on success and on the failure paths above.
+for file in themes/*.json; do
+    cp "${snapshot_dir}/$(basename "$file")" "$file"
+done
 
 echo
 if [[ "$fail" -ne 0 ]]; then

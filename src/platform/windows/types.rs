@@ -24,6 +24,12 @@ pub use crate::platform::windows_notify::WindowsHandleKind;
 /// `PeekMessage` inside it), which is what makes it the way back in. The timer exists only between
 /// the two messages, so an idle window gains no wake-up while a drag gets one frame per
 /// [`crate::platform::types::FRAME_INTERVAL_MS`].
+///
+/// Only the production widget tree has a modal-loop heartbeat to install: the sized profiles
+/// (`mini`/`embedded`) strip it, so the constant and its three uses are gated together. Leaving
+/// the constant ungated made it dead code in `mini` on the Windows target, where the runner builds
+/// every profile.
+#[cfg(widgets_unstripped)]
 const FRAME_HEARTBEAT_TIMER_ID: usize = 0x5257; // "RW"
 
 /// Drives one frame from inside Win32's modal move/size loop.

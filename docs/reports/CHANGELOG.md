@@ -136,6 +136,57 @@ When the two disagree, this file is the one that ships; `tools/check_changelog_s
   the DPI and the layout rectangle, not just a size or a width), so a theme or geometry change
   cannot leave a stale measurement behind.
 
+### Fixed
+
+- **A control inside a mounted surface repaints it, and a container mounted as a surface paints its
+  children.** `Platform::mount_surface` gives a widget its own painting box, and the platform asked
+  `render_frame` for it — one widget, no descendants. A container's children are registry ids, so
+  an `MdiArea` (or an `AdaptiveScaffold` with id slots) mounted that way showed its own chrome and
+  none of its content. The cached surface entry point now renders a subtree frame when the widget
+  has children (`render_frame` keeps its deliberate "exactly one widget" contract), a change to a
+  surface bumps the epoch of the frame cached *for that surface* as well as its window's, and a
+  repaint submitted by a control inside a surface falls through to the nearest surface ancestor
+  when the backend truthfully rejects the child's id. `MdiArea` in `demo/control` is the case that
+  exposed this.
+- **`MenuBar::clear` and `MenuBar::detach_menu` request the frame they change.** The other mutators
+  already did; these two left the old titles (and, for a detached open menu, the popup) on screen
+  until something else asked for a repaint.
+- **A mounted surface's tree frame is invalidated on change.** Containers cache their frame under
+  the surface's own id, while `repaint_frame_owner` answers with the window; bumping only the window
+  left the surface replaying its first frame.
+- **The Control demo's MDI row is laid out inside the area and re-arranges on resize.**
+  `add_sub_window` takes absolute coordinates, so the row now cascades from the area's rectangle
+  instead of hard-coding positions outside it, and the window layout re-applies the arrangement the
+  Shuffle button last chose (the frames do not follow the area by themselves).
+- **Running the theme-fixture gate no longer dirties the tree.** `themes/generate.sh` writes every
+  preset, including the host-dependent `macos-*.json` (system UI family); the gate snapshotted only
+  `default`/`dark`, so on macOS it left those two rewritten (`Arial` → `SF Pro`). It now snapshots
+  and restores every file the generator writes.
+- **`check_icon_entry_contract.sh` works on a BSD host.** `wc -l < file` pads its count on macOS,
+  and the claim scanner rejected the padded argument as a usage error; the count is trimmed first.
+- **`check_widget_kind_count.sh` no longer reads somebody else's number as a widget-kind claim.**
+  The cookbook's `IconName<br/>(4,323 variants)` row matched `323 variants`; the number patterns now
+  reject a value preceded by a digit or a thousands separator.
+- **`tools/lib_cargo_cache.sh` parses under macOS's bash 3.2.** A quoted word inside a command
+  substitution (`case … in *" $name "*`) is a 3.2 parse error; the loop moved into a function, so
+  the cache key is computed again instead of every gate silently running uncached.
+- **Windows builds compile in the sized profiles.** `install_win32_wake_event` exists on every
+  Windows profile (empty body when there is no loop to wake), and the modal-loop timer id is gated
+  with its only uses, so `mini`/`embedded` on Windows build warning-free.
+
+### Added
+
+- **`TextChange::modified`.** The code editor captures whether the buffer differs from its save
+  point at the moment it publishes a change, so a status-bar subscriber can show the save marker
+  without querying a widget that is lent out for the edit. Undo back to the save point now clears
+  the marker instead of leaving it set.
+- **`rw_pump_frame` reports the cadence predicate** (`FrameOutcome::wants_fast_cadence`) rather than
+  the animation bit alone, matching every platform loop: a host that paces itself on the answer now
+  keeps display-rate frames while a resize/move trigger is still settling. Hosts that ignored the
+  answer are unaffected.
+- **`widget::runtime::surface_root_of`** names the nearest mounted surface above a control, which is
+  what a repaint request from a surface's content uses.
+
 ## 4.1.0 (2026-11-04) — the closed-loop round (issue-20261104, 63/63)
 
 Every item in `docs/issues/issue-20261104.md` is closed: the resize chain, the per-event costs, the

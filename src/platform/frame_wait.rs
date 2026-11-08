@@ -552,8 +552,17 @@ fn block_for(timeout: Duration) -> bool {
 ///
 /// Called by the Windows backend at the start of its loop. Process-wide because the library's
 /// frame wait is process-wide and a message queue belongs to one thread.
-#[cfg(all(windows, not(alloc_frugal)))]
+///
+/// # Why every Windows profile has this function
+///
+/// The call site is in the backend's `run`, which is compiled in the sized profiles too, while the
+/// channel itself is not (there is no `Platform` loop to wake there). Keeping one name with an
+/// empty sized-profile body means the call site needs no `cfg` of its own — the same arrangement
+/// [`set_wake_hook`](inner::set_wake_hook) uses — and a `mini` build on Windows compiles instead
+/// of failing on a missing symbol.
+#[cfg(windows)]
 pub(crate) fn install_win32_wake_event() {
+    #[cfg(not(alloc_frugal))]
     win32_wake::install();
 }
 

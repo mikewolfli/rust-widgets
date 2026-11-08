@@ -200,21 +200,31 @@ _rw_cache_key() {
   local argv_digest
   argv_digest="$(printf '%s\n%s\n%s\n' "$RW_CACHE_CARGO" "$toolchain" "$*" | _rw_digest_stream)"
   local environment_digest
-  environment_digest="$(
-    while IFS= read -r name; do
-      # Harness-owned knobs do not affect the verdict of a compilation; see
-      # `RW_CACHE_HARNESS_ENV` above for what including them cost.
-      # (No apostrophe in this comment: bash 3.2 mis-reads a quoted word inside a
-      # command substitution as an opening quote and rejects the whole file.)
-      case "$RW_CACHE_HARNESS_ENV" in
-        *" $name "*) continue ;;
-      esac
-      printf '%s=%q\n' "$name" "${!name}"
-    done < <(compgen -e) | LC_ALL=C sort | _rw_digest_stream
-  )"
+  environment_digest="$(_rw_environment_digest)"
   local source_digest
   source_digest="$(_rw_source_digest)"
   printf '%s\n%s\n%s\n' "$argv_digest" "$environment_digest" "$source_digest"
+}
+
+# The digest of the environment variables that can affect a build.
+#
+# # Why this is a function instead of an inline `$( … )`
+#
+# The exact-match test `case … in *" $name "*)` — a quoted word inside a command substitution —
+# is a bash 3.2 parse error (macOS's `/bin/bash`): the shell reads the quote as opening a string
+# that never closes and rejects the whole file. Moving the loop into a function keeps the same
+# semantics (the harness list is space-padded so `HOME` cannot match `HOMEDIR`) while the pattern
+# sits outside a command substitution, where bash 3.2 parses it correctly.
+_rw_environment_digest() {
+  local name
+  while IFS= read -r name; do
+    # Harness-owned knobs do not affect the verdict of a compilation; see
+    # `RW_CACHE_HARNESS_ENV` above for what including them cost.
+    case "$RW_CACHE_HARNESS_ENV" in
+      *" $name "*) continue ;;
+    esac
+    printf '%s=%q\n' "$name" "${!name}"
+  done < <(compgen -e) | LC_ALL=C sort | _rw_digest_stream
 }
 
 # rw_cargo_cached <seconds> <cargo args…>
