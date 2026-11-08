@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
 // SPDX-License-Identifier: MIT
 
-use crate::compat::{format, lock, Box, HashMap, MiniToString, Mutex, String};
+use crate::compat::{format, lock, Box, HashMap, MiniToString, Mutex, String, Vec};
 use crate::data_binding::traits::*;
 use crate::signal::Signal1;
 use alloc::sync::{Arc, Weak};
@@ -78,6 +78,26 @@ pub struct Binding<T: Clone + Send + 'static> {
     /// the model now agree. Carrying the property name lets one subscriber watch several bound
     /// properties without a separate signal per control.
     binding_synced: Signal1<String>,
+    /// The open transaction, if any (EX4-01).
+    ///
+    /// Shared across clones like the value itself: a form that holds one handle and a control that
+    /// holds another must agree that a transaction is in progress, or the control's announcement
+    /// would escape it.
+    update_batch: Arc<Mutex<UpdateBatch>>,
+}
+
+/// Deferred announcements of one [`Binding::with_updates`] scope.
+///
+/// Only the `binding_synced` announcements are deferred. A value write still notifies listeners
+/// immediately, because the listeners are what apply the new value to the model/controls; delaying
+/// them would make the model and the controls disagree for the duration of the scope. What a batch
+/// saves is the per-property *agreement report*, which a host folds into one redraw.
+#[derive(Default)]
+struct UpdateBatch {
+    /// Nesting depth; announcements are deferred while this is non-zero.
+    depth: usize,
+    /// Properties announced while the scope was open, in first-announced order.
+    deferred: Vec<String>,
 }
 
 struct BindingInner<T: Clone + Send + 'static> {
@@ -133,6 +153,7 @@ impl<T: Clone + Send + 'static> Clone for Binding<T> {
             inner: Arc::clone(&self.inner),
             validation_failed: self.validation_failed.clone(),
             binding_synced: self.binding_synced.clone(),
+            update_batch: Arc::clone(&self.update_batch),
         }
     }
 }
@@ -144,6 +165,7 @@ impl<T: Clone + Send + 'static> Binding<T> {
             inner: Arc::new(Mutex::new(BindingInner::new(value))),
             validation_failed: Signal1::new(),
             binding_synced: Signal1::new(),
+            update_batch: Arc::new(Mutex::new(UpdateBatch::default())),
         }
     }
 
@@ -378,8 +400,78 @@ impl<T: Clone + Send + 'static> Binding<T> {
     ///
     /// Public so a control that pushed its own value into a bound model can report the same fact
     /// the bridge reports when it pushes in the other direction.
+    ///
+    /// Inside [`Self::with_updates`] the announcement is queued and emitted once when the outermost
+    /// scope closes; outside one it is emitted immediately, so a non-batched caller sees no change.
     pub fn announce_synced(&self, property: &str) {
-        self.binding_synced.emit(String::from(property));
+        let immediate = {
+            let mut batch = lock(&self.update_batch);
+            if batch.depth == 0 {
+                true
+            } else {
+                if !batch.deferred.iter().any(|queued| queued == property) {
+                    batch.deferred.push(String::from(property));
+                }
+                false
+            }
+        };
+        if immediate {
+            self.binding_synced.emit(String::from(property));
+        }
+    }
+
+    /// Runs `updates` as one transaction: `binding_synced` announcements are queued and emitted
+    /// once, in first-announced order, when the outermost scope closes (EX4-01).
+    ///
+    /// # What it does and does not defer
+    ///
+    /// The model writes themselves are not deferred: a `set` still updates the value and notifies
+    /// its listeners at once, because those listeners are what apply the value to the controls.
+    /// Deferring them would leave the model ahead of the UI for the scope. What is deferred is the
+    /// *agreement report* — `binding_synced` — which is the signal a host uses to schedule a redraw;
+    /// one redraw for an N-field form is the saving this exists for. The frame bus already folds
+    /// repeated repaint requests for one surface (`FRAME_REPAINT_REASONS`), so no second coalescing
+    /// mechanism is introduced here.
+    ///
+    /// # Nesting and panics
+    ///
+    /// Nested scopes join the outer one, so the flush happens exactly once. Closing on unwind is a
+    /// guard's job, which is why the depth counter is decremented from `Drop` rather than from the
+    /// tail of `updates`.
+    pub fn with_updates<R>(&self, updates: impl FnOnce(&Self) -> R) -> R {
+        struct FlushGuard<'a, T: Clone + Send + 'static> {
+            binding: &'a Binding<T>,
+        }
+        impl<T: Clone + Send + 'static> Drop for FlushGuard<'_, T> {
+            fn drop(&mut self) {
+                self.binding.close_update_scope();
+            }
+        }
+
+        {
+            let mut batch = lock(&self.update_batch);
+            batch.depth = batch.depth.saturating_add(1);
+        }
+        let guard = FlushGuard { binding: self };
+        let result = updates(self);
+        drop(guard);
+        result
+    }
+
+    /// Decrements the scope depth and flushes the queue when the outermost scope closes.
+    fn close_update_scope(&self) {
+        let pending = {
+            let mut batch = lock(&self.update_batch);
+            batch.depth = batch.depth.saturating_sub(1);
+            if batch.depth == 0 {
+                core::mem::take(&mut batch.deferred)
+            } else {
+                Vec::new()
+            }
+        };
+        for property in pending {
+            self.binding_synced.emit(property);
+        }
     }
 
     /// Validates `value` and then stores it.
@@ -603,6 +695,49 @@ mod tests {
     use super::*;
     use crate::compat::{lock, Mutex};
     use core::sync::atomic::AtomicI32;
+
+    #[test]
+    fn with_updates_defers_the_synced_announcements_until_the_scope_closes() {
+        let binding = Binding::new(0);
+        let seen: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&seen);
+        binding.binding_synced_signal().connect(move |property| {
+            lock(&sink).push((*property).clone());
+        });
+
+        binding.with_updates(|model| {
+            model.set(1);
+            model.announce_synced("name");
+            model.announce_synced("age");
+            model.announce_synced("name");
+            assert!(lock(&seen).is_empty(), "nothing is announced inside the scope");
+        });
+
+        assert_eq!(binding.get(), 1);
+        assert_eq!(
+            *lock(&seen),
+            crate::compat::vec![String::from("name"), String::from("age")],
+            "one announcement per property, in first-announced order"
+        );
+    }
+
+    #[test]
+    fn nested_update_scopes_flush_once_when_the_outermost_closes() {
+        let binding = Binding::new(0);
+        let seen: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&seen);
+        binding.binding_synced_signal().connect(move |property| {
+            lock(&sink).push((*property).clone());
+        });
+
+        binding.with_updates(|outer| {
+            outer.announce_synced("a");
+            outer.with_updates(|inner| inner.announce_synced("b"));
+            assert!(lock(&seen).is_empty(), "the inner scope must not flush");
+        });
+
+        assert_eq!(*lock(&seen), crate::compat::vec![String::from("a"), String::from("b")]);
+    }
 
     #[test]
     fn test_binding_get_set() {

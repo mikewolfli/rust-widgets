@@ -1880,10 +1880,15 @@ pub fn dispatch_trigger(widget_id: ObjectId, kind: WidgetTriggerKind) -> bool {
                 // stale one.
                 crate::widget::runtime::dispatch_resize(widget_id, width, height);
             } else {
-                log::warn!(
-                    "a Resized trigger arrived for widget {widget_id}, but no client size is \
-                     recorded for it; the layout was not re-run"
-                );
+                // The warning is part of the `RW_RESIZE_TRACE=1` recount: a host that never asked
+                // for the diagnostics should not have its log filled by a stale size it cannot act
+                // on (GV4-01).
+                if crate::widget::runtime::resize_trace_enabled() {
+                    log::warn!(
+                        "a Resized trigger arrived for widget {widget_id}, but no client size is \
+                         recorded for it; the layout was not re-run"
+                    );
+                }
             }
             false
         }

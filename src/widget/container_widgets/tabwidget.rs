@@ -492,6 +492,7 @@ impl TabWidget {
         self.tabs.push(tab);
         let index = self.tabs.len().saturating_sub(1);
         self.sync_pages();
+        self.base.request_redraw();
         index
     }
     /// Inserts a tab at position.

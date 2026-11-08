@@ -59,11 +59,11 @@
 
 use core::ffi::c_void;
 use core::ptr;
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU8, Ordering};
 use std::time::{Duration, Instant};
 
 use objc2_core_foundation::{
-    kCFRunLoopCommonModes, kCFRunLoopDefaultMode, CFAbsoluteTimeGetCurrent, CFRunLoop,
+    kCFRunLoopCommonModes, kCFRunLoopDefaultMode, CFAbsoluteTimeGetCurrent, CFRetained, CFRunLoop,
     CFRunLoopTimer, CFRunLoopTimerContext,
 };
 
@@ -96,6 +96,11 @@ impl HeartbeatScope {
 static SCOPE: AtomicU8 = AtomicU8::new(0);
 /// Whether the process-wide timer is on the main run loop.
 static INSTALLED: AtomicBool = AtomicBool::new(false);
+/// The installed timer, so an input event can expedite the next tick (PL4-01).
+///
+/// The run loop retains the timer for the life of the process (it is never invalidated), so this
+/// pointer stays valid after `install` drops its own reference.
+static TIMER: AtomicPtr<CFRunLoopTimer> = AtomicPtr::new(ptr::null_mut());
 
 /// Installs the process-wide heartbeat on the main run loop, once.
 ///
@@ -149,6 +154,9 @@ pub(crate) unsafe fn install(scope: HeartbeatScope) -> bool {
     // alone is not run by AppKit's tracking loops.
     run_loop.add_timer(Some(&timer), unsafe { kCFRunLoopCommonModes });
 
+    // Remember the timer so an input event can move the next tick forward (PL4-01).
+    TIMER.store(CFRetained::as_ptr(&timer).as_ptr(), Ordering::SeqCst);
+
     // The run loop retains the timer; dropping this handle releases only this reference. The
     // timer itself runs for the life of the process, because a heartbeat that stopped could not
     // restart the drain it exists for.
@@ -166,8 +174,9 @@ extern "C-unwind" fn tick(timer: *mut CFRunLoopTimer, _info: *mut c_void) {
 
     if !heartbeat_may_drive(modal_loops_only, current_mode_is_default()) {
         // The backend's own loop is running and is the frame driver. Backing off to the idle
-        // interval here is what keeps a still window at its old wake rate; the cost is that a drag
-        // is noticed at most one idle interval late, which is a tenth of a second.
+        // interval here is what keeps a still window at its old wake rate; an input event moves
+        // the next tick back to the frame cadence through [`expedite`], so its first frame is
+        // not one idle interval late (PL4-01).
         retarget_in(timer, Duration::from_millis(crate::platform::types::IDLE_FRAME_INTERVAL_MS));
         return;
     }
@@ -230,6 +239,23 @@ fn current_mode_is_default() -> bool {
         return false;
     };
     ptr::eq(&*current, default_mode)
+}
+
+/// Moves the next heartbeat tick to the next frame after an input event (PL4-01).
+///
+/// While the window is still, the tick retargets itself to [`IDLE_FRAME_INTERVAL_MS`](crate::platform::types::IDLE_FRAME_INTERVAL_MS),
+/// so an input that starts an animation (a hover fade, a press feedback) would otherwise wait up
+/// to one idle interval for its first frame. Retargeting to one millisecond makes that frame run
+/// on the next turn of the loop, which is the same re-arm the GTK backend performs.
+pub(crate) fn expedite() {
+    let raw = TIMER.load(Ordering::SeqCst);
+    if raw.is_null() {
+        return;
+    }
+    // SAFETY: `raw` was stored by `install` from the timer the main run loop retains for the life
+    // of the process (the heartbeat is never invalidated), so the reference is valid here.
+    let timer = unsafe { &*raw };
+    retarget_in(timer, Duration::from_millis(1));
 }
 
 /// Moves the next fire to `deadline`, or leaves it alone when the instant has already passed.

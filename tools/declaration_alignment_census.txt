@@ -10,8 +10,8 @@
 #           placeholder is not a lie, so it is not required to be answered
 # failed  = declarations that disagree with the implementation
 
-controls   241
-skipped    241
+controls   242
+skipped    242
 failed     0
 
 ## skipped entries (each with its reason)
@@ -229,6 +229,7 @@ failed     0
 - grid_view_header::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
 - line_number_gutter::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
 - find_replace_bar::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
+- tree_find_bar::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
 - list_state_host::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
 - summary_row::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
 - zoom_strip::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered

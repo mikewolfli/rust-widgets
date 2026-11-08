@@ -2401,6 +2401,21 @@ impl<'a> RenderContext<'a> {
                 }
             }
         }
+        // A three-vertex path fits inline, so it skips the shared-slice copy entirely (GV4-10).
+        // The bucket recorder above already stores vertices in the frame arena, which is why this
+        // branch is only on the immediate path.
+        if points.len() == 3 {
+            self.dispatch_owned(RenderCommand::DrawPath3 {
+                a: self.offset_point(points[0]),
+                b: self.offset_point(points[1]),
+                c: self.offset_point(points[2]),
+                closed,
+                color,
+                filled,
+                width,
+            });
+            return;
+        }
         // Collect straight into the shared slice the command now carries, so the immediate path
         // does not allocate an intermediate `Vec` (G-02). The translated slice is cached by its
         // complete geometry, so a polygon that did not move this frame reuses its arc instead of
@@ -3002,6 +3017,28 @@ mod tests {
     use crate::core::{Color, Font, Point, Rect, Size};
     use crate::render::SoftwarePaintBackend;
     use crate::render::{PaintBackend, RenderCommand};
+
+    /// GV4-10: a three-vertex path takes the inline command and still paints.
+    #[test]
+    fn a_three_vertex_path_paints_through_the_inline_variant() {
+        let mut backend = SoftwarePaintBackend::new(Size::new(16, 16), 1.0);
+        backend.begin_frame(Color::TRANSPARENT);
+        {
+            let mut context = RenderContext::new(&mut backend);
+            context.draw_path(
+                &[Point::new(2, 2), Point::new(14, 2), Point::new(2, 14)],
+                true,
+                Color::BLACK,
+                true,
+                1,
+            );
+        }
+        backend.end_frame();
+        assert!(
+            backend.frame_rgba().as_chunks::<4>().0.iter().any(|pixel| pixel[3] != 0),
+            "the inline three-vertex path must reach the rasteriser"
+        );
+    }
 
     struct SoftwareRenderConfigTestGuard {
         _lock: MutexGuard<'static, ()>,

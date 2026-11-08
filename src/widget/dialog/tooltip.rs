@@ -393,9 +393,51 @@ impl Tooltip {
             owes_frame = true;
         }
         if owes_frame {
-            self.base.request_redraw();
+            self.request_frame_repaint(Some(self.damage_bounds()));
         }
         owes_frame
+    }
+
+    /// Submits one animated frame as damage bounded by the painted box plus the shared
+    /// margin, so an animation tick does not bump the global structure generation.
+    ///
+    /// `bounds` is supplied by [`Self::tick`], because the animation sweep calls `tick`
+    /// while it holds the widget registry; passing the rectangle keeps that path from
+    /// asking the runtime to read the geometry back. A control that is unmounted falls
+    /// back to [`BaseWidget::request_redraw`], which keeps the redraw signal contract for
+    /// host-owned controls.
+    fn request_frame_repaint(&self, bounds: Option<Rect>) {
+        let _ = bounds;
+        #[cfg(not(alloc_frugal))]
+        {
+            if let Some(id) = crate::widget::runtime::registry_id_of(self.id()) {
+                let narrow = crate::widget::runtime::repaint_mode(id)
+                    != crate::widget::runtime::RepaintMode::Full;
+                if narrow || bounds.is_none() {
+                    let damage = bounds
+                        .or_else(|| crate::widget::runtime::painted_box_with_damage_margin(id))
+                        .unwrap_or_else(|| self.damage_bounds());
+                    crate::widget::runtime::request_repaint_rect(id, damage);
+                    // The replaced `request_redraw` emitted this signal; keep it.
+                    self.base.redraw_requested.emit();
+                    return;
+                }
+            }
+        }
+        self.base.request_redraw();
+    }
+
+    /// This control's own rectangle grown by the shared damage margin.
+    fn damage_bounds(&self) -> Rect {
+        let rect = self.geometry();
+        let margin = crate::widget::metrics::DAMAGE_MARGIN;
+        let offset = margin as i32;
+        Rect::new(
+            rect.x.saturating_sub(offset),
+            rect.y.saturating_sub(offset),
+            rect.width.saturating_add(margin).saturating_add(margin),
+            rect.height.saturating_add(margin).saturating_add(margin),
+        )
     }
 
     /// Returns whether the tooltip is currently visible.

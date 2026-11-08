@@ -57,7 +57,7 @@ registry name, so the pair can be found from the control it extends.
 | 18 | `pair_tag` | `tag` | `TagGroup` | `pair_tag.svg` | `pair_tag.light.svg` |
 | 19 | `pair_image_gallery` | `image_gallery` | `ColumnChooser` | `pair_image_gallery.svg` | `pair_image_gallery.light.svg` |
 
-## Controls (241)
+## Controls (242)
 
 | # | Control | Dark | Light |
 |---|---|---|---|
@@ -292,13 +292,14 @@ registry name, so the pair can be found from the control it extends.
 | 229 | `grid_view_header` | `grid_view_header.svg` | `grid_view_header.light.svg` |
 | 230 | `line_number_gutter` | `line_number_gutter.svg` | `line_number_gutter.light.svg` |
 | 231 | `find_replace_bar` | `find_replace_bar.svg` | `find_replace_bar.light.svg` |
-| 232 | `list_state_host` | `list_state_host.svg` | `list_state_host.light.svg` |
-| 233 | `summary_row` | `summary_row.svg` | `summary_row.light.svg` |
-| 234 | `zoom_strip` | `zoom_strip.svg` | `zoom_strip.light.svg` |
-| 235 | `axis_picker` | `axis_picker.svg` | `axis_picker.light.svg` |
-| 236 | `chart_data_table` | `chart_data_table.svg` | `chart_data_table.light.svg` |
-| 237 | `calendar_mark_layer` | `calendar_mark_layer.svg` | `calendar_mark_layer.light.svg` |
-| 238 | `drag_ghost_layer` | `drag_ghost_layer.svg` | `drag_ghost_layer.light.svg` |
-| 239 | `chart_crosshair` | `chart_crosshair.svg` | `chart_crosshair.light.svg` |
-| 240 | `drum_column` | `drum_column.svg` | `drum_column.light.svg` |
-| 241 | `preset_chip_bar` | `preset_chip_bar.svg` | `preset_chip_bar.light.svg` |
+| 232 | `tree_find_bar` | `tree_find_bar.svg` | `tree_find_bar.light.svg` |
+| 233 | `list_state_host` | `list_state_host.svg` | `list_state_host.light.svg` |
+| 234 | `summary_row` | `summary_row.svg` | `summary_row.light.svg` |
+| 235 | `zoom_strip` | `zoom_strip.svg` | `zoom_strip.light.svg` |
+| 236 | `axis_picker` | `axis_picker.svg` | `axis_picker.light.svg` |
+| 237 | `chart_data_table` | `chart_data_table.svg` | `chart_data_table.light.svg` |
+| 238 | `calendar_mark_layer` | `calendar_mark_layer.svg` | `calendar_mark_layer.light.svg` |
+| 239 | `drag_ghost_layer` | `drag_ghost_layer.svg` | `drag_ghost_layer.light.svg` |
+| 240 | `chart_crosshair` | `chart_crosshair.svg` | `chart_crosshair.light.svg` |
+| 241 | `drum_column` | `drum_column.svg` | `drum_column.light.svg` |
+| 242 | `preset_chip_bar` | `preset_chip_bar.svg` | `preset_chip_bar.light.svg` |

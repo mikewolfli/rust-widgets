@@ -380,7 +380,57 @@ pub fn drive_frame(delta_ms: u32) -> FrameOutcome {
         }));
     });
 
+    #[cfg(not(alloc_frugal))]
+    trace_stall_if_enabled(index);
+
     FrameOutcome { events_dispatched, controls_ticked, repaints_submitted, needs_another_frame }
+}
+
+/// Whether the `RW_RESIZE_TRACE=1` pause diagnostics are enabled (GV4-01).
+///
+/// Shared with the app layer's Resized warning: one switch turns the whole resize recount on, so a
+/// reproduction collects both the stall line and the reason a size was missing.
+#[cfg(not(alloc_frugal))]
+pub(crate) fn resize_trace_enabled() -> bool {
+    use std::sync::OnceLock;
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var("RW_RESIZE_TRACE").ok().as_deref() == Some("1"))
+}
+
+/// Prints the previous frame's ledger once when the host loop stalled between frames (GV4-01).
+///
+/// Enabled only by `RW_RESIZE_TRACE=1`. A gap over 250 ms between two `drive_frame` calls is the
+/// observable shape of "the window appeared frozen": no frame ran for a quarter of a second. The
+/// line names the frame number, whether it was *before* the stall (the frame whose state the user
+/// was looking at), and the repaint reasons, so a reproduction can be closed without a profiler.
+/// The steady-state cost is one thread-local read per frame.
+#[cfg(not(alloc_frugal))]
+fn trace_stall_if_enabled(index: u64) {
+    use std::time::{Duration, Instant};
+
+    thread_local! {
+        /// `(wall clock of the previous frame, that frame's index)`.
+        static PREVIOUS: core::cell::Cell<Option<(Instant, u64)>> = const { core::cell::Cell::new(None) };
+    }
+
+    if !resize_trace_enabled() {
+        return;
+    }
+
+    let now = Instant::now();
+    let previous = PREVIOUS.with(|slot| slot.replace(Some((now, index))));
+    let Some((previous_at, previous_index)) = previous else {
+        return;
+    };
+    let gap = now.duration_since(previous_at);
+    // The index condition is the "no frame ran" half: if a frame had run, it would have replaced
+    // the stored index, so the earlier one would no longer be the immediately preceding frame.
+    if gap <= Duration::from_millis(250) || previous_index.checked_add(1) != Some(index) {
+        return;
+    }
+    if let Some(stats) = last_frame_stats() {
+        eprintln!("[rw-resize-trace] stall_ms={} {stats}", gap.as_millis());
+    }
 }
 
 thread_local! {

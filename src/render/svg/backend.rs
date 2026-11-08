@@ -1622,6 +1622,19 @@ impl PaintBackend for SvgPaintBackend {
                     r#"<path d="{d}" fill="{fill}" stroke="{stroke}" stroke-width="{width}" />"#
                 ));
             }
+            RenderCommand::DrawPath3 { a, b, c, closed, color, filled, width } => {
+                // The inline three-vertex form of `DrawPath` (GV4-10): same `d` shape, no shared
+                // slice to read the points from.
+                let mut d = format!("M {} {} L {} {} L {} {}", a.x, a.y, b.x, b.y, c.x, c.y);
+                if *closed {
+                    d.push_str(" Z");
+                }
+                let fill = if *filled { color_to_rgba(color) } else { "none".to_string() };
+                let stroke = if *filled { "none".to_string() } else { color_to_rgba(color) };
+                self.push_element(format!(
+                    r#"<path d="{d}" fill="{fill}" stroke="{stroke}" stroke-width="{width}" />"#
+                ));
+            }
             RenderCommand::DrawPathDashed { points, closed, color, width, dash } => {
                 // The stroked form of the arm above with a repeating dash
                 // pattern (G-014). SVG expresses the pattern natively with
@@ -2570,6 +2583,7 @@ mod tests {
                 RenderCommand::DrawGradient { .. } => "DrawGradient",
                 RenderCommand::DrawArc { .. } => "DrawArc",
                 RenderCommand::DrawPath { .. } => "DrawPath",
+                RenderCommand::DrawPath3 { .. } => "DrawPath3",
                 RenderCommand::DrawPathDashed { .. } => "DrawPathDashed",
                 RenderCommand::FillPathNonZero { .. } => "FillPathNonZero",
                 RenderCommand::BoxShadow { .. } => "BoxShadow",

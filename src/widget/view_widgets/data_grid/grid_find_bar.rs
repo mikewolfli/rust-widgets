@@ -15,7 +15,7 @@
 //! selection + `ensure_visible`. The bar owns no table, so it works with every member of the
 //! family (DataGrid, GridTable, VirtualTable).
 
-use crate::core::{Color, HorizontalAlignment, Rect};
+use crate::core::{Color, HorizontalAlignment, Point, Rect};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
 use crate::widget::view_widgets::data_source::IncrementalTableDataSource;
@@ -38,6 +38,8 @@ pub struct GridFindBar {
     current_match: Option<usize>,
     /// The prompt painted while the query is empty.
     placeholder: String,
+    /// The uncommitted IME composition drawn inline after the query.
+    preedit: String,
     /// The painted prompt/query text, keyed by the query it was built from.
     display_cache: RefCell<Option<(String, String)>>,
     /// Emitted with the matched row's projection index.
@@ -62,6 +64,7 @@ impl GridFindBar {
             searchable_columns: Vec::new(),
             current_match: None,
             placeholder: "Find…".to_string(),
+            preedit: String::new(),
             display_cache: RefCell::new(None),
             match_found: Signal1::new(),
             no_match: Signal1::new(),
@@ -91,6 +94,7 @@ impl GridFindBar {
         }
         self.visible = false;
         self.query.clear();
+        self.preedit.clear();
         self.current_match = None;
         self.closed.emit(());
         self.base.request_redraw();
@@ -326,6 +330,26 @@ impl Draw for GridFindBar {
             if query_empty { ink.with_alpha(140) } else { ink },
             HorizontalAlignment::Left,
         );
+        // The uncommitted IME composition is painted after the query with an underline, so a
+        // CJK composition is visible before it is confirmed.
+        if !self.preedit.is_empty() {
+            let preedit_x = rect.x + 6 + context.measure_text(&self.query, font).width as i32;
+            let line = context.text_line(rect, font);
+            context.draw_text(
+                Point::new(preedit_x, line.y),
+                &self.preedit,
+                font,
+                ink,
+                HorizontalAlignment::Left,
+            );
+            let preedit_width = context.measure_text(&self.preedit, font).width as i32;
+            let underline_y = line.y + line.height as i32 - 1;
+            context.draw_line(
+                Point::new(preedit_x, underline_y),
+                Point::new(preedit_x + preedit_width, underline_y),
+                ink,
+            );
+        }
     }
 }
 
@@ -355,13 +379,19 @@ impl crate::event::EventHandler for GridFindBar {
                 }
             }
             crate::event::Event::TextInput { text } => {
+                self.preedit.clear();
                 self.query.push_str(text);
                 self.forward_typed_query();
             }
             // An IME commit is the same channel: the composed text becomes query text.
             crate::event::Event::ImeCommit { text } => {
+                self.preedit.clear();
                 self.query.push_str(text);
                 self.forward_typed_query();
+            }
+            crate::event::Event::ImePreedit { text, .. } => {
+                self.preedit = text.clone();
+                self.base.request_redraw();
             }
             _ => {}
         }

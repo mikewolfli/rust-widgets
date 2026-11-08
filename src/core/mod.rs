@@ -59,7 +59,7 @@ pub use geometry::{deg_to_rad, Orientation, Point, Rect, Size};
 pub use media_clock::{FrameVerdict, MediaClock, PlaybackState};
 pub use mutex_ext::MutexExt;
 pub use scroll_physics::ScrollPhysics;
-pub use text_direction::TextDirection;
+pub use text_direction::{default_text_direction, set_default_text_direction, TextDirection};
 pub use types::{
     CoreConfig, CoreError, CoreObject, CoreResult, ObjectId, PlatformCapabilities, PlatformFamily,
     RuntimeProfile, Version,

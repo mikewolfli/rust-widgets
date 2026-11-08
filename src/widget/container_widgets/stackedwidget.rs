@@ -63,6 +63,7 @@ impl StackedWidget {
         self.layout.insert_at(self.layout.item_count(), widget);
         let index = self.layout.item_count().saturating_sub(1);
         self.sync_pages();
+        self.base.request_redraw();
         index
     }
     /// Inserts a widget at position.
@@ -77,6 +78,7 @@ impl StackedWidget {
         // The stack's own insert keeps the selected page on the same widget.
         self.layout.insert_at(index, widget);
         self.sync_pages();
+        self.base.request_redraw();
     }
     /// Removes a widget.
     pub fn remove_widget(&mut self, widget: ObjectId) {
@@ -103,6 +105,7 @@ impl StackedWidget {
         // that renders by id cannot paint it over the selected one.
         crate::set_widget_visible(widget, false);
         self.sync_pages();
+        self.base.request_redraw();
         true
     }
     /// Returns number of widgets.

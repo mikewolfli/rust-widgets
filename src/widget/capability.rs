@@ -182,7 +182,7 @@ use crate::widget::window::Window;
 #[cfg(full_widgets)]
 use crate::widget::companions::{
     AxisPicker, CalendarMarkLayer, ChartDataTable, DragGhostLayer, FindReplaceBar,
-    LineNumberGutter, ListStateHost, SummaryRow, ZoomStrip,
+    LineNumberGutter, ListStateHost, SummaryRow, TreeFindBar, ZoomStrip,
 };
 #[cfg(full_widgets)]
 use crate::widget::display_widgets::empty_state::EmptyState;
@@ -2346,6 +2346,9 @@ impl WidgetFactory {
             "zoom_strip" => self::coercion::widget_as::<ZoomStrip>(widget).is_some(),
             "search_bar" => self::coercion::widget_as::<SearchBar>(widget).is_some(),
             "find_replace_bar" => self::coercion::widget_as::<FindReplaceBar>(widget).is_some(),
+            // `WidgetKind::Panel`: the tree find strip borrows the panel kind, so it needs its own
+            // concrete-type row or its properties resolve to another panel control's schema.
+            "tree_find_bar" => self::coercion::widget_as::<TreeFindBar>(widget).is_some(),
             "empty_state" => self::coercion::widget_as::<EmptyState>(widget).is_some(),
             "list_state_host" => self::coercion::widget_as::<ListStateHost>(widget).is_some(),
             // ── Controls registered in RW-77/RW-81/RW-100 ──

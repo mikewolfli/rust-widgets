@@ -1274,6 +1274,10 @@ impl Platform for LinuxPlatform {
                 else {
                     return glib::Propagation::Stop;
                 };
+                // Input may start an animation (a hover fade, a press feedback): move an idle
+                // heartbeat back to the frame cadence so the first frame is not one idle interval
+                // late (PL4-01). The call is idempotent while the heartbeat is already fast.
+                expedite_frame_heartbeat();
                 // Tab is a library action, not content: it moves focus before the input method
                 // sees it. Shift reverses the direction, matching every other toolkit.
                 if super::canvas::gdk_keyval_is_tab(*event.keyval()) {
@@ -1329,6 +1333,7 @@ impl Platform for LinuxPlatform {
                 else {
                     return glib::Propagation::Stop;
                 };
+                expedite_frame_heartbeat();
                 let release_modifiers = super::canvas::modifier_bits(event);
                 let key_event = crate::event::Event::KeyRelease {
                     key: super::canvas::logical_key(
@@ -1427,6 +1432,7 @@ impl Platform for LinuxPlatform {
                 else {
                     return glib::Propagation::Proceed;
                 };
+                expedite_frame_heartbeat();
                 // A second press inside GTK's double-click interval is the double-click
                 // event the controls actually listen for; otherwise it is a normal press.
                 let is_double = event.button() == 1
@@ -1464,6 +1470,7 @@ impl Platform for LinuxPlatform {
                 else {
                     return glib::Propagation::Proceed;
                 };
+                expedite_frame_heartbeat();
                 if crate::widget::runtime::dispatch_pointer_event(
                     window_widget,
                     &crate::event::Event::MouseRelease { pos: point, button: 1 },
@@ -1496,6 +1503,7 @@ impl Platform for LinuxPlatform {
                 else {
                     return glib::Propagation::Proceed;
                 };
+                expedite_frame_heartbeat();
                 // Routed through the same path a click uses, which is what lets the router
                 // own the enter/leave pair: the widget layer synthesises `MouseEnter` and
                 // `MouseLeave` from a move, so a plain `MouseMove` carries the hover.
@@ -1525,6 +1533,7 @@ impl Platform for LinuxPlatform {
                 else {
                     return glib::Propagation::Proceed;
                 };
+                expedite_frame_heartbeat();
                 // The canvas decodes the wheel the same way; see `linux::canvas` for why
                 // `direction()` wins over `delta()` when it is set. Both axes are kept: a
                 // `Left`/`Right` wheel or a smooth diagonal gesture must not be flattened onto
@@ -1590,6 +1599,7 @@ impl Platform for LinuxPlatform {
                     else {
                         return glib::Propagation::Proceed;
                     };
+                    expedite_frame_heartbeat();
                     let (x, y) = touch.position();
                     let point = crate::core::Point::new(x as i32, y as i32);
                     // `GdkEventSequence` identifies the contact for its whole lifetime, which is

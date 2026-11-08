@@ -462,6 +462,8 @@ pub struct FileDialog {
     name_edit: String,
     /// Whether the buffer holds an edit rather than the selection.
     name_editing: bool,
+    /// The uncommitted IME composition drawn inline at the file-name caret.
+    preedit: String,
     /// The new-folder name being typed, or `None` when the prompt is closed (DLG-002).
     new_folder_name: Option<String>,
     /// Why the last new-folder request failed, shown in the prompt until it is dismissed.
@@ -538,6 +540,7 @@ impl FileDialog {
             pending_overwrite: None,
             name_edit: String::new(),
             name_editing: false,
+            preedit: String::new(),
             new_folder_name: None,
             new_folder_error: None,
             sort_descending: false,
@@ -1647,6 +1650,7 @@ impl EventHandler for FileDialog {
                 }
             }
             Event::TextInput { text } | Event::ImeCommit { text } => {
+                self.preedit.clear();
                 // The folder prompt is a separate naming flow: text goes to the folder name and
                 // never to the file-name field while it is open (DLG-002).
                 if let Some(name) = self.new_folder_name.as_mut() {
@@ -1662,6 +1666,10 @@ impl EventHandler for FileDialog {
                     self.name_edit = self.selected_file().unwrap_or("").to_string();
                 }
                 self.name_edit.extend(text.chars().filter(|ch| !ch.is_control()));
+                self.base.request_redraw();
+            }
+            Event::ImePreedit { text, .. } if self.new_folder_name.is_none() => {
+                self.preedit = text.clone();
                 self.base.request_redraw();
             }
             Event::KeyPress { key, .. } => {
@@ -2593,6 +2601,26 @@ impl Draw for FileDialog {
                     let caret_x = fname_line.x
                         + crate::widget::metrics::estimate_text_width(fname, fname_font, 1.0)
                             as i32;
+                    // The uncommitted IME composition is drawn at the caret with an underline,
+                    // so a CJK composition is visible before it is confirmed.
+                    if !self.preedit.is_empty() {
+                        let preedit_x = caret_x.min(fname_band.x + fname_band.width as i32 - 1);
+                        context.draw_text(
+                            Point::new(preedit_x + 1, fname_line.y),
+                            &self.preedit,
+                            fname_font,
+                            ink,
+                            HorizontalAlignment::Left,
+                        );
+                        let preedit_width =
+                            context.measure_text(&self.preedit, fname_font).width as i32;
+                        let underline_y = fname_line.y + fname_line.height as i32 - 1;
+                        context.draw_line(
+                            Point::new(preedit_x + 1, underline_y),
+                            Point::new(preedit_x + 1 + preedit_width, underline_y),
+                            ink,
+                        );
+                    }
                     context.fill_rect(
                         Rect::new(
                             caret_x.min(fname_band.x + fname_band.width as i32 - 1),

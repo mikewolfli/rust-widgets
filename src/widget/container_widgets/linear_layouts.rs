@@ -614,11 +614,14 @@ pub struct FlowLayout {
     spacing: u32,
     padding: u32,
     wrap: bool,
-    /// Reading direction forwarded to the flow engine; left-to-right by default.
-    text_direction: TextDirection,
+    /// Reading direction forwarded to the flow engine. `None` follows the locale default, so a
+    /// language change mirrors every flow that never chose a direction explicitly.
+    text_direction: Option<TextDirection>,
     /// Bumped by every input that changes the arrangement.
     rect_version: u64,
-    rect_cache: std::cell::RefCell<Option<(u64, std::rc::Rc<Vec<Rect>>)>>,
+    /// `(version, effective direction, rects)`: the direction is part of the key because the
+    /// locale default can change without bumping `rect_version`.
+    rect_cache: std::cell::RefCell<Option<(u64, TextDirection, std::rc::Rc<Vec<Rect>>)>>,
     /// Emitted with the item index when an item is clicked.
     pub item_clicked: Signal1<usize>,
 }
@@ -638,7 +641,7 @@ impl FlowLayout {
             spacing: 8,
             padding: 8,
             wrap: true,
-            text_direction: TextDirection::default(),
+            text_direction: None,
             rect_version: 1,
             rect_cache: std::cell::RefCell::new(None),
             item_clicked: Signal1::new(),
@@ -654,17 +657,17 @@ impl FlowLayout {
         }
     }
 
-    /// The reading direction items are placed in.
+    /// The reading direction items are placed in; an unset direction follows the locale default.
     pub fn text_direction(&self) -> TextDirection {
-        self.text_direction
+        self.text_direction.unwrap_or_else(crate::core::default_text_direction)
     }
 
     /// Sets the reading direction; right-to-left mirrors each run inside the control.
     pub fn set_text_direction(&mut self, direction: TextDirection) {
-        if self.text_direction == direction {
+        if self.text_direction == Some(direction) {
             return;
         }
-        self.text_direction = direction;
+        self.text_direction = Some(direction);
         self.rect_version = self.rect_version.wrapping_add(1);
         self.base.request_layout();
         self.base.request_redraw();
@@ -810,13 +813,15 @@ impl FlowLayout {
     }
 
     fn cached_item_rects(&self) -> std::rc::Rc<Vec<Rect>> {
-        if let Some((version, rects)) = self.rect_cache.borrow().as_ref() {
-            if *version == self.rect_version {
+        let direction = self.text_direction();
+        if let Some((version, cached_direction, rects)) = self.rect_cache.borrow().as_ref() {
+            if *version == self.rect_version && *cached_direction == direction {
                 return std::rc::Rc::clone(rects);
             }
         }
         let rects = std::rc::Rc::new(self.compute_item_rects());
-        *self.rect_cache.borrow_mut() = Some((self.rect_version, std::rc::Rc::clone(&rects)));
+        *self.rect_cache.borrow_mut() =
+            Some((self.rect_version, direction, std::rc::Rc::clone(&rects)));
         rects
     }
 
@@ -828,7 +833,7 @@ impl FlowLayout {
             padding: self.padding as i32,
             wrap: self.wrap,
         });
-        engine.set_text_direction(self.text_direction);
+        engine.set_text_direction(self.text_direction());
         let children: Vec<ChildInfo> = self
             .items
             .iter()
@@ -1010,11 +1015,14 @@ pub struct WrapLayout {
     spacing: u32,
     run_spacing: Option<u32>,
     padding: u32,
-    /// Reading direction forwarded to the wrap engine; left-to-right by default.
-    text_direction: TextDirection,
+    /// Reading direction forwarded to the wrap engine. `None` follows the locale default, so a
+    /// language change mirrors every wrap that never chose a direction explicitly.
+    text_direction: Option<TextDirection>,
     /// Bumped by every input that changes the arrangement.
     rect_version: u64,
-    rect_cache: std::cell::RefCell<Option<(u64, std::rc::Rc<Vec<Rect>>)>>,
+    /// `(version, effective direction, rects)`: the direction is part of the key because the
+    /// locale default can change without bumping `rect_version`.
+    rect_cache: std::cell::RefCell<Option<(u64, TextDirection, std::rc::Rc<Vec<Rect>>)>>,
     /// Emitted with the item index when an item is clicked.
     pub item_clicked: Signal1<usize>,
 }
@@ -1031,7 +1039,7 @@ impl WrapLayout {
             spacing: 8,
             run_spacing: None,
             padding: 8,
-            text_direction: TextDirection::default(),
+            text_direction: None,
             rect_version: 1,
             rect_cache: std::cell::RefCell::new(None),
             item_clicked: Signal1::new(),
@@ -1173,17 +1181,17 @@ impl WrapLayout {
         self.base.request_redraw();
     }
 
-    /// The reading direction items are placed in.
+    /// The reading direction items are placed in; an unset direction follows the locale default.
     pub fn text_direction(&self) -> TextDirection {
-        self.text_direction
+        self.text_direction.unwrap_or_else(crate::core::default_text_direction)
     }
 
     /// Sets the reading direction; right-to-left mirrors each run inside the control.
     pub fn set_text_direction(&mut self, direction: TextDirection) {
-        if self.text_direction == direction {
+        if self.text_direction == Some(direction) {
             return;
         }
-        self.text_direction = direction;
+        self.text_direction = Some(direction);
         self.rect_version = self.rect_version.wrapping_add(1);
         self.base.request_layout();
         self.base.request_redraw();
@@ -1198,13 +1206,15 @@ impl WrapLayout {
     }
 
     fn cached_item_rects(&self) -> std::rc::Rc<Vec<Rect>> {
-        if let Some((version, rects)) = self.rect_cache.borrow().as_ref() {
-            if *version == self.rect_version {
+        let direction = self.text_direction();
+        if let Some((version, cached_direction, rects)) = self.rect_cache.borrow().as_ref() {
+            if *version == self.rect_version && *cached_direction == direction {
                 return std::rc::Rc::clone(rects);
             }
         }
         let rects = std::rc::Rc::new(self.compute_item_rects());
-        *self.rect_cache.borrow_mut() = Some((self.rect_version, std::rc::Rc::clone(&rects)));
+        *self.rect_cache.borrow_mut() =
+            Some((self.rect_version, direction, std::rc::Rc::clone(&rects)));
         rects
     }
 
@@ -1216,7 +1226,7 @@ impl WrapLayout {
             self.padding as i32,
         );
         engine.set_run_spacing(self.run_spacing.map(|spacing| spacing as i32));
-        engine.set_text_direction(self.text_direction);
+        engine.set_text_direction(self.text_direction());
         let children: Vec<ChildInfo> = self
             .items
             .iter()
@@ -1801,5 +1811,41 @@ mod tests {
         wrap.set_text_direction(TextDirection::RightToLeft);
         assert!(wrap.text_direction().is_right_to_left());
         assert_eq!(wrap.item_rects()[0].x, 70, "the wrap run mirrors too");
+    }
+
+    /// EX4-03: a control that never chose a direction follows the locale default, and the cache
+    /// notices the change without a `rect_version` bump.
+    #[test]
+    fn an_unset_control_direction_follows_the_locale_default() {
+        let previous = crate::core::default_text_direction();
+        crate::core::set_default_text_direction(TextDirection::LeftToRight);
+
+        let mut flow = FlowLayout::new(Rect::new(0, 0, 100, 40));
+        flow.set_padding(0);
+        flow.add_item(FlexItemSpec::new("a", Size::new(30, 10)));
+        assert_eq!(flow.text_direction(), TextDirection::LeftToRight);
+        assert_eq!(flow.item_rects()[0].x, 0);
+
+        crate::core::set_default_text_direction(TextDirection::RightToLeft);
+        assert_eq!(flow.text_direction(), TextDirection::RightToLeft);
+        assert_eq!(
+            flow.item_rects()[0].x,
+            70,
+            "the cached rects must follow a locale change, not a version bump"
+        );
+
+        // An explicit direction wins over the default and stays put.
+        flow.set_text_direction(TextDirection::LeftToRight);
+        crate::core::set_default_text_direction(TextDirection::RightToLeft);
+        assert_eq!(flow.text_direction(), TextDirection::LeftToRight);
+        assert_eq!(flow.item_rects()[0].x, 0);
+
+        let mut wrap = WrapLayout::new(Rect::new(0, 0, 100, 40));
+        wrap.set_padding(0);
+        wrap.add_item(FlexItemSpec::new("a", Size::new(30, 10)));
+        assert_eq!(wrap.text_direction(), TextDirection::RightToLeft);
+        assert_eq!(wrap.item_rects()[0].x, 70);
+
+        crate::core::set_default_text_direction(previous);
     }
 }

@@ -398,23 +398,42 @@ fn apply_layout_bounded(
     depth: u32,
     max_depth: u32,
 ) -> Vec<(ObjectId, Rect)> {
+    // The returned list is this call's result, so it is owned here rather than borrowed from the
+    // scratch pool. Nested levels (below) reuse a pooled buffer instead of allocating one per
+    // declarative container (RD4-02).
+    let mut geometries = Vec::new();
+    apply_node(parent_id, rect, context, depth, max_depth, &mut geometries);
+    geometries
+}
+
+/// Solves one declarative container into `out` and applies the result recursively.
+///
+/// The traversal, the depth bound and the spacer filter are unchanged; only the buffer that
+/// collects this level's rectangles is supplied by the caller, so a nested level can hand it a
+/// pooled scratch list instead of allocating.
+fn apply_node(
+    parent_id: ObjectId,
+    rect: Rect,
+    context: &LayoutContext,
+    depth: u32,
+    max_depth: u32,
+    out: &mut Vec<(ObjectId, Rect)>,
+) {
     // The recursion below is compiled out with `set_widget_geometry` on alloc-frugal
     // builds (there is no registry to move), so the two traversal parameters have no
     // reader there. Naming them as intentionally unused keeps `mini` warning-free.
     #[cfg(alloc_frugal)]
     let _ = (depth, max_depth);
-    let geometries = LAYOUT_MAP.with(|map| {
+    LAYOUT_MAP.with(|map| {
         let map = map.borrow();
         let Some(layout) = map.get(&parent_id) else {
-            return Vec::new();
+            return;
         };
-        let mut geometries = Vec::new();
         layout.update_with_context(rect, context, &mut |child_id, child_rect| {
             if child_id != SPACER_ID {
-                geometries.push((child_id, child_rect));
+                out.push((child_id, child_rect));
             }
         });
-        geometries
     });
 
     // `set_widget_geometry` is compiled out in the alloc-frugal profile (there is no
@@ -422,7 +441,7 @@ fn apply_layout_bounded(
     // The computed list is still returned: a caller in that profile can use it to
     // place whatever it draws, which is the honest answer rather than a silent no-op.
     #[cfg(not(alloc_frugal))]
-    for (child_id, child_rect) in &geometries {
+    for (child_id, child_rect) in out.iter() {
         crate::set_widget_geometry(
             *child_id,
             child_rect.x,
@@ -431,7 +450,19 @@ fn apply_layout_bounded(
             child_rect.height,
         );
         if depth < max_depth && has_layout(*child_id) {
-            apply_layout_bounded(*child_id, *child_rect, context, depth + 1, max_depth);
+            // The pool exists only in a full widget build; elsewhere a nested level simply
+            // allocates its list, which is the behaviour this module started with.
+            #[cfg(all(full_widgets, not(alloc_frugal)))]
+            {
+                let mut nested = crate::layout::scratch::take_geometry_scratch();
+                apply_node(*child_id, *child_rect, context, depth + 1, max_depth, &mut nested);
+                crate::layout::scratch::return_geometry_scratch(nested);
+            }
+            #[cfg(not(all(full_widgets, not(alloc_frugal))))]
+            {
+                let mut nested = Vec::new();
+                apply_node(*child_id, *child_rect, context, depth + 1, max_depth, &mut nested);
+            }
         } else if depth >= max_depth && has_layout(*child_id) {
             log::warn!(
                 "declarative layout for widget {parent_id} exceeded the {max_depth}-level nesting \
@@ -454,8 +485,6 @@ fn apply_layout_bounded(
             );
         }
     }
-
-    geometries
 }
 
 /// The geometry a layout would compute, without writing anything.

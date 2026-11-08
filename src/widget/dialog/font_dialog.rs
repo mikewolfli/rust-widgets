@@ -35,6 +35,21 @@ fn folded_family_cmp(a: &str, b: &str) -> core::cmp::Ordering {
     a.chars().flat_map(char::to_lowercase).cmp(b.chars().flat_map(char::to_lowercase))
 }
 
+/// The token spelling [`Font::parse`] reads back: `"<family> <size>[ bold][ italic]"`.
+///
+/// `Font::to_css` cannot be used here: it writes `normal 400 14px Arial`, while `Font::parse`
+/// takes the family first and a bare number as the size, so the two do not round-trip.
+fn font_spec(font: &Font) -> String {
+    let mut spec = format!("{} {}", font.family(), font.size());
+    if font.is_bold() {
+        spec.push_str(" bold");
+    }
+    if font.is_italic() {
+        spec.push_str(" italic");
+    }
+    spec
+}
+
 /// Font selection dialog.
 ///
 /// Holds the font the user is choosing and signals the outcome. It enumerates the host's
@@ -152,7 +167,8 @@ fn builtin_styles() -> Vec<FontStyleChoice> {
 pub type FontStyleProvider = Box<dyn Fn(&str) -> Vec<FontStyleChoice>>;
 
 /// Sizes offered when the current size is not already in the list.
-const SIZES: [u32; 17] = [8, 9, 10, 11, 12, 14, 16, 18, 20, 22, 24, 28, 32, 36, 48, 64, 72];
+pub(crate) const SIZES: [u32; 17] =
+    [8, 9, 10, 11, 12, 14, 16, 18, 20, 22, 24, 28, 32, 36, 48, 64, 72];
 
 /// The row height shared by drawing and hit-testing.
 const ROW_HEIGHT: i32 = 20;
@@ -763,6 +779,18 @@ impl WidgetProperties for FontDialog {
             "strikethrough" => Ok(CapabilityValue::Bool(self.is_strikethrough())),
             "no_buttons" => Ok(CapabilityValue::Bool(self.no_buttons)),
             "show_preview" => Ok(CapabilityValue::Bool(self.show_preview)),
+            // The selected font travels as the CSS shorthand `Font::parse` reads back, so a
+            // designer round-trips the dialog's core output instead of only subscribing to it.
+            "current_font" => Ok(CapabilityValue::String(font_spec(&self.current_font))),
+            "font_families" => Ok(CapabilityValue::Tuple(
+                self.families
+                    .iter()
+                    .map(|family| CapabilityValue::String(family.clone()))
+                    .collect(),
+            )),
+            "font_sizes" => Ok(CapabilityValue::Tuple(
+                self.sizes.iter().map(|size| CapabilityValue::UInt(u64::from(*size))).collect(),
+            )),
             _ => base_property_get(self, name),
         }
     }
@@ -789,6 +817,34 @@ impl WidgetProperties for FontDialog {
                 self.set_option(FontDialogOption::ShowPreview, expect_bool(value)?);
                 Ok(())
             }
+            "current_font" => {
+                let spec = crate::widget::capability::coercion::expect_string(value)?;
+                let font = Font::parse(&spec).ok_or(CapabilityAccessError::OutOfRange)?;
+                self.set_current_font(font);
+                Ok(())
+            }
+            "font_families" => {
+                let families = crate::widget::capability::coercion::expect_string_list(value)?;
+                self.set_font_families(families);
+                Ok(())
+            }
+            "font_sizes" => {
+                let sizes = crate::widget::capability::coercion::expect_number_list(value)?;
+                let mut sizes: Vec<u32> = sizes
+                    .into_iter()
+                    .filter(|size| *size > 0.0 && *size <= f64::from(u32::MAX))
+                    .map(|size| size as u32)
+                    .collect();
+                if sizes.is_empty() {
+                    return Err(CapabilityAccessError::OutOfRange);
+                }
+                sizes.sort_unstable();
+                sizes.dedup();
+                self.sizes = sizes;
+                self.sync_indices();
+                self.base.request_redraw();
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
@@ -800,6 +856,9 @@ impl WidgetProperties for FontDialog {
             "strikethrough",
             "no_buttons",
             "show_preview",
+            "current_font",
+            "font_families",
+            "font_sizes",
             BASE_PROPERTY_NAMES
         ]
     }
@@ -1272,6 +1331,38 @@ mod tests {
     #[cfg(not(feature = "runtime-fonts"))]
     fn isolate_face_registry() -> FaceRegistryGuard {
         FaceRegistryGuard
+    }
+
+    #[test]
+    fn the_published_font_properties_round_trip() {
+        use crate::compat::vec;
+        use crate::widget::capability::types::CapabilityValue;
+        use crate::widget::capability::WidgetProperties;
+
+        let _guard = isolate_face_registry();
+        let mut dialog = FontDialog::new(Rect::new(0, 0, 420, 320));
+        dialog.set("current_font", CapabilityValue::String("Menlo 18 bold".to_string())).unwrap();
+        assert_eq!(
+            dialog.get("current_font").unwrap(),
+            CapabilityValue::String("Menlo 18 bold".to_string())
+        );
+        assert_eq!(dialog.current_font().family(), "Menlo");
+
+        dialog
+            .set(
+                "font_sizes",
+                CapabilityValue::Tuple(vec![
+                    CapabilityValue::UInt(9),
+                    CapabilityValue::UInt(18),
+                    CapabilityValue::UInt(9),
+                ]),
+            )
+            .unwrap();
+        assert_eq!(
+            dialog.get("font_sizes").unwrap(),
+            CapabilityValue::Tuple(vec![CapabilityValue::UInt(9), CapabilityValue::UInt(18),]),
+            "sizes are normalised (sorted and deduplicated)"
+        );
     }
 
     #[test]

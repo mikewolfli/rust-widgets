@@ -1794,6 +1794,7 @@ impl DockArea {
         }
         dock.min_size = min_size;
         self.arrange();
+        self.request_arrangement_repaint();
         true
     }
 
@@ -1822,6 +1823,7 @@ impl DockArea {
         // every other dock mutation makes.
         self.active_dock_changed.emit(widget);
         self.arrange();
+        self.request_arrangement_repaint();
         true
     }
 
@@ -1857,6 +1859,7 @@ impl DockArea {
         self.docks[index].split_of = None;
         self.active_dock_changed.emit(widget);
         self.arrange();
+        self.request_arrangement_repaint();
         true
     }
 
@@ -2523,12 +2526,28 @@ impl DockArea {
         }
         dock.active = true;
         self.arrange();
+        self.request_arrangement_repaint();
         true
     }
 
     /// The dock `widget` was split inside, if any.
     pub fn split_parent_of(&self, widget: ObjectId) -> Option<ObjectId> {
         self.docks.iter().find(|dock| dock.widget == widget).and_then(|dock| dock.split_of)
+    }
+
+    /// Marks every participant of the arrangement for repaint.
+    ///
+    /// `DockArea` is a layout model rather than a widget (it has no `BaseWidget`), so it cannot
+    /// ask for its own frame. Its mutators therefore repaint the panels they own: `arrange`
+    /// moves them through `set_widget_geometry`, which records the new box but does not mark
+    /// damage, so a programmatic dock change would otherwise leave the previous frame on screen.
+    fn request_arrangement_repaint(&self) {
+        for dock in &self.docks {
+            crate::widget::runtime::request_repaint(dock.widget);
+        }
+        if let Some(central) = self.central {
+            crate::widget::runtime::request_repaint(central);
+        }
     }
 
     /// Pushes the computed rectangles into the widgets and hides inactive tabs.

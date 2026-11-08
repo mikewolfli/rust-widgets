@@ -331,6 +331,23 @@ fn convert_commands(
                     Err(BridgeGap { index, variant: command_variant_name(command) })
                 }
             }
+            RenderCommand::DrawPath3 { a, b, c, closed, color, filled, width } => {
+                if *filled {
+                    // Inline triangle: one allocation for the GPU command's shared slice, which the
+                    // GPU path already paid for every path before this variant existed.
+                    Ok(WgpuDrawCommand::DrawPath {
+                        points: vec![(a.x, a.y), (b.x, b.y), (c.x, c.y)].into(),
+                        closed: *closed,
+                        color: rgba8(color),
+                        filled: true,
+                        width: *width,
+                        clip: None,
+                    })
+                } else {
+                    // The stroked form arrives as its segment list, like `DrawPath`.
+                    Err(BridgeGap { index, variant: command_variant_name(command) })
+                }
+            }
             RenderCommand::FillPathNonZero { path, color } => {
                 Ok(WgpuDrawCommand::FillPathNonZero {
                     points: path
@@ -596,6 +613,7 @@ fn is_compound_command(command: &RenderCommand) -> bool {
             | RenderCommand::DrawTextDecorated { .. }
             | RenderCommand::DrawPathDashed { .. }
             | RenderCommand::DrawPath { filled: false, .. }
+            | RenderCommand::DrawPath3 { filled: false, .. }
             // Not 1:N, but it *can* be 1:0: a scaled draw the reference skips must not reach the
             // table as a command the dispatcher cannot claim.
             | RenderCommand::DrawImageScaled { .. }
@@ -637,6 +655,29 @@ fn expand_compound_commands(
                 filled: true,
             } => {
                 push_filled_arc(*center, *radius, *start_angle, *end_angle, *color, expanded);
+            }
+            RenderCommand::DrawPath3 { a, b, c, closed, color, filled: false, width } => {
+                // The inline form expands to the same segment list as `DrawPath` below.
+                expanded.push(RenderCommand::DrawLineStroke {
+                    from: *a,
+                    to: *b,
+                    color: *color,
+                    width: *width,
+                });
+                expanded.push(RenderCommand::DrawLineStroke {
+                    from: *b,
+                    to: *c,
+                    color: *color,
+                    width: *width,
+                });
+                if *closed {
+                    expanded.push(RenderCommand::DrawLineStroke {
+                        from: *c,
+                        to: *a,
+                        color: *color,
+                        width: *width,
+                    });
+                }
             }
             RenderCommand::DrawPath { points, closed, color, filled: false, width } => {
                 // `SoftwareSurface::draw_path` strokes one segment per edge with its centred
@@ -1101,6 +1142,7 @@ fn command_variant_name(command: &RenderCommand) -> &'static str {
         RenderCommand::DrawGradient { .. } => "DrawGradient",
         RenderCommand::DrawArc { .. } => "DrawArc",
         RenderCommand::DrawPath { .. } => "DrawPath",
+        RenderCommand::DrawPath3 { .. } => "DrawPath3",
         RenderCommand::DrawPathDashed { .. } => "DrawPathDashed",
         RenderCommand::FillPathNonZero { .. } => "FillPathNonZero",
         RenderCommand::BoxShadow { .. } => "BoxShadow",

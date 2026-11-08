@@ -784,6 +784,39 @@
     "action.close": {
       "message": "Close"
     },
+    "dialog.file_dialog.column_name": {
+      "message": "Name"
+    },
+    "dialog.file_dialog.column_size": {
+      "message": "Size"
+    },
+    "dialog.file_dialog.column_type": {
+      "message": "Type"
+    },
+    "dialog.file_dialog.column_modified": {
+      "message": "Modified"
+    },
+    "dialog.find_replace.find": {
+      "message": "Find:"
+    },
+    "dialog.find_replace.no_matches": {
+      "message": "No matches"
+    },
+    "dialog.find_replace.replace": {
+      "message": "Rpl:"
+    },
+    "dialog.find_replace.replace_short": {
+      "message": "Rpl"
+    },
+    "dialog.find_replace.replace_all": {
+      "message": "Rpl All"
+    },
+    "dialog.message_box.hide_details": {
+      "message": "Hide Details..."
+    },
+    "dialog.message_box.show_details": {
+      "message": "Show Details..."
+    },
     "calendar.month.1": { "message": "January" },
     "calendar.month.2": { "message": "February" },
     "calendar.month.3": { "message": "March" },

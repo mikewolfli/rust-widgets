@@ -65,12 +65,49 @@ fn bench_json_loader_parse_and_bind(c: &mut Criterion) {
     });
 }
 
+/// Builds a 1000-node document: one `vbox` with a thousand `label` children (DM5-02).
 #[cfg(all(
     not(target_arch = "wasm32"),
     feature = "desktop",
     not(any(feature = "mini", feature = "embedded"))
 ))]
-criterion_group!(benches, bench_json_loader_parse_and_bind);
+fn thousand_node_document() -> String {
+    let mut document = String::from(
+        r#"{"window":{"id":"bench_window","title":"Bench","width":1280,"height":720,"layout":{"type":"vbox","spacing":0,"children":["#,
+    );
+    for index in 0..1000 {
+        if index > 0 {
+            document.push(',');
+        }
+        document.push_str(&format!(r#"{{"label":{{"id":"n{index}","text":"Row {index}"}}}}"#));
+    }
+    document.push_str("]}}}");
+    document
+}
+
+/// Loading a document whose node count is large enough for the ancestor-chain cost to show.
+#[cfg(all(
+    not(target_arch = "wasm32"),
+    feature = "desktop",
+    not(any(feature = "mini", feature = "embedded"))
+))]
+fn bench_json_loader_large_document(c: &mut Criterion) {
+    let document = thousand_node_document();
+    c.bench_function("json_loader_load_1000_nodes", |b| {
+        b.iter(|| {
+            let layout = load_layout_from_str(&document)
+                .expect("the generated 1000-node document must parse and instantiate");
+            black_box(layout.len());
+        })
+    });
+}
+
+#[cfg(all(
+    not(target_arch = "wasm32"),
+    feature = "desktop",
+    not(any(feature = "mini", feature = "embedded"))
+))]
+criterion_group!(benches, bench_json_loader_parse_and_bind, bench_json_loader_large_document);
 
 #[cfg(all(
     not(target_arch = "wasm32"),

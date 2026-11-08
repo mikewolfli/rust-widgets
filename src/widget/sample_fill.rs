@@ -63,7 +63,7 @@ use crate::widget::companions::{
     CommandPaletteHost, DragGhostLayer, DrawerSectionHeader, DropDownPopupHost, FindReplaceBar,
     HeaderMenu, LayerEntry, LayerPanel, Legend, LegendEntry, ListState, ListStateHost, MenuPanel,
     MenuPanelItem, PaletteEntryRef, PlaylistPanel, PopupItem, SpeedDial, SpeedDialAction,
-    SwipeAction, SwipeActions,
+    SwipeAction, SwipeActions, TreeFindBar,
 };
 use crate::widget::container_widgets::carousel::Carousel;
 use crate::widget::container_widgets::groupbox::GroupBox;
@@ -1137,6 +1137,16 @@ pub fn apply(name: &str, widget: &mut dyn Widget) -> bool {
             Some(bar) => {
                 bar.set_query("widget");
                 bar.set_replacement("control");
+                bar.open();
+                true
+            }
+            None => false,
+        },
+        // Emit the tree find strip in its open state with a query, so its painted field and text
+        // are exercised by the census/snapshot rather than skipped as "not opened yet".
+        "tree_find_bar" => match widget_as_mut::<TreeFindBar>(widget) {
+            Some(bar) => {
+                bar.set_query("widget");
                 bar.open();
                 true
             }

@@ -191,6 +191,7 @@ impl Splitter {
         if self.pane_layout_changed.slot_count() > 0 {
             self.pane_layout_changed.emit(self.layout.ratios().to_vec());
         }
+        self.base.request_redraw();
         index
     }
     /// Removes one pane by object id.
@@ -218,6 +219,7 @@ impl Splitter {
         if self.pane_layout_changed.slot_count() > 0 {
             self.pane_layout_changed.emit(self.layout.ratios().to_vec());
         }
+        self.base.request_redraw();
         true
     }
     /// Replaces the widget hosted by pane `index`, keeping the split it had (C-004).

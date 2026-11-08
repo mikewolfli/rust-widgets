@@ -253,6 +253,44 @@ fn bench_flex_arrange_resize_sweep(c: &mut Criterion) {
     });
 }
 
+/// A window layout applied to a real 60-child window, swept across 200 sizes (DM5-02).
+///
+/// This exercises the whole path the declarative/flex benches cannot: `WindowHandle::set_layout`
+/// registers the layout, and every `set_geometry` re-runs it through `apply_window_layout` →
+/// `set_widget_geometry` → panel recursion, which is where LY3-01..04 and RD4-01/02 live.
+#[cfg(not(target_arch = "wasm32"))]
+fn bench_window_layout_suite(c: &mut Criterion) {
+    #[cfg(any(feature = "desktop", feature = "tablet", feature = "mobile"))]
+    {
+        use rust_widgets::app::{App, WidgetHandle};
+        use rust_widgets::core::Orientation;
+        use rust_widgets::layout::BoxLayout;
+        use rust_widgets::layout::Layout;
+
+        let mut app = App::new();
+        app.init();
+        let window = app.new_window("layout bench", 0, 0, 800, 600);
+        let mut layout = BoxLayout::new(Orientation::Vertical, 0, 0);
+        let mut children = Vec::with_capacity(60);
+        for _ in 0..60 {
+            let child = window.new_label("row", 0, 0, 0, 0);
+            layout.add_widget(child.raw_id(), 1);
+            children.push(child.raw_id());
+        }
+        window.set_layout(layout);
+        c.bench_function("window_layout_apply_60_children_resize_sweep", |b| {
+            b.iter(|| {
+                for step in 0..200u32 {
+                    window.set_geometry(0, 0, 800 + step, 600);
+                    black_box(children.len());
+                }
+            })
+        });
+    }
+    #[cfg(not(any(feature = "desktop", feature = "tablet", feature = "mobile")))]
+    let _ = c;
+}
+
 /// The declarative-view benches, kept in one always-registered entry so the `criterion_group!`
 /// list stays valid when `declarative_view` is compiled out.
 #[cfg(not(target_arch = "wasm32"))]
@@ -278,7 +316,8 @@ criterion_group!(
     bench_view_suite,
     bench_flex_arrange_cached,
     bench_flex_arrange_uncached,
-    bench_flex_arrange_resize_sweep
+    bench_flex_arrange_resize_sweep,
+    bench_window_layout_suite
 );
 #[cfg(not(target_arch = "wasm32"))]
 criterion_main!(benches);

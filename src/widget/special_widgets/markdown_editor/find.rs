@@ -90,6 +90,8 @@ pub struct FindBar {
     replaced_cache: (usize, String),
     /// Which field typing goes to.
     focus: FindFocus,
+    /// The uncommitted IME composition drawn inline after the focused field's text.
+    preedit: String,
     /// Emitted with the active match's byte range, or `(0, 0)` when there is no match.
     pub search_changed: Signal1<(usize, usize)>,
     /// Emitted when the reader asks for a replacement.
@@ -115,6 +117,7 @@ impl FindBar {
             counter_cache: RefCell::new(None),
             replaced_cache: (0, String::new()),
             focus: FindFocus::Query,
+            preedit: String::new(),
             search_changed: Signal1::new(),
             replace_requested: Signal1::new(),
         }
@@ -139,6 +142,7 @@ impl FindBar {
             return;
         }
         self.visible = false;
+        self.preedit.clear();
         self.base.request_layout();
         self.base.request_redraw();
     }
@@ -646,6 +650,7 @@ impl EventHandler for FindBar {
                 }
             }
             Event::TextInput { text } | Event::ImeCommit { text } => {
+                self.preedit.clear();
                 let target = match self.focus {
                     FindFocus::Query => &mut self.query,
                     FindFocus::Replace => &mut self.replacement,
@@ -654,6 +659,10 @@ impl EventHandler for FindBar {
                 if matches!(self.focus, FindFocus::Query) {
                     self.recompute_matches();
                 }
+                self.base.request_redraw();
+            }
+            Event::ImePreedit { text, .. } => {
+                self.preedit = text.clone();
                 self.base.request_redraw();
             }
             Event::KeyPress { key, modifiers } => {
@@ -750,16 +759,36 @@ impl Draw for FindBar {
         }
         let counter = counter_cache.as_ref().map(|(_, text)| text.as_str()).unwrap_or_default();
         let counter_width = context.measure_text(counter, font).width as i32;
+        let query_shown = crate::widget::text_utils::elide_end(
+            &self.query,
+            ((text_rect.width as i32 - counter_width - 8) / 7).max(1) as usize,
+        );
         context.draw_text(
             Point::new(text_rect.x, text_rect.y + 7),
-            &crate::widget::text_utils::elide_end(
-                &self.query,
-                ((text_rect.width as i32 - counter_width - 8) / 7).max(1) as usize,
-            ),
+            &query_shown,
             font,
             if self.query.is_empty() { ink.with_alpha(120) } else { ink },
             HorizontalAlignment::Left,
         );
+        // The uncommitted IME composition is drawn after the query with an underline, so a CJK
+        // composition is visible before it is confirmed.
+        if matches!(self.focus, FindFocus::Query) && !self.preedit.is_empty() {
+            let preedit_x = text_rect.x + context.measure_text(&query_shown, font).width as i32;
+            context.draw_text(
+                Point::new(preedit_x, text_rect.y + 7),
+                &self.preedit,
+                font,
+                ink,
+                HorizontalAlignment::Left,
+            );
+            let preedit_width = context.measure_text(&self.preedit, font).width as i32;
+            let underline_y = text_rect.y + 7 + font.size().ceil().max(1.0) as i32;
+            context.draw_line(
+                Point::new(preedit_x, underline_y),
+                Point::new(preedit_x + preedit_width, underline_y),
+                ink,
+            );
+        }
         context.draw_text(
             Point::new(
                 query_band.x + query_band.width as i32 - 2 * FIND_TOGGLE_SIDE - 12 - counter_width,
@@ -801,16 +830,37 @@ impl Draw for FindBar {
                 border,
             );
             if let Some(text_rect) = self.replace_text_rect() {
+                let replacement_shown = crate::widget::text_utils::elide_end(
+                    &self.replacement,
+                    (text_rect.width as i32 / 7).max(1) as usize,
+                );
                 context.draw_text(
                     Point::new(text_rect.x, text_rect.y + 7),
-                    &crate::widget::text_utils::elide_end(
-                        &self.replacement,
-                        (text_rect.width as i32 / 7).max(1) as usize,
-                    ),
+                    &replacement_shown,
                     font,
                     if self.replacement.is_empty() { ink.with_alpha(120) } else { ink },
                     HorizontalAlignment::Left,
                 );
+                // The composition belongs to the focused field; the replacement row is the
+                // second one.
+                if matches!(self.focus, FindFocus::Replace) && !self.preedit.is_empty() {
+                    let preedit_x =
+                        text_rect.x + context.measure_text(&replacement_shown, font).width as i32;
+                    context.draw_text(
+                        Point::new(preedit_x, text_rect.y + 7),
+                        &self.preedit,
+                        font,
+                        ink,
+                        HorizontalAlignment::Left,
+                    );
+                    let preedit_width = context.measure_text(&self.preedit, font).width as i32;
+                    let underline_y = text_rect.y + 7 + font.size().ceil().max(1.0) as i32;
+                    context.draw_line(
+                        Point::new(preedit_x, underline_y),
+                        Point::new(preedit_x + preedit_width, underline_y),
+                        ink,
+                    );
+                }
             }
             // The two replacement actions are controls on the bar, so a reader never has to know
             // that the host applies their request; the result count is the feedback that the

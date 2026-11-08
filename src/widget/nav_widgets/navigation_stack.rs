@@ -666,6 +666,29 @@ impl NavigationStack {
         self.base.request_redraw();
         true
     }
+
+    /// Pops the top page when `start`→`end` is a back swipe (EX4-06).
+    ///
+    /// [`EdgeSwipeRecognizer`](crate::gesture::EdgeSwipeRecognizer) emits the ordinary
+    /// [`Event::Swipe`] rather than a bespoke event, so this is the stack's consumer for it: a
+    /// swipe counts only when it begins inside the leading edge strip [`Self::edge_band`] describes
+    /// and travels inward. That is the same strip [`Self::begin_edge_drag`] claims for pointer
+    /// drags, so a recognised swipe and a direct drag cannot disagree about what "back" means.
+    /// Returns `true` when a page was popped.
+    #[cfg(feature = "touch")]
+    pub fn handle_back_swipe(&mut self, start: Point, end: Point) -> bool {
+        if !(self.can_pop() && self.back_visible) || !self.edge_band().contains_point(start) {
+            return false;
+        }
+        let inward =
+            if self.direction.is_right_to_left() { end.x < start.x } else { end.x > start.x };
+        if !inward {
+            return false;
+        }
+        let before = self.pages.len();
+        let _ = self.pop();
+        self.pages.len() < before
+    }
 }
 
 impl Widget for NavigationStack {
@@ -1116,6 +1139,23 @@ impl EventHandler for NavigationStack {
                         page.handle_event(event);
                     }
                 }
+            }
+            // A host that runs an `EdgeSwipeRecognizer` hands the derived `Swipe` here instead of
+            // replaying raw touches (EX4-06). The edge band and inward direction still gate it, so
+            // an ordinary swipe that began in the page belongs to the page beneath.
+            #[cfg(feature = "touch")]
+            Event::Swipe { start, end, .. } => {
+                if self.handle_back_swipe(*start, *end) {
+                    return;
+                }
+                let content = self.content_rect();
+                if content.contains_point(*start) {
+                    if let Some(page) = self.pages.last_mut().and_then(|slot| slot.widget_mut()) {
+                        page.set_geometry(content);
+                        page.handle_event(event);
+                    }
+                }
+                self.base.handle_event(event);
             }
             _ => {
                 let content = self.content_rect();
@@ -1665,6 +1705,44 @@ mod tests {
         stack.handle_event(&Event::TouchMove { pos: Point::new(390, 300), touch_id: 1 });
         stack.handle_event(&Event::TouchEnd { pos: Point::new(390, 300), touch_id: 1 });
         assert_eq!(stack.page_count(), 2, "no edge band, no back gesture");
+    }
+
+    /// EX4-06: an `EdgeSwipeRecognizer` emits the ordinary `Swipe`, and this is its consumer.
+    #[cfg(feature = "touch")]
+    #[test]
+    fn a_recognized_back_swipe_from_the_leading_edge_pops() {
+        let mut stack = NavigationStack::new(Rect::new(0, 0, 400, 600));
+        stack.push(Box::new(TestPage::new(Color::BLACK)));
+        stack.push(Box::new(TestPage::new(Color::BLACK)));
+        assert!(stack.handle_back_swipe(Point::new(4, 300), Point::new(200, 300)));
+        assert_eq!(stack.page_count(), 1);
+    }
+
+    /// The same band and inward direction keep a recognised swipe from stealing the page's.
+    #[cfg(feature = "touch")]
+    #[test]
+    fn a_recognized_swipe_that_missed_the_band_or_direction_is_ignored() {
+        let mut stack = NavigationStack::new(Rect::new(0, 0, 400, 600));
+        stack.push(Box::new(TestPage::new(Color::BLACK)));
+        stack.push(Box::new(TestPage::new(Color::BLACK)));
+        assert!(!stack.handle_back_swipe(Point::new(200, 300), Point::new(390, 300)));
+        assert!(!stack.handle_back_swipe(Point::new(4, 300), Point::new(0, 300)));
+        assert_eq!(stack.page_count(), 2);
+    }
+
+    /// The event arm runs the recognised swipe through the same gate as the public helper.
+    #[cfg(feature = "touch")]
+    #[test]
+    fn the_swipe_event_arm_pops_through_the_back_gate() {
+        let mut stack = NavigationStack::new(Rect::new(0, 0, 400, 600));
+        stack.push(Box::new(TestPage::new(Color::BLACK)));
+        stack.push(Box::new(TestPage::new(Color::BLACK)));
+        stack.handle_event(&Event::Swipe {
+            start: Point::new(4, 300),
+            end: Point::new(200, 300),
+            velocity: 800.0,
+        });
+        assert_eq!(stack.page_count(), 1);
     }
 
     /// N-003: replace/insert/pop-to extend the stack without inventing a second transition model.

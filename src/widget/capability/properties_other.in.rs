@@ -1931,6 +1931,38 @@ macro_rules! impl_properties_other {
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
         ];
 
+        /// Find strip for a tree's flattened rows (`CMP4-01`).
+        #[cfg(not(alloc_frugal))]
+        pub(crate) const TREE_FIND_BAR_PROPERTIES: &[PropertySchema] = &[
+            PropertySchema::new("query", PropertyValueKind::String, true, true),
+            PropertySchema::new("case_sensitive", PropertyValueKind::Bool, true, true),
+            // The same operator vocabulary the grid find bar and `FilterRow` use.
+            PropertySchema::enumerated(
+                "match_mode",
+                true,
+                true,
+                &[
+                    "contains",
+                    "equals",
+                    "starts_with",
+                    "ends_with",
+                    "not_contains",
+                    "equals_number",
+                    "greater_than",
+                    "greater_or_equal",
+                    "less_than",
+                    "less_or_equal",
+                ],
+            ),
+            // The match cursor is the search's output; it is not a writable input.
+            PropertySchema::new("current_match", PropertyValueKind::UInt, true, false),
+            PropertySchema::new("auto_scroll", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+        ];
+
         /// Loading / empty / error surface for a list (`COMP-23`).
         ///
         /// `state` is the four-token state machine the reader reports, and `empty_icon` is the

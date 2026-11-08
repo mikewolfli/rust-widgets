@@ -315,6 +315,7 @@ impl WidgetFactory {
             // `WidgetFactory::widget_matches_capability` carries one row per name.
             self.register(line_number_gutter_capability(), create_line_number_gutter);
             self.register(find_replace_bar_capability(), create_find_replace_bar);
+            self.register(tree_find_bar_capability(), create_tree_find_bar);
             self.register(list_state_host_capability(), create_list_state_host);
             self.register(summary_row_capability(), create_summary_row);
             self.register(zoom_strip_capability(), create_zoom_strip);

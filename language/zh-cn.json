@@ -784,6 +784,39 @@
     "action.close": {
       "message": "关闭"
     },
+    "dialog.file_dialog.column_name": {
+      "message": "名称"
+    },
+    "dialog.file_dialog.column_size": {
+      "message": "大小"
+    },
+    "dialog.file_dialog.column_type": {
+      "message": "类型"
+    },
+    "dialog.file_dialog.column_modified": {
+      "message": "修改时间"
+    },
+    "dialog.find_replace.find": {
+      "message": "查找："
+    },
+    "dialog.find_replace.no_matches": {
+      "message": "无匹配项"
+    },
+    "dialog.find_replace.replace": {
+      "message": "替换："
+    },
+    "dialog.find_replace.replace_short": {
+      "message": "替换"
+    },
+    "dialog.find_replace.replace_all": {
+      "message": "全部替换"
+    },
+    "dialog.message_box.hide_details": {
+      "message": "隐藏详情..."
+    },
+    "dialog.message_box.show_details": {
+      "message": "显示详情..."
+    },
     "calendar.month.1": { "message": "一月" },
     "calendar.month.2": { "message": "二月" },
     "calendar.month.3": { "message": "三月" },

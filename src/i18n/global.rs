@@ -76,6 +76,10 @@ pub fn set_language(language: &str) -> bool {
         return false;
     }
     bump_language_generation();
+    // EX4-03: the language tag also decides the base reading direction. Writing the library
+    // default here is the one place a language switch can mirror every layout that did not pin
+    // its own direction; a container that called `set_text_direction` keeps its explicit value.
+    crate::core::set_default_text_direction(crate::core::TextDirection::for_language(language));
     signal.emit(event);
     arm_repaint_for_language_change();
     // A language switch is exactly the event `register_retranslator` exists for: a control that

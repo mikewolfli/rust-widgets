@@ -68,6 +68,8 @@ pub struct ColorPicker {
     hex_editing: bool,
     /// The text in the hex field while editing.
     hex_buffer: String,
+    /// The uncommitted IME composition drawn inline after the hex buffer.
+    preedit: String,
     /// Whether the panel paints its own OK / Cancel row (SP-62).
     show_buttons: bool,
     /// The recent-colour band, drawn through the shared `Swatch` control (SP-119).
@@ -131,6 +133,7 @@ impl ColorPicker {
             drag_target: None,
             hex_editing: false,
             hex_buffer: String::new(),
+            preedit: String::new(),
             show_buttons: false,
             recent: Swatch::new(Rect::new(0, 0, 0, 0)),
             recent_enabled: false,
@@ -201,6 +204,7 @@ impl ColorPicker {
     pub fn cancel(&mut self) {
         self.hex_editing = false;
         self.hex_buffer.clear();
+        self.preedit.clear();
         self.drag_target = None;
         self.base.request_redraw();
         self.canceled.emit();
@@ -231,6 +235,7 @@ impl ColorPicker {
             return;
         }
         self.hex_editing = editing;
+        self.preedit.clear();
         if editing {
             self.hex_buffer = self.hex_rgba();
         }
@@ -986,7 +991,12 @@ impl EventHandler for ColorPicker {
                 }
             }
             Event::TextInput { text } | Event::ImeCommit { text } if self.hex_editing => {
+                self.preedit.clear();
                 self.hex_buffer.push_str(text);
+                self.base.request_redraw();
+            }
+            Event::ImePreedit { text, .. } if self.hex_editing => {
+                self.preedit = text.clone();
                 self.base.request_redraw();
             }
             // Other events are not relevant for this widget
@@ -1169,6 +1179,27 @@ impl Draw for ColorPicker {
                 ink,
                 HorizontalAlignment::Left,
             );
+            // The uncommitted IME composition is drawn after the buffer with an underline, so a
+            // CJK composition is visible before it is confirmed.
+            if !self.preedit.is_empty() {
+                let preedit_x =
+                    hex_band.x + context.measure_text(&self.hex_buffer, hex_font).width as i32;
+                let line = context.text_line(hex_band, hex_font);
+                context.draw_text(
+                    Point::new(preedit_x, line.y),
+                    &self.preedit,
+                    hex_font,
+                    ink,
+                    HorizontalAlignment::Left,
+                );
+                let preedit_width = context.measure_text(&self.preedit, hex_font).width as i32;
+                let underline_y = line.y + line.height as i32 - 1;
+                context.draw_line(
+                    Point::new(preedit_x, underline_y),
+                    Point::new(preedit_x + preedit_width, underline_y),
+                    ink,
+                );
+            }
         } else {
             // The readout is chrome sitting on the panel, so it is the resolved ink rather than
             // a literal that was tuned for one appearance.

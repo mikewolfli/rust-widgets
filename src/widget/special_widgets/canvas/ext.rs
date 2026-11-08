@@ -18,10 +18,8 @@ use crate::signal::Signal1;
 use crate::widget::save_state::SaveState;
 use alloc::collections::VecDeque;
 
-use super::{
-    command_bounds, next_layer_cache_key, rects_intersect, snap_command, transform_command, Canvas,
-    COMMAND_CHUNK_SIZE,
-};
+use super::command::{command_bounds, rects_intersect, snap_command, transform_command};
+use super::{next_layer_cache_key, Canvas, COMMAND_CHUNK_SIZE};
 
 /// A uniform scale and translation applied to every drawing command a [`Canvas`] stores.
 ///

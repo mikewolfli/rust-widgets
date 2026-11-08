@@ -486,6 +486,21 @@ pub(crate) fn find_replace_bar_capability() -> WidgetCapability {
 }
 
 #[cfg(not(alloc_frugal))]
+/// `tree_find_bar` — the query strip for a tree's flattened rows (`CMP4-01`).
+pub(crate) fn tree_find_bar_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::Panel,
+        canonical_name: "tree_find_bar",
+        aliases: &[],
+        properties: TREE_FIND_BAR_PROPERTIES,
+        events: events_of!("tree_find_bar"),
+        // The three value-carrying setters travel through the property route; publishing their
+        // command names keeps them visible to a designer and satisfies the setter census.
+        commands: &["set_auto_scroll", "set_case_sensitive", "set_match_mode"],
+    }
+}
+
+#[cfg(not(alloc_frugal))]
 /// `list_state_host` — the loading/empty/error surface for a list (`COMP-23`).
 pub(crate) fn list_state_host_capability() -> WidgetCapability {
     WidgetCapability {

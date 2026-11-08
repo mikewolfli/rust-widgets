@@ -12,6 +12,7 @@
 //!
 //! **State:** Production callers: `src/event/loop.rs:196` (`gesture_engine.process(...)`).
 
+pub mod edge_swipe;
 pub mod engine;
 pub mod pinch;
 pub mod press;
@@ -19,6 +20,7 @@ pub mod rotate;
 pub mod swipe;
 pub mod tap;
 
+pub use edge_swipe::{EdgeSide, EdgeSwipeRecognizer, DEFAULT_EDGE_WIDTH};
 pub use engine::{
     set_tuning, tuning, GestureConflictPolicy, GestureEngine, GestureKind, GestureRecognizer,
     GestureState, GestureTuning, GestureUpdate,

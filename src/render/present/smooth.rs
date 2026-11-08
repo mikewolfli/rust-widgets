@@ -131,11 +131,13 @@ pub fn classify(command: &RenderCommand) -> (CommandClass, &'static str) {
                 )
             }
         }
-        RenderCommand::DrawPath { filled: true, .. } => (
+        RenderCommand::DrawPath { filled: true, .. }
+        | RenderCommand::DrawPath3 { filled: true, .. } => (
             CommandClass::MappedWithDivergence,
             "the GPU fan may include one boundary pixel the reference scanline fill excludes",
         ),
-        RenderCommand::DrawPath { filled: false, color, .. } => {
+        RenderCommand::DrawPath { filled: false, color, .. }
+        | RenderCommand::DrawPath3 { filled: false, color, .. } => {
             if color.a == 255 {
                 (
                     CommandClass::Mapped,
@@ -567,6 +569,7 @@ fn variant_name(command: &RenderCommand) -> &'static str {
         RenderCommand::DrawGradient { .. } => "DrawGradient",
         RenderCommand::DrawArc { .. } => "DrawArc",
         RenderCommand::DrawPath { .. } => "DrawPath",
+        RenderCommand::DrawPath3 { .. } => "DrawPath3",
         RenderCommand::DrawPathDashed { .. } => "DrawPathDashed",
         RenderCommand::FillPathNonZero { .. } => "FillPathNonZero",
         RenderCommand::BoxShadow { .. } => "BoxShadow",

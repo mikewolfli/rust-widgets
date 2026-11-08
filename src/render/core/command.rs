@@ -810,6 +810,29 @@ pub enum RenderCommand {
         /// Stroke width in pixels; ignored when `filled` is true.
         width: u32,
     },
+    /// Draw a three-vertex path without an `Arc<[Point]>` allocation (GV4-10).
+    ///
+    /// Arc, pie, meter and dropdown geometry is frequently a triangle or a three-point polyline;
+    /// recording those through [`RenderCommand::DrawPath`] copies the vertices into a shared slice,
+    /// which is one refcounted allocation per path per frame. This variant keeps the three points
+    /// inline, so the software backend can paint them from a stack array. It is otherwise exactly
+    /// `DrawPath { points: [a, b, c] }`: the same fill/stroke rules, the same `closed` meaning.
+    DrawPath3 {
+        /// First vertex in logical pixels.
+        a: Point,
+        /// Second vertex in logical pixels.
+        b: Point,
+        /// Third vertex in logical pixels.
+        c: Point,
+        /// Connects `c` back to `a` when stroking. Ignored when `filled` is true.
+        closed: bool,
+        /// Stroke color, or fill color when `filled` is true.
+        color: Color,
+        /// Fills the triangle instead of stroking it.
+        filled: bool,
+        /// Stroke width in pixels; ignored when `filled` is true.
+        width: u32,
+    },
     /// Stroke a polyline with a repeating dash pattern (G-014).
     ///
     /// This is the stroked form of [`RenderCommand::DrawPath`] with a
@@ -1077,6 +1100,9 @@ impl RenderCommand {
                 Some(bounds_around_point(*center, radius.saturating_add(*width)))
             }
             Self::DrawArc { center, radius, .. } => Some(bounds_around_point(*center, *radius)),
+            Self::DrawPath3 { a, b, c, width, filled, .. } => {
+                Some(bounds_of_points(&[*a, *b, *c], if *filled { 0 } else { *width }))
+            }
             Self::DrawText { origin, text, font, alignment, .. }
             | Self::DrawTextDecorated { origin, text, font, alignment, .. } => {
                 // The generous box already pads one em on every side, which covers

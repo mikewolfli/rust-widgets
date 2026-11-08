@@ -532,6 +532,7 @@ impl TabBar {
         if self.current_index.is_none() {
             self.current_index = Some(idx);
         }
+        self.base.request_redraw();
         idx
     }
 
@@ -577,6 +578,7 @@ impl TabBar {
         } else {
             self.current_index = Some(idx);
         }
+        self.base.request_redraw();
     }
 
     /// Removes the tab at the given index.
@@ -604,6 +606,7 @@ impl TabBar {
             // No action needed for this transition
             _ => {}
         }
+        self.base.request_redraw();
     }
 
     /// Removes all tabs.
@@ -611,6 +614,7 @@ impl TabBar {
         self.tabs.clear();
         self.current_index = None;
         self.hovered_index = None;
+        self.base.request_redraw();
     }
 
     /// Returns the number of tabs.

@@ -99,6 +99,7 @@ mod swatch;
 mod swipe_actions;
 mod toast_host;
 mod tooltip_manager;
+mod tree_find_bar;
 mod zoom_pan;
 mod zoom_strip;
 
@@ -154,5 +155,6 @@ pub use toast_host::{
     HostedToast, ToastAnchor, ToastHost, ToastOverflowPolicy, ToastStackingDirection,
 };
 pub use tooltip_manager::TooltipManager;
+pub use tree_find_bar::{TreeFindBar, TreeSearchSource};
 pub use zoom_pan::{ZoomMode, ZoomPanController};
 pub use zoom_strip::ZoomStrip;

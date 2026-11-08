@@ -283,6 +283,7 @@ impl ToolBox {
         self.items.push(item);
         self.clamp_scroll();
         self.sync_pages();
+        self.base.request_redraw();
         self.items.len().saturating_sub(1)
     }
     /// Inserts an item at position.
@@ -307,6 +308,7 @@ impl ToolBox {
         }
         self.clamp_scroll();
         self.sync_pages();
+        self.base.request_redraw();
     }
     /// Removes an item.
     pub fn remove_item(&mut self, index: usize) {
@@ -335,6 +337,7 @@ impl ToolBox {
             }
             self.clamp_scroll();
             self.sync_pages();
+            self.base.request_redraw();
         }
     }
     /// Returns number of items.

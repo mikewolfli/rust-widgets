@@ -27,6 +27,37 @@
 //! the axis it manages, and a control that does not is no worse off than before
 //! because the default is [`TextDirection::LeftToRight`].
 
+/// The process/thread default direction, used by a layout that was never given one (EX4-03).
+///
+/// The value is thread-local for the same reason the environment snapshot is: layouts run on the
+/// thread that owns the UI, and a language switch is a UI-thread fact. It starts left-to-right,
+/// which is the value every control assumed before this existed.
+pub fn default_text_direction() -> TextDirection {
+    DEFAULT_DIRECTION.try_with(core::cell::Cell::get).unwrap_or(TextDirection::LeftToRight)
+}
+
+/// Sets the default direction for layouts that were never given one explicitly.
+///
+/// Returns whether the value changed. The i18n language switch is the producer: it derives the
+/// direction from the new tag through [`TextDirection::for_language`] and writes it here, so a
+/// container that has no explicit direction mirrors without every call site being touched.
+pub fn set_default_text_direction(direction: TextDirection) -> bool {
+    DEFAULT_DIRECTION
+        .try_with(|slot| {
+            let changed = slot.get() != direction;
+            slot.set(direction);
+            changed
+        })
+        .unwrap_or(false)
+}
+
+thread_local! {
+    /// The default [`TextDirection`] for layouts with no explicit direction.
+    #[allow(clippy::missing_const_for_thread_local)]
+    static DEFAULT_DIRECTION: core::cell::Cell<TextDirection> =
+        const { core::cell::Cell::new(TextDirection::LeftToRight) };
+}
+
 /// The direction in which a line of content is laid out and read.
 ///
 /// The default is [`TextDirection::LeftToRight`], which is what every control in

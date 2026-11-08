@@ -130,24 +130,79 @@ pub(crate) enum ParamsFamily {
     Gradient,
 }
 
-/// Bind groups over the shared params arena, keyed by the texture they sample (RD2-01).
+/// Bind groups over the shared params arena, keyed by the texture they sample (RD2-01 / EX4-04).
 ///
 /// A textured bind group can only be reused while the texture is the same, so the key pairs the
-/// family with the upload's content [`TextureKey`]. The cache lives for one frame: its entries
-/// keep texture views alive, and a per-frame lifetime bounds that memory to what this frame drew.
-/// A params-arena growth changes `generation` and drops every entry, because they bind the old
-/// buffer handle.
+/// family with the upload's content [`TextureKey`]. The cache **persists across frames**: the
+/// arena buffer is grow-only, so a group built over generation `g` stays valid until the buffer is
+/// replaced, and the texture it samples is already kept alive by `TextureCache` under the same
+/// content key. A still scene therefore builds each group once instead of once per frame.
+///
+/// `MAX_GROUPS` bounds the memory a long run with many distinct images can retain; reaching it
+/// clears the cache rather than growing without limit. A params-arena growth changes `generation`
+/// and drops every entry, because they bind the old buffer handle.
 #[derive(Default)]
 pub(crate) struct ParamsGroupCache {
+    groups: GenerationMap<wgpu::BindGroup>,
+}
+
+/// How many cross-frame groups the cache keeps before it starts over.
+const MAX_GROUPS: usize = 512;
+
+/// The generation-tagged map behind [`ParamsGroupCache`].
+///
+/// Split from the `wgpu` handle so the retention policy — a stale arena generation drops every
+/// entry, and `MAX_GROUPS` bounds a long run — is testable without a device. The policy is the
+/// whole behaviour of the cache; the surrounding type only adds the clone on `get`.
+struct GenerationMap<V> {
     generation: u64,
-    groups: HashMap<(ParamsFamily, TextureKey), wgpu::BindGroup>,
+    entries: HashMap<(ParamsFamily, TextureKey), V>,
+}
+
+impl<V> Default for GenerationMap<V> {
+    fn default() -> Self {
+        Self { generation: 0, entries: HashMap::new() }
+    }
+}
+
+impl<V> GenerationMap<V> {
+    /// Keeps entries that still bind the live arena; a stale generation clears them.
+    fn prepare(&mut self, generation: u64) {
+        if self.generation != generation {
+            self.entries.clear();
+            self.generation = generation;
+        }
+    }
+
+    fn get(&self, generation: u64, family: ParamsFamily, key: &TextureKey) -> Option<&V> {
+        if self.generation != generation {
+            return None;
+        }
+        self.entries.get(&(family, *key))
+    }
+
+    fn insert(&mut self, generation: u64, family: ParamsFamily, key: TextureKey, value: V) {
+        if self.generation != generation {
+            self.entries.clear();
+            self.generation = generation;
+        }
+        if self.entries.len() >= MAX_GROUPS && !self.entries.contains_key(&(family, key)) {
+            // A long-lived process that has drawn more distinct images than the cap clears the map
+            // rather than retaining every group forever. The next frame rebuilds what it needs.
+            self.entries.clear();
+        }
+        self.entries.insert((family, key), value);
+    }
 }
 
 impl ParamsGroupCache {
-    /// Clears the cache and records the arena generation its groups would bind.
-    pub(crate) fn reset(&mut self, generation: u64) {
-        self.groups.clear();
-        self.generation = generation;
+    /// Prepares the cache for a frame whose arena has `generation`.
+    ///
+    /// Unlike a per-frame reset, this keeps entries that still bind the live arena. It is called at
+    /// the start of every encoded frame so a generation change is noticed before any lookup; a
+    /// stale generation clears the map because every group in it binds a dead buffer handle.
+    pub(crate) fn prepare(&mut self, generation: u64) {
+        self.groups.prepare(generation);
     }
 
     /// The group for `(family, key)`, when this frame already built one over the same arena.
@@ -157,10 +212,7 @@ impl ParamsGroupCache {
         family: ParamsFamily,
         key: &TextureKey,
     ) -> Option<wgpu::BindGroup> {
-        if self.generation != generation {
-            return None;
-        }
-        self.groups.get(&(family, *key)).cloned()
+        self.groups.get(generation, family, key).cloned()
     }
 
     /// Stores a group for the rest of this arena generation.
@@ -171,10 +223,7 @@ impl ParamsGroupCache {
         key: TextureKey,
         group: wgpu::BindGroup,
     ) {
-        if self.generation != generation {
-            self.reset(generation);
-        }
-        self.groups.insert((family, key), group);
+        self.groups.insert(generation, family, key, group);
     }
 }
 
@@ -1597,4 +1646,54 @@ pub(crate) fn readback_frame_bytes(width: u32, height: u32) -> Result<u64, Strin
     (padded as u64)
         .checked_mul(height as u64)
         .ok_or_else(|| format!("readback buffer for {width}x{height} overflows u64"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn key(ptr: usize) -> TextureKey {
+        TextureKey { ptr, len: 4, width: 1, height: 1 }
+    }
+
+    #[test]
+    fn a_second_pass_over_the_same_generation_keeps_the_groups_it_built() {
+        let mut map = GenerationMap::<u32>::default();
+        map.prepare(7);
+        map.insert(7, ParamsFamily::Image, key(1), 11);
+        map.prepare(7);
+        assert_eq!(map.entries.len(), 1, "the same arena must not drop its groups");
+        assert_eq!(map.get(7, ParamsFamily::Image, &key(1)), Some(&11));
+    }
+
+    #[test]
+    fn a_new_arena_generation_drops_the_groups_that_bound_the_old_buffer() {
+        let mut map = GenerationMap::<u32>::default();
+        map.prepare(7);
+        map.insert(7, ParamsFamily::Gradient, key(2), 22);
+        map.prepare(8);
+        assert!(map.entries.is_empty(), "a rebuilt arena invalidates every group");
+        assert_eq!(map.get(7, ParamsFamily::Gradient, &key(2)), None);
+        assert_eq!(map.get(8, ParamsFamily::Gradient, &key(2)), None);
+    }
+
+    #[test]
+    fn reaching_the_cap_starts_over_only_for_a_new_key() {
+        let mut map = GenerationMap::<usize>::default();
+        map.prepare(1);
+        for index in 0..MAX_GROUPS {
+            map.insert(1, ParamsFamily::Image, key(index), index);
+        }
+        assert_eq!(map.entries.len(), MAX_GROUPS);
+
+        // Replacing a key the map already holds does not trip the cap.
+        map.insert(1, ParamsFamily::Image, key(0), 99);
+        assert_eq!(map.entries.len(), MAX_GROUPS);
+        assert_eq!(map.get(1, ParamsFamily::Image, &key(0)), Some(&99));
+
+        // A genuinely new key at the cap clears the map before storing it.
+        map.insert(1, ParamsFamily::Radial, key(MAX_GROUPS), MAX_GROUPS);
+        assert_eq!(map.entries.len(), 1);
+        assert_eq!(map.get(1, ParamsFamily::Image, &key(0)), None);
+    }
 }

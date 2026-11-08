@@ -694,6 +694,9 @@ fn forward_touches(this: &Object, event: id, phase: TouchPhase) {
 /// Routing goes through the platform's hit test so a click on a widget nested inside
 /// the mounted one reaches that widget, rather than always reaching the surface owner.
 fn forward_mouse(this: &Object, event: id, phase: MousePhase) {
+    // Input may start an animation; move an idle heartbeat to the next millisecond so the first
+    // frame is not one idle interval late (PL4-01).
+    crate::platform::macos_heartbeat::expedite();
     let outcome = std::panic::catch_unwind(|| {
         // SAFETY: `this` is the live canvas view; `event` is an NSEvent AppKit
         // passed to the selector, valid for the duration of this call.
@@ -785,6 +788,7 @@ fn forward_mouse(this: &Object, event: id, phase: MousePhase) {
 /// Tab is consumed here to move focus: it is not a printable character, so forwarding
 /// it to the widget would be a no-op and the user could never leave the first control.
 extern "C" fn key_down(this: &Object, _cmd: Sel, event: id) {
+    crate::platform::macos_heartbeat::expedite();
     let outcome = std::panic::catch_unwind(|| {
         // SAFETY: `this` is the live canvas view; `event` is the NSEvent AppKit
         // delivered to this selector.
@@ -865,6 +869,7 @@ extern "C" fn key_down(this: &Object, _cmd: Sel, event: id) {
 /// this can be. Tab is not special-cased either — focus traversal happened on the press, and
 /// repeating it here would move focus twice for one Tab.
 extern "C" fn key_up(this: &Object, _cmd: Sel, event: id) {
+    crate::platform::macos_heartbeat::expedite();
     let outcome = std::panic::catch_unwind(|| {
         // SAFETY: `this` is the live canvas view; `event` is the NSEvent AppKit
         // delivered to this selector.

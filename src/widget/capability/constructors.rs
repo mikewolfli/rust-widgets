@@ -1973,6 +1973,12 @@ pub fn create_find_replace_bar(geometry: Rect, _text: &str) -> Box<dyn Widget> {
 }
 
 #[cfg(full_widgets)]
+/// Creates a closed tree find bar with no data source bound (`CMP4-01`).
+pub fn create_tree_find_bar(geometry: Rect, _text: &str) -> Box<dyn Widget> {
+    Box::new(crate::widget::companions::TreeFindBar::new(geometry))
+}
+
+#[cfg(full_widgets)]
 /// Creates an idle list-state host with no empty or error content (`COMP-23`).
 pub fn create_list_state_host(geometry: Rect, _text: &str) -> Box<dyn Widget> {
     Box::new(crate::widget::companions::ListStateHost::new(geometry))

@@ -1,0 +1,30 @@
+# Steady-state benchmark baseline (GV4-04)
+#
+# Format: <bench id> <median> <command that produced it>
+#
+# # What this file is
+#
+# A record of one real `cargo bench` round for the two frame/layout benchmarks the resize and
+# JSON work is measured against, plus the two DM5-02 additions. It is deliberately **not** a
+# gate: CI's timing noise would make a threshold a source of false failures. Two rounds are
+# collected before any tolerance is proposed (the same "record first" decision the icon and
+# control-rendering baselines made).
+#
+# # Provenance
+#
+# Host: macOS (desktop profile, cocoa backend), 2026-11-09.
+# Toolchain: the repository's default stable toolchain.
+# Criterion 0.8.2, `--quick` sampling (warm release build).
+#
+# # Numbers (median of the quick sample)
+#
+# render_frame_1280x800_full                     839.45 us   cargo bench --bench render_bench -- render_frame_1280x800_full --quick
+# json_loader_load_1000_nodes                     1.1712 ms  cargo bench --bench json_bench -- json_loader_load_1000_nodes --quick
+# window_layout_apply_60_children_resize_sweep    5.0300 ms  cargo bench --bench capability_bench -- window_layout_apply_60_children_resize_sweep --quick
+#
+# `json_loader_load_1000_nodes` is one full `load_layout_from_str` of the generated 1000-node
+# document (parse + instantiate + bind), not a parse-only measurement.
+#
+# `window_layout_apply_60_children_resize_sweep` drives `WindowHandle::set_geometry` across 200
+# distinct widths over a 60-child `BoxLayout` window, so it measures the real
+# `apply_window_layout` -> `set_widget_geometry` chain rather than `Layout::arrange` alone.

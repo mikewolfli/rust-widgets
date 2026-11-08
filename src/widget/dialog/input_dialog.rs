@@ -105,6 +105,8 @@ pub struct InputDialog {
     double_decimals: u8,
     /// How far the caret sits into [`InputDialog::text_value`], in characters.
     text_caret: usize,
+    /// The uncommitted IME composition drawn inline at the caret.
+    preedit: String,
     /// Whether the host has delivered committed text, which retires the raw-key fallback.
     text_input_seen: bool,
     /// Whether the text field has been focused by a click. The caret is painted only then, so
@@ -168,6 +170,7 @@ impl InputDialog {
             double_step: 1.0,
             double_decimals: 1,
             text_caret: 0,
+            preedit: String::new(),
             text_input_seen: false,
             text_focused: false,
             dropdown_open: false,
@@ -884,12 +887,17 @@ impl EventHandler for InputDialog {
                 }
             }
             Event::TextInput { text } | Event::ImeCommit { text } => {
+                self.preedit.clear();
                 self.text_input_seen = true;
                 let filtered: String =
                     text.chars().filter(|character| !character.is_control()).collect();
                 if !filtered.is_empty() {
                     self.insert_at_caret(&filtered);
                 }
+            }
+            Event::ImePreedit { text, .. } => {
+                self.preedit = text.clone();
+                self.base.request_redraw();
             }
             Event::KeyPress { key, modifiers } => {
                 let length = self.text_value.chars().count();
@@ -1324,6 +1332,24 @@ impl Draw for InputDialog {
             let advance = font.size().ceil().max(1.0) as i32;
             let caret_x = input_band.x + 4 + self.text_caret as i32 * advance;
             if caret_x < input_band.x + input_band.width as i32 - 2 {
+                // The uncommitted IME composition is drawn at the caret with an underline, so a
+                // CJK composition is visible before it is confirmed.
+                if !self.preedit.is_empty() {
+                    context.draw_text(
+                        Point::new(caret_x + 1, input_band.y + 3),
+                        &self.preedit,
+                        font,
+                        ink,
+                        HorizontalAlignment::Left,
+                    );
+                    let preedit_width = context.measure_text(&self.preedit, font).width as i32;
+                    let underline_y = input_band.y + input_band.height as i32 - 3;
+                    context.draw_line(
+                        Point::new(caret_x + 1, underline_y),
+                        Point::new(caret_x + 1 + preedit_width, underline_y),
+                        ink,
+                    );
+                }
                 context.draw_line(
                     Point::new(caret_x, input_band.y + 3),
                     Point::new(caret_x, input_band.y + input_band.height as i32 - 3),

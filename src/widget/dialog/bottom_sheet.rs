@@ -22,7 +22,7 @@ use crate::event::{key_codes, Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::GenericSignal;
 use crate::style::{MotionSlot, PropertyDriver};
-use crate::widget::capability::coercion::{expect_bool, expect_f32};
+use crate::widget::capability::coercion::{expect_bool, expect_f32, expect_u32};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
@@ -37,6 +37,25 @@ pub enum SheetAttachment {
     Overlay,
     /// A panel flush with the window's bottom edge, with no scrim.
     Attached,
+}
+
+impl SheetAttachment {
+    /// Returns the token this attachment is published under.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Overlay => "overlay",
+            Self::Attached => "attached",
+        }
+    }
+
+    /// Parses an attachment from its published token, or `None` when it names no form.
+    pub fn from_token(token: &str) -> Option<Self> {
+        match token {
+            "overlay" => Some(Self::Overlay),
+            "attached" => Some(Self::Attached),
+            _ => None,
+        }
+    }
 }
 
 /// A drag in progress on the sheet's handle.
@@ -382,6 +401,8 @@ impl WidgetProperties for BottomSheet {
         match name {
             "expanded" => Ok(CapabilityValue::Bool(self.is_open())),
             "peek_height" => Ok(CapabilityValue::Float(f64::from(self.content_height()))),
+            "attachment" => Ok(CapabilityValue::String(self.attachment.as_str().to_string())),
+            "content_height" => Ok(CapabilityValue::UInt(u64::from(self.content_height()))),
             _ => base_property_get(self, name),
         }
     }
@@ -400,12 +421,29 @@ impl WidgetProperties for BottomSheet {
                 self.set_content_height(expect_f32(value)? as u32);
                 Ok(())
             }
+            "attachment" => {
+                let token = crate::widget::capability::coercion::expect_string(value)?;
+                let attachment =
+                    SheetAttachment::from_token(&token).ok_or(CapabilityAccessError::OutOfRange)?;
+                self.set_attachment(attachment);
+                Ok(())
+            }
+            "content_height" => {
+                self.set_content_height(expect_u32(value)?);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["expanded", "peek_height", BASE_PROPERTY_NAMES]
+        property_names_of![
+            "expanded",
+            "peek_height",
+            "attachment",
+            "content_height",
+            BASE_PROPERTY_NAMES
+        ]
     }
 
     /// Runs one of the commands `bottom_sheet` publishes.
@@ -628,6 +666,28 @@ mod tests {
 
     fn make_sheet() -> BottomSheet {
         BottomSheet::new(Rect::new(0, 0, 400, 600))
+    }
+
+    #[test]
+    fn the_published_attachment_and_content_height_round_trip() {
+        use crate::widget::capability::types::CapabilityValue;
+        use crate::widget::capability::WidgetProperties;
+
+        let mut sheet = make_sheet();
+        sheet.set("content_height", CapabilityValue::UInt(200)).unwrap();
+        assert_eq!(sheet.content_height(), 200);
+        assert_eq!(sheet.get("content_height").unwrap(), CapabilityValue::UInt(200));
+
+        sheet.set("attachment", CapabilityValue::String("attached".to_string())).unwrap();
+        assert_eq!(sheet.attachment(), SheetAttachment::Attached);
+        assert_eq!(
+            sheet.get("attachment").unwrap(),
+            CapabilityValue::String("attached".to_string())
+        );
+        assert_eq!(
+            sheet.set("attachment", CapabilityValue::String("nowhere".to_string())),
+            Err(CapabilityAccessError::OutOfRange)
+        );
     }
 
     #[test]

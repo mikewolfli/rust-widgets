@@ -3,7 +3,7 @@
 
 //! Box layout manager — arranges items in a single row or column.
 use super::{ChildInfo, Layout, LayoutConstraints, LayoutContext, Orientation, SizePolicy};
-use crate::compat::{Any, Box, Vec};
+use crate::compat::{Any, Box, RefCell, Vec};
 use crate::core::Alignment;
 use crate::core::{ObjectId, Rect, Size};
 use crate::style::EdgeOffsets;
@@ -90,6 +90,18 @@ fn nominal_context(scale: f32) -> LayoutContext {
     LayoutContext { layout_scale: scale, font_scale: scale, min_touch_size: Size::new(0, 0) }
 }
 
+/// One cached placement pass: every item paired with the rectangle it was given (`None` for a
+/// spacer).
+type BoxPlacements = Vec<(Option<ObjectId>, Rect)>;
+
+/// The inputs that decide a placement pass (LY3-02 / RD4-01).
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct BoxCacheKey {
+    rect: Rect,
+    scale_bits: u32,
+    min_touch: Size,
+}
+
 /// Linear layout that arranges items in one direction.
 #[derive(Debug)]
 pub struct BoxLayout {
@@ -99,11 +111,30 @@ pub struct BoxLayout {
     /// Four-way margins. `None` means the uniform [`Self::margin`] is used on every side.
     margins: Option<EdgeOffsets>,
     items: Vec<BoxLayoutItem>,
+    /// The last pass this layout produced, keyed by every input that produced it.
+    ///
+    /// BoxLayout was the only container layout without a cache: a resize pass re-solved every
+    /// node, and `child_rect` re-ran the whole pass for a single lookup. The key carries the
+    /// scale and touch floor because `update_with_context` consumes both; `update` types the
+    /// nominal `1.0` / zero-touch entry. Every mutator invalidates the slot.
+    last_layout: RefCell<Option<(BoxCacheKey, BoxPlacements)>>,
 }
 impl BoxLayout {
     /// Create a box layout with orientation, spacing and margin.
     pub fn new(orientation: Orientation, spacing: u32, margin: u32) -> Self {
-        Self { orientation, spacing, margin, margins: None, items: Vec::new() }
+        Self {
+            orientation,
+            spacing,
+            margin,
+            margins: None,
+            items: Vec::new(),
+            last_layout: RefCell::new(None),
+        }
+    }
+
+    /// Drops the cached pass; called by every mutator that changes a placement input.
+    fn invalidate_last_layout(&mut self) {
+        self.last_layout.get_mut().take();
     }
 
     /// Sets four-way margins, overriding the uniform [`Self::margin`].
@@ -112,6 +143,7 @@ impl BoxLayout {
     /// working. Radii are scaled by the device context on the same path as the uniform value.
     pub fn set_margins(&mut self, margins: EdgeOffsets) {
         self.margins = Some(margins);
+        self.invalidate_last_layout();
     }
 
     /// The four-way margins, or `None` when the uniform [`Self::margin`] applies.
@@ -148,6 +180,7 @@ impl BoxLayout {
             return;
         }
         self.orientation = orientation;
+        self.invalidate_last_layout();
     }
 
     /// Inserts a widget at `index`, shifting the items at and after it.
@@ -171,6 +204,7 @@ impl BoxLayout {
                 child_layout: None,
             },
         );
+        self.invalidate_last_layout();
         true
     }
 
@@ -194,6 +228,7 @@ impl BoxLayout {
                 child_layout: None,
             },
         );
+        self.invalidate_last_layout();
         true
     }
     /// Returns inter-item spacing.
@@ -210,6 +245,7 @@ impl BoxLayout {
         match self.items.iter_mut().find(|item| item.widget_id == Some(widget_id)) {
             Some(item) => {
                 item.align = align;
+                self.last_layout.get_mut().take();
                 true
             }
             None => false,
@@ -239,6 +275,7 @@ impl BoxLayout {
         match self.items.iter_mut().find(|item| item.widget_id == Some(widget_id)) {
             Some(item) => {
                 item.cross_size = size;
+                self.last_layout.get_mut().take();
                 true
             }
             None => false,
@@ -263,6 +300,7 @@ impl BoxLayout {
         match self.items.iter_mut().find(|item| item.widget_id == Some(widget_id)) {
             Some(item) => {
                 item.baseline = baseline;
+                self.last_layout.get_mut().take();
                 true
             }
             None => false,
@@ -272,6 +310,7 @@ impl BoxLayout {
     /// Updates inter-item spacing.
     pub fn set_spacing(&mut self, spacing: u32) {
         self.spacing = spacing;
+        self.invalidate_last_layout();
     }
     /// Returns outer margin.
     pub fn margin(&self) -> u32 {
@@ -280,6 +319,7 @@ impl BoxLayout {
     /// Updates outer margin.
     pub fn set_margin(&mut self, margin: u32) {
         self.margin = margin;
+        self.invalidate_last_layout();
     }
     /// Returns number of managed items (widgets + spacers).
     pub fn item_count(&self) -> usize {
@@ -287,6 +327,7 @@ impl BoxLayout {
     }
     /// Adds an empty spacer item with the provided stretch factor.
     pub fn add_spacer(&mut self, stretch: u32) {
+        self.invalidate_last_layout();
         self.items.push(BoxLayoutItem {
             widget_id: None,
             stretch: stretch.max(1),
@@ -310,6 +351,7 @@ impl BoxLayout {
     /// The cap is expressed through the item's own constraints, so the allocator is the
     /// one that enforces it (the same path that honours `set_constraints`).
     pub fn add_fixed_spacer(&mut self, size: u32) {
+        self.invalidate_last_layout();
         self.items.push(BoxLayoutItem {
             widget_id: None,
             stretch: 1,
@@ -337,6 +379,7 @@ impl BoxLayout {
             return false;
         };
         item.child_layout = Some(layout);
+        self.invalidate_last_layout();
         true
     }
 
@@ -352,12 +395,14 @@ impl BoxLayout {
     pub fn set_constraints(&mut self, widget_id: ObjectId, constraints: LayoutConstraints) {
         if let Some(item) = self.items.iter_mut().find(|item| item.widget_id == Some(widget_id)) {
             item.constraints = constraints;
+            self.last_layout.get_mut().take();
         }
     }
     /// Sets size policy for an existing widget item.
     pub fn set_size_policy(&mut self, widget_id: ObjectId, policy: SizePolicy) {
         if let Some(item) = self.items.iter_mut().find(|item| item.widget_id == Some(widget_id)) {
             item.policy = policy;
+            self.last_layout.get_mut().take();
         }
     }
 
@@ -377,6 +422,7 @@ impl BoxLayout {
         match self.items.get_mut(index) {
             Some(item) => {
                 item.stretch = stretch.max(1);
+                self.last_layout.get_mut().take();
                 true
             }
             None => false,
@@ -396,6 +442,7 @@ impl BoxLayout {
         match self.items.iter_mut().find(|item| item.widget_id == Some(widget_id)) {
             Some(item) => {
                 item.stretch = stretch.max(1);
+                self.last_layout.get_mut().take();
                 true
             }
             None => false,
@@ -754,6 +801,127 @@ impl BoxLayout {
             })
             .max()
     }
+
+    /// Replays the cached pass for `key`, or solves and stores a new one (LY3-02 / RD4-01).
+    ///
+    /// `nested` is the context the items' attached layouts receive: `update_with_context`
+    /// forwards its own context, while `update` forwards the nominal context, exactly as each
+    /// entry did before the cache existed.
+    fn update_cached(
+        &self,
+        rect: Rect,
+        scale: f32,
+        min_touch: Size,
+        nested: &LayoutContext,
+        widgets: &mut dyn FnMut(ObjectId, Rect),
+    ) {
+        let key = BoxCacheKey { rect, scale_bits: scale.to_bits(), min_touch };
+        {
+            let cache = self.last_layout.borrow();
+            if let Some((cached, placements)) = cache.as_ref() {
+                if *cached == key {
+                    self.replay_placements(placements, nested, widgets);
+                    return;
+                }
+            }
+        }
+        let placements = self.place(rect, scale, min_touch);
+        self.replay_placements(&placements, nested, widgets);
+        *self.last_layout.borrow_mut() = Some((key, placements));
+    }
+
+    /// Solves one placement pass without touching any widget.
+    ///
+    /// The loop is the single implementation of the box geometry; both `update` entries and
+    /// `child_rect` consume its output, so they cannot drift from one another.
+    fn place(&self, rect: Rect, scale: f32, min_touch: Size) -> BoxPlacements {
+        let scaled_spacing = (self.spacing as f32 * scale).round() as u32;
+        let (left, top, right, bottom) = self.scaled_insets(scale);
+        let gaps = (self.items.len().saturating_sub(1)) as u32;
+        let primary = match self.orientation {
+            Orientation::Horizontal => rect.width.saturating_sub(left).saturating_sub(right),
+            Orientation::Vertical => rect.height.saturating_sub(top).saturating_sub(bottom),
+        }
+        .saturating_sub(gaps * scaled_spacing);
+        let cross = match self.orientation {
+            Orientation::Horizontal => rect.height.saturating_sub(top).saturating_sub(bottom),
+            Orientation::Vertical => rect.width.saturating_sub(left).saturating_sub(right),
+        };
+        let majors = self.allocate_major_lengths(primary);
+        // LAY-004: the shared baseline among the `Baseline`-aligned items, from their explicit
+        // cross sizes (this entry has no `ChildInfo` to fall back to).
+        let shared_baseline =
+            self.shared_baseline(|index| self.items[index].cross_size.map(|size| size.min(cross)));
+        let mut placements: BoxPlacements = Vec::with_capacity(self.items.len());
+        let mut cursor_x = rect.x + left as i32;
+        let mut cursor_y = rect.y + top as i32;
+        for (index, item) in self.items.iter().enumerate() {
+            let major = majors.get(index).copied().unwrap_or(0);
+            // An aligned item shrinks to its explicit cross size and is placed within the band;
+            // with no explicit size it keeps stretching, because this entry point has no
+            // `ChildInfo` to ask. The hint-aware `arrange` prefers `cross_size` too, so both
+            // entries agree whenever the caller supplied one.
+            let mut cross = cross;
+            let mut cross_offset = 0u32;
+            if let Some(align) = item.align {
+                if let Some(requested) = item.cross_size {
+                    let band = cross;
+                    cross = requested.min(band);
+                    cross_offset = match align {
+                        Alignment::Center => (band - cross) / 2,
+                        Alignment::Right | Alignment::Bottom => band - cross,
+                        // LAY-004: baselines align at one shared cross coordinate; with no
+                        // baseline information the offset is 0, the start alignment an
+                        // unspecified arm always had.
+                        Alignment::Baseline => {
+                            let own = item.baseline.unwrap_or(cross);
+                            shared_baseline.map_or(0, |shared| shared.saturating_sub(own))
+                        }
+                        _ => 0,
+                    };
+                }
+            }
+            let child_rect = match self.orientation {
+                Orientation::Horizontal => {
+                    Rect::new(cursor_x, cursor_y.saturating_add(cross_offset as i32), major, cross)
+                }
+                Orientation::Vertical => {
+                    Rect::new(cursor_x.saturating_add(cross_offset as i32), cursor_y, cross, major)
+                }
+            };
+            // A widget item is grown to the touch floor; a spacer keeps its rectangle. The
+            // nested layout attached to an item divides the rectangle the item was given, so
+            // it must see the same (grown) box the widget sees (DEMO-004).
+            let placed = if item.widget_id.is_some() {
+                crate::layout::types::grow_to_min_touch_size(child_rect, min_touch)
+            } else {
+                child_rect
+            };
+            placements.push((item.widget_id, placed));
+            match self.orientation {
+                Orientation::Horizontal => cursor_x += (major + scaled_spacing) as i32,
+                Orientation::Vertical => cursor_y += (major + scaled_spacing) as i32,
+            }
+        }
+        placements
+    }
+
+    /// Delivers a solved pass: one callback per widget, then one update per attached layout.
+    fn replay_placements(
+        &self,
+        placements: &BoxPlacements,
+        nested: &LayoutContext,
+        widgets: &mut dyn FnMut(ObjectId, Rect),
+    ) {
+        for (item, (widget_id, child_rect)) in self.items.iter().zip(placements.iter()) {
+            if let Some(widget_id) = widget_id {
+                widgets(*widget_id, *child_rect);
+            }
+            if let Some(child) = &item.child_layout {
+                child.update_with_context(*child_rect, nested, &mut *widgets);
+            }
+        }
+    }
 }
 impl Layout for BoxLayout {
     fn as_any_mut(&mut self) -> &mut dyn Any {
@@ -822,78 +990,7 @@ impl Layout for BoxLayout {
         // The field had no reader at all before this, so a 2x text preference grew the glyphs (via
         // the theme's font token) and left every gap at its nominal size.
         let scale = context.layout_scale.max(context.font_scale);
-        let scaled_spacing = (self.spacing as f32 * scale).round() as u32;
-        let (left, top, right, bottom) = self.scaled_insets(scale);
-        let gaps = (self.items.len().saturating_sub(1)) as u32;
-        let primary = match self.orientation {
-            Orientation::Horizontal => rect.width.saturating_sub(left).saturating_sub(right),
-            Orientation::Vertical => rect.height.saturating_sub(top).saturating_sub(bottom),
-        }
-        .saturating_sub(gaps * scaled_spacing);
-        let cross = match self.orientation {
-            Orientation::Horizontal => rect.height.saturating_sub(top).saturating_sub(bottom),
-            Orientation::Vertical => rect.width.saturating_sub(left).saturating_sub(right),
-        };
-        let majors = self.allocate_major_lengths(primary);
-        // LAY-004: the shared baseline among the `Baseline`-aligned items, from their explicit
-        // cross sizes (this entry has no `ChildInfo` to fall back to).
-        let shared_baseline =
-            self.shared_baseline(|index| self.items[index].cross_size.map(|size| size.min(cross)));
-        let mut cursor_x = rect.x + left as i32;
-        let mut cursor_y = rect.y + top as i32;
-        for (index, item) in self.items.iter().enumerate() {
-            let major = majors.get(index).copied().unwrap_or(0);
-            // An aligned item shrinks to its explicit cross size and is placed within the band;
-            // with no explicit size it keeps stretching, because this entry point has no
-            // `ChildInfo` to ask. The hint-aware `arrange` prefers `cross_size` too, so both
-            // entries agree whenever the caller supplied one.
-            let mut cross = cross;
-            let mut cross_offset = 0u32;
-            if let Some(align) = item.align {
-                if let Some(requested) = item.cross_size {
-                    let band = cross;
-                    cross = requested.min(band);
-                    cross_offset = match align {
-                        Alignment::Center => (band - cross) / 2,
-                        Alignment::Right | Alignment::Bottom => band - cross,
-                        // LAY-004: baselines align at one shared cross coordinate; with no
-                        // baseline information the offset is 0, the start alignment an
-                        // unspecified arm always had.
-                        Alignment::Baseline => {
-                            let own = item.baseline.unwrap_or(cross);
-                            shared_baseline.map_or(0, |shared| shared.saturating_sub(own))
-                        }
-                        _ => 0,
-                    };
-                }
-            }
-            let child_rect = match self.orientation {
-                Orientation::Horizontal => {
-                    Rect::new(cursor_x, cursor_y.saturating_add(cross_offset as i32), major, cross)
-                }
-                Orientation::Vertical => {
-                    Rect::new(cursor_x.saturating_add(cross_offset as i32), cursor_y, cross, major)
-                }
-            };
-            if let Some(widget_id) = item.widget_id {
-                let placed = crate::layout::types::grow_to_min_touch_size(
-                    child_rect,
-                    context.min_touch_size,
-                );
-                widgets(widget_id, placed);
-                // The nested layout divides the rectangle its item was given, so it and the widget
-                // it may accompany agree on the box (DEMO-004).
-                if let Some(child) = &item.child_layout {
-                    child.update_with_context(placed, context, &mut *widgets);
-                }
-            } else if let Some(child) = &item.child_layout {
-                child.update_with_context(child_rect, context, &mut *widgets);
-            }
-            match self.orientation {
-                Orientation::Horizontal => cursor_x += (major + scaled_spacing) as i32,
-                Orientation::Vertical => cursor_y += (major + scaled_spacing) as i32,
-            }
-        }
+        self.update_cached(rect, scale, context.min_touch_size, context, widgets);
     }
 
     /// The hint-aware path: an aligned item is placed at the cross size it asks for.
@@ -939,6 +1036,23 @@ impl Layout for BoxLayout {
         if !self.has_child(id) {
             return None;
         }
+        // A cached nominal pass answers the lookup directly, which is what makes an inspector or
+        // hit-test query cost a scan rather than a full re-solve (RD4-01).
+        {
+            let cache = self.last_layout.borrow();
+            if let Some((cached, placements)) = cache.as_ref() {
+                if cached.rect == rect
+                    && cached.scale_bits == 1.0f32.to_bits()
+                    && cached.min_touch == Size::new(0, 0)
+                {
+                    if let Some((_, child_rect)) =
+                        placements.iter().find(|(child, _)| *child == Some(id))
+                    {
+                        return Some(*child_rect);
+                    }
+                }
+            }
+        }
         let mut found = None;
         self.update(rect, &mut |child, child_rect| {
             if child == id && found.is_none() {
@@ -948,9 +1062,11 @@ impl Layout for BoxLayout {
         found
     }
     fn clear(&mut self) {
+        self.invalidate_last_layout();
         self.items.clear();
     }
     fn add_widget(&mut self, widget_id: ObjectId, stretch: u32) {
+        self.invalidate_last_layout();
         self.items.push(BoxLayoutItem {
             widget_id: Some(widget_id),
             stretch: stretch.max(1),
@@ -963,77 +1079,17 @@ impl Layout for BoxLayout {
         });
     }
     fn remove_widget(&mut self, widget_id: ObjectId) {
+        self.invalidate_last_layout();
         self.items.retain(|item| item.widget_id != Some(widget_id));
     }
     fn update(&self, rect: Rect, widgets: &mut dyn FnMut(ObjectId, Rect)) {
         if self.items.is_empty() {
             return;
         }
-        let gaps = (self.items.len().saturating_sub(1)) as u32;
-        let (left, top, right, bottom) = self.scaled_insets(1.0);
-        let primary = match self.orientation {
-            Orientation::Horizontal => rect.width.saturating_sub(left).saturating_sub(right),
-            Orientation::Vertical => rect.height.saturating_sub(top).saturating_sub(bottom),
-        }
-        .saturating_sub(gaps * self.spacing);
-        let cross = match self.orientation {
-            Orientation::Horizontal => rect.height.saturating_sub(top).saturating_sub(bottom),
-            Orientation::Vertical => rect.width.saturating_sub(left).saturating_sub(right),
-        };
-        let majors = self.allocate_major_lengths(primary);
-        // LAY-004: the shared baseline among the `Baseline`-aligned items, from their explicit
-        // cross sizes (this entry has no `ChildInfo` either).
-        let shared_baseline =
-            self.shared_baseline(|index| self.items[index].cross_size.map(|size| size.min(cross)));
-        let mut cursor_x = rect.x + left as i32;
-        let mut cursor_y = rect.y + top as i32;
-        for (index, item) in self.items.iter().enumerate() {
-            let major = majors.get(index).copied().unwrap_or(0);
-            // The explicit cross size is honoured here too: this entry point has no `ChildInfo`
-            // either, but a caller that stated a size expects both entries to use it.
-            let mut cross = cross;
-            let mut cross_offset = 0u32;
-            if let Some(align) = item.align {
-                if let Some(requested) = item.cross_size {
-                    let band = cross;
-                    cross = requested.min(band);
-                    cross_offset = match align {
-                        Alignment::Center => (band - cross) / 2,
-                        Alignment::Right | Alignment::Bottom => band - cross,
-                        // LAY-004: baselines align at one shared cross coordinate; with no
-                        // baseline information the offset is 0, the start alignment an
-                        // unspecified arm always had.
-                        Alignment::Baseline => {
-                            let own = item.baseline.unwrap_or(cross);
-                            shared_baseline.map_or(0, |shared| shared.saturating_sub(own))
-                        }
-                        _ => 0,
-                    };
-                }
-            }
-            let child_rect = match self.orientation {
-                Orientation::Horizontal => {
-                    Rect::new(cursor_x, cursor_y.saturating_add(cross_offset as i32), major, cross)
-                }
-                Orientation::Vertical => {
-                    Rect::new(cursor_x.saturating_add(cross_offset as i32), cursor_y, cross, major)
-                }
-            };
-            if let Some(widget_id) = item.widget_id {
-                widgets(widget_id, child_rect);
-            }
-            // `update` is the nominal geometry entry: no context, no scaling, and no touch floor.
-            // A nested layout is still run, with that same nominal reading, so a caller that asks
-            // this entry for a rectangle gets the same tree shape the context entry produces
-            // (DEMO-004).
-            if let Some(child) = &item.child_layout {
-                child.update_with_context(child_rect, &nominal_context(1.0), &mut *widgets);
-            }
-            match self.orientation {
-                Orientation::Horizontal => cursor_x += (major + self.spacing) as i32,
-                Orientation::Vertical => cursor_y += (major + self.spacing) as i32,
-            }
-        }
+        // `update` is the nominal geometry entry: no context, no scaling, and no touch floor. A
+        // nested layout is run with the same nominal reading, so a caller that asks this entry
+        // for a rectangle gets the same tree shape the context entry produces (DEMO-004).
+        self.update_cached(rect, 1.0, Size::new(0, 0), &nominal_context(1.0), widgets);
     }
     // G-403: the trait no longer defaults these entries; each forward reproduces the previous fallback behaviour.
     fn arrange_with_context(
@@ -1059,6 +1115,43 @@ impl Layout for BoxLayout {
 mod tests {
     use super::*;
     use crate::compat::Vec;
+
+    /// A repeated pass is served by the cache; a mutator invalidates it (RD4-01).
+    #[test]
+    fn a_repeated_pass_replays_the_cache_and_a_mutator_invalidates_it() {
+        let mut layout = BoxLayout::new(Orientation::Horizontal, 4, 2);
+        layout.add_widget(1, 1);
+        layout.add_widget(2, 1);
+        let rect = Rect::new(0, 0, 104, 40);
+
+        let mut first: Vec<ObjectId> = Vec::new();
+        layout.update(rect, &mut |id, _| first.push(id));
+        let mut second: Vec<ObjectId> = Vec::new();
+        layout.update(rect, &mut |id, _| second.push(id));
+        assert_eq!(first, second, "the second pass must replay the cached order");
+
+        let mut before = Vec::new();
+        layout.update(rect, &mut |id, child| before.push((id, child)));
+        layout.set_spacing(20);
+        let mut after = Vec::new();
+        layout.update(rect, &mut |id, child| after.push((id, child)));
+        let before_second = before.iter().find(|(id, _)| *id == 2).expect("placed").1;
+        let after_second = after.iter().find(|(id, _)| *id == 2).expect("placed").1;
+        assert_ne!(before_second, after_second, "set_spacing must invalidate the cache");
+    }
+
+    /// `child_rect` answers from the cache instead of re-solving the whole pass.
+    #[test]
+    fn child_rect_answers_from_the_cached_nominal_pass() {
+        let mut layout = BoxLayout::new(Orientation::Vertical, 0, 0);
+        layout.add_widget(7, 1);
+        layout.add_widget(8, 1);
+        let rect = Rect::new(0, 0, 100, 100);
+        let mut placed = Vec::new();
+        layout.update(rect, &mut |id, child| placed.push((id, child)));
+        let expected = placed.iter().find(|(id, _)| *id == 8).expect("placed").1;
+        assert_eq!(layout.child_rect(8, rect), Some(expected));
+    }
 
     /// Collects the rects a horizontal box layout produces, keyed by widget id.
     fn placed(layout: &BoxLayout, rect: Rect) -> Vec<(ObjectId, Rect)> {

@@ -17,7 +17,7 @@ use crate::widget::metrics::{dimensions, effective_font, estimate_text_width};
 use crate::widget::{Draw, IconName, Widget};
 
 use super::model::{
-    strip_menu_mnemonic, ItemBandsKey, Menu, MenuEntry, MnemonicRow, PopupDirection,
+    strip_menu_mnemonic_cow, ItemBandsKey, Menu, MenuEntry, MnemonicRow, PopupDirection,
     PopupMetricsKey, MENU_COLUMN_GAP,
 };
 
@@ -248,7 +248,10 @@ impl Menu {
             .items
             .iter()
             .map(|item| {
-                let text = strip_menu_mnemonic(item.text());
+                // The cached row owns its text, so this still materialises a `String`; the Cow form
+                // is used because it is the helper that avoids a second copy when the label has no
+                // marker (GV4-08). The rows are rebuilt only on an item/font change, not per frame.
+                let text = strip_menu_mnemonic_cow(item.text()).into_owned();
                 let underline = item.mnemonic().and_then(|mnemonic| {
                     text.char_indices().find(|(_, ch)| ch.eq_ignore_ascii_case(&mnemonic)).map(
                         |(byte, ch)| {

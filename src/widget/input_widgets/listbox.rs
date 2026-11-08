@@ -447,6 +447,7 @@ impl ListBox {
         self.item_meta.push(ListBoxItem::default());
         self.invalidate_item_caches();
         self.item_changed.emit(index);
+        self.base.request_redraw();
     }
     /// Adds multiple items.
     pub fn add_items(&mut self, items: Vec<String>) {
@@ -458,6 +459,7 @@ impl ListBox {
         for index in first..first + added {
             self.item_changed.emit(index);
         }
+        self.base.request_redraw();
     }
     /// Inserts an item at specified position.
     pub fn insert_item(&mut self, index: usize, text: String) {
@@ -485,6 +487,7 @@ impl ListBox {
                 }
             }
             self.item_changed.emit(index);
+            self.base.request_redraw();
         }
     }
     /// Adds `index` to the selection, keeping `selected_indices` sorted. Returns whether it was new.
@@ -540,6 +543,7 @@ impl ListBox {
             };
             self.selection_changed.emit();
             self.item_changed.emit(index);
+            self.base.request_redraw();
         }
     }
 
@@ -588,6 +592,7 @@ impl ListBox {
         self.current_row = None;
         self.anchor = None;
         self.selection_changed.emit();
+        self.base.request_redraw();
     }
     /// Returns selection mode.
     pub fn selection_mode(&self) -> SelectionMode {

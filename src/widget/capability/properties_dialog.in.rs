@@ -99,6 +99,12 @@ macro_rules! impl_properties_dialog {
             PropertySchema::new("strikethrough", PropertyValueKind::Bool, true, true),
             PropertySchema::new("no_buttons", PropertyValueKind::Bool, true, true),
             PropertySchema::new("show_preview", PropertyValueKind::Bool, true, true),
+            // The dialog's core inputs and outputs: the selected face, the offered families and
+            // the offered sizes. The `font_selected` event existed while no property carried the
+            // result, so a designer could subscribe but not preset or read it back.
+            PropertySchema::new("current_font", PropertyValueKind::String, true, true),
+            PropertySchema::new("font_families", PropertyValueKind::StringList, true, true),
+            PropertySchema::new("font_sizes", PropertyValueKind::NumberList, true, true),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
@@ -190,6 +196,11 @@ macro_rules! impl_properties_dialog {
         pub(crate) const BOTTOM_SHEET_PROPERTIES: &[PropertySchema] = &[
             PropertySchema::new("expanded", PropertyValueKind::Bool, true, true),
             PropertySchema::new("peek_height", PropertyValueKind::Float, true, true),
+            // The presentation form and the content height are the two knobs that decide where
+            // the sheet docks and how tall it is; `MODAL_BOTTOM_SHEET` already publishes its
+            // height, so this sibling cannot lag behind.
+            PropertySchema::enumerated("attachment", true, true, &["overlay", "attached"]),
+            PropertySchema::new("content_height", PropertyValueKind::UInt, true, true),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),

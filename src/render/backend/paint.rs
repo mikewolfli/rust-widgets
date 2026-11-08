@@ -824,6 +824,9 @@ pub(super) fn route_command_to_surface(surface: &mut SoftwareSurface, command: &
         RenderCommand::DrawPath { points, closed, color, filled, width } => {
             surface.draw_path(points, *closed, *color, *filled, *width);
         }
+        RenderCommand::DrawPath3 { a, b, c, closed, color, filled, width } => {
+            surface.draw_path(&[*a, *b, *c], *closed, *color, *filled, *width);
+        }
         RenderCommand::DrawPathDashed { points, closed, color, width, dash } => {
             // One dash kernel, shared with the border's dashed edges (G-014): the
             // polyline is expanded here, on the immediate path, into the same

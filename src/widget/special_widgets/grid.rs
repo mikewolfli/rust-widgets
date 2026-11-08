@@ -123,6 +123,8 @@ pub struct GridWidget {
     edit_buffer: String,
     /// The editor's insertion point, as a character index into `edit_buffer`.
     edit_caret: usize,
+    /// The uncommitted IME composition drawn inline at the caret.
+    preedit: String,
     /// Whether a double-click or Enter starts an in-place edit. Off preserves the historical
     /// read-only grid.
     editable: bool,
@@ -179,6 +181,7 @@ impl GridWidget {
             editing_cell: None,
             edit_buffer: String::new(),
             edit_caret: 0,
+            preedit: String::new(),
             editable: false,
             frame_revision: 0,
             frame_builds: 0,
@@ -222,6 +225,7 @@ impl GridWidget {
             editing_cell: None,
             edit_buffer: String::new(),
             edit_caret: 0,
+            preedit: String::new(),
             editable: false,
             frame_revision: 0,
             frame_builds: 0,
@@ -392,6 +396,7 @@ impl GridWidget {
         };
         let text = core::mem::take(&mut self.edit_buffer);
         self.edit_caret = 0;
+        self.preedit.clear();
         if row < self.rows && column < self.columns {
             self.set_cell_text(row, column, text.clone());
             self.cell_edited.emit((row, column, text));
@@ -408,6 +413,7 @@ impl GridWidget {
         self.editing_cell = None;
         self.edit_buffer.clear();
         self.edit_caret = 0;
+        self.preedit.clear();
         self.base.request_redraw();
     }
 
@@ -1496,6 +1502,26 @@ impl Draw for GridWidget {
                         + 3
                         + context.measure_text(&self.edit_buffer[..caret_byte], &cell_font).width
                             as i32;
+                    // The uncommitted IME composition is drawn at the caret with an underline,
+                    // so a CJK composition is visible before it is confirmed.
+                    if !self.preedit.is_empty() {
+                        let preedit_x = caret_x.min(cell.x + cell.width as i32 - 1);
+                        context.draw_text(
+                            Point::new(preedit_x + 1, cell.y + 3),
+                            &self.preedit,
+                            &cell_font,
+                            ink,
+                            HorizontalAlignment::Left,
+                        );
+                        let preedit_width =
+                            context.measure_text(&self.preedit, &cell_font).width as i32;
+                        let underline_y = cell.y + cell.height as i32 - 4;
+                        context.draw_line(
+                            Point::new(preedit_x + 1, underline_y),
+                            Point::new(preedit_x + 1 + preedit_width, underline_y),
+                            ink,
+                        );
+                    }
                     context.fill_rect(
                         Rect::new(
                             caret_x.min(cell.x + cell.width as i32 - 1),
@@ -1669,6 +1695,7 @@ impl EventHandler for GridWidget {
         if self.editing_cell.is_some() {
             match event {
                 Event::TextInput { text } | Event::ImeCommit { text } => {
+                    self.preedit.clear();
                     let filtered: String = text.chars().filter(|ch| !ch.is_control()).collect();
                     if filtered.is_empty() {
                         return;
@@ -1678,6 +1705,10 @@ impl EventHandler for GridWidget {
                     chars.splice(at..at, filtered.chars());
                     self.edit_buffer = chars.into_iter().collect();
                     self.edit_caret = at + filtered.chars().count();
+                    self.base.request_redraw();
+                }
+                Event::ImePreedit { text, .. } => {
+                    self.preedit = text.clone();
                     self.base.request_redraw();
                 }
                 Event::KeyPress { key, .. } => match crate::shortcut::Key::from_key_code(*key) {

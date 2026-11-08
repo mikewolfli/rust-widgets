@@ -40,6 +40,8 @@ pub struct ChipInput {
     allow_duplicates: bool,
     /// The caret, in characters.
     cursor: usize,
+    /// The uncommitted IME composition drawn inline at the caret.
+    preedit: String,
     /// Emitted with the id of a chip this control committed.
     pub chip_committed: Signal1<String>,
     /// Emitted with the id of a chip removed through the text line.
@@ -69,6 +71,7 @@ impl ChipInput {
             max_count: 0,
             allow_duplicates: false,
             cursor: 0,
+            preedit: String::new(),
             chip_committed: Signal1::new(),
             chip_removed: Signal1::new(),
             text_changed: Signal1::new(),
@@ -450,6 +453,7 @@ impl EventHandler for ChipInput {
         }
         match event {
             Event::TextInput { text } | Event::ImeCommit { text } => {
+                self.preedit.clear();
                 let filtered: String = text.chars().filter(|ch| !ch.is_control()).collect();
                 if filtered.is_empty() {
                     return;
@@ -471,6 +475,10 @@ impl EventHandler for ChipInput {
                     return;
                 }
                 self.insert(&filtered);
+            }
+            Event::ImePreedit { text, .. } => {
+                self.preedit = text.clone();
+                self.base.request_redraw();
             }
             Event::KeyPress { key, .. } => {
                 let pressed = crate::shortcut::Key::from_key_code(*key);
@@ -594,6 +602,23 @@ impl Draw for ChipInput {
         let caret_byte = crate::widget::text_utils::byte_index_of_char(&self.text, self.cursor);
         let caret_x = input.x + 6 + estimate_text_width(&self.text[..caret_byte], font, 1.0) as i32;
         if self.base.is_enabled() {
+            // The uncommitted IME composition is drawn at the caret with an underline marking it
+            // as preedit, so a CJK composition is visible before it is confirmed.
+            if !self.preedit.is_empty() {
+                context.draw_text(
+                    Point::new(caret_x + 1, caret_y),
+                    &self.preedit,
+                    font,
+                    ink,
+                    HorizontalAlignment::Left,
+                );
+                let preedit_width = estimate_text_width(&self.preedit, font, 1.0) as i32;
+                context.draw_line(
+                    Point::new(caret_x + 1, caret_y + 14),
+                    Point::new(caret_x + 1 + preedit_width, caret_y + 14),
+                    ink,
+                );
+            }
             context.fill_rect(Rect::new(caret_x, caret_y - 1, 1, 15), ink);
         }
     }
@@ -603,6 +628,18 @@ impl Draw for ChipInput {
 mod tests {
     use super::*;
     use std::sync::{Arc, Mutex};
+
+    /// The composition is held while it is uncommitted and retired by the commit (WC5-01).
+    #[test]
+    fn an_ime_composition_is_held_until_it_commits() {
+        use crate::event::{Event, EventHandler};
+        let mut input = ChipInput::new(Rect::new(0, 0, 240, 60));
+        input.handle_event(&Event::ImePreedit { text: "世".to_string(), cursor: 1 });
+        assert_eq!(input.preedit, "世", "the composition is held while it is uncommitted");
+        input.handle_event(&Event::ImeCommit { text: "界".to_string() });
+        assert!(input.preedit.is_empty(), "a commit retires the composition");
+        assert_eq!(input.text(), "界");
+    }
 
     /// The live tag list is published after a commit, a removal and a clear, and the control
     /// resolves the event the shared capability declares (SP-121).

@@ -37,6 +37,27 @@ jobs:
       - name: Run README sample checks
         run: cargo run --example readme_check
 
+  # Windows runtime closure (GV4-03). The cross-compile job above proves the Win32 backend
+  # type-checks; only a Windows host can run its behaviour. `--lib` is the suite the issue's
+  # action list names, and the judge is "all tests green". Interactive resize sampling remains
+  # a manual check and is recorded as such in the issue's completion statement.
+  windows-tests:
+    name: Windows runtime tests (desktop)
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Cargo test (lib, desktop)
+        run: cargo test --lib --features desktop
+
   validation-gates:
     name: Validation gates (profiles + ABI)
     runs-on: ubuntu-latest

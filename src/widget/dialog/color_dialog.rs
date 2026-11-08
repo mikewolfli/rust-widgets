@@ -188,6 +188,8 @@ pub struct ColorDialog {
     custom_colors: Vec<Color>,
     /// The typed hex text while the hex field is focused.
     hex_input: String,
+    /// The uncommitted IME composition drawn inline after the hex input.
+    preedit: String,
     /// Whether the hex field has focus.
     hex_focused: bool,
     modal: bool,
@@ -328,6 +330,7 @@ impl ColorDialog {
             hue: 0.0,
             custom_colors: Vec::new(),
             hex_input: String::new(),
+            preedit: String::new(),
             hex_focused: false,
             modal: true,
             current_color_changed: Signal1::new(),
@@ -1115,6 +1118,7 @@ impl EventHandler for ColorDialog {
                 }
             }
             Event::TextInput { text } | Event::ImeCommit { text } => {
+                self.preedit.clear();
                 if self.hex_focused {
                     let mut candidate = self.hex_input.clone();
                     candidate.extend(text.chars().filter(|character| !character.is_control()));
@@ -1122,6 +1126,10 @@ impl EventHandler for ColorDialog {
                     let _ = self.set_hex(&candidate);
                     self.base.request_redraw();
                 }
+            }
+            Event::ImePreedit { text, .. } if self.hex_focused => {
+                self.preedit = text.clone();
+                self.base.request_redraw();
             }
             Event::KeyPress { key, .. } => {
                 if self.picking_from_screen && *key == key_codes::ESCAPE {
@@ -1403,6 +1411,28 @@ impl Draw for ColorDialog {
                     ink,
                     HorizontalAlignment::Left,
                 );
+                // The uncommitted IME composition is drawn after the input with an underline,
+                // so a CJK composition is visible before it is confirmed.
+                if self.hex_focused && !self.preedit.is_empty() {
+                    let preedit_x = field.x
+                        + 4
+                        + context.measure_text(&self.hex_input, preview_font).width as i32;
+                    context.draw_text(
+                        Point::new(preedit_x, line.y),
+                        &self.preedit,
+                        preview_font,
+                        ink,
+                        HorizontalAlignment::Left,
+                    );
+                    let preedit_width =
+                        context.measure_text(&self.preedit, preview_font).width as i32;
+                    let underline_y = line.y + line.height as i32 - 1;
+                    context.draw_line(
+                        Point::new(preedit_x, underline_y),
+                        Point::new(preedit_x + preedit_width, underline_y),
+                        ink,
+                    );
+                }
             } else {
                 // The hex readout sits in the strip between the swatch and the panel's right
                 // margin, so a long hex string truncates there rather than running under the

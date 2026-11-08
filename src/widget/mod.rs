@@ -201,6 +201,8 @@ pub mod special_widgets;
 #[cfg(full_widgets)]
 pub mod view_widgets;
 // Individual widget files (not in subfolders)
+#[cfg(not(alloc_frugal))]
+pub mod snapshot;
 pub mod svg;
 pub mod window;
 pub use window::Window;

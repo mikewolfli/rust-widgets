@@ -1714,6 +1714,9 @@ impl RustWidgetsObjc2CanvasView {
     /// Translates an AppKit mouse event into a widget event and routes it.
     #[cfg(widgets_unstripped)]
     fn forward_mouse(&self, event: &NSEvent, phase: MousePhase) {
+        // Input may start an animation; move an idle heartbeat to the next millisecond so the
+        // first frame is not one idle interval late (PL4-01).
+        crate::platform::macos_heartbeat::expedite();
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let Some(widget_id) = self.widget_target() else {
                 return;
@@ -1885,6 +1888,9 @@ impl RustWidgetsObjc2CanvasView {
     /// cfg'd out (this is a `mini × macos` build failure, not a behavioural choice).
     #[cfg(widgets_unstripped)]
     fn forward_key(&self, event: &NSEvent, release: bool) {
+        // Input may start an animation; move an idle heartbeat back to the frame cadence
+        // (PL4-01).
+        crate::platform::macos_heartbeat::expedite();
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let Some(widget_id) = self.widget_target() else {
                 return;

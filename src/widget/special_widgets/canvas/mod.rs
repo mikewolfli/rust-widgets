@@ -8,10 +8,10 @@
 //! It also emits mouse interaction signals so callers can respond to clicks, drags and hover
 //! events on the drawing area.
 //!
-//! This module is the entry point only: `widget.rs` holds the implementation and
-//! `ext.rs` holds the canvas-only types plus the additive C-11'/RW-29..RW-33 seams.
-//! Re-exporting their public surface keeps every historical path (`canvas::Canvas`,
-//! `canvas::CanvasTransform`, …) unchanged.
+//! This module is the entry point only: `widget.rs` holds the implementation, `ext.rs` holds
+//! the canvas-only types plus the additive C-11'/RW-29..RW-33 seams, and `command.rs` holds the
+//! shared command mapping (transform, snapping, bounds, culling). Re-exporting their public
+//! surface keeps every historical path (`canvas::Canvas`, `canvas::CanvasTransform`, …) unchanged.
 
 mod widget;
 

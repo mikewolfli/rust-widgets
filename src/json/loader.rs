@@ -1511,16 +1511,6 @@ impl JsonLoader {
         // kind is matched automatically.
         apply_declared_styles(&mut *widget, obj, ancestors);
 
-        // The element this node contributes to its children's chain. `state` is not part of a
-        // combinator, so it stays `None` here (STY-002).
-        let mut child_ancestors = ancestors.to_vec();
-        child_ancestors.push(ElementRef {
-            kind: widget.kind(),
-            class: obj.get("class").and_then(|v| v.as_str()),
-            id: if id_str.is_empty() { None } else { Some(id_str) },
-            state: None,
-        });
-
         // Apply common properties (geometry, enabled, visible, tooltip, style).
         //
         // The min/max size constraints are applied **inside** this call: `apply_properties`
@@ -1552,6 +1542,9 @@ impl JsonLoader {
         // directions of the parent/child relation, and gives a window its host surface.
         // Doing it by hand here would be a second implementation of that, and the second
         // one is the one that rots.
+        // The element's kind is captured before the mount consumes the box; the ancestor chain is
+        // built lazily from this value below (DM5-01).
+        let node_kind = widget.kind();
         let widget_id = mount_declared_widget(widget, parent_id, declared_id, widget_type);
         if widget_id == 0 && !id_str.is_empty() {
             // Name the document's own spelling of the id. The backend and mount warnings
@@ -1671,8 +1664,23 @@ impl JsonLoader {
         // like one panel holding all of its sub-panels at once.
         let tab_widget_children = widget_type.eq_ignore_ascii_case("tabwidget");
 
+        // Builds this node's ancestor chain on demand. A leaf node (no children, no layout, no
+        // container content) never calls it, so it no longer allocates a `Vec` for a chain no
+        // consumer reads (DM5-01).
+        let ancestor_chain = || {
+            let mut chain = ancestors.to_vec();
+            chain.push(ElementRef {
+                kind: node_kind,
+                class: obj.get("class").and_then(|v| v.as_str()),
+                id: if id_str.is_empty() { None } else { Some(id_str) },
+                state: None,
+            });
+            chain
+        };
+
         // Handle children (for container widgets)
         if let Some(children) = obj.get("children").and_then(|v| v.as_array()) {
+            let child_ancestors = ancestor_chain();
             for child_value in children {
                 if let Some(child_obj) = child_value.as_object() {
                     if child_obj.len() == 1 {
@@ -1741,7 +1749,7 @@ impl JsonLoader {
                 binding,
                 depth,
                 resolver,
-                &child_ancestors,
+                &ancestor_chain(),
             )?;
         }
 
@@ -1779,7 +1787,7 @@ impl JsonLoader {
                                     binding,
                                     depth + 1,
                                     resolver,
-                                    &child_ancestors,
+                                    &ancestor_chain(),
                                 )?;
 
                                 if child_id != 0 {

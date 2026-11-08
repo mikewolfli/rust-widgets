@@ -948,11 +948,11 @@ impl WgpuRenderer {
             scratch.reset();
             scratch.reserve(&self.device, commands.len() as u64 + 1);
         }
-        // Textured families' groups are per-frame: their entries keep texture views alive, and a
-        // frame's worth of draws is the bound we want on that memory. They bind the arena
-        // generation established by the reservation above.
+        // Textured families' groups persist across frames (EX4-04): they bind the grow-only params
+        // arena generation plus a content-keyed texture that `TextureCache` already keeps alive, so
+        // a still scene does not rebuild a bind group per frame.
         let arena_generation = self.params_scratch.borrow().generation();
-        self.params_group_cache.borrow_mut().reset(arena_generation);
+        self.params_group_cache.borrow_mut().prepare(arena_generation);
         let framebuffer = PixelRect { x: 0, y: 0, width, height };
         let clear_count = commands
             .iter()

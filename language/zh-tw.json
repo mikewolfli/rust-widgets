@@ -784,6 +784,39 @@
     "action.close": {
       "message": "關閉"
     },
+    "dialog.file_dialog.column_name": {
+      "message": "名稱"
+    },
+    "dialog.file_dialog.column_size": {
+      "message": "大小"
+    },
+    "dialog.file_dialog.column_type": {
+      "message": "類型"
+    },
+    "dialog.file_dialog.column_modified": {
+      "message": "修改時間"
+    },
+    "dialog.find_replace.find": {
+      "message": "尋找："
+    },
+    "dialog.find_replace.no_matches": {
+      "message": "無相符項目"
+    },
+    "dialog.find_replace.replace": {
+      "message": "取代："
+    },
+    "dialog.find_replace.replace_short": {
+      "message": "取代"
+    },
+    "dialog.find_replace.replace_all": {
+      "message": "全部取代"
+    },
+    "dialog.message_box.hide_details": {
+      "message": "隱藏詳細資料..."
+    },
+    "dialog.message_box.show_details": {
+      "message": "顯示詳細資料..."
+    },
     "calendar.month.1": { "message": "一月" },
     "calendar.month.2": { "message": "二月" },
     "calendar.month.3": { "message": "三月" },

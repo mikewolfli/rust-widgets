@@ -178,4 +178,8 @@ pub(crate) fn notify_window_moved(window_id: ObjectId, position: Point) {
             window.notify_moved(position);
         }
     });
+    // Queue the same `Moved` trigger the GTK and Win32 backends queue, so the screen-anchored
+    // layout branch and the DPI/scale re-layout are reachable on macOS too (PL4-02). A
+    // moved-only tick is a no-op through the LY3-01 guard, so this costs nothing at rest.
+    let _ = crate::inject_widget_trigger_event(window, crate::platform::WidgetTriggerKind::Moved);
 }

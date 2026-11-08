@@ -9,7 +9,7 @@
 //! and close. Emits typed signals when actions are triggered.
 
 use crate::compat::{format, RefCell};
-use crate::core::{Color, HorizontalAlignment, ObjectId, Rect, Size};
+use crate::core::{Color, HorizontalAlignment, ObjectId, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -134,6 +134,8 @@ pub struct FindReplaceDialog {
     pub focus_changed: Signal1<ObjectId>,
     /// Caret position, in characters, for each field.
     caret: [usize; 2],
+    /// The uncommitted IME composition drawn inline at the focused field's caret.
+    preedit: String,
     /// Selection anchor, in characters, for each field. Equal to the caret when nothing is
     /// selected; the range between the two is the selected text.
     anchor: [usize; 2],
@@ -174,6 +176,7 @@ impl FindReplaceDialog {
             focus_field: 0,
             focus_changed: Signal1::new(),
             caret: [0, 0],
+            preedit: String::new(),
             anchor: [0, 0],
             text_input_seen: false,
             match_report: None,
@@ -854,6 +857,27 @@ impl Draw for FindReplaceDialog {
                     HorizontalAlignment::Left,
                 );
             }
+            // The uncommitted IME composition is drawn at the caret with an underline, so a
+            // CJK composition is visible before it is confirmed.
+            if self.focus_field == 0 && !self.preedit.is_empty() {
+                let advance = font.size().ceil().max(1.0) as i32;
+                let caret_x = input_rect.x + 4 + self.caret[0] as i32 * advance;
+                let line = self.text_line(input_rect, font, context);
+                context.draw_text(
+                    Point::new(caret_x, line.y),
+                    &self.preedit,
+                    font,
+                    ink,
+                    HorizontalAlignment::Left,
+                );
+                let preedit_width = context.measure_text(&self.preedit, font).width as i32;
+                let underline_y = line.y + line.height as i32 - 1;
+                context.draw_line(
+                    Point::new(caret_x, underline_y),
+                    Point::new(caret_x + preedit_width, underline_y),
+                    ink,
+                );
+            }
             // The host's match report is painted inside the field's trailing edge, so the
             // user sees "3 / 12" (or "no matches") beside the query that produced it
             // (DLG-11). Only a non-empty query can have a report worth showing.
@@ -1021,6 +1045,27 @@ impl Draw for FindReplaceDialog {
                     font,
                     ink,
                     HorizontalAlignment::Left,
+                );
+            }
+            // The uncommitted IME composition belongs to the focused field; the replace field is
+            // addressed by index 1.
+            if self.focus_field == 1 && !self.preedit.is_empty() {
+                let advance = font.size().ceil().max(1.0) as i32;
+                let caret_x = r_input_rect.x + 4 + self.caret[1] as i32 * advance;
+                let line = self.text_line(r_input_rect, font, context);
+                context.draw_text(
+                    Point::new(caret_x, line.y),
+                    &self.preedit,
+                    font,
+                    ink,
+                    HorizontalAlignment::Left,
+                );
+                let preedit_width = context.measure_text(&self.preedit, font).width as i32;
+                let underline_y = line.y + line.height as i32 - 1;
+                context.draw_line(
+                    Point::new(caret_x, underline_y),
+                    Point::new(caret_x + preedit_width, underline_y),
+                    ink,
                 );
             }
         }
@@ -1289,12 +1334,17 @@ impl EventHandler for FindReplaceDialog {
                 }
             }
             Event::TextInput { text } | Event::ImeCommit { text } => {
+                self.preedit.clear();
                 self.text_input_seen = true;
                 let filtered: String =
                     text.chars().filter(|character| !character.is_control()).collect();
                 if !filtered.is_empty() {
                     self.insert_text(&filtered);
                 }
+            }
+            Event::ImePreedit { text, .. } => {
+                self.preedit = text.clone();
+                self.base.request_redraw();
             }
             _ => {
                 self.base.handle_event(event);

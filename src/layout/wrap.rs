@@ -55,18 +55,23 @@ pub struct WrapLayout {
     run_spacing: Option<i32>,
     /// Outer padding.
     padding: i32,
-    /// Reading direction. Left-to-right is the historical behaviour; right-to-left mirrors
-    /// each arranged row horizontally inside the content box.
-    text_direction: TextDirection,
+    /// Reading direction. `None` follows [`crate::core::default_text_direction`] (the locale /
+    /// language default), while an explicit value pins this layout.
+    text_direction: Option<TextDirection>,
     /// Managed children with size tracking.
     children: Vec<WrapChild>,
-    /// The last nominal layout, keyed by the rect it was computed from (LAY-005).
+    /// The last nominal layout, keyed by the rect and the effective reading direction it was
+    /// computed from (LAY-005).
     ///
     /// `child_rect` answers a one-child query from this cache instead of re-running the
     /// line-breaking solve (G-158). Only [`Layout::update`] — the nominal path — populates
     /// it, so a cached answer is byte-identical to the trait default's update-and-capture;
     /// a rect mismatch falls back to that same capture. Every mutator clears it.
-    last_layout: RefCell<Option<(Rect, ChildPlacements)>>,
+    ///
+    /// The direction is part of the key because it can change without a mutator: a language
+    /// switch writes the library default, and a mirrored wrap must not replay an unmirrored
+    /// cached arrangement (EX4-03).
+    last_layout: RefCell<Option<(Rect, TextDirection, ChildPlacements)>>,
 }
 
 impl Default for WrapLayout {
@@ -347,15 +352,15 @@ impl WrapLayout {
             spacing,
             run_spacing: None,
             padding,
-            text_direction: TextDirection::default(),
+            text_direction: None,
             children: Vec::new(),
             last_layout: RefCell::new(None),
         }
     }
 
-    /// The reading direction used when placing children.
+    /// The reading direction used when arranging children.
     pub fn text_direction(&self) -> TextDirection {
-        self.text_direction
+        self.text_direction.unwrap_or_else(crate::core::default_text_direction)
     }
 
     /// Sets the reading direction.
@@ -365,7 +370,7 @@ impl WrapLayout {
     /// its LTR counterpart and only the physical origin changes.
     pub fn set_text_direction(&mut self, direction: TextDirection) {
         self.invalidate_last_layout();
-        self.text_direction = direction;
+        self.text_direction = Some(direction);
     }
 
     /// Sets the gap between wrap lines, independently of the gap between items.
@@ -470,7 +475,7 @@ impl WrapLayout {
             content,
         );
         let mut rects: Vec<Rect> = rects;
-        if self.text_direction.is_right_to_left() {
+        if self.text_direction().is_right_to_left() {
             mirror_horizontally(&mut rects, content);
         }
         self.children.iter().zip(rects).map(|(child, rect)| (child.widget_id, rect)).collect()
@@ -540,7 +545,7 @@ impl WrapLayout {
             // `None` anyway (the item spacing), so the two spellings agree.
             run_spacing: Some(run_spacing),
             padding,
-            text_direction: self.text_direction,
+            text_direction: Some(self.text_direction()),
             children: sized,
             // The temporary solver owns no cache: it exists for one arrangement.
             last_layout: RefCell::new(None),
@@ -668,7 +673,7 @@ impl Layout for WrapLayout {
             entries.push((id, r));
             widgets(id, r);
         });
-        *self.last_layout.borrow_mut() = Some((rect, entries));
+        *self.last_layout.borrow_mut() = Some((rect, self.text_direction(), entries));
     }
 
     // G-403: the trait no longer defaults these entries; each forward reproduces the previous fallback behaviour.
@@ -766,8 +771,8 @@ impl Layout for WrapLayout {
         if !self.has_child(id) {
             return None;
         }
-        if let Some((cached_rect, entries)) = self.last_layout.borrow().as_ref() {
-            if *cached_rect == rect {
+        if let Some((cached_rect, cached_direction, entries)) = self.last_layout.borrow().as_ref() {
+            if *cached_rect == rect && *cached_direction == self.text_direction() {
                 return entries.iter().find(|(child, _)| *child == id).map(|(_, r)| *r);
             }
         }
@@ -786,6 +791,29 @@ mod tests {
     use super::*;
     use crate::compat::HashMap;
     use crate::layout::Hints;
+
+    /// A wrap layout with no pinned direction follows the language default, and the cache key
+    /// notices the change so a mirrored solve is not served an unmirrored arrangement (EX4-03).
+    #[test]
+    fn the_cache_key_tracks_the_effective_direction() {
+        let previous = crate::core::default_text_direction();
+        crate::core::set_default_text_direction(TextDirection::LeftToRight);
+        let mut layout = WrapLayout::new(WrapDirection::Horizontal, WrapAlignment::Start, 8, 8);
+        layout.add_widget(1, 0);
+        layout.set_child_size(1, Size::new(20, 10));
+        let rect = Rect::new(0, 0, 100, 100);
+        layout.update(rect, &mut |_, _| {});
+        let left_to_right = layout.child_rect(1, rect).expect("the child was placed");
+
+        crate::core::set_default_text_direction(TextDirection::RightToLeft);
+        assert_eq!(layout.text_direction(), TextDirection::RightToLeft);
+        let right_to_left = layout.child_rect(1, rect).expect("the child was placed");
+        assert_ne!(
+            left_to_right.x, right_to_left.x,
+            "a direction change must not replay the cached unmirrored arrangement"
+        );
+        crate::core::set_default_text_direction(previous);
+    }
 
     #[test]
     fn wrap_layout_default_creates_empty() {

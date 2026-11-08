@@ -93,6 +93,8 @@ pub struct Breadcrumb {
     edit_buffer: String,
     /// The editor's insertion point, as a character index into `edit_buffer` (SP-70).
     caret_pos: usize,
+    /// The uncommitted IME composition drawn inline at the caret.
+    preedit: String,
     /// Emitted when a segment is activated. Payload is segment id.
     pub segment_activated: Signal1<String>,
     /// Emitted with the segment id when a context menu is requested over one.
@@ -139,6 +141,7 @@ impl Breadcrumb {
             editing: false,
             edit_buffer: String::new(),
             caret_pos: 0,
+            preedit: String::new(),
             segment_activated: Signal1::new(),
             context_menu_requested: Signal1::new(),
             path_edited: Signal1::new(),
@@ -235,6 +238,7 @@ impl Breadcrumb {
         }
         let text = self.edit_buffer.clone();
         self.editing = false;
+        self.preedit.clear();
         self.path_edited.emit(text);
         self.base.request_redraw();
     }
@@ -254,6 +258,7 @@ impl Breadcrumb {
         self.editing = false;
         self.edit_buffer.clear();
         self.caret_pos = 0;
+        self.preedit.clear();
         self.base.request_redraw();
     }
 
@@ -854,7 +859,12 @@ impl EventHandler for Breadcrumb {
                 // editor inserts at the caret instead of appending, which is what makes editing a
                 // path in the middle possible (SP-70).
                 Event::TextInput { text } | Event::ImeCommit { text } => {
+                    self.preedit.clear();
                     self.insert_at_caret(text);
+                }
+                Event::ImePreedit { text, .. } => {
+                    self.preedit = text.clone();
+                    self.base.request_redraw();
                 }
                 _ => {}
             }
@@ -999,6 +1009,25 @@ impl Draw for Breadcrumb {
                 HorizontalAlignment::Left,
             );
             let caret_x = inner.x + prefix_width - overflow;
+            // The uncommitted IME composition is drawn at the caret with an underline, so a CJK
+            // composition is visible before it is confirmed.
+            if !self.preedit.is_empty() {
+                context.draw_text(
+                    Point::new(caret_x + 1, inner.y),
+                    &self.preedit,
+                    font,
+                    text_color,
+                    HorizontalAlignment::Left,
+                );
+                let preedit_width = context.measure_text(&self.preedit, font).width as i32;
+                let underline_y = inner.y + inner.height as i32 - 1;
+                context.draw_line_stroke(
+                    Point::new(caret_x + 1, underline_y),
+                    Point::new(caret_x + 1 + preedit_width, underline_y),
+                    text_color,
+                    1,
+                );
+            }
             context.draw_line_stroke(
                 Point::new(caret_x, inner.y),
                 Point::new(caret_x, inner.y + inner.height as i32),

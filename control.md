@@ -2,7 +2,7 @@
 
 # 控件图像总览 / Control gallery
 
-本页共 **241** 张控件快照名（每个两种外观，共 **482** 张 SVG）。
+本页共 **242** 张控件快照名（每个两种外观，共 **484** 张 SVG）。
 这些名字来自控件注册表（`factory.widget_names()`），每行是一个**规范名**（不含别名）。
 快照名数多于 `WidgetKind` 的枚举数（**231**），是因为多个控件可以共用一个 kind（例如九种图表都报告 `WidgetKind::Chart`），而不是因为别名。
 
@@ -54,10 +54,10 @@
 | Media and web (`media_widgets`) | 2 | [跳转](#media-and-web) |
 | Miscellaneous (`misc_widgets`) | 12 | [跳转](#miscellaneous) |
 | Cupertino (iOS-style) (`cupertino`) | 8 | [跳转](#cupertino-ios-style) |
-| companions (`companions`) | 26 | [跳转](#companions) |
+| companions (`companions`) | 27 | [跳转](#companions) |
 | macos (`macos`) | 5 | [跳转](#macos) |
 | Core controls (`root`) | 2 | [跳转](#core-controls) |
-| **合计** | **241** | |
+| **合计** | **242** | |
 
 ## Base controls
 
@@ -374,7 +374,7 @@
 
 ## companions
 
-`companions` — 26 个控件。
+`companions` — 27 个控件。
 
 | 控件 | 深色 | 浅色 |
 |---|---|---|
@@ -402,6 +402,7 @@
 | `swipe_actions` | ![swipe_actions (dark)](snapshots/svg/swipe_actions.svg) | ![swipe_actions (light)](snapshots/svg/swipe_actions.light.svg) |
 | `toast_host` | ![toast_host (dark)](snapshots/svg/toast_host.svg) | ![toast_host (light)](snapshots/svg/toast_host.light.svg) |
 | `tooltip_manager` | ![tooltip_manager (dark)](snapshots/svg/tooltip_manager.svg) | ![tooltip_manager (light)](snapshots/svg/tooltip_manager.light.svg) |
+| `tree_find_bar` | ![tree_find_bar (dark)](snapshots/svg/tree_find_bar.svg) | ![tree_find_bar (light)](snapshots/svg/tree_find_bar.light.svg) |
 | `zoom_pan_controller` | ![zoom_pan_controller (dark)](snapshots/svg/zoom_pan_controller.svg) | ![zoom_pan_controller (light)](snapshots/svg/zoom_pan_controller.light.svg) |
 | `zoom_strip` | ![zoom_strip (dark)](snapshots/svg/zoom_strip.svg) | ![zoom_strip (light)](snapshots/svg/zoom_strip.light.svg) |
 

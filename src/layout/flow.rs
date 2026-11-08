@@ -112,9 +112,10 @@ struct FlowLayoutSnapshot {
 pub struct FlowLayout {
     config: FlowLayoutConfig,
     children: Vec<FlowChild>,
-    /// Reading direction. [`TextDirection::LeftToRight`] (the default) keeps the historical
-    /// geometry; right-to-left mirrors the arrangement horizontally inside the content box.
-    text_direction: TextDirection,
+    /// Reading direction. `None` follows [`crate::core::default_text_direction`] (the locale /
+    /// language default), while an explicit value pins this layout. The getter always answers an
+    /// effective direction, so every caller sees the same value the placement used.
+    text_direction: Option<TextDirection>,
     /// Bumped by every mutation that can change what the children measure as.
     ///
     /// [`Self::child_sizes`] is asked for by `preferred_size`, `minimum_size`, `arrange` and
@@ -147,7 +148,7 @@ impl FlowLayout {
         Self {
             config: FlowLayoutConfig::default(),
             children: Vec::new(),
-            text_direction: TextDirection::default(),
+            text_direction: None,
             size_revision: 0,
             size_cache: RefCell::new(None),
             last_layout: RefCell::new(None),
@@ -168,7 +169,7 @@ impl FlowLayout {
         Self {
             config,
             children: Vec::new(),
-            text_direction: TextDirection::default(),
+            text_direction: None,
             size_revision: 0,
             size_cache: RefCell::new(None),
             last_layout: RefCell::new(None),
@@ -187,7 +188,7 @@ impl FlowLayout {
 
     /// The reading direction used when placing children.
     pub fn text_direction(&self) -> TextDirection {
-        self.text_direction
+        self.text_direction.unwrap_or_else(crate::core::default_text_direction)
     }
 
     /// Sets the reading direction.
@@ -197,7 +198,7 @@ impl FlowLayout {
     /// the left. The sizes and the wrap decision are unchanged; only the physical origin is
     /// mirrored, which is what makes an RTL flow read in the same order as its text.
     pub fn set_text_direction(&mut self, direction: TextDirection) {
-        self.text_direction = direction;
+        self.text_direction = Some(direction);
     }
     /// Appends a widget, capturing its current [`Widget::size_hint`] as its default size.
     ///
@@ -379,7 +380,7 @@ impl FlowLayout {
             spacing,
             content_rect,
         );
-        if self.text_direction.is_right_to_left() {
+        if self.text_direction().is_right_to_left() {
             crate::layout::wrap::mirror_horizontally(&mut rects, content_rect);
         }
         rects
@@ -546,7 +547,7 @@ impl Layout for FlowLayout {
         *self.last_layout.borrow_mut() = Some(FlowLayoutSnapshot {
             rect,
             config: self.config,
-            text_direction: self.text_direction,
+            text_direction: self.text_direction(),
             size_revision: self.size_revision,
             entries,
         });
@@ -584,7 +585,7 @@ impl Layout for FlowLayout {
         if let Some(snapshot) = self.last_layout.borrow().as_ref() {
             if snapshot.rect == rect
                 && snapshot.config == self.config
-                && snapshot.text_direction == self.text_direction
+                && snapshot.text_direction == self.text_direction()
                 && snapshot.size_revision == self.size_revision
             {
                 return snapshot.entries.iter().find(|(child, _)| *child == id).map(|(_, r)| *r);
@@ -663,6 +664,19 @@ impl Layout for FlowLayout {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A layout never given a direction follows the language default, and an explicit value pins
+    /// it (EX4-03).
+    #[test]
+    fn an_unset_direction_follows_the_language_default() {
+        let previous = crate::core::default_text_direction();
+        crate::core::set_default_text_direction(TextDirection::RightToLeft);
+        let mut layout = FlowLayout::new();
+        assert_eq!(layout.text_direction(), TextDirection::RightToLeft);
+        layout.set_text_direction(TextDirection::LeftToRight);
+        assert_eq!(layout.text_direction(), TextDirection::LeftToRight);
+        crate::core::set_default_text_direction(previous);
+    }
 
     /// Minimal test widget that returns a fixed size hint.
     struct TestWidget {

@@ -536,3 +536,14 @@ anchored before the successful injection).
 > `macOS backends clippy: OK (objc2, cocoa and the two-backend combination are warning-free)`.
 > The clippy record shows three findings because the `desktop` cell also compiles the objc2 module
 > on an Apple target, so the injected warning is visible in every configuration that includes it.
+
+## Round 16 (2026-11-09) — Linux/GTK type-check closure (GV4-02)
+
+| gate | injected | reported |
+|---|---|---|
+| `check_linux_gtk_check.sh` | added a probe function to `src/platform/linux/platform_impl.rs` under `cfg(all(unix_desktop, feature = "gtk-native"))`: `fn _reverse_injection_probe() -> u8 { "this is not a u8" }` | `error[E0308]: mismatched types` / `  --> src/platform/linux/platform_impl.rs:48:5` / `   \|     "this is not a u8"` / `   \|     ^^^^^^^^^^^^^^^^^^ expected \`u8\`, found \`&str\`` / `❌ Linux/GTK type-check failed` (exit 1) |
+
+> The probe was reverted immediately and the gate re-run green in the same round:
+> `✅ Linux/GTK type-check passed (compile only; no link)` (28.1 s, zero warnings). The gate is
+> host-gated: without the Linux target, pkg-config or gtk+3 it prints `unsupported host (…)` and
+> exits 2 (recorded as SKIP by the runner), which is the honest host limit rather than a timeout.

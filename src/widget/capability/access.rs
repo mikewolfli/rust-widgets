@@ -301,6 +301,13 @@ pub fn default_named_property_value(
         ("preset_chip_bar", "chip_height") => Some(CapabilityValue::UInt(24)),
         ("preset_chip_bar", "chip_padding") => Some(CapabilityValue::UInt(10)),
         ("preset_chip_bar", "spacing") => Some(CapabilityValue::UInt(6)),
+        // CMP4-01: the tree find bar borrows the `Panel` kind, so its role-specific defaults
+        // are keyed by canonical name. Each mirrors `TreeFindBar::new`.
+        ("tree_find_bar", "query") => Some(CapabilityValue::String(String::new())),
+        ("tree_find_bar", "case_sensitive") => Some(CapabilityValue::Bool(false)),
+        ("tree_find_bar", "match_mode") => Some(CapabilityValue::String("contains".to_string())),
+        ("tree_find_bar", "current_match") => Some(CapabilityValue::UInt(0)),
+        ("tree_find_bar", "auto_scroll") => Some(CapabilityValue::Bool(true)),
         ("thumbnail_cache", "max_entries") => Some(CapabilityValue::UInt(256)),
         ("thumbnail_cache", "target_width") => Some(CapabilityValue::UInt(96)),
         ("thumbnail_cache", "target_height") => Some(CapabilityValue::UInt(96)),
@@ -1786,6 +1793,26 @@ pub fn default_widget_property_default_value(
             // Mirrors `FontDialog::new`: no face option is set and the preview is on.
             "underline" | "strikethrough" | "no_buttons" => CapabilityValue::Bool(false),
             "show_preview" => CapabilityValue::Bool(true),
+            // The fresh dialog's selected font is the platform default; the family list is the
+            // host's catalogue, of which the selected family is the one guaranteed member
+            // (`sync_indices` keeps it offered). The schema default names exactly that member so a
+            // write of the default reads back unchanged.
+            "current_font" => {
+                let font = crate::core::Font::default();
+                CapabilityValue::String(format!("{} {}", font.family(), font.size()))
+            }
+            "font_families" => {
+                let font = crate::core::Font::default();
+                CapabilityValue::Tuple(crate::compat::vec![CapabilityValue::String(
+                    font.family().to_string()
+                )])
+            }
+            "font_sizes" => CapabilityValue::Tuple(
+                crate::widget::dialog::font_dialog::SIZES
+                    .iter()
+                    .map(|size| CapabilityValue::UInt(u64::from(*size)))
+                    .collect(),
+            ),
             _ => return None,
         },
         WidgetKind::InputDialog => match property_name {
@@ -1952,6 +1979,8 @@ pub fn default_widget_property_default_value(
         WidgetKind::BottomSheet => match property_name {
             "expanded" => CapabilityValue::Bool(false),
             "peek_height" => CapabilityValue::Float(100.0),
+            "attachment" => CapabilityValue::String("overlay".to_string()),
+            "content_height" => CapabilityValue::UInt(100),
             _ => return None,
         },
         WidgetKind::BottomNavigationBar => match property_name {

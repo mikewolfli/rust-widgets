@@ -63,6 +63,20 @@ pub enum FilterOperator {
 }
 
 impl FilterOperator {
+    /// Every operator token, in the order the enum declares, for a designer's enumerated list.
+    pub const TOKENS: &'static [&'static str] = &[
+        "contains",
+        "equals",
+        "starts_with",
+        "ends_with",
+        "not_contains",
+        "equals_number",
+        "greater_than",
+        "greater_or_equal",
+        "less_than",
+        "less_or_equal",
+    ];
+
     /// The token this operator is spelled as in JSON and in a saved filter.
     pub fn as_str(self) -> &'static str {
         match self {

@@ -241,6 +241,7 @@ tool_button: clicked, toggled, triggered, action_triggered
 tooltip: 
 tooltip_manager: tooltip_shown, tooltip_hidden
 tree_table: projection_changed, selection_changed, context_menu_requested, expansion_changed, sort_changed, fetch_started, fetch_finished
+tree_find_bar: match_changed
 tree_view: activated, collapsed, drag_finished, expanded, fetch_finished, fetch_started, focused_node_changed, node_double_clicked, on_header_clicked, row_move_requested, selection_changed, selection_set_changed, fetch_failure
 virtual_list: selection_changed, visible_window_changed, drag_finished, selected_rows_changed
 virtual_table: visible_window_changed, selection_changed, selection_set_changed, context_menu_requested, sort_changed
