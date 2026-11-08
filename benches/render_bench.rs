@@ -235,6 +235,64 @@ fn bench_render_frame_dirty(c: &mut Criterion) {
     runtime::unregister(root_id);
 }
 
+/// Measures the **worst case of a resize**: a 1280x800 window tree with the whole surface
+/// damaged, so neither the tree-frame cache nor a per-widget layer can serve the paint (DM4-5).
+///
+/// The existing 1280x800 bench damages one 110x30 control, which measures the incremental path;
+/// the only full-frame bench was 400x300. An interactive resize produces the third shape — every
+/// tick a new size, so every cached layer is invalid and the whole tree is rasterised — and that is
+/// what this measures. The fixture is the same 100-widget tree so the two numbers are comparable.
+#[cfg(not(feature = "mini"))]
+#[cfg(not(target_arch = "wasm32"))]
+fn bench_render_frame_full(c: &mut Criterion) {
+    use rust_widgets::widget::base_widgets::button::Button;
+    use rust_widgets::widget::container_widgets::groupbox::GroupBox;
+    use rust_widgets::widget::runtime::{self, RepaintMode};
+    use rust_widgets::widget::Widget;
+
+    let surface = Size::new(1280, 800);
+    let clear = Color::WHITE;
+    let whole = Rect::new(0, 0, surface.width, surface.height);
+
+    let mut root = GroupBox::new(whole);
+    let mut children = Vec::new();
+    for index in 0..100_usize {
+        let column = (index % 10) as i32;
+        let row = (index / 10) as i32;
+        let geometry = Rect::new(column * 120, row * 40, 110, 30);
+        let Some(id) = runtime::register(Box::new(Button::new(format!("b{index}"), geometry)))
+        else {
+            panic!("the runtime must accept a child widget");
+        };
+        root.add_child(id);
+        children.push(id);
+    }
+    let Some(root_id) = runtime::register(Box::new(root)) else {
+        panic!("the runtime must accept the root widget");
+    };
+
+    assert!(runtime::set_repaint_mode(root_id, RepaintMode::Dirty));
+    runtime::request_repaint_rect(root_id, whole);
+    let warm = runtime::render_frame_cached_shared(root_id, surface, clear);
+    debug_assert!(warm.is_some(), "the tree must paint a frame");
+
+    c.bench_function("render_frame_1280x800_full", |b| {
+        b.iter(|| {
+            // Damage the whole client area, which is what a new client size does: every cached
+            // layer's bounds are stale, so the frame is rasterised in full.
+            runtime::request_repaint_rect(root_id, whole);
+            let frame = runtime::render_frame_cached_shared(root_id, surface, clear);
+            debug_assert!(frame.is_some(), "a fully damaged frame must still produce pixels");
+            black_box(frame);
+        })
+    });
+
+    for id in children {
+        runtime::unregister(id);
+    }
+    runtime::unregister(root_id);
+}
+
 // The two runtime benchmarks are compiled only where `widget::runtime` exists: the
 // alloc-frugal profile (`mini`) compiles the widget runtime out, and a benchmark cannot
 // measure a path that is not there. Grouping them separately keeps the pixel-level
@@ -249,6 +307,7 @@ criterion_group!(
     bench_render_frame,
     bench_render_frame_tree,
     bench_render_frame_dirty,
+    bench_render_frame_full,
     bench_dispatch_pointer_event
 );
 

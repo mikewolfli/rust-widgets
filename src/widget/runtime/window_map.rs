@@ -40,6 +40,31 @@ pub fn surface_window_for(surface: ObjectId) -> Option<ObjectId> {
     SURFACE_WINDOWS.try_with(|map| map.borrow().get(&surface).copied()).unwrap_or(None)
 }
 
+/// The nearest ancestor of `id` — `id` itself included — that the platform mounted as a surface.
+///
+/// # Why a control inside a surface needs this
+///
+/// [`crate::Platform::invalidate_surface`] answers only for the id the host mounted; the controls
+/// that make up that surface's content are not mount points. A child of an `MdiArea` is the
+/// clearest case: it was added with `add_child_linked`, so it has a parent link but no surface of
+/// its own, and `invalidate_surface(child)` reaches nothing. Without this walk the child's repaint
+/// request — a hover, a caret, a text change — stops at a backend that truthfully says "I do not
+/// know that id", and the surface shows the old pixels.
+///
+/// The walk is bounded by [`TOP_WINDOW_MAX_DEPTH`] for the reason the window walk is: a corrupted
+/// parent chain must not hang a paint path. `None` means the widget lives in an ordinary window
+/// tree (the common case), where the window invalidation already covers it.
+pub fn surface_root_of(id: ObjectId) -> Option<ObjectId> {
+    let mut current = id;
+    for _ in 0..TOP_WINDOW_MAX_DEPTH {
+        if surface_window_for(current).is_some() {
+            return Some(current);
+        }
+        current = read_widget(current, |widget| widget.parent())??;
+    }
+    None
+}
+
 /// The rectangle of the mounted window that contains `id` (DL2-04).
 ///
 /// A popup is painted outside its owner's geometry, so deciding whether it fits below the field
@@ -238,6 +263,17 @@ pub fn request_repaint_because(id: ObjectId, reason: RepaintReason) {
     }
     if crate::invalidate_surface(id) {
         note_frame_repaint_reason(id, reason);
+    } else {
+        // A control inside a mounted surface has no platform surface of its own, so the
+        // backend truthfully refused its id. The nearest ancestor that *is* mounted is what
+        // the platform can repaint, and that surface paints the control's pixels. A control in
+        // an ordinary window usually reaches none either, and the window's own invalidation
+        // (already submitted by `request_repaint_subtree`) covers it.
+        if let Some(surface) = surface_root_of(id) {
+            if crate::invalidate_surface(surface) {
+                note_frame_repaint_reason(surface, reason);
+            }
+        }
     }
 }
 

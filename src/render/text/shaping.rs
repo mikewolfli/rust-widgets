@@ -327,6 +327,24 @@ impl ShapeKeyBase {
 /// better cache — it is a leak nobody measured.
 const SHAPE_CACHE_LIMIT: usize = 512;
 
+/// FNV-1a over a text run, used as the first half of a cache probe key (RD3-03).
+///
+/// A bucket used to be scanned with a full `str` comparison per entry. Under one
+/// `ShapeKeyBase` (one face, size and weight) there can be up to `SHAPE_CACHE_LIMIT` distinct
+/// captions, so a lookup on a long string paid `O(entries x len)` byte comparisons per frame. The
+/// hash turns that into one integer compare per entry; the borrowed text comparison still follows
+/// on a hash match, so a collision costs a comparison, never a wrong answer.
+fn text_hash(text: &str) -> u64 {
+    const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+    let mut hash = FNV_OFFSET;
+    for byte in text.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+    hash
+}
+
 /// A bounded cache shaped exactly like `raster.rs`'s `CoverageCache`: a hash map plus a FIFO queue
 /// of the keys in insertion order.
 ///
@@ -336,9 +354,9 @@ const SHAPE_CACHE_LIMIT: usize = 512;
 /// request is simply shaped again on its next use, which is the correct trade for a cache this
 /// small (no LRU bookkeeping on the shaping path).
 struct FifoCache<V> {
-    /// One bucket per non-text part of the request. A bucket holds the shared text and the value,
-    /// so a lookup compares borrowed text and allocates nothing (RD-01).
-    entries: HashMap<ShapeKeyBase, Vec<(Arc<str>, V)>>,
+    /// One bucket per non-text part of the request. A bucket holds the shared text, its hash and
+    /// the value, so a lookup compares one integer per entry before borrowing the text (RD3-03).
+    entries: HashMap<ShapeKeyBase, Vec<(Arc<str>, u64, V)>>,
     order: VecDeque<(ShapeKeyBase, Arc<str>)>,
 }
 
@@ -348,26 +366,28 @@ impl<V> FifoCache<V> {
     }
 
     fn get(&self, base: &ShapeKeyBase, text: &str) -> Option<&V> {
+        let probe = text_hash(text);
         self.entries
             .get(base)?
             .iter()
-            .find(|(stored, _)| stored.as_ref() == text)
-            .map(|(_, value)| value)
+            .find(|(stored, hash, _)| *hash == probe && stored.as_ref() == text)
+            .map(|(_, _, value)| value)
     }
 
     fn insert(&mut self, base: ShapeKeyBase, text: Arc<str>, value: V) {
+        let hash = text_hash(&text);
         // Only a key that was not already resident joins the queue, so a stale queue entry can
         // never evict a live one (the rule `CoverageCache` documents).
         let mut resident = false;
         {
             let bucket = self.entries.entry(base.clone()).or_default();
-            if let Some(slot) =
-                bucket.iter_mut().find(|(stored, _)| stored.as_ref() == text.as_ref())
-            {
-                slot.1 = value;
+            if let Some(slot) = bucket.iter_mut().find(|(stored, stored_hash, _)| {
+                *stored_hash == hash && stored.as_ref() == text.as_ref()
+            }) {
+                slot.2 = value;
                 resident = true;
             } else {
-                bucket.push((text.clone(), value));
+                bucket.push((text.clone(), hash, value));
             }
         }
         if !resident {
@@ -378,7 +398,7 @@ impl<V> FifoCache<V> {
                 let mut empty = false;
                 if let Some(bucket) = self.entries.get_mut(&oldest_base) {
                     if let Some(index) =
-                        bucket.iter().position(|(stored, _)| *stored == oldest_text)
+                        bucket.iter().position(|(stored, _, _)| *stored == oldest_text)
                     {
                         bucket.remove(index);
                     }

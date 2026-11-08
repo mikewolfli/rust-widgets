@@ -946,8 +946,12 @@ impl EventLoop {
                         // EV-X05: one panic barrier around the chain. A panicking host filter
                         // must not take the loop thread down (which would also skip the deferred
                         // event write-back below); it is logged and the event is treated as
-                        // unconsumed.
-                        let claimed =
+                        // unconsumed. An **empty** chain cannot claim anything and cannot panic,
+                        // so the barrier is skipped: the default host paid the unwinding
+                        // machinery on every event for no benefit (RT3-02).
+                        let claimed = if event_filters.is_empty() {
+                            Ok(false)
+                        } else {
                             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                                 for filter in &event_filters {
                                     if filter(target, event) {
@@ -955,7 +959,8 @@ impl EventLoop {
                                     }
                                 }
                                 false
-                            }));
+                            }))
+                        };
                         match claimed {
                             Ok(true) => return,
                             Ok(false) => {}
@@ -1413,15 +1418,20 @@ impl EventLoop {
         // W-09: the host's filter chain, in registration order; a filter can consume the event.
         // The chain is empty by default, so this loop is the previous behaviour exactly.
         // EV-X05: one panic barrier, matching the threaded dispatch path; a panicking filter is
-        // logged and the event is treated as unconsumed.
-        let claimed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            for filter in &self.event_filters {
-                if filter(target, &event) {
-                    return true;
+        // logged and the event is treated as unconsumed. An empty chain skips the barrier: nothing
+        // can claim, nothing can panic, and the default host should not pay it per event (RT3-02).
+        let claimed = if self.event_filters.is_empty() {
+            Ok(false)
+        } else {
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                for filter in &self.event_filters {
+                    if filter(target, &event) {
+                        return true;
+                    }
                 }
-            }
-            false
-        }));
+                false
+            }))
+        };
         match claimed {
             Ok(true) => return true,
             Ok(false) => {}

@@ -9,7 +9,8 @@ use super::super::shaders::ShaderModule;
 use super::policy::{CostGate, RenderQuality};
 use super::resources::{
     padded_row_bytes, readback_frame_bytes, rgba8_from_unit, rgba_buffer_len, CpuFrame,
-    ParamsGroupCache, ParamsGroups, ParamsScratch, RenderCache, TextureCache, GPU_READBACK_TIMEOUT,
+    ParamsGroupCache, ParamsGroups, ParamsScratch, RenderCache, TextCoverageCache, TextureCache,
+    GPU_READBACK_TIMEOUT,
 };
 use crate::render::gpu::{GpuCapability, GpuRenderer};
 use std::cell::{Ref, RefCell};
@@ -123,6 +124,12 @@ pub struct WgpuRenderer {
     /// that build. Folding it into `RenderCache` made the lookup re-borrow the very cell the
     /// caller already held mutably, which is a panic on the first cached image.
     pub(crate) texture_cache: RefCell<TextureCache>,
+    /// Content-keyed uploads of rasterised text coverage (RD3-04).
+    ///
+    /// Separate from [`Self::texture_cache`] because the format differs (`R8Unorm` coverage, not
+    /// `Rgba8Unorm` pixels) and because a text key hashes content rather than an allocation
+    /// identity. Separate from [`Self::cache`] for the same borrow reason as `texture_cache`.
+    pub(crate) text_coverage_cache: RefCell<TextCoverageCache>,
     /// Grow-only uniform buffer the per-draw params of one frame are carved out of (RD2-01).
     ///
     /// Separate from [`Self::cache`] for the same reason as `texture_cache`: the packer holds

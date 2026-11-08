@@ -102,7 +102,6 @@ TOO_LONG_PENDING = {
 
 
 
-    "src/platform/macos/canvas.rs": "legacy Cocoa canvas: window lifecycle delegate trampolines → `macos/canvas/lifecycle.rs`",
     "src/widget/view_widgets/grid_table.rs": "span layout vs selection vs paint → `grid_table/{layout,paint}.rs`",
     "src/widget/view_widgets/properties/properties_panel.rs": "property rows vs editors vs paint → `properties_panel/{rows,paint}.rs`",
     "src/widget/view_widgets/tree/tree_view.rs": "projection/index vs selection vs paint → `tree_view/{model,paint}.rs`",

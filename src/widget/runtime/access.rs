@@ -113,6 +113,8 @@ pub fn set_geometry(id: ObjectId, geometry: Rect) -> bool {
         // A resize can leave a parent's layer rect unchanged while the child inside it shrinks,
         // so the layers are dropped wholesale rather than by rectangle.
         invalidate_widget_layers();
+        // The subtree-metrics table reads geometry, so a write here makes it stale (RD3-02).
+        note_structure_changed();
     }
     found
 }

@@ -1893,6 +1893,11 @@ impl Platform for WindowsPlatform {
                 DispatchMessageW, PeekMessageW, TranslateMessage, MSG, PM_REMOVE, WM_QUIT,
             };
             self.runtime_running.store(true, Ordering::SeqCst);
+            // A cross-thread `wake()` cannot reach this loop through the condition variable: the
+            // wait below blocks in the message queue. Installing the auto-reset event gives it a
+            // channel the wait watches, so a stop request or scheduled work is immediate instead
+            // of waiting for the idle backstop (PL3-4).
+            crate::platform::frame_wait::install_win32_wake_event();
             while self.runtime_running.load(Ordering::SeqCst) {
                 let mut msg: MSG = std::mem::zeroed();
                 while PeekMessageW(&mut msg, null_mut(), 0, 0, PM_REMOVE) != 0 {
@@ -1922,7 +1927,7 @@ impl Platform for WindowsPlatform {
                     // Block in the native message queue. An input message wakes this
                     // immediately (so the loop keeps zero input latency), while a still loop
                     // waits the longer idle interval instead of waking every 16 ms.
-                    crate::platform::frame_wait::pause_between_frames(outcome.needs_another_frame);
+                    crate::platform::frame_wait::pause_between_frames(outcome.wants_fast_cadence());
                 }
             }
             self.runtime_running.store(false, Ordering::SeqCst);
@@ -1938,7 +1943,9 @@ impl Platform for WindowsPlatform {
         // another thread it wakes nothing; the flag above is what ends the loop in that case.
         self.runtime_running.store(false, Ordering::SeqCst);
         // The Win32 pump may be waiting on `MsgWaitForMultipleObjectsEx`; the library's frame
-        // wait must learn about the stop immediately rather than after the idle interval.
+        // wait must learn about the stop immediately rather than after the idle interval. That
+        // wake is real on this backend because the wait also watches the process-level event the
+        // frame wait installs (PL3-4), not only the condition variable.
         crate::platform::frame_wait::wake();
         #[cfg(target_os = "windows")]
         // SAFETY: posted to the current thread queue; no pointer or handle is involved.

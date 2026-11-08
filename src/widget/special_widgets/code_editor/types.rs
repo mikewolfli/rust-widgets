@@ -903,6 +903,16 @@ pub struct TextChange {
     /// A document load, a tab switch and a history restore replace every line; the
     /// region fields then describe the whole document and no line above it survived.
     pub whole_document: bool,
+    /// Whether the buffer differs from its save point **after** this change.
+    ///
+    /// This is [`CodeEditor::is_modified`](super::CodeEditor::is_modified) captured at the
+    /// moment the change is announced, and it is here because a subscriber cannot ask the
+    /// widget for it: the emit happens while the editor is borrowed for the edit, so the
+    /// runtime refuses a lookup from inside the callback (the widget is lent out). A host that
+    /// took "an edit happened" to mean "the buffer is modified" therefore showed a save marker
+    /// after undo returned the document to its save point. The maintainer of the flag is the
+    /// editor, so the fact travels with the event instead of being guessed from it.
+    pub modified: bool,
 }
 
 impl TextChange {
@@ -914,6 +924,9 @@ impl TextChange {
             inserted_lines,
             inserted_text: String::new(),
             whole_document: true,
+            // The constructors describe a change, not a buffer state; an emitter that knows
+            // the buffer overwrites this before sending. See the field's documentation.
+            modified: false,
         }
     }
 
@@ -930,6 +943,7 @@ impl TextChange {
             inserted_lines,
             inserted_text: inserted_text.into(),
             whole_document: false,
+            modified: false,
         }
     }
 }

@@ -147,6 +147,11 @@ pub fn register_face(name: &'static str, bytes: &'static [u8]) -> bool {
     registry.len = len + 1;
     drop(registry);
     crate::render::text::font_assets::invalidate_face_cache();
+    // A newly registered face can take over characters that were previously measured from a
+    // fallback face, and `TEXT_METRICS` is keyed by `(text, font, scale)` — not by the face that
+    // answered. Without this bump those widths stay stale until an unrelated invalidation, which
+    // is the clipping/overlap the replacement and `clear_faces` paths already avoid (RD3-01).
+    crate::render::pipeline::invalidate_text_measurements();
     true
 }
 

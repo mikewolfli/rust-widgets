@@ -1507,17 +1507,22 @@ pub(crate) fn apply_panel_geometry(panel_id: ObjectId, rect: Rect) {
     // ended up as its own descendant) from turning a layout pass into an unbounded
     // recursion; the same bound the widget runtime uses for its parent walks.
     const MAX_PANEL_DEPTH: u32 = 64;
-    apply_panel_geometry_bounded(panel_id, rect, 0, MAX_PANEL_DEPTH);
+    // One device context for the whole panel subtree (LY3-04): every nesting level used to build
+    // its own, so one resize paid one platform text-scale query per level.
+    let context = crate::layout::types::LayoutContext::default();
+    apply_panel_geometry_bounded(panel_id, rect, &context, 0, MAX_PANEL_DEPTH);
 }
 
 /// Applies `panel_id`'s stored layout against `rect` under an explicit nesting bound.
 ///
 /// `pub(crate)` because the declarative layout walk reaches it for a panel nested inside a
 /// document container (LY-02), sharing the one depth semantics rather than recursing a second
-/// way.
+/// way. `context` is the caller's per-pass device context: the recursion re-uses it instead of
+/// rebuilding one per nesting level (LY3-04).
 pub(crate) fn apply_panel_geometry_bounded(
     panel_id: ObjectId,
     rect: Rect,
+    context: &crate::layout::types::LayoutContext,
     depth: u32,
     max_depth: u32,
 ) {
@@ -1541,7 +1546,6 @@ pub(crate) fn apply_panel_geometry_bounded(
         return;
     }
 
-    let context = crate::layout::types::LayoutContext::default();
     // LY-07: same take/return pool as `apply_window_layout`. A nested panel re-enters this
     // function while the outer list is still live, so the pool is a stack.
     let mut scratch = crate::layout::scratch::take_geometry_scratch();
@@ -1550,7 +1554,7 @@ pub(crate) fn apply_panel_geometry_bounded(
         let Some(layout) = map.get(&panel_id) else {
             return scratch;
         };
-        layout.update_with_context(rect, &context, &mut |widget_id, geometry| {
+        layout.update_with_context(rect, context, &mut |widget_id, geometry| {
             scratch.push((widget_id, geometry));
         });
         scratch
@@ -1566,15 +1570,15 @@ pub(crate) fn apply_panel_geometry_bounded(
             geometry.height,
         );
         if widget_hosts_a_layout(widget_id) {
-            apply_panel_geometry_bounded(widget_id, geometry, depth + 1, max_depth);
+            apply_panel_geometry_bounded(widget_id, geometry, context, depth + 1, max_depth);
         }
         // Both registries are applied when both hold an entry (LY-02): the `else if` skipped
         // the declarative side for a widget that also had a panel layout.
         if crate::layout::declarative::has_layout(widget_id) {
             // See `apply_window_layout`: a container loaded from a document can sit
             // inside a panel, and moving the panel must re-run the document's layout
-            // for that container's children.
-            crate::layout::declarative::apply_layout(widget_id, geometry);
+            // for that container's children. The pass context is shared (LY3-04).
+            crate::layout::declarative::apply_layout_in_context(widget_id, geometry, context);
         }
     }
     crate::layout::scratch::return_geometry_scratch(child_geometries);

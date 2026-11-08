@@ -450,13 +450,23 @@ impl ConstraintLayout {
         // Apply constraints in dependency order, lowest priority first, so a stronger
         // constraint is the one that survives on a shared edge. A cycle is broken by
         // falling back to declaration order; the layout still terminates.
+        //
+        // LY3-03: the cached plan is **borrowed**, not cloned. `Rc` keeps it alive for the whole
+        // pass and both halves are read-only here, so the previous `ranked.clone()` +
+        // `constrained.clone()` were pure cost — one index buffer and one map bucket per child, on
+        // every pass. Only the cycle fallback builds owned values, because there is nothing cached
+        // to borrow.
         let plan = self.resolve_order();
-        let (ranked, constrained): (Vec<usize>, HashMap<ObjectId, ()>) = match plan {
-            Some(plan) => {
-                // `ranked` borrows the cached vectors but is consumed below; cloning it is
-                // cheaper than re-building the dependency graph and re-sorting (G-157).
-                (plan.ranked.clone(), plan.constrained.clone())
-            }
+        match plan.as_deref() {
+            Some(plan) => Self::apply_ranked(
+                &self.constraints,
+                &self.children,
+                &plan.ranked,
+                &plan.constrained,
+                rect,
+                &mut resolved,
+                widgets,
+            ),
             None => {
                 log::warn!(
                     "constraint layout has a dependency cycle; resolving in declaration order"
@@ -464,20 +474,44 @@ impl ConstraintLayout {
                 let mut ranked: Vec<usize> = (0..self.constraints.len()).collect();
                 ranked.sort_by_key(|index| self.constraints[*index].1.priority);
                 let constrained = self.constraints.iter().map(|(id, _)| (*id, ())).collect();
-                (ranked, constrained)
+                Self::apply_ranked(
+                    &self.constraints,
+                    &self.children,
+                    &ranked,
+                    &constrained,
+                    rect,
+                    &mut resolved,
+                    widgets,
+                );
             }
-        };
-        for index in ranked {
-            let (subject_id, constraint_ref) = &self.constraints[index];
+        }
+    }
+
+    /// Applies `ranked` constraints to `resolved` and then emits every child (LY3-03).
+    ///
+    /// Split out so the cached-plan branch and the cycle fallback share one implementation: the
+    /// two used to be the same loops written once around an owned tuple, which is what forced the
+    /// clones.
+    fn apply_ranked(
+        constraints: &[(ObjectId, ConstraintRef)],
+        children: &[ObjectId],
+        ranked: &[usize],
+        constrained: &HashMap<ObjectId, ()>,
+        rect: Rect,
+        resolved: &mut HashMap<ObjectId, Rect>,
+        widgets: &mut dyn FnMut(ObjectId, Rect),
+    ) {
+        for &index in ranked {
+            let (subject_id, constraint_ref) = &constraints[index];
             if let Some(mut widget_rect) = resolved.get(subject_id).copied() {
-                Self::resolve_rect(&mut widget_rect, constraint_ref, rect, &resolved);
+                Self::resolve_rect(&mut widget_rect, constraint_ref, rect, resolved);
                 resolved.insert(*subject_id, widget_rect);
             }
         }
 
         // Second pass: for children that were referenced but have no constraint
         // defined, still emit them at the parent rect position.
-        for &child_id in &self.children {
+        for &child_id in children {
             if let Some(widget_rect) = resolved.get(&child_id).copied() {
                 // If the child has no constraints, its rect will still be the parent rect.
                 // Only emit if it has at least one constraint (otherwise we'd double-emit rect-sized widgets).

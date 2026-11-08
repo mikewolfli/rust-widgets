@@ -433,16 +433,52 @@ impl Drop for DispatchGuard {
 pub fn dispatch_resize(id: ObjectId, width: u32, height: u32) -> usize {
     let event = Event::resize(width, height);
     let mut reached = 0;
+    // RT3-04: the target list and the explicit work stack used to be two `Vec::new()` per call —
+    // once per window per frame of an interactive drag. They are taken from a thread-local slot
+    // and returned afterwards. Taking the struct *out* of the slot (rather than borrowing it)
+    // means a handler that resizes another subtree gets `None` and uses its own buffers, so a
+    // nested call falls back instead of failing a borrow.
+    let taken = RESIZE_SCRATCH.with(|slot| slot.borrow_mut().take());
+    let Some(mut scratch) = taken else {
+        let mut targets = alloc::vec::Vec::new();
+        let mut work = alloc::vec::Vec::new();
+        collect_subtree_ids(id, &mut targets, &mut work);
+        for target in targets {
+            if dispatch_event(target, &event) {
+                reached += 1;
+            }
+        }
+        return reached;
+    };
+    scratch.targets.clear();
+    scratch.work.clear();
     // The descendants are collected before delivery so a handler that mounts or destroys
     // controls cannot make the walk observe a half-updated registry.
-    let mut targets = alloc::vec::Vec::new();
-    collect_subtree_ids(id, &mut targets);
-    for target in targets {
+    collect_subtree_ids(id, &mut scratch.targets, &mut scratch.work);
+    for target in scratch.targets.iter().copied() {
         if dispatch_event(target, &event) {
             reached += 1;
         }
     }
+    scratch.targets.clear();
+    RESIZE_SCRATCH.with(|slot| *slot.borrow_mut() = Some(scratch));
     reached
+}
+
+/// The reusable containers of one [`dispatch_resize`] call (RT3-04).
+#[cfg(not(alloc_frugal))]
+struct ResizeScratch {
+    /// `id` and every mounted descendant, parents before children.
+    targets: alloc::vec::Vec<ObjectId>,
+    /// The traversal's explicit stack, kept beside the target list so both survive across calls.
+    work: alloc::vec::Vec<ObjectId>,
+}
+
+#[cfg(not(alloc_frugal))]
+thread_local! {
+    /// See [`dispatch_resize`]: empty whenever no resize delivery is in progress.
+    static RESIZE_SCRATCH: core::cell::RefCell<Option<ResizeScratch>> =
+        const { core::cell::RefCell::new(None) };
 }
 
 /// Collects `id` and every mounted descendant into `out`, parents before children.
@@ -459,11 +495,16 @@ pub fn dispatch_resize(id: ObjectId, width: u32, height: u32) -> usize {
 /// moves on; a recursive version holds it while it descends, which would make the buffer busy at
 /// every level and buy nothing.
 #[cfg(not(alloc_frugal))]
-pub(crate) fn collect_subtree_ids(id: ObjectId, out: &mut alloc::vec::Vec<ObjectId>) {
+pub(crate) fn collect_subtree_ids(
+    id: ObjectId,
+    out: &mut alloc::vec::Vec<ObjectId>,
+    work: &mut alloc::vec::Vec<ObjectId>,
+) {
     out.push(id);
     // Reversed pushes so `pop` yields the first child first: `out` stays "parents before children,
-    // siblings in declaration order", exactly as the recursive form produced.
-    let mut work: alloc::vec::Vec<ObjectId> = alloc::vec::Vec::new();
+    // siblings in declaration order", exactly as the recursive form produced. `work` is supplied
+    // by the caller so it can be pooled with `out` (RT3-04).
+    work.clear();
     with_child_ids(id, |children| {
         work.extend(children.iter().rev().copied());
     });

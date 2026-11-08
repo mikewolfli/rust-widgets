@@ -578,10 +578,18 @@ impl MenuBar {
         self.entries.get(index).map(|entry| entry.is_enabled())
     }
     /// Removes every entry and clears both the active and hovered cursors.
+    ///
+    /// Repaints: the entries are the bar's picture, so clearing them is a visible change. The
+    /// sibling mutators (`remove_menu`, `set_menu_enabled`) already asked for the frame; `clear`
+    /// was the one that left the old titles on screen until something else happened.
     pub fn clear(&mut self) {
+        let changed = !self.entries.is_empty();
         self.entries.clear();
         self.active_index = None;
         self.hovered_index = None;
+        if changed {
+            self.base.request_redraw();
+        }
     }
 
     /// Installs a widget in the trailing corner slot.
@@ -628,15 +636,23 @@ impl MenuBar {
         } else {
             self.menus.push((index, menu));
         }
+        // Replacing the menu of the entry that is currently open changes what the bar shows, so
+        // the same rule as the other mutators applies: the write is a visible state change.
+        self.base.request_redraw();
         true
     }
 
     /// Removes and returns the menu attached to `index`, if any.
+    ///
+    /// Repaints when a menu was actually removed: an open popup's owner going away changes the
+    /// picture, and leaving the frame untouched left the popup on screen with no owner to close
+    /// it. A call that finds no attached menu changes nothing and asks for nothing.
     pub fn detach_menu(&mut self, index: usize) -> Option<Menu> {
         let slot = self.menus.iter().position(|(attached, _)| *attached == index)?;
         if self.open_menu_index == Some(index) {
             self.open_menu_index = None;
         }
+        self.base.request_redraw();
         Some(self.menus.remove(slot).1)
     }
 

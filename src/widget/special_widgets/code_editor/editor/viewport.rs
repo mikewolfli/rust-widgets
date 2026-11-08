@@ -201,6 +201,19 @@ impl CodeEditor {
         }
     }
 
+    /// Announces a committed text change with the buffer's save-point state attached.
+    ///
+    /// # Why every emitter goes through here
+    ///
+    /// [`TextChange::modified`] is a fact about the buffer, not about the edit, so an emitter
+    /// that forgets to set it (or sets it from the event's shape) reports the opposite of the
+    /// truth after an undo back to the save point. One funnel means a future emit site cannot
+    /// get it wrong, and [`Self::is_modified`] stays the single maintainer of the flag.
+    pub(super) fn emit_text_change(&self, mut change: TextChange) {
+        change.modified = self.is_modified();
+        self.text_change.emit(change);
+    }
+
     /// Recomputes fold hints, match cache, row budget and the cursor clamp.
     pub(super) fn refresh_derived_state(&mut self) {
         self.refresh_derived_state_after(None);

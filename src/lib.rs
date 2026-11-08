@@ -493,6 +493,19 @@ pub struct FrameOutcome {
     pub needs_another_frame: bool,
 }
 
+#[cfg(alloc_frugal)]
+impl FrameOutcome {
+    /// Whether the host should keep the fast cadence for the next iteration.
+    ///
+    /// The same expression the runtime profiles use (`needs_another_frame || events_dispatched >
+    /// 0`). In this profile both inputs are structurally zero: there is no animation bus to owe a
+    /// frame and no trigger queue to dispatch one, so the answer is the honest `false` and every
+    /// shared backend loop settles on its idle backstop.
+    pub fn wants_fast_cadence(&self) -> bool {
+        self.needs_another_frame || self.events_dispatched > 0
+    }
+}
+
 /// Drives one frame in the allocation-frugal profile.
 ///
 /// # Why this is a real function and not a stub

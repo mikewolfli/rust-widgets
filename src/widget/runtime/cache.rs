@@ -112,8 +112,19 @@ pub(crate) fn note_renderable_change() {
 /// whose root is not a window — every window that holds a cached frame is bumped, which is what
 /// the old single global epoch did for every change; the conservative direction costs repaints,
 /// never staleness.
+///
+/// # The surface's own entry
+///
+/// A mounted surface caches its frame under **its own** id when it is painted as a subtree (see
+/// `render_frame_cached_shared`), while [`repaint_frame_owner`] answers with the window the
+/// surface is linked to. Bumping only that window left the surface's cached frame valid forever:
+/// the first container frame was replayed after every change. The surface therefore bumps its own
+/// entry as well. No extra lookup is paid for a control inside a window, and a control inside a
+/// surface needs none either — its owner cannot be resolved (a surface has no parent in the
+/// tree), so the `None` arm above already bumps every entry, the surface's included.
 pub(crate) fn note_renderable_change_for(id: ObjectId) {
     let owner = repaint_frame_owner(id);
+    let surface_frame = surface_window_for(id).map(|_| id);
     let _ = TREE_FRAME_EPOCHS.try_with(|epochs| {
         let mut epochs = epochs.borrow_mut();
         match owner {
@@ -124,6 +135,11 @@ pub(crate) fn note_renderable_change_for(id: ObjectId) {
                 for epoch in epochs.values_mut() {
                     *epoch = epoch.wrapping_add(1);
                 }
+            }
+        }
+        if let Some(surface) = surface_frame {
+            if owner != Some(surface) {
+                *epochs.entry(surface).or_insert(1) += 1;
             }
         }
     });
@@ -206,6 +222,37 @@ thread_local! {
     /// the only place the queue is emptied.
     #[allow(clippy::missing_const_for_thread_local)]
     pub(crate) static DEFERRED_DAMAGE_INDEX: RefCell<HashMap<ObjectId, usize>> = RefCell::new(HashMap::new());
+
+    /// Generation of the cached `subtree_metrics` table (RD3-02).
+    ///
+    /// `subtree_metrics` answers from geometry, visibility, the child list and
+    /// `has_open_popup` — the **structure** of a painted subtree. This counter changes whenever
+    /// one of those can have changed: a control asked for a redraw or showed/hid itself, its
+    /// geometry was written, a popup grab was set or released, or a control mounted or was
+    /// destroyed. Those are exactly the events that produce a repaint *because the picture's shape
+    /// changed*.
+    ///
+    /// # Why this is not `LAYER_EPOCH` or `TREE_FRAME_EPOCH`
+    ///
+    /// The layer epoch is bumped only for causes no rectangle describes, so a visibility or popup
+    /// change that lands in a rectangle path leaves it alone; the tree-frame epoch is bumped by
+    /// *every* damage submission, including an animating control's per-frame damage, which would
+    /// make the metrics cache miss on exactly the frames it exists to serve. Animation damage goes
+    /// through `mark_dirty_rect`, which deliberately does not bump this counter: an animating
+    /// control changes pixels, not the layout of the tree.
+    #[allow(clippy::missing_const_for_thread_local)]
+    pub(crate) static STRUCTURE_EPOCH: core::cell::Cell<u64> = const { core::cell::Cell::new(0) };
+}
+
+/// The current structure generation. See [`STRUCTURE_EPOCH`].
+pub(crate) fn structure_epoch() -> u64 {
+    STRUCTURE_EPOCH.try_with(|epoch| epoch.get()).unwrap_or(0)
+}
+
+/// Records that a subtree's structure — its geometry, visibility, children or popup — may have
+/// changed. See [`STRUCTURE_EPOCH`].
+pub(crate) fn note_structure_changed() {
+    let _ = STRUCTURE_EPOCH.try_with(|epoch| epoch.set(epoch.get().wrapping_add(1)));
 }
 
 /// The current per-widget layer epoch for this thread.

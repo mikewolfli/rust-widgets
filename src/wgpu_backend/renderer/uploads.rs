@@ -11,7 +11,7 @@
 use super::super::raster::text_coverage_into;
 use super::super::types::{PixelRect, Rgba8};
 use super::frame::WgpuRenderer;
-use super::resources::{ParamsFamily, TextureKey};
+use super::resources::{ParamsFamily, TextCoverageKey, TextureKey};
 use std::sync::Arc;
 
 /// One image draw in the command-stream pass.
@@ -337,25 +337,41 @@ impl WgpuRenderer {
     /// blends — and the result is a one-byte-per-pixel `R8Unorm` texture. The fragment shader
     /// multiplies that coverage by the text colour, so what moves to the GPU is the per-pixel
     /// colour work and the composite, not the glyph shapes.
+    ///
+    /// # Why the coverage texture is cached (RD3-04)
+    ///
+    /// Coverage depends on the text, its box and the face that answered each character — not on
+    /// the colour or the destination, which are params the shader reads. A caption redrawn every
+    /// frame therefore has byte-identical coverage every frame, and this used to allocate a fresh
+    /// `Vec`, rasterise the whole box and upload it again each time. The key is that complete
+    /// content identity ([`TextCoverageKey`]), so a hit costs a hash lookup and a handle clone.
     pub(super) fn upload_text_draw(&self, rect: PixelRect, text: &str, color: Rgba8) -> TextDraw {
-        let mut coverage = vec![0u8; rect.width as usize * rect.height as usize];
-        text_coverage_into(rect, text, &mut coverage);
-        self.upload_coverage_draw(rect, &coverage, color)
+        let key = TextCoverageKey::new(text, rect.width, rect.height);
+        let cached = self.text_coverage_cache.borrow().view(&key, text);
+        let view = match cached {
+            Some(view) => view,
+            None => {
+                let mut coverage = vec![0u8; rect.width as usize * rect.height as usize];
+                text_coverage_into(rect, text, &mut coverage);
+                let (texture, view) = self.coverage_texture(rect, &coverage);
+                self.text_coverage_cache.borrow_mut().insert(
+                    key,
+                    Arc::from(text),
+                    texture,
+                    view.clone(),
+                );
+                view
+            }
+        };
+        self.text_draw_bind_group(rect, color, view)
     }
 
-    /// Uploads a caller-supplied coverage mask and returns the bind group that draws it.
-    ///
-    /// This is the shaped-text half of [`Self::upload_text_draw`]: the bytes are already in the
-    /// layout the reference compositor used, so this method only uploads them. `coverage` must be
-    /// exactly `rect.width * rect.height` bytes; the frame encoder checks that before calling, and
-    /// a mismatch here would make `write_texture` read the wrong number of rows.
-    pub(super) fn upload_coverage_draw(
+    /// Creates the `R8Unorm` coverage texture for `rect` and writes `coverage` into it.
+    fn coverage_texture(
         &self,
         rect: PixelRect,
         coverage: &[u8],
-        color: Rgba8,
-    ) -> TextDraw {
-        debug_assert_eq!(coverage.len(), rect.width as usize * rect.height as usize);
+    ) -> (wgpu::Texture, wgpu::TextureView) {
         let size =
             wgpu::Extent3d { width: rect.width, height: rect.height, depth_or_array_layers: 1 };
         let texture = self.device.create_texture(&wgpu::TextureDescriptor {
@@ -384,6 +400,16 @@ impl WgpuRenderer {
             size,
         );
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        (texture, view)
+    }
+
+    /// Writes one text box's params and binds it to `view`.
+    fn text_draw_bind_group(
+        &self,
+        rect: PixelRect,
+        color: Rgba8,
+        view: wgpu::TextureView,
+    ) -> TextDraw {
         let mut data = [0u8; 32];
         write_f32s(
             &mut data,
@@ -418,6 +444,23 @@ impl WgpuRenderer {
             ],
         });
         TextDraw { bind_group }
+    }
+
+    /// Uploads a caller-supplied coverage mask and returns the bind group that draws it.
+    ///
+    /// This is the shaped-text half of [`Self::upload_text_draw`]: the bytes are already in the
+    /// layout the reference compositor used, so this method only uploads them. `coverage` must be
+    /// exactly `rect.width * rect.height` bytes; the frame encoder checks that before calling, and
+    /// a mismatch here would make `write_texture` read the wrong number of rows.
+    pub(super) fn upload_coverage_draw(
+        &self,
+        rect: PixelRect,
+        coverage: &[u8],
+        color: Rgba8,
+    ) -> TextDraw {
+        debug_assert_eq!(coverage.len(), rect.width as usize * rect.height as usize);
+        let (_texture, view) = self.coverage_texture(rect, coverage);
+        self.text_draw_bind_group(rect, color, view)
     }
 
     /// Writes one path's cover params into the shared arena and returns their dynamic offset.

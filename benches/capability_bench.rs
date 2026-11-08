@@ -229,6 +229,30 @@ fn bench_flex_arrange_uncached(c: &mut Criterion) {
     });
 }
 
+/// A **resize sweep**: the same row arranged against a monotonically changing width (DM4-5).
+///
+/// This is the shape an interactive drag produces — every tick a new client size, so the layout
+/// cache misses and the solver runs — which the cached/uncached pair above cannot show: those
+/// alternate two sizes to measure a miss, not a sustained sweep. The sequence never repeats, so a
+/// monotonic sweep also cannot be served by a two-entry cache.
+#[cfg(not(target_arch = "wasm32"))]
+fn bench_flex_arrange_resize_sweep(c: &mut Criterion) {
+    use rust_widgets::layout::Layout;
+    let (layout, children) = flex_fixture();
+    let mut scratch = Vec::with_capacity(children.len());
+    c.bench_function("flex_arrange_40_children_resize_sweep", |b| {
+        b.iter(|| {
+            // One drag-like sweep per iteration: 200 distinct sizes, then start over.
+            for step in 0..200u32 {
+                let rect = rust_widgets::core::Rect::new(0, 0, 800 + step, 40);
+                scratch.clear();
+                layout.arrange(rect, &children, &mut |_, child| scratch.push(child));
+                black_box(scratch.len());
+            }
+        })
+    });
+}
+
 /// The declarative-view benches, kept in one always-registered entry so the `criterion_group!`
 /// list stays valid when `declarative_view` is compiled out.
 #[cfg(not(target_arch = "wasm32"))]
@@ -253,7 +277,8 @@ criterion_group!(
     bench_event_queue_batch_drain,
     bench_view_suite,
     bench_flex_arrange_cached,
-    bench_flex_arrange_uncached
+    bench_flex_arrange_uncached,
+    bench_flex_arrange_resize_sweep
 );
 #[cfg(not(target_arch = "wasm32"))]
 criterion_main!(benches);

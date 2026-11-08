@@ -76,13 +76,17 @@ pub extern "C" fn rw_quit() {
 /// is the *frame* step, not the *input* source — the same division
 /// `Platform::run` documents for a backend whose loop is externally driven.
 ///
-/// Returns whether another frame is owed (an animation is still settling). A host
-/// that ignores the answer still receives every queued trigger; it simply may not
-/// paint the final settle frame of an animation until its next call. In the
-/// allocation-frugal profile there is no animation bus, so the honest answer is
-/// always `false` — the same answer `crate::drive_frame` gives there.
+/// Returns whether another frame is owed. The answer is
+/// [`FrameOutcome::wants_fast_cadence`], the same predicate every platform loop uses: it is
+/// `true` while an animation is still settling **and** while this frame dispatched a trigger
+/// (a resize, a move), because such a frame needs display-rate frames even though nothing is
+/// animating — a host that paced itself on the animation bit alone would fall back to its idle
+/// interval in the middle of a drag. A host that ignores the answer still receives every queued
+/// trigger; it simply may not paint the final settle frame (or the next step of a drag) until
+/// its next call. In the allocation-frugal profile there is no animation bus, so the honest
+/// answer is `false` — the same answer `crate::drive_frame` gives there.
 pub extern "C" fn rw_pump_frame(delta_ms: c_uint) -> CBool {
-    c_try!({ crate::drive_frame(delta_ms).needs_another_frame })
+    c_try!({ crate::drive_frame(delta_ms).wants_fast_cadence() })
 }
 
 /// Destroy a widget created by any `rw_create_*` call.

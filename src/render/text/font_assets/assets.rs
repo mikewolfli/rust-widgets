@@ -367,6 +367,18 @@ static FACE_GENERATION: core::sync::atomic::AtomicU32 = core::sync::atomic::Atom
 static SLOT_GENERATIONS: crate::compat::Mutex<[u32; COVERAGE_CACHE_SLOTS]> =
     crate::compat::Mutex::new([0u32; COVERAGE_CACHE_SLOTS]);
 
+/// The current face-list generation.
+///
+/// A cache outside this module that stores **rasterised output** — the wgpu text-coverage
+/// texture, for example — must include this in its key: the bytes it stores describe which face
+/// answered a character, and a `register_face`/`clear_faces` between two draws changes that
+/// without changing the text (RD3-04).
+/// The only consumer is behind `gpu-wgpu`, so the allowance covers builds without it.
+#[allow(dead_code)]
+pub(crate) fn face_generation() -> u32 {
+    FACE_GENERATION.load(core::sync::atomic::Ordering::Acquire)
+}
+
 /// The face that covers `ch`, consulting **host-registered faces first**.
 ///
 /// # Why this exists rather than every caller walking `active_faces`

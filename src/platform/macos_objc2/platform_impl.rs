@@ -34,13 +34,14 @@ fn resolve_host(window_id: u64) -> u64 {
     }
 }
 
-/// The frame interval this backend's loop runs at, in milliseconds.
+/// The **delta** this backend advances the library by, in milliseconds.
 ///
 /// The same value as every other backend's twin constant, and named here for the same
-/// reason: the sleep between iterations and the delta handed to [`crate::drive_frame`]
-/// must be the same number, or every transition runs at the ratio between them with
-/// nothing to notice the mismatch. A backend that later runs at the display's own rate
-/// changes exactly this value.
+/// reason: a transition must take the time its theme asked for. It is the delta handed to
+/// [`crate::drive_frame`] on every tick, including an idle tick; the loop's **wake cadence**
+/// is decided by the frame outcome through
+/// `platform::frame_wait::pause_between_frames`, never by this number (PL3-1). A backend that
+/// later runs at the display's own rate changes exactly this value.
 const FRAME_INTERVAL_MS: u64 = crate::platform::types::FRAME_INTERVAL_MS;
 
 impl Platform for MacOSObjc2Platform {
@@ -1096,31 +1097,47 @@ impl Platform for MacOSObjc2Platform {
         // `crate::drive_frame` drains and then advances the animation bus; the drain alone
         // re-ran layout but left every animation inert, because nothing on this backend ran
         // the per-frame step (BLUE24 §0A.1 measurement 1).
-        // The loop is paced by the wait below: it blocks in the native run loop when a native
-        // window is available, so an idle window no longer wakes every frame.
+        //
+        // The loop is paced by the vsync wait below when a display link is live, and by the
+        // shared deadline grid otherwise: it blocks in the native run loop when a native window
+        // is available, so an idle window no longer wakes every frame, and the delta it was
+        // woken for is the measured presented-time delta rather than a fixed 16 ms (PL3-3).
+        #[cfg(all(target_os = "macos", feature = "macos"))]
+        let mut next_delta = FRAME_INTERVAL_MS as u32;
         while self.runtime.running.load(Ordering::SeqCst) {
             // The run-loop wait is this backend's blocking primitive: pumping here is what
             // makes the native window draw and receive input, and waiting *inside* the run loop
-            // keeps that input immediate while an idle window is not polled. The shared deadline
-            // grid decides how long it may block, and `pump_native_event_until` reports whether
-            // it dispatched an event before the timeout -- the early wake the grid keeps the
-            // deadline across. The pump still runs with a zero timeout when a frame is already
-            // due, so a long frame cannot starve input.
+            // keeps that input immediate while an idle window is not polled. The pump still runs
+            // with a zero timeout when a frame is already due, so a long frame cannot starve
+            // input.
             #[cfg(all(target_os = "macos", feature = "macos"))]
             {
-                let outcome = crate::drive_frame(FRAME_INTERVAL_MS as u32);
+                let outcome = crate::drive_frame(next_delta);
                 // An idle window's display-link callback then skips its published deadline
                 // and its wake until a frame is owed again (PL-04).
-                crate::platform::display_link::note_frame_demand(outcome.needs_another_frame);
-                crate::platform::frame_wait::pause_between_frames_with(
-                    outcome.needs_another_frame,
+                //
+                // The demand bit is `wants_fast_cadence`, not `needs_another_frame`: a
+                // resize/move frame owes the fast cadence without advancing an animation, and
+                // gating the link on the animation bit would freeze `next_deadline()` at the last
+                // published instant — a past deadline this loop would then spin on with a zero
+                // wait (PL3-2/PL3-3).
+                crate::platform::display_link::note_frame_demand(outcome.wants_fast_cadence());
+                // The entry this backend's own `supports_vsync_frame` / `next_vsync_deadline`
+                // declarations promised: wait for the display link's presentation instant and
+                // report the measured presented-time delta for the next frame. With no live
+                // deadline it falls back to the fixed grid and reports `None`, which is the
+                // nominal interval (the previous behaviour).
+                let measured = crate::platform::frame_wait::pause_between_frames_with_vsync(
+                    outcome.wants_fast_cadence(),
+                    crate::platform::display_link::next_deadline,
                     super::native::pump_native_event_until,
                 );
+                next_delta = measured.unwrap_or(FRAME_INTERVAL_MS as u32);
             }
             #[cfg(not(all(target_os = "macos", feature = "macos")))]
             {
                 let outcome = crate::drive_frame(FRAME_INTERVAL_MS as u32);
-                crate::platform::frame_wait::pause_between_frames(outcome.needs_another_frame);
+                crate::platform::frame_wait::pause_between_frames(outcome.wants_fast_cadence());
             }
         }
     }

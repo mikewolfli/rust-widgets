@@ -833,6 +833,11 @@ fn every_window_state_field_is_classified_and_backed_by_a_test() {
             "fallback via `mirrored_flag`",
             "every_mirror_backed_getter_defers_to_the_platform_first",
         ),
+        (
+            "applied",
+            "bookkeeping, read by `apply_window_layout`'s repeat-size guard",
+            "the_applied_layout_guard_skips_a_repeat_size",
+        ),
     ];
 
     // The test reads its own source file: `include_str!` is resolved relative to the
@@ -885,12 +890,92 @@ fn every_window_state_field_is_classified_and_backed_by_a_test() {
     }
 }
 
+/// LY3-01: a repeated pass at the same client size is skipped, a resize re-runs it, and a
+/// newly registered layout runs even at an unchanged size.
+#[test]
+fn the_applied_layout_guard_skips_a_repeat_size() {
+    use crate::core::Rect;
+
+    /// A layout that counts how many times it was asked.
+    struct Counting(Rc<core::cell::Cell<u32>>);
+
+    impl crate::layout::Layout for Counting {
+        fn as_any(&self) -> &dyn core::any::Any {
+            self
+        }
+        fn as_any_mut(&mut self) -> &mut dyn core::any::Any {
+            self
+        }
+        fn add_widget(&mut self, _widget_id: ObjectId, _stretch: u32) {}
+        fn remove_widget(&mut self, _widget_id: ObjectId) {}
+        fn update(&self, rect: Rect, widgets: &mut dyn FnMut(ObjectId, Rect)) {
+            self.0.set(self.0.get() + 1);
+            widgets(1, rect);
+        }
+        fn arrange(
+            &self,
+            rect: Rect,
+            _children: &[crate::layout::ChildInfo],
+            widgets: &mut dyn FnMut(ObjectId, Rect),
+        ) {
+            self.update(rect, widgets);
+        }
+        fn arrange_with_context(
+            &self,
+            rect: Rect,
+            _children: &[crate::layout::ChildInfo],
+            _context: &crate::layout::LayoutContext,
+            widgets: &mut dyn FnMut(ObjectId, Rect),
+        ) {
+            self.update(rect, widgets);
+        }
+        fn update_with_context(
+            &self,
+            rect: Rect,
+            _context: &crate::layout::LayoutContext,
+            widgets: &mut dyn FnMut(ObjectId, Rect),
+        ) {
+            self.update(rect, widgets);
+        }
+    }
+
+    const WINDOW: ObjectId = 0x4C59_0001;
+    WINDOW_STATES.with(|map| {
+        map.borrow_mut().insert(WINDOW, WindowState { w: 800, h: 600, ..WindowState::default() });
+    });
+    let runs = Rc::new(core::cell::Cell::new(0));
+    LAYOUTS.with(|map| {
+        map.borrow_mut().insert(WINDOW, Box::new(Counting(Rc::clone(&runs))));
+    });
+
+    apply_window_layout(WINDOW);
+    assert_eq!(runs.get(), 1, "the first pass asks the layout");
+
+    apply_window_layout(WINDOW);
+    assert_eq!(runs.get(), 1, "an unchanged size must not re-solve the tree (LY3-01)");
+
+    WINDOW_STATES.with(|map| {
+        map.borrow_mut().get_mut(&WINDOW).expect("the window state is present").w = 801;
+    });
+    apply_window_layout(WINDOW);
+    assert_eq!(runs.get(), 2, "a resize must re-solve");
+
+    invalidate_applied_layout(WINDOW);
+    apply_window_layout(WINDOW);
+    assert_eq!(runs.get(), 3, "a freshly registered layout runs even at the same size");
+
+    LAYOUTS.with(|map| map.borrow_mut().remove(&WINDOW));
+    WINDOW_STATES.with(|map| map.borrow_mut().remove(&WINDOW));
+    LAYOUT_CONTEXT_SCALES.with(|map| map.borrow_mut().remove(&WINDOW));
+}
+
 /// The test names this module is expected to define, so the classification table above can be
 /// checked from inside the module it describes.
 const TEST_NAMES: &[&str] = &[
     "the_window_position_mirror_is_read_by_center_on_screen",
     "the_window_geometry_mirror_reaches_the_layout_path",
     "every_mirror_backed_getter_defers_to_the_platform_first",
+    "the_applied_layout_guard_skips_a_repeat_size",
 ];
 
 /// RW-63: the new handle families are id-backed views of the same object.

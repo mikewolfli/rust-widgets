@@ -14,7 +14,7 @@
 //! does not exercise every one of them.
 #![allow(dead_code)]
 use super::{ChildInfo, Layout, LayoutContext};
-use crate::compat::{Any, Box, HashMap, Vec};
+use crate::compat::{Any, Box, HashMap, RefCell, Vec};
 use crate::core::{ObjectId, Point, Rect, Size};
 use crate::widget::Widget;
 /// A positioned child in an absolute layout, with optional size and anchor.
@@ -603,6 +603,13 @@ pub struct AbsoluteLayout {
     /// Membership index, so `has_child`/`widget_count` are O(1) instead of scanning the
     /// entry list once per entry (G-155).
     members: HashMap<ObjectId, ()>,
+    /// The last resolved pass, keyed by the rect it was computed from (LY3-02).
+    ///
+    /// Absolute was the one layout with no LAY-005-style cache, so a no-op pass — a `Moved`
+    /// trigger, a parent re-entering this panel at an unchanged rect — rebuilt every child's
+    /// rectangle. The key is the whole parent rect (including its origin, which the resolution
+    /// ignores but which costs nothing to compare); every mutator clears it.
+    last_layout: RefCell<Option<(Rect, Vec<Rect>)>>,
 }
 
 /// A single child of an absolute layout: its id, captured size hint, position, and
@@ -626,7 +633,12 @@ struct AbsoluteEntry {
 impl AbsoluteLayout {
     /// Creates a layout with no children.
     pub fn new() -> Self {
-        Self { children: Vec::new(), members: HashMap::new() }
+        Self { children: Vec::new(), members: HashMap::new(), last_layout: RefCell::new(None) }
+    }
+
+    /// Drops the cached pass after any mutation (LY3-02).
+    fn invalidate_last_layout(&mut self) {
+        self.last_layout.get_mut().take();
     }
     /// Adds a child at an absolute position, with no size constraint.
     ///
@@ -635,6 +647,7 @@ impl AbsoluteLayout {
     pub fn add_child(&mut self, child: Box<dyn Widget>, position: AbsolutePosition) {
         let widget_id = child.id();
         let size_hint = child.size_hint();
+        self.invalidate_last_layout();
         self.members.insert(widget_id, ());
         self.children.push(AbsoluteEntry {
             widget_id,
@@ -653,6 +666,7 @@ impl AbsoluteLayout {
     ) {
         let widget_id = child.id();
         let size_hint = child.size_hint();
+        self.invalidate_last_layout();
         self.members.insert(widget_id, ());
         self.children.push(AbsoluteEntry {
             widget_id,
@@ -668,6 +682,7 @@ impl AbsoluteLayout {
     /// `index` shift down by one.
     pub fn remove_child(&mut self, index: usize) -> Option<Box<dyn Widget>> {
         if index < self.children.len() {
+            self.invalidate_last_layout();
             let removed = self.children.remove(index);
             if !self.children.iter().any(|entry| entry.widget_id == removed.widget_id) {
                 self.members.remove(&removed.widget_id);
@@ -680,6 +695,7 @@ impl AbsoluteLayout {
     /// Position and constraint state goes with them; the layout is left empty, as
     /// if freshly constructed.
     pub fn clear_children(&mut self) {
+        self.invalidate_last_layout();
         self.children.clear();
         self.members.clear();
     }
@@ -737,6 +753,7 @@ impl AbsoluteLayout {
     pub fn set_position(&mut self, index: usize, position: AbsolutePosition) -> bool {
         if let Some(entry) = self.children.get_mut(index) {
             entry.position = position;
+            self.invalidate_last_layout();
             true
         } else {
             false
@@ -773,6 +790,7 @@ impl AbsoluteLayout {
         match self.entry_for_mut(id) {
             Some(entry) => {
                 entry.position = position;
+                self.invalidate_last_layout();
                 true
             }
             None => false,
@@ -791,6 +809,7 @@ impl AbsoluteLayout {
             Some(entry) => {
                 entry.position.x = point.x;
                 entry.position.y = point.y;
+                self.invalidate_last_layout();
                 true
             }
             None => false,
@@ -808,6 +827,7 @@ impl AbsoluteLayout {
             Some(entry) => {
                 entry.position =
                     AbsolutePosition::new(rect.x, rect.y).with_size(rect.width, rect.height);
+                self.invalidate_last_layout();
                 true
             }
             None => false,
@@ -837,6 +857,7 @@ impl AbsoluteLayout {
     pub fn set_constraint(&mut self, index: usize, constraint: Constraint) -> bool {
         if let Some(entry) = self.children.get_mut(index) {
             entry.constraint = Some(constraint);
+            self.invalidate_last_layout();
             true
         } else {
             false
@@ -855,6 +876,7 @@ impl AbsoluteLayout {
     ) -> bool {
         if let Some(entry) = self.children.get_mut(index) {
             entry.constraint = constraint;
+            self.invalidate_last_layout();
             true
         } else {
             false
@@ -897,6 +919,7 @@ impl Layout for AbsoluteLayout {
         // `insert` returning `None` means the id was absent; the `compat::HashMap` may be a
         // `BTreeMap` under `alloc_frugal`, so a std-only `hash_map::Entry` cannot be named here.
         if self.members.insert(widget_id, ()).is_none() {
+            self.invalidate_last_layout();
             self.children.push(AbsoluteEntry {
                 widget_id,
                 size_hint: None,
@@ -907,17 +930,30 @@ impl Layout for AbsoluteLayout {
     }
 
     fn remove_widget(&mut self, widget_id: ObjectId) {
+        self.invalidate_last_layout();
         self.children.retain(|entry| entry.widget_id != widget_id);
         self.members.remove(&widget_id);
     }
 
     fn update(&self, rect: Rect, widgets: &mut dyn FnMut(ObjectId, Rect)) {
+        // A pass for the rect the previous one already resolved replays the cached rectangles
+        // (LY3-02). The borrow is held across the callback, as every other layout's cache does:
+        // the callback writes geometry and may request a repaint, and neither re-enters here.
+        if let Some((cached_rect, positions)) = self.last_layout.borrow().as_ref() {
+            if *cached_rect == rect {
+                for (entry, child_rect) in self.children.iter().zip(positions.iter()) {
+                    widgets(entry.widget_id, *child_rect);
+                }
+                return;
+            }
+        }
         let positions = self.layout(rect);
         for (i, child_rect) in positions.iter().enumerate() {
             if let Some(entry) = self.children.get(i) {
                 widgets(entry.widget_id, *child_rect);
             }
         }
+        *self.last_layout.borrow_mut() = Some((rect, positions));
     }
 
     // G-403: the trait no longer defaults these entries; each forward reproduces the previous fallback behaviour.

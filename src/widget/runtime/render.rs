@@ -474,6 +474,13 @@ pub fn render_frame_cached_shared(
     if size.width == 0 || size.height == 0 {
         return None;
     }
+    // See `render_frame`: a container's frame is a subtree frame. The tree cache keys on the
+    // widget's own renderable epoch (and the global repaint generation), which
+    // `note_renderable_change_for` bumps for a mounted surface as well as for a window, so a
+    // repeat of an unchanged frame is still an `Rc` clone rather than a repaint.
+    if has_painted_children(id) {
+        return render_frame_tree_cached_shared(id, size, clear);
+    }
 
     // Take a shared handle to the previous frame — a pointer clone, not a pixel copy. A frame of
     // the wrong size is treated as absent so the callee falls back to a full paint.
@@ -597,6 +604,24 @@ pub fn adaptive_large_damage_run(id: ObjectId) -> u32 {
         .unwrap_or(0)
 }
 
+/// Whether `id` is a mounted widget whose descendants the tree painter must visit.
+///
+/// # Why the cached surface painter asks
+///
+/// A mounted surface is usually a leaf control, and the platform paints it with one widget's
+/// box. A container mounted that way (`MdiArea`, a panel-like widget) is different: its children
+/// are ids in the registry, not fields of the container, so the single-widget painter
+/// ([`render_frame`], whose "exactly one widget" contract is deliberate and pinned by
+/// `window_tree_paints_visible_controls_test`) would leave every child unpainted. The cached
+/// surface entry point and the window-tree entry point are the two painters that own a
+/// *picture*, so they answer this question; `render_frame` keeps its narrower contract.
+///
+/// The answer is read from the widget rather than from a kind table, so a container the library
+/// has never heard of is served the same way. An unmounted (or lent-out) id answers `false`.
+fn has_painted_children(id: ObjectId) -> bool {
+    read_widget(id, |widget| !widget.base().children().is_empty()).unwrap_or(false)
+}
+
 /// Renders one frame of a mounted widget at `size` and returns the RGBA bytes.
 ///
 /// `bytes.len() == size.width * size.height * 4`, top-down, straight (non
@@ -682,6 +707,10 @@ pub(crate) fn overlay_child_flag(child: ObjectId) -> bool {
 /// notification is the repaint the state change must request to become visible, plus the popup
 /// grab lifecycle every popup's open and close goes through.
 pub(crate) fn note_overlay_maybe_changed(id: Option<ObjectId>) {
+    // A popup opening or closing, a control showing or hiding itself, and a surface mounting or
+    // unmounting all change the *structure* a painted subtree has — so the metrics table that
+    // records that structure is stale (RD3-02), whether or not the caller named a rectangle.
+    note_structure_changed();
     OVERLAY_CHILD_FLAGS.with(|flags| {
         let mut flags = flags.borrow_mut();
         match id {
@@ -836,8 +865,25 @@ pub fn render_frame_tree(id: ObjectId, size: Size, clear: crate::core::Color) ->
         // `SubtreeMetrics` is a per-frame memo: subtree bounds and the open-popup flag are each
         // computed once per node, not once per ancestor that asks for them. The table is taken from
         // a thread-local slot and returned afterwards, so a static frame allocates none (G-36).
-        let mut metrics = TREE_METRICS.with(|slot| core::mem::take(&mut *slot.borrow_mut()));
-        metrics.clear();
+        //
+        // RD3-02: the slot now keeps the table across frames while the **structure generation**
+        // and the global repaint generation are unchanged. A repaint caused by one control's
+        // animation damage therefore re-walks only the subtrees whose layers were dropped, instead
+        // of prefetching metrics for the whole tree again. The generation changes on any geometry,
+        // visibility, popup, mount or teardown change — see `cache::STRUCTURE_EPOCH` for why the
+        // tree-frame epoch cannot be used here (it bumps on every damage submission).
+        let metrics_key = (id, structure_epoch(), global_epoch);
+        let mut metrics = TREE_METRICS_CACHE.with(|slot| {
+            let mut slot = slot.borrow_mut();
+            match slot.take() {
+                Some((cached_key, table)) if cached_key == metrics_key => table,
+                Some((_, mut table)) => {
+                    table.clear();
+                    table
+                }
+                None => HashMap::new(),
+            }
+        });
         ordered_root_children(&mut root_children);
         // DLG-001: the scrim owner is resolved once per frame, and the plane is painted directly
         // before it. A modal that is one of these children is rasterised into its own layer, where
@@ -895,12 +941,8 @@ pub fn render_frame_tree(id: ObjectId, size: Size, clear: crate::core::Color) ->
                 );
             }
         }
-        TREE_METRICS.with(|slot| {
-            let mut slot = slot.borrow_mut();
-            if metrics.capacity() > slot.capacity() {
-                metrics.clear();
-                *slot = metrics;
-            }
+        TREE_METRICS_CACHE.with(|slot| {
+            *slot.borrow_mut() = Some((metrics_key, metrics));
         });
     }
     ROOT_CHILD_IDS.with(|slot| {
@@ -1157,10 +1199,22 @@ pub(crate) struct SubtreeMetrics {
     pub(crate) has_open_popup: bool,
 }
 
-// The per-frame subtree memo, reused across frames. `render_frame_tree` empties it at the start
-// and stores the grown buffer back at the end (G-36).
+/// The retained `subtree_metrics` table and the key it was computed under (RD3-02).
+type TreeMetricsCache = Option<((ObjectId, u64, u64), HashMap<ObjectId, SubtreeMetrics>)>;
+
 thread_local! {
-    pub(crate) static TREE_METRICS: RefCell<HashMap<ObjectId, SubtreeMetrics>> = RefCell::new(HashMap::new());
+    /// The `subtree_metrics` table, kept across frames under the freshness tokens that decide
+    /// whether it still describes the tree (RD3-02).
+    ///
+    /// Before this the table was a per-frame memo: the layer cache saved rasterising unchanged
+    /// subtrees, but every repaint still re-walked the whole tree to compute their bounds. The key
+    /// pairs the tree's root with the **structure generation**
+    /// ([`structure_epoch`](crate::widget::runtime::cache::structure_epoch)) and the global repaint
+    /// generation. The structure generation is bumped by the events that change a subtree's shape
+    /// (geometry, visibility, popups, mount, teardown) and deliberately not by per-frame animation
+    /// damage, so an animating control's frames reuse the table while any structural change drops
+    /// it on the next frame.
+    pub(crate) static TREE_METRICS_CACHE: RefCell<TreeMetricsCache> = const { RefCell::new(None) };
 }
 
 /// The result of offering one widget subtree to the layer cache.

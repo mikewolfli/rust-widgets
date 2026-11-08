@@ -202,8 +202,10 @@ _rw_cache_key() {
   local environment_digest
   environment_digest="$(
     while IFS= read -r name; do
-      # Harness-owned knobs do not affect a compilation's verdict; see
+      # Harness-owned knobs do not affect the verdict of a compilation; see
       # `RW_CACHE_HARNESS_ENV` above for what including them cost.
+      # (No apostrophe in this comment: bash 3.2 mis-reads a quoted word inside a
+      # command substitution as an opening quote and rejects the whole file.)
       case "$RW_CACHE_HARNESS_ENV" in
         *" $name "*) continue ;;
       esac

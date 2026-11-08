@@ -22,9 +22,15 @@
 //! # Precision, and what a caller may rely on
 //!
 //! `after` is a **lower bound**. Work becomes due at its deadline and runs on the next frame that
-//! follows, so the granularity is one frame interval (~16 ms on every backend here) and a still
-//! window does not change it: the loops tick unconditionally. A caller that needs sub-frame
-//! precision wants a toolkit timer, not this.
+//! follows. The frame cadence is two-tiered since G-503: while a frame is owed the loops run at
+//! [`FRAME_INTERVAL_MS`](crate::platform::types::FRAME_INTERVAL_MS) (~16 ms), and a still window
+//! blocks until a wake or the idle backstop
+//! ([`IDLE_FRAME_INTERVAL_MS`](crate::platform::types::IDLE_FRAME_INTERVAL_MS), 100 ms).
+//! [`schedule_in`] calls [`crate::platform::frame_wait::wake`], so the work is still observed
+//! immediately on every backend whose loop that call can reach — the polling loops through the
+//! condition variable, GTK and Win32 through their wake hooks (PL3-4). On AppKit, whose loop has
+//! no cross-thread wake, the latency of scheduled work is bounded by the idle backstop rather than
+//! by one frame. A caller that needs sub-frame precision wants a toolkit timer, not this.
 //!
 //! # Repeating work
 //!

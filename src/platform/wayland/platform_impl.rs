@@ -466,7 +466,7 @@ impl Platform for WaylandPlatform {
             // applied and every animation stayed frozen. Advance the frame exactly as the
             // Linux backend's state-only loop does, then block when no frame is owed.
             let outcome = crate::drive_frame(FRAME_INTERVAL_MS);
-            crate::platform::frame_wait::pause_between_frames(outcome.needs_another_frame);
+            crate::platform::frame_wait::pause_between_frames(outcome.wants_fast_cadence());
         }
     }
 
@@ -874,6 +874,12 @@ impl WaylandPlatform {
 
         // Idle timeout: bounds quit latency when the compositor is silent.
         const IDLE_TIMEOUT_MS: i32 = 50;
+        // How long the socket wait may block. A frame that owed another one shortens it to this
+        // backend's frame step, so an animation is paced by the loop rather than by the idle
+        // backstop (PL3-2's rule applied to the one loop whose wait is `poll`, not
+        // `pause_between_frames`).
+        const FAST_TIMEOUT_MS: i32 = 1;
+        let mut poll_timeout_ms = FAST_TIMEOUT_MS;
 
         log::info!("[wayland] Entering native fd-based event loop");
         loop {
@@ -909,7 +915,7 @@ impl WaylandPlatform {
                     // immediately, an idle loop blocks until an event or the bounded timeout.
                     // The raw `sleep(16)` was a busy-wait that also discarded the driver's
                     // "another frame owed" answer.
-                    crate::platform::frame_wait::pause_between_frames(outcome.needs_another_frame);
+                    crate::platform::frame_wait::pause_between_frames(outcome.wants_fast_cadence());
                     continue;
                 }
             };
@@ -932,7 +938,7 @@ impl WaylandPlatform {
                     let fd = read_guard.connection_fd().as_raw_fd();
                     let mut pollfd = libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
                     // SAFETY: `pollfd` is a valid stack local and the call touches only this thread's fd set.
-                    let rc = unsafe { libc::poll(&mut pollfd, 1, IDLE_TIMEOUT_MS) };
+                    let rc = unsafe { libc::poll(&mut pollfd, 1, poll_timeout_ms) };
                     if rc > 0 {
                         // Data available: read it, then dispatch to handlers.
                         if let Err(e) = read_guard.read() {
@@ -968,7 +974,15 @@ impl WaylandPlatform {
             // never read. Without the animation step that follows it, every hover fade and
             // caret blink was inert on this backend for the same reason it was on the
             // others (BLUE24 §0A.1 measurement 1). See `crate::drive_frame`.
-            crate::drive_frame(FRAME_INTERVAL_MS);
+            //
+            // The outcome decides the next socket wait: an owed frame (or a dispatched trigger,
+            // see `wants_fast_cadence`) shortens it to one millisecond; a still window returns to
+            // the idle backstop. The timeout is stored for the next `poll` above, so the first
+            // iteration waits one millisecond and every later one follows the previous frame's
+            // demand.
+            let outcome = crate::drive_frame(FRAME_INTERVAL_MS);
+            poll_timeout_ms =
+                if outcome.wants_fast_cadence() { FAST_TIMEOUT_MS } else { IDLE_TIMEOUT_MS };
         }
         log::info!("[wayland] Native event loop exited");
     }

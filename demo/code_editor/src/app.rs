@@ -424,10 +424,22 @@ fn build_editor(
 /// renders at start-up: one formatter for both paths.
 fn wire_status_bar(editor: &CodeEditor, target: Arc<Mutex<Option<ObjectId>>>) {
     let facts = Arc::new(Mutex::new(StatusFacts::of(editor)));
+    // The text last written, so a signal that produces the same line does not cost another native
+    // status-bar write (DM4-3). This is the same guard finance's `EventLog::shown` uses.
+    let last_shown = Arc::new(Mutex::new(String::new()));
     let publish_facts = Arc::clone(&facts);
+    let publish_shown = Arc::clone(&last_shown);
     let publish = move || {
         let Some(id) = *target.lock().unwrap() else { return };
         let line = publish_facts.lock().unwrap().render();
+        {
+            let mut shown = publish_shown.lock().unwrap();
+            if *shown == line {
+                return;
+            }
+            shown.clear();
+            shown.push_str(&line);
+        }
         rust_widgets::set_widget_text(id, &line);
     };
 
@@ -441,12 +453,26 @@ fn wire_status_bar(editor: &CodeEditor, target: Arc<Mutex<Option<ObjectId>>>) {
         cursor_publish();
     });
 
+    // DM4-3: the line total comes from the change description, which carries `removed_lines` and
+    // `inserted_lines` for the edited region — O(1) instead of `text.lines().count()` over the whole
+    // document on every keystroke. `text_change` fires for every committed change (including
+    // `set_text`/load, where `whole_document` makes `inserted_lines` the total).
     let (text_facts, text_publish) = (Arc::clone(&facts), publish);
-    editor.text_changed.connect(move |text| {
+    editor.text_change.connect(move |change| {
         {
             let mut facts = text_facts.lock().unwrap();
-            facts.lines = text.lines().count().max(1);
-            facts.modified = true;
+            facts.lines = if change.whole_document {
+                change.inserted_lines
+            } else {
+                facts.lines.saturating_sub(change.removed_lines) + change.inserted_lines
+            }
+            .max(1);
+            // The buffer's save-point state, not "an event arrived": undo/redo that returns the
+            // document to the point it was saved at clears the editor's flag, and the status bar
+            // must drop the marker with it. The editor captured the fact at emit time because a
+            // subscriber cannot query a widget that is lent out for the edit (see
+            // `TextChange::modified`).
+            facts.modified = change.modified;
         }
         text_publish();
     });

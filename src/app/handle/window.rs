@@ -782,6 +782,10 @@ impl WindowHandle {
         LAYOUTS.with(|map| {
             map.borrow_mut().insert(self.id, Box::new(layout));
         });
+        // The pass below is guarded by the size it last applied, and a freshly registered layout
+        // has never been applied to any size. Dropping the record is what keeps the guard from
+        // swallowing a layout set at an unchanged size (LY3-01).
+        invalidate_applied_layout(self.id);
         apply_window_layout(self.id);
     }
 
@@ -855,10 +859,25 @@ pub(crate) fn apply_window_layout(window_id: ObjectId) {
     };
 
     let context = crate::layout::types::LayoutContext::default();
+    let scale = context.layout_scale.max(context.font_scale);
+    // LY3-01: a `Moved` trigger re-runs this pass on every tick even though neither the client
+    // size nor the device scale changed, and the layout is a pure function of exactly those two
+    // inputs (plus the layout object itself, which only changes through `set_layout`/
+    // `store_layout` — both of which invalidate the record). The scale is compared against the
+    // value the previous pass published, so a DPI or text-scale switch at an unchanged pixel size
+    // still re-lays the tree.
+    if applied_layout_is_current(window_id, width, height, scale) {
+        return;
+    }
     // Published before the pass so a diagnostic can read the scale that was actually used
     // even when the layout ignores the context entirely.
     LAYOUT_CONTEXT_SCALES.with(|map| {
-        map.borrow_mut().insert(window_id, context.layout_scale.max(context.font_scale));
+        map.borrow_mut().insert(window_id, scale);
+    });
+    WINDOW_STATES.with(|map| {
+        if let Some(state) = map.borrow_mut().get_mut(&window_id) {
+            state.applied = Some((width, height));
+        }
     });
     // LY-07: the list is taken from a per-thread pool and returned after it has been applied, so a
     // resize reuses one allocation per nesting level instead of making one.
@@ -873,11 +892,13 @@ pub(crate) fn apply_window_layout(window_id: ObjectId) {
             // mirrored into `LAYOUTS`.
             if crate::layout::declarative::has_layout(window_id) {
                 // The pool entry is not used on this path: `apply_layout` builds its own list and
-                // returns it to the caller, so handing it back keeps the pool warm.
+                // returns it to the caller, so handing it back keeps the pool warm. The context
+                // built above is handed down instead of a second one being built there (LY3-04).
                 crate::layout::scratch::return_geometry_scratch(scratch);
-                return crate::layout::declarative::apply_layout(
+                return crate::layout::declarative::apply_layout_in_context(
                     window_id,
                     Rect::new(0, 0, width, height),
+                    &context,
                 );
             }
             return scratch;
@@ -915,10 +936,40 @@ pub(crate) fn apply_window_layout(window_id: ObjectId) {
             apply_panel_geometry(widget_id, geometry);
         }
         if crate::layout::declarative::has_layout(widget_id) {
-            crate::layout::declarative::apply_layout(widget_id, geometry);
+            crate::layout::declarative::apply_layout_in_context(widget_id, geometry, &context);
         }
     }
     crate::layout::scratch::return_geometry_scratch(child_geometries);
+}
+
+/// Whether the last layout pass already ran for `(width, height, scale)` (LY3-01).
+///
+/// The scale is read from [`LAYOUT_CONTEXT_SCALES`] rather than stored beside the size, because
+/// that table already records exactly "the scale the previous pass was asked with" — a second copy
+/// would be a mirror that could disagree with it (principle #99).
+fn applied_layout_is_current(window_id: ObjectId, width: u32, height: u32, scale: f32) -> bool {
+    let applied = WINDOW_STATES
+        .try_with(|map| map.borrow().get(&window_id).and_then(|state| state.applied))
+        .ok()
+        .flatten();
+    if applied != Some((width, height)) {
+        return false;
+    }
+    LAYOUT_CONTEXT_SCALES.try_with(|map| map.borrow().get(&window_id).copied()).ok().flatten()
+        == Some(scale)
+}
+
+/// Forgets the size the last layout pass applied, so the next pass runs even at the same size.
+///
+/// Called whenever a **new** layout is registered for `window_id`: the guard compares the client
+/// size and the published scale, and a layout that has just been stored has been applied to
+/// neither (LY3-01).
+pub(crate) fn invalidate_applied_layout(window_id: ObjectId) {
+    let _ = WINDOW_STATES.try_with(|map| {
+        if let Some(state) = map.borrow_mut().get_mut(&window_id) {
+            state.applied = None;
+        }
+    });
 }
 
 /// Whether `id` has a child layout registered on it.
@@ -1074,6 +1125,13 @@ pub(crate) struct WindowState {
     pub(crate) fullscreen: bool,
     pub(crate) resizable: bool,
     pub(crate) decorated: bool,
+    /// The client size the last [`apply_window_layout`] pass ran for (LY3-01).
+    ///
+    /// Not a platform mirror: it records what this module last did, so a `Moved` trigger — which
+    /// changes neither the size nor the device scale — no longer re-solves the whole tree. `None`
+    /// means "no pass applied", which also covers a layout registered after the last pass; see
+    /// [`invalidate_applied_layout`].
+    pub(crate) applied: Option<(u32, u32)>,
 }
 
 impl std::fmt::Debug for WindowState {
@@ -1114,6 +1172,7 @@ impl Default for WindowState {
             fullscreen: false,
             resizable: true,
             decorated: true,
+            applied: None,
         }
     }
 }

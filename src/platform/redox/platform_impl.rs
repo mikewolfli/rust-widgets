@@ -264,7 +264,7 @@ impl Platform for OrbitalPlatform {
         while self.running.load(Ordering::SeqCst) {
             self.pump();
             let outcome = crate::drive_frame(FRAME_INTERVAL_MS);
-            crate::platform::frame_wait::pause_between_frames(outcome.needs_another_frame);
+            crate::platform::frame_wait::pause_between_frames(outcome.wants_fast_cadence());
         }
     }
 

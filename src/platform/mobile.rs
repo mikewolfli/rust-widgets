@@ -208,7 +208,7 @@ impl Platform for AndroidMobilePlatform {
         log::info!("[mobile] AndroidMobilePlatform run (state-only preview backend)");
         while self.running.load(Ordering::SeqCst) {
             let outcome = crate::drive_frame(FRAME_INTERVAL_MS as u32);
-            crate::platform::frame_wait::pause_between_frames(outcome.needs_another_frame);
+            crate::platform::frame_wait::pause_between_frames(outcome.wants_fast_cadence());
         }
     }
 

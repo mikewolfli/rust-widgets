@@ -784,8 +784,14 @@ pub fn mark_dirty_rect(id: ObjectId, rect: Rect) -> bool {
         // Narrow when the backend can express it; otherwise fall back to invalidating
         // the whole control. `request_repaint` is the same call the `Full` path uses,
         // so the fallback needs no special handling here.
-        if !crate::invalidate_surface_rect(id, rect) {
-            crate::invalidate_surface(id);
+        //
+        // A control inside a mounted surface is the case both calls refuse: it has no platform
+        // surface of its own, so the damage is submitted against the nearest ancestor that does.
+        // Dropping it here would make the tracker paint a region nothing was asked to show.
+        if !crate::invalidate_surface_rect(id, rect) && !crate::invalidate_surface(id) {
+            if let Some(surface) = surface_root_of(id) {
+                let _ = crate::invalidate_surface(surface);
+            }
         }
         // Account for it against this frame, so `drive_frame`'s `repaints_submitted`
         // reports what the frame actually cost rather than a second bookkeeping pass

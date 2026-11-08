@@ -844,6 +844,8 @@ impl BaseWidget {
             });
         }
         self.request_layout();
+        #[cfg(not(alloc_frugal))]
+        crate::widget::runtime::note_structure_changed();
         true
     }
 
@@ -870,6 +872,10 @@ impl BaseWidget {
         #[cfg(not(alloc_frugal))]
         {
             self.children.push(child);
+            // A child-list change alters every ancestor's painted bounds, which the retained
+            // `subtree_metrics` table records — so it is stale from here (RD3-02). One bump at the
+            // primitive covers `add_child`, `Widget::add_child` and `add_child_linked`.
+            crate::widget::runtime::note_structure_changed();
             true
         }
     }
@@ -905,7 +911,14 @@ impl BaseWidget {
     /// Only edits this list: the removed child's parent link is left pointing
     /// back here. Does nothing if `child` is not present.
     pub fn remove_child(&mut self, child: ObjectId) {
+        let before = self.children.len();
         self.children.retain(|&id| id != child);
+        if self.children.len() != before {
+            // The subtree's painted bounds changed; see `try_add_child` (RD3-02). A no-op removal
+            // does not bump, so a repeat call stays free.
+            #[cfg(not(alloc_frugal))]
+            crate::widget::runtime::note_structure_changed();
+        }
     }
     /// Makes the widget visible by setting its visibility flag.
     ///
@@ -927,6 +940,10 @@ impl BaseWidget {
             return;
         }
         self.visible = true;
+        // Visibility is an input `subtree_metrics` reads, so the cached table is stale even
+        // though the control's own rectangle did not move (RD3-02).
+        #[cfg(not(alloc_frugal))]
+        crate::widget::runtime::note_structure_changed();
         self.request_layout();
         self.request_redraw();
     }
@@ -943,6 +960,9 @@ impl BaseWidget {
             return;
         }
         self.visible = false;
+        // See `show`: a hidden node's painted bounds and popup contribution change with the flag.
+        #[cfg(not(alloc_frugal))]
+        crate::widget::runtime::note_structure_changed();
         // A control hidden while hovered used to keep its hover state and its hover animation
         // until the next pointer move, and a tooltip could still pop up over it (WG-02).
         #[cfg(not(alloc_frugal))]
@@ -1393,6 +1413,13 @@ impl BaseWidget {
         self.ever_requested_redraw.set(true);
         #[cfg(not(alloc_frugal))]
         crate::widget::runtime::mark_widget_damage(self.id(), self.geometry());
+        // A control asking for a whole-control redraw is announcing a change to its own
+        // appearance or structure (a hover, a popup opening, a visibility flip). The frame bus's
+        // per-frame animation damage goes through `mark_dirty_rect` instead, so bumping the
+        // structure generation here is what keeps animated frames served by the metrics cache
+        // (RD3-02).
+        #[cfg(not(alloc_frugal))]
+        crate::widget::runtime::note_structure_changed();
         self.redraw_requested.emit();
     }
 
@@ -1406,6 +1433,8 @@ impl BaseWidget {
         self.ever_requested_redraw.set(true);
         #[cfg(not(alloc_frugal))]
         crate::widget::runtime::mark_widget_damage(self.id(), rect);
+        #[cfg(not(alloc_frugal))]
+        crate::widget::runtime::note_structure_changed();
         #[cfg(alloc_frugal)]
         let _ = rect;
         self.redraw_requested.emit();

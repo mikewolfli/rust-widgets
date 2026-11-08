@@ -15,7 +15,8 @@ use super::encode::INSTANCE_BYTES;
 use super::frame::{passive_stencil_state, WgpuRenderer};
 use super::policy::{CostGate, RenderQuality};
 use super::resources::{
-    CpuFrame, ParamsGroupCache, ParamsGroups, ParamsScratch, RenderCache, TextureCache,
+    CpuFrame, ParamsGroupCache, ParamsGroups, ParamsScratch, RenderCache, TextCoverageCache,
+    TextureCache,
 };
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -1514,6 +1515,7 @@ impl WgpuRenderer {
             shader_cache,
             cache: RefCell::new(RenderCache::default()),
             texture_cache: RefCell::new(TextureCache::default()),
+            text_coverage_cache: RefCell::new(TextCoverageCache::default()),
             params_scratch: RefCell::new(ParamsScratch::default()),
             params_groups: RefCell::new(None::<ParamsGroups>),
             params_group_cache: RefCell::new(ParamsGroupCache::default()),

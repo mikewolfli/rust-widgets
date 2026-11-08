@@ -1,6 +1,21 @@
-//! Widget Gallery Generator — renders all widgets to SVG and generates a gallery HTML page.
+//! Widget Gallery Generator — renders every published control to SVG and generates a gallery page.
 //!
 //! Usage: cargo run --example widget_gallery [output_dir]
+//!
+//! # Why the set comes from the factory (GX2-2)
+//!
+//! This used to hold 24 hand-written entries out of the registry's published set, with six
+//! hand-chosen category names, so the page could silently describe a quarter of the library. The
+//! sweep now asks [`WidgetFactory::widget_names`] — the same source the rendering census uses,
+//! which cannot under-count — and groups each control by [`WidgetKind::designer_category`], the
+//! palette category its capability manifest already carries. A control that is registered but
+//! cannot be constructed is reported on stderr rather than dropped, because that is itself a
+//! finding about the registry.
+//!
+//! # Why the date is generated
+//!
+//! The page used to claim a hard-coded `2026-06-10` regardless of when it ran. It now prints the
+//! UTC date the run happened on, computed from `SystemTime` (no dependency and no locale).
 
 #[cfg(all(
     any(feature = "desktop", feature = "tablet", feature = "mobile"),
@@ -11,12 +26,9 @@ use rust_widgets::core::Rect;
     any(feature = "desktop", feature = "tablet", feature = "mobile"),
     not(any(feature = "mini", feature = "embedded"))
 ))]
-use rust_widgets::widget::svg::render_to_svg;
-#[cfg(all(
-    any(feature = "desktop", feature = "tablet", feature = "mobile"),
-    not(any(feature = "mini", feature = "embedded"))
-))]
-use rust_widgets::widget::*;
+use rust_widgets::widget::{
+    draw_bridge, svg::render_widget_to_svg, AdaptiveScaffold, MdiArea, WidgetFactory, WidgetKind,
+};
 #[cfg(all(
     any(feature = "desktop", feature = "tablet", feature = "mobile"),
     not(any(feature = "mini", feature = "embedded"))
@@ -27,6 +39,20 @@ use std::fs;
     not(any(feature = "mini", feature = "embedded"))
 ))]
 use std::path::PathBuf;
+
+/// The box every control is rendered into.
+#[cfg(all(
+    any(feature = "desktop", feature = "tablet", feature = "mobile"),
+    not(any(feature = "mini", feature = "embedded"))
+))]
+const GALLERY_RECT: Rect = Rect::new(0, 0, 240, 160);
+
+/// The text every control is rendered with, so a caption is not the empty string.
+#[cfg(all(
+    any(feature = "desktop", feature = "tablet", feature = "mobile"),
+    not(any(feature = "mini", feature = "embedded"))
+))]
+const GALLERY_TEXT: &str = "Sample";
 
 /// Gallery entry for a widget
 #[cfg(all(
@@ -40,6 +66,64 @@ struct GalleryEntry {
     render: Box<dyn Fn() -> String>,
 }
 
+/// The UTC date of this run, as `YYYY-MM-DD`.
+///
+/// One small civil-date conversion rather than a dependency: the worst answer for a machine whose
+/// clock predates the epoch is `1970-01-01`, which is honest and impossible to mistake for a
+/// hard-coded claim.
+#[cfg(all(
+    any(feature = "desktop", feature = "tablet", feature = "mobile"),
+    not(any(feature = "mini", feature = "embedded"))
+))]
+fn generated_on() -> String {
+    let seconds = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs())
+        .unwrap_or(0);
+    let (year, month, day) = civil_from_days((seconds / 86_400) as i64);
+    format!("{year:04}-{month:02}-{day:02}")
+}
+
+/// Howard Hinnant's `civil_from_days`, the standard branch-free inverse of the day-count
+/// algorithm (the same one the file dialog and the date editor carry).
+#[cfg(all(
+    any(feature = "desktop", feature = "tablet", feature = "mobile"),
+    not(any(feature = "mini", feature = "embedded"))
+))]
+fn civil_from_days(days: i64) -> (i64, u32, u32) {
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let day_of_era = z - era * 146_097; // [0, 146096]
+    let year_of_era =
+        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let mut year = year_of_era + era * 400;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let month_prime = (5 * day_of_year + 2) / 153;
+    let day = (day_of_year - (153 * month_prime + 2) / 5 + 1) as u32;
+    let month = (if month_prime < 10 { month_prime + 3 } else { month_prime - 9 }) as u32;
+    year += i64::from(month <= 2);
+    (year, month, day)
+}
+
+/// Renders a freshly constructed control to SVG, themed and with sample content.
+#[cfg(all(
+    any(feature = "desktop", feature = "tablet", feature = "mobile"),
+    not(any(feature = "mini", feature = "embedded"))
+))]
+fn render_control(name: &str) -> String {
+    let Some(mut widget) = WidgetFactory::shared().create(name, GALLERY_RECT, GALLERY_TEXT) else {
+        return String::new();
+    };
+    // Content first: a control's default state renders empty otherwise (the same fill the
+    // rendering census applies). The gallery draws every control in the library's default style;
+    // applying an appearance per control is what the census does, and it is a crate-internal step.
+    rust_widgets::widget::sample_fill::apply(name, widget.as_mut());
+    match draw_bridge::draw_of(widget.as_mut()) {
+        Some(drawable) => render_widget_to_svg(drawable, GALLERY_RECT),
+        None => String::new(),
+    }
+}
+
 fn main() {
     #[cfg(all(
         any(feature = "desktop", feature = "tablet", feature = "mobile"),
@@ -50,241 +134,52 @@ fn main() {
         let out_path = PathBuf::from(&out_dir);
         fs::create_dir_all(&out_path).unwrap();
 
-        let entries: Vec<GalleryEntry> = vec![
-            // Base widgets
-            GalleryEntry {
-                name: "Button",
-                kind: WidgetKind::Button,
-                category: "Base",
-                render: Box::new(|| {
-                    let mut w = Button::new("Click Me".to_string(), Rect::new(0, 0, 120, 36));
-                    render_to_svg(&mut w)
-                }),
-            },
-            GalleryEntry {
-                name: "Label",
-                kind: WidgetKind::Label,
-                category: "Base",
-                render: Box::new(|| {
-                    let mut w = Label::new("Hello World".to_string(), Rect::new(0, 0, 200, 24));
-                    render_to_svg(&mut w)
-                }),
-            },
-            GalleryEntry {
-                name: "CheckBox",
-                kind: WidgetKind::CheckBox,
-                category: "Base",
-                render: Box::new(|| {
-                    let mut w = CheckBox::new(Rect::new(0, 0, 24, 24));
-                    render_to_svg(&mut w)
-                }),
-            },
-            GalleryEntry {
-                name: "RadioButton",
-                kind: WidgetKind::RadioButton,
-                category: "Base",
-                render: Box::new(|| {
-                    let mut w = RadioButton::new(Rect::new(0, 0, 24, 24));
-                    render_to_svg(&mut w)
-                }),
-            },
-            GalleryEntry {
-                name: "ToggleButton",
-                kind: WidgetKind::ToggleButton,
-                category: "Base",
-                render: Box::new(|| {
-                    let mut w = ToggleButton::new("Toggle".to_string(), Rect::new(0, 0, 100, 32));
-                    render_to_svg(&mut w)
-                }),
-            },
-            // Input widgets
-            GalleryEntry {
-                name: "LineEdit",
-                kind: WidgetKind::LineEdit,
-                category: "Input",
-                render: Box::new(|| {
-                    let mut w = LineEdit::new(Rect::new(0, 0, 200, 28));
-                    render_to_svg(&mut w)
-                }),
-            },
-            GalleryEntry {
-                name: "ComboBox",
-                kind: WidgetKind::ComboBox,
-                category: "Input",
-                render: Box::new(|| {
-                    let mut w = ComboBox::new(Rect::new(0, 0, 180, 28));
-                    render_to_svg(&mut w)
-                }),
-            },
-            GalleryEntry {
-                name: "SpinBox",
-                kind: WidgetKind::SpinBox,
-                category: "Input",
-                render: Box::new(|| {
-                    let mut w = SpinBox::new(Rect::new(0, 0, 100, 28));
-                    render_to_svg(&mut w)
-                }),
-            },
-            GalleryEntry {
-                name: "Slider",
-                kind: WidgetKind::Slider,
-                category: "Input",
-                render: Box::new(|| {
-                    let mut w = Slider::new(Rect::new(0, 0, 200, 24));
-                    render_to_svg(&mut w)
-                }),
-            },
-            GalleryEntry {
-                name: "ProgressBar",
-                kind: WidgetKind::ProgressBar,
-                category: "Display",
-                render: Box::new(|| {
-                    let mut w = ProgressBar::new(Rect::new(0, 0, 200, 24));
-                    render_to_svg(&mut w)
-                }),
-            },
-            GalleryEntry {
-                name: "ScrollBar",
-                kind: WidgetKind::ScrollBar,
-                category: "Display",
-                render: Box::new(|| {
-                    let mut w = ScrollBar::new(Rect::new(0, 0, 16, 200));
-                    render_to_svg(&mut w)
-                }),
-            },
-            // Container widgets
-            GalleryEntry {
-                name: "GroupBox",
-                kind: WidgetKind::GroupBox,
-                category: "Container",
-                render: Box::new(|| {
-                    let mut w = GroupBox::new(Rect::new(0, 0, 300, 200));
-                    w.set_title("Group".to_string());
-                    render_to_svg(&mut w)
-                }),
-            },
-            // Modern/Switch widgets
-            GalleryEntry {
-                name: "Switch",
-                kind: WidgetKind::Switch,
-                category: "Modern",
-                render: Box::new(|| {
-                    let mut w = Switch::new(Rect::new(0, 0, 50, 26));
-                    render_to_svg(&mut w)
-                }),
-            },
-            GalleryEntry {
-                name: "Badge",
-                kind: WidgetKind::Badge,
-                category: "Modern",
-                render: Box::new(|| {
-                    let mut w = Badge::new(Rect::new(0, 0, 40, 20));
-                    render_to_svg(&mut w)
-                }),
-            },
-            GalleryEntry {
-                name: "Chip",
-                kind: WidgetKind::Chip,
-                category: "Modern",
-                render: Box::new(|| {
-                    let mut w = Chip::new(Rect::new(0, 0, 80, 28));
-                    render_to_svg(&mut w)
-                }),
-            },
-            GalleryEntry {
-                name: "Tooltip",
-                kind: WidgetKind::Tooltip,
-                category: "Modern",
-                render: Box::new(|| {
-                    let mut w = Tooltip::new("Tooltip text", Rect::new(0, 0, 120, 28));
-                    render_to_svg(&mut w)
-                }),
-            },
-            GalleryEntry {
-                name: "ProgressCircle",
-                kind: WidgetKind::ProgressCircle,
-                category: "Modern",
-                render: Box::new(|| {
-                    let mut w = ProgressCircle::new(Rect::new(0, 0, 48, 48));
-                    render_to_svg(&mut w)
-                }),
-            },
-            GalleryEntry {
-                name: "Icon",
-                kind: WidgetKind::Icon,
-                category: "Modern",
-                render: Box::new(|| {
-                    let mut w = Icon::new(Rect::new(0, 0, 32, 32));
-                    render_to_svg(&mut w)
-                }),
-            },
-            GalleryEntry {
-                name: "SegmentedButton",
-                kind: WidgetKind::SegmentedButton,
-                category: "Modern",
-                render: Box::new(|| {
-                    let mut w = SegmentedButton::new(Rect::new(0, 0, 240, 32));
-                    render_to_svg(&mut w)
-                }),
-            },
-            GalleryEntry {
-                name: "RangeSlider",
-                kind: WidgetKind::RangeSlider,
-                category: "Input",
-                render: Box::new(|| {
-                    let mut w = RangeSlider::new(Rect::new(0, 0, 200, 32));
-                    render_to_svg(&mut w)
-                }),
-            },
-            GalleryEntry {
-                name: "FloatingLabel",
-                kind: WidgetKind::FloatingLabel,
-                category: "Input",
-                render: Box::new(|| {
-                    let mut w = FloatingLabel::new(Rect::new(0, 0, 200, 48));
-                    render_to_svg(&mut w)
-                }),
-            },
-            // Charts & Data viz
-            GalleryEntry {
-                name: "Sparkline",
-                kind: WidgetKind::Sparkline,
-                category: "Charts",
-                render: Box::new(|| {
-                    let mut w = Sparkline::new(Rect::new(0, 0, 100, 24));
-                    render_to_svg(&mut w)
-                }),
-            },
-            // Feedback & overlays
-            GalleryEntry {
-                name: "Toast",
-                kind: WidgetKind::Toast,
-                category: "Feedback",
-                render: Box::new(|| {
-                    let mut w = Toast::new(Rect::new(0, 0, 280, 48), "Saved");
-                    render_to_svg(&mut w)
-                }),
-            },
-            GalleryEntry {
-                name: "SplashScreen",
-                kind: WidgetKind::SplashScreen,
-                category: "Feedback",
-                render: Box::new(|| {
-                    let mut w = SplashScreen::new(Rect::new(0, 0, 320, 240), "Starting");
-                    w.set_progress(Some(0.4));
-                    render_to_svg(&mut w)
-                }),
-            },
-            GalleryEntry {
-                name: "ColorPicker",
-                kind: WidgetKind::ColorPicker,
-                category: "Input",
-                render: Box::new(|| {
-                    let mut w = ColorPicker::new(Rect::new(0, 0, 240, 160));
-                    render_to_svg(&mut w)
-                }),
-            },
-        ];
+        // Every published control, exactly once: the factory's own name list is the authority.
+        let factory = WidgetFactory::shared();
+        let mut entries: Vec<GalleryEntry> = Vec::new();
+        for name in factory.widget_names() {
+            let Some(widget) = factory.create(name, GALLERY_RECT, GALLERY_TEXT) else {
+                eprintln!("widget_gallery: {name} is registered but could not be constructed");
+                continue;
+            };
+            let kind = widget.kind();
+            entries.push(GalleryEntry {
+                name,
+                kind,
+                category: kind.designer_category(),
+                render: Box::new(move || render_control(name)),
+            });
+        }
+
+        // GX2-1 / GX2-2: the two composition paradigms get a section of their own. They are not
+        // single controls with a settable size hint, so they are constructed explicitly rather
+        // than through the factory.
+        entries.push(GalleryEntry {
+            name: "AdaptiveScaffold",
+            kind: WidgetKind::AdaptiveScaffold,
+            category: "patterns",
+            render: Box::new(|| {
+                let mut scaffold = AdaptiveScaffold::new("Scaffold", GALLERY_RECT);
+                scaffold.set_show_bottom_nav(true);
+                scaffold.add_nav_item("home", "Home");
+                scaffold.add_nav_item("search", "Search");
+                scaffold.add_nav_item("settings", "Settings");
+                render_widget_to_svg(&mut scaffold, GALLERY_RECT)
+            }),
+        });
+        entries.push(GalleryEntry {
+            name: "MdiArea",
+            kind: WidgetKind::MdiArea,
+            category: "patterns",
+            render: Box::new(|| {
+                let mut area = MdiArea::new(GALLERY_RECT);
+                area.add_sub_window(1, Rect::new(8, 8, 150, 90));
+                area.add_sub_window(2, Rect::new(60, 40, 150, 90));
+                area.set_sub_window_title(1, "Project A".to_string());
+                area.set_sub_window_title(2, "Project B".to_string());
+                render_widget_to_svg(&mut area, GALLERY_RECT)
+            }),
+        });
 
         // Generate SVG for each widget
         let mut gallery_html = String::new();
@@ -307,7 +202,7 @@ fn main() {
         gallery_html.push_str("<h1>Widget Gallery</h1>");
         gallery_html.push_str(&format!(
             "<p>Generated: {} | Total widgets: {}</p>",
-            "2026-06-10",
+            generated_on(),
             entries.len()
         ));
 

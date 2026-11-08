@@ -47,8 +47,10 @@
 //! [`crate::platform::display_link::next_deadline`] for the instant the next frame is presented,
 //! advances the animation bus by the measured delta, and moves its own next fire to that instant.
 //! A frame that owes nothing retargets to [`IDLE_FRAME_INTERVAL_MS`] instead, so an idle window is
-//! not woken at the display rate. The timer repeats and is never invalidated: invalidating it would
-//! also stop the drain this exists for.
+//! not woken at the display rate. A frame that **dispatched a trigger** keeps the fast cadence
+//! even when no animation started, which is what lets a live resize follow the window edge instead
+//! of stepping at the idle rate (PL3-2). The timer repeats and is never invalidated: invalidating
+//! it would also stop the drain this exists for.
 
 #![cfg(all(
     target_os = "macos",
@@ -180,14 +182,20 @@ extern "C-unwind" fn tick(timer: *mut CFRunLoopTimer, _info: *mut c_void) {
         // Tell the display link whether this frame owed another one; an idle window's callback
         // then skips its present-time bookkeeping and its wake (PL-04). The flag lives in the
         // shared module both macOS backends use.
-        crate::platform::display_link::note_frame_demand(outcome.needs_another_frame);
-        (outcome.needs_another_frame, deadline)
+        //
+        // `wants_fast_cadence`, not `needs_another_frame`: a frame that dispatched a `Resized`
+        // while no animation runs still needs display-rate deadlines, and gating the link on the
+        // animation bit alone froze `next_deadline()` at the last published instant — a stale
+        // deadline the pacing loop then treats as "already due" (a zero wait). One predicate for
+        // "do I need display-rate frames" (PL3-2).
+        crate::platform::display_link::note_frame_demand(outcome.wants_fast_cadence());
+        (outcome.wants_fast_cadence(), deadline)
     });
-    let Some((needs_another_frame, deadline)) = driven else {
+    let Some((keep_fast, deadline)) = driven else {
         return;
     };
 
-    if needs_another_frame {
+    if keep_fast {
         // Follow the display when there is one. With no display link (a headless or CoreVideo-less
         // host) the timer's own interval *is* the cadence, so it is deliberately left alone --
         // retargeting to the idle backstop there would drop every animation to 10 fps.
@@ -198,7 +206,9 @@ extern "C-unwind" fn tick(timer: *mut CFRunLoopTimer, _info: *mut c_void) {
         // Nothing is animating and nothing is queued (G-503): a still window does not need 60
         // wakeups a second. The tick is moved out to the idle backstop, which still drains the
         // resize triggers and notices a host that changed state without a wake; the next animated
-        // frame moves it back to the display deadline.
+        // frame moves it back to the display deadline. A frame that dispatched a `Resized`/`Moved`
+        // trigger keeps the fast cadence through `wants_fast_cadence`, which is what lets a live
+        // drag follow the window edge instead of stepping at 10 Hz (PL3-2).
         retarget_in(timer, Duration::from_millis(crate::platform::types::IDLE_FRAME_INTERVAL_MS));
     }
 }

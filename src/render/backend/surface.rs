@@ -2323,7 +2323,59 @@ impl<'a> RenderContext<'a> {
         let center = self.offset_point(center);
         self.dispatch_owned(RenderCommand::DrawCircleStroke { center, radius, color, width });
     }
-    /// Draw a polyline/polygon path from a list of points.
+    /// The shared translated vertex slice for `points` (RD3-05).
+    ///
+    /// [`Self::draw_path`] already reused an arc for a polygon painted every frame;
+    /// [`Self::draw_path_dashed`] rebuilt one unconditionally for the same geometry. Both now use
+    /// this lookup, whose key is the complete geometry: the translation, the vertex contents and
+    /// the closed flag. Colour, fill, width and the dash pattern are command fields and are not
+    /// part of the shared slice, so a solid stroke and its dashed neighbour share one arc. Bounded
+    /// by [`PATH_POINT_CACHE_DEPTH`].
+    ///
+    /// # Cost
+    ///
+    /// A hit is one `Arc` clone and no allocation. A miss allocates the translated slice (no
+    /// intermediate `Vec`) and one vector for the key, because the comparison is against the
+    /// vertices as the caller wrote them. The old comment here claimed the miss allocated
+    /// nothing at all, which the `points.to_vec()` key contradicted.
+    fn translated_path_points(&self, points: &[Point], closed: bool) -> Arc<[Point]> {
+        let offset_x = self.offset_x;
+        let offset_y = self.offset_y;
+        let cached = PATH_POINT_CACHE.with(|cache| {
+            cache
+                .borrow()
+                .iter()
+                .find(|(x, y, vertices, cached_closed, _)| {
+                    *x == offset_x
+                        && *y == offset_y
+                        && *cached_closed == closed
+                        && vertices.as_slice() == points
+                })
+                .map(|(_, _, _, _, arc)| Arc::clone(arc))
+        });
+        match cached {
+            Some(arc) => arc,
+            None => {
+                // A hit costs no allocation. A miss collects the translated slice directly into
+                // the `Arc<[Point]>` the command carries — no intermediate `Vec` for the result —
+                // and also allocates one key vector: the cache compares the *untranslated*
+                // vertices it was handed, so it must keep a copy of them for the next lookup.
+                // That key copy is the price of the comparison being exact rather than
+                // positional, and it is paid only on a miss (G-02).
+                let arc: Arc<[Point]> =
+                    points.iter().map(|point| self.offset_point(*point)).collect();
+                PATH_POINT_CACHE.with(|cache| {
+                    let mut cache = cache.borrow_mut();
+                    if cache.len() >= PATH_POINT_CACHE_DEPTH {
+                        cache.remove(0);
+                    }
+                    cache.push((offset_x, offset_y, points.to_vec(), closed, Arc::clone(&arc)));
+                });
+                arc
+            }
+        }
+    }
+    /// Draws a polyline/polygon path from a list of points.
     ///
     /// When `filled` is true the path is closed implicitly and filled with
     /// `color`; otherwise it is stroked with `width` and closed only when
@@ -2353,35 +2405,7 @@ impl<'a> RenderContext<'a> {
         // does not allocate an intermediate `Vec` (G-02). The translated slice is cached by its
         // complete geometry, so a polygon that did not move this frame reuses its arc instead of
         // rebuilding the vertices.
-        let offset_x = self.offset_x;
-        let offset_y = self.offset_y;
-        let cached = PATH_POINT_CACHE.with(|cache| {
-            cache
-                .borrow()
-                .iter()
-                .find(|(x, y, vertices, cached_closed, _)| {
-                    *x == offset_x
-                        && *y == offset_y
-                        && *cached_closed == closed
-                        && vertices.as_slice() == points
-                })
-                .map(|(_, _, _, _, arc)| Arc::clone(arc))
-        });
-        let points = match cached {
-            Some(arc) => arc,
-            None => {
-                let arc: Arc<[Point]> =
-                    points.iter().map(|point| self.offset_point(*point)).collect();
-                PATH_POINT_CACHE.with(|cache| {
-                    let mut cache = cache.borrow_mut();
-                    if cache.len() >= PATH_POINT_CACHE_DEPTH {
-                        cache.remove(0);
-                    }
-                    cache.push((offset_x, offset_y, points.to_vec(), closed, Arc::clone(&arc)));
-                });
-                arc
-            }
-        };
+        let points = self.translated_path_points(points, closed);
         self.dispatch_owned(RenderCommand::DrawPath { points, closed, color, filled, width });
     }
     /// Strokes a polyline with a repeating dash pattern (G-014).
@@ -2412,7 +2436,7 @@ impl<'a> RenderContext<'a> {
                 }
             }
         }
-        let points: Arc<[Point]> = points.iter().map(|point| self.offset_point(*point)).collect();
+        let points = self.translated_path_points(points, closed);
         self.dispatch_owned(RenderCommand::DrawPathDashed { points, closed, color, width, dash });
     }
     /// Fills packed contours together using the non-zero winding rule.

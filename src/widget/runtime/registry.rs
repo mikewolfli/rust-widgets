@@ -88,6 +88,15 @@ pub(crate) fn finish_registration(id: ObjectId) {
     {
         note_tooltip_manager(id, true);
     }
+    // RT3-03: record the top-level windows so the drag hit test descends the windows that exist
+    // instead of scanning every mounted control on every pointer move.
+    if read_widget(id, |widget| widget.kind() == crate::widget::WidgetKind::Window).unwrap_or(false)
+    {
+        note_window_root(id, true);
+    }
+    // RD3-02: a newly mounted control changes the painted bounds of every ancestor's subtree, so
+    // the cached metrics table is stale.
+    note_structure_changed();
 }
 
 // ---------------------------------------------------------------------------
@@ -327,6 +336,8 @@ pub fn unregister(id: ObjectId) -> bool {
     // look it up and find nothing.
     #[cfg(full_widgets)]
     note_tooltip_manager(id, false);
+    // RT3-03: and a destroyed window must leave the drag hit test's root set for the same reason.
+    note_window_root(id, false);
     // A host-registered repeating timer would otherwise outlive the control: the worker would
     // keep waking and posting `Event::Timer` to an id that no longer resolves. The loop owns the
     // timer set, so the purge goes through the shared registry rather than a manager method

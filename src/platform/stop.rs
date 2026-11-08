@@ -69,6 +69,11 @@ pub fn request() -> bool {
     STOP_REQUESTED.store(true, Ordering::SeqCst);
     // A loop blocked between frames must wake to read the request; the recorded flag is the
     // acknowledgement, the wake is what makes it observable before the idle backstop expires.
+    //
+    // That wake reaches every loop the way that loop actually waits (PL3-4): the polling backends
+    // park on this module's condition variable, GTK and Win32 publish a wake hook that posts to
+    // their own loop, and AppKit has no cross-thread wake — its heartbeat reads the recorded flag
+    // at its next tick, which is one idle interval while the window is still.
     crate::platform::frame_wait::wake();
     loop_has_ticked()
 }

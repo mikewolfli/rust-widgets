@@ -107,6 +107,12 @@ pub use emoji::FONT as EMOJI;
 mod assets;
 pub use assets::*;
 // `invalidate_face_cache` is `pub(crate)` and exists only where runtime faces do.
+/// The face-list generation; see [`assets::face_generation`]. Used by caches that store
+/// rasterised output and must therefore notice a face change without a text change (RD3-04).
+/// The only such cache today (the wgpu coverage textures) is behind `gpu-wgpu`, so a build
+/// without that feature compiles this entry and calls it from nowhere.
+#[allow(unused_imports)]
+pub(crate) use assets::face_generation;
 #[cfg(feature = "runtime-fonts")]
 pub(crate) use assets::invalidate_face_cache;
 

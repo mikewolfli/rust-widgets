@@ -13,13 +13,14 @@ use crate::compat::{format, String};
 use crate::core::PlatformFamily;
 use crate::platform::{Platform, PlatformCapabilities};
 
-/// The frame interval this backend's loop runs at, in milliseconds.
+/// The **delta** this backend advances the library by, in milliseconds.
 ///
 /// The same value as every other backend's twin constant, and named here for the same
-/// reason: the sleep between iterations and the delta handed to [`crate::drive_frame`]
-/// must be the same number, or every transition runs at the ratio between them with
-/// nothing to notice the mismatch. A backend that later runs at the display's own rate
-/// changes exactly this value. Both arms of `run` read it: the host polling loop and the
+/// reason: a transition must take the time its theme asked for. It is the delta handed to
+/// [`crate::drive_frame`] on every tick, including an idle tick; the loop's **wake cadence**
+/// is decided by the frame outcome through
+/// `platform::frame_wait::pause_between_frames`, never by this number (PL3-1). A backend that
+/// later runs at the display's own rate changes exactly this value. Both arms of `run` read it: the host polling loop and the
 /// browser's `requestAnimationFrame` callback.
 const FRAME_INTERVAL_MS: u64 = crate::platform::types::FRAME_INTERVAL_MS;
 
@@ -570,7 +571,7 @@ impl Platform for WasmPlatform {
             // per-frame step (BLUE24 §0A.1 measurement 1). See `crate::drive_frame`.
             while self.runtime.running.load(Ordering::SeqCst) {
                 let outcome = crate::drive_frame(FRAME_INTERVAL_MS as u32);
-                crate::platform::frame_wait::pause_between_frames(outcome.needs_another_frame);
+                crate::platform::frame_wait::pause_between_frames(outcome.wants_fast_cadence());
             }
         }
     }

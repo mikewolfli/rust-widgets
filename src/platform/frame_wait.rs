@@ -7,9 +7,10 @@
 //!
 //! Every backend loop used to end an iteration with `thread::sleep(FRAME_INTERVAL_MS)`: 62.5
 //! wakeups per second even when nothing was animating and no input had arrived. The frame driver
-//! already answers whether a frame is owed
-//! ([`FrameOutcome::needs_another_frame`](crate::widget::runtime::FrameOutcome)); the missing
-//! piece was a way to *block* when it is not.
+//! already answers whether the loop must stay on the fast cadence
+//! ([`FrameOutcome::wants_fast_cadence`](crate::widget::runtime::FrameOutcome), which folds "an
+//! animation is settling" and "this frame dispatched a trigger"); the missing piece was a way to
+//! *block* when it need not.
 //!
 //! # Deadline pacing
 //!
@@ -47,6 +48,16 @@
 //! returns as soon as a message arrives. A backend whose host owns the event queue uses
 //! [`pause_between_frames_with`], which applies the same deadline grid to the timeout it hands to
 //! that wait.
+//!
+//! # Waking a loop that does not wait here
+//!
+//! Three desktop toolkits own their own loops and never park on this module's condition
+//! variable: GTK blocks in `glib::main`, AppKit in its run loop, and Win32 in its message queue.
+//! [`wake`] still notifies the condition variable (the polling backends wait there), and also
+//! calls a **backend hook** installed with [`set_wake_hook`]. GTK's hook posts to the main
+//! context; Win32's signals a process-level event the message wait watches (PL3-4). The two
+//! macOS backends install none: their run loop has no cross-thread wake channel they can reach,
+//! which [`set_wake_hook`](inner::set_wake_hook) records as an accepted limit.
 
 use core::cell::Cell;
 use core::time::Duration;
@@ -67,6 +78,14 @@ mod inner {
         generation: AtomicU64,
         mutex: Mutex<()>,
         ready: Condvar,
+        /// The backend's own wake channel, when its loop does not wait on `ready` (PL3-4).
+        ///
+        /// A toolkit loop (GTK's `glib::main`, a Win32 message pump) blocks in its own queue, so
+        /// a `notify_all` here reaches nobody. The backend installs a hook that performs the
+        /// toolkit's own wake; `wake` calls it after the notify, so one call serves both kinds of
+        /// loop. `Mutex` rather than an atomic because the stored value is a function pointer and
+        /// the lock costs one uncontended acquire on a path that already takes one.
+        hook: Mutex<Option<fn()>>,
     }
 
     static WAKE: OnceLock<WakeState> = OnceLock::new();
@@ -76,6 +95,7 @@ mod inner {
             generation: AtomicU64::new(0),
             mutex: Mutex::new(()),
             ready: Condvar::new(),
+            hook: Mutex::new(None),
         })
     }
 
@@ -85,8 +105,36 @@ mod inner {
         state.generation.fetch_add(1, Ordering::SeqCst);
         // Notify while holding the mutex: a waiter that observed the previous generation must
         // not be able to enter `wait_timeout` after this notify has already passed.
-        let _guard = state.mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        state.ready.notify_all();
+        {
+            let _guard = state.mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            state.ready.notify_all();
+        }
+        // A loop that waits in its toolkit's queue does not see the notify above (PL3-4).
+        // Read under the lock, then call outside it: `MainContext::invoke` may pump the loop.
+        let hook = *state.hook.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(hook) = hook {
+            hook();
+        }
+    }
+
+    /// Installs (or removes) the backend's own wake channel. See [`WakeState::hook`].
+    ///
+    /// # One slot, one loop
+    ///
+    /// The value is a single function pointer, so it describes **the loop that owns this
+    /// thread's frames**: a later install replaces an earlier one rather than stacking. A backend
+    /// must clear it (`None`) when its loop exits, and should do so with a drop guard rather than
+    /// a trailing statement so an unwind out of the toolkit's `main` cannot leave a hook that
+    /// posts to a loop nothing is running. On the current backends at most one such loop exists
+    /// per process, so "last write wins" and "the loop's hook" are the same thing.
+    ///
+    /// Consumed by the GTK and Win32 loops, which block in their own event queues. Every other
+    /// backend waits on `ready`, so on those targets nothing calls this — the entry point stays
+    /// because the alternative is a `cfg` at each toolkit call site (principle #53).
+    #[allow(dead_code)]
+    pub(crate) fn set_wake_hook(hook: Option<fn()>) {
+        let state = state();
+        *state.hook.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = hook;
     }
 
     /// Blocks until [`wake`] or `timeout`, whichever happens first.
@@ -148,6 +196,12 @@ mod inner {
     /// backend loops need no `cfg` of their own (principle #53).
     pub(crate) fn wake() {}
 
+    /// The allocation-frugal profile has no toolkit wake hook to install: its loops poll, so a
+    /// hook would be a channel nothing calls. Keeping the setter means a backend needs no `cfg`
+    /// at its own call site; no caller exists in this profile, hence the allowance.
+    #[allow(dead_code)]
+    pub(crate) fn set_wake_hook(_hook: Option<fn()>) {}
+
     /// The allocation-frugal profile has no animation bus and no wake channel, so the loop
     /// simply paces itself and every wait runs to its full timeout. `false` says "not woken
     /// early", which is the honest answer for this profile.
@@ -157,7 +211,11 @@ mod inner {
     }
 }
 
-pub(crate) use inner::wake;
+/// Installed by a backend whose loop does not wait on this module's condition variable; see
+/// [`set_wake_hook`](inner::set_wake_hook). No caller exists on a host where every loop waits on
+/// the condition variable, which is why the import is allowed to go unused.
+#[allow(unused_imports)]
+pub(crate) use inner::{set_wake_hook, wake};
 
 /// The wake generation and the generation-guarded wait are only meaningful where a wake
 /// channel exists; the allocation-frugal profile's host loop has none and does not call them.
@@ -316,6 +374,12 @@ fn store_pacing(pacing: Pacing) {
 ///
 /// A still loop blocks for a wake with a bounded backstop, which is what removes the idle
 /// busy-poll. An early wake ends the wait without moving the deadline.
+///
+/// `needs_another_frame` is the frame outcome's `wants_fast_cadence` answer, not its
+/// `needs_another_frame` field: a frame that dispatched a `Resized`/`Moved` trigger wants the
+/// fast cadence even though no animation is running (PL3-2). The parameter keeps its historical
+/// name because every call site passes the same boolean meaning; only the predicate that produces
+/// it changed.
 pub(crate) fn pause_between_frames(needs_another_frame: bool) {
     pause_between_frames_with(needs_another_frame, block_for);
 }
@@ -381,8 +445,9 @@ where
 /// backend's next absolute deadline, so missed deadlines are never replayed as a burst. A wake
 /// that arrives before the deadline runs the frame with the clock-based delta and leaves the
 /// deadline in place, so input stays immediate and the cadence keeps its phase.
-// The blocking backend loops call the fixed-grid entry today; this is the entry a vsync-capable
-// loop uses, and the tests below exercise every branch of it directly.
+// The blocking backend loops call the fixed-grid entry; this is the entry the macOS backend's
+// loop uses, and the tests below exercise every branch of it directly. Other hosts compile it so
+// the trait contract and its tests stay platform-independent, hence the dead-code allowance.
 #[allow(dead_code)]
 pub(crate) fn pause_between_frames_with_vsync<D, F>(
     needs_another_frame: bool,
@@ -410,6 +475,16 @@ where
     };
 
     let now = Instant::now();
+    // A deadline more than one nominal interval in the past is not a late frame to catch up: the
+    // publisher stopped (display asleep, the link torn down, or a driver that gated its updates),
+    // and following it would turn every iteration into a zero-wait catch-up whose observed delta
+    // collapses to ~0 — a spinning loop with a stopped animation clock. Treat it as no live
+    // signal: the fixed grid takes over and reports `None`, exactly like a missing deadline.
+    if now.saturating_duration_since(deadline) > Duration::from_millis(FRAME_INTERVAL_MS) {
+        VSYNC_PACING.with(|cell| cell.set(VsyncPacing::default()));
+        pause_between_frames_with(true, block);
+        return None;
+    }
     let mut pacing = VSYNC_PACING.with(Cell::get);
     let wait = pacing.wait_for(now, deadline);
     if wait.is_zero() {
@@ -443,21 +518,113 @@ fn block_for(timeout: Duration) -> bool {
     // Win32 has a real message queue. Blocking in it is what makes input latency zero while
     // idle CPU stays at zero; a condition-variable wait would delay `WM_*` messages.
     let millis = timeout_millis_ceil(timeout);
-    // SAFETY: no handles are passed (`nCount == 0`, null pointer), so the call cannot read or
-    // write any memory we own. `QS_ALLINPUT` waits for any input message, and
+    // `wake()` also has to end this wait (PL3-4): the condition variable it notifies is not what
+    // this thread is blocked on, so the wait additionally watches the backend's auto-reset event.
+    // `MsgWaitForMultipleObjectsEx` returns for either a message or that event.
+    let event = win32_wake::handle();
+    let handles = [event];
+    let (count, handle_list) = if event.is_null() {
+        // No event (creation failed, or a build whose loop never installed one): the wait is the
+        // previous message-only form rather than a null handle the kernel would reject.
+        (0u32, core::ptr::null())
+    } else {
+        (1u32, handles.as_ptr())
+    };
+    // SAFETY: `count` is 0 with a null list, or 1 with a pointer to one live handle owned by
+    // `win32_wake`. Nothing is read or written in memory we own beyond that one-element array,
+    // which outlives the call. `QS_ALLINPUT` waits for any input message, and
     // `MWMO_INPUTAVAILABLE` also returns for input already queued before the call.
     let wait_result = unsafe {
         winapi::um::winuser::MsgWaitForMultipleObjectsEx(
-            0,
-            core::ptr::null(),
+            count,
+            handle_list,
             millis,
             winapi::um::winuser::QS_ALLINPUT,
             winapi::um::winuser::MWMO_INPUTAVAILABLE,
         )
     };
-    // Anything other than a timeout means input arrived before the deadline, which is exactly
-    // the early wake the pacing grid must preserve.
+    // Anything other than a timeout means input — or a library wake — arrived before the
+    // deadline, which is exactly the early wake the pacing grid must preserve.
     wait_result != winapi::shared::winerror::WAIT_TIMEOUT
+}
+
+/// Creates the Win32 wake event, once, and installs the hook [`wake`] calls (PL3-4a).
+///
+/// Called by the Windows backend at the start of its loop. Process-wide because the library's
+/// frame wait is process-wide and a message queue belongs to one thread.
+#[cfg(all(windows, not(alloc_frugal)))]
+pub(crate) fn install_win32_wake_event() {
+    win32_wake::install();
+}
+
+/// The Win32 wake channel (PL3-4a).
+///
+/// [`block_for`] blocks in `MsgWaitForMultipleObjectsEx`, which returns only for messages: this
+/// module's condition variable is invisible to it. A process-level auto-reset event turns
+/// [`wake`](super::wake) into a message-queue wake — the event is signalled and that wait returns.
+#[cfg(all(windows, not(alloc_frugal)))]
+mod win32_wake {
+    use core::sync::atomic::{AtomicIsize, Ordering};
+
+    /// The wake event, or 0 when [`install`] could not create one.
+    ///
+    /// Process-lifetime and never closed: closing it while another thread is inside
+    /// `MsgWaitForMultipleObjectsEx` on it would make that wait fail, and one event per process
+    /// is all the channel needs.
+    static WAKE_EVENT: AtomicIsize = AtomicIsize::new(0);
+
+    thread_local! {
+        /// Whether the calling thread is the loop that installed the event.
+        ///
+        /// `wake()` is also called from **inside** `drive_frame` — a theme crossfade arms a global
+        /// repaint there — and signalling the event from the loop's own thread would make its own
+        /// `MsgWaitForMultipleObjectsEx` return immediately, turning a still window into a spin.
+        /// A thread that is about to wait does not need to be woken by itself.
+        static LOOP_THREAD: core::cell::Cell<bool> = const { core::cell::Cell::new(false) };
+    }
+
+    /// Creates the wake event once and installs the hook [`super::wake`] calls.
+    pub(crate) fn install() {
+        LOOP_THREAD.with(|flag| flag.set(true));
+        if WAKE_EVENT.load(Ordering::Acquire) != 0 {
+            return;
+        }
+        // SAFETY: no security attributes, not manual-reset (the kernel clears it on return),
+        // initially unsignalled and unnamed. The handle is stored for the life of the process.
+        let handle: winapi::um::winnt::HANDLE = unsafe {
+            winapi::um::synchapi::CreateEventW(core::ptr::null_mut(), 0, 0, core::ptr::null())
+        };
+        if handle.is_null() {
+            log::warn!(
+                "[windows] could not create the frame-wait event; a cross-thread wake waits for \
+                 the idle backstop"
+            );
+            return;
+        }
+        WAKE_EVENT.store(handle as isize, Ordering::Release);
+        super::set_wake_hook(Some(signal));
+    }
+
+    /// The event [`super::block_for`] watches, or null when none exists.
+    pub(crate) fn handle() -> winapi::um::winnt::HANDLE {
+        WAKE_EVENT.load(Ordering::Acquire) as winapi::um::winnt::HANDLE
+    }
+
+    /// Sets the auto-reset event, ending a wait in the message queue.
+    fn signal() {
+        // The loop's own thread is not a wake source: see `LOOP_THREAD`.
+        if LOOP_THREAD.with(|flag| flag.get()) {
+            return;
+        }
+        let handle = handle();
+        if handle.is_null() {
+            return;
+        }
+        // SAFETY: `handle` is the event `install` created and the process never closes it.
+        unsafe {
+            let _ = winapi::um::synchapi::SetEvent(handle);
+        }
+    }
 }
 
 /// Blocks for at most `timeout`, reporting whether a wake cut the wait short.
@@ -828,6 +995,28 @@ mod tests {
         let following = at(base, 64);
         assert_eq!(pacing.wait_for(after, following), Duration::from_millis(12));
         assert_eq!(pacing.observe(following), FRAME_INTERVAL_MS as u32);
+    }
+
+    #[test]
+    fn a_stale_vsync_deadline_falls_back_to_the_fixed_grid() {
+        // A publisher that stopped leaves its last instant behind. Following it would make each
+        // iteration a zero-wait catch-up with a ~0 delta (a spin, and a frozen animation clock),
+        // so a deadline more than one interval old is treated as no live deadline.
+        store_pacing(Pacing::default());
+        VSYNC_PACING.with(|cell| cell.set(VsyncPacing::default()));
+        let stale = Instant::now().checked_sub(Duration::from_secs(60)).expect("a past instant");
+        let requested = Cell::new(Duration::ZERO);
+
+        let delta = pause_between_frames_with_vsync(
+            true,
+            || Some(stale),
+            |timeout| {
+                requested.set(timeout);
+                false
+            },
+        );
+        assert_eq!(delta, None, "a stale deadline must fall back to the fixed grid");
+        assert_eq!(requested.get(), interval(), "the fixed grid waits one full interval");
     }
 
     #[test]

@@ -73,8 +73,19 @@ use rust_widgets_suites::finance::{
 /// one the status bar shows) are the ones that survive.
 const EVENT_LOG_CAPACITY: usize = 200;
 
+/// One line in the event log, and the coalescing tag it belongs to.
+///
+/// A `Some` tag marks a signal whose bursts collapse to their latest value — a hover crossing
+/// hundreds of bars is one fact, not hundreds. `None` marks a discrete event kept as it happened.
+struct LogEntry {
+    /// The coalescing identity, or `None` for an append-only event.
+    tag: Option<&'static str>,
+    /// The text this line shows.
+    text: String,
+}
+
 struct EventLog {
-    entries: Mutex<VecDeque<String>>,
+    entries: Mutex<VecDeque<LogEntry>>,
     /// The status bar that shows the most recent entry, once one exists.
     status: Mutex<Option<StatusBarHandle>>,
     /// The text last written to that bar, so an identical event does not rewrite it.
@@ -97,7 +108,32 @@ impl EventLog {
             if entries.len() >= EVENT_LOG_CAPACITY {
                 entries.pop_front();
             }
-            entries.push_back(message.clone());
+            entries.push_back(LogEntry { tag: None, text: message.clone() });
+        }
+        self.publish(&message);
+    }
+
+    /// Appends `message` under `tag`, replacing the previous line with the same tag (DM4-4).
+    ///
+    /// Hover signals fire once per bar crossed, and a sweep over the 240-bar series produced 240
+    /// `format!`s, 240 log lines and 240 status-bar writes on the UI thread for a fact the user can
+    /// only read as "the pointer is over bar N". Overwriting the tag's existing line in place keeps
+    /// one line per continuous signal; a discrete event (a click) still uses [`Self::append`].
+    /// A repeated hover over the same target publishes nothing new — `publish` already skips an
+    /// identical status text.
+    fn append_coalesced(&self, tag: &'static str, message: impl Into<String>) {
+        let message = message.into();
+        {
+            let mut entries = self.entries.lock().unwrap();
+            if let Some(entry) = entries.iter_mut().rev().find(|entry| entry.tag == Some(tag)) {
+                entry.text.clear();
+                entry.text.push_str(&message);
+            } else {
+                if entries.len() >= EVENT_LOG_CAPACITY {
+                    entries.pop_front();
+                }
+                entries.push_back(LogEntry { tag: Some(tag), text: message.clone() });
+            }
         }
         self.publish(&message);
     }
@@ -136,12 +172,12 @@ impl EventLog {
     }
 
     fn snapshot(&self) -> Vec<String> {
-        self.entries.lock().unwrap().iter().cloned().collect()
+        self.entries.lock().unwrap().iter().map(|entry| entry.text.clone()).collect()
     }
 
     /// The most recent entry, for the status bar.
     fn latest(&self) -> String {
-        self.entries.lock().unwrap().back().cloned().unwrap_or_default()
+        self.entries.lock().unwrap().back().map(|entry| entry.text.clone()).unwrap_or_default()
     }
 }
 
@@ -575,7 +611,16 @@ struct PanelLayout {
     /// A `Cell` because `update` takes `&self`: a layout that could not record what it had
     /// already done would be forced to redo it.
     last_applied: std::cell::Cell<Option<(u32, u32)>>,
+    /// The size the last layout **log** line reported (DM4-2).
+    ///
+    /// A drag delivers a new client size on every tick, and every tick reached the status bar and
+    /// the log. One line per [`LAYOUT_LOG_SIZE_STEP`] pixels of change keeps the log readable and
+    /// leaves the rest of the drag free of native writes. Same rule as the control demo's grid.
+    last_logged: std::cell::Cell<Option<(u32, u32)>>,
 }
+
+/// How much the client size must change before the layout writes another log line (DM4-2).
+const LAYOUT_LOG_SIZE_STEP: u32 = 32;
 
 /// Which computed rect a mounted panel takes.
 ///
@@ -642,12 +687,22 @@ impl LayoutTrait for PanelLayout {
         for (id, slot) in &self.panels {
             widgets(*id, slot.rect_in(&layout));
         }
-        self.log.append(format!(
-            "[Layout] window resized to {}x{} — {} slot(s) repositioned",
-            rect.width,
-            rect.height,
-            self.panels.len()
-        ));
+        let should_log = match self.last_logged.get() {
+            None => true,
+            Some((width, height)) => {
+                rect.width.abs_diff(width) >= LAYOUT_LOG_SIZE_STEP
+                    || rect.height.abs_diff(height) >= LAYOUT_LOG_SIZE_STEP
+            }
+        };
+        if should_log {
+            self.last_logged.set(Some((rect.width, rect.height)));
+            self.log.append(format!(
+                "[Layout] window resized to {}x{} — {} slot(s) repositioned",
+                rect.width,
+                rect.height,
+                self.panels.len()
+            ));
+        }
     }
 
     // The demo's layout positions its seven fixed panels from its own slot geometry, not from what
@@ -751,6 +806,7 @@ fn register_window_layout(
         panels: registered,
         log: Arc::clone(log),
         last_applied: std::cell::Cell::new(None),
+        last_logged: std::cell::Cell::new(None),
     });
 }
 
@@ -790,11 +846,17 @@ fn build_screen(win: &WindowHandle, log: &Arc<EventLog>, status: Option<ObjectId
     // publishes, not just the convenient one.
     let hover_log = Arc::clone(log);
     chart.bar_hovered.connect(move |index| {
-        hover_log.append(format!("[CandlestickChart] hover bar #{index}"));
+        hover_log.append_coalesced(
+            "candlestick_hover",
+            format!("[CandlestickChart] hover bar #{index}"),
+        );
     });
     let unhover_log = Arc::clone(log);
     chart.bar_unhovered.connect(move |index| {
-        unhover_log.append(format!("[CandlestickChart] pointer left bar #{index}"));
+        unhover_log.append_coalesced(
+            "candlestick_unhover",
+            format!("[CandlestickChart] pointer left bar #{index}"),
+        );
     });
     let click_log = Arc::clone(log);
     chart.bar_clicked.connect(move |index| {
@@ -807,7 +869,7 @@ fn build_screen(win: &WindowHandle, log: &Arc<EventLog>, status: Option<ObjectId
     volume.set_series(series.clone());
     let volume_log = Arc::clone(log);
     volume.bar_hovered.connect(move |index| {
-        volume_log.append(format!("[VolumeChart] hover bar #{index}"));
+        volume_log.append_coalesced("volume_hover", format!("[VolumeChart] hover bar #{index}"));
     });
     let volume_click_log = Arc::clone(log);
     volume.bar_clicked.connect(move |index| {
@@ -825,7 +887,8 @@ fn build_screen(win: &WindowHandle, log: &Arc<EventLog>, status: Option<ObjectId
     // demo wires them too: the four left-column panes then respond to the pointer alike.
     let macd_hover_log = Arc::clone(log);
     macd.bar_hovered.connect(move |index| {
-        macd_hover_log.append(format!("[IndicatorChart/MACD] hover bar #{index}"));
+        macd_hover_log
+            .append_coalesced("macd_hover", format!("[IndicatorChart/MACD] hover bar #{index}"));
     });
     let macd_click_log = Arc::clone(log);
     macd.bar_clicked.connect(move |index| {
@@ -840,7 +903,8 @@ fn build_screen(win: &WindowHandle, log: &Arc<EventLog>, status: Option<ObjectId
     rsi.set_show_reference_levels(true);
     let rsi_hover_log = Arc::clone(log);
     rsi.bar_hovered.connect(move |index| {
-        rsi_hover_log.append(format!("[IndicatorChart/RSI] hover bar #{index}"));
+        rsi_hover_log
+            .append_coalesced("rsi_hover", format!("[IndicatorChart/RSI] hover bar #{index}"));
     });
     let rsi_click_log = Arc::clone(log);
     rsi.bar_clicked.connect(move |index| {
@@ -867,7 +931,7 @@ fn build_screen(win: &WindowHandle, log: &Arc<EventLog>, status: Option<ObjectId
     });
     let quote_hover_log = Arc::clone(log);
     quotes.quote_hovered.connect(move |symbol| {
-        quote_hover_log.append(format!("[QuoteBoard] hover {symbol}"));
+        quote_hover_log.append_coalesced("quote_hover", format!("[QuoteBoard] hover {symbol}"));
     });
     // `selection_changed` is a different fact from `quote_clicked`: it fires whenever the
     // selected row changes, including when the host calls `select()` — not only on a click.
@@ -886,12 +950,15 @@ fn build_screen(win: &WindowHandle, log: &Arc<EventLog>, status: Option<ObjectId
         // The signal hands the value out as an `Arc`, so the tuple is dereferenced
         // rather than destructured in the parameter position.
         let (side, index) = *position;
-        ladder_log.append(format!("[OrderBook] hover {side:?} #{index}"));
+        ladder_log.append_coalesced("book_hover", format!("[OrderBook] hover {side:?} #{index}"));
     });
     let ladder_leave_log = Arc::clone(log);
     ladder.level_unhovered.connect(move |position| {
         let (side, index) = *position;
-        ladder_leave_log.append(format!("[OrderBook] pointer left {side:?} #{index}"));
+        ladder_leave_log.append_coalesced(
+            "book_unhover",
+            format!("[OrderBook] pointer left {side:?} #{index}"),
+        );
     });
     // A click on a ladder row is what a trader acts on, so the demo reads the row's price and
     // quantity back through the widget's own query rather than repeating what the signal already
@@ -932,7 +999,7 @@ fn build_screen(win: &WindowHandle, log: &Arc<EventLog>, status: Option<ObjectId
     depth.set_depth(0);
     let depth_log = Arc::clone(log);
     depth.level_hovered.connect(move |price| {
-        depth_log.append(format!("[DepthChart] hover price {price:.2}"));
+        depth_log.append_coalesced("depth_hover", format!("[DepthChart] hover price {price:.2}"));
     });
     let id_depth = mount(win, depth, layout.depth, "DepthChart", log);
 
@@ -1940,6 +2007,7 @@ mod tests {
             panels: vec![(7, PanelSlot::Status)],
             log: Arc::new(EventLog::new()),
             last_applied: std::cell::Cell::new(None),
+            last_logged: std::cell::Cell::new(None),
         };
         let mut placed = Vec::new();
         LayoutTrait::update(&layout, Rect::new(0, 0, 800, 600), &mut |id, rect| {

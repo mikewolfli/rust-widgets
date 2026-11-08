@@ -180,7 +180,7 @@ impl CodeEditor {
         self.refresh_derived_state();
         // A switch replaces every line, so it is described as a wholesale change rather
         // than by cloning the new document into the signal payload (J-P12).
-        self.text_change.emit(TextChange::document(self.line_count()));
+        self.emit_text_change(TextChange::document(self.line_count()));
         self.tab_changed.emit(index);
         self.emit_cursor_and_selection();
         self.base.request_layout();

@@ -663,6 +663,96 @@ impl TextureCache {
     }
 }
 
+/// Identity of one rasterised text coverage mask (RD3-04).
+///
+/// The bytes of a coverage texture depend on the text, the box it was laid out in, and **which
+/// face answered each character** — the last of which changes when a host calls `register_face`
+/// without any text changing. All four are therefore part of the key. `digest` plus `len` is the
+/// probe; the entry keeps the text itself, so a hash collision costs a comparison and never draws
+/// the wrong glyphs.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct TextCoverageKey {
+    digest: u64,
+    len: usize,
+    width: u32,
+    height: u32,
+    face_generation: u32,
+}
+
+impl TextCoverageKey {
+    pub(crate) fn new(text: &str, width: u32, height: u32) -> Self {
+        const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+        const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+        let mut digest = FNV_OFFSET;
+        for byte in text.as_bytes() {
+            digest ^= u64::from(*byte);
+            digest = digest.wrapping_mul(FNV_PRIME);
+        }
+        Self {
+            digest,
+            len: text.len(),
+            width,
+            height,
+            face_generation: crate::render::text::font_assets::face_generation(),
+        }
+    }
+}
+
+/// One cached coverage upload: the text it was rasterised from, plus the texture.
+pub(crate) struct CachedTextCoverage {
+    /// The text, retained so a hash collision cannot reuse the wrong glyphs.
+    text: Arc<str>,
+    /// The texture the view was made from (the view alone already keeps it alive).
+    _texture: wgpu::Texture,
+    view: wgpu::TextureView,
+}
+
+/// Content-keyed text coverage uploads (RD3-04).
+///
+/// The GPU text path rasterises glyph coverage on the CPU and uploads it as an `R8Unorm` texture
+/// per draw. Unlike an `Arc` image, the same caption is drawn again on every frame with identical
+/// coverage — colour and position are shader inputs, not texture content — so the upload is
+/// reusable until the text, the box or the face changes. This is the text-side counterpart of
+/// [`TextureCache`].
+#[derive(Default)]
+pub(crate) struct TextCoverageCache {
+    entries: HashMap<TextCoverageKey, CachedTextCoverage>,
+    order: VecDeque<TextCoverageKey>,
+}
+
+impl TextCoverageCache {
+    /// How many coverage uploads one renderer keeps before evicting the oldest.
+    ///
+    /// A screen paints more distinct captions than distinct images, and a coverage texel is one
+    /// byte rather than four, so the bound is higher than [`TextureCache`]'s.
+    const LIMIT: usize = 64;
+
+    /// The cached view for `key`, when the entry describes exactly this text.
+    pub(crate) fn view(&self, key: &TextCoverageKey, text: &str) -> Option<wgpu::TextureView> {
+        let entry = self.entries.get(key)?;
+        (entry.text.as_ref() == text).then(|| entry.view.clone())
+    }
+
+    /// Stores `texture`/`view` under `key`, evicting the oldest entry when the cache is full.
+    pub(crate) fn insert(
+        &mut self,
+        key: TextCoverageKey,
+        text: Arc<str>,
+        texture: wgpu::Texture,
+        view: wgpu::TextureView,
+    ) {
+        if self.entries.insert(key, CachedTextCoverage { text, _texture: texture, view }).is_none()
+        {
+            self.order.push_back(key);
+        }
+        while self.order.len() > Self::LIMIT {
+            if let Some(oldest) = self.order.pop_front() {
+                self.entries.remove(&oldest);
+            }
+        }
+    }
+}
+
 #[derive(Default)]
 pub(crate) struct RenderCache {
     pub(crate) uniform: Option<UniformArena>,

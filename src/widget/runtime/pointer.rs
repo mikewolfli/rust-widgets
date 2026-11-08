@@ -656,13 +656,15 @@ impl DragCoordinator {
 type DispatchHitCache = Option<(ObjectId, bool, Point, u64, Option<ObjectId>)>;
 
 thread_local! {
-    /// Top-level window ids reused by [`drag_widget_at_point`].
+    /// Mounted top-level window ids (RT3-03).
     ///
-    /// The drag hit test descends each window's tree instead of scanning every mounted control
-    /// (RT-02); this buffer holds the roots for the duration of one query. A nested query takes
-    /// the flat-scan fallback rather than panicking on a borrow conflict.
-    pub(crate) static DRAG_WINDOW_ROOTS: RefCell<alloc::vec::Vec<ObjectId>> =
-        const { RefCell::new(alloc::vec::Vec::new()) };
+    /// The drag hit test used to clear its buffer and walk every entry of [`MOUNTED`] on every
+    /// pointer move — O(all mounted controls) per move while a drag was in progress, because a
+    /// moving pointer always misses the point memo. This set is maintained beside the registry
+    /// (written by [`finish_registration`], removed by [`unregister`]), so the query iterates the
+    /// windows that exist — normally one. Visibility is read per window at query time rather than
+    /// mirrored here: a stored bit would be one more thing to keep in step with `set_visible`.
+    pub(crate) static WINDOW_ROOTS: RefCell<IdSet> = const { RefCell::new(IdSet::new()) };
 
     /// Single-slot memo for the last [`widget_at_point`] answer (G-103).
     ///
@@ -679,8 +681,9 @@ thread_local! {
     /// The dispatch path used to descend the tree on every pointer event, including the second
     /// event at an unchanged position (a press followed by a release, a hover re-delivery).
     /// The key is the descent root, whether the root's bounds were trusted, the exact point and
-    /// the content epoch — the same freshness token the drag-path memo uses. `unregister` bumps
-    /// that epoch, so a destroyed control cannot leave a stale answer behind.
+    /// the owning **window's** content epoch (RT3-01) — one animation elsewhere on the thread no
+    /// longer invalidates it. `unregister` bumps that epoch, so a destroyed control cannot leave a
+    /// stale answer behind.
     pub(crate) static LAST_DISPATCH_HIT: RefCell<DispatchHitCache> = const { RefCell::new(None) };
 
     /// Per-window containment cache for [`scan_widget_at_point`].
@@ -692,12 +695,28 @@ thread_local! {
         const { RefCell::new(alloc::vec::Vec::new()) };
 }
 
+/// The freshness token the dispatch-path memo compares (RT3-01).
+///
+/// The global renderable epoch is bumped by *any* control's damage on this thread, so one
+/// spinner's animation invalidated every window's dispatch memo on every frame and the PL-05 hit
+/// cache was effectively dead in an animated window. The token that describes "this tree's hit
+/// answers" is the owning **window's** frame epoch — the same one the tree-frame cache uses —
+/// which changes exactly when that window's content can have changed. A root with no window
+/// ancestor (a bare subtree, an unmounted id) has no window epoch to trust, so it keeps the
+/// global one: the conservative answer repaints more, never returns a stale hit.
+fn dispatch_epoch(root: ObjectId) -> u64 {
+    match repaint_frame_owner(root) {
+        Some(window) => renderable_epoch_for(window),
+        None => renderable_epoch(),
+    }
+}
+
 /// [`widget_at_inner`] with a single-slot memo for the dispatch path (PL-05).
 ///
 /// `trust_root` is part of the key rather than assumed: the popup case deliberately skips the
 /// root's own bounds, so the two answers for one `(root, point)` are not interchangeable.
 fn dispatch_widget_at(root: ObjectId, point: Point, trust_root: bool) -> Option<ObjectId> {
-    let epoch = renderable_epoch();
+    let epoch = dispatch_epoch(root);
     if let Some((cached_root, cached_trust, cached_point, cached_epoch, hit)) =
         LAST_DISPATCH_HIT.with(|slot| *slot.borrow())
     {
@@ -757,28 +776,19 @@ pub(crate) fn widget_at_point(point: Point, viewport: Rect) -> Option<ObjectId> 
 /// fallback for a registry with no window (a test fixture, or a host that mounts bare
 /// containers) or a hit rule that extends past every window.
 fn drag_widget_at_point(point: Point) -> Option<ObjectId> {
-    let descended = DRAG_WINDOW_ROOTS
+    let descended = WINDOW_ROOTS
         .try_with(|roots| {
-            let Ok(mut roots) = roots.try_borrow_mut() else {
-                return None;
-            };
-            roots.clear();
-            // Reading `kind`/`is_visible` per entry is a field access on an already-borrowed
-            // entry; it does not call a control's own hit rule the way the old scan did.
-            let _ = MOUNTED.try_with(|map| {
-                for (id, entry) in map.borrow().iter() {
-                    if entry.widget.kind() == crate::widget::WidgetKind::Window
-                        && entry.widget.is_visible()
-                    {
-                        roots.push(*id);
-                    }
-                }
-            });
-            if roots.is_empty() {
+            let roots = roots.try_borrow().ok()?;
+            if roots.0.is_empty() {
                 return None;
             }
             let mut best: Option<(ObjectId, u32)> = None;
-            for window in roots.iter().copied() {
+            for window in roots.0.iter().copied() {
+                // Visibility is the one fact the resident set does not mirror (RT3-03): reading it
+                // here is one field access per window and cannot go stale.
+                if !read_widget(window, |widget| widget.is_visible()).unwrap_or(false) {
+                    continue;
+                }
                 let Some(candidate) = widget_at(window, point) else {
                     continue;
                 };
@@ -1090,6 +1100,22 @@ pub fn clear_hover_for(id: ObjectId) {
         .map(|rect| Point::new(rect.x + (rect.width / 2) as i32, rect.y + (rect.height / 2) as i32))
         .unwrap_or(Point::new(0, 0));
     dispatch_hover_transition(None, point);
+}
+
+/// Adds `id` to, or removes it from, the mounted window-root set (RT3-03).
+///
+/// [`finish_registration`] answers `is_window` from the control's kind at mount time and
+/// `unregister` removes unconditionally: removing an id that was never a window is a no-op, and
+/// it saves the teardown path a registry read. Those are the only two writers, so the set cannot
+/// describe a control that is not mounted.
+pub(crate) fn note_window_root(id: ObjectId, is_window: bool) {
+    let _ = WINDOW_ROOTS.try_with(|set| {
+        if is_window {
+            set.borrow_mut().insert(id);
+        } else {
+            set.borrow_mut().remove(&id);
+        }
+    });
 }
 
 #[cfg(full_widgets)]

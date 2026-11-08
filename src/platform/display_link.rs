@@ -12,10 +12,19 @@
 //! the link; a backend adds only what the C ABI cannot express (the cocoa backend's AppKit
 //! observers).
 //!
-//! The callback does no rendering and owns no frame state: it publishes the presented host time
-//! and calls [`crate::platform::frame_wait::wake`], the same wake primitive every other backend
-//! uses. The loop keeps driving [`crate::drive_frame`] and reads the deadline through
-//! [`next_deadline`].
+//! The callback does no rendering: it records the presented host time, gates itself on the
+//! frame demand the driver published, and calls [`crate::platform::frame_wait::wake`], the same
+//! wake primitive every other backend uses. The loop keeps driving [`crate::drive_frame`] and
+//! reads the deadline through [`next_deadline`].
+//!
+//! # Why the callback reads a demand flag
+//!
+//! The callback runs on its own CoreVideo thread; without a gate it published two atomics and
+//! woke the frame wait at the display rate for the life of the process, a still window included
+//! (PL-04). [`note_frame_demand`] is how the driver turns the callback into a no-op while nothing
+//! is owed; the link itself stays started so the next event resumes presentation at the next
+//! vsync. That flag — and [`NEXT_PRESENTED_HOST_TIME`] — is the frame state this module owns; it
+//! is not the *drive* state, which stays in the loop.
 //!
 //! # Lifecycle
 //!
@@ -396,7 +405,10 @@ extern "C" fn display_link_callback(
             NEXT_PRESENTED_HOST_TIME.store(stamp.host_time, Ordering::Release);
         }
     }
-    crate::platform::frame_wait::wake();
+    // No `frame_wait::wake()` here (PL3-4): this callback runs on CoreVideo's own thread, while
+    // both macOS loops block in AppKit's run loop or in a CoreFoundation timer, never on the frame
+    // wait's condition variable. The notify therefore had no waiter, and the display link's
+    // published deadline is what the heartbeat and the objc2 loop read instead.
     CV_RETURN_SUCCESS
 }
 

@@ -51,10 +51,14 @@ use gtk::glib;
 /// The frame interval this backend's event loop runs at, in milliseconds.
 ///
 /// One constant rather than a `16` written at each loop and at each `drive_frame`
-/// call, because the two must agree: a loop that wakes on a 16 ms timer but advances
-/// the animation bus by a different delta makes every transition run at a speed that
-/// is a ratio of the two, with nothing to notice the mismatch. Named here so a backend
-/// that later runs at the display's own rate changes exactly one value.
+/// call, because the animation step and the fast wake cadence must agree: a loop that wakes
+/// on a 16 ms timer but advances the animation bus by a different delta makes every transition
+/// run at a speed that is a ratio of the two, with nothing to notice the mismatch. Named here so
+/// a backend that later runs at the display's own rate changes exactly one value.
+///
+/// This is the **delta** handed to `drive_frame` on every tick, including an idle tick: the two
+/// cadences below decide only how often the loop is woken, never how far time advances
+/// (PL3-1).
 const FRAME_INTERVAL_MS: u64 = crate::platform::types::FRAME_INTERVAL_MS;
 
 /// Cadence the GTK heartbeat drops to while no frame is owed.
@@ -65,6 +69,38 @@ const FRAME_INTERVAL_MS: u64 = crate::platform::types::FRAME_INTERVAL_MS;
 #[cfg(all(unix_desktop, feature = "gtk-native"))]
 const IDLE_FRAME_INTERVAL_MS: u64 = crate::platform::types::IDLE_FRAME_INTERVAL_MS;
 
+#[cfg(all(unix_desktop, feature = "gtk-native"))]
+thread_local! {
+    /// The live heartbeat's source slot and the cadence it was armed at.
+    ///
+    /// [`arm_frame_heartbeat`] owns both, but the re-arm an input event needs has to be reachable
+    /// from the GTK signal handlers installed in `create_window`, which runs before `run()` owns
+    /// the slot. Holding the pair here is what lets [`expedite_frame_heartbeat`] move an idle
+    /// heartbeat back to the frame cadence without a second timer or a state field.
+    static HEARTBEAT: core::cell::RefCell<
+        Option<(std::rc::Rc<core::cell::Cell<Option<glib::SourceId>>>, u64)>,
+    > = const { core::cell::RefCell::new(None) };
+}
+
+/// Clears the frame-wait wake hook when the GTK loop's scope ends, including by unwinding.
+///
+/// # Why a drop guard rather than the trailing statement it replaces
+///
+/// [`gtk::main`] is the toolkit's loop, and anything the loop runs may panic. The previous
+/// trailing `set_wake_hook(None)` only ran on a normal return, so an unwind left the hook
+/// installed: a later worker-thread wake then posted to a `glib::MainContext` that nothing was
+/// running, which is a wake that costs work and reaches no loop. The guard makes "the hook
+/// outlives no loop" true under both exits, and the explicit clear stays for readability.
+#[cfg(all(unix_desktop, feature = "gtk-native"))]
+struct WakeHookGuard;
+
+#[cfg(all(unix_desktop, feature = "gtk-native"))]
+impl Drop for WakeHookGuard {
+    fn drop(&mut self) {
+        crate::platform::frame_wait::set_wake_hook(None);
+    }
+}
+
 /// Installs (or re-installs) the GTK frame heartbeat at `interval_ms`.
 ///
 /// # Why the cadence is re-armed rather than fixed
@@ -73,17 +109,28 @@ const IDLE_FRAME_INTERVAL_MS: u64 = crate::platform::types::IDLE_FRAME_INTERVAL_
 /// desktop application woke its main thread sixty times a second to run a frame that had nothing
 /// to do (PL-03). The closure now asks the frame outcome whether another frame is owed and moves
 /// itself to [`IDLE_FRAME_INTERVAL_MS`] when it is not, or back to [`FRAME_INTERVAL_MS`] when an
-/// animation, a pending trigger or a pending repaint needs one.
+/// animation, a dispatched trigger or a pending repaint needs one.
+///
+/// # Why the delta is not `interval_ms`
+///
+/// The cadence says how often the loop is woken; it says nothing about how much time passed for
+/// the animation bus. An idle source fires every [`IDLE_FRAME_INTERVAL_MS`] (100 ms), so passing
+/// its own interval as the delta jumped a transition that started between two ticks forward by
+/// 100 ms on its first frame — a 120 ms hover fade painted at 83% complete (PL3-1). The delta is
+/// the nominal frame step on every tick; only the wake cadence changes.
 #[cfg(all(unix_desktop, feature = "gtk-native"))]
 fn arm_frame_heartbeat(
     slot: std::rc::Rc<core::cell::Cell<Option<glib::SourceId>>>,
     interval_ms: u64,
 ) {
+    HEARTBEAT.with(|live| {
+        *live.borrow_mut() = Some((std::rc::Rc::clone(&slot), interval_ms));
+    });
     let next_slot = std::rc::Rc::clone(&slot);
     let id = glib::timeout_add_local(core::time::Duration::from_millis(interval_ms), move || {
-        let outcome = crate::drive_frame(interval_ms as u32);
+        let outcome = crate::drive_frame(FRAME_INTERVAL_MS as u32);
         let wanted =
-            if outcome.needs_another_frame { FRAME_INTERVAL_MS } else { IDLE_FRAME_INTERVAL_MS };
+            if outcome.wants_fast_cadence() { FRAME_INTERVAL_MS } else { IDLE_FRAME_INTERVAL_MS };
         if wanted != interval_ms {
             // Retire this source and install the one for the new cadence. The recursive arm
             // stores the fresh id in the shared slot before this closure returns.
@@ -94,6 +141,40 @@ fn arm_frame_heartbeat(
         glib::ControlFlow::Continue
     });
     slot.set(Some(id));
+}
+
+/// Moves a live heartbeat back to the frame cadence after an input event (PL3-2).
+///
+/// A GTK signal handler runs synchronously, so the `Resized` trigger a `size-allocate` queues is
+/// only drained on the next heartbeat tick — up to one idle interval (100 ms) later while the
+/// window is still. Re-arming the idle source at the frame cadence here makes the frame that
+/// applies the new size run one frame step later instead. A heartbeat that is already fast is
+/// left alone, so a drag pays nothing.
+#[cfg(all(unix_desktop, feature = "gtk-native"))]
+fn expedite_frame_heartbeat() {
+    let live = HEARTBEAT.with(|live| live.borrow().clone());
+    let Some((slot, interval_ms)) = live else {
+        return;
+    };
+    if interval_ms == FRAME_INTERVAL_MS {
+        return;
+    }
+    // Retire the idle source first, so exactly one heartbeat remains installed.
+    if let Some(id) = slot.take() {
+        id.remove();
+    }
+    arm_frame_heartbeat(slot, FRAME_INTERVAL_MS);
+}
+
+/// Wakes the GTK main loop from any thread (PL3-4).
+///
+/// `glib::MainContext::default()` is the context `gtk::main()` runs, and `invoke` is the
+/// toolkit's thread-safe "run this on the loop thread" entry: it posts a source and wakes the
+/// context, so a `stop::request()` or `schedule_in` from a worker lands at once instead of
+/// waiting for the idle backstop.
+#[cfg(all(unix_desktop, feature = "gtk-native"))]
+fn wake_gtk_main_loop() {
+    glib::MainContext::default().invoke(|| {});
 }
 
 /// Resolves a window id to the GTK toplevel this backend owns for it.
@@ -901,8 +982,18 @@ impl Platform for LinuxPlatform {
             // an animation is picked up on the next idle tick (PL-03).
             let heartbeat = std::rc::Rc::new(core::cell::Cell::new(None));
             arm_frame_heartbeat(std::rc::Rc::clone(&heartbeat), FRAME_INTERVAL_MS);
+            // A worker that posts a stop request or schedules work calls `frame_wait::wake`, which
+            // cannot reach `gtk::main` through this module's condition variable. The GTK hook is
+            // what makes the wake land instead of waiting for the idle backstop (PL3-4).
+            crate::platform::frame_wait::set_wake_hook(Some(wake_gtk_main_loop));
+            // Armed before the loop starts so an unwind out of `gtk::main` clears the hook too.
+            let _wake_hook = WakeHookGuard;
             gtk::main();
-            // The loop is over, so the source must not outlive it.
+            // The loop is over, so the source must not outlive it, and neither may the hook: a
+            // later wake would post to a context nothing is running. The guard repeats this on
+            // the unwind path; `set_wake_hook(None)` is idempotent, so both exits are safe.
+            crate::platform::frame_wait::set_wake_hook(None);
+            HEARTBEAT.with(|live| *live.borrow_mut() = None);
             if let Some(id) = heartbeat.take() {
                 id.remove();
             }
@@ -921,17 +1012,16 @@ impl Platform for LinuxPlatform {
             // the frame, and *that* is what makes a hover transition on this path reach
             // its end (BLUE24 §1 criterion 5 -- the end-to-end "it really moves" check).
             //
-            // The sleep length is still fixed at the frame interval. A host that wants an
-            // event-driven loop would block until the next event when
-            // `needs_another_frame` is `false`; this backend has no such primitive --
-            // `Platform::run` is entered once and owns the thread until `quit` -- so it
-            // polls. What matters for correctness is that the *library* is asked per frame
-            // and that a still frame costs nothing but the sweep.
+            // The wait is not a fixed sleep: `pause_between_frames` blocks in the frame wait
+            // (an event, a stop request or scheduled work wakes it immediately) and uses the
+            // idle backstop only while no frame is owed, so a still window costs no busy-poll.
+            // The delta handed to `drive_frame` stays the nominal frame step on every tick — the
+            // cadence decides how often the loop is woken, never how far time advances (PL3-1).
             while self.runtime.running.load(Ordering::SeqCst) {
                 let outcome = crate::drive_frame(FRAME_INTERVAL_MS as u32);
                 // A still loop blocks for the next wake instead of polling every frame. A posted
                 // event, a stop request, or scheduled cross-thread work wakes it immediately.
-                crate::platform::frame_wait::pause_between_frames(outcome.needs_another_frame);
+                crate::platform::frame_wait::pause_between_frames(outcome.wants_fast_cadence());
             }
         }
     }
@@ -1572,7 +1662,11 @@ impl Platform for LinuxPlatform {
                 let (width, height) =
                     (allocation.width().max(0) as u32, allocation.height().max(0) as u32);
                 if let Some(widget_id) = crate::widget::runtime::widget_id_for_host_window(id) {
-                    crate::queue_resize_trigger(widget_id, width, height);
+                    if crate::queue_resize_trigger(widget_id, width, height) {
+                        // The trigger waits for the frame loop, so make sure it does not also
+                        // wait for the idle backstop (PL3-2).
+                        expedite_frame_heartbeat();
+                    }
                 }
             });
 

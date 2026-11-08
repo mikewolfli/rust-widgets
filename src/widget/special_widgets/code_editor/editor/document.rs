@@ -561,7 +561,7 @@ impl CodeEditor {
         // unchanged counter (BLUE26 B26.08).
         self.revision.set(self.revision.get().wrapping_add(1));
         self.text_changed.emit(next);
-        self.text_change.emit(TextChange::document(self.line_count()));
+        self.emit_text_change(TextChange::document(self.line_count()));
         self.emit_cursor_and_selection();
         self.base.request_layout();
         self.base.request_redraw();
@@ -990,7 +990,7 @@ impl CodeEditor {
         if let Some(text) = after_text {
             self.text_changed.emit(text);
         }
-        self.text_change.emit(change);
+        self.emit_text_change(change);
         self.emit_cursor_and_selection();
         self.base.request_layout();
         self.base.request_redraw();

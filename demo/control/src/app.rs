@@ -13,8 +13,9 @@
 //!   行 5 — Text area:   ScrollArea（内含多行 Label）+ Panel + Frame
 //!   行 6 — Paging:      Pagination (jump cell + page-size selector) + TabWidget
 //!   行 7 — Chart:       BarChart (eased value changes)
-//!   行 8 — State:       Shuffle data / Save state / Restore state
-//!   行 9-13 — Log:      事件日志标题与最近四条事件（随控件事件实时更新）
+//!   行 8 — State:       Shuffle data / Save state / Restore state（Shuffle 同时切换 MDI 层叠/平铺）
+//!   行 9 — 开发范式:    AdaptiveScaffold（移动脚手架）+ MdiArea（桌面 MDI，两个子窗）
+//!   行 10-14 — Log:     事件日志标题与最近四条事件（随控件事件实时更新）
 //!   隐藏 — MessageBox（由 “Click Me” 打开）
 //!
 //! 菜单栏（File / Edit / View）由 `new_menu_bar` + `new_menu` 创建：每个 `new_menu`
@@ -45,7 +46,9 @@ use rust_widgets::core::{ObjectId, Orientation, Rect};
 use rust_widgets::layout::Layout as LayoutTrait;
 use rust_widgets::theme::global_theme_manager;
 use rust_widgets::widget::chart_widgets::bar_chart::{BarChart, BarEntry};
+use rust_widgets::widget::container_widgets::mdiarea::MdiArea;
 use rust_widgets::widget::container_widgets::tabwidget::TabWidget;
+use rust_widgets::widget::nav_widgets::adaptive_scaffold::AdaptiveScaffold;
 use rust_widgets::widget::nav_widgets::pagination::Pagination;
 use rust_widgets::widget::runtime::{with_widget, with_widget_mut};
 use rust_widgets::{collect_save_state, restore_save_state, SavedState};
@@ -70,6 +73,13 @@ use rust_widgets::{collect_save_state, restore_save_state, SavedState};
 /// memory stays bounded and the entries a reader looks at — the most recent ones, the four the
 /// on-screen panel shows — are exactly the ones that survive.
 const EVENT_LOG_CAPACITY: usize = 200;
+
+/// Set to any value to make the chart row export its SVG at start-up (DM4-6).
+///
+/// The export used to run unconditionally on the construction path, which the offscreen preview
+/// also uses, so every preview paid a full serialise and a temp-file write for an artifact nothing
+/// reads. Same opt-in shape as finance's paint check.
+const EXPORT_SVG_ENV: &str = "RW_DEMO_EXPORT_SVG";
 
 /// One on-screen log row together with the text it currently shows.
 struct LogRow {
@@ -104,29 +114,35 @@ impl EventLog {
 
         // One writer mutex order everywhere in this type: rows first, then entries.
         let mut rows = self.rows.lock().unwrap();
-        let tail: Vec<String> = {
-            let mut entries = self.entries.lock().unwrap();
-            if entries.len() >= EVENT_LOG_CAPACITY {
-                entries.pop_front();
-            }
-            entries.push_back(msg);
-            // Show the tail of the log in the panel: the last N messages, oldest first, so the
-            // newest line is always the bottom row — the direction a terminal scrolls.
-            let start = entries.len().saturating_sub(rows.len());
-            entries.range(start..).cloned().collect()
-        };
-
-        // Only rows whose text actually changed are written. A scrolling tail shifts one line
-        // per event, so an event that really adds a new line does still rewrite the panel — that
-        // is what a four-line tail means. What this removes is the redundant half: a repeated
-        // event (the same value notified twice, a status line set to the text it already shows)
-        // leaves the four rows identical and now costs zero native writes instead of four.
+        let mut entries = self.entries.lock().unwrap();
+        if entries.len() >= EVENT_LOG_CAPACITY {
+            entries.pop_front();
+        }
+        entries.push_back(msg);
+        // Show the tail of the log in the panel: the last N messages, oldest first, so the
+        // newest line is always the bottom row — the direction a terminal scrolls.
         //
-        // The row lock is held across the writes on purpose: these rows are plain labels with
-        // no callbacks registered on them, so a write cannot re-enter `append`, and every
-        // append in this demo already runs on the loop thread.
-        for (row, line) in rows.iter_mut().zip(tail.iter()) {
-            if row.shown != *line {
+        // DM4-1: the comparison borrows the entries directly. The previous form cloned the whole
+        // four-line tail into a `Vec<String>` before comparing, so a burst of identical events paid
+        // one `Vec` and four `String` clones per event only to discover that no row had changed. The
+        // lock order (rows, then entries) and the write rule are unchanged: only a row whose text
+        // actually differs is written, so a repeated event still costs zero native `set_text`.
+        let start = entries.len().saturating_sub(rows.len());
+        // Right-align, exactly as `attach_rows` does: with fewer entries than rows the newest
+        // line belongs in the bottom row, and the leading rows are blank rather than keeping
+        // whatever an earlier, longer log left there. `zip` alone put the first entry in the top
+        // row, which disagreed with the panel `attach_rows` builds. In the demo the log is
+        // already longer than the panel when it attaches, so the two never visibly differed; the
+        // rule is aligned here so a future panel with a short log cannot show it.
+        let leading_blank = rows.len().saturating_sub(entries.len());
+        for row in rows.iter_mut().take(leading_blank) {
+            if !row.shown.is_empty() {
+                row.handle.set_text("");
+                row.shown.clear();
+            }
+        }
+        for (row, line) in rows.iter_mut().skip(leading_blank).zip(entries.range(start..)) {
+            if row.shown.as_str() != line.as_str() {
                 row.handle.set_text(line);
                 row.shown.clone_from(line);
             }
@@ -235,6 +251,20 @@ struct Follower {
     height: u32,
 }
 
+/// Row 9's MDI area and the arrangement the user last chose.
+///
+/// Shared between the layout and the Shuffle button, which is what makes a resize re-apply the
+/// arrangement instead of leaving the sub-window frames at the absolute positions they had when
+/// the area was first mounted. A sub-window frame is stored in window coordinates (the same space
+/// `add_sub_window`/`cascade_sub_windows` use), so it does not follow the area's own rectangle on
+/// its own.
+struct MdiRowState {
+    /// The mounted area, once row 9 has one.
+    area: Option<ObjectId>,
+    /// `true` for a cascade arrangement, `false` for a tile arrangement.
+    cascade: bool,
+}
+
 /// Window layout: fixed chrome plus a grid whose columns share the width by weight.
 ///
 /// # Why this exists
@@ -260,35 +290,59 @@ struct ControlGridLayout {
     /// `Cell` because `update` takes `&self`: a layout that cannot remember what it already
     /// did can only repeat it.
     last_applied: std::cell::Cell<Option<(u32, u32)>>,
+    /// The size the last layout **log** line reported (DM4-2).
+    ///
+    /// A drag delivers a new client size every tick, so every tick reached the log and rewrote the
+    /// four-row panel. The line is emitted at most once per [`LOG_SIZE_STEP`] pixels of change,
+    /// which keeps the log readable and the panel untouched for the rest of the drag.
+    last_logged: std::cell::Cell<Option<(u32, u32)>>,
+    /// Scratch containers reused by one pass (DM4-2). `RefCell` for the same reason
+    /// `last_applied` is a `Cell`: `update` takes `&self`. Cleared, never reallocated.
+    scratch_rows: std::cell::RefCell<Vec<u16>>,
+    scratch_heights: std::cell::RefCell<Vec<u32>>,
+    scratch_placed: std::cell::RefCell<Vec<(ObjectId, Rect)>>,
+    /// Indices into `slots` for the current row: the slot references cannot live in a field, so a
+    /// row collects the indices and each accessor reads `self.slots[index]`.
+    scratch_row_slots: std::cell::RefCell<Vec<usize>>,
+    scratch_widths: std::cell::RefCell<Vec<u32>>,
+    /// Row 9's MDI area and the arrangement to re-apply after the area is placed (GX2-1).
+    mdi: Arc<Mutex<MdiRowState>>,
 }
 
+/// How much the client size must change before the layout writes another log line (DM4-2).
+const LOG_SIZE_STEP: u32 = 32;
+
 impl ControlGridLayout {
-    /// Content rows that actually have slots, in ascending order.
-    fn content_rows(&self) -> Vec<u16> {
-        let mut rows: Vec<u16> = self
-            .slots
-            .iter()
-            .filter(|slot| slot.band == Band::Content)
-            .map(|slot| slot.row)
-            .collect();
-        rows.sort_unstable();
-        rows.dedup();
-        rows
+    /// Content rows that actually have slots, in ascending order, written into `out`.
+    fn content_rows(&self, out: &mut Vec<u16>) {
+        out.clear();
+        out.extend(self.slots.iter().filter(|slot| slot.band == Band::Content).map(|s| s.row));
+        out.sort_unstable();
+        out.dedup();
     }
 
     /// The height each content row needs, before the available space is considered.
-    fn nominal_row_heights(&self, rows: &[u16]) -> Vec<u32> {
-        rows.iter()
-            .map(|row| {
-                self.slots
-                    .iter()
-                    .filter(|slot| slot.band == Band::Content && slot.row == *row)
-                    .map(|slot| slot.nominal.3)
-                    .max()
-                    .unwrap_or(1)
-                    .max(1)
-            })
-            .collect()
+    fn nominal_row_heights(&self, rows: &[u16], out: &mut Vec<u32>) {
+        out.clear();
+        out.extend(rows.iter().map(|row| {
+            self.slots
+                .iter()
+                .filter(|slot| slot.band == Band::Content && slot.row == *row)
+                .map(|slot| slot.nominal.3)
+                .max()
+                .unwrap_or(1)
+                .max(1)
+        }));
+    }
+
+    /// Whether a size change is large enough to warrant another log line (DM4-2).
+    fn should_log(&self, width: u32, height: u32) -> bool {
+        match self.last_logged.get() {
+            None => true,
+            Some((w, h)) => {
+                width.abs_diff(w) >= LOG_SIZE_STEP || height.abs_diff(h) >= LOG_SIZE_STEP
+            }
+        }
     }
 
     /// Fits `heights` and the gaps into `available`, shrinking both when they do not fit.
@@ -359,8 +413,9 @@ impl LayoutTrait for ControlGridLayout {
 
         let mut moved = 0usize;
         // Every placed rectangle, so a follower can be positioned from its host's final box
-        // rather than from the host's nominal rectangle.
-        let mut placed_rects: Vec<(ObjectId, Rect)> = Vec::with_capacity(self.slots.len());
+        // rather than from the host's nominal rectangle. Reused across passes (DM4-2).
+        let mut placed_rects = self.scratch_placed.borrow_mut();
+        placed_rects.clear();
 
         // ── Window chrome ────────────────────────────────────────────
         for slot in &self.slots {
@@ -382,8 +437,10 @@ impl LayoutTrait for ControlGridLayout {
         }
 
         // ── Content grid ─────────────────────────────────────────────────
-        let rows = self.content_rows();
-        let mut heights = self.nominal_row_heights(&rows);
+        let mut rows = self.scratch_rows.borrow_mut();
+        self.content_rows(&mut rows);
+        let mut heights = self.scratch_heights.borrow_mut();
+        self.nominal_row_heights(&rows, &mut heights);
         let available = content_bottom.saturating_sub(content_top);
         let gap = Self::fit_rows(&mut heights, available);
 
@@ -393,36 +450,48 @@ impl LayoutTrait for ControlGridLayout {
         let block = heights.iter().sum::<u32>() + gap * (rows.len() as u32).saturating_sub(1);
         let mut y = content_top as i32 + (available.saturating_sub(block) / 2) as i32;
 
+        // The per-row slot list and column widths are scratch too (DM4-2). They hold indices, not
+        // references, because a struct field cannot borrow `self.slots`.
+        let mut row_slots = self.scratch_row_slots.borrow_mut();
+        let mut widths = self.scratch_widths.borrow_mut();
         for (index, row) in rows.iter().enumerate() {
             let row_height = heights.get(index).copied().unwrap_or(1).max(1);
-            let row_slots: Vec<&Slot> = self
-                .slots
-                .iter()
-                .filter(|slot| slot.band == Band::Content && slot.row == *row)
-                .collect();
+            row_slots.clear();
+            row_slots.extend(
+                self.slots
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, slot)| slot.band == Band::Content && slot.row == *row)
+                    .map(|(index, _)| index),
+            );
             if row_slots.is_empty() {
                 continue;
             }
             let count = row_slots.len() as u32;
             let gaps = SLOT_GAP * count.saturating_sub(1);
-            let weight_total: u32 = row_slots.iter().map(|slot| slot.weight).sum::<u32>().max(1);
-            let fixed_width: u32 =
-                row_slots.iter().filter(|slot| slot.weight == 0).map(|slot| slot.nominal.2).sum();
+            let weight_total: u32 =
+                row_slots.iter().map(|index| self.slots[*index].weight).sum::<u32>().max(1);
+            let fixed_width: u32 = row_slots
+                .iter()
+                .filter(|index| self.slots[**index].weight == 0)
+                .map(|index| self.slots[*index].nominal.2)
+                .sum();
             let flexible = width.saturating_sub(MARGIN * 2 + gaps + fixed_width).max(count);
 
             // Widths first, so the last weighted slot can absorb the rounding remainder and
             // the row ends exactly at the right margin instead of a few pixels short.
-            let mut widths: Vec<u32> = row_slots
-                .iter()
-                .map(|slot| {
-                    if slot.weight == 0 {
-                        slot.nominal.2.max(1)
-                    } else {
-                        (flexible * slot.weight / weight_total).max(1)
-                    }
-                })
-                .collect();
-            if let Some(last_weighted) = row_slots.iter().rposition(|slot| slot.weight > 0) {
+            widths.clear();
+            widths.extend(row_slots.iter().map(|index| {
+                let slot = &self.slots[*index];
+                if slot.weight == 0 {
+                    slot.nominal.2.max(1)
+                } else {
+                    (flexible * slot.weight / weight_total).max(1)
+                }
+            }));
+            if let Some(last_weighted) =
+                row_slots.iter().rposition(|index| self.slots[*index].weight > 0)
+            {
                 let planned: u32 = widths.iter().sum::<u32>() + gaps;
                 let target = width.saturating_sub(MARGIN * 2);
                 if planned < target {
@@ -431,7 +500,9 @@ impl LayoutTrait for ControlGridLayout {
             }
 
             let mut x = MARGIN as i32;
-            for (slot, slot_width) in row_slots.iter().zip(widths.iter()) {
+            for (position, slot_index) in row_slots.iter().copied().enumerate() {
+                let slot = &self.slots[slot_index];
+                let slot_width = widths[position];
                 // The control keeps its design height: a taller row band is vertical
                 // breathing room, not permission to stretch a 32px button into a 90px one.
                 let control_height = slot.nominal.3.min(row_height).max(1);
@@ -439,11 +510,11 @@ impl LayoutTrait for ControlGridLayout {
                 // a top edge, which reads as a form. Centring made the short control float in
                 // the middle of a tall row with no visual relationship to its neighbour.
                 let control_y = y;
-                widgets(slot.id, Rect::new(x, control_y, (*slot_width).max(1), control_height));
+                widgets(slot.id, Rect::new(x, control_y, slot_width.max(1), control_height));
                 moved += 1;
                 placed_rects
-                    .push((slot.id, Rect::new(x, control_y, (*slot_width).max(1), control_height)));
-                x += *slot_width as i32 + SLOT_GAP as i32;
+                    .push((slot.id, Rect::new(x, control_y, slot_width.max(1), control_height)));
+                x += slot_width as i32 + SLOT_GAP as i32;
             }
             y += row_height as i32 + gap as i32;
         }
@@ -464,7 +535,33 @@ impl LayoutTrait for ControlGridLayout {
             }
         }
 
+        // Row 9's sub-window frames are stored in window coordinates, so a new area rectangle
+        // does not move them. Re-applying the arrangement the user last chose is what keeps the
+        // two sub-windows inside the area after a resize; the Shuffle button owns the choice.
         if moved > 0 {
+            let (area, cascade) = {
+                let state = self.mdi.lock().unwrap();
+                (state.area, state.cascade)
+            };
+            if let Some(area_id) = area {
+                let _ = rust_widgets::widget::runtime::with_widget_mut(area_id, |widget| {
+                    let Some(area) = (widget as &mut dyn core::any::Any).downcast_mut::<MdiArea>()
+                    else {
+                        return;
+                    };
+                    if cascade {
+                        area.cascade_sub_windows();
+                    } else {
+                        area.tile_sub_windows();
+                    }
+                });
+            }
+        }
+
+        // DM4-2: one log line per coarse size change, not one per drag tick. The panel is four
+        // labels, so every line costs up to four native writes on top of the `format!`.
+        if moved > 0 && self.should_log(rect.width, rect.height) {
+            self.last_logged.set(Some((rect.width, rect.height)));
             self.log.append(format!(
                 "[Layout] window {}x{} -> {} control(s) placed",
                 rect.width, rect.height, moved
@@ -518,8 +615,9 @@ const SLOT_GAP: u32 = 10;
 
 #[cfg(test)]
 // The tests sit beside the layout they exercise so a reader meets the cases where the rules are
-// stated. The file is under 2000 lines, which principle #9 makes the bar for splitting; the lint
-// is a file-layout preference, not a correctness signal.
+// stated. This is a demo crate, not a `src/` module: principle #9's 2000-line split bar is enforced
+// by `tools/check_source_structure.sh` over the library, so the demo's own length is not a gate.
+// The lint suppressed here is a file-layout preference, not a correctness signal.
 #[allow(clippy::items_after_test_module)]
 mod layout_tests {
     use super::*;
@@ -540,6 +638,14 @@ mod layout_tests {
             followers: Vec::new(),
             log: Arc::new(EventLog::new()),
             last_applied: std::cell::Cell::new(None),
+            last_logged: std::cell::Cell::new(None),
+            scratch_rows: RefCell::new(Vec::new()),
+            scratch_heights: RefCell::new(Vec::new()),
+            scratch_placed: RefCell::new(Vec::new()),
+            scratch_row_slots: RefCell::new(Vec::new()),
+            scratch_widths: RefCell::new(Vec::new()),
+            // No MDI row in these fixtures: the re-arrange block is a no-op without an id.
+            mdi: Arc::new(Mutex::new(MdiRowState { area: None, cascade: true })),
         }
     }
 
@@ -699,12 +805,20 @@ fn register_window_layout(
     slots: Vec<Slot>,
     followers: Vec<Follower>,
     log: &Arc<EventLog>,
+    mdi: Arc<Mutex<MdiRowState>>,
 ) {
     win.set_layout(ControlGridLayout {
         slots,
         followers,
         log: Arc::clone(log),
         last_applied: std::cell::Cell::new(None),
+        last_logged: std::cell::Cell::new(None),
+        scratch_rows: RefCell::new(Vec::new()),
+        scratch_heights: RefCell::new(Vec::new()),
+        scratch_placed: RefCell::new(Vec::new()),
+        scratch_row_slots: RefCell::new(Vec::new()),
+        scratch_widths: RefCell::new(Vec::new()),
+        mdi,
     });
 }
 
@@ -848,11 +962,21 @@ fn selected_tab(id: ObjectId) -> Option<usize> {
 // 构建所有控件 + 日志面板
 // ═══════════════════════════════════════════════════════════════════════════════
 
+/// What [`build_all_controls`] produced.
+///
+/// `slots` is what the layout positions; `mdi` is row 9's MDI state, which the layout and the
+/// Shuffle button share (see [`MdiRowState`]). Returning it rather than reaching for a global
+/// keeps every window's row 9 independent, which is what a test with more than one window needs.
+struct BuiltControls {
+    slots: Vec<Slot>,
+    mdi: Arc<Mutex<MdiRowState>>,
+}
+
 fn build_all_controls(
     win: &WindowHandle,
     log: &Arc<EventLog>,
     followers: &mut Vec<Follower>,
-) -> Vec<Slot> {
+) -> BuiltControls {
     // Each control registers its own row here so the window layout can re-place it on resize.
     // The row number only says "same horizontal band"; columns share the row's width by weight.
     let mut slots: Vec<Slot> = Vec::new();
@@ -1283,13 +1407,16 @@ fn build_all_controls(
     let mut chart = BarChart::new(Rect::new(20, 436, 680, 110));
     chart.set_animate_value_changes(true);
     chart.set_bars(shuffled_bars(0));
-    // Exercise the engine's headless SVG renderer from the chart the row actually shows: the
-    // file is written to the temp directory, so the demo leaves no artifact in the repository
-    // (CH2-06).
-    let svg_path = std::env::temp_dir().join("rust_widgets_demo_bar_chart.svg");
-    match chart.export_svg(&svg_path.to_string_lossy()) {
-        Ok(()) => log.append(format!("[BarChart] engine SVG export -> {}", svg_path.display())),
-        Err(error) => log.append(format!("[BarChart] engine SVG export failed: {error}")),
+    // Exercise the engine's headless SVG renderer, but only when asked (DM4-6). This runs inside
+    // `build_all_controls`, which the offscreen preview also calls, so an unconditional export made
+    // every preview serialise the whole chart and write a temp file that nothing reads. The gate is
+    // the same shape finance's paint check uses; unset is the ordinary demo path.
+    if std::env::var_os(EXPORT_SVG_ENV).is_some() {
+        let svg_path = std::env::temp_dir().join("rust_widgets_demo_bar_chart.svg");
+        match chart.export_svg(&svg_path.to_string_lossy()) {
+            Ok(()) => log.append(format!("[BarChart] engine SVG export -> {}", svg_path.display())),
+            Err(error) => log.append(format!("[BarChart] engine SVG export failed: {error}")),
+        }
     }
     let chart_id = match win.mount_surface(Box::new(chart), Rect::new(20, 436, 680, 110)) {
         Ok(surface) => {
@@ -1315,8 +1442,16 @@ fn build_all_controls(
 
     let window_id = win.raw_id();
     let shuffle_round = Arc::new(Mutex::new(0u64));
+    // The MDI area mounts in the development-patterns row below, after this button exists. The
+    // button reads the id through this slot when it runs, which is long after the mount. The same
+    // slot carries the arrangement, so the window layout can re-apply the user's choice after a
+    // resize. `Arc<Mutex<..>>` rather than `Rc<Cell<..>>` because `on_click` takes a `Send`
+    // closure.
+    let mdi_target: Arc<Mutex<MdiRowState>> =
+        Arc::new(Mutex::new(MdiRowState { area: None, cascade: true }));
 
     let shuffle = row!(8, 1, (20, 556, 200, 32), new_button("Shuffle data"));
+    let mdi_arrange = Arc::clone(&mdi_target);
     let l = Arc::clone(log);
     let round_counter = Arc::clone(&shuffle_round);
     let chart_target = chart_id;
@@ -1374,6 +1509,45 @@ fn build_all_controls(
             Some(index) => l.append(format!("[TabWidget] shuffle -> index {index}")),
             None => l.append("[TabWidget] shuffle could not move the selection"),
         }
+
+        // GX2-1: the same button arranges the MDI sub-windows, alternating cascade and tile so one
+        // click shows both layouts without a second control. The choice is stored in the shared
+        // row state, which is also what a resize re-applies; deriving it from `round % 2` here
+        // would let the two paths disagree after any resize.
+        let (mdi_id, cascade) = {
+            let mut state = mdi_arrange.lock().unwrap();
+            state.cascade = !state.cascade;
+            (state.area, state.cascade)
+        };
+        let arranged = mdi_id.and_then(|id| {
+            with_widget_mut(id, |widget| {
+                let area = (widget as &mut dyn core::any::Any).downcast_mut::<MdiArea>()?;
+                if cascade {
+                    area.cascade_sub_windows();
+                } else {
+                    area.tile_sub_windows();
+                }
+                Some(area.sub_window_count())
+            })
+            .flatten()
+        });
+        match arranged {
+            Some(count) => {
+                // The area and its sub-windows are painted by the mounted surface's own frame.
+                // The runtime's invalidation is what asks the platform to repaint it: the
+                // button's click changes no state fact of the area, so nothing else submits
+                // the frame. (A control inside a window does not need this: the window's
+                // invalidation covers it.)
+                if let Some(id) = mdi_id {
+                    rust_widgets::widget::runtime::request_repaint(id);
+                }
+                l.append(format!(
+                    "[MdiArea] {} -> {count} sub-window(s)",
+                    if cascade { "cascade" } else { "tile" }
+                ))
+            }
+            None => l.append("[MdiArea] shuffle could not reach the area"),
+        }
     });
     log.append("[Button] 'Shuffle data' updates the chart and both saved controls");
 
@@ -1410,19 +1584,96 @@ fn build_all_controls(
         ));
     });
 
+    // ── Row 9: Development patterns (AdaptiveScaffold / MdiArea) (GX2-1) ──
+    //
+    // The two composition paradigms the library ships were only visible in the docs. They are
+    // ordinary controls, so the demo mounts them the way it mounts every other self-painted
+    // control: on a surface, and registered with the window layout so a resize moves them.
+    log.append("=== Row: Development patterns (AdaptiveScaffold / MdiArea) ===");
+
+    // Narrow window: bottom navigation bar; wide window: navigation rail. Dragging the demo
+    // window across the breakpoint (599/840 px) shows the form switch.
+    let mut scaffold = AdaptiveScaffold::new("移动脚手架", Rect::new(20, 0, 340, 90));
+    scaffold.set_show_bottom_nav(true);
+    scaffold.add_nav_item("home", "首页");
+    scaffold.add_nav_item("search", "搜索");
+    scaffold.add_nav_item("settings", "设置");
+    let scaffold_id = match win.mount_surface(Box::new(scaffold), Rect::new(20, 0, 340, 90)) {
+        Ok(surface) => {
+            let id = surface.raw_id();
+            slots.push(Slot {
+                id,
+                band: Band::Content,
+                row: 9,
+                weight: 1,
+                nominal: (20, 0, 340, 90),
+            });
+            log.append(format!(
+                "[AdaptiveScaffold] mounted id={id:?} with 3 bottom-nav items (narrow) / rail (wide)"
+            ));
+            Some(id)
+        }
+        Err(error) => {
+            log.append(format!("[AdaptiveScaffold] mount failed ({error}); the row is not shown"));
+            None
+        }
+    };
+
+    // Desktop MDI: two sub-windows referencing two ordinary labels. `add_sub_window` reparents
+    // them into the area, so the labels supply the sub-window contents and titles; the Shuffle
+    // button below cascades/tiles the frames.
+    let mut area = MdiArea::new(Rect::new(370, 0, 320, 90));
+    let first = win.new_label("项目 A", 0, 0, 1, 1);
+    let second = win.new_label("项目 B", 0, 0, 1, 1);
+    // `add_sub_window` takes the frame in the area's own (absolute) coordinates — the same
+    // space `cascade_sub_windows` computes from the area's geometry — so the frames are laid
+    // out by the area instead of hand-written numbers. A first `cascade` is what puts the two
+    // windows inside the area before the first frame is painted; tile/cascade from the Shuffle
+    // button then re-uses the same arithmetic.
+    area.add_sub_window(first.raw_id(), Rect::new(0, 0, 150, 64));
+    area.add_sub_window(second.raw_id(), Rect::new(0, 0, 150, 64));
+    area.cascade_sub_windows();
+    area.set_sub_window_title(first.raw_id(), "项目 A".to_string());
+    area.set_sub_window_title(second.raw_id(), "项目 B".to_string());
+    let mdi_id = match win.mount_surface(Box::new(area), Rect::new(370, 0, 320, 90)) {
+        Ok(surface) => {
+            let id = surface.raw_id();
+            slots.push(Slot {
+                id,
+                band: Band::Content,
+                row: 9,
+                weight: 1,
+                nominal: (370, 0, 320, 90),
+            });
+            log.append(format!(
+                "[MdiArea] mounted id={id:?} with 2 sub-windows; Shuffle arranges them"
+            ));
+            Some(id)
+        }
+        Err(error) => {
+            log.append(format!("[MdiArea] mount failed ({error}); the row is not shown"));
+            None
+        }
+    };
+
     // ── Log Panel (底部 4 行标签) ─────────────────────────────────────
     log.append("=== Log Panel ===");
 
-    let _title = row!(9, 1, (20, 496, 680, 18), new_label("事件日志"));
+    let _title = row!(10, 1, (20, 496, 680, 18), new_label("事件日志"));
     let mut log_rows = Vec::new();
     for i in 0..4 {
-        let entry = row!(10 + i as u16, 1, (20, 518 + i * 20, 680, 18), new_label(""));
+        let entry = row!(11 + i as u16, 1, (20, 518 + i * 20, 680, 18), new_label(""));
         log_rows.push(entry);
     }
     log.attach_rows(log_rows);
     log.append("[LogPanel] 4 label rows at bottom");
 
-    slots
+    // Report the paradigm row's ids so the Shuffle wiring below can reach the MDI area. The
+    // scaffold id is only logged: its form switches on the window width by itself.
+    let _ = scaffold_id;
+    *mdi_target.lock().unwrap() = MdiRowState { area: mdi_id, cascade: true };
+
+    BuiltControls { slots, mdi: mdi_target }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1591,14 +1842,15 @@ fn build_window(app: &mut App, dark: bool, log: &Arc<EventLog>) -> WindowHandle 
 
     // 构建全部基础控件，并交给窗口一个 layout
     let mut followers = Vec::new();
-    slots.extend(build_all_controls(&win, log, &mut followers));
+    let built = build_all_controls(&win, log, &mut followers);
+    slots.extend(built.slots);
     // 必须在控件都建好之后：layout 需要它们的 id。
     //
     // 没有这一步，窗口 resize 后**什么都不会重排**：库侧链路是完整的
     // （OS 报 resize → 后端入队 `Resized` → `app/handle.rs` 重跑窗口 layout），
     // 但 `LAYOUTS` 里没有本窗口的条目，`apply_window_layout` 拿到空列表，控件
     // 停留在启动时为 1180×760 算出的坐标。
-    register_window_layout(&win, slots, followers, log);
+    register_window_layout(&win, slots, followers, log, built.mdi);
     win
 }
 
@@ -1739,8 +1991,9 @@ mod paint_tests {
         let slots = build_window_chrome(&win, &log);
         let mut followers = Vec::new();
         let mut slots = slots;
-        slots.extend(build_all_controls(&win, &log, &mut followers));
-        register_window_layout(&win, slots, followers, &log);
+        let built = build_all_controls(&win, &log, &mut followers);
+        slots.extend(built.slots);
+        register_window_layout(&win, slots, followers, &log, built.mdi);
 
         let size = Size::new(1180, 760);
         let frame = rust_widgets::widget::runtime::render_frame_tree(
@@ -1761,5 +2014,88 @@ mod paint_tests {
         }
         counts.sort_by_key(|(_, n)| std::cmp::Reverse(*n));
         eprintln!("[PROBE] top colours: {:?}", &counts[..counts.len().min(8)]);
+    }
+
+    /// Row 9's sub-window frames are absolute, so a layout pass must re-apply the arrangement
+    /// after the area has its new rectangle. Without it the frames stay where they were when the
+    /// window was smaller: some fall outside the area's clip and the content disappears.
+    ///
+    /// # What is measured
+    ///
+    /// The layout's placement closure writes the area's geometry (as the framework's does), then
+    /// the re-arrange block runs. Every sub-window frame must land inside the rectangle the
+    /// layout just gave the area.
+    #[test]
+    fn a_layout_pass_rearranges_the_mdi_sub_windows() {
+        use rust_widgets::widget::runtime::{register, with_widget};
+
+        rust_widgets::init();
+        let first = register(Box::new(rust_widgets::widget::Label::new(
+            "A".to_string(),
+            Rect::new(0, 0, 1, 1),
+        )))
+        .expect("register the first label");
+        let second = register(Box::new(rust_widgets::widget::Label::new(
+            "B".to_string(),
+            Rect::new(0, 0, 1, 1),
+        )))
+        .expect("register the second label");
+        let mut area = MdiArea::new(Rect::new(0, 0, 120, 80));
+        area.add_sub_window(first, Rect::new(0, 0, 100, 40));
+        area.add_sub_window(second, Rect::new(20, 20, 100, 40));
+        let area_id = register(Box::new(area)).expect("register the area");
+
+        let mdi = Arc::new(Mutex::new(MdiRowState { area: Some(area_id), cascade: true }));
+        let layout = ControlGridLayout {
+            slots: vec![Slot {
+                id: area_id,
+                band: Band::Content,
+                row: 0,
+                weight: 1,
+                nominal: (20, 20, 120, 80),
+            }],
+            followers: Vec::new(),
+            log: Arc::new(EventLog::new()),
+            last_applied: std::cell::Cell::new(None),
+            last_logged: std::cell::Cell::new(None),
+            scratch_rows: RefCell::new(Vec::new()),
+            scratch_heights: RefCell::new(Vec::new()),
+            scratch_placed: RefCell::new(Vec::new()),
+            scratch_row_slots: RefCell::new(Vec::new()),
+            scratch_widths: RefCell::new(Vec::new()),
+            mdi,
+        };
+
+        let mut placed = None;
+        LayoutTrait::update(&layout, Rect::new(0, 0, 600, 300), &mut |id, rect| {
+            // The framework's placement: the widget really moves before the re-arrange phase
+            // runs, which is what the MDI re-arrange reads.
+            rust_widgets::set_widget_geometry(id, rect.x, rect.y, rect.width, rect.height);
+            if id == area_id {
+                placed = Some(rect);
+            }
+        });
+        let placed = placed.expect("the area is one of the layout's slots");
+
+        let (left, right) = with_widget(area_id, |widget| {
+            let area = (widget as &dyn core::any::Any)
+                .downcast_ref::<MdiArea>()
+                .expect("the registered widget is an MdiArea");
+            (
+                area.sub_window(0).expect("first sub-window").geometry(),
+                area.sub_window(1).expect("second sub-window").geometry(),
+            )
+        })
+        .expect("read the area back");
+
+        for frame in [left, right] {
+            assert!(
+                frame.x >= placed.x
+                    && frame.y >= placed.y
+                    && frame.x + frame.width as i32 <= placed.x + placed.width as i32
+                    && frame.y + frame.height as i32 <= placed.y + placed.height as i32,
+                "sub-window {frame:?} is outside the placed area {placed:?}"
+            );
+        }
     }
 }

@@ -148,7 +148,7 @@ impl CodeEditor {
         // A multi-caret batch rewrites several disjoint regions, so there is no single
         // line range to report; it is described conservatively as a whole-document change
         // (a subscriber re-reads what it needs) rather than pretending to one span.
-        self.text_change.emit(TextChange::document(self.line_count()));
+        self.emit_text_change(TextChange::document(self.line_count()));
         self.emit_cursor_and_selection();
         self.base.request_layout();
         self.base.request_redraw();
@@ -1288,7 +1288,7 @@ impl CodeEditor {
         self.clamp_cursor_to_document();
         self.refresh_derived_state();
         self.text_changed.emit(restored);
-        self.text_change.emit(TextChange::document(self.line_count()));
+        self.emit_text_change(TextChange::document(self.line_count()));
         self.emit_cursor_and_selection();
         self.base.request_layout();
         self.base.request_redraw();

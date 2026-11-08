@@ -171,9 +171,10 @@ impl Dial {
     /// [`Dial::set_value`], so the value will be clamped or wrapped into the
     /// new range and `value_changed` may fire.
     ///
-    /// `min` above the current `maximum` leaves an inverted range in which the
-    /// clamp saturates unpredictably; use [`Dial::set_range`] instead, which
-    /// keeps `maximum >= minimum`.
+    /// `min` above the current `maximum` leaves an inverted range: the bounds are stored as given,
+    /// and the scale they describe is meaningless. Writes go through `ordered_clamp_i32`, so a
+    /// pointer or `set_value` write cannot panic on it, but the value no longer means anything — use
+    /// [`Dial::set_range`], which keeps `maximum >= minimum`.
     pub fn set_minimum(&mut self, min: i32) {
         if self.minimum == min {
             return;
@@ -350,7 +351,11 @@ impl Dial {
         };
         let range = self.maximum as f64 - self.minimum as f64;
         let value = self.minimum as f64 + fraction * range;
-        (value.round() as i32).clamp(self.minimum, self.maximum)
+        // WT3-2: `set_minimum`/`set_maximum` accept an inverted pair (and the capability property
+        // route can produce one), and a bare `clamp(min, max)` **panics** when `min > max` — inside
+        // a pointer callback that abort crosses FFI. `set_value` in this file already normalises
+        // through `ordered_clamp_i32`; this read path is the one that was missed.
+        ordered_clamp_i32(value.round() as i32, self.minimum, self.maximum)
     }
     /// The angular sweep the dial's scale occupies, in radians.
     fn sweep_radians(wrapping: bool) -> f64 {
@@ -1155,6 +1160,35 @@ mod tests {
         assert!((70..=80).contains(&bottom), "the bottom of a wrapping dial is ~75, got {bottom}");
         let left = d.value_at_point(Point::new(10, 40));
         assert!(left <= 2 || left >= 98, "the 9 o'clock position is the wrap point, got {left}");
+    }
+
+    /// WT3-2: an inverted range (produced by the two single-bound setters) must not abort the
+    /// process when a pointer reaches `value_at_point`.
+    ///
+    /// `set_minimum` documents that it does not normalise, and the capability property route can
+    /// set the bounds in either order, so an inverted pair is a reachable state. A bare
+    /// `clamp(min, max)` panics on it; inside a pointer callback that panic crosses FFI as an abort.
+    /// The value is meaningless in this state, which is why the assertion is only that the call
+    /// returns a number inside the normalised pair.
+    #[test]
+    fn an_inverted_range_does_not_panic_on_the_pointer_path() {
+        use crate::core::Point;
+
+        let mut d = Dial::new(Rect::new(0, 0, 80, 80));
+        d.set_range(0, 100);
+        d.set_minimum(100);
+        d.set_maximum(0);
+        for point in [Point::new(70, 40), Point::new(10, 40), Point::new(40, 70)] {
+            let value = d.value_at_point(point);
+            assert!(
+                (0..=100).contains(&value),
+                "the read must stay inside the bounds, got {value}"
+            );
+        }
+        // The same state through the drag entry point, which is where the panic would abort.
+        d.handle_event(&Event::mouse_press(70, 40, 1));
+        d.handle_event(&Event::mouse_move(20, 40));
+        d.handle_event(&Event::mouse_release(20, 40, 1));
     }
 
     /// A drag snaps to the configured step, and the caller can turn that off.

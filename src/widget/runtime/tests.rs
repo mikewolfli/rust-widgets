@@ -314,6 +314,76 @@ fn animation_damage_is_unioned_per_window() {
     );
 }
 
+/// RT3-01: the dispatch memo is keyed by the **window's** epoch, not the global one.
+///
+/// Before this, any control's damage bumped the global epoch, so one animation anywhere on the
+/// thread invalidated the memo for every window on every frame. The assertion is on the cached
+/// key: after damaging window B, window A's cached epoch must still equal A's window epoch and
+/// must differ from the (bumped) global epoch.
+#[cfg(not(alloc_frugal))]
+#[test]
+fn the_dispatch_memo_is_keyed_by_the_windows_own_epoch() {
+    use crate::event::Event;
+    use crate::widget::{Button, Window};
+
+    let window_a = register(Box::new(Window::new(
+        "memo a".to_string(),
+        crate::core::Rect::new(0, 0, 200, 200),
+    )))
+    .expect("mount window A");
+    let _window_a_unmount = MountGuard(window_a);
+    let window_b = register(Box::new(Window::new(
+        "memo b".to_string(),
+        crate::core::Rect::new(0, 0, 200, 200),
+    )))
+    .expect("mount window B");
+    let _window_b_unmount = MountGuard(window_b);
+
+    let child_a =
+        register(Box::new(Button::new("a".to_string(), crate::core::Rect::new(10, 10, 40, 20))))
+            .expect("mount A's button");
+    let _child_a_unmount = MountGuard(child_a);
+    let child_b =
+        register(Box::new(Button::new("b".to_string(), crate::core::Rect::new(10, 10, 40, 20))))
+            .expect("mount B's button");
+    let _child_b_unmount = MountGuard(child_b);
+    with_widget_mut(window_a, |widget| widget.base_mut().add_child_linked(child_a));
+    with_widget_mut(window_b, |widget| widget.base_mut().add_child_linked(child_b));
+
+    let point = Point::new(15, 15);
+    let probe = Event::MouseMove { pos: point };
+    assert!(dispatch_pointer_event(window_a, &probe, point));
+
+    let cached = LAST_DISPATCH_HIT
+        .with(|slot| *slot.borrow())
+        .expect("the dispatch path must record its answer");
+    assert_eq!(cached.0, window_a);
+    assert_eq!(
+        cached.3,
+        renderable_epoch_for(window_a),
+        "the memo must carry the owning window's epoch"
+    );
+
+    let global_before = renderable_epoch();
+    // The return value says whether this control tracks damage; the epoch bump happens either way,
+    // which is the fact this test is about.
+    let _ = mark_dirty_rect(child_b, crate::core::Rect::new(0, 0, 4, 4));
+    assert_ne!(renderable_epoch(), global_before, "damage bumps the global epoch");
+    assert_eq!(
+        cached.3,
+        renderable_epoch_for(window_a),
+        "damage in another window must not move A's epoch"
+    );
+    assert_ne!(cached.3, renderable_epoch(), "the memo must not be keyed by the global epoch");
+
+    // A repeat query at the same point still answers, and still records A's own epoch.
+    assert!(dispatch_pointer_event(window_a, &probe, point));
+    let again = LAST_DISPATCH_HIT
+        .with(|slot| *slot.borrow())
+        .expect("the dispatch path must record its answer");
+    assert_eq!(again.3, renderable_epoch_for(window_a));
+}
+
 /// A frame that advances a control submits damage bounded by that control.
 ///
 /// 丝滑-2's last step: the sweep used to ask for the whole subtree (and the whole window)
@@ -4507,6 +4577,180 @@ fn a_window_tree_frame_contains_its_children_not_just_the_background() {
         "the window's own chrome or its child must paint something; \
          a uniform frame is the blank-board defect"
     );
+}
+
+/// RD3-02: a retained metrics table must not hide a control that becomes visible.
+///
+/// The table now survives frames whose structure did not change (that is the point: an animating
+/// control no longer forces a whole-tree metrics prefetch). This renders the same still tree twice
+/// — the second frame is served from the retained table — then shows a hidden child and renders
+/// again. The invalidation paths must make the child appear.
+#[test]
+fn a_control_shown_after_a_cached_frame_is_painted() {
+    let window_id = register(Box::new(crate::widget::window::Window::new(
+        "metrics cache".to_string(),
+        Rect::new(0, 0, 120, 80),
+    )))
+    .expect("mount the window");
+    let _unmount_window = MountGuard(window_id);
+
+    let mut child = crate::widget::Button::new("ok".to_string(), Rect::new(10, 10, 60, 30));
+    child.hide();
+    let child_id = register(Box::new(child)).expect("mount the button");
+    let _unmount_child = MountGuard(child_id);
+    with_widget_mut(window_id, |window| {
+        window.add_child(child_id);
+    });
+
+    let size = Size::new(120, 80);
+    let clear = Color::rgb(1, 2, 3);
+    let first = render_frame_tree(window_id, size, clear).expect("first frame");
+    let second = render_frame_tree(window_id, size, clear).expect("second frame");
+    assert_eq!(first, second, "a still tree must render identically while the table is reused");
+
+    with_widget_mut(child_id, |widget| widget.show());
+
+    let shown = render_frame_tree(window_id, size, clear).expect("frame after show");
+    // The window paints every pixel of its own chrome, so "more non-clear pixels" is not a usable
+    // signal; a changed frame is. The child was hidden when the retained table was built, so a
+    // stale entry would leave this frame byte-identical to the previous one.
+    assert_ne!(
+        shown, second,
+        "showing a control must change the frame even though the metrics table was retained"
+    );
+}
+
+/// A mounted surface that is a **container** must paint its descendants, not only its own box.
+///
+/// # The defect this pins
+///
+/// The platform gives a mounted surface its own painting box and calls `render_frame` for it — a
+/// frame of ``size`` describing that one widget. A container's children are ids in the registry,
+/// not fields of the container, so only the tree painter descends them. An `MdiArea` mounted with
+/// `mount_surface` therefore showed its sub-window frames and titles and none of the content the
+/// sub-windows were given: the labels were mounted, reachable and invisible.
+///
+/// # Why the probe is a text change
+///
+/// Comparing "with a child" to "without one" would also show the frame and title the area draws
+/// for a new sub-window, which the area paints itself. Changing the child's text leaves the area's
+/// own chrome untouched, so a changed frame can only come from the child being painted.
+#[test]
+fn a_container_mounted_as_a_surface_paints_its_children() {
+    let area_rect = Rect::new(0, 0, 200, 120);
+    let area_id =
+        register(Box::new(crate::widget::MdiArea::new(area_rect))).expect("mount the area");
+    let _unmount_area = MountGuard(area_id);
+
+    let label_id = register(Box::new(crate::widget::Label::new(
+        "Child A".to_string(),
+        Rect::new(0, 0, 100, 20),
+    )))
+    .expect("mount the label");
+    let _unmount_label = MountGuard(label_id);
+
+    with_widget_mut(area_id, |widget| {
+        let area = (widget as &mut dyn core::any::Any)
+            .downcast_mut::<crate::widget::MdiArea>()
+            .expect("the registered widget is an MdiArea");
+        area.add_sub_window(label_id, area_rect);
+        area.place_subwindows();
+        true
+    });
+
+    let size = Size::new(200, 120);
+    let clear = Color::rgb(9, 9, 9);
+    let first = render_frame_cached_shared(area_id, size, clear).expect("the surface frame");
+
+    with_widget_mut(label_id, |widget| {
+        let label = (widget as &mut dyn core::any::Any)
+            .downcast_mut::<crate::widget::Label>()
+            .expect("the registered child is a Label");
+        label.set_text("Child B");
+    });
+
+    // The assertion is about *painting*, not caching, so the retained frame is dropped
+    // explicitly: `a_surface_change_bumps_the_surfaces_own_frame_epoch` covers the cache.
+    forget_cached_frame(area_id);
+    let second = render_frame_cached_shared(area_id, size, clear)
+        .expect("the frame after the child changed");
+    assert_ne!(
+        first, second,
+        "a child of a mounted surface must be painted by the surface's frame"
+    );
+}
+
+/// A change that is visible through a mounted surface drops the frame cached **for the surface**.
+///
+/// `repaint_frame_owner` answers "which window's tree frame is stale?", and for a surface that is
+/// the window it was mounted into. The frame a container surface caches is keyed by the surface's
+/// own id, so bumping only the window left the surface replaying its first frame forever.
+#[test]
+fn a_surface_change_bumps_the_surfaces_own_frame_epoch() {
+    let window_id = register(Box::new(crate::widget::window::Window::new(
+        "surface epoch".to_string(),
+        Rect::new(0, 0, 200, 120),
+    )))
+    .expect("mount the window");
+    let _unmount_window = MountGuard(window_id);
+
+    let area_id = register(Box::new(crate::widget::MdiArea::new(Rect::new(0, 0, 200, 120))))
+        .expect("mount the surface");
+    let _unmount_area = MountGuard(area_id);
+    assert!(set_surface_window(area_id, window_id), "the surface link is new");
+
+    let before = renderable_epoch_for(area_id);
+    note_renderable_change_for(area_id);
+    assert!(
+        renderable_epoch_for(area_id) > before,
+        "a change to a surface must invalidate the surface's own cached frame"
+    );
+}
+
+/// A control inside a mounted surface resolves to the surface a backend can actually invalidate.
+#[test]
+fn a_child_of_a_surface_resolves_to_the_surface_root() {
+    let window_id = register(Box::new(crate::widget::window::Window::new(
+        "surface root".to_string(),
+        Rect::new(0, 0, 200, 120),
+    )))
+    .expect("mount the window");
+    let _unmount_window = MountGuard(window_id);
+
+    let area_id = register(Box::new(crate::widget::MdiArea::new(Rect::new(0, 0, 200, 120))))
+        .expect("mount the surface");
+    let _unmount_area = MountGuard(area_id);
+    assert!(set_surface_window(area_id, window_id));
+
+    let child_id = register(Box::new(crate::widget::Label::new(
+        "inside".to_string(),
+        Rect::new(4, 4, 80, 20),
+    )))
+    .expect("mount the child");
+    let _unmount_child = MountGuard(child_id);
+    let added = with_widget_mut(area_id, |widget| {
+        let area = (widget as &mut dyn core::any::Any)
+            .downcast_mut::<crate::widget::MdiArea>()
+            .expect("the registered widget is an MdiArea");
+        area.add_sub_window(child_id, Rect::new(0, 0, 200, 120));
+        true
+    })
+    .unwrap_or(false);
+    assert!(added, "the sub-window was added to the surface");
+
+    assert_eq!(surface_root_of(child_id), Some(area_id), "the child is painted by the surface");
+    assert_eq!(surface_root_of(area_id), Some(area_id), "a surface is its own root");
+
+    // A control in an ordinary window tree has no surface above it; the fallback must stay off
+    // that path so a window-backed control is not invalidated twice.
+    let plain_id =
+        register(Box::new(crate::widget::Label::new("plain".to_string(), Rect::new(8, 8, 80, 20))))
+            .expect("mount a window-backed control");
+    let _unmount_plain = MountGuard(plain_id);
+    with_widget_mut(window_id, |window| {
+        window.base_mut().add_child_linked(plain_id);
+    });
+    assert_eq!(surface_root_of(plain_id), None);
 }
 
 /// The child-list traversal a window painter depends on must actually reach a child.

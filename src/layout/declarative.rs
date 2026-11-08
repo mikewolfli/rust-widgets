@@ -78,6 +78,11 @@ pub fn store_layout(parent_id: ObjectId, layout: Box<dyn Layout>) {
     LAYOUT_MAP.with(|map| {
         map.borrow_mut().insert(parent_id, layout);
     });
+    // A window root that has just been given a layout has never had it applied, and the window
+    // path skips a pass whose client size and scale are unchanged (LY3-01). Dropping that record
+    // is what makes a layout installed at an unchanged size take effect immediately.
+    #[cfg(full_widgets)]
+    crate::app::handle::invalidate_applied_layout(parent_id);
 }
 
 /// Removes the layout stored for `parent_id`.
@@ -357,12 +362,33 @@ pub fn apply_layout(parent_id: ObjectId, rect: Rect) -> Vec<(ObjectId, Rect)> {
     // again against its new rectangle; otherwise its children keep the boxes they were
     // given at load time. The bound is the same one the widget runtime uses for parent
     // walks, and it keeps a corrupted/self-referential document from recursing forever.
-    const MAX_LAYOUT_DEPTH: u32 = 64;
+    //
     // One device context for the whole solve, constructed at the same single point the window
     // and panel paths use (LY-03). The document path used to call `Layout::update`, so a layout
     // that honours `LayoutContext` was asked differently here than one level up.
     let context = LayoutContext::default();
-    apply_layout_bounded(parent_id, rect, &context, 0, MAX_LAYOUT_DEPTH)
+    apply_layout_in_context(parent_id, rect, &context)
+}
+
+/// [`apply_layout`] under a device context the caller already holds (LY3-04).
+///
+/// The window path builds one context for its pass and hands it down, so a declarative root no
+/// longer pays a second platform text-scale query for the same resize. The traversal, the depth
+/// bound and the spacer filter are the ones [`apply_layout_bounded`] owns; this is only the
+/// entry point that keeps the context instance shared.
+///
+/// # Why this name
+///
+/// [`apply_layout_with_context`] already exists and means something different: it arranges a
+/// caller-supplied child list (the inspector/hint path), where this one applies the layout the
+/// parent already has.
+pub(crate) fn apply_layout_in_context(
+    parent_id: ObjectId,
+    rect: Rect,
+    context: &LayoutContext,
+) -> Vec<(ObjectId, Rect)> {
+    const MAX_LAYOUT_DEPTH: u32 = 64;
+    apply_layout_bounded(parent_id, rect, context, 0, MAX_LAYOUT_DEPTH)
 }
 
 fn apply_layout_bounded(
@@ -422,6 +448,7 @@ fn apply_layout_bounded(
             crate::app::handle::apply_panel_geometry_bounded(
                 *child_id,
                 *child_rect,
+                context,
                 depth + 1,
                 max_depth,
             );

@@ -32,6 +32,26 @@ pub struct FrameOutcome {
     pub needs_another_frame: bool,
 }
 
+impl FrameOutcome {
+    /// Whether the host should keep the fast (animation) cadence for the next iteration.
+    ///
+    /// # Why dispatching a trigger counts (PL3-2)
+    ///
+    /// A frame that drained the trigger queue is not necessarily a frame that started an
+    /// animation: a `Resized` or `Moved` trigger re-runs layout and requests a repaint but
+    /// advances no control, so `needs_another_frame` is `false`. Judging the cadence by that bit
+    /// alone then dropped a live drag to the idle backstop, and the layout followed the window
+    /// edge at 10 Hz. A frame that dispatched at least one event keeps the fast cadence for one
+    /// more iteration, which is exactly as long as the trigger source keeps producing events;
+    /// the first quiet frame afterwards settles back to the backstop on its own.
+    ///
+    /// One definition rather than the same `||` at every backend loop (principle #101): thirteen
+    /// loops ask this question, so a copy per loop is thirteen chances to drift.
+    pub fn wants_fast_cadence(&self) -> bool {
+        self.needs_another_frame || self.events_dispatched > 0
+    }
+}
+
 /// The decode accounting for a build with no decoder linked in: always zero.
 ///
 /// # Why a real type and not `(0, 0, 0)`
