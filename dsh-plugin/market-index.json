@@ -1,0 +1,56 @@
+{
+  "format": 1,
+  "title": "rust-widgets DSH skills",
+  "description": "Skills for maintaining the rust-widgets Rust GUI library.",
+  "metadata": {
+    "categories": {
+      "development": {
+        "title": "Development"
+      }
+    },
+    "labels": {},
+    "sortKeys": {}
+  },
+  "plugins": [
+    {
+      "name": "dsh-skill-rust-widgets",
+      "title": "rust-widgets maintainer",
+      "description": "DSH skill: maintain, extend and audit the rust-widgets Rust GUI library.",
+      "icon": "./icon.svg",
+      "author": "Mike Li",
+      "homepage": "https://github.com/mikewolfli/rust-widgets#readme",
+      "repository": {
+        "url": "https://github.com/mikewolfli/rust-widgets",
+        "directory": "dsh-plugin"
+      },
+      "metadata": {
+        "category": "development",
+        "keywords": [
+          "dsh",
+          "dsh-skill",
+          "dsh-plugin",
+          "rust",
+          "gui",
+          "rust-widgets"
+        ],
+        "labels": [],
+        "sortKeys": {}
+      },
+      "versions": [
+        {
+          "version": "0.1.0",
+          "publishTimestamp": 1794198867,
+          "source": {
+            "type": "git",
+            "url": "https://github.com/mikewolfli/rust-widgets",
+            "commit": "5c76cc32aad8602215567ecc3891b7603a4aad6c",
+            "path": "dsh-plugin"
+          },
+          "engines": {
+            "dsh": ">=0.2.2-rc.1"
+          }
+        }
+      ]
+    }
+  ]
+}
