@@ -850,6 +850,10 @@ impl FileDialog {
                 || suffixes.is_none_or(|suffixes| filter_accepts(suffixes, &entry.name))
         });
         self.selected_rows.clear();
+        // `selected_files` is the authoritative selection read by `selected_file()` and
+        // `accept_impl`; leaving it behind after a re-list let the dialog accept a path from
+        // the previous directory.
+        self.selected_files.clear();
         self.scroll = 0;
         *self.visible_cache.borrow_mut() = None;
         // A re-list keeps the caller's ordering instead of reverting to the host's order.
@@ -1172,13 +1176,15 @@ impl FileDialog {
     ///
     /// This is a **setter, not a toggle**: any previous selection is discarded,
     /// so it cannot be used to build up a multi-file selection for
-    /// [`FileDialogMode::OpenFiles`]. No repaint is requested.
+    /// [`FileDialogMode::OpenFiles`]. The selected-file strip is drawn from this
+    /// field, so a write requests a repaint.
     pub fn select_file(&mut self, path: impl Into<String>) {
         let path = path.into();
         self.selected_rows = self.row_for_path(&path).into_iter().collect();
         self.selected_files = vec![path.clone()];
         self.file_selected.emit(path);
         self.selection_changed.emit(self.selected_files.clone());
+        self.base.request_redraw();
     }
     /// Clears the pending selection without closing the dialog.
     ///

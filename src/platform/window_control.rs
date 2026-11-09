@@ -89,6 +89,22 @@ pub(crate) fn remove_window_position(window_id: ObjectId) -> bool {
     WINDOW_POSITIONS.with(|positions| positions.borrow_mut().remove(&window_id).is_some())
 }
 
+/// Clears the active-window mirror when `window_id` is the one it names.
+///
+/// Focus is reported by `notify_window_focus`; teardown has no focus notification, so a
+/// destroyed focused window otherwise stays visible through `App::active_window()`.
+#[allow(dead_code)]
+pub(crate) fn clear_active_window(window_id: ObjectId) -> bool {
+    let mut cleared = false;
+    let _ = ACTIVE_WINDOW.try_with(|active| {
+        if active.get() == Some(window_id) {
+            active.set(None);
+            cleared = true;
+        }
+    });
+    cleared
+}
+
 /// Installs (or replaces) the close handler for `window_id`.
 #[allow(dead_code)]
 pub(crate) fn set_close_handler(window_id: ObjectId, handler: CloseHandler) {

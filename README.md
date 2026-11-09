@@ -32,16 +32,17 @@ services at all.
 
 ## Install
 
-> **4.1.0** is the current release: the closed-loop round over **4.0.1** (itself the upstream-feedback
-> patch on **4.0.0**, the companion release for the **rustage** refactor). It closes every item in
-> `docs/issues/issue-20261104.md` — the resize chain, the per-event and per-frame costs, the container
-> content model on the JSON side, the window/handle capability surface — and removes the upload
-> infrastructure that measurement showed to be slower than `wgpu`'s own path. Existing signatures are
-> preserved; see the [changelog](CHANGELOG.md).
+> **4.2.0** is the current release: the completeness round on top of **4.1.0** (the closed-loop round),
+> which itself followed **4.0.1** (the upstream-feedback patch on **4.0.0**, the companion release
+> for the **rustage** refactor). This round works through `docs/issues/issue-20261108.md` — hot paths,
+> the box-layout cache, container damage, IME preedit on every text surface, and the companion
+> controls — makes every constructible control paint an allocation-free steady-state frame, and moves
+> the icon catalogue into `crates/rust-widgets-icons`. Existing signatures are preserved; see the
+> [changelog](CHANGELOG.md).
 
 ```toml
 [dependencies]
-rust_widgets = "4.1.0"
+rust_widgets = "4.2.0"
 ```
 
 Choose **exactly one** device profile. They are mutually exclusive: `mini` and `embedded` compile
@@ -49,11 +50,11 @@ parts of the crate *out*, so pairing one with `desktop` is not a lowest common d
 a build that cannot work.
 
 ```toml
-rust_widgets = { version = "4.1.0", features = ["desktop"] }                       # default
-rust_widgets = { version = "4.1.0", default-features = false, features = ["tablet"] }
-rust_widgets = { version = "4.1.0", default-features = false, features = ["mobile"] }
-rust_widgets = { version = "4.1.0", default-features = false, features = ["embedded"] }
-rust_widgets = { version = "4.1.0", default-features = false, features = ["mini"] }
+rust_widgets = { version = "4.2.0", features = ["desktop"] }                       # default
+rust_widgets = { version = "4.2.0", default-features = false, features = ["tablet"] }
+rust_widgets = { version = "4.2.0", default-features = false, features = ["mobile"] }
+rust_widgets = { version = "4.2.0", default-features = false, features = ["embedded"] }
+rust_widgets = { version = "4.2.0", default-features = false, features = ["mini"] }
 ```
 
 | Profile | Intended for |

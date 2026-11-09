@@ -217,8 +217,12 @@ impl Gauge {
             return Ok(());
         }
         self.minimum = minimum;
+        let previous = self.value;
         self.value = clamp_value(self.value, self.minimum, self.maximum);
         self.reset_display();
+        if self.value != previous {
+            self.value_changed.emit(self.value);
+        }
         self.base.request_redraw();
         Ok(())
     }
@@ -237,8 +241,12 @@ impl Gauge {
             return Ok(());
         }
         self.maximum = maximum;
+        let previous = self.value;
         self.value = clamp_value(self.value, self.minimum, self.maximum);
         self.reset_display();
+        if self.value != previous {
+            self.value_changed.emit(self.value);
+        }
         self.base.request_redraw();
         Ok(())
     }
@@ -354,13 +362,10 @@ impl Gauge {
         if sweep.abs() <= f32::EPSILON {
             return None;
         }
-        let mut delta = angle - self.start_angle;
-        while delta < 0.0 {
-            delta += core::f32::consts::TAU;
-        }
-        while delta >= core::f32::consts::TAU {
-            delta -= core::f32::consts::TAU;
-        }
+        // `rem_euclid` wraps in constant time; the previous pair of `while` loops was
+        // proportional to the angle's magnitude and a finite-but-huge `start_angle` could
+        // freeze the UI thread for an astronomical number of iterations.
+        let delta = (angle - self.start_angle).rem_euclid(core::f32::consts::TAU);
         if sweep > 0.0 {
             Some((delta / sweep).clamp(0.0, 1.0))
         } else {
@@ -465,6 +470,9 @@ impl Gauge {
         if self.unit == unit {
             return;
         }
+        // `unit_label` is the published spelling of the same value; both must move together
+        // or `unit_label()` reports a stale suffix while `draw` prints the new one.
+        self.unit_label = unit.clone();
         self.unit = unit;
         *self.readout_cache.borrow_mut() = None;
         self.base.request_redraw();
@@ -952,6 +960,26 @@ impl EventHandler for Gauge {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_huge_start_angle_does_not_spin_in_the_pointer_mapping() {
+        let mut gauge = Gauge::new(Rect::new(0, 0, 160, 160));
+        // The old `while delta >= TAU { delta -= TAU }` pair iterated proportional to the
+        // angle's magnitude; this finite-but-huge start angle froze the pointer path.
+        gauge.set_start_angle(1e30);
+        assert!(gauge.fraction_at_angle(0.0).is_some());
+    }
+
+    #[test]
+    fn setting_the_unit_keeps_the_published_label_in_step() {
+        let mut gauge = Gauge::new(Rect::new(0, 0, 160, 160));
+        gauge.set_unit("ms".into());
+        assert_eq!(gauge.unit(), "ms");
+        assert_eq!(gauge.unit_label(), "ms");
+        gauge.set_unit_label("px".into());
+        assert_eq!(gauge.unit(), "px");
+        assert_eq!(gauge.unit_label(), "px");
+    }
 
     #[test]
     fn a_new_gauge_reads_zero_of_a_hundred() {

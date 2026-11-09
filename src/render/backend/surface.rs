@@ -781,12 +781,17 @@ pub(crate) fn dash_line_segments_into(
     for index in 0..edges {
         let from = points[index];
         let to = points[(index + 1) % points.len()];
-        let dx = i64::from(to.x - from.x);
-        let dy = i64::from(to.y - from.y);
+        let dx = i64::from(to.x) - i64::from(from.x);
+        let dy = i64::from(to.y) - i64::from(from.y);
         // The edge's length in path pixels. An integer square root keeps the walk
         // in integers: for an axis-aligned edge `isqrt(dx²) == |dx|` exactly, so
-        // the interpolation below reproduces the historical walk bit for bit.
-        let length = (dx * dx + dy * dy).isqrt();
+        // the interpolation below reproduces the historical walk bit for bit. The
+        // square is widened to `i128`; opposite `i32` extremes overflow both the old
+        // `i32` subtraction and the `i64` product.
+        let dx_wide = i128::from(dx);
+        let dy_wide = i128::from(dy);
+        let length =
+            ((dx_wide * dx_wide + dy_wide * dy_wide) as u128).isqrt().min(i64::MAX as u128) as i64;
         if length <= 0 {
             continue;
         }

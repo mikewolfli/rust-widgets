@@ -583,7 +583,7 @@ impl CupertinoDatePicker {
                 for _ in 0..steps {
                     self.apply_step(self.logical_column(self.fling_column), self.fling_forward);
                 }
-                self.base.request_redraw();
+                self.base.request_frame_repaint();
             }
             self.fling_remaining -= travel;
             let decay = (1.0 - FLING_DECAY_PER_MS * delta_ms as f32).clamp(0.0, 1.0);

@@ -472,11 +472,14 @@ impl ProgressDialog {
     /// unconditionally, i.e. a single-valued range is treated as complete
     /// rather than as division by zero.
     pub fn progress_fraction(&self) -> f32 {
-        let range = self.maximum - self.minimum;
+        // Widen before subtracting: `i32::MAX - i32::MIN` does not fit in `i32`, so
+        // `set_range(i32::MIN, i32::MAX)` used to panic in debug builds and report a wrong
+        // fraction in release.
+        let range = i64::from(self.maximum) - i64::from(self.minimum);
         if range <= 0 {
             return 1.0;
         }
-        (self.value - self.minimum) as f32 / range as f32
+        (f64::from(self.value) - f64::from(self.minimum)) as f32 / range as f32
     }
 
     /// Submits one animated frame as damage bounded by the painted box plus the shared

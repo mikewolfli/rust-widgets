@@ -1573,7 +1573,7 @@ impl Widget for PropertiesPanel {
         }
         self.hover_elapsed_ms = self.hover_elapsed_ms.saturating_add(delta_ms);
         if self.hover_elapsed_ms >= TOOLTIP_DELAY_MS {
-            self.base.request_redraw();
+            self.base.request_frame_repaint();
             return false;
         }
         true

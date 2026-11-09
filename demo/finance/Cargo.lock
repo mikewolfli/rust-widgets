@@ -2198,15 +2198,15 @@ dependencies = [
 
 [[package]]
 name = "rust-widgets-font"
-version = "4.1.0"
+version = "4.2.0"
 
 [[package]]
 name = "rust-widgets-icons"
-version = "4.1.0"
+version = "4.2.0"
 
 [[package]]
 name = "rust-widgets-suites"
-version = "4.1.0"
+version = "4.2.0"
 dependencies = [
  "log",
  "rust_widgets",
@@ -2215,7 +2215,7 @@ dependencies = [
 
 [[package]]
 name = "rust_widgets"
-version = "4.1.0"
+version = "4.2.0"
 dependencies = [
  "chrono",
  "cocoa",

@@ -25,11 +25,13 @@ type juint = u32;
 // ---------------------------------------------------------------------------
 // Helper: convert Java string → owned Rust String
 // ---------------------------------------------------------------------------
-fn jstring_to_string(env: &mut JNIEnv<'_>, input: &JString) -> String {
+fn jstring_to_string(env: &mut JNIEnv<'_>, input: &JString) -> Option<String> {
     if input.is_null() {
-        return String::new();
+        return Some(String::new());
     }
-    env.get_string(input).map(|s| s.into()).unwrap_or_default()
+    // `get_string` throws a Java exception on failure. Returning `None` rather than an
+    // empty string keeps the caller from invoking the C ABI with a value it never read.
+    env.get_string(input).map(|s| s.into()).ok()
 }
 
 /// Convert a Java string to a `CString`, throwing a Java exception on a NUL.
@@ -53,7 +55,15 @@ fn jstring_to_cstring(env: &mut JNIEnv<'_>, input: &JString<'_>) -> Option<std::
         // Already reported; throwing twice would mask the first failure.
         return None;
     }
-    let value = jstring_to_string(env, input);
+    let Some(value) = jstring_to_string(env, input) else {
+        if !exception_pending(env) {
+            let _ = env.throw_new(
+                "java/lang/IllegalArgumentException",
+                "could not read the Java string argument",
+            );
+        }
+        return None;
+    };
     match std::ffi::CString::new(value) {
         Ok(c) => Some(c),
         Err(_) => {

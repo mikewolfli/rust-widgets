@@ -73,6 +73,11 @@ impl StackedWidget {
     /// [`Self::add_widget`] and the rest of the container family (`tab_bar`,
     /// `pie_menu`, `kanban_board` all clamp).
     pub fn insert_widget(&mut self, index: usize, widget: ObjectId) {
+        // A widget already in the stack is a no-op, matching `add_widget`: a second entry for
+        // one id would paint it twice and make `remove_widget` leave a phantom page.
+        if self.index_of(widget).is_some() {
+            return;
+        }
         let index = index.min(self.layout.item_count());
         self.base.add_child_linked(widget);
         // The stack's own insert keeps the selected page on the same widget.
@@ -321,7 +326,7 @@ impl Widget for StackedWidget {
             self.previous_page = None;
         }
         self.place_current_page();
-        self.base.request_redraw();
+        self.base.request_frame_repaint();
         self.previous_page.is_some()
     }
 
@@ -503,6 +508,14 @@ mod tests {
     }
     fn widget_id_2() -> ObjectId {
         1002
+    }
+
+    #[test]
+    fn inserting_an_existing_page_is_a_noop() {
+        let mut stack = StackedWidget::new(Rect::new(0, 0, 200, 200));
+        stack.add_widget(widget_id_1());
+        stack.insert_widget(0, widget_id_1());
+        assert_eq!(stack.count(), 1, "a duplicate page id would paint the same widget twice");
     }
     fn widget_id_3() -> ObjectId {
         1003

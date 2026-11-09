@@ -801,9 +801,16 @@ fn decode_jpeg(data: &[u8]) -> Result<DecodedImage, String> {
                 }
                 height = u16::from_be_bytes([seg_data[1], seg_data[2]]) as u32;
                 width = u16::from_be_bytes([seg_data[3], seg_data[4]]) as u32;
-                let _num_components = seg_data[5];
+                let num_components = seg_data[5];
+                // The decode path keeps four DC predictors and four component planes;
+                // a malformed header declaring 5+ components would index past them.
+                if !(1..=4).contains(&num_components) {
+                    return Err(format!(
+                        "JPEG SOF declares {num_components} components; the decoder supports 1..=4"
+                    ));
+                }
                 let mut off = 6;
-                for _ in 0.._num_components {
+                for _ in 0..num_components {
                     if off + 3 > seg_data.len() {
                         break;
                     }

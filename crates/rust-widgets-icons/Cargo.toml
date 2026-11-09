@@ -1,6 +1,6 @@
 [package]
 name = "rust-widgets-icons"
-version = "4.1.0"
+version = "4.2.0"
 edition = "2021"
 description = "Material Symbols outlined icon data and name table for rust_widgets (generated geometry; Apache-2.0 path data)"
 license = "MIT"

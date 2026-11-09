@@ -636,6 +636,7 @@ impl PieMenu {
         item.id = id;
         self.items.push(item);
         self.recalculate_angles();
+        self.base.request_redraw();
         id
     }
 
@@ -660,6 +661,7 @@ impl PieMenu {
         self.next_id = self.next_id.max(id.saturating_add(1));
         self.items.push(item);
         self.recalculate_angles();
+        self.base.request_redraw();
         Ok(id)
     }
 
@@ -709,6 +711,7 @@ impl PieMenu {
         item.id = self.take_next_id();
         self.items.insert(idx, item);
         self.recalculate_angles();
+        self.base.request_redraw();
     }
 
     /// Removes the item at `index`; out-of-range indices are ignored.
@@ -720,6 +723,7 @@ impl PieMenu {
         if index < self.items.len() {
             self.items.remove(index);
             self.recalculate_angles();
+            self.base.request_redraw();
         }
     }
 
@@ -730,6 +734,7 @@ impl PieMenu {
     pub fn clear(&mut self) {
         self.items.clear();
         self.hovered_index = None;
+        self.base.request_redraw();
     }
 
     /// Returns the number of items in the menu.

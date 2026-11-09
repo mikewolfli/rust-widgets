@@ -46,6 +46,11 @@ pub(crate) fn nearest_scale_into(
     if source_width == 0 || source_height == 0 || width == 0 || height == 0 {
         return;
     }
+    // A frame that declares a non-zero size but carries fewer than one RGBA pixel must
+    // leave the destination zero-filled rather than index `data[0..4]` out of bounds.
+    if data.len() < 4 {
+        return;
+    }
     for y in 0..height {
         let source_y = (y as u64 * source_height as u64 / height as u64) as u32;
         for x in 0..width {
@@ -55,5 +60,19 @@ pub(crate) fn nearest_scale_into(
             let destination = (y as usize * width as usize + x as usize) * 4;
             out[destination..destination + 4].copy_from_slice(&data[source..source + 4]);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::compat::Vec;
+
+    #[test]
+    fn a_frame_shorter_than_one_pixel_leaves_the_destination_zero_filled() {
+        let mut out = Vec::new();
+        nearest_scale_into(&[], 1, 1, 2, 2, &mut out);
+        assert_eq!(out.len(), 16);
+        assert!(out.iter().all(|byte| *byte == 0));
     }
 }

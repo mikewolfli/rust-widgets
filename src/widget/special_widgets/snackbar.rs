@@ -582,7 +582,7 @@ impl Widget for Snackbar {
             if self.indeterminate && self.progress.is_some() {
                 self.indeterminate_phase =
                     (self.indeterminate_phase + delta_ms as f32 / 1200.0) % 1.0;
-                self.base.request_redraw();
+                self.base.request_frame_repaint();
                 moving = true;
             }
         }

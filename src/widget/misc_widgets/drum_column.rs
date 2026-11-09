@@ -423,7 +423,7 @@ impl Widget for DrumColumn {
             let direction = if self.drag_offset < 0.0 { -1.0 } else { 1.0 };
             self.drag_offset -= step * direction;
         }
-        self.base.request_redraw();
+        self.base.request_frame_repaint();
         self.drag_offset != 0.0
     }
 

@@ -559,6 +559,14 @@ impl Draw for BottomSheet {
         // { return; }`: the guard is now on the *drawn* position rather than the logical flag, so the
         // last frame of a dismissal still paints the panel where it is.
         if rise <= 0.0 {
+            // A closed sheet must not leave its content child painted at the last slide
+            // position; the visibility pass below is unreachable once the panel is stowed.
+            if let Some(content) = self.content_widget {
+                if self.placed_content.is_some() {
+                    crate::set_widget_visible(content, false);
+                    self.placed_content = None;
+                }
+            }
             return;
         }
 

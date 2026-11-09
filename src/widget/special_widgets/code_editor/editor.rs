@@ -1432,7 +1432,7 @@ impl CodeEditor {
             self.mark_caret_damage();
         }
         if running {
-            self.base.request_redraw();
+            self.base.request_frame_repaint();
         }
         running
     }

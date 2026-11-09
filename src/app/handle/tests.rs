@@ -316,6 +316,43 @@ fn line_edit_handle_states_are_scoped_per_widget() {
     assert_eq!(b.max_length(), 32767);
     assert!(b.is_read_only());
 }
+
+/// A mounted control that does not publish the property **refuses** the write, and the handle's
+/// read cache must not absorb it. The mirror used to be written before the control was asked, so
+/// a refused setter still read back as applied.
+#[test]
+fn a_refused_line_edit_write_is_not_recorded_in_the_mirror() {
+    let id = crate::widget::runtime::register(Box::new(crate::widget::Button::new(
+        "probe".to_string(),
+        crate::core::Rect::new(0, 0, 80, 24),
+    )))
+    .expect("a button mounts");
+    let handle = LineEditHandle::from_raw(id);
+    handle.set_placeholder("hint");
+    assert_eq!(handle.placeholder(), "", "a refused placeholder must not be reported");
+    handle.set_max_length(8);
+    assert_eq!(handle.max_length(), 32767, "a refused max_length must not be reported");
+    handle.set_selection(1, 2);
+    assert_eq!(handle.selection(), (0, 0), "a refused selection must not be reported");
+    crate::widget::runtime::unregister(id);
+}
+
+/// The same rule for the scroll area: an extent or offset the control refused stays out of the
+/// mirror, so `content_size()`/`scroll_position()` keep reporting the last accepted state.
+#[test]
+fn a_refused_scroll_area_write_is_not_recorded_in_the_mirror() {
+    let id = crate::widget::runtime::register(Box::new(crate::widget::Button::new(
+        "probe".to_string(),
+        crate::core::Rect::new(0, 0, 80, 24),
+    )))
+    .expect("a button mounts");
+    let handle = ScrollAreaHandle::from_raw(id);
+    handle.set_content_size(320, 240);
+    assert_eq!(handle.content_size(), (0, 0), "a refused content size must not be reported");
+    handle.set_scroll_position(5, 6);
+    assert_eq!(handle.scroll_position(), (0, 0), "a refused offset must not be reported");
+    crate::widget::runtime::unregister(id);
+}
 /// A backend with no icon concept and no minimum-size read-back.
 ///
 /// Six of the shipped backends (`linux-gtk`, `wayland`, `android`, `ios`, `wasm`, `harmony`)

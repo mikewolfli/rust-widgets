@@ -91,6 +91,7 @@ struct TooltipWrapKey {
     bold: bool,
     italic: bool,
     available: u32,
+    wrap: bool,
 }
 
 /// The last wrap result, so a still frame does no measuring or allocation.
@@ -605,6 +606,7 @@ impl Tooltip {
             bold: font.is_bold(),
             italic: font.is_italic(),
             available,
+            wrap: self.wrap,
         };
         if let Some(cache) = self.wrap_cache.borrow().as_ref() {
             if cache.key == key {

@@ -915,12 +915,30 @@ extern "C" fn on_surface_changed(component: *mut NativeXComponent, window: *mut 
 /// The surface is going away. Frames can no longer be presented.
 #[cfg(target_env = "ohos")]
 extern "C" fn on_surface_destroyed(
-    _component: *mut NativeXComponent,
+    component: *mut NativeXComponent,
     _window: *mut core::ffi::c_void,
 ) {
-    let mut state = surface().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-    state.alive = false;
-    state.native_window = 0;
+    {
+        let mut state = surface().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.alive = false;
+        state.native_window = 0;
+        state.mounted_widget = None;
+    }
+    // SDK 20 exposes no callback-unregister entry, so a surface destroy is the only unbind
+    // signal there is. Clearing the binding here lets a recreated component bind instead of
+    // being refused forever; the compare-exchange keeps a late callback from an older
+    // component from unbinding a newer one.
+    if !component.is_null() {
+        let _ = BOUND_COMPONENT.compare_exchange(
+            component as usize,
+            0,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
+        if BOUND_COMPONENT.load(Ordering::Acquire) == 0 {
+            BOUND.store(false, Ordering::Release);
+        }
+    }
     log::info!("[harmony] xcomponent: surface destroyed");
 }
 

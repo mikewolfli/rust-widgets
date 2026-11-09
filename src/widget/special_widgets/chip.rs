@@ -1026,7 +1026,7 @@ impl Widget for Chip {
         }
         let moving = self.pill_slide.tick(delta_ms);
         if moving {
-            self.base.request_redraw();
+            self.base.request_frame_repaint();
         }
         moving
     }

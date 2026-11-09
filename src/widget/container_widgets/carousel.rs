@@ -467,7 +467,15 @@ impl Carousel {
     pub fn set_page_content_id(&mut self, index: usize, content: Option<ObjectId>) -> bool {
         match self.pages.get_mut(index) {
             Some(page) => {
+                let previous = page.content_id();
                 page.set_content_id(content);
+                if previous != content {
+                    // Replacing a page's declared child must hide the one it replaced; it is
+                    // no longer reachable from `pages`, so the painted-page pass cannot.
+                    if let Some(previous) = previous {
+                        crate::set_widget_visible(previous, false);
+                    }
+                }
                 self.base.request_redraw();
                 true
             }
@@ -489,6 +497,12 @@ impl Carousel {
         }
         let before = self.current_index;
         let removed = self.pages.remove(index);
+        // A removed page's declared content is no longer in `pages`, so the visibility pass
+        // over surviving pages can never hide it; hide it here or it keeps painting over the
+        // new page at its last geometry.
+        if let Some(content_id) = removed.content_id() {
+            crate::set_widget_visible(content_id, false);
+        }
         let last = self.pages.len().saturating_sub(1);
         if index < before {
             self.current_index = before - 1;
@@ -953,7 +967,7 @@ impl Widget for Carousel {
                 self.slide = Some(slide);
                 sliding = true;
             }
-            self.base.request_redraw();
+            self.base.request_frame_repaint();
         }
         let mut settling = sliding;
         if self.settle_offset.abs() > 0.5 {
@@ -964,7 +978,7 @@ impl Widget for Carousel {
             } else {
                 settling = true;
             }
-            self.base.request_redraw();
+            self.base.request_frame_repaint();
         }
         if !self.autoplay_should_run() {
             return settling;

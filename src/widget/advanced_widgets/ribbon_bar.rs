@@ -517,6 +517,7 @@ impl RibbonBar {
         if self.tabs.len() == 1 {
             self.current_tab_index = 0;
         }
+        self.base.request_redraw();
         idx
     }
 
@@ -586,6 +587,7 @@ impl RibbonBar {
         let groups = &mut self.groups[tab_index];
         let idx = groups.len();
         groups.push(RibbonGroup::new(group_title));
+        self.base.request_redraw();
         idx
     }
 
@@ -615,15 +617,22 @@ impl RibbonBar {
     }
 
     fn insert_item(&mut self, tab_index: usize, group_index: usize, item: RibbonItem) -> usize {
-        if let Some(groups) = self.groups.get_mut(tab_index) {
+        let inserted = if let Some(groups) = self.groups.get_mut(tab_index) {
             if let Some(group) = groups.get_mut(group_index) {
                 let items = group.items_mut();
                 let idx = items.len();
                 items.push(item);
-                return idx;
+                Some(idx)
+            } else {
+                None
             }
+        } else {
+            None
+        };
+        if inserted.is_some() {
+            self.base.request_redraw();
         }
-        0
+        inserted.unwrap_or(0)
     }
 
     /// Returns the number of items in the specified group.
@@ -643,8 +652,17 @@ impl RibbonBar {
         item_index: usize,
         enabled: bool,
     ) {
-        if let Some(item) = self.item_mut(tab_index, group_index, item_index) {
-            item.set_enabled(enabled);
+        let changed = if let Some(item) = self.item_mut(tab_index, group_index, item_index) {
+            let changed = item.is_enabled() != enabled;
+            if changed {
+                item.set_enabled(enabled);
+            }
+            changed
+        } else {
+            false
+        };
+        if changed {
+            self.base.request_redraw();
         }
     }
 
@@ -666,10 +684,17 @@ impl RibbonBar {
         item_index: usize,
         checked: bool,
     ) {
-        if let Some(item) = self.item_mut(tab_index, group_index, item_index) {
-            if item.is_checkable() {
+        let changed = if let Some(item) = self.item_mut(tab_index, group_index, item_index) {
+            let changed = item.is_checkable() && item.is_checked() != checked;
+            if changed {
                 item.set_checked(checked);
             }
+            changed
+        } else {
+            false
+        };
+        if changed {
+            self.base.request_redraw();
         }
     }
 
@@ -778,6 +803,7 @@ impl RibbonBar {
         self.hovered_item = None;
         self.focused_item = None;
         self.temporarily_expanded = false;
+        self.base.request_redraw();
     }
 
     /// The application button's label, if one is installed.

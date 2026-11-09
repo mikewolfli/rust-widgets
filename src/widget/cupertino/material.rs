@@ -361,7 +361,7 @@ impl Widget for MaterialSnackbar {
             changed = true;
         }
         if changed {
-            self.base.request_redraw();
+            self.base.request_frame_repaint();
         }
         changed
     }

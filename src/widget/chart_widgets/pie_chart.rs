@@ -1194,7 +1194,7 @@ impl Widget for PieChart {
             }
         }
         if moving {
-            self.base.request_redraw();
+            self.base.request_frame_repaint();
         }
         moving
     }

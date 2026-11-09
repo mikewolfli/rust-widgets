@@ -395,9 +395,20 @@ impl TabView {
 
     /// Removes all tabs and resets the selection.
     pub fn clear_tabs(&mut self) {
+        let had_selection = !self.tabs.is_empty();
+        // Id-backed pages are mounted by the runtime, so clearing the tab list must also
+        // unlink and hide them; otherwise the old selected page keeps painting over the
+        // empty strip and the next `add_tab` inherits a stale content slot.
+        for id in self.content_ids.drain(..).flatten() {
+            self.base.remove_child_linked(id);
+            crate::set_widget_visible(id, false);
+        }
         self.tabs.clear();
         self.badges.clear();
         self.selected_index = 0;
+        if had_selection {
+            self.tab_changed.emit(0);
+        }
         self.base.request_redraw();
     }
 
@@ -562,6 +573,10 @@ impl TabView {
         self.tabs.insert(to, page);
         let badge = self.badges.remove(from);
         self.badges.insert(to, badge);
+        // `content_ids` is parallel to `tabs`; reordering only the visible captions left the
+        // index-to-content mapping pointing at the wrong page.
+        let content = self.content_ids.remove(from);
+        self.content_ids.insert(to, content);
         if self.selected_index == from {
             self.selected_index = to;
         } else if from < self.selected_index && to >= self.selected_index {
@@ -1469,6 +1484,22 @@ mod tests {
 
     fn make_tab_view() -> TabView {
         TabView::new(Rect::new(0, 0, 300, 400))
+    }
+
+    #[test]
+    fn moving_a_tab_moves_its_declared_content() {
+        let mut tv = make_tab_view();
+        tv.add_tab_id("A", Some(101), None::<&str>);
+        tv.add_tab_id("B", Some(102), None::<&str>);
+        assert_eq!(tv.content_widget_id(), Some(101));
+        assert!(tv.move_tab(0, 1));
+        assert_eq!(
+            tv.content_widget_id(),
+            Some(101),
+            "the selected tab must keep its own content after a reorder"
+        );
+        tv.clear_tabs();
+        assert_eq!(tv.content_widget_id(), None, "cleared tabs must drop their content ids");
     }
 
     /// The band the renderer draws and the band the hit test accepts are one derivation.

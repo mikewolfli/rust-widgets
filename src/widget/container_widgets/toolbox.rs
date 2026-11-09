@@ -1069,10 +1069,10 @@ impl Widget for ToolBox {
         self.scroll_render += delta * step;
         if (target - self.scroll_render).abs() <= 0.01 {
             self.scroll_render = target;
-            self.base.request_redraw();
+            self.base.request_frame_repaint();
             return false;
         }
-        self.base.request_redraw();
+        self.base.request_frame_repaint();
         true
     }
 

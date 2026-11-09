@@ -174,6 +174,11 @@ impl ProgressCircle {
     /// restart the movement. When the environment asks for reduced motion the driver jumps
     /// straight to the target instead.
     pub fn set_value(&mut self, value: f32) {
+        // `f32::clamp` propagates NaN, so a non-finite write would store NaN in the driver and
+        // publish it through `value_changed`, contradicting the "clamped to 0.0..=1.0" contract.
+        if !value.is_finite() {
+            return;
+        }
         let clamped = value.clamp(0.0, 1.0);
         if self.value_animation.target() == clamped {
             return;
@@ -804,6 +809,15 @@ impl EventHandler for ProgressCircle {
 mod tests {
     use super::*;
     use crate::render::PaintBackend;
+
+    #[test]
+    fn a_non_finite_value_is_ignored() {
+        let mut pc = ProgressCircle::new(Rect::new(0, 0, 48, 48));
+        pc.set_value(0.4);
+        pc.set_value(f32::NAN);
+        assert!(pc.value().is_finite(), "NaN must never reach the driver or the signal");
+        assert!((pc.value() - 0.4).abs() < f32::EPSILON);
+    }
 
     #[test]
     fn progress_circle_default_creation() {

@@ -97,6 +97,24 @@ fn writer_applies_custom_page_number_layout() {
     let text = String::from_utf8_lossy(&bytes);
     assert!(text.contains("BT /F1 12.00 Tf 500.00 36.00 Td (Page 1/1)"));
 }
+/// Page objects are stored in a `HashMap`; the reader must still return them in the
+/// order the document declares, not in hash order.
+#[test]
+fn reader_keeps_pages_in_object_order() {
+    let writer = PdfWriter::new();
+    let mut doc = writer.create_document(Size { width: 101, height: 100 });
+    doc.add_page(Size { width: 202, height: 100 });
+    doc.add_page(Size { width: 303, height: 100 });
+    let bytes = doc.to_bytes().expect("serialize document");
+    let mut loaded = PdfReader::new().load_from_bytes(&bytes).expect("load bytes");
+    let sizes: Vec<(u32, u32)> = (0..loaded.page_count())
+        .filter_map(|index| {
+            loaded.get_page(index).map(|page| (page.size().width, page.size().height))
+        })
+        .collect();
+    assert_eq!(sizes, vec![(101, 100), (202, 100), (303, 100)]);
+}
+
 #[test]
 fn reader_roundtrip_preserves_page_stream_and_media_box() {
     let writer = PdfWriter::new();
@@ -269,8 +287,18 @@ fn writer_combined_pipeline_emits_form_security_and_image_markers() {
     assert!(text.contains("/AcroForm"));
     assert!(text.contains("/Annots ["));
     assert!(text.contains("/Subtype /Widget"));
-    assert!(text.contains("/T (email)"));
-    assert!(text.contains("/T (newsletter)"));
+    #[cfg(not(feature = "pdf-encryption"))]
+    {
+        assert!(text.contains("/T (email)"));
+        assert!(text.contains("/T (newsletter)"));
+    }
+    #[cfg(feature = "pdf-encryption")]
+    {
+        // Form-field names are strings, so a conforming reader decrypts them: they must be
+        // emitted as AESV3 hex strings, never as plaintext literals.
+        assert!(text.contains("/T <"));
+        assert!(!text.contains("(email)"));
+    }
     #[cfg(not(feature = "pdf-encryption"))]
     {
         assert!(text.contains("% RW-NOTE: PDF encryption requested"));
@@ -348,9 +376,15 @@ fn reader_roundtrip_preserves_security_and_image_route_markers() {
     }
     #[cfg(feature = "pdf-encryption")]
     {
+        // Decryption happens in the reader, not here: the stored body is binary, not the
+        // hex-string syntax that string objects use. The reader may normalise the bytes it
+        // keeps, so only the absence of plaintext is asserted here; the raw file's block
+        // alignment is covered by `writer_encrypts_page_content_stream`.
+        assert!(!content_bytes.starts_with(b"<"));
+        assert!(!content_bytes.is_empty(), "the encrypted body is present");
         let content_text = String::from_utf8_lossy(&content_bytes);
-        assert!(content_text.starts_with('<'), "encrypted content is a hex string");
         assert!(!content_text.contains("BT /F1"));
+        assert!(!content_text.contains("% rw-image-route"));
     }
 }
 #[test]
@@ -386,7 +420,7 @@ fn writer_image_with_rgba_payload_drops_alpha_deterministically() {
 // ── Document-level standard encryption (pdf-encryption feature) ──
 
 /// A non-default security profile under `pdf-encryption` must produce a real
-/// `/Encrypt` dictionary object, a `/Crypt` filter, a trailer `/Encrypt N 0 R`
+/// `/Encrypt` dictionary object with a direct `/CF` crypt filter, a trailer `/Encrypt N 0 R`
 /// reference, and an honest "applied" marker that never says "NOT encrypted".
 #[cfg(feature = "pdf-encryption")]
 #[test]
@@ -408,20 +442,33 @@ fn writer_emits_encrypt_dictionary_and_trailer_reference() {
     assert!(text.contains("/Filter /Standard"));
     assert!(text.contains("/V 5"));
     assert!(text.contains("/R 6"));
-    assert!(text.contains("/Length 16"));
+    assert!(text.contains("/Length 256"));
     assert!(text.contains("/StmF /StdCF"));
     assert!(text.contains("/StrF /StdCF"));
     assert!(text.contains("/CFM /AESV3"));
-    assert!(text.contains("/Type /CryptFilter"));
+    assert!(text.contains("/OE <"));
+    assert!(text.contains("/UE <"));
+    assert!(text.contains("/Perms <"));
+    assert!(text.starts_with("%PDF-2.0"), "R=6 is the PDF 2.0 handler");
+    // The crypt filter is a direct dictionary; an indirection made some readers report
+    // the method but decrypt with the wrong key.
+    assert!(text.contains("/CF << /StdCF <<"));
+    // Algorithm 2 hashes the first `/ID` element into the file key, so the trailer must
+    // carry it for a conforming reader to be able to decrypt the content.
+    assert!(text.contains("/ID [<"), "the trailer must carry the document ID");
 
-    // The trailer and catalog both reference the encryption dictionary by number.
+    // The trailer references the encryption dictionary by number; the catalog carries no
+    // `/Encrypt` key (ISO 32000-1 §7.5.5 puts it in the trailer only).
     let encrypt_id = parse_encrypt_object_id(&text).expect("trailer must reference /Encrypt");
     assert!(text.contains(&format!("{encrypt_id} 0 obj")));
     let trailer_start = text.find("trailer\n").expect("a trailer exists");
     assert!(text[trailer_start..].contains(&format!("/Encrypt {encrypt_id} 0 R")));
     let catalog_start = text.find("1 0 obj").expect("catalog object");
     let catalog_end = text[catalog_start..].find("endobj").expect("catalog end") + catalog_start;
-    assert!(text[catalog_start..catalog_end].contains(&format!("/Encrypt {encrypt_id} 0 R")));
+    assert!(
+        !text[catalog_start..catalog_end].contains("/Encrypt"),
+        "the catalog must not carry /Encrypt"
+    );
 
     // Honest marker: encryption applied, never the "NOT encrypted" claim.
     assert!(text.contains("% RW-NOTE: PDF encryption applied"));
@@ -433,7 +480,7 @@ fn writer_emits_encrypt_dictionary_and_trailer_reference() {
 }
 
 /// The page content stream is encrypted, so its plaintext operators no longer
-/// appear and the stream body is a `<...>` hex string of whole AES blocks.
+/// appear and the stream body is the raw `IV || ciphertext` a reader decrypts.
 #[cfg(feature = "pdf-encryption")]
 #[test]
 fn writer_encrypts_page_content_stream() {
@@ -456,14 +503,25 @@ fn writer_encrypts_page_content_stream() {
 
     // The plaintext operator string must not survive into the ciphertext.
     assert!(!text.contains("secret text"));
-    // The content object's stream body is a single AESV3 hex payload.
-    let stream_start = text.find("stream\n").expect("a content stream exists") + "stream\n".len();
-    let rest = &text[stream_start..];
-    let body = &rest[..rest.find("\nendstream").expect("stream terminator")];
-    assert!(body.starts_with('<') && body.ends_with('>'), "encrypted stream is a hex string");
-    let hex = &body[1..body.len() - 1];
-    assert!(hex.chars().all(|ch| ch.is_ascii_hexdigit()));
-    assert_eq!(hex.len() % 32, 0, "IV + ciphertext must be whole AES blocks");
+    // The content object's stream body is the raw IV || AES-256 ciphertext: a stream is
+    // binary, so the hex-string syntax (correct only for string objects) would make a
+    // reader decrypt ASCII characters instead of the ciphertext.
+    let marker = b"stream\n".as_slice();
+    let start = bytes
+        .windows(marker.len())
+        .position(|window| window == marker)
+        .expect("a content stream exists")
+        + marker.len();
+    let end_marker = b"\nendstream".as_slice();
+    let end = start
+        + bytes[start..]
+            .windows(end_marker.len())
+            .position(|window| window == end_marker)
+            .expect("stream terminator");
+    let body = &bytes[start..end];
+    assert!(!body.starts_with(b"<"));
+    assert!(body.len() >= 32, "IV + at least one ciphertext block");
+    assert_eq!(body.len() % 16, 0, "IV + ciphertext must be whole AES blocks");
 }
 
 /// The reader must stop reporting an encrypted document as if it were open: it

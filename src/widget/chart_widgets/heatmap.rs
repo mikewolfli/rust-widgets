@@ -196,8 +196,10 @@ pub struct Heatmap {
     pub cell_double_clicked: Signal1<(usize, usize)>,
 }
 
-/// The hover read-out text and measured size, with the key they were built for.
-type ReadoutCache = RefCell<Option<((usize, usize), u64, u32, String, u32, u32)>>;
+/// The hover read-out text and measured size, with the complete key they were built for:
+/// `(cell, value bits, font, dpi bits, text, width, height)`.
+type ReadoutCache =
+    RefCell<Option<((usize, usize), u64, crate::core::Font, u64, String, u32, u32)>>;
 
 impl Heatmap {
     /// Creates a heat map with no rows, no columns and no values.
@@ -1408,12 +1410,14 @@ impl Draw for Heatmap {
                 let view_column = display_column.saturating_sub(self.first_column);
                 let value = self.cell(row, column).and_then(|cell| cell.value);
                 let generation = value.map(f64::to_bits).unwrap_or(0);
+                let dpi_bits = u64::from(context.dpi_scale().to_bits());
                 let fresh = matches!(
                     self.readout_text.borrow().as_ref(),
-                    Some((cell, cached_value, cached_font, _, _, _))
+                    Some((cell, cached_value, cached_font, cached_dpi, _, _, _))
                         if *cell == (row, column)
                             && *cached_value == generation
-                            && *cached_font == font.size().to_bits()
+                            && *cached_font == *font
+                            && *cached_dpi == dpi_bits
                 );
                 if !fresh {
                     let row_label = self.row_labels.get(row).map(String::as_str).unwrap_or("");
@@ -1429,14 +1433,16 @@ impl Draw for Heatmap {
                     *self.readout_text.borrow_mut() = Some((
                         (row, column),
                         generation,
-                        font.size().to_bits(),
+                        font.clone(),
+                        dpi_bits,
                         text,
                         metrics.width,
                         metrics.height.max(1),
                     ));
                 }
                 let readout = self.readout_text.borrow();
-                if let Some((_, _, _, text, measured_width, measured_height)) = readout.as_ref() {
+                if let Some((_, _, _, _, text, measured_width, measured_height)) = readout.as_ref()
+                {
                     let width = *measured_width as i32 + 8;
                     let height = *measured_height as i32 + 6;
                     let mut x = cell_box

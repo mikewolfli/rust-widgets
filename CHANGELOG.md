@@ -5,7 +5,14 @@ The canonical project changelog is maintained at [docs/reports/CHANGELOG.md](doc
 This root-level file exists for tools and release automation that expect `CHANGELOG.md` at repository root.
 When the two disagree, this file is the one that ships; `tools/check_changelog_sync.sh` keeps them identical.
 
-## Unreleased
+## 4.2.0 (2026-11-09) — the completeness round
+
+The `docs/issues/issue-20261108.md` round is recorded in `docs/log/log-20261109-1.md`: the hot paths
+stop bumping the global structure epoch, box layout reuses one solve per frame, container mutators
+request the frame they change, and every text surface implements IME preedit. This release also makes
+every constructible control paint an allocation-free steady-state frame and moves the icon catalogue
+into `crates/rust-widgets-icons`, recorded in `docs/log/log-20261106-2.md`. `docs/log/log-20261109-2.md`
+ships the DSH skill plugin, which touches no crate code.
 
 ### Changed
 

@@ -1051,6 +1051,7 @@ impl TabWidget {
         let tab = self.tabs.remove(from);
         self.tabs.insert(to, tab);
 
+        let previous_index = self.current_index;
         self.current_index = match self.current_index {
             c if c == from => to,
             c if from < c && c <= to => c - 1,
@@ -1059,6 +1060,12 @@ impl TabWidget {
         };
 
         self.tab_moved.emit((from, to));
+        // `insert_tab` and `remove_tab` announce an index shift because an index-keyed mirror
+        // would otherwise name a different page under the same number; a reorder that crosses
+        // the selected tab has exactly the same effect.
+        if self.current_index != previous_index {
+            self.current_changed.emit(self.current_index);
+        }
         self.base.request_redraw();
         true
     }

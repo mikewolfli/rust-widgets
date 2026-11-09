@@ -520,7 +520,7 @@ impl Keyboard {
         if self.press_progress > 0.0 {
             self.press_progress = (self.press_progress - delta_ms as f32 / 140.0).max(0.0);
             due = true;
-            self.base.request_redraw();
+            self.base.request_frame_repaint();
         }
         if let Some((row, col)) = self.held_key {
             self.repeat_elapsed = self.repeat_elapsed.saturating_add(delta_ms);

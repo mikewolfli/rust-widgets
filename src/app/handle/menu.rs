@@ -44,7 +44,7 @@ impl MenuBarHandle {
         })
         .flatten();
         match connected {
-            Some(handle) => record_signal_connection(id, SignalKind::Triggered, handle),
+            Some(handle) => record_signal_connection(id, SignalKind::MenuBarTriggered, handle),
             None => {
                 log::warn!(
                     "on_triggered ignored for id={id}: it is not a live menu bar, so the callback \
@@ -84,7 +84,7 @@ impl MenuBarHandle {
         })
         .flatten();
         match connected {
-            Some(handle) => record_signal_connection(id, SignalKind::TriggeredEntry, handle),
+            Some(handle) => record_signal_connection(id, SignalKind::MenuBarTriggeredEntry, handle),
             None => {
                 log::warn!(
                     "on_entry_triggered ignored for id={id}: it is not a live menu bar, so the \
@@ -125,7 +125,7 @@ impl MenuBarHandle {
         })
         .flatten();
         match connected {
-            Some(handle) => record_signal_connection(id, SignalKind::TriggeredEntry, handle),
+            Some(handle) => record_signal_connection(id, SignalKind::MenuBarEntryAction, handle),
             None => {
                 log::warn!(
                     "on_entry_action_triggered ignored for id={id}: it is not a live menu bar, so \
@@ -208,7 +208,7 @@ impl MenuHandle {
         })
         .flatten();
         match connected {
-            Some(handle) => record_signal_connection(id, SignalKind::Triggered, handle),
+            Some(handle) => record_signal_connection(id, SignalKind::MenuTriggered, handle),
             None => {
                 log::warn!(
                     "on_triggered ignored for id={id}: it is not a live menu, so the callback will \
@@ -252,7 +252,7 @@ impl MenuHandle {
         })
         .flatten();
         match connected {
-            Some(handle) => record_signal_connection(id, SignalKind::Triggered, handle),
+            Some(handle) => record_signal_connection(id, SignalKind::MenuItemAction, handle),
             None => {
                 log::warn!(
                     "on_item_action_triggered ignored for id={id}: it is not a live menu, so the \

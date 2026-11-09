@@ -171,6 +171,8 @@ pub enum LanguageId {
     JavaScript,
     /// Go source, including backtick raw strings.
     Go,
+    /// Zig source (`//` line comments, `\\\\` multiline string lines, `"`, `'`).
+    Zig,
     /// C-family source, including `#define` preprocessor lines.
     CLike,
     /// Java source.
@@ -214,6 +216,7 @@ impl LanguageId {
             Self::Python => "Python",
             Self::JavaScript => "JavaScript",
             Self::Go => "Go",
+            Self::Zig => "Zig",
             Self::CLike => "C",
             Self::Java => "Java",
             Self::CSharp => "C#",
@@ -272,18 +275,15 @@ impl LanguageId {
 
     /// Returns `true` when `//` starts a line comment.
     pub fn supports_slash_comments(self) -> bool {
-        matches!(
-            self,
-            Self::Rust
-                | Self::JavaScript
-                | Self::Go
-                | Self::CLike
-                | Self::Java
-                | Self::CSharp
-                | Self::Cpp
-                | Self::Kotlin
-                | Self::Swift
-        )
+        matches!(self, |Self::Rust| Self::JavaScript
+            | Self::Go
+            | Self::Zig
+            | Self::CLike
+            | Self::Java
+            | Self::CSharp
+            | Self::Cpp
+            | Self::Kotlin
+            | Self::Swift)
     }
 
     /// Returns `true` when `--` starts a line comment.
@@ -302,6 +302,7 @@ impl LanguageId {
             self,
             Self::Rust
                 | Self::Go
+                | Self::Zig
                 | Self::CLike
                 | Self::Java
                 | Self::CSharp
@@ -686,6 +687,64 @@ impl LanguageId {
                 "where",
                 "while",
             ],
+            // Zig keyword set from the language reference. `false`, `null`, `true` and
+            // `undefined` are keywords too, because they are reserved words rather than
+            // type names. Kept in byte order for the binary-search lookup.
+            Self::Zig => &[
+                "addrspace",
+                "align",
+                "allowzero",
+                "and",
+                "anyframe",
+                "anytype",
+                "asm",
+                "async",
+                "await",
+                "break",
+                "callconv",
+                "catch",
+                "comptime",
+                "const",
+                "continue",
+                "defer",
+                "else",
+                "enum",
+                "errdefer",
+                "error",
+                "export",
+                "extern",
+                "false",
+                "fn",
+                "for",
+                "if",
+                "inline",
+                "linksection",
+                "noalias",
+                "noinline",
+                "nosuspend",
+                "null",
+                "opaque",
+                "or",
+                "orelse",
+                "packed",
+                "pub",
+                "resume",
+                "return",
+                "struct",
+                "suspend",
+                "switch",
+                "test",
+                "threadlocal",
+                "true",
+                "try",
+                "undefined",
+                "union",
+                "unreachable",
+                "usingnamespace",
+                "var",
+                "volatile",
+                "while",
+            ],
             Self::Html | Self::Xml | Self::Css => &[],
             Self::Json => &["false", "null", "true"],
             Self::Yaml => &["false", "no", "null", "off", "on", "true", "yes"],
@@ -792,6 +851,45 @@ impl LanguageId {
                 &["Any", "Bool", "Character", "Double", "Float", "Int", "String", "Void"]
             }
             Self::Sql => &["boolean", "date", "int", "integer", "text", "timestamp", "varchar"],
+            // Zig primitive types, including the C ABI aliases. Byte-ordered for the
+            // binary-search lookup. `anyframe`/`anytype` are keywords and live in the
+            // keyword table instead; `anyerror` is a primitive type and lives here.
+            Self::Zig => &[
+                "anyerror",
+                "bool",
+                "c_char",
+                "c_int",
+                "c_long",
+                "c_longdouble",
+                "c_longlong",
+                "c_short",
+                "c_uint",
+                "c_ulong",
+                "c_ulonglong",
+                "c_ushort",
+                "comptime_float",
+                "comptime_int",
+                "f128",
+                "f16",
+                "f32",
+                "f64",
+                "f80",
+                "i128",
+                "i16",
+                "i32",
+                "i64",
+                "i8",
+                "isize",
+                "noreturn",
+                "type",
+                "u128",
+                "u16",
+                "u32",
+                "u64",
+                "u8",
+                "usize",
+                "void",
+            ],
             Self::Html
             | Self::Xml
             | Self::Json
@@ -1070,6 +1168,30 @@ impl SyntaxHighlighter for BuiltinHighlighter {
                         return (spans, LineState::BlockComment);
                     }
                 }
+            }
+
+            // Zig's multiline string literal is a run of lines whose first
+            // non-whitespace token is `\\`. Every such line is independent, so this
+            // needs no carried `LineState`: colour the remainder of the line and keep
+            // lexing the next line from `Clean`.
+            if self.language == LanguageId::Zig
+                && rest.starts_with("\\\\")
+                && line[..index].trim().is_empty()
+            {
+                spans.push(TokenSpan::new(index, len, TokenKind::String));
+                break;
+            }
+
+            // A Zig quoted identifier (`@"main"`, `@"type"`) is one identifier, not an
+            // `@` followed by a string literal.
+            if self.language == LanguageId::Zig && rest.starts_with("@\"") {
+                let end = rest[2..]
+                    .find('"')
+                    .map(|offset| (index + 2 + offset + 1).min(len))
+                    .unwrap_or(len);
+                spans.push(TokenSpan::new(index, end, TokenKind::Identifier));
+                index = end;
+                continue;
             }
 
             // String and character literals, including Python triple quotes and
@@ -1593,6 +1715,33 @@ mod tests {
         assert!(!spans.contains(&TokenKind::Character));
     }
 
+    /// Zig uses `//` comments, has no block comment, treats `'a'` as a character and
+    /// recognises both `\\` multiline string lines and `@"…"` quoted identifiers.
+    #[test]
+    fn zig_comments_literals_and_multiline_strings_are_recognized() {
+        let highlighter = BuiltinHighlighter::new(LanguageId::Zig);
+        assert_eq!(kinds(&highlighter, "// note").first(), Some(&TokenKind::Comment));
+        assert!(
+            !kinds(&highlighter, "/* not a block comment */").contains(&TokenKind::BlockComment),
+            "Zig has no block comments"
+        );
+
+        let literal = "const c = 'x'; const s = \"text\";";
+        let spans = spans_of(&highlighter, literal);
+        assert!(spans.iter().any(|span| span.kind == TokenKind::Character));
+        assert!(spans.iter().any(|span| span.kind == TokenKind::String));
+
+        let multiline = "    \\\\already inside a multiline string";
+        let spans = spans_of(&highlighter, multiline);
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].kind, TokenKind::String);
+
+        let quoted = "@\"type\"";
+        let spans = spans_of(&highlighter, quoted);
+        assert_eq!(spans[0].kind, TokenKind::Identifier);
+        assert_eq!(&quoted[spans[0].start..spans[0].end], "@\"type\"");
+    }
+
     /// The keyword and type tables are binary-searched, so every language's list must be
     /// in byte order. This pins the invariant that makes the lookup valid — without it a
     /// new keyword appended out of order would silently stop highlighting (J-P07).
@@ -1603,6 +1752,7 @@ mod tests {
             LanguageId::Python,
             LanguageId::JavaScript,
             LanguageId::Go,
+            LanguageId::Zig,
             LanguageId::CLike,
             LanguageId::Java,
             LanguageId::CSharp,

@@ -2133,12 +2133,12 @@ impl ComboBox {
         let mut animating = false;
         if self.open && self.reveal_progress < 1.0 {
             self.reveal_progress = (self.reveal_progress + delta_ms as f32 / 150.0).min(1.0);
-            self.base.request_redraw();
+            self.base.request_frame_repaint();
             animating = true;
         }
         // The editable caret cycles only while the box is focused (X-003).
         if self.editable && self.base.focus_reason().is_some() && self.cursor_blink.tick(delta_ms) {
-            self.base.request_redraw();
+            self.base.request_frame_repaint();
             animating = true;
         }
         animating

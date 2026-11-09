@@ -257,6 +257,10 @@ impl Tag {
             return;
         }
         self.base.set_hovered(hovered);
+        // `BaseWidget::set_hovered` deliberately does not repaint by itself; this control's
+        // paint reads the flag to pick the fill, so the setter owns the damage like every
+        // other appearance setter here.
+        self.base.request_redraw();
     }
 
     /// The rectangle the close glyph occupies, or `None` when the tag is not closable.

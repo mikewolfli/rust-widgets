@@ -355,6 +355,13 @@ impl ImageGallery {
         } else if self.current_index >= self.images.len() {
             self.current_index = self.images.len() - 1;
         }
+        // Multi-select indices name positions in the old list; drop the ones the new list no
+        // longer has so `selected_indices()` never reports an out-of-range image.
+        let selected_before = self.selected.len();
+        self.selected.retain(|index| *index < self.images.len());
+        if self.selected.len() != selected_before {
+            self.selection_changed.emit(self.selected_indices());
+        }
         self.image_changed.emit(self.current_index);
         self.base.request_layout();
         self.base.request_redraw();
@@ -365,11 +372,34 @@ impl ImageGallery {
         if index >= self.images.len() {
             return;
         }
+        let before = self.current_index;
         self.images.remove(index);
         // Every index at and after `index` now names a different image.
         self.thumbnails.clear();
-        if !self.images.is_empty() && self.current_index >= self.images.len() {
+        if self.images.is_empty() {
+            self.current_index = 0;
+        } else if index < self.current_index {
+            // The selected image itself survived but shifted left; keep naming it.
+            self.current_index -= 1;
+        } else if self.current_index >= self.images.len() {
             self.current_index = self.images.len() - 1;
+        }
+        // Rebuild the multi-select set through the same shift: entries after the removed
+        // index move left, and the removed index leaves the set.
+        let remapped: std::collections::BTreeSet<usize> = self
+            .selected
+            .iter()
+            .copied()
+            .filter(|selected| *selected != index)
+            .map(|selected| if selected > index { selected - 1 } else { selected })
+            .collect();
+        if remapped != self.selected {
+            self.selected = remapped;
+            self.selection_changed.emit(self.selected_indices());
+        }
+        // The displayed image changed when the removed index was at or before the selection:
+        // either a different image now sits at the same index, or the index itself moved.
+        if self.images.is_empty() || index <= before {
             self.image_changed.emit(self.current_index);
         }
         self.base.request_redraw();
@@ -1522,6 +1552,18 @@ mod tests {
         g.add_image("/images/photo4.jpg", Some("Forest"));
         g.add_image("/images/photo5.jpg", Some("City"));
         g
+    }
+
+    #[test]
+    fn removing_an_earlier_image_keeps_the_same_photo_current() {
+        let mut g = make_gallery(Rect::new(0, 0, 400, 300));
+        g.set_current_index(3);
+        g.remove_image(1);
+        assert_eq!(
+            g.selected_index(),
+            Some(2),
+            "the current index must follow the same photo after an earlier removal"
+        );
     }
 
     #[test]

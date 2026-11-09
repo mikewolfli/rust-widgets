@@ -315,7 +315,7 @@ impl NumberPicker {
             self.settle_offset = 0.0;
             self.settling = false;
         } else {
-            self.base.request_redraw();
+            self.base.request_frame_repaint();
         }
         self.settling
     }

@@ -70,6 +70,14 @@ const FRAME_INTERVAL_MS: u64 = crate::platform::types::FRAME_INTERVAL_MS;
 const IDLE_FRAME_INTERVAL_MS: u64 = crate::platform::types::IDLE_FRAME_INTERVAL_MS;
 
 #[cfg(all(unix_desktop, feature = "gtk-native"))]
+/// The shared source slot of a live frame heartbeat.
+type HeartbeatSlot = std::rc::Rc<core::cell::Cell<Option<glib::SourceId>>>;
+
+#[cfg(all(unix_desktop, feature = "gtk-native"))]
+/// A live heartbeat: its source slot and the cadence it was armed at.
+type HeartbeatSource = (HeartbeatSlot, u64);
+
+#[cfg(all(unix_desktop, feature = "gtk-native"))]
 thread_local! {
     /// The live heartbeat's source slot and the cadence it was armed at.
     ///
@@ -77,9 +85,8 @@ thread_local! {
     /// from the GTK signal handlers installed in `create_window`, which runs before `run()` owns
     /// the slot. Holding the pair here is what lets [`expedite_frame_heartbeat`] move an idle
     /// heartbeat back to the frame cadence without a second timer or a state field.
-    static HEARTBEAT: core::cell::RefCell<
-        Option<(std::rc::Rc<core::cell::Cell<Option<glib::SourceId>>>, u64)>,
-    > = const { core::cell::RefCell::new(None) };
+    static HEARTBEAT: core::cell::RefCell<Option<HeartbeatSource>> =
+        const { core::cell::RefCell::new(None) };
 }
 
 /// Clears the frame-wait wake hook when the GTK loop's scope ends, including by unwinding.

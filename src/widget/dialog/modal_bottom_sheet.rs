@@ -329,7 +329,9 @@ impl ModalBottomSheet {
             self.drag_origin_y = None;
             let sheet_height = self.compute_sheet_height();
             if self.drag_offset > sheet_height as f32 / 3.0 {
-                self.is_visible = false;
+                // Route through `hide()` rather than clearing the flag: it also stops the drag,
+                // aims the reveal at 0, and requests the frame that paints the slide-out.
+                self.hide();
                 self.dismissed.emit();
             }
             self.drag_offset = 0.0;
@@ -535,6 +537,15 @@ impl Draw for ModalBottomSheet {
         // previous order filled the whole page with the scrim and only then returned, which
         // cost a full-page fill on every still frame of a closed sheet (G-P11).
         if !self.is_visible && reveal <= 0.0 {
+            // The closing frame that reaches the resting end must also hide the declared
+            // content: the frame pass below is unreachable from here and used to leave the
+            // child painted at its last slide position after the sheet closed.
+            if let Some(content) = self.content.as_mut() {
+                content.hide();
+            }
+            if let Some(content_id) = self.content_id {
+                crate::set_widget_visible(content_id, false);
+            }
             return;
         }
 

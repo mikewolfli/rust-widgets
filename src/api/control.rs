@@ -147,8 +147,11 @@ pub fn widget_value(widget_id: crate::core::ObjectId) -> Option<f64> {
 pub fn set_widget_range(widget_id: crate::core::ObjectId, min: f64, max: f64) -> bool {
     let names: &[&str] = &["minimum", "min", "min_value"];
     let max_names: &[&str] = &["maximum", "max", "max_value"];
-    widget::capability::widget_access::write_number(widget_id, names, min)
-        && widget::capability::widget_access::write_number(widget_id, max_names, max)
+    let min_ok = widget::capability::widget_access::write_number(widget_id, names, min);
+    let max_ok = widget::capability::widget_access::write_number(widget_id, max_names, max);
+    // Evaluate both halves: writing `min` then short-circuiting on failure left a partial
+    // range applied while claiming nothing happened.
+    min_ok && max_ok
 }
 
 /// Read a widget's `(min, max)` range.

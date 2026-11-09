@@ -292,9 +292,14 @@ impl ProgressBar {
         if self.maximum == self.minimum {
             return 0.0;
         }
-        // Use saturating_sub to prevent integer overflow.
-        ((self.value.saturating_sub(self.minimum)) as f32)
-            / ((self.maximum.saturating_sub(self.minimum)) as f32)
+        // Compute the span in `f64`: `i32::MAX - i32::MIN` is wider than `i32`, and the old
+        // `saturating_sub` pair saturated both terms to `i32::MAX`, reporting 1.0 for the
+        // middle of the full range.
+        let span = f64::from(self.maximum) - f64::from(self.minimum);
+        if span == 0.0 {
+            return 0.0;
+        }
+        ((f64::from(self.value) - f64::from(self.minimum)) / span).clamp(0.0, 1.0) as f32
     }
 
     /// Whether the bar is showing an indeterminate sweep.
@@ -920,6 +925,19 @@ mod tests {
     use crate::compat::Vec;
     use crate::core::{Color, Orientation, Rect, Size};
     use crate::style::WidgetStyle;
+
+    #[test]
+    fn a_full_i32_range_reports_the_midpoint() {
+        let mut pb = ProgressBar::new(Rect::new(0, 0, 200, 20));
+        pb.set_minimum(i32::MIN);
+        pb.set_maximum(i32::MAX);
+        pb.set_value(0);
+        assert!(
+            (pb.progress() - 0.5).abs() < 1e-6,
+            "the full i32 range must not saturate both terms, got {}",
+            pb.progress()
+        );
+    }
 
     #[test]
     fn progressbar_creation_defaults() {

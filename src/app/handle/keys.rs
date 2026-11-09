@@ -53,50 +53,61 @@ impl LineEditHandle {
     /// Written through the control's `placeholder_text` property contract (the single live
     /// write path); the in-process mirror is updated as well and serves as this handle's read
     /// cache. There is no separate native write-through call — a control that does not publish
-    /// the property refuses it, and only the mirror then records the request.
+    /// the property refuses it, and the mirror then keeps its previous value rather than claiming
+    /// the request landed (`PropertyWrite::should_mirror`).
     pub fn set_placeholder(&self, text: &str) {
-        LINE_EDIT_STATES.with(|map| {
-            map.borrow_mut().entry(self.raw_id()).or_insert_with(Default::default).placeholder =
-                text.to_owned();
-        });
-        write_control_property(
+        let write = write_control_property_outcome(
             self.raw_id(),
             "placeholder_text",
             crate::widget::capability::CapabilityValue::String(text.to_string()),
         );
+        if write.should_mirror() {
+            LINE_EDIT_STATES.with(|map| {
+                map.borrow_mut()
+                    .entry(self.raw_id())
+                    .or_insert_with(Default::default)
+                    .placeholder = text.to_owned();
+            });
+        }
     }
 
     /// Set whether the line-edit is read-only.
     ///
     /// Written through the control's `read_only` property contract, so the control itself stops
-    /// accepting input; the in-process mirror is updated as the handle's read cache. No separate
-    /// native write-through is performed — the library paints and owns every control.
+    /// accepting input; the in-process mirror is updated as the handle's read cache unless the
+    /// control refused the write. No separate native write-through is performed — the library
+    /// paints and owns every control.
     pub fn set_read_only(&self, read_only: bool) {
-        LINE_EDIT_STATES.with(|map| {
-            map.borrow_mut().entry(self.raw_id()).or_insert_with(Default::default).read_only =
-                read_only;
-        });
-        write_control_property(
+        let write = write_control_property_outcome(
             self.raw_id(),
             "read_only",
             crate::widget::capability::CapabilityValue::Bool(read_only),
         );
+        if write.should_mirror() {
+            LINE_EDIT_STATES.with(|map| {
+                map.borrow_mut().entry(self.raw_id()).or_insert_with(Default::default).read_only =
+                    read_only;
+            });
+        }
     }
 
     /// Set the maximum number of characters allowed.
     ///
     /// Written through the control's `max_length` property contract; the in-process mirror is
-    /// updated as the handle's read cache. A control that does not publish the property refuses
-    /// the write rather than accepting it into a store nothing reads.
+    /// updated as the handle's read cache unless the control refused the write. A control that
+    /// does not publish the property refuses it rather than accepting it into a store nothing reads.
     pub fn set_max_length(&self, len: u32) {
-        LINE_EDIT_STATES.with(|map| {
-            map.borrow_mut().entry(self.raw_id()).or_insert_with(Default::default).max_length = len;
-        });
-        write_control_property(
+        let write = write_control_property_outcome(
             self.raw_id(),
             "max_length",
             crate::widget::capability::CapabilityValue::UInt(u64::from(len)),
         );
+        if write.should_mirror() {
+            LINE_EDIT_STATES.with(|map| {
+                map.borrow_mut().entry(self.raw_id()).or_insert_with(Default::default).max_length =
+                    len;
+            });
+        }
     }
 
     /// Clear the line-edit text.
@@ -107,17 +118,21 @@ impl LineEditHandle {
     /// Set the echo mode (Normal / Password / NoEcho).
     ///
     /// Written through the control's `echo_mode` property contract; the in-process mirror is
-    /// updated as the handle's read cache. The read path ([`Self::echo_mode`]) prefers the same
-    /// property, so a mode written through the crate-root API is observed here too (API-04).
+    /// updated as the handle's read cache unless the control refused the write. The read path
+    /// ([`Self::echo_mode`]) prefers the same property, so a mode written through the crate-root
+    /// API is observed here too (API-04).
     pub fn set_echo_mode(&self, mode: EchoMode) {
-        LINE_EDIT_STATES.with(|map| {
-            map.borrow_mut().entry(self.raw_id()).or_insert_with(Default::default).echo_mode = mode;
-        });
-        write_control_property(
+        let write = write_control_property_outcome(
             self.raw_id(),
             "echo_mode",
             crate::widget::capability::CapabilityValue::String(echo_mode_token(mode).to_string()),
         );
+        if write.should_mirror() {
+            LINE_EDIT_STATES.with(|map| {
+                map.borrow_mut().entry(self.raw_id()).or_insert_with(Default::default).echo_mode =
+                    mode;
+            });
+        }
     }
 
     /// Return the placeholder text.
@@ -200,17 +215,11 @@ impl LineEditHandle {
     /// Select all text in the line-edit.
     ///
     /// Written through the control's `selection` property as the whole range, so the control and
-    /// the mirror agree and `cursor_position` stays a pure caret query (API-03).
+    /// the mirror agree and `cursor_position` stays a pure caret query (API-03). The mirror is only
+    /// updated when the write was not refused.
     pub fn select_all(&self) {
-        LINE_EDIT_STATES.with(|map| {
-            let mut map = map.borrow_mut();
-            let state = map.entry(self.raw_id()).or_default();
-            state.select_all = true;
-            state.selection_start = 0;
-            state.selection_end = u32::MAX;
-        });
         // u32::MAX is the crate's "to the end" sentinel; the control clamps it to its length.
-        write_control_property(
+        let write = write_control_property_outcome(
             self.raw_id(),
             "selection",
             crate::widget::capability::CapabilityValue::String(crate::compat::format!(
@@ -218,28 +227,40 @@ impl LineEditHandle {
                 u32::MAX
             )),
         );
+        if write.should_mirror() {
+            LINE_EDIT_STATES.with(|map| {
+                let mut map = map.borrow_mut();
+                let state = map.entry(self.raw_id()).or_default();
+                state.select_all = true;
+                state.selection_start = 0;
+                state.selection_end = u32::MAX;
+            });
+        }
     }
 
     /// Set the selection range (start..end).
     ///
     /// Written through the control's `selection` property — the same spelling the crate-root
     /// `set_widget_selection` uses (API-03) — and recorded in the in-process mirror as the
-    /// handle's read cache. The caret is no longer used to carry the range, so both ends survive.
+    /// handle's read cache unless the control refused the write. The caret is no longer used to
+    /// carry the range, so both ends survive.
     pub fn set_selection(&self, start: u32, end: u32) {
-        LINE_EDIT_STATES.with(|map| {
-            let mut map = map.borrow_mut();
-            let state = map.entry(self.raw_id()).or_default();
-            state.select_all = false;
-            state.selection_start = start;
-            state.selection_end = end;
-        });
-        write_control_property(
+        let write = write_control_property_outcome(
             self.raw_id(),
             "selection",
             crate::widget::capability::CapabilityValue::String(crate::compat::format!(
                 "{start},{end}"
             )),
         );
+        if write.should_mirror() {
+            LINE_EDIT_STATES.with(|map| {
+                let mut map = map.borrow_mut();
+                let state = map.entry(self.raw_id()).or_default();
+                state.select_all = false;
+                state.selection_start = start;
+                state.selection_end = end;
+            });
+        }
     }
 }
 

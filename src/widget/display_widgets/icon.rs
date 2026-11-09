@@ -1617,7 +1617,7 @@ impl Widget for Icon {
                 advanced = true;
             }
             if advanced {
-                self.base.request_redraw();
+                self.base.request_frame_repaint();
             }
             true
         }

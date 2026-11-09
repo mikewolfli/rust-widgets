@@ -686,7 +686,7 @@ impl Cascader {
             return false;
         }
         self.reveal_progress = (self.reveal_progress + delta_ms as f32 / 120.0).min(1.0);
-        self.base.request_redraw();
+        self.base.request_frame_repaint();
         self.reveal_progress < 1.0
     }
 

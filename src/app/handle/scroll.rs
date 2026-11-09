@@ -32,23 +32,25 @@ impl ScrollAreaHandle {
     /// Set the scroll offset.
     ///
     /// Written to the control through its property contract, and recorded in the
-    /// in-process mirror as well
-    /// through [`crate::platform::Platform::set_widget_scroll_position`] (`SetScrollPos` on
-    /// Windows, the GTK adjustments, the AppKit clip view).
+    /// in-process mirror as well. The mirror only follows the write when the control accepted it
+    /// (or when no control is mounted, the offline fallback); a refused axis keeps its previous
+    /// value, so [`Self::scroll_position`] never reports an offset the control rejected.
     pub fn set_scroll_position(&self, x: i32, y: i32) {
-        {
-            let wrote_x = write_control_property(
-                self.raw_id(),
-                "scroll_position_x",
-                crate::widget::capability::CapabilityValue::Int(i64::from(x)),
-            );
-            let wrote_y = write_control_property(
-                self.raw_id(),
-                "scroll_position_y",
-                crate::widget::capability::CapabilityValue::Int(i64::from(y)),
-            );
-            note_property_pair("scroll_area.set_scroll_position", wrote_x, wrote_y);
-        };
+        let wrote_x = write_control_property_outcome(
+            self.raw_id(),
+            "scroll_position_x",
+            crate::widget::capability::CapabilityValue::Int(i64::from(x)),
+        );
+        let wrote_y = write_control_property_outcome(
+            self.raw_id(),
+            "scroll_position_y",
+            crate::widget::capability::CapabilityValue::Int(i64::from(y)),
+        );
+        note_property_pair(
+            "scroll_area.set_scroll_position",
+            wrote_x.is_applied(),
+            wrote_y.is_applied(),
+        );
         // The control clamps the offset against its own content/viewport, so the mirror
         // records what the control **accepted**, not what the caller asked for. Reading it
         // back is what makes `scroll_position()` a fact rather than a request.
@@ -56,8 +58,11 @@ impl ScrollAreaHandle {
             Some(crate::widget::capability::CapabilityValue::Int(value)) => value as i32,
             _ => fallback,
         };
-        let actual_x = actual("scroll_position_x", x);
-        let actual_y = actual("scroll_position_y", y);
+        let current = self.scroll_position();
+        let actual_x =
+            if wrote_x.should_mirror() { actual("scroll_position_x", x) } else { current.0 };
+        let actual_y =
+            if wrote_y.should_mirror() { actual("scroll_position_y", y) } else { current.1 };
         SCROLL_AREA_STATES.with(|map| {
             let mut map = map.borrow_mut();
             let state = map.entry(self.raw_id()).or_default();
@@ -80,25 +85,34 @@ impl ScrollAreaHandle {
     /// well as recorded in the in-process mirror, so the control's own scroll clamp — and
     /// therefore [`Self::scroll_to_bottom`] — uses the size the caller declared. A previous
     /// version wrote only the mirror, which meant the control clamped every offset against
-    /// its own (zero) content size and the scroll never moved.
+    /// its own (zero) content size and the scroll never moved. A refused extent keeps the
+    /// previous mirror value instead of claiming a size the control rejected.
     pub fn set_content_size(&self, w: u32, h: u32) {
-        SCROLL_AREA_STATES.with(|map| {
-            let mut map = map.borrow_mut();
-            let state = map.entry(self.raw_id()).or_default();
-            state.content_w = w;
-            state.content_h = h;
-        });
-        let wrote_w = write_control_property(
+        let wrote_w = write_control_property_outcome(
             self.raw_id(),
             "content_width",
             crate::widget::capability::CapabilityValue::UInt(u64::from(w)),
         );
-        let wrote_h = write_control_property(
+        let wrote_h = write_control_property_outcome(
             self.raw_id(),
             "content_height",
             crate::widget::capability::CapabilityValue::UInt(u64::from(h)),
         );
-        note_property_pair("scroll_area.set_content_size", wrote_w, wrote_h);
+        note_property_pair(
+            "scroll_area.set_content_size",
+            wrote_w.is_applied(),
+            wrote_h.is_applied(),
+        );
+        SCROLL_AREA_STATES.with(|map| {
+            let mut map = map.borrow_mut();
+            let state = map.entry(self.raw_id()).or_default();
+            if wrote_w.should_mirror() {
+                state.content_w = w;
+            }
+            if wrote_h.should_mirror() {
+                state.content_h = h;
+            }
+        });
         // The control clamps its current offset against the new extent. Refresh the mirror
         // through the same read-back path so a shrunken content size cannot leave a stale
         // scroll position reported to the caller.

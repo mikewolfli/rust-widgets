@@ -93,6 +93,20 @@ enum DeclaredWire {
 /// A loader that parses JSON layout strings and instantiates widget trees.
 pub struct JsonLoader;
 
+/// Whether `obj` declares anything [`route_container_content`] would route.
+///
+/// Used by both the caller (so a leaf node never builds its ancestor chain) and the
+/// router itself (so a leaf answers without resolving the canonical widget name).
+fn has_routing_key(obj: &serde_json::Map<String, Value>, child_ids: &[ObjectId]) -> bool {
+    !child_ids.is_empty()
+        || obj.contains_key("pages")
+        || obj.contains_key("sections")
+        || obj.contains_key("panes")
+        || obj.contains_key("menus")
+        || obj.contains_key("actions")
+        || obj.contains_key("items")
+}
+
 /// Routes a container node's declared children into that container's own content model.
 ///
 /// # Why this exists (issue-20261104 DM-06/07/08/11/12)
@@ -130,20 +144,10 @@ fn route_container_content(
     resolver: Option<&dyn crate::widget::icon_source::IconResourceResolver>,
     ancestors: &[ElementRef<'_>],
 ) -> Result<(), String> {
-    // Fold aliases onto the canonical name, so a document spelling `scrollarea`,
-    // `tab_view` or `wizard` routes exactly like the canonical spelling. The designer's
-    // generator already relies on this one answer per control.
-    //
-    // Guarded first: a leaf node has neither children nor a content key, and answering that
-    // without allocating the canonical name keeps the loader's per-node cost where it was.
-    let has_routing_key = !child_ids.is_empty()
-        || obj.contains_key("pages")
-        || obj.contains_key("sections")
-        || obj.contains_key("panes")
-        || obj.contains_key("menus")
-        || obj.contains_key("actions")
-        || obj.contains_key("items");
-    if !has_routing_key {
+    // Guarded first: a leaf node has neither children nor a content key, so the caller
+    // skips building its ancestor chain and this function answers without allocating the
+    // canonical name (DM5-01).
+    if !has_routing_key(obj, child_ids) {
         return Ok(());
     }
     let canonical = crate::widget::capability::WidgetFactory::shared().canonical_name(widget_type);
@@ -1739,7 +1743,7 @@ impl JsonLoader {
         // DM-06/07/08/11/12). This runs **outside** the `children` branch above because the
         // families that need it do not all use `children`: the menu and tool bar declare
         // `menus`/`actions`, and the wizard, accordion and splitter use their own keys.
-        if !tab_widget_children {
+        if !tab_widget_children && has_routing_key(obj, &child_ids) {
             route_container_content(
                 widget_id,
                 widget_type,

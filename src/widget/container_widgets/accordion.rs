@@ -731,7 +731,7 @@ impl Widget for Accordion {
         }
         self.sync_body_widgets();
         self.base.request_layout();
-        self.base.request_redraw();
+        self.base.request_frame_repaint();
         moving
     }
 

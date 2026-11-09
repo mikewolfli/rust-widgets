@@ -562,7 +562,7 @@ impl TagInput {
         }
         let running = self.cursor_blink.tick(delta_ms);
         if running {
-            self.base.request_redraw();
+            self.base.request_frame_repaint();
         }
         running
     }

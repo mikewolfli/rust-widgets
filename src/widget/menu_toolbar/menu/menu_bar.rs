@@ -521,6 +521,10 @@ impl MenuBar {
     pub fn add_menu(&mut self, title: impl Into<String>) -> usize {
         let idx = self.entries.len();
         self.entries.push(MenuBarEntry::new(title));
+        // A new title changes the strip; every sibling mutator (`remove_menu`, `clear`,
+        // `set_menu_enabled`) requests the frame, so this one must too. The width cache keys
+        // on the entry list and re-hashes on the next draw.
+        self.base.request_redraw();
         idx
     }
 

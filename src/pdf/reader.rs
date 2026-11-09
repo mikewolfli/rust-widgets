@@ -23,7 +23,7 @@
 //!   `/Encrypt` dictionary is reported through [`PdfSecurity`] (permissions and a
 //!   non-empty `user_password` marker), and its `/Encrypt` reference is kept in the
 //!   security marker text. The reader does **not** decrypt encrypted content streams:
-//!   a stream opened as a `/AESV3` hex string is not fed through a PDF string parser,
+//!   a stream opened as an `/AESV3` hex string is not fed through a PDF string parser,
 //!   so encrypted payloads are surfaced as-is rather than silently mis-decoded.
 //! - **Font subsetting / CID fonts**: Only core Helvetica is used as a
 //!   default font resource. Embedded font programs are not parsed.
@@ -55,8 +55,7 @@ use std::fs;
 /// written", so the recovered [`PdfSecurity`] does not mis-report an encrypted
 /// document as open.
 fn declares_encryption(text: &str) -> bool {
-    text.contains("/Encrypt ")
-        || (text.contains("/Filter /Standard") && text.contains("/CFM /AESV3"))
+    text.contains("/Encrypt ") || text.contains("/Filter /Standard")
 }
 
 /// Recover as much of the original [`PdfSecurity`] as the file actually proves.
@@ -93,8 +92,17 @@ fn recover_security(text: &str) -> Option<PdfSecurity> {
 /// actually an integer are accepted, otherwise the catalog's `/Pages` would be
 /// mistaken for the permission entry.
 fn parse_permission_value(text: &str) -> u32 {
-    for (index, _) in text.match_indices("/P ") {
-        let rest = &text[index + "/P ".len()..];
+    // Restrict the search to the `/Encrypt` dictionary. An annotation's `/P <page> 0 R`
+    // also matches the literal prefix, and the whole-file scan used to return that page
+    // number as the permission bitmask when it appeared before the encryption object.
+    let objects = parse_pdf_objects(text);
+    let body = objects
+        .values()
+        .find(|body| body.contains("/Filter /Standard"))
+        .map(String::as_str)
+        .unwrap_or(text);
+    for (index, _) in body.match_indices("/P ") {
+        let rest = &body[index + "/P ".len()..];
         let token: String =
             rest.chars().take_while(|ch| ch.is_ascii_digit() || *ch == '-').collect();
         if let Ok(value) = token.parse::<i64>() {
@@ -181,7 +189,12 @@ pub(crate) fn parse_pdf_pages(text: &str) -> Vec<ParsedPdfPage> {
         return Vec::new();
     }
     let mut pages = Vec::new();
-    for body in objects.values() {
+    // `objects` is a `HashMap`, so iterating its values yields pages in hash order.
+    // Sort the object numbers first: a multi-page document must round-trip in page order.
+    let mut object_ids: Vec<u32> = objects.keys().copied().collect();
+    object_ids.sort_unstable();
+    for object_id in object_ids {
+        let Some(body) = objects.get(&object_id) else { continue };
         let is_page_object = body.contains("/Type /Page ")
             || body.contains("/Type /Page\n")
             || body.contains("/Type /Page\r");

@@ -260,7 +260,7 @@ impl ListBoxHandle {
         })
         .flatten();
         match connected {
-            Some(handle) => record_signal_connection(id, SignalKind::Triggered, handle),
+            Some(handle) => record_signal_connection(id, SignalKind::ContextMenuRequested, handle),
             None => {
                 log::warn!(
                     "on_context_menu_requested ignored for id={id}: it is not a live list box, so \
@@ -318,7 +318,7 @@ impl ButtonHandle {
         })
         .flatten();
         match connected {
-            Some(handle) => record_signal_connection(id, SignalKind::Triggered, handle),
+            Some(handle) => record_signal_connection(id, SignalKind::ContextMenuRequested, handle),
             None => {
                 log::warn!(
                     "on_context_menu_requested ignored for id={id}: it is not a live button, so \

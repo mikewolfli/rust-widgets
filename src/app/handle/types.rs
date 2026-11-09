@@ -839,10 +839,18 @@ type LocalCallbackMap = RefCell<HashMap<(ObjectId, u64), Box<dyn FnMut()>>>;
 pub(crate) enum SignalKind {
     Clicked,
     Closed,
-    /// A payload-carrying control event connected by a handle method (`on_triggered`).
-    Triggered,
-    /// A menu-bar entry event whose payload also carries the entry rectangle.
-    TriggeredEntry,
+    /// `MenuBar::triggered`, connected by `MenuBarHandle::on_triggered`.
+    MenuBarTriggered,
+    /// `Menu::triggered`, connected by `MenuHandle::on_triggered`.
+    MenuTriggered,
+    /// `MenuBar::triggered_entry`, connected by `on_entry_triggered`.
+    MenuBarTriggeredEntry,
+    /// `MenuBar::entry_action_triggered`, connected by `on_entry_action_triggered`.
+    MenuBarEntryAction,
+    /// `Menu::action_triggered`, connected by `MenuHandle::on_item_action_triggered`.
+    MenuItemAction,
+    /// A control's `context_menu_requested` (ListBox, Button, TabWidget).
+    ContextMenuRequested,
     /// The window's `focus_gained` signal, connected by `on_focus_gained`.
     FocusGained,
     /// The window's `focus_lost` signal, connected by `on_focus_lost`.
@@ -1335,13 +1343,15 @@ pub fn binding_report(widget_id: ObjectId) -> BindingReport {
                         match connection.kind {
                             SignalKind::Clicked => clicked += 1,
                             SignalKind::Closed => closed += 1,
-                            SignalKind::Triggered | SignalKind::TriggeredEntry => triggered += 1,
-                            // Window focus/move subscriptions are counted as triggered: they are
-                            // handle-recorded subscriptions whose purpose is the same (a live
-                            // callback for this id).
-                            SignalKind::FocusGained | SignalKind::FocusLost | SignalKind::Moved => {
-                                triggered += 1
-                            }
+                            SignalKind::MenuBarTriggered
+                            | SignalKind::MenuTriggered
+                            | SignalKind::MenuBarTriggeredEntry
+                            | SignalKind::MenuBarEntryAction
+                            | SignalKind::MenuItemAction
+                            | SignalKind::ContextMenuRequested
+                            | SignalKind::FocusGained
+                            | SignalKind::FocusLost
+                            | SignalKind::Moved => triggered += 1,
                         }
                     }
                 }
@@ -1642,6 +1652,7 @@ pub fn remove_callbacks(id: ObjectId) {
     let _ = crate::shortcut::route::clear_key_handler(id);
     let _ = crate::platform::window_control::clear_close_handler(id);
     let _ = crate::platform::window_control::remove_window_position(id);
+    let _ = crate::platform::window_control::clear_active_window(id);
     // Disconnect the signal subscriptions this widget's handles made. The
     // handles are taken out of the table first so a re-entrant removal cannot see
     // the same handles twice, then applied against the live widget.
@@ -1658,22 +1669,54 @@ pub fn remove_callbacks(id: ObjectId) {
                     SignalKind::Closed => {
                         widget.base().closed.disconnect(connection.handle);
                     }
-                    SignalKind::Triggered => {
+                    SignalKind::MenuBarTriggered => {
                         if let Some(bar) = (widget as &mut dyn core::any::Any)
                             .downcast_mut::<crate::widget::menu_toolbar::menu_bar::MenuBar>(
                         ) {
                             bar.triggered.disconnect(connection.handle);
-                        } else if let Some(menu) = (widget as &mut dyn core::any::Any)
+                        }
+                    }
+                    SignalKind::MenuTriggered => {
+                        if let Some(menu) = (widget as &mut dyn core::any::Any)
                             .downcast_mut::<crate::widget::menu_toolbar::menu::Menu>(
                         ) {
                             menu.triggered.disconnect(connection.handle);
                         }
                     }
-                    SignalKind::TriggeredEntry => {
+                    SignalKind::MenuBarTriggeredEntry => {
                         if let Some(bar) = (widget as &mut dyn core::any::Any)
                             .downcast_mut::<crate::widget::menu_toolbar::menu_bar::MenuBar>(
                         ) {
                             bar.triggered_entry.disconnect(connection.handle);
+                        }
+                    }
+                    SignalKind::MenuBarEntryAction => {
+                        if let Some(bar) = (widget as &mut dyn core::any::Any)
+                            .downcast_mut::<crate::widget::menu_toolbar::menu_bar::MenuBar>(
+                        ) {
+                            bar.entry_action_triggered.disconnect(connection.handle);
+                        }
+                    }
+                    SignalKind::MenuItemAction => {
+                        if let Some(menu) = (widget as &mut dyn core::any::Any)
+                            .downcast_mut::<crate::widget::menu_toolbar::menu::Menu>(
+                        ) {
+                            menu.action_triggered.disconnect(connection.handle);
+                        }
+                    }
+                    SignalKind::ContextMenuRequested => {
+                        if let Some(list) = (widget as &mut dyn core::any::Any)
+                            .downcast_mut::<crate::widget::input_widgets::listbox::ListBox>(
+                        ) {
+                            list.context_menu_requested.disconnect(connection.handle);
+                        } else if let Some(button) = (widget as &mut dyn core::any::Any)
+                            .downcast_mut::<crate::widget::base_widgets::button::Button>(
+                        ) {
+                            button.context_menu_requested.disconnect(connection.handle);
+                        } else if let Some(tabs) = (widget as &mut dyn core::any::Any)
+                            .downcast_mut::<crate::widget::TabWidget>()
+                        {
+                            tabs.context_menu_requested.disconnect(connection.handle);
                         }
                     }
                     SignalKind::FocusGained | SignalKind::FocusLost | SignalKind::Moved => {

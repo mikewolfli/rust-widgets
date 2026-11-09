@@ -333,7 +333,7 @@ impl HeroAnimation {
                 self.is_animating = false;
                 self.playing_reverse = false;
                 self.animation_completed.emit();
-                self.base.request_redraw();
+                self.base.request_frame_repaint();
             }
         } else {
             self.set_progress(eased);

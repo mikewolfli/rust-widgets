@@ -81,10 +81,11 @@ pub struct Sparkline {
     show_end_value: bool,
     /// The formatted end-value annotation and its measured size (ADV2-04).
     ///
-    /// Keyed by the value's bits, the resolved font's size and its family: the draw path used to
-    /// `format!` and `measure_text` this on every frame even when the trace was static. A sparkline
-    /// is commonly embedded in a table, so the cost was paid once per instance per frame.
-    end_value_cache: Option<(u64, u32, crate::compat::String, crate::compat::String, u32, u32)>,
+    /// Keyed by the value's bits, the resolved font's **complete** identity and the device
+    /// scale: the draw path used to `format!` and `measure_text` this on every frame even
+    /// when the trace was static. A sparkline is commonly embedded in a table, so the cost
+    /// was paid once per instance per frame.
+    end_value_cache: Option<(u64, crate::core::Font, u64, crate::compat::String, u32, u32)>,
     /// Whether the area under the trace is filled.
     fill: bool,
     /// Whether every sample gets a small disc.
@@ -673,17 +674,17 @@ impl Draw for Sparkline {
             if let Some(value) = self.data.last().copied() {
                 let font = crate::widget::metrics::role_font(self.base.style(), 9.0);
                 let value_bits = value.to_bits();
-                let size_bits = font.size().to_bits();
+                let dpi_bits = u64::from(context.dpi_scale().to_bits());
                 let fresh = self.end_value_cache.as_ref().is_some_and(|cache| {
-                    cache.0 == value_bits && cache.1 == size_bits && cache.2 == font.family()
+                    cache.0 == value_bits && cache.1 == font && cache.2 == dpi_bits
                 });
                 if !fresh {
                     let text = format_end_value(value);
                     let metrics = context.measure_text(&text, &font);
                     self.end_value_cache = Some((
                         value_bits,
-                        size_bits,
-                        font.family().to_string(),
+                        font.clone(),
+                        dpi_bits,
                         text,
                         metrics.width,
                         metrics.height.max(1),

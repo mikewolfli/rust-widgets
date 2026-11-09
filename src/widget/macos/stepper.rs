@@ -337,7 +337,7 @@ impl Widget for MacStepper {
             }
         }
         if fired > 0 {
-            self.base.request_redraw();
+            self.base.request_frame_repaint();
         }
         fired > 0
     }

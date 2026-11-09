@@ -412,7 +412,7 @@ impl RefreshControl {
         let spinning = if self.is_refreshing {
             let turns = delta_ms as f32 / 1000.0;
             self.spin.jump_to((self.spin.value() + turns).fract());
-            self.base.request_redraw();
+            self.base.request_frame_repaint();
             true
         } else {
             false

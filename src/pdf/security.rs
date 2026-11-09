@@ -10,10 +10,10 @@
 //!
 //! - **With `pdf-encryption`**: a non-default profile is applied as a standard
 //!   `/Filter /Standard` security handler — the writer emits an `/Encrypt`
-//!   dictionary plus a `/Crypt` filter, references it from the trailer and the
-//!   catalog, and encrypts every content stream with AES-128-CBC. The `% RW-NOTE`
-//!   marker then states that encryption was applied (see
-//!   `serialize_security_diagnostics_entries`).
+//!   dictionary with a direct `/CF` crypt filter, references it from the trailer,
+//!   and encrypts every stream and string with AES-256-CBC (PDF 2.0, V5/R6,
+//!   `/CFM /AESV3`). The `% RW-NOTE` marker then states that encryption was applied
+//!   (see `serialize_security_diagnostics_entries`).
 //! - **Without `pdf-encryption`**: the profile stays intent only; the `% RW-NOTE`
 //!   marker records the requested permissions and states the output is **not**
 //!   encrypted, because it is not.
@@ -24,7 +24,7 @@
 //! # Encryption tooling (`pdf-encryption` feature)
 //!
 //! With the `pdf-encryption` feature this module additionally provides the real
-//! AES-128-CBC primitives (`PdfEncryption`, `encrypt_pdf`) used by the writer to
+//! AES-256-CBC primitives (`PdfEncryption`, `encrypt_pdf`) used by the writer to
 //! encrypt content. `PdfEncryption` also builds the standard encryption dictionary
 //! wired into the document pipeline.
 //!
@@ -129,27 +129,24 @@ fn parse_pdf_literal_by_key(text: &str, key: &str) -> Option<String> {
 
 /// PDF encryption algorithm selector.
 ///
-/// # Why there is no `AES256`
-///
-/// An `AES256` variant used to exist and was **never produced**: `PdfEncryption::new` hardcoded
-/// `AES128`, `derive_encryption_key` always returns 16 bytes and `aes128_cbc_encrypt` is AES-128
-/// only — so the branch that advertised `/Length 32` was unreachable, and reaching it would have
-/// emitted a dictionary whose key length disagreed with the ciphertext. A variant no constructor
-/// can produce is not a feature; it is a promise the code cannot keep. Removed until a real AES-256
-/// key path exists (which is a self-contained addition, not a flag).
+/// The standard R=6 handler (`/V 5`, `/R 6`, `/CFM /AESV3`) is the only applied algorithm: it is
+/// what ISO 32000-2 (PDF 2.0) specifies. R=4/AES-128 was removed with the upgrade rather than kept
+/// as a second, weaker path — a file this writer emits must be decryptable by a current reader.
 #[cfg(feature = "pdf-encryption")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EncryptionAlgorithm {
     /// No encryption.
     None,
-    /// AES-128 in CBC mode.
-    AES128,
+    /// AES-256 in CBC mode (PDF 2.0, V5/R6, `/CFM /AESV3`).
+    AES256,
 }
 
-/// Represents PDF encryption parameters for AES-128-CBC encryption.
+/// Represents PDF encryption parameters for the standard R=6 handler (AES-256).
 ///
-/// Stores user/owner passwords, permission flags, the salts the `/O` and `/U` entries are derived
-/// from, and the derived encryption key used to encrypt/decrypt PDF stream content.
+/// The file key is **random**, not derived from a password: `/U`/`/UE` wrap it for the user
+/// password and `/O`/`/OE` for the owner password, exactly as ISO 32000-2 Algorithms 2.A/2.B
+/// require. The entries are computed once in [`PdfEncryption::new`], so the dictionary always
+/// describes the key the ciphertext was produced with.
 #[cfg(feature = "pdf-encryption")]
 #[derive(Debug, Clone)]
 pub struct PdfEncryption {
@@ -161,104 +158,157 @@ pub struct PdfEncryption {
     pub owner_password: String,
     /// Permission flags encoded as a 32-bit integer.
     pub permissions: u32,
-    /// Derived encryption key (16 bytes for AES-128).
+    /// Random 256-bit file key, wrapped by `/UE` and `/OE`.
     pub encryption_key: Vec<u8>,
-    /// Per-document salt mixed into the `/U` entry.
-    ///
-    /// Stored rather than regenerated per dictionary build: `build_encryption_dictionary` used to
-    /// mint fresh salts, so the `/O` / `/U` entries described a **different** salt than the one the
-    /// key was derived from — the dictionary did not match the ciphertext it was prepended to.
-    pub user_salt: [u8; 16],
-    /// Second salt mixed into the `/O` entry (owner).
-    pub owner_salt: [u8; 16],
+    /// The first `/ID` element, written to the trailer.
+    pub document_id: [u8; 16],
+    /// `/U`: 32-byte password hash ‖ validation salt ‖ key salt.
+    u_entry: [u8; 48],
+    /// `/O`: 32-byte owner hash ‖ validation salt ‖ key salt.
+    o_entry: [u8; 48],
+    /// `/UE`: the file key encrypted with the user key salt's intermediate key.
+    ue_entry: [u8; 32],
+    /// `/OE`: the file key encrypted with the owner key salt's intermediate key.
+    oe_entry: [u8; 32],
+    /// `/Perms`: the permission word plus the `adb` marker, encrypted with the file key.
+    perms_entry: [u8; 16],
 }
 
 #[cfg(feature = "pdf-encryption")]
 impl PdfEncryption {
-    /// Create a new `PdfEncryption` with AES-128, deriving the encryption key from the user password
-    /// and a CSPRNG salt.
+    /// Create a new `PdfEncryption` under the standard R=6 handler (AES-256).
+    ///
+    /// Draws a random 256-bit file key, the document ID and four 8-byte salts from the OS CSPRNG,
+    /// then builds `/U`/`/UE` and `/O`/`/OE` with ISO 32000-2 Algorithms 2.A/2.B.
     ///
     /// Returns `Err` when the OS entropy source is unavailable: the alternative is a predictable
-    /// salt, which would silently defeat the encryption.
+    /// file key, which would silently defeat the encryption.
     pub fn new(
         user_password: &str,
         owner_password: &str,
         permissions: u32,
     ) -> Result<Self, String> {
-        let algorithm = EncryptionAlgorithm::AES128;
-        let user_salt = generate_salt().ok_or_else(entropy_unavailable)?;
-        let owner_salt = generate_salt().ok_or_else(entropy_unavailable)?;
-        let encryption_key = derive_encryption_key(user_password, &user_salt);
+        let mut file_key = [0u8; AES256_KEY_LEN];
+        let mut document_id = [0u8; 16];
+        let mut u_validation_salt = [0u8; 8];
+        let mut u_key_salt = [0u8; 8];
+        let mut o_validation_salt = [0u8; 8];
+        let mut o_key_salt = [0u8; 8];
+        let mut perms_tail = [0u8; 4];
+        for bytes in [
+            file_key.as_mut_slice(),
+            document_id.as_mut_slice(),
+            u_validation_salt.as_mut_slice(),
+            u_key_salt.as_mut_slice(),
+            o_validation_salt.as_mut_slice(),
+            o_key_salt.as_mut_slice(),
+            perms_tail.as_mut_slice(),
+        ] {
+            getrandom::fill(bytes).map_err(|_| entropy_unavailable())?;
+        }
+
+        let u_entry = compute_u_entry(user_password, &u_validation_salt, &u_key_salt);
+        let ue_entry = compute_ue_entry(user_password, &u_key_salt, &file_key);
+        let o_entry = compute_o_entry(
+            owner_password,
+            user_password,
+            &o_validation_salt,
+            &o_key_salt,
+            &u_entry,
+        );
+        let oe_entry =
+            compute_oe_entry(owner_password, user_password, &o_key_salt, &u_entry, &file_key);
+        let perms_entry = compute_perms_entry(&file_key, permissions, perms_tail);
+
         Ok(PdfEncryption {
-            algorithm,
+            algorithm: EncryptionAlgorithm::AES256,
             user_password: user_password.to_string(),
             owner_password: owner_password.to_string(),
             permissions,
-            encryption_key,
-            user_salt,
-            owner_salt,
+            encryption_key: file_key.to_vec(),
+            document_id,
+            u_entry,
+            o_entry,
+            ue_entry,
+            oe_entry,
+            perms_entry,
         })
     }
 
+    /// The first `/ID` element, hex-encoded for the trailer.
+    pub fn file_id_hex(&self) -> String {
+        hex_encode(&self.document_id)
+    }
+
+    /// Verifies a user password against the stored `/U` entry (ISO 32000-2 Algorithm 2.A/2.B).
+    pub fn verify_user_password(&self, password: &str) -> bool {
+        let hash = hash_r6(password, &self.u_entry[32..40], &[]);
+        hash[..] == self.u_entry[..32]
+    }
+
+    /// Verifies an owner password against the stored `/O` entry (the `/U` entry is its `udata`).
+    pub fn verify_owner_password(&self, password: &str) -> bool {
+        let hash = hash_r6(password, &self.o_entry[32..40], &self.u_entry);
+        hash[..] == self.o_entry[..32]
+    }
+
     /// Build a PDF encryption dictionary string with entries:
-    /// `/Filter`, `/Length`, `/V`, `/R`, `/O`, `/U`, `/P`, `/StmF`, `/StrF`.
+    /// `/Filter`, `/Length`, `/V`, `/R`, `/O`, `/U`, `/OE`, `/UE`, `/P`, `/Perms`,
+    /// `/StmF`, `/StrF` and `/CF`.
     ///
-    /// Produces a PDF-2.0-style encryption dictionary for AES-128. The `/StmF` and `/StrF` names
-    /// are the standard `/StdCF` crypt-filter names that the writer resolves through the document's
-    /// own `/Crypt` dictionary.
+    /// Produces the ISO 32000-2 V5/R6 dictionary for AES-256. `/CF` is a **direct** dictionary
+    /// whose `/StdCF` entry is the crypt filter `/StmF`/`/StrF` name, which readers resolve without
+    /// an extra object indirection.
     ///
-    /// The result is a single-line `<< ... >>` body with no leading or trailing
-    /// newline, so callers can embed it directly inside an object or a trailer
-    /// without breaking the surrounding structure.
-    ///
-    /// # Why `/O` and `/U` use a *stored* salt
-    ///
-    /// They are `SHA-256(password + salt)` entries. They used to be computed from **fresh** salts
-    /// generated here, unrelated to the key the content was actually encrypted under — so the
-    /// dictionary did not describe the file it was prepended to. They are now derived from the same
-    /// salts [`PdfEncryption`] was constructed with, so the dictionary and the ciphertext agree.
+    /// The result is a single-line `<< ... >>` body with no leading or trailing newline, so
+    /// callers can embed it directly inside an object or a trailer without breaking the
+    /// surrounding structure.
     pub fn build_encryption_dictionary(&self) -> String {
-        let (v, r, length) = match self.algorithm {
-            EncryptionAlgorithm::AES128 => (5, 6, 16),
-            EncryptionAlgorithm::None => return String::new(),
-        };
-
-        // /O (32 bytes): SHA-256(owner_password + user_salt + owner_salt)
-        let o_hash = compute_hash(&self.owner_password, &self.user_salt, &self.owner_salt);
-        let o_hex = hex_encode(&o_hash);
-
-        // /U (32 bytes): SHA-256(user_password + user_salt)
-        let u_hash = compute_hash(&self.user_password, &self.user_salt, &[]);
-        let u_hex = hex_encode(&u_hash);
-
-        // /P: permission flags as signed integer
+        if self.algorithm != EncryptionAlgorithm::AES256 {
+            return String::new();
+        }
         let p = self.permissions as i32;
-
         format!(
-            "<< /Filter /Standard /Length {length} /V {v} /R {r} /O <{o_hex}> /U <{u_hex}> /P {p} /StmF /StdCF /StrF /StdCF >>"
+            "<< /Filter /Standard /Length 256 /V 5 /R 6 /O <{}> /U <{}> /OE <{}> /UE <{}> /P {p} \
+             /Perms <{}> /StmF /StdCF /StrF /StdCF /CF << /StdCF << /AuthEvent /DocOpen \
+             /CFM /AESV3 /Length 32 >> >> >>",
+            hex_encode(&self.o_entry),
+            hex_encode(&self.u_entry),
+            hex_encode(&self.oe_entry),
+            hex_encode(&self.ue_entry),
+            hex_encode(&self.perms_entry),
         )
     }
 
-    /// Encrypt one content string/stream under this document's file key.
+    /// Encrypt one string value, returning PDF hex-string syntax.
     ///
-    /// Encodes the ciphertext in PDF-2.0 `AESV3` form: a 16-byte random IV
-    /// followed by the PKCS#7-padded AES-128-CBC ciphertext, each byte written as
-    /// two lowercase hex digits and wrapped in `<...>`. (PDF 2.0 / ISO 32000-2 §7.6.2.)
-    ///
-    /// The IV is freshly drawn per call from the OS CSPRNG so equal plaintexts
-    /// never produce equal ciphertexts.
+    /// The result is `<IV ‖ AES-256-CBC ciphertext>` under the document's file key, which is how a
+    /// reader reconstructs the value. Objects that must stay readable (the encryption dictionary
+    /// itself and the trailer's `/ID`) must not be passed through here.
     pub fn encrypt_content(&self, plaintext: &[u8]) -> Result<String, String> {
-        if self.algorithm == EncryptionAlgorithm::None {
-            return Err(
-                "cannot encrypt content with the `None` algorithm; use an AES-128 key".to_string()
-            );
+        let payload = self.encrypt_stream(plaintext)?;
+        Ok(format!("<{}>", hex_encode(&payload)))
+    }
+
+    /// Encrypt one stream body, returning the raw bytes a `stream ... endstream` carries.
+    ///
+    /// The result is the 16-byte IV followed by the AES-256-CBC ciphertext (PKCS#7 padded), under
+    /// the document's file key. ISO 32000-2 applies the security handler to a stream **after** its
+    /// filters, so a filtered stream is encrypted in its encoded form and a reader reverses the
+    /// order (decrypt, then decode).
+    ///
+    /// The IV is freshly drawn per call from the OS CSPRNG.
+    pub fn encrypt_stream(&self, plaintext: &[u8]) -> Result<Vec<u8>, String> {
+        if self.algorithm != EncryptionAlgorithm::AES256 {
+            return Err("cannot encrypt a stream with the `None` algorithm; use the AES-256 key"
+                .to_string());
         }
         let iv = generate_salt().ok_or_else(entropy_unavailable)?;
-        let ciphertext = aes128_cbc_encrypt(&self.encryption_key, &iv, plaintext);
+        let ciphertext = aes256_cbc_encrypt(&self.encryption_key, &iv, plaintext);
         let mut payload = Vec::with_capacity(iv.len() + ciphertext.len());
         payload.extend_from_slice(&iv);
         payload.extend_from_slice(&ciphertext);
-        Ok(format!("<{}>", hex_encode(&payload)))
+        Ok(payload)
     }
 }
 
@@ -311,7 +361,7 @@ fn encode_permission_flags(security: &PdfSecurity) -> u32 {
     permissions
 }
 
-/// Encrypt PDF content with AES-128-CBC using a key derived from the user password and a CSPRNG salt.
+/// Encrypt PDF content under the real R=6 standard handler (AES-256).
 ///
 /// # Arguments
 /// * `content` - Raw PDF byte content to encrypt.
@@ -319,15 +369,10 @@ fn encode_permission_flags(security: &PdfSecurity) -> u32 {
 /// * `owner_password` - Owner password for permission changes.
 ///
 /// # Returns
-/// The encryption dictionary followed by, in order: the 16-byte key salt, the 16-byte IV, and the
-/// AES-128-CBC ciphertext (PKCS#7 padded).
-///
-/// # Why the salt is written out
-///
-/// The key is `SHA-256(user_password + salt)[..16]`. A previous revision derived the key from a salt
-/// it **never wrote**, so the result was not decryptable by anyone — not even by the tool that made
-/// it. The salt is now serialized alongside the IV, which is what makes the output a real encrypted
-/// blob rather than undecryptable bytes wearing a dictionary.
+/// The encryption dictionary followed by, in order: the 16-byte document ID, the
+/// 16-byte IV, and the AES-256-CBC ciphertext (PKCS#7 padded). A consumer recovers the
+/// random file key from `/U` + `/UE` (user password) or `/O` + `/OE` (owner password)
+/// using ISO 32000-2 Algorithm 2.B.
 ///
 /// # Errors
 /// Returns `Err` when the OS entropy source is unavailable (see `generate_salt`).
@@ -337,30 +382,16 @@ pub fn encrypt_pdf(
     user_password: &str,
     owner_password: &str,
 ) -> Result<Vec<u8>, String> {
-    let salt = generate_salt().ok_or_else(entropy_unavailable)?;
-    let key = derive_encryption_key(user_password, &salt);
-    let iv = generate_salt().ok_or_else(entropy_unavailable)?;
-    let encrypted = aes128_cbc_encrypt(&key, &iv, content);
-
-    let mut enc = PdfEncryption {
-        algorithm: EncryptionAlgorithm::AES128,
-        user_password: user_password.to_string(),
-        owner_password: owner_password.to_string(),
-        permissions: 0xFFFFFFFCu32, // allow all by default
-        encryption_key: key,
-        user_salt: salt,
-        owner_salt: [0u8; 16],
-    };
-    enc.owner_salt = generate_salt().ok_or_else(entropy_unavailable)?;
+    let enc = PdfEncryption::new(user_password, owner_password, 0xFFFF_FFFC)?;
+    let payload = enc.encrypt_stream(content)?;
     let dict = enc.build_encryption_dictionary();
 
-    // Output: encryption dictionary, key salt, IV, then ciphertext. The salt is what lets a reader
-    // re-derive the key; without it the file is a black box.
+    // Output: encryption dictionary, document ID, IV, then ciphertext. The document ID is
+    // kept for the caller's trailer; unlike R=4 it is not an input to the key derivation.
     let mut result = dict.into_bytes();
     result.push(b'\n');
-    result.extend_from_slice(&salt);
-    result.extend_from_slice(&iv);
-    result.extend_from_slice(&encrypted);
+    result.extend_from_slice(&enc.document_id);
+    result.extend_from_slice(&payload);
     Ok(result)
 }
 
@@ -406,30 +437,147 @@ fn generate_salt() -> Option<[u8; 16]> {
     }
 }
 
-/// Derive a 16-byte AES-128 encryption key by hashing the password
-/// with a salt using SHA-256 and taking the first 16 bytes.
+/// The 256-bit AES key length / R=6 file-key length, in bytes.
+///
+/// Kept as a named constant because the key length appears in `/Length 256`, the 32-byte
+/// `/UE`/`/OE` payloads and the 32-byte `Perms` clear text; one fact, one spelling.
 #[cfg(feature = "pdf-encryption")]
-fn derive_encryption_key(password: &str, salt: &[u8]) -> Vec<u8> {
-    use sha2::{Digest, Sha256};
-    let mut hasher = Sha256::new();
-    hasher.update(password.as_bytes());
-    hasher.update(salt);
-    let hash = hasher.finalize();
-    hash[..16].to_vec()
+const AES256_KEY_LEN: usize = 32;
+
+/// ISO 32000-2 truncates a password to 127 bytes of UTF-8.
+#[cfg(feature = "pdf-encryption")]
+fn password_bytes(password: &str) -> &[u8] {
+    let bytes = password.as_bytes();
+    &bytes[..bytes.len().min(127)]
 }
 
-/// Compute a 32-byte hash for /O or /U entries.
-/// For /O: SHA-256(password + user_salt + owner_salt)
-/// For /U: SHA-256(password + user_salt)
+/// ISO 32000-2 Algorithm 2.B: the R=6 password hash.
+///
+/// Starts with `SHA-256(password ‖ salt ‖ udata)`, then repeatedly encrypts
+/// `(password ‖ K ‖ udata)` 64 times with AES-128-CBC and re-hashes the result with
+/// SHA-256/384/512 until the termination condition holds. `K` grows to 48/64 bytes on the
+/// SHA-384/512 rounds; only the first 32 bytes are returned.
 #[cfg(feature = "pdf-encryption")]
-fn compute_hash(password: &str, salt1: &[u8], salt2: &[u8]) -> Vec<u8> {
-    use sha2::{Digest, Sha256};
-    let mut hasher = Sha256::new();
-    hasher.update(password.as_bytes());
-    hasher.update(salt1);
-    hasher.update(salt2);
-    let hash = hasher.finalize();
-    hash.to_vec()
+fn hash_r6(password: &str, salt: &[u8], udata: &[u8]) -> [u8; 32] {
+    let password = password_bytes(password);
+    let mut key_material = sha_digest::<sha2::Sha256>(password, salt, udata);
+    let mut round = 0u32;
+    loop {
+        round += 1;
+        let mut block =
+            Vec::with_capacity(64 * (password.len() + key_material.len() + udata.len()));
+        for _ in 0..64 {
+            block.extend_from_slice(password);
+            block.extend_from_slice(&key_material);
+            block.extend_from_slice(udata);
+        }
+        let key: [u8; 16] = key_material[..16].try_into().expect("K always starts with 16 bytes");
+        let iv: [u8; 16] =
+            key_material[16..32].try_into().expect("K always carries a 16-byte IV after the key");
+        let encrypted = aes128_cbc_encrypt_no_padding(&key, &iv, &block);
+        let selector: u32 = encrypted[..16].iter().map(|&byte| u32::from(byte)).sum::<u32>() % 3;
+        key_material = match selector {
+            0 => sha_digest::<sha2::Sha256>(&encrypted, &[], &[]),
+            1 => sha_digest::<sha2::Sha384>(&encrypted, &[], &[]),
+            _ => sha_digest::<sha2::Sha512>(&encrypted, &[], &[]),
+        };
+        let last = u32::from(encrypted[encrypted.len() - 1]);
+        if round >= 64 && last <= round - 32 {
+            let mut out = [0u8; 32];
+            out.copy_from_slice(&key_material[..32]);
+            return out;
+        }
+    }
+}
+
+/// Hash the three components Algorithm 2.B consumes, with the selected SHA-2 variant.
+#[cfg(feature = "pdf-encryption")]
+fn sha_digest<D: sha2::Digest + Default>(first: &[u8], second: &[u8], third: &[u8]) -> Vec<u8> {
+    let mut hasher = D::new();
+    hasher.update(first);
+    hasher.update(second);
+    hasher.update(third);
+    hasher.finalize().to_vec()
+}
+
+/// `/U` = password hash ‖ validation salt ‖ key salt (ISO 32000-2 Algorithm 2.A).
+#[cfg(feature = "pdf-encryption")]
+fn compute_u_entry(user_password: &str, validation_salt: &[u8; 8], key_salt: &[u8; 8]) -> [u8; 48] {
+    let hash = hash_r6(user_password, validation_salt, &[]);
+    let mut entry = [0u8; 48];
+    entry[..32].copy_from_slice(&hash);
+    entry[32..40].copy_from_slice(validation_salt);
+    entry[40..48].copy_from_slice(key_salt);
+    entry
+}
+
+/// `/UE` = the file key encrypted under `hash(password, key salt)` (AES-256-CBC, zero IV).
+#[cfg(feature = "pdf-encryption")]
+fn compute_ue_entry(
+    user_password: &str,
+    key_salt: &[u8; 8],
+    file_key: &[u8; AES256_KEY_LEN],
+) -> [u8; 32] {
+    let intermediate = hash_r6(user_password, key_salt, &[]);
+    let mut entry = [0u8; 32];
+    entry.copy_from_slice(&aes256_cbc_encrypt_no_padding(&intermediate, &[0u8; 16], file_key));
+    entry
+}
+
+/// `/O` = owner-password hash ‖ validation salt ‖ key salt (ISO 32000-2 Algorithm 2.A).
+#[cfg(feature = "pdf-encryption")]
+fn compute_o_entry(
+    owner_password: &str,
+    user_password: &str,
+    validation_salt: &[u8; 8],
+    key_salt: &[u8; 8],
+    u_entry: &[u8; 48],
+) -> [u8; 48] {
+    let owner = if owner_password.is_empty() { user_password } else { owner_password };
+    let hash = hash_r6(owner, validation_salt, u_entry);
+    let mut entry = [0u8; 48];
+    entry[..32].copy_from_slice(&hash);
+    entry[32..40].copy_from_slice(validation_salt);
+    entry[40..48].copy_from_slice(key_salt);
+    entry
+}
+
+/// `/OE` = the file key encrypted under the owner's key-salt hash (AES-256-CBC, zero IV).
+#[cfg(feature = "pdf-encryption")]
+fn compute_oe_entry(
+    owner_password: &str,
+    user_password: &str,
+    key_salt: &[u8; 8],
+    u_entry: &[u8; 48],
+    file_key: &[u8; AES256_KEY_LEN],
+) -> [u8; 32] {
+    let owner = if owner_password.is_empty() { user_password } else { owner_password };
+    let intermediate = hash_r6(owner, key_salt, u_entry);
+    let mut entry = [0u8; 32];
+    entry.copy_from_slice(&aes256_cbc_encrypt_no_padding(&intermediate, &[0u8; 16], file_key));
+    entry
+}
+
+/// `/Perms`: the permission word and the `adb` marker, encrypted with the file key.
+///
+/// `EncryptMetadata` is always true for this writer, so byte 8 is `T`.
+#[cfg(feature = "pdf-encryption")]
+fn compute_perms_entry(
+    file_key: &[u8; AES256_KEY_LEN],
+    permissions: u32,
+    tail: [u8; 4],
+) -> [u8; 16] {
+    let mut clear = [0u8; 16];
+    let extended = 0xFFFF_FFFF_0000_0000u64 | u64::from(permissions);
+    clear[..8].copy_from_slice(&extended.to_le_bytes());
+    clear[8] = b'T';
+    clear[9] = b'a';
+    clear[10] = b'd';
+    clear[11] = b'b';
+    clear[12..].copy_from_slice(&tail);
+    let mut entry = [0u8; 16];
+    entry.copy_from_slice(&aes256_cbc_encrypt_no_padding(file_key, &[0u8; 16], &clear));
+    entry
 }
 
 /// Hex-encode bytes to lowercase hex string.
@@ -441,30 +589,57 @@ fn hex_encode(bytes: &[u8]) -> String {
     super::reader::hex_encode_lower(bytes)
 }
 
-/// Encrypt plaintext with AES-128-CBC using the given key and IV.
-/// Pads plaintext with PKCS#7 before encryption.
+/// Encrypt with AES-128-CBC and no padding (Algorithm 2.B's inner loop).
 #[cfg(feature = "pdf-encryption")]
-fn aes128_cbc_encrypt(key: &[u8], iv: &[u8; 16], plaintext: &[u8]) -> Vec<u8> {
-    use aes::cipher::{block_padding::Pkcs7, BlockEncryptMut, KeyIvInit};
+fn aes128_cbc_encrypt_no_padding(key: &[u8; 16], iv: &[u8; 16], data: &[u8]) -> Vec<u8> {
+    use aes::cipher::{block_padding::NoPadding, BlockModeEncrypt, KeyIvInit};
     use aes::Aes128;
     use cbc::Encryptor;
 
     type Aes128Cbc = Encryptor<Aes128>;
+    let cipher = Aes128Cbc::new(&(*key).into(), &(*iv).into());
+    let mut out = vec![0u8; data.len()];
+    cipher
+        .encrypt_padded_b2b::<NoPadding>(data, &mut out)
+        .expect("Algorithm 2.B input is block-aligned by construction")
+        .to_vec()
+}
 
-    // `cipher` 0.4 uses `GenericArray`; buffer types go through `.into()` so the
-    // code does not depend on the deprecated `GenericArray::from_slice` helper.
-    let key_arr = key.into();
-    let iv_arr = iv.into();
+/// Encrypt with AES-256-CBC and no padding (`/UE`, `/OE`, `/Perms`).
+#[cfg(feature = "pdf-encryption")]
+fn aes256_cbc_encrypt_no_padding(key: &[u8], iv: &[u8; 16], data: &[u8]) -> Vec<u8> {
+    use aes::cipher::{block_padding::NoPadding, BlockModeEncrypt, KeyIvInit};
+    use aes::Aes256;
+    use cbc::Encryptor;
 
-    let cipher = Aes128Cbc::new(key_arr, iv_arr);
-    // AES block size is 16 bytes; allocate buffer for plaintext + one padding block
+    type Aes256Cbc = Encryptor<Aes256>;
+    let key_arr: [u8; 32] = key.try_into().expect("AES-256 key is exactly 32 bytes");
+    let cipher = Aes256Cbc::new(&key_arr.into(), &(*iv).into());
+    let mut out = vec![0u8; data.len()];
+    cipher
+        .encrypt_padded_b2b::<NoPadding>(data, &mut out)
+        .expect("the R=6 wrapped entries are block-aligned by construction")
+        .to_vec()
+}
+
+/// Encrypt with AES-256-CBC and PKCS#7 padding (streams and strings).
+#[cfg(feature = "pdf-encryption")]
+fn aes256_cbc_encrypt(key: &[u8], iv: &[u8; 16], plaintext: &[u8]) -> Vec<u8> {
+    use aes::cipher::{block_padding::Pkcs7, BlockModeEncrypt, KeyIvInit};
+    use aes::Aes256;
+    use cbc::Encryptor;
+
+    type Aes256Cbc = Encryptor<Aes256>;
+    let key_arr: [u8; 32] = key.try_into().expect("AES-256 key is exactly 32 bytes");
+    let cipher = Aes256Cbc::new(&key_arr.into(), &(*iv).into());
     let mut out = vec![0u8; plaintext.len() + 16];
-    // encrypt_padded_b2b_mut returns the padded ciphertext as a sub-slice
-    let encrypted = cipher.encrypt_padded_b2b_mut::<Pkcs7>(plaintext, &mut out).expect(
-        "AES-128-CBC encryption cannot fail for a buffer that was sized as \
-             plaintext.len() + 16 and Pkcs7 padding, so the allocator or key length is wrong",
-    );
-    encrypted.to_vec()
+    cipher
+        .encrypt_padded_b2b::<Pkcs7>(plaintext, &mut out)
+        .expect(
+            "AES-256-CBC encryption cannot fail for a buffer sized plaintext.len() + 16 with \
+             PKCS#7 padding, so the allocator or key length is wrong",
+        )
+        .to_vec()
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -565,34 +740,94 @@ mod tests {
         let result =
             encrypt_pdf(content, "userpass", "ownerpass").expect("entropy is available in tests");
         assert!(!result.is_empty(), "Encrypted output should not be empty");
-        // Key salt (16) + IV (16) + at least one ciphertext block.
-        assert!(result.len() > 32, "Output should contain salt + IV + ciphertext");
+        // Document ID (16) + IV (16) + at least one ciphertext block.
+        assert!(result.len() > 32, "Output should contain document ID + IV + ciphertext");
         // Should contain the encryption dictionary structure
         let result_str = String::from_utf8_lossy(&result);
         assert!(result_str.contains("/Filter"));
         assert!(result_str.contains("/Standard"));
     }
 
-    /// The output must be **decryptable**: the salt the key was derived from is written out, so a
-    /// reader can re-derive the key. Pins the defect where the salt was discarded (the output could
-    /// never be decrypted by anyone).
+    /// `encrypt_pdf`'s output must be recoverable by a conforming R=6 consumer: `/U` + `/UE`
+    /// wrap the random file key, and the AES-256-CBC payload is decrypted with it.
     #[cfg(feature = "pdf-encryption")]
     #[test]
-    fn encrypt_pdf_writes_the_salt_so_the_output_is_decryptable() {
+    fn encrypt_pdf_can_be_opened_with_the_r6_entries() {
         let content = b"decryptable payload";
         let out = encrypt_pdf(content, "pw", "owner").expect("entropy");
         let dict_end =
             out.iter().position(|&b| b == b'\n').expect("the dictionary ends with a newline");
-        // The 16-byte key salt follows the dictionary, then the IV, then the ciphertext.
+        let dict = String::from_utf8_lossy(&out[..dict_end]).to_string();
         let payload = &out[dict_end + 1..];
-        assert!(payload.len() >= 32, "salt + IV must be present after the dictionary");
-        let salt: [u8; 16] = payload[..16].try_into().expect("16 bytes");
-        let expected_key = derive_encryption_key("pw", &salt);
-        // The stored key must be the one the written salt derives, or the file is a black box.
-        let mut enc = PdfEncryption::new("pw", "owner", 0xFFFFFFFC).expect("entropy");
-        enc.user_salt = salt;
-        enc.encryption_key = expected_key.clone();
-        assert_eq!(enc.encryption_key, expected_key);
+        assert!(payload.len() >= 16 + 16 + 16, "document ID + IV + ciphertext");
+        let _document_id: [u8; 16] = payload[..16].try_into().expect("16 bytes");
+        let iv: [u8; 16] = payload[16..32].try_into().expect("16 bytes");
+        let ciphertext = &payload[32..];
+
+        let u_entry = parse_hex_n::<48>(&dict, "/U <").expect("/U entry");
+        let ue_entry = parse_hex_n::<32>(&dict, "/UE <").expect("/UE entry");
+        // Algorithm 2.A/2.B: the user key salt is U[40..48]; its hash unwraps the file key.
+        let intermediate = hash_r6("pw", &u_entry[40..48], &[]);
+        let file_key = aes256_cbc_decrypt_no_padding(&intermediate, &[0u8; 16], &ue_entry);
+        let decrypted = aes256_cbc_decrypt(&file_key, &iv, ciphertext);
+        assert_eq!(decrypted, content, "the R=6 entries must recover the random file key");
+
+        assert_eq!(parse_permission_entry(&dict), Some(0xFFFF_FFFC));
+    }
+
+    /// Parse an N-byte hex entry (`/U <...>`, `/UE <...>`, ...) out of the dictionary.
+    #[cfg(feature = "pdf-encryption")]
+    fn parse_hex_n<const N: usize>(dict: &str, marker: &str) -> Option<[u8; N]> {
+        let start = dict.find(marker)? + marker.len();
+        let hex = dict.get(start..start + N * 2)?;
+        let mut out = [0u8; N];
+        for (index, byte) in out.iter_mut().enumerate() {
+            *byte = u8::from_str_radix(&hex[index * 2..index * 2 + 2], 16).ok()?;
+        }
+        Some(out)
+    }
+
+    /// Parse the signed `/P` permission word out of the dictionary.
+    #[cfg(feature = "pdf-encryption")]
+    fn parse_permission_entry(dict: &str) -> Option<u32> {
+        let start = dict.find("/P ")? + "/P ".len();
+        let token: String =
+            dict[start..].chars().take_while(|ch| ch.is_ascii_digit() || *ch == '-').collect();
+        token.parse::<i64>().ok().map(|value| value as u32)
+    }
+
+    /// AES-256-CBC decryption, used only to prove the ciphertext matches the recovered key.
+    #[cfg(feature = "pdf-encryption")]
+    fn aes256_cbc_decrypt(key: &[u8], iv: &[u8; 16], ciphertext: &[u8]) -> Vec<u8> {
+        use aes::cipher::{block_padding::Pkcs7, BlockModeDecrypt, KeyIvInit};
+        use aes::Aes256;
+        use cbc::Decryptor;
+
+        type Aes256CbcDec = Decryptor<Aes256>;
+        let key_arr: [u8; 32] = key.try_into().expect("AES-256 key is 32 bytes");
+        let cipher = Aes256CbcDec::new(&key_arr.into(), &(*iv).into());
+        let mut out = vec![0u8; ciphertext.len()];
+        cipher
+            .decrypt_padded_b2b::<Pkcs7>(ciphertext, &mut out)
+            .expect("valid PKCS#7 ciphertext")
+            .to_vec()
+    }
+
+    /// AES-256-CBC decryption without padding (`/UE`, `/OE`, `/Perms`).
+    #[cfg(feature = "pdf-encryption")]
+    fn aes256_cbc_decrypt_no_padding(key: &[u8], iv: &[u8; 16], data: &[u8]) -> Vec<u8> {
+        use aes::cipher::{block_padding::NoPadding, BlockModeDecrypt, KeyIvInit};
+        use aes::Aes256;
+        use cbc::Decryptor;
+
+        type Aes256CbcDec = Decryptor<Aes256>;
+        let key_arr: [u8; 32] = key.try_into().expect("AES-256 key is 32 bytes");
+        let cipher = Aes256CbcDec::new(&key_arr.into(), &(*iv).into());
+        let mut out = vec![0u8; data.len()];
+        cipher
+            .decrypt_padded_b2b::<NoPadding>(data, &mut out)
+            .expect("the wrapped entries are block-aligned")
+            .to_vec()
     }
 
     #[cfg(feature = "pdf-encryption")]
@@ -601,12 +836,16 @@ mod tests {
         let enc = PdfEncryption::new("user", "owner", 0xFFFFFFFC).expect("entropy");
         let dict = enc.build_encryption_dictionary();
         assert!(dict.contains("/Filter /Standard"));
-        assert!(dict.contains("/Length 16"));
+        assert!(dict.contains("/Length 256"));
         assert!(dict.contains("/V 5"));
         assert!(dict.contains("/R 6"));
         assert!(dict.contains("/O <"));
         assert!(dict.contains("/U <"));
-        assert!(dict.contains("/P"));
+        assert!(dict.contains("/OE <"));
+        assert!(dict.contains("/UE <"));
+        assert!(dict.contains("/Perms <"));
+        assert!(dict.contains("/P "));
+        assert!(dict.contains("/CFM /AESV3"));
         assert!(dict.contains("/StmF /StdCF"));
         assert!(dict.contains("/StrF /StdCF"));
     }
@@ -627,15 +866,26 @@ mod tests {
         );
     }
 
+    /// R=6 draws a random file key; the password only wraps it. Unlike R=4, the same password
+    /// and permissions must therefore produce **different** keys on two constructions.
     #[cfg(feature = "pdf-encryption")]
     #[test]
-    fn test_same_password_produces_same_key() {
-        let salt = generate_salt().expect("entropy");
-        // Use a fixed salt so the derivation is deterministic.
-        let key1 = derive_encryption_key("mypassword", &salt);
-        let key2 = derive_encryption_key("mypassword", &salt);
-        assert_eq!(key1, key2, "Same password + same salt should produce same key");
-        assert_eq!(key1.len(), 16, "AES-128 key should be 16 bytes");
+    fn r6_uses_a_random_file_key() {
+        let first = PdfEncryption::new("same", "owner", 0xFFFF_FFFC).expect("entropy");
+        let second = PdfEncryption::new("same", "owner", 0xFFFF_FFFC).expect("entropy");
+        assert_ne!(first.encryption_key, second.encryption_key);
+        assert!(first.verify_user_password("same"));
+        assert!(second.verify_user_password("same"));
+    }
+
+    #[cfg(feature = "pdf-encryption")]
+    #[test]
+    fn r6_user_and_owner_passwords_verify() {
+        let enc = PdfEncryption::new("correct horse", "owner", 0xFFFF_FFFC).expect("entropy");
+        assert!(enc.verify_user_password("correct horse"));
+        assert!(!enc.verify_user_password("wrong horse"));
+        assert!(enc.verify_owner_password("owner"));
+        assert!(!enc.verify_owner_password("wrong owner"));
     }
 
     #[cfg(feature = "pdf-encryption")]
@@ -663,21 +913,19 @@ mod tests {
 
     #[cfg(feature = "pdf-encryption")]
     #[test]
-    fn test_aes128_cbc_encrypt_produces_valid_output() {
-        let key = b"0123456789abcdef"; // 16 bytes
+    fn aes256_cbc_encrypt_produces_valid_output() {
+        let key = b"0123456789abcdef0123456789abcdef"; // 32 bytes
         let iv = b"fedcba9876543210"; // 16 bytes
         let plaintext = b"Hello, PDF encryption!";
-        let ciphertext = aes128_cbc_encrypt(key, iv, plaintext);
-        // Ciphertext should be a multiple of 16 (AES block size) due to PKCS#7 padding
+        let ciphertext = aes256_cbc_encrypt(key, iv, plaintext);
         assert_eq!(ciphertext.len() % 16, 0, "Ciphertext length must be a multiple of 16");
-        // Ciphertext should differ from plaintext
         assert_ne!(
             ciphertext.as_slice(),
             &plaintext[..],
             "Ciphertext should differ from plaintext"
         );
-        // Output should be longer than plaintext (due to padding)
         assert!(ciphertext.len() > plaintext.len(), "Ciphertext should be longer due to padding");
+        assert_eq!(aes256_cbc_decrypt(key, iv, &ciphertext), plaintext);
     }
 
     // ── Document-level encryption dictionary tests ──
@@ -741,8 +989,8 @@ mod tests {
         .is_some());
     }
 
-    /// `encrypt_content` yields a PDF-2.0 AESV3 hex string: `<` + a whole number of
-    /// AES blocks including the 16-byte IV prefix + `>`.
+    /// `encrypt_content` yields a PDF 2.0 AESV3 hex string: `<` + the 16-byte IV + a whole
+    /// number of AES blocks + `>`.
     #[cfg(feature = "pdf-encryption")]
     #[test]
     fn test_encrypt_content_emits_hex_wrapped_iv_plus_ciphertext() {
@@ -769,10 +1017,51 @@ mod tests {
             user_password: String::new(),
             owner_password: String::new(),
             permissions: 0,
-            encryption_key: vec![0u8; 16],
-            user_salt: [0u8; 16],
-            owner_salt: [0u8; 16],
+            encryption_key: vec![0u8; 32],
+            document_id: [0u8; 16],
+            u_entry: [0u8; 48],
+            o_entry: [0u8; 48],
+            ue_entry: [0u8; 32],
+            oe_entry: [0u8; 32],
+            perms_entry: [0u8; 16],
         };
         assert!(enc.encrypt_content(b"payload").is_err());
+    }
+
+    /// Algorithm 2.B against an independent implementation: qpdf 11.9 wrote this `/U` for the
+    /// password `user`. Its first 32 bytes are `SHA-2` rounds over `user` and the validation salt
+    /// at `U[32..40]`; recomputing them pins the whole loop.
+    #[cfg(feature = "pdf-encryption")]
+    #[test]
+    fn r6_hash_matches_the_qpdf_reference() {
+        let u = decode_hex::<48>(
+            "36fcc1d9f34915526157c565a4de877239db53d13521e957f5ef1eb42fb0847c\
+             8d23e8e905754f65f33b46ff8faa708b",
+        );
+        assert_eq!(hash_r6("user", &u[32..40], &[]), u[..32]);
+    }
+
+    /// `/Perms` decodes to the permission word, `T` (EncryptMetadata) and the `adb` marker.
+    #[cfg(feature = "pdf-encryption")]
+    #[test]
+    fn r6_perms_entry_decodes_the_permission_word() {
+        let enc = PdfEncryption::new("user", "owner", 0xFFFF_F0C0).expect("entropy");
+        let clear =
+            aes256_cbc_decrypt_no_padding(&enc.encryption_key, &[0u8; 16], &enc.perms_entry);
+        assert_eq!(u32::from_le_bytes(clear[..4].try_into().expect("4 bytes")), 0xFFFF_F0C0);
+        assert_eq!(&clear[8..12], b"Tadb");
+    }
+
+    /// Decode a fixed-size byte array from a hex string, ignoring ASCII whitespace.
+    #[cfg(feature = "pdf-encryption")]
+    fn decode_hex<const N: usize>(hex: &str) -> [u8; N] {
+        let compact: String = hex.chars().filter(|ch| !ch.is_ascii_whitespace()).collect();
+        assert_eq!(compact.len(), N * 2, "hex string must contain exactly {N} bytes");
+        let mut out = [0u8; N];
+        for (index, byte) in out.iter_mut().enumerate() {
+            *byte = u8::from_str_radix(&compact[index * 2..index * 2 + 2], 16)
+                .expect("valid hex digit");
+        }
+        out
     }
 }

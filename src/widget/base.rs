@@ -1423,6 +1423,43 @@ impl BaseWidget {
         self.redraw_requested.emit();
     }
 
+    /// Submits one **animation** frame as damage, without bumping the structure epoch.
+    ///
+    /// [`Self::request_redraw`] bumps the process-wide structure generation, which is what makes
+    /// [`crate::widget::runtime::request_repaint_rect`]'s metrics cache (RD3-02) miss for every
+    /// animated control on every frame. A `tick` frame changes pixels, not structure, so it must
+    /// take this narrower route: the control's own box grown by
+    /// [`DAMAGE_MARGIN`](crate::widget::metrics::DAMAGE_MARGIN), submitted through
+    /// `request_repaint_rect` (which still falls back to a whole-control repaint in
+    /// [`RepaintMode::Full`](crate::widget::runtime::RepaintMode::Full)).
+    ///
+    /// The redraw signal `request_redraw` emitted is kept, so a host-owned control observes the
+    /// same event it did before. In `alloc_frugal` profiles, where damage tracking is not compiled
+    /// in, this is exactly `request_redraw`.
+    pub(crate) fn request_frame_repaint(&self) {
+        #[cfg(not(alloc_frugal))]
+        {
+            if let Some(id) = crate::widget::runtime::registry_id_of(self.id()) {
+                let narrow = crate::widget::runtime::repaint_mode(id)
+                    != crate::widget::runtime::RepaintMode::Full;
+                if narrow {
+                    let damage = crate::widget::runtime::painted_box_with_damage_margin(id)
+                        .unwrap_or_else(|| {
+                            crate::widget::runtime::grow_by_damage_margin(self.geometry())
+                        });
+                    crate::widget::runtime::request_repaint_rect(id, damage);
+                    self.redraw_requested.emit();
+                    return;
+                }
+                // In `Full` mode a tick keeps the base signal: the animation sweep holds the
+                // registry across `tick`, so the whole-control fallback would re-enter that
+                // borrow. This mirrors the per-widget helpers already used by the display
+                // controls.
+            }
+        }
+        self.request_redraw();
+    }
+
     /// Requests a repaint of `rect`, in the same coordinates [`Self::geometry`] uses.
     ///
     /// The damage tracker unions this rectangle with the control's other damage, so a control

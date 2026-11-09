@@ -1727,6 +1727,7 @@ impl DockArea {
         }
         self.area = area;
         self.arrange();
+        self.request_arrangement_repaint();
     }
 
     /// The thickness of one edge band.
@@ -1745,6 +1746,7 @@ impl DockArea {
         }
         self.edge_extent = extent;
         self.arrange();
+        self.request_arrangement_repaint();
     }
 
     /// The thickness `area`'s band currently has.
@@ -1773,6 +1775,7 @@ impl DockArea {
         }
         self.edge_extents[index] = Some(extent);
         self.arrange();
+        self.request_arrangement_repaint();
         true
     }
 
@@ -1917,8 +1920,10 @@ impl DockArea {
         });
         self.dock_removed.emit(widget);
         self.arrange();
+        self.request_arrangement_repaint();
         target.active_dock_changed.emit(widget);
         target.arrange();
+        target.request_arrangement_repaint();
         true
     }
 
@@ -1926,10 +1931,27 @@ impl DockArea {
     ///
     /// Emits [`Self::dock_removed`] and, through [`Self::arrange`], [`Self::layout_changed`].
     pub fn remove_dock(&mut self, widget: ObjectId) -> bool {
+        let removed_state = self
+            .docks
+            .iter()
+            .find(|dock| dock.widget == widget)
+            .map(|dock| (dock.group, dock.active));
         let before = self.docks.len();
         self.docks.retain(|dock| dock.widget != widget);
         let removed = self.docks.len() != before;
         if removed {
+            // A removed visible member must not blank a shared tab group: promote the first
+            // surviving member and announce it through the signal that already documents
+            // "which dock became visible after remove_dock".
+            if let Some((group, true)) = removed_state {
+                if let Some(replacement) = self.docks.iter_mut().find(|dock| dock.group == group) {
+                    if !replacement.active {
+                        replacement.active = true;
+                        let replacement_id = replacement.widget;
+                        self.active_dock_changed.emit(replacement_id);
+                    }
+                }
+            }
             // A dock that was split inside the removed one loses its parent: it keeps its own
             // rectangle (the band model places it again) instead of pointing at a dock that is gone.
             for dock in self.docks.iter_mut().filter(|dock| dock.split_of == Some(widget)) {
@@ -1937,6 +1959,7 @@ impl DockArea {
             }
             self.dock_removed.emit(widget);
             self.arrange();
+            self.request_arrangement_repaint();
         }
         removed
     }
@@ -1958,6 +1981,7 @@ impl DockArea {
         }
         self.central = widget;
         self.arrange();
+        self.request_arrangement_repaint();
     }
 
     /// The centre widget, if any.
@@ -1993,6 +2017,7 @@ impl DockArea {
         }
         self.active_dock_changed.emit(into);
         self.arrange();
+        self.request_arrangement_repaint();
         true
     }
 
@@ -2013,6 +2038,7 @@ impl DockArea {
         self.docks[index].active = true;
         self.active_dock_changed.emit(widget);
         self.arrange();
+        self.request_arrangement_repaint();
         true
     }
 
@@ -2032,6 +2058,7 @@ impl DockArea {
         }
         self.active_dock_changed.emit(widget);
         self.arrange();
+        self.request_arrangement_repaint();
         true
     }
 
@@ -2513,6 +2540,7 @@ impl DockArea {
         self.docks.insert(insert_at.min(self.docks.len()), entry);
         self.active_dock_changed.emit(widget);
         self.arrange();
+        self.request_arrangement_repaint();
         true
     }
 
@@ -2667,6 +2695,7 @@ impl DockArea {
             .unwrap_or(1)
             .max(self.next_group);
         self.arrange();
+        self.request_arrangement_repaint();
         true
     }
 }

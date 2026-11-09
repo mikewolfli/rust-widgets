@@ -1374,7 +1374,7 @@ impl SpinBox {
                 }
                 self.repeat_elapsed = delay + remaining;
                 if stepped {
-                    self.base.request_redraw();
+                    self.base.request_frame_repaint();
                 }
                 animating = true;
             }
@@ -1382,7 +1382,7 @@ impl SpinBox {
         // The edit caret cycles only while a typed entry is open (X-003).
         if self.editing && self.cursor_blink.tick(delta_ms) {
             animating = true;
-            self.base.request_redraw();
+            self.base.request_frame_repaint();
         }
         animating
     }

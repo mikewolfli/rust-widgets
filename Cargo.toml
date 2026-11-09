@@ -1,6 +1,6 @@
 [package]
 name = "rust_widgets"
-version = "4.1.0"
+version = "4.2.0"
 edition = "2021"
 description = "Pure Rust cross-platform native GUI library with hardware-adaptive rendering, 180 widgets, touch/gesture support, i18n, and SVG-pipeline-accurate output"
 license = "MIT"
@@ -170,7 +170,7 @@ desktop = [
     "image",
     # `print`, `pdf`, `pdf-encryption`, `video` and `audio` are **not** in the default
     # profile: they have no in-repo production consumer and together compile ~16k lines plus
-    # minimp3_fixed, jpeg-decoder and the AES/SHA/CBC stack. The same NOTE above applies:
+    # minimp3_fixed, jpeg-decoder and the AES/CBC/SHA-2 stack. The same NOTE above applies:
     #   cargo build --features "desktop,print,pdf,pdf-encryption,video,audio"
     # The snapshot export path does not render through any of the five, so this changes no
     # exported picture.
@@ -698,7 +698,7 @@ profile-embedded-mini = []
 # `webkit-engine` was here (Linux-only, gating a wrapper over webkit2gtk). Deleted by
 # BLUE20 layer 5 (ruling W1) because the wrapper never displayed a page; the feature
 # promised a rendering engine the library did not have.
-pdf-encryption = ["aes", "sha2", "cbc", "dep:getrandom"]
+pdf-encryption = ["aes", "cbc", "dep:getrandom", "dep:sha2"]
 audio-output = ["cpal"]
 video-codecs = ["dep:ffmpeg-next"]
 
@@ -833,11 +833,11 @@ all-desktop-features = [
 # crate would fail its own verification build with `couldn't read …ttf`. Moving them out and
 # excluding `crates/` (see the negated pattern in `include`) is the form of "exclude" that still
 # leaves a package that compiles.
-rust-widgets-font = { version = "^4.1.0", path = "crates/rust-widgets-font", optional = true }
+rust-widgets-font = { version = "^4.2.0", path = "crates/rust-widgets-font", optional = true }
 # The icon resources (name table, SVG paths, fallback polygons) live in this nested package so
 # the third-party geometry is not part of this crate's source. It is always a dependency: the
 # fallback table is what a build without `icons` draws. `icons` turns on its `data` feature.
-rust-widgets-icons = { version = "^4.1.0", path = "crates/rust-widgets-icons", default-features = false }
+rust-widgets-icons = { version = "^4.2.0", path = "crates/rust-widgets-icons", default-features = false }
 serde = { version = "1.0", features = ["derive"], optional = true }
 serde_json = { version = "1.0", optional = true }
 # BLUE28 B28.40: the standard host/GPU interop handle type. Optional because it is a
@@ -898,8 +898,10 @@ symphonia = { version = "0.6", default-features = false, features = [
 
 # Audio/video codecs
 aes = { version = "0.9", optional = true }
-sha2 = { version = "0.11", optional = true }
 cbc = { version = "0.2", optional = true }
+# ISO 32000-2 (PDF 2.0) R=6 derives the password entries and the intermediate keys with
+# SHA-256/384/512 (Algorithm 2.B); the audited `sha2` crate supplies them.
+sha2 = { version = "0.11", optional = true }
 # A real OS CSPRNG for PDF salt/IV material. `EncryptionAlgorithm`'s salt and IV were derived from a
 # time-seeded LCG, which is predictable and defeats the purpose of a salt. `getrandom` is the
 # cross-platform way to read the OS entropy source; on wasm32 it needs the `wasm_js` feature, which

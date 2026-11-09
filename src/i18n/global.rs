@@ -529,6 +529,31 @@ mod tests {
         *crate::compat::lock(&GLOBAL_I18N) = None;
     }
 
+    /// A language switch also mirrors the writing direction for layouts that have not pinned
+    /// one (EX4-03). The direction is a thread-local fact, so the assertion runs on the same
+    /// thread that performs the switch.
+    #[test]
+    fn a_language_switch_mirrors_the_default_text_direction() {
+        let _lock = global_i18n_test_lock();
+        init_with_options(InitOptions::default());
+
+        assert!(set_language("ar"));
+        assert_eq!(
+            crate::core::default_text_direction(),
+            crate::core::TextDirection::RightToLeft,
+            "an RTL language must set the default direction"
+        );
+
+        assert!(set_language("en"));
+        assert_eq!(
+            crate::core::default_text_direction(),
+            crate::core::TextDirection::LeftToRight,
+            "switching back to an LTR language must restore the default direction"
+        );
+
+        *crate::compat::lock(&GLOBAL_I18N) = None;
+    }
+
     /// A registered retranslator runs on `retranslate` and stops after its handle is dropped.
     #[test]
     fn retranslate_runs_registered_callbacks_until_their_handle_is_dropped() {

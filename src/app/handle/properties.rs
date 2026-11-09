@@ -9,6 +9,39 @@
 
 use crate::core::ObjectId;
 
+/// The outcome of writing one property on a mounted control.
+///
+/// "Did not write" is not one case. A control that does not publish the property, or a value of
+/// the wrong carrier, **refused** the write: the control still holds the old value, so a handle's
+/// read cache must keep the old value too. An id with no control behind it has nobody to ask —
+/// handles deliberately keep serving the last request as an offline read cache (HB-08) — so that
+/// case must still record it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PropertyWrite {
+    /// The control accepted the value.
+    Applied,
+    /// The control is mounted but refused the value (unpublished name, wrong carrier).
+    Refused,
+    /// No control is mounted at this id.
+    Unmounted,
+}
+
+impl PropertyWrite {
+    /// Whether the control accepted the value.
+    pub(crate) fn is_applied(self) -> bool {
+        matches!(self, PropertyWrite::Applied)
+    }
+
+    /// Whether a handle's in-process read cache should record the requested value.
+    ///
+    /// `Applied` agrees with the control. `Unmounted` is the documented offline fallback: with no
+    /// control to answer, the handle still reports what was asked for. A `Refused` write is the one
+    /// case the cache must **not** absorb, or the getter would claim a value the control rejected.
+    pub(crate) fn should_mirror(self) -> bool {
+        !matches!(self, PropertyWrite::Refused)
+    }
+}
+
 /// Writes one property on the control the id addresses, and reports whether it took.
 ///
 /// # Why every handle setter must go through here
@@ -38,26 +71,40 @@ use crate::core::ObjectId;
 /// a control that does not publish `name` **refuses** the write rather than accepting it into
 /// a store nothing reads.
 ///
-/// Returns `false` when the id is not a mounted widget, or when the control refused the write
-/// (an unpublished name, or a value of the wrong kind). The refusal is also logged, because a
-/// silent `false` is the defect this replaced.
+/// Returns `true` when the control took the value; `false` when it is mounted but rejected the
+/// name/carrier, or when the id has no mounted widget. Use [`write_control_property_outcome`]
+/// when the caller also needs to know *why* it did not land.
 pub(crate) fn write_control_property(
     id: ObjectId,
     name: &str,
     value: crate::widget::capability::CapabilityValue,
 ) -> bool {
+    write_control_property_outcome(id, name, value).is_applied()
+}
+
+/// Writes one property and reports why it did or did not apply.
+///
+/// [`write_control_property`] answers the common "did it land" question. A handle that also keeps
+/// an in-process read cache needs the distinction: a **refused** write must not be cached (the
+/// control still holds the old value), while an id with no mounted control keeps the offline
+/// fallback the handle family documents (HB-08). See [`PropertyWrite::should_mirror`].
+pub(crate) fn write_control_property_outcome(
+    id: ObjectId,
+    name: &str,
+    value: crate::widget::capability::CapabilityValue,
+) -> PropertyWrite {
     let written = crate::widget::runtime::with_widget_mut(id, |widget| {
         crate::widget::capability::WidgetFactory::shared().write_property(widget, name, value)
     });
     match written {
-        Some(Ok(())) => true,
+        Some(Ok(())) => PropertyWrite::Applied,
         Some(Err(error)) => {
             log::warn!("[handle] `{name}` was refused for id={id}: {error:?}");
-            false
+            PropertyWrite::Refused
         }
         None => {
             log::warn!("[handle] `{name}` ignored for id={id}: the id is not a mounted widget");
-            false
+            PropertyWrite::Unmounted
         }
     }
 }
@@ -72,7 +119,7 @@ pub(crate) fn write_control_property(
 pub(crate) fn note_property_pair(operation: &str, first: bool, second: bool) {
     if !(first && second) {
         log::debug!(
-            "[handle] {operation}: one of the two property writes was refused \
+            "[handle] {operation}: one of the two property writes did not reach the control \
              (first={first}, second={second})"
         );
     }

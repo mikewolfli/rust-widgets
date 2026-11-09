@@ -168,6 +168,11 @@ impl ControlBackend for super::CustomPaintControlBackend {
         }
         // `widget::runtime` is compiled out of the alloc-frugal profile, which
         // holds no widget objects by design; only the host-side maps remain there.
+        // The app layer owns callback tables and window mirrors that the registry does not, so
+        // remove them while the widget is still mounted. `rw_destroy_widget` used to skip this,
+        // leaking every closure and leaving `App::windows()` reporting destroyed ids.
+        #[cfg(full_widgets)]
+        crate::app::remove_callbacks(widget_id);
         #[cfg(not(alloc_frugal))]
         let released = crate::widget::runtime::unregister(widget_id);
         #[cfg(alloc_frugal)]
