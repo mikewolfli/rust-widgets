@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="rust-widgets">
+  <rect width="64" height="64" rx="14" fill="#1f2430"/>
+  <rect x="12" y="16" width="40" height="28" rx="4" fill="none" stroke="#f0a04b" stroke-width="3"/>
+  <path d="M12 24h40" stroke="#f0a04b" stroke-width="3"/>
+  <circle cx="18" cy="20" r="1.6" fill="#f0a04b"/>
+  <circle cx="23" cy="20" r="1.6" fill="#f0a04b"/>
+  <path d="M22 32h20M22 38h12" stroke="#8ecae6" stroke-width="3" stroke-linecap="round"/>
+  <path d="M32 48v6M26 51l6 3 6-3" stroke="#f0a04b" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

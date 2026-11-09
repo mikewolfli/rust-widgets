@@ -1,0 +1,10 @@
+{
+  "skills": [
+    {
+      "name": "rust-widgets-maintainer",
+      "description": "Maintain, extend and audit the rust-widgets Rust GUI library. Use when changing controls, layouts, rendering, platform backends, the code editor, capability metadata, JSON layout loading, or running the repository's validation gates.",
+      "directory": "rust-widgets-maintainer",
+      "whenToUse": "Load when working inside the rust-widgets repository on a coding, review, or validation task."
+    }
+  ]
+}

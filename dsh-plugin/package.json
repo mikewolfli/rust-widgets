@@ -1,0 +1,57 @@
+{
+  "name": "dsh-skill-rust-widgets",
+  "version": "0.1.0",
+  "description": "DSH skill: maintain, extend and audit the rust-widgets Rust GUI library.",
+  "license": "MIT",
+  "author": "Mike Li",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./package.json": "./package.json",
+    "./cordis.patch.yml": "./cordis.patch.yml"
+  },
+  "files": [
+    "icon.svg",
+    "lib",
+    "skills",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "icon": "./icon.svg",
+  "engines": {
+    "node": ">=22",
+    "dsh": ">=0.2.2-rc.1"
+  },
+  "keywords": [
+    "dsh",
+    "dsh-skill",
+    "dsh-plugin",
+    "rust",
+    "gui",
+    "rust-widgets"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mikewolfli/rust-widgets.git",
+    "directory": "dsh-plugin"
+  },
+  "homepage": "https://github.com/mikewolfli/rust-widgets#readme",
+  "bugs": {
+    "url": "https://github.com/mikewolfli/rust-widgets/issues"
+  },
+  "dsh": {
+    "manifestVersion": 1,
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "scripts": {
+    "sync-skill": "node scripts/sync-skill.mjs",
+    "check-skill": "node scripts/sync-skill.mjs --check",
+    "prepack": "node scripts/sync-skill.mjs",
+    "test": "node --test test/plugin.test.mjs",
+    "market-index": "node scripts/make-index.mjs"
+  }
+}
