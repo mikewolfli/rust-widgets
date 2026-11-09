@@ -39,11 +39,11 @@
       "versions": [
         {
           "version": "0.1.0",
-          "publishTimestamp": 1794198978,
+          "publishTimestamp": 1794199180,
           "source": {
             "type": "git",
             "url": "https://github.com/mikewolfli/rust-widgets",
-            "commit": "265c14d3582bd8c182b460e94ea0a7b159434025",
+            "commit": "965f46c87b875410784aface0c93e1be4813c102",
             "path": "dsh-plugin"
           },
           "engines": {
