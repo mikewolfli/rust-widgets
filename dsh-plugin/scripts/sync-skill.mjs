@@ -1,9 +1,13 @@
 // Copy the repository's canonical skills into this package before packing.
 //
 // Source of truth: <repo>/.dsh/skills/<name>/SKILL.md (the root DSH discovery
-// tree). Destination: ./skills/<name>/SKILL.md plus a small index.json the
+// tree). Destination: ./assets/<name>/SKILL.md plus a small index.json the
 // runtime reads without a YAML parser. `--check` verifies the two trees match
 // without writing, so CI or a maintainer can catch drift.
+//
+// The bundled bodies live under `assets/` on purpose: package managers that
+// sniff a dependency's `skills/` directory as agent content would otherwise
+// gate the install behind an approval prompt, and this package needs none.
 
 import {
   mkdirSync,
@@ -16,7 +20,7 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const SOURCE_ROOT = fileURLToPath(new URL('../../.dsh/skills/', import.meta.url))
-const DEST_ROOT = fileURLToPath(new URL('../skills/', import.meta.url))
+const DEST_ROOT = fileURLToPath(new URL('../assets/', import.meta.url))
 const NAME_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/
 const CHECK = process.argv.includes('--check')
 

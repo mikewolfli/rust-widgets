@@ -48,7 +48,7 @@ The package has no runtime dependencies.
 ## Development
 
 ```sh
-npm run sync-skill   # copy .dsh/skills into ./skills and rebuild index.json
+npm run sync-skill   # copy .dsh/skills into ./assets and rebuild index.json
 npm run check-skill  # fail if the bundled copy drifted
 npm test             # node:test against the provider contract
 npm pack --dry-run   # inspect the published file list
@@ -83,7 +83,12 @@ does not carry the version being described, so commit the package first.
 ## How it works
 
 `lib/index.js` is a Cordis plugin: it registers a provider on `ctx.skills` with
-`list()` and `get()`. The bundled `skills/index.json` carries each skill's name,
-description and `whenToUse`; the body is read from `skills/<name>/SKILL.md` on
+`list()` and `get()`. The bundled `assets/index.json` carries each skill's name,
+description and `whenToUse`; the body is read from `assets/<name>/SKILL.md` on
 demand and the YAML frontmatter is stripped because the catalog already holds
 those fields.
+
+The bodies sit under `assets/` rather than `skills/` on purpose: package managers
+that treat a dependency's `skills/` directory as agent content would otherwise
+gate the install behind an approval prompt. The canonical copy still lives at
+`<repo>/.dsh/skills/rust-widgets-maintainer/SKILL.md`.

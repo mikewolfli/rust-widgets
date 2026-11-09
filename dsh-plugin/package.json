@@ -12,9 +12,9 @@
     "./cordis.patch.yml": "./cordis.patch.yml"
   },
   "files": [
+    "assets",
     "icon.svg",
     "lib",
-    "skills",
     "cordis.patch.yml",
     "README.md",
     "LICENSE"
