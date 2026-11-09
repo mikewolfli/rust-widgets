@@ -1678,6 +1678,22 @@ impl EventHandler for MdiArea {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
         if !self.base.is_enabled() {
+            // A disable mid-gesture must end the gesture. `set_enabled` does not touch the
+            // latches, so a re-enabled area would resume the resize/move/reorder on the next
+            // pointer move and commit it on a release the user never completed.
+            let mut any_armed = false;
+            if self.resize_drag.take().is_some() {
+                any_armed = true;
+            }
+            if self.move_drag.take().is_some() {
+                any_armed = true;
+            }
+            if self.tab_drag.take().is_some() {
+                any_armed = true;
+            }
+            if any_armed {
+                self.base.request_redraw();
+            }
             return;
         }
         if let Event::MousePress { pos, button, .. } = event {
@@ -2735,6 +2751,40 @@ mod tests {
 
         area.set_enabled(true);
         assert!(area.is_enabled());
+    }
+
+    /// Disabling mid-gesture drops the drag latches.
+    ///
+    /// # What this pins
+    ///
+    /// The disabled guard returned before touching `resize_drag`/`move_drag`/`tab_drag`, so a
+    /// re-enabled area resumed the abandoned gesture on the next pointer move and committed it
+    /// on a release the user never completed.
+    #[test]
+    fn disabling_mid_gesture_drops_the_drag_latches() {
+        let mut area = MdiArea::new(Rect::new(0, 0, 600, 400));
+        area.add_sub_window(1, Rect::new(0, 0, 120, 80));
+        area.add_sub_window(2, Rect::new(140, 0, 120, 80));
+
+        area.resize_drag = Some(SubwindowResize {
+            index: 0,
+            edges: ResizeEdges { left: false, right: true, top: true, bottom: false },
+            origin: Point::new(5, 5),
+            geometry: Rect::new(0, 0, 120, 80),
+        });
+        area.move_drag = Some(SubwindowMove {
+            index: 0,
+            origin: Point::new(5, 5),
+            geometry: Rect::new(0, 0, 120, 80),
+        });
+        area.tab_drag = Some((0, Point::new(5, 5)));
+
+        area.set_enabled(false);
+        // The next event while disabled is what finalises the cancellation.
+        area.handle_event(&Event::MouseMove { pos: Point::new(50, 50) });
+        assert!(area.resize_drag.is_none(), "a disabled area holds no resize gesture");
+        assert!(area.move_drag.is_none(), "a disabled area holds no move gesture");
+        assert!(area.tab_drag.is_none(), "a disabled area holds no reorder gesture");
     }
 
     // ── 8. ID / Kind ──────────────────────────────────────────────────────

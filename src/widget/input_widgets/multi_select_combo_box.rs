@@ -208,6 +208,10 @@ impl MultiSelectComboBox {
     /// Removes an item by index. Returns true if the item was removed.
     pub fn remove_item(&mut self, index: usize) -> bool {
         if index < self.items.len() {
+            // The published selection is a list of item IDs, so removing an unselected row
+            // cannot change it even though every later index shifts down. Only a removed
+            // *selected* row changes what a host sees, and only then is the signal raised.
+            let selection_changed = self.selected.contains(&index);
             self.items.remove(index);
             // Adjust selected indices
             let mut new_selected = HashSet::new();
@@ -221,6 +225,9 @@ impl MultiSelectComboBox {
             }
             self.selected = new_selected;
             self.bump_summary();
+            if selection_changed {
+                self.emit_selection_changed();
+            }
             self.base.request_redraw();
             true
         } else {
@@ -230,10 +237,16 @@ impl MultiSelectComboBox {
 
     /// Removes all items and clears the selection.
     pub fn clear_items(&mut self) {
+        // Clearing the rows clears the selection with them; a host following the signal has to
+        // see that, or it keeps rendering the ids of rows that no longer exist.
+        let selection_changed = !self.selected.is_empty();
         self.items.clear();
         self.selected.clear();
         self.set_expanded(false);
         self.bump_summary();
+        if selection_changed {
+            self.emit_selection_changed();
+        }
         self.base.request_redraw();
     }
 
@@ -989,8 +1002,11 @@ impl MultiSelectComboBox {
         if !self.expanded {
             return None;
         }
-        let rect = self.geometry();
-        let item_height = 28i32;
+        // The list hangs from the *painted* band, not from the rectangle the control was
+        // given: a field is a fixed-height band centred in its cell, so measuring the rows
+        // from `geometry()` would put the hit targets somewhere the rows are not drawn.
+        let rect = self.field_band();
+        let item_height = MULTI_SELECT_ROW_HEIGHT as i32;
         let drop_down_y = rect.y + rect.height as i32;
         let (first, last) = self.visible_range();
         let drop_down_height = item_height * (last - first) as i32;
@@ -1006,7 +1022,9 @@ impl MultiSelectComboBox {
     /// Resolves a press at `pos`: the field toggles the list, a row toggles its selection, and
     /// a press outside both dismisses the list.
     fn press_at(&mut self, pos: Point) {
-        let rect = self.geometry();
+        // One geometry for the field and the list it opens: `field_band()` is what the draw
+        // measures the fill, the indicator and the rows from.
+        let rect = self.field_band();
 
         // Click on the main box toggles expand
         if rect.contains_point(pos) {
@@ -1016,7 +1034,7 @@ impl MultiSelectComboBox {
 
         // Click on a dropdown item
         if self.expanded {
-            let item_height = 28i32;
+            let item_height = MULTI_SELECT_ROW_HEIGHT as i32;
             let drop_down_y = rect.y + rect.height as i32;
             let (first, last) = self.visible_range();
             let drop_down_height = item_height * (last - first) as i32;
@@ -1059,7 +1077,7 @@ impl EventHandler for MultiSelectComboBox {
             // completed tap performs the same open/toggle/dismiss transition as the pointer.
             #[cfg(feature = "touch")]
             Event::TouchBegin { pos, .. } => {
-                self.base.set_pressed(self.geometry().contains_point(*pos));
+                self.base.set_pressed(self.field_band().contains_point(*pos));
             }
             #[cfg(feature = "touch")]
             event if crate::event::translator::is_touch_cancel(event) => {
@@ -1238,6 +1256,76 @@ mod tests {
         let ids = ids.unwrap();
         assert!(ids.contains(&1));
         assert!(ids.contains(&3));
+    }
+
+    /// The open list answers the pointer where it is *painted*, not where the control was given
+    /// its rectangle.
+    ///
+    /// # What this pins
+    ///
+    /// A multi-select is a text field: the field is a fixed-height band centred in its cell and
+    /// the list hangs from that band's bottom edge. The press arm and the hover arm used to
+    /// measure the rows from `geometry()`, so in a cell taller than a field every row hit target
+    /// sat on the empty space below the painted list.
+    #[test]
+    fn the_open_list_is_hit_tested_from_the_painted_band() {
+        let mut cb = MultiSelectComboBox::new(Rect::new(0, 0, 200, 120));
+        cb.add_item(MultiSelectItem::new(1, "A".to_string()));
+        cb.add_item(MultiSelectItem::new(2, "B".to_string()));
+        cb.set_expanded(true);
+
+        let band = cb.field_band();
+        assert!(band.y > 0, "the test needs a band that is not pinned to the cell top");
+        let list_top = band.y + band.height as i32;
+        assert_eq!(cb.row_at_pos(Point::new(10, list_top + 4)), Some(0));
+        assert_eq!(
+            cb.row_at_pos(Point::new(10, list_top + MULTI_SELECT_ROW_HEIGHT as i32 + 4)),
+            Some(1)
+        );
+        // The empty space between the cell's top and the band is not a row.
+        assert_eq!(cb.row_at_pos(Point::new(10, band.y - 2)), None);
+        // And a press on the painted field still toggles, so field and list share one box.
+        cb.press_at(Point::new(10, band.y + band.height as i32 / 2));
+        assert!(!cb.expanded);
+    }
+
+    /// Removing a row publishes only when the *selection* changes, and clearing the rows
+    /// publishes the emptied selection.
+    ///
+    /// # What this pins
+    ///
+    /// `remove_item`/`clear_items` shifted `selected` but never raised `selection_changed`, so a
+    /// host mirroring the signal kept ids for rows that no longer existed. Removing an
+    /// *unselected* row must stay silent: the published ids are unchanged by an index shift.
+    #[test]
+    fn removing_rows_publishes_the_selection_it_leaves_behind() {
+        let mut cb = MultiSelectComboBox::new(Rect::new(0, 0, 200, 30));
+        cb.add_item(MultiSelectItem::new(1, "A".to_string()));
+        cb.add_item(MultiSelectItem::new(2, "B".to_string()));
+        cb.add_item(MultiSelectItem::new(3, "C".to_string()));
+        cb.select(0);
+
+        let captured = Arc::new(Mutex::new(None::<Vec<u64>>));
+        cb.selection_changed.connect({
+            let captured = Arc::clone(&captured);
+            move |val: Arc<Vec<u64>>| {
+                *captured.lock().unwrap() = Some(val.to_vec());
+            }
+        });
+
+        // Row 1 was not selected; its id set is unchanged, so nothing is published.
+        assert!(cb.remove_item(1));
+        assert_eq!(*captured.lock().unwrap(), None);
+
+        // Row 0 (id 1) was selected; dropping it publishes the empty selection.
+        assert!(cb.remove_item(0));
+        assert_eq!(captured.lock().unwrap().as_deref(), Some(&[][..]));
+
+        // Re-selecting and clearing the rows publishes the emptied selection again.
+        cb.select(0);
+        assert_eq!(captured.lock().unwrap().as_deref(), Some(&[3u64][..]));
+        cb.clear_items();
+        assert_eq!(captured.lock().unwrap().as_deref(), Some(&[][..]));
     }
 
     #[test]

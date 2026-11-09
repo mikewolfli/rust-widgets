@@ -1453,7 +1453,9 @@ impl Mention {
         }
         if self.is_popup_open() {
             if let Some(index) = self.row_at(pos) {
-                self.complete(index);
+                // `row_at` reports the row inside the painted window; `complete` takes an index
+                // into the filtered list, so the window's offset has to be added back.
+                self.complete(index + self.scroll_offset);
             } else {
                 // A click outside the popup and outside the field dismisses,
                 // which is what every popup list does.

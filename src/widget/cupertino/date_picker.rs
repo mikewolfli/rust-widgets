@@ -1000,7 +1000,13 @@ impl Draw for CupertinoDatePicker {
             CupertinoDatePickerMode::Date => self.date_columns_into(&mut columns, &mut order),
             CupertinoDatePickerMode::CountDownTimer => {
                 columns[0] = Some((self.selected_hour as i32, self.hour_labels.as_slice()));
-                columns[1] = Some((self.selected_minute as i32, self.minute_labels.as_slice()));
+                // The label table holds one entry per *slot* (every `minute_interval` minutes),
+                // so the index is the slot, not the minute value: 15 minutes at a step of five is
+                // slot 3, and using 15 addressed past the twelve-entry table.
+                columns[1] = Some((
+                    (self.selected_minute / self.minute_interval.max(1)) as i32,
+                    self.minute_labels.as_slice(),
+                ));
                 columns[2] = Some((self.selected_second as i32, self.second_labels.as_slice()));
                 for (index, slot) in order.iter_mut().take(3).enumerate() {
                     *slot = index;

@@ -805,6 +805,31 @@ impl FontComboBox {
         self.visible_indices.get(row).copied()
     }
 
+    /// The visible row the current selection sits on, or `-1` when it is filtered out.
+    fn visible_row_of_current(&self) -> isize {
+        self.visible_indices
+            .iter()
+            .position(|index| *index as i32 == self.current_index)
+            .map(|row| row as isize)
+            .unwrap_or(-1)
+    }
+
+    /// Selects the family at visible row `row`, clamped into the visible list.
+    ///
+    /// The rows are what the popup paints and what the keyboard is moving through; the selection
+    /// itself is an index into the unfiltered list, so the move goes through
+    /// [`Self::original_index_at`].
+    fn move_to_visible_row(&mut self, row: isize) {
+        let count = self.visible_fonts.len() as isize;
+        if count == 0 {
+            return;
+        }
+        let row = row.clamp(0, count - 1) as usize;
+        if let Some(original) = self.original_index_at(row) {
+            self.set_current_index(original as i32);
+        }
+    }
+
     /// The size the popup rows are drawn at: the field's **effective** font size (I-15).
     fn popup_row_font_size(&self) -> f32 {
         effective_font(self.base.style()).size().max(1.0)
@@ -897,6 +922,13 @@ impl FontComboBox {
         let band = self.field_band();
         let popup_top = band.y + band.height as i32;
         if pos.x < band.x || pos.x >= band.x + band.width as i32 || pos.y < popup_top {
+            return None;
+        }
+        // The list paints at most one page of rows, so a press below the short painted list must
+        // not resolve to a row that exists in the data but is not on screen.
+        let page_bottom =
+            popup_top + self.page_size(self.visible_fonts.len()) as i32 * self.popup_row_height();
+        if pos.y >= page_bottom {
             return None;
         }
         let row =
@@ -1369,28 +1401,21 @@ impl EventHandler for FontComboBox {
             // Keyboard navigation of the list: arrows move the selection, Page keys move a
             // windowful, Home/End jump, Escape closes, and a printable key performs
             // first-letter selection.
+            //
+            // The arrows move in *visible-row* space and then translate through the parallel
+            // index table. `current_index` addresses the unfiltered list, so using it directly
+            // skipped or hid rows whenever a filter (or the MRU reorder) was in play.
             Event::KeyPress { key, .. } if !self.editable && !self.visible_fonts.is_empty() => {
-                let page = self.max_visible_items.max(1);
-                let count = self.visible_fonts.len() as i32;
+                let page = self.max_visible_items.max(1) as isize;
+                let count = self.visible_fonts.len() as isize;
+                let row = self.visible_row_of_current();
                 match *key {
-                    38 => {
-                        let next = (self.current_index.max(0) - 1).max(0);
-                        self.set_current_index(next);
-                    }
-                    40 => {
-                        let next = (self.current_index + 1).min(count - 1);
-                        self.set_current_index(next);
-                    }
-                    33 => {
-                        let next = (self.current_index - page).max(0);
-                        self.set_current_index(next);
-                    }
-                    34 => {
-                        let next = (self.current_index + page).min(count - 1);
-                        self.set_current_index(next);
-                    }
-                    36 => self.set_current_index(0),
-                    35 => self.set_current_index(count - 1),
+                    38 => self.move_to_visible_row(row - 1),
+                    40 => self.move_to_visible_row(row + 1),
+                    33 => self.move_to_visible_row(row - page),
+                    34 => self.move_to_visible_row(row + page),
+                    36 => self.move_to_visible_row(0),
+                    35 => self.move_to_visible_row(count - 1),
                     27 => self.hide_popup(),
                     32..=126 => {
                         if let Some(ch) = char::from_u32(*key) {
@@ -1771,6 +1796,30 @@ crate::impl_scrollable_rows!(
 mod tests {
     use super::*;
     use crate::core::Rect;
+
+    /// Keyboard navigation moves through the *visible* rows.
+    ///
+    /// # What this pins
+    ///
+    /// The arrows stepped `current_index` by one and clamped against the visible count, but
+    /// `current_index` addresses the unfiltered list: with a filter on, the key moved to a family
+    /// the popup was not showing.
+    #[test]
+    fn keyboard_navigation_follows_the_visible_rows() {
+        let mut combo = FontComboBox::new(Rect::new(0, 0, 240, 32));
+        for name in ["Alpha", "Beta", "Gamma"] {
+            combo.add_font(name.to_string());
+        }
+        combo.set_writing_system_filter(Some("mm".to_string()));
+        assert_eq!(combo.visible_fonts(), ["Gamma".to_string()]);
+
+        combo.handle_event(&crate::event::Event::KeyPress { key: 40, modifiers: 0 });
+        assert_eq!(
+            combo.selected_index(),
+            Some(2),
+            "the only visible row is Gamma, which is the third family"
+        );
+    }
 
     #[test]
     fn fontcombobox_creation_defaults() {

@@ -900,14 +900,9 @@ impl EventHandler for Breadcrumb {
                     let _ = self.activate_selected();
                 }
             }
-            Event::ContextMenu { pos } => {
-                // The host owns the menu; this signal tells it which segment was asked about.
-                if let Some(index) = self.hit_index(*pos) {
-                    if let Some(segment) = self.segments.get(index) {
-                        self.context_menu_requested.emit(segment.id.clone());
-                    }
-                }
-            }
+            // A context-menu request is delivered to `handle_event` *and* to
+            // `Widget::context_menu_event`; emitting in both places sent every right-click to the
+            // host twice. The hook is the single emitter.
             Event::KeyPress { key, modifiers } => match *key {
                 27 if self.overflow_open => self.close_overflow(),
                 37 => self.move_selection(-1),

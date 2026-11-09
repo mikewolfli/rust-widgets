@@ -316,6 +316,16 @@ impl Widget for MacStepper {
     /// delay or interval disables repeating, which preserves the old "one step per press"
     /// behaviour for a host that wants it.
     fn tick(&mut self, delta_ms: u32) -> bool {
+        if !self.base.is_enabled() || !self.base.is_visible() {
+            // A disabled or hidden stepper must not keep stepping, and the hold latch would keep
+            // `is_animating()` true so the host scheduled frames forever. The release that would
+            // have cleared it never arrives while the control is disabled.
+            self.holding = false;
+            self.pressed = None;
+            self.held_ms = 0;
+            self.repeats_done = 0;
+            return false;
+        }
         if !self.holding || self.repeat_delay_ms == 0 || self.repeat_interval_ms == 0 {
             return false;
         }

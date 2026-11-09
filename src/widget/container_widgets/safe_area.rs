@@ -141,7 +141,9 @@ impl SafeArea {
             return;
         }
         if let Some(previous) = self.content_child {
-            self.base.remove_child(previous);
+            // One-sided `remove_child` left the child still naming this control as its parent.
+            self.base.remove_child_linked(previous);
+            crate::set_widget_visible(previous, false);
         }
         self.content_child = child;
         if let Some(child) = child {

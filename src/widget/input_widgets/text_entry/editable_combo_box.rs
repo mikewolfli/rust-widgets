@@ -622,7 +622,10 @@ impl EditableComboBox {
             self.text = self.items[index].clone();
             self.text_changed.emit_lazy(|| self.text.clone());
             self.item_selected.emit(index);
-            self.expanded = false;
+            // `collapse`, not a bare assignment: the popup grab is cleared there. Writing
+            // `expanded = false` directly left the grab held, so the next press anywhere was
+            // routed to this control instead of the widget under the pointer.
+            self.collapse();
             self.sync_popup();
             self.base.request_redraw();
             return true;

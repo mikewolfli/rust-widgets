@@ -455,9 +455,13 @@ impl EventHandler for TextEdit {
                     return;
                 }
                 if primary && *key == 88 {
-                    // Primary+X: copy, then remove the selection.
-                    let _ = self.copy_selection_to_clipboard();
-                    self.backspace();
+                    // Primary+X: copy, then remove the selection. With no selection there is
+                    // nothing to cut, and `backspace` would fall back to deleting the character
+                    // before the caret — a cut silently becoming a delete.
+                    if self.selection_range().is_some() {
+                        let _ = self.copy_selection_to_clipboard();
+                        self.backspace();
+                    }
                     return;
                 }
                 if primary && *key == 86 {

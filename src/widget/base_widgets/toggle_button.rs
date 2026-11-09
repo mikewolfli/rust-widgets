@@ -1557,6 +1557,10 @@ impl crate::event::EventHandler for ToggleButton {
                 // whether this control had armed the gesture.
                 if self.signaled_pressed && self.base.contains_point_with_touch_expansion(*pos) {
                     self.toggle();
+                    // A pointer activation is a click. Without this the tool button reported
+                    // `clicked` only when it was activated from the keyboard, so every
+                    // mouse-driven tool button looked dead to a host listening on the channel.
+                    self.emit_clicked();
                 }
                 self.set_pressed(false);
             }
@@ -1587,6 +1591,8 @@ impl crate::event::EventHandler for ToggleButton {
             crate::event::Event::Tap { pos } => {
                 if self.base.contains_point_with_touch_expansion(*pos) {
                     self.toggle();
+                    // Same rule as the release arm above: the tap is the activation.
+                    self.emit_clicked();
                 }
                 self.set_pressed(false);
             }
@@ -2231,6 +2237,29 @@ mod checked_visibility_tests {
             "a larger font must widen the toggle hint: {} vs {}",
             big_hint.width,
             base_hint.width
+        );
+    }
+
+    #[test]
+    fn a_pointer_release_reports_the_click() {
+        use crate::event::Event;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+        let mut button = ToggleButton::new("Bold".to_string(), Rect::new(0, 0, 80, 30));
+        let clicks = Arc::new(AtomicUsize::new(0));
+        {
+            let clicks = Arc::clone(&clicks);
+            button.base.clicked.connect(move || {
+                clicks.fetch_add(1, Ordering::SeqCst);
+            });
+        }
+        button.handle_event(&Event::MousePress { pos: Point::new(5, 5), button: 1, modifiers: 0 });
+        button.handle_event(&Event::MouseRelease { pos: Point::new(5, 5), button: 1 });
+        assert!(button.is_checked(), "the pointer activation toggles the latch");
+        assert_eq!(
+            clicks.load(Ordering::SeqCst),
+            1,
+            "and it reports the click, like every other button"
         );
     }
 }

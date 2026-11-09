@@ -317,11 +317,27 @@ impl SegmentedControl {
             self.disabled.resize(index + 1, false);
         }
         self.disabled[index] = !enabled;
-        if !enabled && self.selected_index == Some(index) {
-            // A disabled segment cannot remain the control's value: the value would be one the
-            // user can neither see as chosen nor change away from by clicking it again.
-            let next = (0..self.items.len()).find(|candidate| self.item_enabled(*candidate));
-            self.selected_index = next;
+        if !enabled {
+            // A disabled segment can be neither the value nor part of the selected set. Both
+            // halves are corrected here, and the value change is published: a host mirroring
+            // `selection_changed` would otherwise keep the segment chosen.
+            let was_selected = self.selected_set.contains(&index);
+            self.selected_set.retain(|selected| *selected != index);
+            if self.selected_index == Some(index) {
+                let next = (0..self.items.len()).find(|candidate| self.item_enabled(*candidate));
+                self.selected_index = next;
+                if let Some(item) = next.and_then(|next| self.items.get(next)) {
+                    self.selection_changed.emit(item.id.clone());
+                }
+                self.slide_from = self.selected_index.unwrap_or(0);
+                self.slide.jump_to(1.0);
+            } else if was_selected {
+                // The primary value did not move, but the selected *set* lost a member.
+                if let Some(item) = self.selected_index.and_then(|primary| self.items.get(primary))
+                {
+                    self.selection_changed.emit(item.id.clone());
+                }
+            }
         }
         self.base.request_redraw();
         true
@@ -1547,6 +1563,31 @@ mod tests {
     /// The quantity that was broken is the rectangle handed to `fill_rect`, so the assertion is on
     /// the rendered picture. Asserting `indicator_position()` is the mistake this test exists to
     /// avoid: it is the same value the old test checked, and it was never wrong.
+    /// Disabling the value segment publishes the value it moves to.
+    ///
+    /// # What this pins
+    ///
+    /// `set_item_enabled` moved `selected_index` to the next enabled segment but emitted
+    /// nothing and left the segment in `selected_set` — a host mirroring `selection_changed`
+    /// kept the disabled segment chosen, and multi-select painted it selected.
+    #[test]
+    fn disabling_the_value_segment_publishes_the_new_value() {
+        let mut control = SegmentedControl::new(Rect::new(0, 0, 240, 40));
+        control.set_items(vec![SegmentItem::new("a", "Alpha"), SegmentItem::new("b", "Beta")]);
+        assert!(control.set_selected_index(0));
+
+        let seen = Arc::new(Mutex::new(Vec::<String>::new()));
+        let sink = Arc::clone(&seen);
+        control.selection_changed.connect(move |id: Arc<String>| {
+            sink.lock().unwrap().push((*id).clone());
+        });
+
+        assert!(control.set_item_enabled(0, false));
+        assert_eq!(control.selected_index(), Some(1), "the value moves to the next segment");
+        assert_eq!(control.selected_indices(), vec![1]);
+        assert_eq!(*seen.lock().unwrap(), vec!["b".to_string()]);
+    }
+
     #[test]
     fn the_indicator_is_painted_mid_slide() {
         let mut control = SegmentedControl::new(Rect::new(0, 0, 240, 120));

@@ -1186,9 +1186,11 @@ impl ChartWidget {
     /// sibling charts re-validate on `set_series` for the same reason; `ChartWidget` did not.
     fn revalidate_hover(&mut self) {
         let points = self.data().len();
-        if self.hovered_index.is_some_and(|index| index >= points) {
+        // The payload is the index hover is leaving, so capture it before clearing: a fixed `0`
+        // left a subscriber's per-index highlight on the row that was actually dropped.
+        if let Some(index) = self.hovered_index.filter(|index| *index >= points) {
             self.hovered_index = None;
-            self.data_point_unhovered.emit(0);
+            self.data_point_unhovered.emit(index);
         }
         self.sync_chart_tooltip();
     }
@@ -1208,9 +1210,13 @@ impl ChartWidget {
         }
         let (start, end) = self.zoom_bounds();
         let visible = end.saturating_sub(start).max(1);
-        let local_x = (pos.x - rect.x).max(0) as u32;
-        let width = rect.width.max(1);
-        let mut idx = start + ((local_x as u64) * (visible as u64) / (width as u64)) as usize;
+        // The marks are placed inside the plot area, not across the whole control: the value-axis
+        // label column and the right padding are not buckets. Measuring from the control's own
+        // rectangle pointed at a neighbouring category near every boundary.
+        let area = PlotArea::of(rect, 12);
+        let span = (area.right - area.left).max(1) as u64;
+        let local_x = (pos.x - area.left).max(0) as u64;
+        let mut idx = start + (local_x * visible as u64 / span) as usize;
         if idx >= end {
             idx = end.saturating_sub(1);
         }
@@ -3183,6 +3189,27 @@ pub use crate::widget::chart_widgets::chart_crosshair::ChartCrosshair;
 mod tests {
     use super::*;
     use std::sync::{Arc, Mutex};
+
+    /// Shrinking the data un-hovers the index it dropped, and says *which* one.
+    ///
+    /// # What this pins
+    ///
+    /// The payload is the index hover is leaving; the path emitted a fixed `0`, so a subscriber
+    /// with a per-index highlight never cleared the row that actually went away.
+    #[test]
+    fn a_shrunk_series_unhovers_the_index_it_dropped() {
+        let mut chart = ChartWidget::new(Rect::new(0, 0, 200, 120));
+        chart.set_data(vec![1.0; 10]);
+        chart.hovered_index = Some(7);
+        let seen = Arc::new(Mutex::new(Vec::<usize>::new()));
+        let sink = Arc::clone(&seen);
+        chart.data_point_unhovered.connect(move |index: Arc<usize>| {
+            sink.lock().unwrap().push(*index);
+        });
+        chart.set_data(vec![1.0; 3]);
+        assert_eq!(*seen.lock().unwrap(), vec![7]);
+        assert_eq!(chart.hovered_index, None);
+    }
 
     /// RW-67: the primary-series data carrier round-trips.
     #[test]

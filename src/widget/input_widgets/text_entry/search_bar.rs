@@ -680,6 +680,9 @@ impl SearchBar {
             return None;
         }
         let row = ((pos.y - menu_top) / RECENT_ROW_HEIGHT as i32) as usize;
+        // The menu paints from `recent_scroll`, so the row under the pointer is that far into
+        // the history, not the first entry.
+        let row = row + self.recent_scroll;
         (row < self.recent_searches.len()).then_some(row)
     }
 

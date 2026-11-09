@@ -217,10 +217,18 @@ impl CupertinoNavigationBar {
 
     /// The region the title slot occupies: the bar's centre, clear of the leading control and
     /// the trailing items.
-    fn title_slot(&self) -> Rect {
+    ///
+    /// The trailing items paint inward from the same right edge, so the slot has to end before
+    /// them: a title widget painted over them would also take their clicks.
+    fn title_slot(&mut self) -> Rect {
         let band = self.bar_band();
         let left = band.x + if self.back_button_visible { BACK_BUTTON_WIDTH as i32 } else { 8 };
-        let right = band.right() - 8;
+        let mut right = band.right() - 8;
+        if !self.trailing_items.is_empty() {
+            let font = role_font(self.base.style(), 17.0);
+            let widths = self.trailing_item_widths(&font);
+            right -= widths.iter().map(|width| *width as i32 + 8).sum::<i32>();
+        }
         Rect::new(
             left,
             band.y + 4,
@@ -903,7 +911,12 @@ impl EventHandler for CupertinoNavigationBar {
                 }
 
                 // Custom items are hit-tested against the boxes they were painted in, from the
-                // same cached width slices the paint pass used (MW2-01).
+                // same cached width slices the paint pass used (MW2-01). The bar is a band in
+                // the control's top edge, so a click below it belongs to whatever is under the
+                // bar, not to an item whose column happens to line up.
+                if pos.y < bar_rect.y || pos.y >= bar_rect.y + bar_rect.height as i32 {
+                    return;
+                }
                 let font = role_font(self.base.style(), 17.0);
                 let leading_widths = self.leading_item_widths(&font);
                 for index in 0..self.leading_items.len() {

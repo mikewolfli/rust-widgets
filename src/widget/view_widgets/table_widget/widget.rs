@@ -1130,7 +1130,16 @@ impl TableWidget {
         &mut self,
         mode: crate::widget::view_widgets::list_view::SelectionMode,
     ) {
+        if self.selection.mode() == mode {
+            return;
+        }
         self.selection.set_mode(mode);
+        // The new mode may trim the set; the highlight is painted from the model, and a host
+        // mirroring the selection has to hear about the surviving row.
+        if let Some(row) = self.selection.current_row() {
+            self.selection_changed.emit(row);
+        }
+        self.base.request_redraw();
     }
     /// Returns current selection mode.
     pub fn selection_mode(&self) -> crate::widget::view_widgets::list_view::SelectionMode {
@@ -1301,13 +1310,16 @@ impl TableWidget {
     }
     fn normalize_projection_state(&mut self) {
         let row_count = self.row_count();
-        // Get current selection and filter out invalid rows
+        // Capture the set before re-validating so a real loss is reported once.
+        let before = self.selection.rows();
         let mut selected_rows = self.selection.rows();
         selected_rows.retain(|row| *row < row_count);
-        // Clear and re-add valid rows
+        // Clear and re-add valid rows. The restore goes through the modifier path because a
+        // plain `select_row` replaces the selection in `Extended` mode, which collapsed a
+        // multi-row selection to the last row on every model change.
         self.selection.clear();
-        for row in selected_rows {
-            self.selection.select_row(row);
+        for row in &selected_rows {
+            self.selection.select_with_modifiers(*row, crate::shortcut::Modifiers::CTRL);
         }
         // Update current row if invalid
         if let Some(current_row) = self.selection.current_row() {
@@ -1316,6 +1328,12 @@ impl TableWidget {
             }
         }
         self.focused_row = self.focused_row.filter(|row| *row < row_count);
+        if before != selected_rows {
+            if let Some(row) = self.selection.current_row() {
+                self.selection_changed.emit(row);
+            }
+            self.base.request_redraw();
+        }
     }
 }
 impl Widget for TableWidget {

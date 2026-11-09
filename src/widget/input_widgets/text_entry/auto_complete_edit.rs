@@ -824,9 +824,14 @@ impl AutoCompleteEdit {
     }
 
     /// Moves the selection highlight down (towards the last item).
+    ///
+    /// The dropdown paints and hit-tests at most `max_visible` rows from the first match, so the
+    /// mark must stop there too: letting it walk past the painted window highlighted nothing and
+    /// let Enter commit a suggestion the user never saw.
     fn select_next(&mut self) {
         if let Some(idx) = self.selected_suggestion {
-            if idx + 1 < self.filtered_suggestions.len() {
+            let visible = self.filtered_suggestions.len().min(self.max_visible);
+            if idx + 1 < visible {
                 self.selected_suggestion = Some(idx + 1);
                 self.base.request_redraw();
             }

@@ -314,8 +314,13 @@ impl EventHandler for CommandLink {
             Event::Tap { pos } => {
                 self.release_at(*pos);
             }
+            // A link is activated from the keyboard only while it holds focus, which is the
+            // rule `Button` applies to the same keys. Without the gate an embedded link fired on
+            // any Space/Enter that reached the page.
             Event::KeyPress { key, .. }
-                if is_keyboard_activation(*key) && self.base.is_enabled() =>
+                if is_keyboard_activation(*key)
+                    && self.base.is_enabled()
+                    && self.base.focus_reason().is_some() =>
             {
                 self.click();
             }
@@ -325,10 +330,12 @@ impl EventHandler for CommandLink {
                 self.base.set_grabbed(false);
                 self.base.set_pressed(false);
             }
-            Event::MouseEnter { .. } => {
+            // A disabled link is not interactive, so it must not report hover either — the
+            // setter docs promise exactly that and the paint path already skips the highlight.
+            Event::MouseEnter { .. } if self.base.is_enabled() => {
                 self.hovered.emit(true);
             }
-            Event::MouseLeave { .. } => {
+            Event::MouseLeave { .. } if self.base.is_enabled() => {
                 self.hovered.emit(false);
             }
             _ => { /* Other events are not relevant */ }
@@ -732,6 +739,8 @@ mod tests {
             cl.clicked.connect(move || {
                 counter.fetch_add(1, Ordering::SeqCst);
             });
+            // A link is activated from the keyboard only while it holds focus, like `Button`.
+            cl.handle_event(&Event::FocusGained { reason: crate::event::FocusReason::Tab });
             cl.handle_event(&Event::KeyPress { key, modifiers: 0 });
             clicks.load(Ordering::SeqCst)
         };

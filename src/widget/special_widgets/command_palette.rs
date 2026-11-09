@@ -257,6 +257,11 @@ pub struct CommandPalette {
     base: BaseWidget,
     entries: Vec<CommandEntry>,
     query: String,
+    /// Whether a committed text event has been seen.
+    ///
+    /// A host that reports both a key code and committed text delivers one keystroke twice; once
+    /// the text form has arrived the key-code fallback must stop or every character doubles.
+    text_input_seen: bool,
     filtered_indices: Vec<usize>,
     highlighted_index: Option<usize>,
     /// The first filtered row drawn; keeps the highlight reachable past the visible rows.
@@ -322,6 +327,7 @@ impl CommandPalette {
             base: BaseWidget::new(WidgetKind::ListView, geometry, "CommandPalette"),
             entries: Vec::new(),
             query: String::new(),
+            text_input_seen: false,
             filtered_indices: Vec::new(),
             highlighted_index: None,
             scroll_offset: 0,
@@ -837,9 +843,12 @@ impl CommandPalette {
                 // Folded once, here, instead of twice per row per frame. The painted text itself
                 // comes from the per-entry cache, so a key no longer clones a formatted string.
                 let folded = text.to_lowercase();
-                folded
-                    .find(&folded_query)
-                    .map(|offset| (text[..offset].chars().count(), self.query.chars().count()))
+                folded.find(&folded_query).map(|offset| {
+                    // The offset indexes the *folded* string. Folding can change the byte length
+                    // of a character (U+1E9E is 3 bytes, its lowercase U+00DF is 2), so slicing
+                    // `text` at that offset could split a character and panic.
+                    (folded[..offset].chars().count(), self.query.chars().count())
+                })
             };
             self.rows.push(RowPresentation { entry_index: Some(entry_index), highlight });
         }
@@ -1248,10 +1257,20 @@ impl EventHandler for CommandPalette {
                     Some(crate::shortcut::Key::P) if primary => {
                         self.move_highlight(-1);
                     }
-                    _ => self.append_query_char(*key),
+                    _ => {
+                        // Printable ASCII is the fallback for a host that reports only key codes;
+                        // committed text wins once it has arrived, so a Windows-style pair
+                        // (`WM_KEYDOWN` + `WM_CHAR`) cannot double every character.
+                        if !self.text_input_seen {
+                            self.append_query_char(*key);
+                        }
+                    }
                 }
             }
-            Event::TextInput { text } | Event::ImeCommit { text } => self.push_text(text),
+            Event::TextInput { text } | Event::ImeCommit { text } => {
+                self.text_input_seen = true;
+                self.push_text(text)
+            }
             Event::ImePreedit { .. } => {}
             Event::Wheel { delta, .. } if delta.y != 0 => {
                 let max = self.filtered_indices.len().saturating_sub(1);
@@ -1548,6 +1567,43 @@ mod tests {
                 .with_category("View")
                 .with_keywords(["sidebar", "panel"]),
         ]
+    }
+
+    /// A case-folding-sensitive title cannot crash the highlight.
+    ///
+    /// # What this pins
+    ///
+    /// The match offset indexes the *folded* title; slicing the original title at it could split
+    /// a character (`U+1E9E` folds from 3 bytes to 2) and panic on the keystroke that filtered to
+    /// the entry.
+    #[test]
+    fn a_title_that_changes_length_when_folded_does_not_panic() {
+        let mut palette = CommandPalette::new(Rect::new(0, 0, 320, 160));
+        palette.set_entries(vec![CommandEntry::new("sharp.s", "\u{1E9E}a")]);
+        palette.set_query("a");
+        assert_eq!(palette.filtered_count(), 1);
+    }
+
+    /// A host that reports both a key code and committed text types one character.
+    ///
+    /// # What this pins
+    ///
+    /// Every unclaimed key code was appended as a character *and* the committed text was, so a
+    /// Windows-style pair typed `Aa` for one `a` keystroke.
+    #[test]
+    fn committed_text_supersedes_the_key_code_fallback() {
+        let mut palette = CommandPalette::new(Rect::new(0, 0, 320, 160));
+        palette.set_entries(sample_entries());
+        palette.handle_event(&crate::event::Event::KeyPress { key: 65, modifiers: 0 });
+        assert_eq!(palette.query(), "A", "a code-only host still types");
+        palette.handle_event(&crate::event::Event::TextInput { text: "a".to_string() });
+        assert_eq!(palette.query(), "Aa", "the committed text is applied once");
+        palette.handle_event(&crate::event::Event::KeyPress { key: 66, modifiers: 0 });
+        assert_eq!(
+            palette.query(),
+            "Aa",
+            "once text events are arriving the code fallback is silent"
+        );
     }
 
     #[test]

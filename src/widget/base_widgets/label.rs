@@ -646,6 +646,12 @@ pub struct Label {
     open_external_links: bool,
     /// The link the pointer is currently over, as an index into [`Label::links`].
     hovered_link: Option<usize>,
+    /// The link a press landed on, as an index into [`Label::links`].
+    ///
+    /// Activation requires that the press and the release name the **same** link. The release
+    /// arm used to activate whatever link it was over, so a release that began on another
+    /// control (a drag ending over a link, or a disabled label) fired the link.
+    pressed_link: Option<usize>,
     /// The control a mnemonic focuses, when the caller bound one.
     ///
     /// A label is not focusable itself; a `buddy` is the field or button whose focus a
@@ -700,6 +706,7 @@ impl Label {
             rich_runs: Vec::new(),
             open_external_links: false,
             hovered_link: None,
+            pressed_link: None,
             buddy: None,
             mnemonic: None,
             text_revision: 0,
@@ -954,6 +961,7 @@ impl Label {
         // dropped; the next pointer event re-resolves it. The registry is not told "left", because
         // the pointer has not moved — the link under it may be the same one.
         self.hovered_link = None;
+        self.pressed_link = None;
     }
     /// Returns text alignment.
     pub fn alignment(&self) -> crate::core::Alignment {
@@ -1638,14 +1646,30 @@ impl EventHandler for Label {
         // path knows where the pointer is.
         match event {
             Event::MouseMove { pos } => self.update_hovered_link(Some(*pos)),
-            Event::MouseLeave { .. } => self.update_hovered_link(None),
-            Event::MouseRelease { pos, button }
+            Event::MouseLeave { .. } => {
+                self.update_hovered_link(None);
+                self.pressed_link = None;
+            }
+            Event::MousePress { pos, button, .. }
                 if *button == crate::event::mouse_button::PRIMARY =>
             {
-                if let Some(index) = self.link_at(*pos) {
-                    self.activate_link(index);
+                // A disabled label is not interactive: the hover path already refuses to
+                // highlight a link, and the press must not arm one either.
+                self.pressed_link = if self.base.is_enabled() { self.link_at(*pos) } else { None };
+            }
+            Event::MouseRelease { pos, button }
+                if *button == crate::event::mouse_button::PRIMARY && self.base.is_enabled() =>
+            {
+                let released = self.link_at(*pos);
+                // Only the link the press landed on can be activated, and only by a release over
+                // that same link — the same press/release pairing a button applies.
+                if let (Some(pressed), Some(released)) = (self.pressed_link.take(), released) {
+                    if pressed == released {
+                        self.activate_link(pressed);
+                    }
                 }
             }
+            Event::FocusLost => self.pressed_link = None,
             // A mnemonic is the label's only keyboard route: Alt + its character focuses the
             // buddy through the same focus API a Tab or an application request uses, so the
             // target's own focus handling (ring, IME, signals) runs unchanged.

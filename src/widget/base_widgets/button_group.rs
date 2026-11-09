@@ -800,6 +800,11 @@ impl ButtonGroup {
             return None;
         }
         let previous = select(&self.key, button);
+        // The chosen member did not run its own toggle, so it has to be told: an external
+        // selection must paint checked and emit its own `state_changed`. Only the displaced peer
+        // was notified before, so `set_checked_button` moved the group's record while the box the
+        // caller selected kept painting unchecked.
+        notify_checked(&[button], true);
         if let Some(previous) = previous.filter(|previous| *previous != button) {
             notify_checked(&[previous], false);
         }

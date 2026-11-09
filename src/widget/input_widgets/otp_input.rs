@@ -342,6 +342,13 @@ impl OtpInput {
             return false;
         }
         self.select_all_active = false;
+        // Nothing to delete. The focus can be moved onto an empty box (a click, a Right arrow)
+        // while `value` is empty, and the branch below then computes `len().saturating_sub(1)` —
+        // zero — and calls `remove(0)` on an empty vector, which panics. A backspace on an empty
+        // code is an ordinary no-op, not an error.
+        if self.value.is_empty() {
+            return false;
+        }
         // The focus sits on or past the last filled box, so there is no character
         // under it: step back onto the previous one and clear that. This covers
         // `focused_index == value.len()`, the ordinary "delete the last digit"
@@ -1528,5 +1535,15 @@ mod tests {
         assert_eq!(*submitted.lock().unwrap(), "12");
         otp.handle_event(&Event::KeyPress { key: 27, modifiers: 0 });
         assert!(*cancelled.lock().unwrap());
+    }
+
+    #[test]
+    fn backspace_on_an_empty_code_is_a_no_op() {
+        let mut otp = otp();
+        // Focus moved onto a later box (a click, a Right arrow) while nothing has been entered.
+        otp.set_focused_index(3);
+        assert!(otp.value().is_empty());
+        assert!(!otp.backspace(), "there is nothing to delete");
+        assert!(otp.value().is_empty(), "and the value stays empty rather than panicking");
     }
 }

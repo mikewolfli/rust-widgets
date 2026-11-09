@@ -1046,17 +1046,35 @@ impl EventHandler for SplitButton {
 
         match event {
             Event::MouseMove { pos } => {
-                self.hovered_primary = self.hit_primary(*pos);
-                self.hovered_arrow = self.hit_arrow(*pos);
-                if let Some(index) = self.hit_menu_index(*pos) {
-                    self.highlighted_action_index = Some(index);
+                let primary = self.hit_primary(*pos);
+                let arrow = self.hit_arrow(*pos);
+                let action = self.hit_menu_index(*pos);
+                let changed = primary != self.hovered_primary
+                    || arrow != self.hovered_arrow
+                    || (action.is_some() && action != self.highlighted_action_index);
+                self.hovered_primary = primary;
+                self.hovered_arrow = arrow;
+                if action.is_some() {
+                    self.highlighted_action_index = action;
+                }
+                // Both faces and the open menu's highlighted row are painted from these fields;
+                // a backend repaints a move only when the hovered *widget* changes.
+                if changed {
+                    self.base.request_redraw();
                 }
             }
             Event::MouseLeave { .. } => {
+                let changed = self.hovered_primary
+                    || self.hovered_arrow
+                    || self.pressed_primary
+                    || self.pressed_arrow;
                 self.hovered_primary = false;
                 self.hovered_arrow = false;
                 self.pressed_primary = false;
                 self.pressed_arrow = false;
+                if changed {
+                    self.base.request_redraw();
+                }
             }
             Event::MousePress { pos, button: 1, .. } => {
                 if self.hit_primary(*pos) {

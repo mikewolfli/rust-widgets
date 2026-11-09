@@ -700,6 +700,12 @@ impl FontDialog {
             let x = layout.rect.x + 4 + column as i32 * (layout.col_w as i32 + COL_GAP);
             if pos.x >= x && pos.x < x + layout.col_w as i32 {
                 let index = self.scroll(column) + row;
+                // The list band is as tall as the dialog, not as long as the column: a press
+                // below the last entry must not clamp onto it and select a row the user did
+                // not point at.
+                if index >= self.column_len(column) {
+                    return None;
+                }
                 return Some((column, index));
             }
         }
@@ -917,7 +923,7 @@ impl EventHandler for FontDialog {
                 let column = self.active_column;
                 let length = match column {
                     0 => self.families.len(),
-                    1 => STYLES.len(),
+                    1 => self.styles.len(),
                     _ => self.sizes.len(),
                 };
                 let visible = self.visible_rows();
@@ -1331,6 +1337,26 @@ mod tests {
     #[cfg(not(feature = "runtime-fonts"))]
     fn isolate_face_registry() -> FaceRegistryGuard {
         FaceRegistryGuard
+    }
+
+    /// A press below the last entry does not clamp onto it.
+    ///
+    /// # What this pins
+    ///
+    /// `row_at` accepted every row inside the list band and `select_row` then clamped the index,
+    /// so clicking empty space below a short column selected its last entry.
+    #[test]
+    fn a_press_below_the_last_family_selects_nothing() {
+        let _guard = isolate_face_registry();
+        let mut dialog = FontDialog::new(Rect::new(0, 0, 420, 320));
+        dialog.set_font_families(vec!["Alpha".to_string(), "Beta".to_string()]);
+        let layout = dialog.layout();
+
+        let first = Point::new(layout.rect.x + 10, layout.list_y + 4);
+        assert_eq!(dialog.row_at(first), Some((0, 0)), "the first row is a row");
+        let below = Point::new(layout.rect.x + 10, layout.list_y + ROW_HEIGHT * 5);
+        assert!(below.y < layout.list_y + layout.list_h as i32, "the point is inside the band");
+        assert_eq!(dialog.row_at(below), None, "empty space below the column is not a row");
     }
 
     #[test]

@@ -466,7 +466,13 @@ impl FilterExpr {
             FilterExpr::MatchAll => true,
             FilterExpr::MatchNothing => false,
             FilterExpr::Predicate(_) => false,
-            FilterExpr::And(children) => children.iter().any(FilterExpr::is_noop),
+            FilterExpr::And(children) => {
+                // An `And` rejects a row unless **every** child accepts it, so it is a no-op only
+                // when every child is. `without_column` produces `and([MatchAll, Predicate])`;
+                // treating any-no-op as no-op dropped the surviving conditions and showed every
+                // row.
+                children.iter().all(FilterExpr::is_noop)
+            }
             FilterExpr::Or(children) => {
                 // An empty `Or` is `MatchNothing`, which is not a no-op; a non-empty
                 // one is a no-op only if some child is.
@@ -880,12 +886,16 @@ mod tests {
         assert!(FilterExpr::MatchAll.is_noop());
         assert!(!FilterExpr::MatchNothing.is_noop());
         assert!(!FilterExpr::Predicate(FilterCondition::contains(0, "a")).is_noop());
-        // An AND containing a no-op child is a no-op: that child cannot reject.
-        assert!(FilterExpr::and(vec![
+        // An AND is only a no-op when **every** child is: a no-op child accepts all, so the
+        // conjunction still rejects on the predicates it keeps. `without_column` produces exactly
+        // `and([MatchAll, Predicate])`, and calling it a no-op would drop the surviving filter.
+        assert!(!FilterExpr::and(vec![
             FilterExpr::MatchAll,
             FilterExpr::Predicate(FilterCondition::contains(0, "a")),
         ])
         .is_noop());
+        assert!(FilterExpr::and(vec![FilterExpr::MatchAll, FilterExpr::MatchAll]).is_noop());
+        assert!(FilterExpr::and(vec![]).is_noop(), "an empty AND accepts everything");
         // An OR containing a no-op child is a no-op, because that child accepts all.
         assert!(FilterExpr::or(vec![
             FilterExpr::MatchAll,

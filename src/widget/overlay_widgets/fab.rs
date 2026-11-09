@@ -686,6 +686,14 @@ impl EventHandler for FAB {
     /// merely crosses the edge may still come back.
     fn handle_event(&mut self, event: &Event) {
         if !self.base.is_enabled() {
+            // A disable mid-gesture must drop the latch. `set_enabled` does not touch it, so
+            // the FAB would keep painting pressed with no button held, `widget_state()` would
+            // report `Pressed`, and the next unpaired release would fire `clicked`.
+            if self.base.is_pressed() {
+                self.base.set_pressed(false);
+                self.sync_press_driver();
+                self.base.request_redraw();
+            }
             return;
         }
 

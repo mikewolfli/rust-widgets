@@ -284,6 +284,9 @@ impl AnimatedImage {
         self.provider_count = 0;
         self.provider_cache.clear();
         self.scale_cache = None;
+        // With no decoder there is no next frame: leaving `playing` set reported animation
+        // forever and kept the host scheduling idle frames for a widget that can never advance.
+        self.playing = false;
         self.base.request_redraw();
     }
 

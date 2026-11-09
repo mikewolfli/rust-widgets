@@ -1303,6 +1303,10 @@ impl RestoreShapePalette {
 
 impl crate::event::EventHandler for FreeformShapeWidget {
     fn handle_event(&mut self, event: &crate::event::Event) {
+        // The base records hover/press/focus, which is what `widget_state()` and the theme's
+        // state roles read. Every sibling control forwards; without it the shape painted its own
+        // hover while reporting `Normal`.
+        self.base.handle_event(event);
         if !self.base.is_enabled() {
             return;
         }

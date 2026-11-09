@@ -407,10 +407,17 @@ impl ImageGallery {
 
     /// Removes all images from the gallery.
     pub fn clear_images(&mut self) {
+        // The selected indices name positions in the deleted list; leaving them behind made
+        // `selected_indices()` report images that no longer exist.
+        let had_selection = !self.selected.is_empty();
         self.images.clear();
         self.thumbnails.clear();
+        self.selected.clear();
         self.current_index = 0;
         self.image_changed.emit(0);
+        if had_selection {
+            self.selection_changed.emit(Vec::new());
+        }
         self.base.request_redraw();
     }
 
@@ -1377,6 +1384,9 @@ impl Draw for ImageGallery {
 
 impl EventHandler for ImageGallery {
     fn handle_event(&mut self, event: &Event) {
+        // The base is the one place hover/press/focus state is recorded; without this forward
+        // `widget_state()` stayed `Normal` while the gallery painted a hovered thumbnail.
+        self.base.handle_event(event);
         if !self.base.is_enabled() {
             return;
         }
@@ -1528,13 +1538,10 @@ impl EventHandler for ImageGallery {
                 }
             }
             Event::KeyPress { .. } => {
-                // An unfocused gallery (or one with arrow navigation disabled) forwards the key
-                // to the base rather than swallowing it.
-                self.base.handle_event(event);
+                // The base already saw the key at the top of this method; an unfocused gallery
+                // consumes nothing here.
             }
-            _ => {
-                self.base.handle_event(event);
-            }
+            _ => {}
         }
     }
 }
@@ -1552,6 +1559,45 @@ mod tests {
         g.add_image("/images/photo4.jpg", Some("Forest"));
         g.add_image("/images/photo5.jpg", Some("City"));
         g
+    }
+
+    /// Clearing the gallery clears the selection with it.
+    ///
+    /// # What this pins
+    ///
+    /// `clear_images` emptied the image list but left `selected` naming positions in it, so
+    /// `selected_indices()` reported images that no longer existed and no signal announced it.
+    #[test]
+    fn clearing_the_gallery_clears_the_selection() {
+        let mut g = make_gallery(Rect::new(0, 0, 400, 300));
+        g.selected.insert(0);
+        g.selected.insert(2);
+        let seen = Arc::new(Mutex::new(Vec::<Vec<usize>>::new()));
+        let sink = Arc::clone(&seen);
+        g.selection_changed.connect(move |indices: Arc<Vec<usize>>| {
+            sink.lock().unwrap().push(indices.to_vec());
+        });
+
+        g.clear_images();
+        assert!(g.selected_indices().is_empty());
+        assert_eq!(*seen.lock().unwrap(), vec![Vec::<usize>::new()]);
+    }
+
+    /// The gallery records hover/press in its base, as every sibling view does.
+    ///
+    /// # What this pins
+    ///
+    /// `handle_event` never forwarded pointer events to `BaseWidget`, so `widget_state()`
+    /// reported `Normal` while the gallery painted a hovered thumbnail.
+    #[test]
+    fn a_pointer_move_reaches_the_base_state() {
+        let mut g = make_gallery(Rect::new(0, 0, 400, 300));
+        g.handle_event(&Event::MouseEnter { pos: crate::core::Point::new(200, 150) });
+        assert_eq!(
+            crate::widget::Widget::widget_state(&g),
+            crate::style::WidgetState::Hover,
+            "the base is what the theme reads for its hover state"
+        );
     }
 
     #[test]

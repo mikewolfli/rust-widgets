@@ -330,10 +330,12 @@ impl SuggestionPopup {
             return;
         }
         self.filter = text.to_string();
-        self.refresh_visible();
-        self.selected_index = self.visible.first().map(|_| 0);
+        // The highlight lands on the first row whatever it was before, so the rebuild must not
+        // clamp it first: a stale row 3 clamped to row 1 would be published and then replaced,
+        // raising `highlight_changed` twice for one move.
+        self.rebuild_visible();
         self.window.set_offset(0, self.visible.len());
-        self.scroll_to_highlight();
+        self.set_highlight(self.visible.first().map(|_| 0));
         self.base.request_redraw();
     }
 
@@ -641,7 +643,7 @@ impl SuggestionPopup {
         self.selected_index = next;
         // Clearing the mark is not a scroll request: a host that moves the pointer off the rows
         // (or closes its list) must not send the window back to its first row. A filter that
-        // leaves no rows still resets the offset through `refresh_visible` -> `scroll_to_highlight`.
+        // leaves no rows still resets the offset through `apply_filter` -> `set_highlight`.
         if next.is_some() {
             self.scroll_to_highlight();
         }
@@ -669,6 +671,12 @@ impl SuggestionPopup {
 
     /// Rebuilds the filtered view and keeps the highlight inside it.
     fn refresh_visible(&mut self) {
+        self.rebuild_visible();
+        self.sync_highlight_after_refresh();
+    }
+
+    /// Re-derives the rows that pass the current filter (no highlight work).
+    fn rebuild_visible(&mut self) {
         let needle = text_match::fold(&self.filter);
         self.visible.clear();
         for (index, label) in self.items.iter().enumerate() {
@@ -684,11 +692,29 @@ impl SuggestionPopup {
                 self.visible.push(index);
             }
         }
-        self.selected_index = match self.selected_index {
+    }
+
+    /// Keeps the highlight inside the rebuilt view and publishes any move it makes.
+    ///
+    /// # Why the clamp is not silent
+    ///
+    /// A list or filter change can move the mark without the user asking (row 5 of the old view
+    /// is row 2 of the new one), so a host following `highlight_changed` would otherwise keep its
+    /// own mark on a row that is no longer highlighted. Only a surviving row is publishable:
+    /// `Signal1<usize>` has no "cleared" value, matching [`Self::set_highlight`].
+    fn sync_highlight_after_refresh(&mut self) {
+        let clamped = match self.selected_index {
             Some(_) if self.visible.is_empty() => None,
             Some(index) => Some(index.min(self.visible.len() - 1)),
             None => None,
         };
+        if clamped != self.selected_index {
+            self.selected_index = clamped;
+            if let Some(index) = clamped {
+                self.suggestion_highlighted.emit(index);
+                self.highlight_changed.emit(index);
+            }
+        }
         self.scroll_to_highlight();
     }
 }
@@ -1127,6 +1153,37 @@ mod tests {
 
         popup.apply_filter("");
         assert_eq!(popup.visible_count(), 3);
+    }
+
+    /// A narrowed view publishes the row the highlight ends up on.
+    ///
+    /// # What this pins
+    ///
+    /// `refresh_visible` used to clamp the highlight silently, so a host mirroring
+    /// `highlight_changed` kept its mark on a row the popup had already moved off.
+    #[test]
+    fn a_narrowed_view_publishes_the_row_the_highlight_moved_to() {
+        let mut popup = popup();
+        popup.set_items(labels(&["alpha", "beta", "gamma", "delta"]));
+        popup.show();
+        popup.set_selected_index(Some(3));
+
+        let seen = Arc::new(Mutex::new(Vec::<usize>::new()));
+        popup.highlight_changed.connect_ref({
+            let seen = Arc::clone(&seen);
+            move |index: &usize| seen.lock().unwrap().push(*index)
+        });
+
+        // A new, shorter row set clamps row 3 to row 1 and says so.
+        popup.set_items(labels(&["alpha", "beta"]));
+        assert_eq!(popup.selected_index(), Some(1));
+        assert_eq!(*lock(&seen), vec![1]);
+
+        // A filter that leaves one row moves the mark to the first row and says so once.
+        popup.apply_filter("a");
+        assert_eq!(popup.visible_count(), 1);
+        assert_eq!(popup.selected_index(), Some(0));
+        assert_eq!(*lock(&seen), vec![1, 0]);
     }
 
     #[test]

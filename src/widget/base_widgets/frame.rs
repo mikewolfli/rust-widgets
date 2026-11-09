@@ -732,23 +732,29 @@ impl Frame {
             return;
         }
         let line_width = line_width as f32;
-        context.draw_line(
+        // The declared width is the groove's width. It used to gate the arm and then be dropped:
+        // both tones were drawn with the 1 px `draw_line`, so `set_mid_line_width(5.0)` painted
+        // exactly the same groove as `1.0`.
+        let groove = mid_line_width.round().max(1.0) as u32;
+        context.draw_line_stroke(
             Point::from_f32(rect.x as f32 + line_width, rect.y as f32 + line_width),
             Point::from_f32(
                 rect.x as f32 + rect.width as f32 - line_width,
                 rect.y as f32 + line_width,
             ),
             mid_light,
+            groove,
         );
-        context.draw_line(
+        context.draw_line_stroke(
             Point::from_f32(rect.x as f32 + line_width, rect.y as f32 + line_width),
             Point::from_f32(
                 rect.x as f32 + line_width,
                 rect.y as f32 + rect.height as f32 - line_width,
             ),
             mid_light,
+            groove,
         );
-        context.draw_line(
+        context.draw_line_stroke(
             Point::from_f32(
                 rect.x as f32 + line_width,
                 rect.y as f32 + rect.height as f32 - line_width,
@@ -758,8 +764,9 @@ impl Frame {
                 rect.y as f32 + rect.height as f32 - line_width,
             ),
             mid_dark,
+            groove,
         );
-        context.draw_line(
+        context.draw_line_stroke(
             Point::from_f32(
                 rect.x as f32 + rect.width as f32 - line_width,
                 rect.y as f32 + line_width,
@@ -769,6 +776,7 @@ impl Frame {
                 rect.y as f32 + rect.height as f32 - line_width,
             ),
             mid_dark,
+            groove,
         );
     }
     /// Draws panel frame with a subtle background fill and simple border.

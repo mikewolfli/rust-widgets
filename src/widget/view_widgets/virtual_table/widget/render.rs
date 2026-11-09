@@ -199,14 +199,18 @@ impl Draw for VirtualTable {
             .and_then(|abs| abs.checked_sub(self.scroll_row))
             .filter(|local| *local < visible_rows);
         if let Some(local_row) = hovered_local {
-            // The band's top and height are the cell band's own: `INSET + row * stride`
-            // tall and `stride - 2` high, so the tint covers the row's cells and the
-            // 2 px gaps between them as one continuous stripe.
+            // The band's top and height are the cell band's own: `INSET + header_offset() +
+            // row * stride` tall and `stride - 2` high, so the tint covers the row's cells and
+            // the 2 px gaps between them as one continuous stripe. Without the header offset the
+            // tint sits one row above the cells it belongs to.
             const INSET: i32 = 2;
             context.fill_rect(
                 Rect::new(
                     rect.x + INSET,
-                    rect.y + INSET + local_row as i32 * self.row_height as i32,
+                    rect.y
+                        + INSET
+                        + self.header_offset()
+                        + local_row as i32 * self.row_height as i32,
                     rect.width.saturating_sub(4),
                     self.row_height.saturating_sub(2),
                 ),

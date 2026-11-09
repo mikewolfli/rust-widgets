@@ -1639,7 +1639,9 @@ impl TabWidget {
             return;
         }
         if let Some(previous) = self.corner_widget {
-            self.base.remove_child(previous);
+            // One-sided `remove_child` left the child still naming this control as its parent.
+            self.base.remove_child_linked(previous);
+            crate::set_widget_visible(previous, false);
         }
         self.corner_widget = widget;
         if let Some(widget) = widget {

@@ -76,6 +76,20 @@ pub struct MaterialSnackbar {
 }
 
 impl MaterialSnackbar {
+    /// The bar's painted rectangle, slide included.
+    ///
+    /// The paint and the press path share this one derivation: computing the resting slot in the
+    /// event handler rejected a press on the visible action while the bar was sliding in (and
+    /// dismissed the bar from a strip nothing was painted in).
+    fn bar_rect(&self) -> Rect {
+        const BAR_HEIGHT: u32 = 48;
+        let rect = self.geometry();
+        let slide = if self.base.is_visible() { self.slide.value().clamp(0.0, 1.0) } else { 1.0 };
+        let bar_y = rect.y + rect.height as i32 - BAR_HEIGHT as i32 - 16
+            + ((1.0 - slide) * (BAR_HEIGHT + 16) as f32) as i32;
+        Rect::new(rect.x + 12, bar_y, rect.width.saturating_sub(24), BAR_HEIGHT)
+    }
+
     /// Creates a new MaterialSnackbar with the given geometry.
     ///
     /// The snackbar starts hidden. Use [`show()`](Self::show) to display it.
@@ -523,9 +537,8 @@ impl Draw for MaterialSnackbar {
         // the bar is exactly where it always was. A hidden snackbar paints its resting slot (at
         // reduced presence, below), not the off-screen end of the slide: the census draws every
         // control inside its own box, and an off-screen pill would otherwise escape it.
-        let slide = if self.base.is_visible() { self.slide.value().clamp(0.0, 1.0) } else { 1.0 };
-        let bar_y = rect.y + rect.height as i32 - bar_height as i32 - 16
-            + ((1.0 - slide) * (bar_height + 16) as f32) as i32;
+        let bar_rect = self.bar_rect();
+        let fill = if self.base.is_visible() { pill } else { pill.with_alpha(96) };
 
         // ── Background pill ──
         //
@@ -534,8 +547,6 @@ impl Draw for MaterialSnackbar {
         // reported `ink = 0`. The bar slot is shown at reduced presence while hidden and becomes the
         // opaque toast when `show` is called, which is the same shape the bottom sheet uses for its
         // own closed state.
-        let bar_rect = Rect::new(rect.x + 12, bar_y, rect.width.saturating_sub(24), bar_height);
-        let fill = if self.base.is_visible() { pill } else { pill.with_alpha(96) };
         context.fill_rounded_rect(bar_rect, bar_height / 2, fill);
         context.draw_rounded_rect_stroke(bar_rect, bar_height / 2, border, 1);
 
@@ -617,11 +628,9 @@ impl EventHandler for MaterialSnackbar {
                 if *button != 1 {
                     return;
                 }
-                let rect = self.geometry();
-                let bar_height = 48u32;
-                let bar_y = rect.y + rect.height as i32 - bar_height as i32 - 16;
-                let bar_rect =
-                    Rect::new(rect.x + 12, bar_y, rect.width.saturating_sub(24), bar_height);
+                // The rect the paint path used, slide included: while the bar is sliding in (or
+                // out) the visible action must still take its own press.
+                let bar_rect = self.bar_rect();
                 if !bar_rect.contains_point(*pos) {
                     return;
                 }
@@ -637,7 +646,7 @@ impl EventHandler for MaterialSnackbar {
                         bar_rect.right() - width as i32 - 24,
                         bar_rect.y,
                         width + 16,
-                        bar_height,
+                        bar_rect.height,
                     )
                 });
                 self.pressed_action = action.contains_point(*pos);

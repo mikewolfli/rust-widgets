@@ -396,9 +396,13 @@ impl EmojiPicker {
             self.glyph_index.entry(glyph.id.clone()).or_insert(index);
         }
         let lookup = &self.glyph_index;
+        let had_recent = !self.recent.is_empty();
         self.recent.retain(|id| lookup.contains_key(id));
+        if had_recent && self.recent.is_empty() {
+            self.recent_tab_vanished();
+        }
         self.cursor = None;
-        self.hovered = None;
+        self.clear_hover();
         self.invalidate_visible();
         self.glyph_metrics.borrow_mut().entries.clear();
         self.base.request_redraw();
@@ -413,7 +417,7 @@ impl EmojiPicker {
     pub fn set_categories(&mut self, categories: Vec<Category>) {
         self.categories = categories;
         self.active_tab = 0;
-        self.hovered = None;
+        self.clear_hover();
         self.invalidate_visible();
         self.base.request_redraw();
     }
@@ -488,7 +492,7 @@ impl EmojiPicker {
         self.search.clear();
         self.search_lower.clear();
         self.cursor = None;
-        self.hovered = None;
+        self.clear_hover();
         self.invalidate_visible();
         self.base.request_redraw();
     }
@@ -506,7 +510,7 @@ impl EmojiPicker {
         self.search = search.to_string();
         self.search_lower = search.to_lowercase();
         self.cursor = None;
-        self.hovered = None;
+        self.clear_hover();
         self.invalidate_visible();
         self.base.request_redraw();
     }
@@ -522,11 +526,12 @@ impl EmojiPicker {
             return;
         }
         self.recent_capacity = capacity;
+        let had_recent = !self.recent.is_empty();
         if self.recent.len() > capacity {
             self.recent.truncate(capacity);
             // A trimmed recent list can hide the tab entirely.
-            if self.recent.is_empty() {
-                self.active_tab = 0;
+            if had_recent && self.recent.is_empty() {
+                self.recent_tab_vanished();
             }
             self.invalidate_visible();
         }
@@ -540,9 +545,11 @@ impl EmojiPicker {
 
     /// Clears the recent list.
     pub fn clear_recent(&mut self) {
+        if !self.recent.is_empty() {
+            self.recent_tab_vanished();
+        }
         self.recent.clear();
-        self.active_tab = 0;
-        self.hovered = None;
+        self.clear_hover();
         self.invalidate_visible();
         self.base.request_redraw();
     }
@@ -585,6 +592,30 @@ impl EmojiPicker {
     /// Whether the recent pseudo-category is the active tab.
     fn recent_tab_active(&self) -> bool {
         self.recent_tab_visible() && self.active_tab == 0
+    }
+
+    /// Keeps the tab selection on the same category when the Recent pseudo-tab appears.
+    ///
+    /// [`Self::tabs`] is `[Recent, ..categories]` while the recent list is non-empty, so every
+    /// category moves one slot. A bare index would silently switch the grid to the Recent tab
+    /// (or one category to the left) the moment the first glyph was chosen.
+    fn recent_tab_appeared(&mut self) {
+        self.active_tab = self.active_tab.saturating_add(1);
+    }
+
+    /// Keeps the tab selection on the same category when the Recent pseudo-tab disappears.
+    fn recent_tab_vanished(&mut self) {
+        self.active_tab = self.active_tab.saturating_sub(1);
+    }
+
+    /// Drops the hovered cell and tells a host that follows the caption about it.
+    ///
+    /// Every setter that rebuilds the projection used to clear `hovered` directly, leaving a
+    /// host's tooltip on a glyph the pointer is no longer over.
+    fn clear_hover(&mut self) {
+        if self.hovered.take().is_some() {
+            self.glyph_hover_changed.emit(String::new());
+        }
     }
 
     /// Whether `glyph` belongs to the current projection.
@@ -697,9 +728,15 @@ impl EmojiPicker {
         }
         // Most recent first, and never twice: a repeat choice moves the entry to the
         // front rather than duplicating it.
+        let had_recent = !self.recent.is_empty();
         self.recent.retain(|id| id != glyph_id);
         self.recent.insert(0, glyph_id.to_string());
         self.recent.truncate(self.recent_capacity);
+        if !had_recent && !self.recent.is_empty() {
+            // The Recent pseudo-tab has just appeared; keep the user on the category they
+            // were browsing instead of silently jumping to it.
+            self.recent_tab_appeared();
+        }
         self.invalidate_visible();
         self.glyph_chosen.emit(glyph_id.to_string());
         self.base.request_redraw();
@@ -789,6 +826,13 @@ impl EmojiPicker {
             return None;
         }
         let row = ((pos.y - grid_top) as u32 / CELL_SIZE) as usize;
+        // The draw stops at the first cell that would leave the control, so a strip below the
+        // last fully painted row holds no cell: mapping it to the next row index would hit-test
+        // (and commit) a glyph that is not on screen.
+        let cell_bottom = grid_top + ((row as u32 + 1) * CELL_SIZE) as i32;
+        if cell_bottom > rect.y + rect.height as i32 {
+            return None;
+        }
         let index = row * columns + column;
         (index < self.visible_len()).then_some(index)
     }
@@ -1685,6 +1729,83 @@ mod tests {
         p.choose("tick");
         p.choose("smile");
         assert_eq!(p.recent(), &["smile", "tick"], "no duplicate entry");
+    }
+
+    /// A strip below the last fully painted row holds no cell.
+    ///
+    /// # What this pins
+    ///
+    /// `draw_grid` stops at the first cell that would leave the control, but `cell_at` mapped
+    /// the leftover strip to the next row index, so a press there committed a glyph that was
+    /// never painted.
+    #[test]
+    fn a_partial_grid_row_below_the_control_holds_no_cell() {
+        let mut p = EmojiPicker::new(Rect::new(0, 0, 280, 240));
+        let table: Vec<EmojiGlyph> =
+            (0..60).map(|i| EmojiGlyph::new(format!("g{i}"), "a", "faces")).collect();
+        p.set_glyphs(table);
+        p.set_categories(vec!["faces".to_string()]);
+
+        let grid_top = (SEARCH_HEIGHT + TAB_HEIGHT) as i32;
+        let columns = p.columns();
+        // 240 - 56 = 184 px of grid: five 34 px rows end at 226, leaving a 14 px strip.
+        let last_full_row_top = grid_top + 4 * CELL_SIZE as i32;
+        assert_eq!(
+            p.cell_at(Point::new(2, last_full_row_top + 4)),
+            Some(4 * columns),
+            "the last fully painted row is still a row"
+        );
+        assert_eq!(
+            p.cell_at(Point::new(2, grid_top + 5 * CELL_SIZE as i32 + 4)),
+            None,
+            "the strip below the painted grid is not a row"
+        );
+    }
+
+    /// Choosing the first glyph keeps the user on the category they were browsing.
+    ///
+    /// # What this pins
+    ///
+    /// The first choice makes the Recent pseudo-tab appear at index 0, so every category moves
+    /// one slot. A bare numeric `active_tab` silently switched the grid to Recent.
+    #[test]
+    fn choosing_the_first_glyph_keeps_the_browsed_category() {
+        let mut p = picker();
+        p.set_active_tab(1); // symbols
+        assert_eq!(p.tabs()[1], "symbols");
+
+        p.choose("tick");
+        assert_eq!(p.active_tab(), 2, "the Recent tab moved every category one slot");
+        assert_eq!(p.tabs()[2], "symbols");
+        let visible: Vec<&str> = p.visible_glyphs().iter().map(|glyph| glyph.id.as_str()).collect();
+        assert_eq!(visible, vec!["tick", "cross"], "the grid still shows the browsed category");
+    }
+
+    /// Rebuilding the projection reports the hover leaving.
+    ///
+    /// # What this pins
+    ///
+    /// The setters that rebuild the grid cleared `hovered` directly, so a host caption stayed on
+    /// a glyph the pointer was no longer over.
+    #[test]
+    fn clearing_the_projection_reports_the_hover_leaving() {
+        let mut p = picker();
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let sink = std::sync::Arc::clone(&seen);
+        p.glyph_hover_changed.connect(move |caption| {
+            sink.lock().unwrap().push((*caption).clone());
+        });
+
+        let cell = p.cell_rect(0).expect("cell 0");
+        p.handle_event(&crate::event::Event::MouseMove { pos: Point::new(cell.x + 2, cell.y + 2) });
+        assert!(!seen.lock().unwrap()[0].is_empty(), "hovering names the glyph");
+
+        p.set_search("tick");
+        assert_eq!(
+            seen.lock().unwrap().last().map(String::as_str),
+            Some(""),
+            "a rebuilt grid tells the host the pointer is no longer over a glyph"
+        );
     }
 
     #[test]

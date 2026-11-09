@@ -9,6 +9,46 @@ use crate::event::Event;
 use std::sync::Arc;
 use std::sync::Mutex;
 
+/// A multi-row `Extended` selection survives a model change.
+///
+/// # What this pins
+///
+/// `normalize_projection_state` re-added the surviving rows one `select_row` at a time, and in
+/// `Extended` mode that call *replaces* the selection: every model/source change collapsed the
+/// selection to the last surviving row without announcing the loss.
+#[test]
+fn an_extended_selection_survives_a_model_change() {
+    struct FiveRows;
+    impl TableModel for FiveRows {
+        fn row_count(&self) -> usize {
+            5
+        }
+        fn column_count(&self) -> usize {
+            1
+        }
+        fn data(&self, row: usize, _column: usize) -> Option<String> {
+            (row < 5).then(|| "x".to_string())
+        }
+    }
+
+    let mut table = TableWidget::new(Rect::new(0, 0, 200, 200));
+    table.set_selection_mode(crate::widget::input_widgets::listbox::SelectionMode::Extended);
+    table.set_model(Arc::new(FiveRows));
+    let ctrl = crate::shortcut::Modifiers::CTRL;
+    table.select_row_with_modifiers(1, ctrl);
+    table.select_row_with_modifiers(2, ctrl);
+    table.select_row_with_modifiers(3, ctrl);
+    assert_eq!(table.selected_rows(), vec![1, 2, 3]);
+
+    // Re-binding the same model runs the normalisation pass again.
+    table.set_model(Arc::new(FiveRows));
+    assert_eq!(
+        table.selected_rows(),
+        vec![1, 2, 3],
+        "re-validating the rows must restore the whole set, not just the last row"
+    );
+}
+
 struct StaticTableModel;
 
 impl TableModel for StaticTableModel {

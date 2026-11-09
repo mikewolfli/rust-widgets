@@ -858,8 +858,19 @@ impl ListView {
         self.selection.rows().into_iter().filter(|row| *row < self.row_count()).collect()
     }
     /// Sets row selection mode.
+    ///
+    /// The new mode may allow fewer rows than are selected, and `set_mode` trims the set. The
+    /// highlight is painted from that model, so the control repaints and tells a mirroring host
+    /// which row survived.
     pub fn set_selection_mode(&mut self, mode: SelectionMode) {
+        if self.selection.mode() == mode {
+            return;
+        }
         self.selection.set_mode(mode);
+        if let Some(row) = self.selection.current_row() {
+            self.selection_changed.emit(row);
+        }
+        self.base.request_redraw();
     }
     /// Returns current selection mode.
     pub fn selection_mode(&self) -> SelectionMode {
@@ -960,11 +971,16 @@ impl ListView {
     }
 
     /// Sets the view mode.
+    ///
+    /// A mode change re-derives how many rows one line holds, so the line offset has to be
+    /// re-clamped: keeping the old line index in a denser grid starts the paint past the last
+    /// row and leaves the view blank and unclickable.
     pub fn set_view_mode(&mut self, mode: ViewMode) {
         if self.view_mode == mode {
             return;
         }
         self.view_mode = mode;
+        self.set_scroll_row(self.scroll_row);
         self.base.request_redraw();
     }
 
@@ -996,6 +1012,8 @@ impl ListView {
         // An open edit names a row too, so a shrinking model must not leave it pointing past the
         // end (RW-18).
         self.editing_row = self.editing_row.filter(|row| *row < row_count);
+        // The scroll offset is a line index, and the new model can be shorter than the old one.
+        self.set_scroll_row(self.scroll_row);
     }
 
     /// The empty/error captions this list paints when it has no rows (RW-17).
@@ -2031,6 +2049,38 @@ mod tests {
                 _ => None,
             }
         }
+    }
+
+    /// A mode change re-clamps the line offset.
+    ///
+    /// # What this pins
+    ///
+    /// `scroll_row` counts lines, and a grid mode puts several rows on one line. Keeping the
+    /// list-mode offset left the paint starting past the last row, so the view was blank and
+    /// unclickable until the host reset the scroll.
+    #[test]
+    fn a_mode_change_reclamps_the_scroll_offset() {
+        struct ManyRows;
+        impl ListModel for ManyRows {
+            fn row_count(&self) -> usize {
+                100
+            }
+            fn data(&self, row: usize) -> Option<String> {
+                (row < 100).then(|| "row".to_string())
+            }
+        }
+        let mut view = ListView::new(Rect::new(0, 0, 240, 120));
+        view.set_model(Arc::new(ManyRows));
+        view.set_scroll_row(99);
+        assert_eq!(view.scroll_row(), 99, "the list mode can reach its last line");
+
+        view.set_view_mode(ViewMode::Icon);
+        let lines = view.row_count().div_ceil(view.list_layout().columns.max(1) as usize);
+        assert!(
+            view.scroll_row() < lines.max(1),
+            "the offset stays inside the new grid: {} of {lines} lines",
+            view.scroll_row()
+        );
     }
 
     #[test]

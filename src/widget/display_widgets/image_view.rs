@@ -1384,6 +1384,13 @@ impl EventHandler for ImageView {
             return;
         }
         if !self.base.is_enabled() {
+            // A disable mid-pan leaves the drag armed: the early return skips the release and
+            // leave arms that clear it, so a re-enabled view would pan on the next pointer
+            // move with no button held.
+            if self.drag_last.take().is_some() {
+                self.interaction_until = None;
+                self.base.request_redraw();
+            }
             return;
         }
         match event {
@@ -1524,6 +1531,34 @@ mod tests {
     use super::*;
     use crate::render::{PaintBackend, SoftwarePaintBackend};
     use crate::widget::svg::render_to_svg;
+
+    /// Disabling mid-pan abandons the drag.
+    ///
+    /// # What this pins
+    ///
+    /// The disabled early return skipped the release/leave arms that clear `drag_last`, so a
+    /// re-enabled view panned on the next pointer move with no button held.
+    #[test]
+    fn disabling_mid_pan_abandons_the_drag() {
+        let mut view = ImageView::new(Image::new(), Rect::new(0, 0, 200, 200));
+        view.handle_event(&Event::MousePress {
+            pos: crate::core::Point::new(50, 50),
+            button: 1,
+            modifiers: 0,
+        });
+        view.set_enabled(false);
+        // The pending release still arrives while the view is disabled; the guard is what must
+        // abandon the drag, because the release arm is never reached.
+        view.handle_event(&Event::MouseRelease { pos: crate::core::Point::new(50, 50), button: 1 });
+        assert!(view.drag_last.is_none(), "a disabled view holds no pan gesture");
+        view.set_enabled(true);
+        view.handle_event(&Event::MouseMove { pos: crate::core::Point::new(80, 80) });
+        assert_eq!(
+            view.pan_offset(),
+            crate::core::Point::new(0, 0),
+            "a disabled pan must not resume on the next move"
+        );
+    }
 
     #[test]
     fn image_view_creation() {

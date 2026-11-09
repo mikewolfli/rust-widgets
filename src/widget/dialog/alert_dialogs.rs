@@ -869,6 +869,11 @@ impl AlertDialog {
 
     /// Sets the action Enter activates and repaints when the highlighted button changes.
     pub fn set_default_button(&mut self, index: usize) {
+        // The card paints one action, so only index 0 exists. Storing a larger index would make
+        // Enter activate a row that is not drawn.
+        if index != 0 {
+            return;
+        }
         if self.card.default_button == index {
             return;
         }
@@ -1274,6 +1279,11 @@ impl ConfirmDialog {
 
     /// Sets the action Enter activates and repaints when it changes.
     pub fn set_default_button(&mut self, index: usize) {
+        // The action row is reject/accept: an index past it has no button to emphasise, and
+        // Enter would otherwise activate an undefined row.
+        if index >= self.labels().len() {
+            return;
+        }
         if self.card.default_button == index {
             return;
         }
@@ -1750,6 +1760,10 @@ impl AboutDialog {
 
     /// Sets the action Enter activates and repaints when it changes.
     pub fn set_default_button(&mut self, index: usize) {
+        // The card paints one action ("Close"), so only index 0 exists.
+        if index != 0 {
+            return;
+        }
         if self.card.default_button == index {
             return;
         }
@@ -2117,6 +2131,29 @@ impl EventHandler for AboutDialog {
 mod tests {
     use super::*;
     use crate::core::Point;
+
+    /// An out-of-range default button is refused, so Enter cannot activate an undefined row.
+    ///
+    /// # What this pins
+    ///
+    /// All three alert cards stored any index; the painter emphasised nothing, yet Enter routed
+    /// the bogus index to `activate` (and every non-zero index accepts).
+    #[test]
+    fn an_out_of_range_default_button_is_refused() {
+        let mut alert = AlertDialog::new("t", "m", Rect::new(0, 0, 320, 160));
+        alert.set_default_button(3);
+        assert_eq!(alert.default_button(), 0, "the alert card paints one action");
+
+        let mut confirm = ConfirmDialog::new("t", "m", Rect::new(0, 0, 360, 170));
+        confirm.set_default_button(7);
+        assert_eq!(confirm.default_button(), 0, "the confirm row has two actions");
+        confirm.set_default_button(1);
+        assert_eq!(confirm.default_button(), 1, "a real action still takes");
+
+        let mut about = AboutDialog::new("a", "1", Rect::new(0, 0, 360, 200));
+        about.set_default_button(2);
+        assert_eq!(about.default_button(), 0, "the about card paints one action");
+    }
 
     /// Records how many times a payload-free signal fired.
     fn counter(signal: &GenericSignal) -> std::sync::Arc<std::sync::atomic::AtomicUsize> {

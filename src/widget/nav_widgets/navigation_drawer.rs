@@ -1202,7 +1202,11 @@ impl EventHandler for NavigationDrawer {
         // conventions (N-11). A persistent drawer (`modal == false`) keeps its position, which
         // is the same switch that governs item-selection dismissal.
         if let Event::KeyPress { key, .. } = event {
-            if *key == key_codes::ESCAPE && self.open && self.modal && self.auto_close_on_select {
+            // Escape follows the same switch as the scrim: an open **modal** drawer is
+            // dismissible. `auto_close_on_select` governs item selection only, and gating Escape
+            // on it left a modal drawer that had opted out of select-to-close un-dismissable by
+            // the keyboard while an outside press still closed it.
+            if *key == key_codes::ESCAPE && self.open && self.modal {
                 self.close();
                 return;
             }

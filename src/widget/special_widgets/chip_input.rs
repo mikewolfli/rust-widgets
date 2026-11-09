@@ -103,6 +103,24 @@ impl ChipInput {
         self.tags_changed.emit(tags);
     }
 
+    /// Reports the chips the band removed by itself (its close affordance).
+    ///
+    /// The band is a real control a pointer press is forwarded to; when it takes a chip away the
+    /// host still has to hear `chip_removed` and the new tag list.
+    fn note_band_removal(&mut self, before: Vec<String>) {
+        let after = self.band.items();
+        let removed: Vec<String> =
+            before.into_iter().filter(|id| !after.iter().any(|item| &item.id == id)).collect();
+        if removed.is_empty() {
+            return;
+        }
+        for id in removed {
+            self.chip_removed.emit(id);
+        }
+        self.emit_tags_changed();
+        self.base.request_redraw();
+    }
+
     /// The chip band, for a host that wants its selection or its signals.
     pub fn chip_band(&self) -> &Chip {
         &self.band
@@ -379,7 +397,14 @@ impl WidgetProperties for ChipInput {
 
     fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
         match name {
-            "items" => WidgetProperties::set(&mut self.band, "items", value),
+            "items" => {
+                // The band owns the rows, but this control owns the published `tags_changed`
+                // wire: a declarative write must report the new list like every other path.
+                WidgetProperties::set(&mut self.band, "items", value)?;
+                self.emit_tags_changed();
+                self.base.request_redraw();
+                Ok(())
+            }
             "text" => {
                 self.set_text(expect_string(value)?);
                 Ok(())
@@ -518,14 +543,20 @@ impl EventHandler for ChipInput {
                 // The chips are real controls; the text line only takes the press when it is
                 // outside the band.
                 if band.contains_point(*pos) {
+                    let before: Vec<String> =
+                        self.band.items().iter().map(|item| item.id.clone()).collect();
                     self.band.handle_event(event);
+                    self.note_band_removal(before);
                 } else if self.input_rect().contains_point(*pos) {
                     self.base.request_redraw();
                 }
             }
             Event::MouseMove { pos } | Event::MouseRelease { pos, .. } => {
                 if self.band.base().geometry().contains_point(*pos) {
+                    let before: Vec<String> =
+                        self.band.items().iter().map(|item| item.id.clone()).collect();
                     self.band.handle_event(event);
+                    self.note_band_removal(before);
                 }
             }
             Event::MouseLeave { .. } => self.band.handle_event(event),

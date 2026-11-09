@@ -370,7 +370,10 @@ impl CheckBox {
     }
     /// Returns true when the checkbox is partially checked (tristate).
     pub fn is_partially_checked(&self) -> bool {
-        self.state == CheckState::PartiallyChecked
+        // Effective state, not the stored latch: a box displaced by an exclusive peer reports
+        // `Unchecked` from `state()` and paints unchecked, so answering from the raw latch made
+        // the accessor disagree with the picture.
+        self.state() == CheckState::PartiallyChecked
     }
     /// Returns true when tristate behavior is enabled.
     pub fn is_tristate_enabled(&self) -> bool {

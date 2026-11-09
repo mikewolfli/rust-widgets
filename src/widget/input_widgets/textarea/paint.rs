@@ -894,8 +894,13 @@ impl TextArea {
     }
 
     /// The scrollbar's track rectangle, or `None` when the value fits the viewport (I-118).
-    fn scrollbar_track(&self) -> Option<(Rect, usize, usize)> {
-        let total = self.line_spans().len();
+    ///
+    /// The total is the number of **display rows**, the space `first_visible_line` and the
+    /// wheel/key scroll live in. It used to be the number of logical lines, so under soft wrap
+    /// the thumb was measured against a document shorter than the one being scrolled and could
+    /// never reach the wrapped rows at the end.
+    pub(crate) fn scrollbar_track(&self) -> Option<(Rect, usize, usize)> {
+        let total = self.display_rows().len();
         let visible = self.visible_line_count();
         if total <= visible {
             return None;

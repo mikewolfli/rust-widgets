@@ -367,9 +367,14 @@ impl ToolBox {
         if index < self.items.len() && self.current_index != index {
             self.current_index = index;
             self.scroll_current_into_view();
-            self.open_exclusive(index);
+            let flipped = self.open_exclusive(index);
             self.sync_pages();
             self.current_changed.emit(index);
+            // The pages the mode moved are part of the change: selecting a page opens it and (in
+            // the single-page modes) shuts the one that was open.
+            for (flipped_index, expanded) in flipped {
+                self.item_expanded_changed.emit((flipped_index, expanded));
+            }
             self.base.request_redraw();
         }
     }
@@ -389,12 +394,18 @@ impl ToolBox {
             return;
         }
         self.mode = mode;
+        let mut flipped = Vec::new();
         if !matches!(mode, ToolBoxMode::NonExclusive) {
             let keep = self.current_index.min(self.items.len().saturating_sub(1));
-            self.open_exclusive(keep);
+            flipped = self.open_exclusive(keep);
         }
         self.sync_pages();
         self.base.request_redraw();
+        // A mode change that closes pages is a real open-state change; a host mirroring the
+        // control cannot learn it from `current_changed`, which did not move.
+        for (index, expanded) in flipped {
+            self.item_expanded_changed.emit((index, expanded));
+        }
     }
 
     /// Whether the item at `index` has an open page, or `None` for an unknown index.
@@ -477,11 +488,15 @@ impl ToolBox {
         if self.items[index].expanded == expanded {
             return true;
         }
+        let mut flipped = Vec::new();
         if expanded {
             let previous = self.current_index;
             self.current_index = index;
-            self.open_exclusive(index);
+            // The requested item is reported below with the state that was asked for; the
+            // entries here are the siblings the mode displaced.
+            flipped = self.open_exclusive(index);
             self.items[index].expanded = expanded;
+            flipped.retain(|(flipped_index, _)| *flipped_index != index);
             if previous != index {
                 self.current_changed.emit(index);
             }
@@ -492,20 +507,35 @@ impl ToolBox {
         self.sync_pages();
         self.base.request_redraw();
         self.item_expanded_changed.emit((index, expanded));
+        for (flipped_index, flipped_expanded) in flipped {
+            self.item_expanded_changed.emit((flipped_index, flipped_expanded));
+        }
         true
     }
 
     /// Opens `keep` and closes every other item in the modes that allow one page only.
-    fn open_exclusive(&mut self, keep: usize) {
+    ///
+    /// Returns the indices whose open state it flipped, in display order, so the caller can
+    /// raise one [`Self::item_expanded_changed`] per real change instead of hiding them.
+    fn open_exclusive(&mut self, keep: usize) -> Vec<(usize, bool)> {
+        let mut flipped = Vec::new();
         if matches!(self.mode, ToolBoxMode::NonExclusive) {
             if let Some(item) = self.items.get_mut(keep) {
-                item.expanded = true;
+                if !item.expanded {
+                    item.expanded = true;
+                    flipped.push((keep, true));
+                }
             }
-            return;
+            return flipped;
         }
         for (index, item) in self.items.iter_mut().enumerate() {
-            item.expanded = index == keep;
+            let expanded = index == keep;
+            if item.expanded != expanded {
+                item.expanded = expanded;
+                flipped.push((index, expanded));
+            }
         }
+        flipped
     }
 
     /// Applies the page model to the mounted pages: every open item's page is shown and fills its
@@ -1628,6 +1658,49 @@ mod tests {
         tb.add_item("A".to_string(), None);
         tb.set_current_index(0); // already 0, should not emit signal
         assert_eq!(tb.selected_index().unwrap_or(0), 0);
+    }
+
+    /// Every open-state flip the mode makes is announced, including the ones the user did not
+    /// directly ask for.
+    ///
+    /// # What this pins
+    ///
+    /// `open_exclusive` closed the other pages without raising `item_expanded_changed`, so
+    /// selecting a page, opening one through `set_item_expanded`, or enforcing the policy in
+    /// `set_mode` left a mirroring host showing pages the control had shut.
+    #[test]
+    fn every_open_state_flip_is_announced() {
+        let mut tb = ToolBox::new(Rect::new(0, 0, 200, 160));
+        tb.add_item("A".to_string(), None);
+        tb.add_item("B".to_string(), None);
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        tb.item_expanded_changed.connect_ref({
+            let seen = Arc::clone(&seen);
+            move |flip: &(usize, bool)| seen.lock().expect("lock").push(*flip)
+        });
+
+        // The first item starts open, so opening the second closes the first and opens it.
+        assert!(tb.set_item_expanded(1, true));
+        assert_eq!(
+            seen.lock().expect("lock").as_slice(),
+            [(1, true), (0, false)],
+            "the requested page and the one it displaced"
+        );
+
+        // Selecting a page opens it through the same policy and reports that flip too.
+        seen.lock().expect("lock").clear();
+        tb.set_current_index(0);
+        assert_eq!(seen.lock().expect("lock").as_slice(), [(0, true), (1, false)]);
+
+        // Enforcing the policy on an already-open stack reports each page it shuts.
+        tb.set_mode(ToolBoxMode::NonExclusive);
+        assert!(tb.set_item_expanded(1, true));
+        assert_eq!(tb.expanded_items(), vec![0, 1]);
+        seen.lock().expect("lock").clear();
+        tb.set_mode(ToolBoxMode::Exclusive);
+        // The current page (1) stays open; the other one is shut and reported.
+        assert_eq!(tb.expanded_items(), vec![1]);
+        assert_eq!(seen.lock().expect("lock").as_slice(), [(0, false)]);
     }
 
     // ── 4. Item count ─────────────────────────────────────────────────────

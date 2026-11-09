@@ -552,13 +552,15 @@ fn fitted_segment_label<'a>(
 
 impl EventHandler for CupertinoSegmentedControl {
     fn handle_event(&mut self, event: &Event) {
+        // The base records the press/grab state; forwarding only in the disabled branch left
+        // `grabbed` set after every successful click (the release never reached the base).
+        self.base.handle_event(event);
         match event {
             Event::MouseRelease { pos, button } => {
                 // A disabled control must not change its selection. Without this the
                 // `set_enabled(false)` API had no effect on this widget at all: the
                 // click was still accepted and `value_changed` still fired.
                 if !self.base.is_enabled() {
-                    self.base.handle_event(event);
                     return;
                 }
                 if *button != 1 || self.segments.is_empty() {
@@ -593,7 +595,7 @@ impl EventHandler for CupertinoSegmentedControl {
                 }
             }
             _ => {
-                self.base.handle_event(event);
+                // The base already saw the event at the top of this method.
             }
         }
     }

@@ -1287,6 +1287,37 @@ fn soft_wrap_adds_word_boundary_rows() {
     }
 }
 
+/// The scrollbar measures the same rows the scrolling does.
+///
+/// # The defect this pins
+///
+/// `scrollbar_track` totalled the *logical* lines while `first_visible_line` indexes *display*
+/// rows. With soft wrap on, the thumb was sized against a shorter document and its drag was
+/// capped below the real end, so the last wrapped rows could not be reached by thumb.
+#[test]
+fn the_scrollbar_measures_the_wrapped_rows_it_scrolls() {
+    let mut ta = TextArea::new(
+        "first line that is long enough to wrap around the field\nsecond line\nthird line"
+            .to_string(),
+        Rect::new(0, 0, 90, 40),
+    );
+    ta.set_soft_wrap(true);
+    let rows = ta.display_rows().len();
+    let logical = ta.line_count();
+    assert!(rows > logical, "the fixture must wrap: {rows} rows vs {logical} lines");
+
+    let (track, total, visible) =
+        ta.scrollbar_track().expect("the wrapped value overflows the field");
+    assert_eq!(total, rows, "the track totals display rows, not logical lines");
+    assert_eq!(visible, ta.visible_line_count());
+
+    // Dragging the thumb past the bottom of the track reaches the last window of the
+    // document — the same clamp the wheel and the caret use.
+    let max_first = rows.saturating_sub(visible);
+    ta.scrollbar_scroll_to(track.y + track.height as i32);
+    assert_eq!(ta.first_visible_line(), max_first);
+}
+
 /// The line budget drops the oldest lines and moves the caret with the surviving text.
 #[test]
 fn a_block_budget_drops_the_oldest_lines() {

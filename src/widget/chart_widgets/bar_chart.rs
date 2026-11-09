@@ -1538,6 +1538,9 @@ impl BarChart {
         if index < self.bars.len() {
             self.clear_value_transition();
             self.bars.remove(index);
+            // The hover names a category; a shorter chart may not have it any more. The paint
+            // maps the index through `categories - 1 - index`, which underflows in reverse mode.
+            self.revalidate_hover();
             self.data_revision = self.data_revision.wrapping_add(1);
             self.data_changed.emit(());
             self.base.request_redraw();
@@ -1551,6 +1554,9 @@ impl BarChart {
     pub fn clear_bars(&mut self) {
         self.clear_value_transition();
         self.bars.clear();
+        // A cleared chart has no category under the pointer; leaving the hover armed made the
+        // overlay read a slot that no longer exists.
+        self.revalidate_hover();
         self.data_revision = self.data_revision.wrapping_add(1);
         self.data_changed.emit(());
         self.base.request_redraw();
@@ -2511,11 +2517,10 @@ impl BarChart {
 
     /// The x pixel for a value in a horizontal plot.
     fn horizontal_value_pixel(&self, value: f64, y_min: f64, y_max: f64, plot_area: Rect) -> i32 {
-        let span = (y_max - y_min).max(f64::EPSILON);
-        let mut fraction = value / span;
-        if self.value_axis.reversed {
-            fraction = 1.0 - fraction;
-        }
+        // The same mapping the vertical plot uses: it subtracts the axis minimum and honours
+        // `AxisScale`/`reversed`. Dividing by the span alone pinned every bar toward the left
+        // edge and drew the value axis origin away from the tick labels.
+        let fraction = self.value_axis.fraction(value, y_min, y_max);
         plot_area.x + (plot_area.width as f64 * fraction) as i32
     }
 
@@ -2889,6 +2894,29 @@ impl EventHandler for BarChart {
 mod tests {
     use super::*;
     use crate::widget::svg::render_to_svg;
+
+    /// A horizontal bar starts at the value axis' minimum.
+    ///
+    /// # What this pins
+    ///
+    /// The horizontal mapping divided the value by the span alone: it ignored `y_min` (so a
+    /// 50-to-100 chart drew every bar as if the axis began at zero) and bypassed the axis scale.
+    #[test]
+    fn a_horizontal_bar_starts_at_the_axis_minimum() {
+        let mut chart = BarChart::new(Rect::new(0, 0, 300, 200));
+        chart.set_orientation(BarOrientation::Horizontal);
+        let plot = Rect::new(10, 10, 200, 100);
+        assert_eq!(
+            chart.horizontal_value_pixel(50.0, 50.0, 100.0, plot),
+            plot.x,
+            "the axis minimum sits on the plot's leading edge"
+        );
+        assert_eq!(
+            chart.horizontal_value_pixel(100.0, 50.0, 100.0, plot),
+            plot.x + plot.width as i32,
+            "the axis maximum sits on the trailing edge"
+        );
+    }
 
     /// RW-67: the primary-series carrier round-trips and preserves bar labels by position.
     #[test]

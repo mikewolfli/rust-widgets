@@ -253,9 +253,18 @@ impl GridWidget {
             return;
         }
         self.rows = rows;
+        // The page is an index into pages of `page_rows` rows; a shorter matrix may not have
+        // the page that was showing, which left the grid blank with no way to page back.
+        let pages = self.page_count();
+        let page = self.page.min(pages.saturating_sub(1));
+        let page_moved = page != self.page;
+        self.page = page;
         self.sync_cells();
         self.update_cell_dimensions();
         self.invalidate_frame_cache();
+        if page_moved {
+            self.page_changed.emit(page);
+        }
         self.base.request_redraw();
     }
     /// Returns the number of columns.
@@ -1760,13 +1769,15 @@ impl EventHandler for GridWidget {
 
         match *event {
             Event::MouseMove { pos } => {
-                if let Some(cell) = self.cell_at(pos) {
-                    if self.hovered_cell != Some(cell) {
-                        self.hovered_cell = Some(cell);
+                let next = self.cell_at(pos);
+                if self.hovered_cell != next {
+                    self.hovered_cell = next;
+                    if let Some(cell) = next {
                         self.cell_hovered.emit(cell);
                     }
-                } else {
-                    self.hovered_cell = None;
+                    // The hover wash is painted from `hovered_cell`; a backend repaints a move
+                    // only when the hovered *widget* changes, so the wash needs its own request.
+                    self.base.request_redraw();
                 }
             }
             Event::MousePress { pos, button: 1, .. } => {
@@ -1863,6 +1874,24 @@ impl EventHandler for GridWidget {
 mod tests {
     use super::*;
     use std::sync::{Arc, Mutex};
+
+    /// A shrunk row count brings the page back into range.
+    ///
+    /// # What this pins
+    ///
+    /// `set_rows` left `page` alone while `page_count()` collapsed, so the grid started past its
+    /// own last row and painted (and hit-tested) nothing.
+    #[test]
+    fn shrinking_the_rows_reclamps_the_page() {
+        let mut grid = GridWidget::with_dimensions(Rect::new(0, 0, 120, 80), 10, 2);
+        grid.set_page_rows(Some(2));
+        grid.set_page(2);
+        assert_eq!(grid.page(), 2);
+
+        grid.set_rows(3);
+        assert_eq!(grid.page(), 1, "three rows of two make two pages");
+        assert!(grid.cell_at(crate::core::Point::new(5, 5)).is_some(), "the grid still paints");
+    }
 
     #[test]
     fn with_dimensions_uses_columns_for_width_and_rows_for_height() {

@@ -772,7 +772,20 @@ impl ShortcutEditor {
     }
 
     fn restore_shortcut_state(&mut self) {
+        let previous = self.shortcuts.clone();
         self.shortcuts = self.history_target.borrow().clone();
+        // Undo/redo replaces every binding at once. `shortcut_changed` is the one published
+        // "binding changed" wire, so a host that persists bindings has to see each entry that
+        // came back different.
+        for entry in &self.shortcuts {
+            let unchanged = previous
+                .iter()
+                .find(|old| old.id == entry.id)
+                .is_some_and(|old| old.keys == entry.keys);
+            if !unchanged {
+                self.shortcut_changed.emit((entry.id.clone(), entry.keys.clone()));
+            }
+        }
         self.table_generation = self.table_generation.wrapping_add(1);
         self.base.request_redraw();
     }
@@ -1242,6 +1255,10 @@ impl EventHandler for ShortcutEditor {
                     match *key {
                         8 => {
                             self.filter_text.pop();
+                            // A new filter starts at the top of its own result set (I-112),
+                            // the rule `set_filter` applies; editing the buffer directly left
+                            // the scroll offset past the shortened list.
+                            self.scroll_offset = 0;
                             self.base.request_redraw();
                         }
                         27 => {
@@ -1251,6 +1268,7 @@ impl EventHandler for ShortcutEditor {
                         32..=126 => {
                             if let Some(ch) = char::from_u32(*key) {
                                 self.filter_text.push(ch);
+                                self.scroll_offset = 0;
                                 self.base.request_redraw();
                             }
                         }

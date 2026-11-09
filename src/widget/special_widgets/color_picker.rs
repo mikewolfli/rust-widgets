@@ -1083,9 +1083,12 @@ impl Draw for ColorPicker {
             ]);
             // The rainbow's stops are constant values, so they are recomputed only when the rail
             // moves — not once per frame as they were.
+            // The rainbow runs down the rail: `set_from_hue_point` reads the pointer's `y`. A
+            // horizontal gradient painted a different colour on every row than the one a click
+            // there selected.
             let rainbow = Gradient::linear(
                 Point::new(hue_rect.x, hue_rect.y),
-                Point::new(hue_rect.x + hue_rect.width as i32, hue_rect.y),
+                Point::new(hue_rect.x, hue_rect.y + hue_rect.height as i32),
             )
             .with_stops(
                 (0..=6)
@@ -1097,13 +1100,14 @@ impl Draw for ColorPicker {
                     })
                     .collect(),
             );
+            // Top is opaque and the bottom is transparent, matching `set_from_alpha_point`.
             let alpha = Gradient::linear(
                 Point::new(alpha_rect.x, alpha_rect.y),
-                Point::new(alpha_rect.x + alpha_rect.width as i32, alpha_rect.y),
+                Point::new(alpha_rect.x, alpha_rect.y + alpha_rect.height as i32),
             )
             .with_stops(vec![
-                GradientStop::new(0.0, self.color.with_alpha(0)),
-                GradientStop::new(1.0, self.color.with_alpha(255)),
+                GradientStop::new(0.0, self.color.with_alpha(255)),
+                GradientStop::new(1.0, self.color.with_alpha(0)),
             ]);
             let metrics = context.measure_text(hex_text, hex_font);
             *self.paint_cache.borrow_mut() = Some(ColorPickerPaintCache {

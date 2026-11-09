@@ -854,7 +854,11 @@ impl Draw for MiniChart {
             }
         };
         let effective_min = self.min_value;
-        let range = (effective_max - effective_min) as f32;
+        // Both ends are unsigned, so a minimum above the data's own maximum (or a minimum
+        // written after the points) would subtract the larger from the smaller and panic in a
+        // debug build. A degenerate range is a range of zero, which the ratio guards below
+        // already treat as the neutral value.
+        let range = effective_max.saturating_sub(effective_min) as f32;
 
         if self.show_axis_labels {
             let font = self.label_font();
@@ -929,7 +933,7 @@ impl Draw for MiniChart {
                     // Single data point: draw a small cross marker at the center
                     let cx = chart_origin_x + chart_area_w as i32 / 2;
                     let y_ratio = if range > 0.0 {
-                        (self.data[0].value - effective_min) as f32 / range
+                        self.data[0].value.saturating_sub(effective_min) as f32 / range
                     } else {
                         0.5
                     };
@@ -958,12 +962,12 @@ impl Draw for MiniChart {
                             + (chart_area_w as i32 * (i + 1) as i32 / (count - 1) as i32);
 
                         let y1_ratio = if range > 0.0 {
-                            (self.data[i].value - effective_min) as f32 / range
+                            self.data[i].value.saturating_sub(effective_min) as f32 / range
                         } else {
                             0.5
                         };
                         let y2_ratio = if range > 0.0 {
-                            (self.data[i + 1].value - effective_min) as f32 / range
+                            self.data[i + 1].value.saturating_sub(effective_min) as f32 / range
                         } else {
                             0.5
                         };
@@ -994,8 +998,11 @@ impl Draw for MiniChart {
                     let bx =
                         chart_origin_x + gap as i32 * (i + 1) as i32 + bar_width as i32 * i as i32;
 
-                    let bar_h_ratio =
-                        if range > 0.0 { (dp.value - effective_min) as f32 / range } else { 0.5 };
+                    let bar_h_ratio = if range > 0.0 {
+                        dp.value.saturating_sub(effective_min) as f32 / range
+                    } else {
+                        0.5
+                    };
                     let bar_h = (chart_area_h as f32 * scale_ratio(bar_h_ratio)) as u32;
 
                     if bar_h == 0 {
@@ -1076,6 +1083,27 @@ mod tests {
     use crate::core::{Color, Rect, Size};
     use crate::render::{PaintBackend, RenderContext, SoftwarePaintBackend};
     use crate::theme::AppearanceMode;
+
+    /// A minimum above the data's values is a degenerate range, not an underflow.
+    ///
+    /// # What this pins
+    ///
+    /// Both ends of the range are `u32`, so `set_range(50, 100)` over a point below 50
+    /// subtracted the larger from the smaller: a debug build panicked and a release build wrapped
+    /// to a huge ratio that painted off the plot.
+    #[test]
+    fn a_minimum_above_the_data_does_not_underflow() {
+        let mut chart = MiniChart::new(Rect::new(0, 0, 200, 150));
+        chart.set_range(50, 100);
+        chart.set_data(vec![DataPoint::new("a", 0), DataPoint::new("b", 120)]);
+        // The same for the single-point path, which reads the only value directly.
+        chart.set_data(vec![DataPoint::new("a", 0)]);
+        let mut backend = SoftwarePaintBackend::new(Size::new(200, 150), 1.0);
+        backend.begin_frame(Color::WHITE);
+        let mut context = RenderContext::new(&mut backend);
+        chart.draw(&mut context);
+        backend.end_frame();
+    }
 
     /// The one published name must resolve, and an unpublished one must not.
     #[test]

@@ -324,18 +324,23 @@ impl Accordion {
     ///
     /// Switching to single-expand with several sections open keeps the **first** open one and
     /// closes the rest, so the policy is true after the write rather than only for the next
-    /// toggle.
+    /// toggle. Every section closed by the policy raises `section_toggled`, because a host
+    /// mirroring the control would otherwise keep showing a body the control has shut.
     pub fn set_single_expand(&mut self, single_expand: bool) {
         if self.single_expand == single_expand {
             return;
         }
         self.single_expand = single_expand;
+        let mut closed: Vec<String> = Vec::new();
         if single_expand {
             // The first open section in display order stays open; every later one closes, so the
             // policy is true after the write rather than only for the next toggle.
             let mut keep = true;
             for section in &mut self.sections {
                 if section.expanded {
+                    if !keep {
+                        closed.push(section.id.clone());
+                    }
                     section.expanded = keep;
                     keep = false;
                 }
@@ -346,6 +351,9 @@ impl Accordion {
         self.sync_body_widgets();
         self.base.request_layout();
         self.base.request_redraw();
+        for id in &closed {
+            self.section_toggled.emit((id.clone(), false));
+        }
     }
 
     /// Whether the section owning `id` is open. `None` for an id no section owns.
@@ -428,16 +436,20 @@ impl Accordion {
     /// Opens or closes a section. Returns whether the state changed.
     ///
     /// The toggle event is emitted only when the state actually changed, so a host that mirrors
-    /// this control cannot be told twice about one press.
+    /// this control cannot be told twice about one press. Under `single_expand`, opening one
+    /// section closes the others through this same method, so each closed sibling raises its own
+    /// `section_toggled(.., false)` rather than vanishing behind the host's back.
     pub fn set_expanded(&mut self, id: &str, expanded: bool) -> bool {
         if self.is_expanded(id) != Some(!expanded) {
             // Either the id is unknown, or it is already in the requested state.
             return false;
         }
+        let mut displaced: Vec<String> = Vec::new();
         if expanded && self.single_expand {
             for section in &mut self.sections {
-                if section.id != id {
+                if section.id != id && section.expanded {
                     section.expanded = false;
+                    displaced.push(section.id.clone());
                 }
             }
         }
@@ -453,6 +465,9 @@ impl Accordion {
         self.base.request_redraw();
         self.sync_body_widgets();
         self.section_toggled.emit((id.to_string(), expanded));
+        for displaced_id in &displaced {
+            self.section_toggled.emit((displaced_id.clone(), false));
+        }
         true
     }
 
@@ -1102,6 +1117,38 @@ mod tests {
             seen.lock().expect("lock").as_slice(),
             [("a".to_string(), true), ("a".to_string(), false)]
         );
+    }
+
+    /// Single-expand reports every section it closes, not just the one it opened.
+    ///
+    /// # What this pins
+    ///
+    /// `set_expanded` closed the siblings through the policy loop without raising their
+    /// `section_toggled`, and `set_single_expand` did the same while enforcing the policy on an
+    /// already-open stack — so a host mirroring the control kept rendering closed bodies.
+    #[test]
+    fn single_expand_reports_the_sections_it_closes() {
+        let mut accordion = accordion();
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        accordion.section_toggled.connect_ref({
+            let seen = std::sync::Arc::clone(&seen);
+            move |toggle: &(String, bool)| seen.lock().expect("lock").push(toggle.clone())
+        });
+
+        assert!(accordion.set_expanded("a", true));
+        assert!(accordion.set_expanded("b", true));
+        assert_eq!(
+            seen.lock().expect("lock").as_slice(),
+            [("a".to_string(), true), ("b".to_string(), true), ("a".to_string(), false),]
+        );
+
+        // Enforcing the policy on an already-open stack reports each section it shuts.
+        accordion.set_single_expand(false);
+        assert!(accordion.set_expanded("a", true));
+        seen.lock().expect("lock").clear();
+        accordion.set_single_expand(true);
+        assert_eq!(accordion.expanded_ids(), vec!["a"]);
+        assert_eq!(seen.lock().expect("lock").as_slice(), [("b".to_string(), false)]);
     }
 
     #[test]

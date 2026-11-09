@@ -291,6 +291,13 @@ impl WizardDialog {
             self.base.remove_child_linked(id);
             crate::set_widget_visible(id, false);
         }
+        // A step before the current one shifts every later step down. Leaving the index alone
+        // would silently advance the wizard by one page, and a host mirroring `step_changed`
+        // would keep showing the step that is no longer current.
+        if index < self.current_step {
+            self.current_step -= 1;
+            self.step_changed.emit(self.current_step);
+        }
         if self.current_step >= self.steps.len() {
             self.current_step = self.steps.len().saturating_sub(1);
             self.step_changed.emit(self.current_step);
@@ -1836,6 +1843,31 @@ mod tests {
     use crate::core::Point;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+
+    /// Removing a step before the current one keeps the wizard on the same page.
+    ///
+    /// # What this pins
+    ///
+    /// The index was left untouched when an earlier step was removed, so the wizard silently
+    /// advanced by one page and no `step_changed` was emitted.
+    #[test]
+    fn removing_an_earlier_step_keeps_the_current_step() {
+        let mut wiz = WizardDialog::new(Rect::new(0, 0, 400, 300));
+        wiz.add_step("one", false);
+        wiz.add_step("two", false);
+        wiz.add_step("three", false);
+        assert!(wiz.go_to_step(2));
+
+        let seen = std::sync::Arc::new(AtomicUsize::new(0));
+        let counter = std::sync::Arc::clone(&seen);
+        wiz.step_changed.connect(move |_step: std::sync::Arc<usize>| {
+            counter.fetch_add(1, Ordering::SeqCst);
+        });
+
+        assert!(wiz.remove_page(0).is_some());
+        assert_eq!(wiz.current_step(), 1, "the same page stays current");
+        assert_eq!(seen.load(Ordering::SeqCst), 1, "the move is announced once");
+    }
 
     #[test]
     fn wizard_dialog_new_is_empty() {

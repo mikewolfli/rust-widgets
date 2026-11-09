@@ -178,7 +178,10 @@ impl RefreshControl {
     /// defect this method used to have in a different form.
     pub fn set_content(&mut self, widget: ObjectId) {
         if let Some(old) = self.content {
-            self.base.remove_child(old);
+            // Linked removal + hide: `remove_child` alone leaves the child's `parent` pointing at
+            // this control (a one-sided link) and leaves it painted by whatever renders it next.
+            self.base.remove_child_linked(old);
+            crate::set_widget_visible(old, false);
         }
         self.content = Some(widget);
         self.base.add_child_linked(widget);
@@ -188,7 +191,8 @@ impl RefreshControl {
     /// Clears the child, detaching it from the tree.
     pub fn clear_content(&mut self) {
         if let Some(old) = self.content.take() {
-            self.base.remove_child(old);
+            self.base.remove_child_linked(old);
+            crate::set_widget_visible(old, false);
             self.base.request_redraw();
         }
     }

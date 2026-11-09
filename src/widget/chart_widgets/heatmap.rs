@@ -568,12 +568,6 @@ impl Heatmap {
         let columns = column_labels.len();
         let rows = row_labels.len();
         self.values = values.into_iter().take(rows).map(|row| pad_row(row, columns)).collect();
-        // The display order is rebuilt from the new shape: a stale order would index rows that
-        // no longer exist, or omit rows the new data added.
-        self.row_order = (0..self.values.len()).collect();
-        self.column_order = (0..columns).collect();
-        self.rebuild_order();
-        self.legend_cache = None;
         // A matrix with fewer rows than labels leaves the missing rows empty rather than
         // shifting the present ones up, which would mislabel every row after the gap.
         while self.values.len() < rows {
@@ -581,6 +575,13 @@ impl Heatmap {
         }
         self.row_labels = row_labels;
         self.column_labels = column_labels;
+        // The display order is rebuilt *after* the new shape and labels are in place: rebuilt
+        // first, it measured the new rows against the old column labels, so a wider matrix
+        // indexed past the mean vector (a panic) and a narrower one kept a stale order.
+        self.row_order = (0..self.values.len()).collect();
+        self.column_order = (0..columns).collect();
+        self.rebuild_order();
+        self.legend_cache = None;
         self.hovered_cell = None;
         self.region_anchor = None;
         self.region_current = None;
@@ -1862,6 +1863,36 @@ mod tests {
     use super::*;
     use crate::core::Point;
     use crate::render::{PaintBackend, SoftwarePaintBackend};
+
+    /// A column-count change rebuilds the order from the new shape, not the old one.
+    ///
+    /// # What this pins
+    ///
+    /// `set_data` built the display order before assigning the new labels and padding the rows,
+    /// so clustering read the new (wider) rows against the old column count: a wider matrix
+    /// indexed past the mean vector and panicked.
+    #[test]
+    fn a_wider_matrix_rebuilds_the_column_order() {
+        let mut heatmap = Heatmap::new(Rect::new(0, 0, 240, 160));
+        heatmap.set_cluster_columns(true);
+        let cell = |value: f64| HeatmapCell::new(value);
+        heatmap.set_data(
+            vec!["r0".to_string(), "r1".to_string()],
+            vec!["c0".to_string(), "c1".to_string()],
+            vec![vec![cell(1.0), cell(2.0)], vec![cell(3.0), cell(4.0)]],
+        );
+        // Twice as many columns as before: the old order was sized for two.
+        heatmap.set_data(
+            vec!["r0".to_string(), "r1".to_string()],
+            vec!["a".to_string(), "b".to_string(), "c".to_string(), "d".to_string()],
+            vec![
+                vec![cell(4.0), cell(1.0), cell(3.0), cell(2.0)],
+                vec![cell(1.0), cell(4.0), cell(2.0), cell(3.0)],
+            ],
+        );
+        assert_eq!(heatmap.column_labels().len(), 4);
+        assert_eq!(heatmap.column_count(), 4);
+    }
 
     /// RW-70: the row-major matrix and the two label lists round-trip.
     #[test]

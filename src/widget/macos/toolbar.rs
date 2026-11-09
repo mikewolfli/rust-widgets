@@ -238,6 +238,13 @@ impl MacToolbar {
         self.layout_cache = None;
         self.base.request_layout();
         self.base.request_redraw();
+        // The slot width is derived from the icon size, so a larger icon folds more slots away.
+        // `overflow_changed` is how a host mirrors the folded set; only `set_items` raised it.
+        let overflow = self.overflow_indices().len();
+        if overflow != self.last_overflow_count {
+            self.last_overflow_count = overflow;
+            self.overflow_changed.emit(overflow);
+        }
     }
 
     /// Whether activating a slot also selects it.
@@ -349,10 +356,38 @@ impl MacToolbar {
         let width = self.slot_width();
         let height = self.slot_height();
         let flexible = self.flexible_extent();
+        let (mut rects, mut separator_x, mut overflow) =
+            Self::place_slots(&self.items, strip, width, height, flexible, strip.right());
+        // The overflow control sits on the strip's trailing end. When anything folds away the
+        // remaining slots have to stop before it: letting them run to the strip's edge painted the
+        // last one underneath the “…” button, which then claimed its presses.
+        if !overflow.is_empty() {
+            let limit = strip.right() - MAC_TOOLBAR_INSET - width as i32 - SLOT_GAP;
+            let placed = Self::place_slots(&self.items, strip, width, height, flexible, limit);
+            rects = placed.0;
+            separator_x = placed.1;
+            overflow = placed.2;
+        }
+        self.layout_cache = Some(ToolbarLayout { strip, icon_bits, rects, separator_x, overflow });
+    }
+
+    /// Places the slots from the strip's leading inset until `right_limit`.
+    ///
+    /// Returns the per-index rects, the x of each separator, and the action slots that did not
+    /// fit. Two passes use it: the first against the strip's own edge to learn whether anything
+    /// folds away, the second against the edge the overflow control will occupy.
+    fn place_slots(
+        items: &[MacToolbarItem],
+        strip: Rect,
+        width: u32,
+        height: u32,
+        flexible: u32,
+        right_limit: i32,
+    ) -> (Vec<Option<Rect>>, Vec<i32>, Vec<usize>) {
         let mut x = strip.x + MAC_TOOLBAR_INSET;
-        let mut rects = vec![None; self.items.len()];
-        let mut separator_x = Vec::with_capacity(self.items.len());
-        for (index, item) in self.items.iter().enumerate() {
+        let mut rects = vec![None; items.len()];
+        let mut separator_x = Vec::with_capacity(items.len());
+        for (index, item) in items.iter().enumerate() {
             let extent = match item.kind {
                 ToolbarItemKind::Separator => SEPARATOR_WIDTH,
                 ToolbarItemKind::FlexibleSpace => flexible,
@@ -361,19 +396,17 @@ impl MacToolbar {
             if matches!(item.kind, ToolbarItemKind::Item | ToolbarItemKind::WidgetSlot) {
                 let rect =
                     Rect::new(x, strip.y + ((strip.height - height) / 2) as i32, width, height);
-                if rect.x >= strip.x && rect.right() <= strip.right() {
+                if rect.x >= strip.x && rect.right() <= right_limit {
                     rects[index] = Some(rect);
                 }
             }
             separator_x.push(x);
             x += extent as i32 + SLOT_GAP;
         }
-        let overflow = (0..self.items.len())
-            .filter(|index| {
-                self.items[*index].kind == ToolbarItemKind::Item && rects[*index].is_none()
-            })
+        let overflow = (0..items.len())
+            .filter(|index| items[*index].kind == ToolbarItemKind::Item && rects[*index].is_none())
             .collect();
-        self.layout_cache = Some(ToolbarLayout { strip, icon_bits, rects, separator_x, overflow });
+        (rects, separator_x, overflow)
     }
 
     /// Installs a widget into the [`ToolbarItemKind::WidgetSlot`] at `index`.

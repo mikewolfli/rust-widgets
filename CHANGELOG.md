@@ -40,6 +40,35 @@ ships the DSH skill plugin, which touches no crate code.
 
 ### Fixed
 
+- **`OtpInput::backspace` panicked on an empty code.** The focus can be moved onto a later box
+  (a click, a Right arrow) while `value` is empty; the delete branch then computed
+  `len().saturating_sub(1)` — zero — and called `remove(0)` on the empty vector. It is a no-op now.
+- **A tool button reports its pointer click.** `ToggleButton` activated on press/release and on a
+  tap but emitted `clicked` only for the keyboard arm, so a host listening on the generic channel
+  saw every mouse-driven tool button as dead.
+- **A label activates a link only from a press on that link, and only while enabled.** The release
+  arm activated whatever link the pointer happened to be over, so a drag that ended on a link (or a
+  release on a disabled label) fired it. The press/release pair is tracked now.
+- **`ButtonGroup::set_checked_button` tells the selected member.** Only the displaced peer was
+  notified, so the member the caller selected kept painting and reporting unchecked.
+- **`CheckBox::is_partially_checked` answers from the effective state.** A box displaced by an
+  exclusive peer reports `Unchecked` from `state()`; the accessor read the raw latch instead.
+- **`Frame::set_mid_line_width` reaches the painter.** The width only gated the groove arm and the
+  groove was then drawn 1 px wide, so `1.0` and `5.0` painted identical pixels.
+- **Selecting an item in an `EditableComboBox` releases the popup grab.** `select_index` wrote
+  `expanded = false` directly instead of calling `collapse`, leaving the grab held so the next press
+  anywhere was routed to the combo.
+- **`CommandLink` keyboard activation requires focus, and a disabled link reports no hover.** The
+  Enter/Space arm fired for any key that reached the page; the hover arm emitted for a disabled link,
+  contradicting its own setter docs.
+- **`Ctrl+X` with no selection no longer deletes a character.** The cut fell through to
+  `backspace`, which deletes before the caret, so an empty cut became an edit.
+- **A disabled `Fab` drops its press latch**, and `RefreshControl`/`SafeArea`/`TabWidget` detach a
+  replaced child with `remove_child_linked` + hide rather than a one-sided `remove_child`.
+- **Escape dismisses an open modal `NavigationDrawer`** regardless of `auto_close_on_select`, which
+  only governs item selection — the drawer was otherwise un-dismissable by keyboard while an outside
+  press still closed it.
+
 - **A short file dialog shows its listing.** `list_rect` reserved the selected-file strip's band
   unconditionally, but the draw drops that strip when it does not fit. At the census rectangle
   (240 × 120) the reservation left the list one pixel short of a single row, so a dialog with
@@ -107,6 +136,66 @@ ships the DSH skill plugin, which touches no crate code.
   branch allocates its level list with `vec!` rather than a `Vec::new` + `resize`. Both were found
   by a clippy run that no gate performed, so `tools/check_macos_backends_clippy.sh` now lints the
   objc2 backend, the cocoa backend and the combination of the two with `-D warnings`.
+- **The per-control close reading closed its remaining families.** 56 semantic defects were fixed and
+  pinned across `display_widgets`/`dialog`, `chart_widgets`/`view_widgets`, `special_widgets`,
+  `companions`/`macos`/`cupertino`/`media_widgets` and the remaining `input_widgets`; the named
+  items the previous round deferred were all closed as well:
+  - `MiniChart` computed an unsigned range with `-`, so a minimum above the data panicked in debug.
+  - `Heatmap::set_data` rebuilt the column order before the new labels and row padding were in
+    place, so a wider matrix indexed past its mean vector.
+  - `EmojiPicker` hit-tested the partial strip below its grid, shifted `active_tab` when the Recent
+    pseudo-tab appeared or disappeared under it, and cleared `hovered` without telling a host.
+  - `FontDialog` selected the last row from a press below the column, and its wheel measured the
+    style column against the built-in list instead of the live one.
+  - `WizardDialog::remove_page` left `current_step` naming the page that shifted into place when an
+    earlier step was removed.
+  - `AlertDialog`/`ConfirmDialog`/`AboutDialog` accepted a `default_button` no row had, so Enter
+    activated an action that was never painted.
+  - `Switch` and `ImageView` kept their gesture latches across a disable, so a release or a pointer
+    move after re-enabling flipped the switch or resumed the pan.
+  - `MultiSelectComboBox` hit-tested rows against `geometry()` while painting them from
+    `field_band()`, and its `remove_item`/`clear_items` never raised `selection_changed`.
+  - `SuggestionPopup` clamped the highlight on a list or filter change silently; it now raises
+    `highlight_changed` for the row it moved to (once, with the final value).
+  - `TextArea`'s scrollbar totalled logical lines while scrolling display rows, so a soft-wrapped
+    document could not be scrolled to its end.
+  - `Accordion` and `ToolBox` now announce every section/page their single-expand policy closes,
+    not just the one the caller asked for, and `MdiArea` drops its drag latches when disabled.
+  - `BarChart` re-validates its hover on `remove_bar`/`clear_bars`, and its horizontal value axis
+    subtracts `y_min` (and honours the axis scale) instead of dividing by the span alone.
+  - `ChartWidget` reports the index it un-hovers when the data shrinks, and resolves its point
+    buckets inside the plot area rather than across the whole control.
+  - `FilterExpr::And::is_noop` required only one no-op child, so `without_column` turned a
+    multi-condition filter into “show everything”; an `And` is a no-op only when every child is.
+  - `TableWidget` re-validated its rows one `select_row` at a time, which collapsed an `Extended`
+    multi-selection to the last row on every model change; `ListView` re-clamps its line offset when
+    the view mode changes, and both publish the selection a mode change trims.
+  - `ImageGallery` forwards pointer events to its base state and clears its selection with its
+    images; `VirtualTable`'s hover band now includes the header offset.
+  - `CommandPalette` sliced the original title at an offset computed on its lowercased copy (a
+    panic for width-changing characters) and accepted printable key codes on top of committed text
+    (every character doubled on Windows-style hosts).
+  - `Breadcrumb` emitted its context-menu request twice; `ColorPicker` painted its hue/alpha rails
+    horizontally while resolving a pick by `y` (its snapshots changed accordingly).
+  - `GridWidget` re-clamps its page when the row count shrinks and repaints hovered-cell changes;
+    `SegmentedControl::set_item_enabled` publishes the value it moves to and drops the disabled
+    segment from the selected set; `ChipInput` publishes `tags_changed` for an `items` write and for
+    a chip its own band removes; `FreeformShapeWidget` and `CupertinoSegmentedControl` forward
+    events to their base state; `SplitButton` repaints hover/menu-highlight changes.
+  - `CupertinoDatePicker`'s countdown minute wheel used the minute value as a label-slot index;
+    `CupertinoNavigationBar` bounds custom-item hits to the bar band and keeps its title slot clear
+    of trailing items; `MaterialSnackbar` resolves a press against the sliding bar it paints.
+  - `MacToolbar` reserves the overflow control's width when anything folds away (two-pass layout)
+    and raises `overflow_changed` when `set_icon_size` changes the folded set; `MacStepper` stops
+    auto-repeating when disabled or hidden; `AnimatedImage` clears `playing` with its provider;
+    `SegmentedButton` publishes the selection its removals and mode changes leave behind.
+  - `FontComboBox` navigates the visible rows instead of mixing them with unfiltered indices, and its
+    popup ignores a press below the painted page; `Mention` and `SearchBar` add their scroll offsets
+    back to the row a click resolves; `ShortcutEditor` resets its scroll when its filter changes and
+    raises `shortcut_changed` for an undo/redo; `MaskedEdit` paints the caret on literal segments;
+    `Keyboard` keeps a dead key's accent when there is no precomposed form and clears the old grid's
+    gestures on a layout change; `AutoCompleteEdit`'s highlight stops at the painted window;
+    `ListBox` honours the press event's modifiers, so `Extended` is reachable by pointer.
 
 ### Added
 

@@ -1087,16 +1087,21 @@ impl EventHandler for Switch {
             Event::MouseRelease { pos, button: 1 } if self.pressed => {
                 self.pressed = false;
                 let drag = self.drag.take();
-                match drag {
-                    // A real drag commits the side the thumb was released on: crossing the
-                    // track's midpoint is what turns the switch on (or back off).
-                    Some(drag) if drag.moved => {
-                        self.set_checked(self.travel.value() >= 0.5);
-                    }
-                    // A press that never moved is still a click, which toggles.
-                    _ => {
-                        if self.base.contains_point_with_touch_expansion(*pos) {
-                            self.toggle();
+                // A disable between press and release takes the gesture out of play: the
+                // release must clear the latch without flipping a control the host has just
+                // disabled.
+                if enabled {
+                    match drag {
+                        // A real drag commits the side the thumb was released on: crossing the
+                        // track's midpoint is what turns the switch on (or back off).
+                        Some(drag) if drag.moved => {
+                            self.set_checked(self.travel.value() >= 0.5);
+                        }
+                        // A press that never moved is still a click, which toggles.
+                        _ => {
+                            if self.base.contains_point_with_touch_expansion(*pos) {
+                                self.toggle();
+                            }
                         }
                     }
                 }
@@ -1117,7 +1122,7 @@ impl EventHandler for Switch {
             #[cfg(feature = "touch")]
             Event::TouchEnd { pos, .. } if self.pressed => {
                 self.pressed = false;
-                if self.base.contains_point_with_touch_expansion(*pos) {
+                if enabled && self.base.contains_point_with_touch_expansion(*pos) {
                     self.toggle();
                 }
                 self.request_frame_repaint(None);
@@ -1184,6 +1189,24 @@ mod tests {
     use crate::core::Point;
     use crate::widget::metrics::dimensions;
     use std::sync::{Arc, Mutex};
+
+    /// A release after the switch is disabled does not flip it.
+    ///
+    /// # What this pins
+    ///
+    /// The release arm had no `enabled` test, so a disable between press and release still
+    /// toggled the control and emitted `toggled`.
+    #[test]
+    fn a_release_after_disable_does_not_flip_the_switch() {
+        let mut sw = Switch::new(Rect::new(0, 0, 60, 30));
+        sw.handle_event(&Event::MousePress { pos: Point::new(10, 15), button: 1, modifiers: 0 });
+        assert!(sw.is_pressed(), "the press arms the switch");
+
+        sw.set_enabled(false);
+        sw.handle_event(&Event::MouseRelease { pos: Point::new(10, 15), button: 1 });
+        assert!(!sw.is_checked(), "a disabled switch must not toggle on release");
+        assert!(!sw.is_pressed(), "the latch is still cleared");
+    }
 
     #[test]
     fn switch_default_is_unchecked() {

@@ -778,13 +778,16 @@ impl ListBox {
         self.current_row
     }
     /// Selects item at a pixel position (maps screen coords to item index).
-    fn select_at_pos(&mut self, pos: Point) {
+    fn select_at_pos(&mut self, pos: Point, modifiers: u32) {
         if let Some(item_index) = self.item_index_at_y(pos) {
-            // `Event::MousePress` carries no modifier mask, so a backend that wants
-            // ctrl-toggle / shift-extend folds the modifiers into the event it
-            // translates and calls `select_with_modifiers` instead of relying on
-            // this path. What a press *can* express is reaching here.
-            self.select(item_index);
+            // `Event::MousePress` does carry a modifier mask (`modifiers`), so an `Extended`
+            // selection can honour Shift/Ctrl here after all; before this it replaced the whole
+            // selection on every click, making the mode's documented pointer behaviour
+            // unreachable.
+            self.select_with_modifiers(
+                item_index,
+                crate::shortcut::Modifiers::from_event_bits(modifiers),
+            );
             self.base.clicked.emit();
         }
     }
@@ -1694,8 +1697,8 @@ impl EventHandler for ListBox {
             return;
         }
         match event {
-            Event::MousePress { pos, button, .. } if *button == 1 => {
-                self.select_at_pos(*pos);
+            Event::MousePress { pos, button, modifiers } if *button == 1 => {
+                self.select_at_pos(*pos, *modifiers);
             }
             Event::MouseMove { pos } => {
                 // Hover is the row the pointer is over, from the same `row_rect` the paint and the
@@ -1733,7 +1736,8 @@ impl EventHandler for ListBox {
             }
             #[cfg(feature = "touch")]
             Event::TouchBegin { pos, .. } => {
-                self.select_at_pos(*pos);
+                // Touch carries no modifier mask: a contact is always an unmodified select.
+                self.select_at_pos(*pos, 0);
             }
             #[cfg(feature = "touch")]
             Event::Tap { pos } => {
@@ -2144,6 +2148,33 @@ mod tests {
             lb.add_item(format!("Item {index}"));
         }
         lb
+    }
+
+    /// A Shift-click extends from the anchor, because the press does carry modifiers.
+    ///
+    /// # What this pins
+    ///
+    /// `select_at_pos` discarded the event's modifier mask (its doc claimed there was none), so in
+    /// `Extended` mode every press replaced the whole selection and the mode's documented
+    /// Shift/Ctrl pointer behaviour was unreachable.
+    #[test]
+    fn a_shift_click_extends_the_selection() {
+        let mut list = listbox_with(4);
+        list.set_selection_mode(SelectionMode::Extended);
+        let first = list.row_rect(0).expect("row 0");
+        list.handle_event(&crate::event::Event::MousePress {
+            pos: crate::core::Point::new(20, first.y + 5),
+            button: 1,
+            modifiers: 0,
+        });
+        let third = list.row_rect(2).expect("row 2");
+        list.handle_event(&crate::event::Event::MousePress {
+            pos: crate::core::Point::new(20, third.y + 5),
+            button: 1,
+            // Event bit 0 is the physical Shift key.
+            modifiers: 1,
+        });
+        assert_eq!(list.selected_indices(), &[0, 1, 2]);
     }
 
     #[test]

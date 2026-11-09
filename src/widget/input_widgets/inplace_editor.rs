@@ -254,8 +254,9 @@ impl InplaceEditor {
     /// Steps back one committed edit and returns `true`, or `false` when there is
     /// nothing to undo.
     ///
-    /// Only committed values are undoable: text edited in the box but not yet
-    /// accepted is not on the stack. The cursor is moved to the end of the
+    /// Edits made inside the box are undoable like any other text edit (a typed run merges into
+    /// one word-sized step). [`Self::finish_edit`] with `accept = false` restores the value; it
+    /// does not itself become an undo step. The cursor is moved to the end of the
     /// restored text.
     pub fn undo(&mut self) -> bool {
         if self.undo_stack.undo().is_err() {

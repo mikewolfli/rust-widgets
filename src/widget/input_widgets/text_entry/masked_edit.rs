@@ -1363,6 +1363,32 @@ impl Draw for MaskedEdit {
                             mask_ink,
                             HorizontalAlignment::Left,
                         );
+                        // The caret can land on a literal: after a completed group the mask's
+                        // separator is the next editable position. Drawing it only under
+                        // `Input` made the caret vanish for the keystroke that completed a cell.
+                        if self.focused
+                            && !self.read_only
+                            && is_enabled
+                            && seg_idx == self.cursor_pos
+                            && self.cursor_blink.is_visible()
+                        {
+                            context.fill_rect(
+                                Rect::new(
+                                    draw_x,
+                                    geom.y + 2,
+                                    (char_width as i32).min(remaining_w).max(1) as u32,
+                                    geom.height.saturating_sub(4),
+                                ),
+                                caret_color,
+                            );
+                            context.draw_text(
+                                Point::new(draw_x, inner_top),
+                                ch.encode_utf8(&mut glyph),
+                                font,
+                                caret_color,
+                                HorizontalAlignment::Left,
+                            );
+                        }
                         display_x += char_width as i32;
                     }
                     MaskSegment::Input { .. } => {

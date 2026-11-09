@@ -515,7 +515,12 @@ impl SegmentedButton {
         self.allows_multiple = allows;
         if !allows && self.selected.len() > 1 {
             self.selected.truncate(1);
+            // The set just lost members; the published "selected changed" wire has to say so.
+            if let Some(index) = self.selected.first().copied() {
+                self.current_changed.emit(index);
+            }
         }
+        self.publish_group_selection();
         self.base.request_redraw();
     }
 
@@ -548,6 +553,12 @@ impl SegmentedButton {
                     *sel -= 1;
                 }
             }
+            // The row and its index are both gone; a host mirroring the selection would keep the
+            // old index without this, and a grouped sibling would keep the old value.
+            if let Some(selected) = self.selected.first().copied() {
+                self.current_changed.emit(selected);
+            }
+            self.publish_group_selection();
             self.base.request_redraw();
             Some(removed)
         } else {

@@ -1169,6 +1169,11 @@ mod tests {
         let mut sb = MaterialSnackbar::new(Rect::new(0, 0, 375, 100));
         sb.set_message("Hello");
         sb.show();
+        // The bar slides in; settle it so the press lands on the painted bar. A bounded loop,
+        // not `while tick()`: the visible bar keeps reporting animation until it auto-dismisses.
+        for _ in 0..60 {
+            sb.tick(16);
+        }
 
         let fired = Arc::new(AtomicBool::new(false));
         let f = fired.clone();
@@ -1188,6 +1193,11 @@ mod tests {
         sb.set_message("File deleted");
         sb.set_action_text("Undo");
         sb.show();
+        // The press is resolved against the painted bar, which only reaches its resting slot
+        // once the entrance slide has settled.
+        for _ in 0..60 {
+            sb.tick(16);
+        }
 
         let fired = Arc::new(AtomicBool::new(false));
         let f = fired.clone();

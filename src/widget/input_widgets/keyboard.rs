@@ -223,6 +223,9 @@ impl Keyboard {
             KeyboardLayout::Numeric => self.build_numeric_layout(),
             KeyboardLayout::Emoji => self.build_emoji_layout(),
         }
+        // The presets take the same invalidation path `set_keys` documents: a gesture naming a
+        // cell of the old grid would otherwise survive into the new one.
+        self.reset_grid_latches();
         self.base.request_redraw();
     }
 
@@ -243,11 +246,20 @@ impl Keyboard {
     /// preset that was applied, because a caller-defined grid is not one of them.
     pub fn set_keys(&mut self, rows: Vec<Vec<KeyDefinition>>) {
         self.keys = rows;
+        self.reset_grid_latches();
+        self.base.request_redraw();
+    }
+
+    /// Clears the gestures that describe the grid being replaced.
+    ///
+    /// A held key, its repeat clock, the pressed cell and an open accent popup all name a
+    /// row/column of the old grid; carrying them into a new one paints the popup at the old
+    /// cell and commits a glyph the new layout does not have.
+    fn reset_grid_latches(&mut self) {
         self.held_key = None;
         self.repeat_elapsed = 0;
         self.accent_popup = None;
         self.pressed_key = None;
-        self.base.request_redraw();
     }
 
     /// The repeat and long-press rhythm (I-21).
@@ -761,13 +773,18 @@ impl Keyboard {
         }
         if let Some(dead) = self.dead_key.take() {
             if let Some(base) = code_char(code) {
-                let composed = compose_accent(dead, base).unwrap_or(base);
+                // No precomposed form keeps both characters, which is the documented contract:
+                // dropping the accent turned ` -> q into a bare "q".
+                let mut composed = String::new();
+                match compose_accent(dead, base) {
+                    Some(character) => composed.push(character),
+                    None => {
+                        composed.push(dead);
+                        composed.push(base);
+                    }
+                }
                 let uppercase = self.shift ^ self.caps_lock;
-                let text = if uppercase {
-                    composed.to_uppercase().to_string()
-                } else {
-                    composed.to_string()
-                };
+                let text = if uppercase { composed.to_uppercase().to_string() } else { composed };
                 self.text_committed.emit(text);
                 self.key_pressed.emit((code, 0));
                 self.base.clicked.emit();
@@ -1341,6 +1358,44 @@ impl Draw for Keyboard {
 mod tests {
     use super::*;
     use crate::core::Rect;
+
+    /// A dead key without a precomposed form keeps both characters.
+    ///
+    /// # What this pins
+    ///
+    /// `compose_accent(dead, base).unwrap_or(base)` dropped the accent exactly in the case the
+    /// docs say it must be kept, so ` -then-q committed a bare "q".
+    #[test]
+    fn a_dead_key_without_a_composition_keeps_both_characters() {
+        let mut kbd = Keyboard::new(Rect::new(0, 0, 400, 200));
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+        let sink = std::sync::Arc::clone(&seen);
+        kbd.text_committed.connect(move |text: std::sync::Arc<String>| {
+            *sink.lock().unwrap() = (*text).clone();
+        });
+        kbd.set_dead_key(Some('`'));
+        // Row 0, column 0 is the q key; `q has no precomposed form.
+        kbd.activate_key((0, 0));
+        let text = seen.lock().unwrap().clone();
+        assert_eq!(text.chars().count(), 2, "both the accent and the letter are committed: {text}");
+        assert!(text.starts_with('`'));
+        assert!(text.ends_with('q') || text.ends_with('Q'));
+    }
+
+    /// A layout change clears the gestures that describe the old grid.
+    ///
+    /// # What this pins
+    ///
+    /// `set_layout` rebuilt the grid but kept `accent_popup`/`held_key`, so an accent popup
+    /// opened on QWERTY survived into Numeric and painted (and committed) at the old cell.
+    #[test]
+    fn a_layout_change_clears_an_open_accent_popup() {
+        let mut kbd = Keyboard::new(Rect::new(0, 0, 400, 200));
+        // Row 0, column 2 is the e key, which carries accents.
+        assert!(kbd.show_accents(0, 2), "the e key carries accents");
+        kbd.set_layout(KeyboardLayout::Numeric);
+        assert!(kbd.accent_popup().is_none());
+    }
 
     #[test]
     fn keyboard_creation_defaults() {
