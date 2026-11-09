@@ -65,8 +65,12 @@ The DSH plugin market has no official index: **Discover lists only the index
 URLs a user adds.** This repository hosts a format-1 index for the plugin:
 
 ```
-https://cdn.jsdelivr.net/gh/mikewolfli/rust-widgets@main/dsh-plugin/market-index.json
+https://raw.githubusercontent.com/mikewolfli/rust-widgets/main/dsh-plugin/market-index.json
 ```
+
+Raw GitHub is used rather than a CDN branch URL because Discover follows no
+redirects and re-reads the index on its own cache TTL; a CDN that caches a branch
+for hours would keep serving a stale pin.
 
 Add it once under **Plugins → Discover**, then install from the card. The card's
 entry pins an exact commit, so that install is reproducible.

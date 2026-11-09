@@ -230,7 +230,7 @@ dsh plugin --profile web add "git+https://github.com/mikewolfli/rust-widgets.git
 ```
 
 The same bundle is listed in a format-1 index for **Plugins → Discover**:
-<https://cdn.jsdelivr.net/gh/mikewolfli/rust-widgets@main/dsh-plugin/market-index.json>.
+<https://raw.githubusercontent.com/mikewolfli/rust-widgets/main/dsh-plugin/market-index.json>.
 
 ## Verifying a change
 
