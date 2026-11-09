@@ -447,7 +447,14 @@ impl CodeEditor {
         }
         let severities = self.gutter_severities_scratch.borrow();
         let active_line = self.cursor.head.line;
-        let mut row = 0usize;
+        // The window starts at the first visible line, not at row 0; the gutter's row counter
+        // must therefore begin at that line's absolute visual row, or it compared a relative
+        // count against the absolute scroll offset and skipped everything.
+        let window_first_line = {
+            let window = self.viewport_lines_scratch.borrow();
+            window.first().copied().unwrap_or(0)
+        };
+        let mut row = self.line_to_visual_row(window_first_line);
         // One reusable label buffer for the whole gutter pass: `line_number_label`
         // through `format!` was a fresh allocation per visible row per frame.
         let mut number_buf = self.gutter_number_scratch.borrow_mut();

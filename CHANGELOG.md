@@ -40,7 +40,58 @@ ships the DSH skill plugin, which touches no crate code.
 
 ### Fixed
 
-- **`OtpInput::backspace` panicked on an empty code.** The focus can be moved onto a later box
+- **Code editor: soft-wrapped text, and every row after scrolling, painted nothing.** The row
+  painter counted from the viewport window's first entry instead of from its absolute visual row,
+  so once the scroll passed the window's slack every row was skipped; and a wrapped row's token
+  runs were discarded before drawing, so wrapped lines had selection chrome but no glyphs.
+- **Code editor: a multi-line selection indented with Tab instead of being replaced by one unit.**
+  The indent branch required the selection to start in the leading whitespace; a mid-line block
+  selection fell through to `insert`, which replaced the whole block with four spaces. Sorting a
+  selected range also hard-coded its post-sort selection to `(0,0)..last`, so the next keystroke
+  replaced almost the document.
+- **Code editor: Shift+Tab outdented only with Alt (unreachable on Windows), and AltGr ran Ctrl
+  shortcuts.** AltGr is reported as Ctrl+Alt, so typing an AltGr character also cut, undid or
+  selected all before the character arrived. Single-modifier shortcuts now ignore the pair.
+- **Code editor: line commands could panic on a stale caret line**, because only the end of
+  `start..=last` was clamped; duplicate/delete-line now clamp both ends.
+- **Code editor: find/goto text is chrome.** A read-only buffer now accepts query text, Tab no
+  longer focuses a hidden replace field, and the built-in regex quantifier `{n,}` is open-ended
+  again (it parsed as “exactly n”, so `find_all`/`replace_all` saw the wrong spans).
+- **Code editor: display setting changes now rebuild the row-prefix table and the measured
+  geometry.** Turning wrapping/line numbers/minimap off, or changing the tab width, font or
+  language through `set_config`, used to leave row mapping on the old ruler until the next edit.
+- **Markdown editor: a host replace request on a non-character-boundary range replaces nothing**
+  instead of panicking in `String::replace_range`; `find_next` advances past a multibyte match
+  instead of re-finding it forever; an outline jump clears the old selection; and pasting
+  multi-line text leaves the caret after the paste, not in the middle of it.
+- **Calendar**: the day grid and weekday header now agree for every `first_day_of_week` (Mon/Sun
+  were the only correct cases); keyboard selection respects the date bounds in Range mode; year
+  navigation from February 29 clamps instead of doing nothing; bounding setters prune the
+  multi-selection; multi-mode deselection announces the remaining primary; hiding the navigation
+  bar closes its menus; the `selected_dates` property goes through the public setter.
+- **Date/time editors**: year/month steps clamp the day (31st → February's last day) instead of
+  being rejected; bounding setters normalise an inverted pair and announce a value they clamp;
+  inverted ranges no longer make every write fail; `TimeEdit::step_up` at `23:59:59` is a no-op
+  instead of producing the earlier `23:00:00`; a custom `display_format` survives a format switch;
+  an unpainted clock face is not clickable; leaving the widget clears the ring highlight; the
+  meridiem section is unreachable on a 24-hour field; the embedded calendar receives the keys the
+  field forwards to it.
+- **`TabBar`**: a non-primary release no longer commits a drag; revoking `movable` or disabling
+  mid-drag cancels it; scrolling requires the scroll buttons and keeps the run at its painted
+  pitch; removing/moving/clearing repairs hover, drag and scroll state and emits
+  `current_changed`; toggling a tab's enabled state repaints.
+- **`PieMenu`**: `clear` and the trait `hide` reset an open submenu path; `set_current_index`
+  refuses a separator; `set_animation_progress` repaints.
+- **`RibbonBar`**: an empty tab no longer leaks a clip; the overflow marker toggles closed;
+  removing/clearing tabs remaps context tints, key tips and focus; a keyboard toggle repaints.
+- **`Dial`**: the notch ring no longer panics at small radii, `ratio` handles the full `i32` range,
+  a disable mid-drag clears the latch, and the painted hub is a real dead zone.
+- **`KeySequenceEdit`**: Escape ends recording through `stop_recording`; multi-chord captures and
+  `set_max_chords` announce the change and record history; undo restores the chord mirror; `Insert`
+  maps to its own virtual-key code (45, not Delete's 46); recording entry/exit repaints.
+- **`InplaceEditor`**: cancelling an edit now discards the undo entries the session pushed and
+  restores the shared history mirror. `UndoStack` gained `seal_merge_run`/`truncate_undo` for it.
+- - **`OtpInput::backspace` panicked on an empty code.** The focus can be moved onto a later box
   (a click, a Right arrow) while `value` is empty; the delete branch then computed
   `len().saturating_sub(1)` — zero — and called `remove(0)` on the empty vector. It is a no-op now.
 - **A tool button reports its pointer click.** `ToggleButton` activated on press/release and on a

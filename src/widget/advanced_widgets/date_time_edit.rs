@@ -438,12 +438,16 @@ impl DateTimeEdit {
     ///
     /// The current value is clamped up into the new range, so the widget never holds
     /// a value below its own minimum — which would make every later
-    /// [`DateTimeEdit::set_datetime`] call fail silently.
+    /// [`DateTimeEdit::set_datetime`] call fail silently. A minimum above the current
+    /// maximum raises the maximum with it, so the accepted range is never empty.
     pub fn set_minimum_datetime(&mut self, dt: DateTime) {
-        if self.minimum == dt {
+        if self.minimum == dt && self.maximum >= dt {
             return;
         }
         self.minimum = dt;
+        if self.maximum < dt {
+            self.maximum = dt;
+        }
         self.calendar_sync_dirty = true;
         self.clamp_to_range();
         self.base.request_redraw();
@@ -451,12 +455,14 @@ impl DateTimeEdit {
     /// Sets the inclusive upper bound for accepted values.
     ///
     /// The current value is clamped down into the new range, like
-    /// [`DateTimeEdit::set_minimum_datetime`] clamps up.
+    /// [`DateTimeEdit::set_minimum_datetime`] clamps up. A maximum below the minimum keeps
+    /// the minimum authoritative: the maximum rises back to it.
     pub fn set_maximum_datetime(&mut self, dt: DateTime) {
-        if self.maximum == dt {
+        let maximum = dt.max(self.minimum);
+        if self.maximum == maximum {
             return;
         }
-        self.maximum = dt;
+        self.maximum = maximum;
         self.calendar_sync_dirty = true;
         self.clamp_to_range();
         self.base.request_redraw();
@@ -464,11 +470,26 @@ impl DateTimeEdit {
     /// Moves the current value inside `minimum..=maximum` if it fell outside.
     ///
     /// Called by both bound setters so "the value is within the range" holds after
-    /// any sequence of calls. See [`clamp_ordered_range`] for why an inverted range
-    /// resolves to `minimum` — it keeps the widget usable instead of wedged at a
-    /// value no write can replace.
+    /// any sequence of calls. The value change is announced (`datetime_changed` and, by
+    /// what moved, the date/time signals) and the history mirror is kept on the value the
+    /// widget now holds. No undo entry is pushed: undoing a bound change would restore a
+    /// value below the widget's own minimum. See [`clamp_ordered_range`] for why an
+    /// inverted range resolves to `minimum`.
     fn clamp_to_range(&mut self) {
-        self.datetime = super::clamp_ordered_range(self.datetime, self.minimum, self.maximum);
+        let clamped = super::clamp_ordered_range(self.datetime, self.minimum, self.maximum);
+        if clamped != self.datetime {
+            let before = self.datetime;
+            self.datetime = clamped;
+            *self.history_target.borrow_mut() = clamped;
+            self.datetime_changed.emit(clamped);
+            if before.date != clamped.date {
+                self.date_changed.emit(clamped.date);
+            }
+            if before.time != clamped.time {
+                self.time_changed.emit(clamped.time);
+            }
+            self.base.request_redraw();
+        }
     }
     /// Stores the display-format pattern.
     ///
@@ -768,6 +789,14 @@ impl DateTimeEdit {
                 Self::shift_date(&mut next.date, days);
             }
         }
+        // `Date::set_year`/`set_month` leave the day alone, so a 31-day date stepped into
+        // a shorter month (or February 29 into a common year) became invalid and
+        // `set_datetime` rejected the whole step — the arrow key looked dead. Clamp to the
+        // target month's own length, which is the same rule `shift_date` applies.
+        if matches!(section, DateTimeSection::Year | DateTimeSection::Month) {
+            let day = next.date.day().min(next.date.days_in_month());
+            next.date.set_day(day);
+        }
         self.set_datetime(next);
     }
 
@@ -799,6 +828,10 @@ impl DateTimeEdit {
             DateTimeSection::Hour => next.time.set_hour(value as u8),
             DateTimeSection::Minute => next.time.set_minute(value as u8),
             DateTimeSection::Second => next.time.set_second(value as u8),
+        }
+        if matches!(section, DateTimeSection::Year | DateTimeSection::Month) {
+            let day = next.date.day().min(next.date.days_in_month());
+            next.date.set_day(day);
         }
         self.set_datetime(next);
         true
@@ -967,10 +1000,20 @@ impl DateTimeEdit {
         self.undo_stack.can_redo()
     }
     fn restore_history_datetime(&mut self) {
+        let before = self.datetime;
         self.restoring_history = true;
         self.datetime = *self.history_target.borrow();
         self.restoring_history = false;
         self.datetime_changed.emit(self.datetime);
+        // The date/time signals are the filtered views `set_datetime` publishes. An undo
+        // is a value change like any other, so a subscriber that only watches `date_changed`
+        // must see an undone date edit; emitting `datetime_changed` alone left it silent.
+        if before.date != self.datetime.date {
+            self.date_changed.emit(self.datetime.date);
+        }
+        if before.time != self.datetime.time {
+            self.time_changed.emit(self.datetime.time);
+        }
         self.base.request_redraw();
     }
 }
@@ -2126,5 +2169,65 @@ mod tests {
         let mut reference = Date::new(2020, 1, 1);
         DateTimeEdit::shift_date_by_walking(&mut reference, 100_000);
         assert_eq!(far, reference);
+    }
+
+    /// Month/year steps must clamp the day to the target month, or `set_datetime` rejects the
+    /// result and the arrow key appears to do nothing.
+    #[test]
+    fn stepping_month_from_a_31day_date_clamps_the_day() {
+        let mut edit = DateTimeEdit::new(Rect::new(0, 0, 220, 30));
+        edit.set_datetime(DateTime::new(Date::new(2024, 1, 31), Time::new(10, 0, 0, 0)));
+        edit.set_current_section(Some(DateTimeSection::Month));
+        edit.step_current_section(1);
+        assert_eq!(edit.datetime().date, Date::new(2024, 2, 29));
+
+        edit.set_datetime(DateTime::new(Date::new(2024, 2, 29), Time::new(10, 0, 0, 0)));
+        edit.set_current_section(Some(DateTimeSection::Year));
+        edit.step_current_section(1);
+        assert_eq!(edit.datetime().date, Date::new(2025, 2, 28));
+    }
+
+    /// Undo is a value change, so the filtered `date_changed`/`time_changed` views must fire
+    /// as well as `datetime_changed`.
+    #[test]
+    fn undo_emits_the_date_and_time_signals() {
+        let mut edit = DateTimeEdit::new(Rect::new(0, 0, 220, 30));
+        let start = DateTime::new(Date::new(2026, 6, 1), Time::new(10, 0, 0, 0));
+        let changed = DateTime::new(Date::new(2026, 6, 2), Time::new(11, 0, 0, 0));
+        edit.set_datetime(start);
+        edit.set_datetime(changed);
+
+        let dates = Arc::new(Mutex::new(Vec::new()));
+        let times = Arc::new(Mutex::new(Vec::new()));
+        {
+            let sink = Arc::clone(&dates);
+            edit.date_changed.connect(move |day| sink.lock().unwrap().push(*day));
+        }
+        {
+            let sink = Arc::clone(&times);
+            edit.time_changed.connect(move |time| sink.lock().unwrap().push(*time));
+        }
+
+        assert!(edit.undo());
+        assert_eq!(edit.datetime(), start);
+        assert_eq!(*dates.lock().unwrap(), vec![Date::new(2026, 6, 1)]);
+        assert_eq!(*times.lock().unwrap(), vec![Time::new(10, 0, 0, 0)]);
+    }
+
+    /// A bound change that moves the value is announced; it is not pushed as an undo entry,
+    /// because undoing it would restore a value below the new minimum.
+    #[test]
+    fn changing_the_range_emits_datetime_changed() {
+        let mut edit = DateTimeEdit::new(Rect::new(0, 0, 220, 30));
+        edit.set_datetime(DateTime::new(Date::new(2026, 6, 1), Time::new(10, 0, 0, 0)));
+        let announced = Arc::new(Mutex::new(None));
+        let sink = Arc::clone(&announced);
+        edit.datetime_changed.connect(move |dt| *sink.lock().unwrap() = Some(*dt));
+
+        let lower = DateTime::new(Date::new(2026, 6, 1), Time::new(12, 0, 0, 0));
+        edit.set_minimum_datetime(lower);
+
+        assert_eq!(edit.datetime(), lower);
+        assert_eq!(*announced.lock().unwrap(), Some(lower));
     }
 }

@@ -230,8 +230,10 @@ impl CodeEditor {
         let mut matches = Vec::new();
         for (line_index, line) in model.lines.iter().enumerate() {
             // A line shorter than the needle cannot contain it; this is a byte-length test,
-            // and a line's byte length is never below its character count.
-            if line.len() < needle.len() {
+            // and a line's byte length is never below its character count. The pruning is
+            // only valid for a literal: a regex pattern's character count says nothing about
+            // the length of what it matches (`\d+` is four characters and matches one digit).
+            if !options.use_regex && line.len() < needle.len() {
                 continue;
             }
             if options.use_regex {
@@ -844,10 +846,17 @@ fn parse_quantifier(pattern: &[char], index: usize) -> (usize, Option<usize>, us
             }
             let body: String = pattern[index + 1..end].iter().collect();
             let mut parts = body.split(',');
-            let min = parts.next().and_then(|part| part.trim().parse::<usize>().ok());
-            let max = parts.next().and_then(|part| part.trim().parse::<usize>().ok());
-            match min {
-                Some(min) => (min, max.or(Some(min)), end + 1),
+            let first = parts.next().and_then(|part| part.trim().parse::<usize>().ok());
+            let second = parts.next();
+            match first {
+                Some(min) => match second {
+                    // `{n}` is exactly n.
+                    None => (min, Some(min), end + 1),
+                    // `{n,}` is open-ended. The empty second component parses to `None`,
+                    // which used to be folded back to `Some(min)` — turning `a{2,}` into
+                    // “exactly two”, so `find_all`/`replace_all` saw the wrong spans.
+                    Some(part) => (min, part.trim().parse::<usize>().ok(), end + 1),
+                },
                 None => (1, Some(1), index),
             }
         }

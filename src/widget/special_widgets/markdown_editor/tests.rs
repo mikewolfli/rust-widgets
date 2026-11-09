@@ -669,3 +669,46 @@ fn mounted_find_bar_reflects_the_editor_query() {
     assert!(!editor.find_bar_visible());
     assert!(!editor.find_bar().is_visible());
 }
+
+/// A multibyte match used to trap `find_next`: the next origin was `current + 1` bytes,
+/// inside the character, so `str::get` failed and the wrap-around search found the same
+/// match forever.
+#[test]
+fn find_next_advances_past_a_multibyte_match() {
+    let mut editor = MarkdownEditor::new(Rect::new(0, 0, 420, 240));
+    editor.set_text("é foo é");
+
+    assert!(editor.find_next("é"));
+    let first = editor.cursor_col();
+    assert!(editor.find_next("é"));
+
+    assert!(editor.cursor_col() > first, "the second match is selected");
+    assert_eq!(editor.cursor_col(), 7, "the caret sits after the second é");
+}
+
+/// A replace request is data from the host. A range that is not on a character boundary
+/// used to reach `String::replace_range` and panic; the contract is "applies nothing".
+#[test]
+fn replace_request_on_non_boundary_range_replaces_nothing() {
+    let mut editor = MarkdownEditor::new(Rect::new(0, 0, 420, 240));
+    editor.set_text("é");
+    let request = ReplaceRequest { ranges: vec![(0, 1)], text: "x".to_string() };
+
+    assert_eq!(editor.apply_replace_request(&request), 0);
+    assert_eq!(editor.text(), "é");
+}
+
+/// Jumping through the outline is a move, not an edit: the old selection must not stay
+/// behind (the next keystroke would replace text that is no longer on screen).
+#[test]
+fn outline_jump_clears_a_stale_selection() {
+    let mut editor = MarkdownEditor::new(Rect::new(0, 0, 420, 240));
+    editor.set_text("# One\nalpha\n# Two");
+    editor.select_all();
+
+    assert!(editor.goto_outline(1));
+    editor.insert_text_at_cursor("X");
+
+    assert!(editor.text().contains("alpha"), "the old selection was not replaced");
+    assert!(editor.text().contains("# One"));
+}

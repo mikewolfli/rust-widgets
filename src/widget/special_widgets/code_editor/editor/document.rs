@@ -548,12 +548,24 @@ impl CodeEditor {
         self.minimap_line_count = 0;
         // The word index describes text that no longer exists.
         self.completion_index = None;
+        // Secondary carets are positions in the old text; keeping them let a later edit
+        // insert at stale (and possibly coincident) slots. A wholesale replacement takes
+        // the caret set with it, as `adopt_document` and a buffer switch already did.
+        self.extra_cursors.clear();
+        self.goal = CursorGoal::default();
         self.scale = DocumentScale::for_lines(self.line_count());
         // A level that forbids editing has to be reflected in the buffer the
         // widget already gates on, so every mutation entry point agrees without
         // repeating the check.
         self.clamp_cursor_to_document();
         self.refresh_derived_state();
+        // The new document can be much shorter than the old one. Both scroll fields are
+        // otherwise written only by scroll/caret paths, so a replacement while scrolled
+        // left a first row past the end and the viewport painted nothing.
+        let rows = self.visible_rows().max(1);
+        let max_first = self.total_visual_rows().saturating_sub(rows);
+        self.scroll_visual_row = self.scroll_visual_row.min(max_first);
+        self.scroll_line = self.visual_row_to_line(self.scroll_visual_row);
         // A wholesale replacement is a committed change like any other, so it advances the revision.
         // `set_text` does not route through `record_and_settle_inner` (it writes the model directly
         // and clears caches), so the bump is repeated here rather than inherited — otherwise a host

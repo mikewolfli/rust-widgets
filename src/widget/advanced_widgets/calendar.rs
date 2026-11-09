@@ -923,6 +923,7 @@ impl Calendar {
         if self.selected_date < date {
             self.set_selected_date(date);
         }
+        self.prune_selection_to_bounds();
         self.base.request_redraw();
     }
     /// Returns maximum date.
@@ -940,7 +941,25 @@ impl Calendar {
         if self.selected_date > date {
             self.set_selected_date(date);
         }
+        self.prune_selection_to_bounds();
         self.base.request_redraw();
+    }
+    /// Drops selected dates (and a pending range anchor) that the current bounds exclude.
+    ///
+    /// Only the primary `selected_date` is clamped by the bound setters above. The Multi/Range
+    /// set is a separate field, so without this a tightened bound left dates that `is_date_selected`
+    /// still reported, that the paint path still filled as selected, and that a click could no
+    /// longer deselect because the pointer path refuses out-of-range days.
+    fn prune_selection_to_bounds(&mut self) {
+        let (minimum, maximum) = (self.minimum_date, self.maximum_date);
+        let before = self.selected_dates.len();
+        self.selected_dates.retain(|date| *date >= minimum && *date <= maximum);
+        if self.selection_anchor.is_some_and(|date| date < minimum || date > maximum) {
+            self.selection_anchor = None;
+        }
+        if self.selected_dates.len() != before {
+            self.base.request_redraw();
+        }
     }
     /// Returns first day of week.
     pub fn first_day_of_week(&self) -> chrono::Weekday {
@@ -992,6 +1011,13 @@ impl Calendar {
             return;
         }
         self.navigation_bar_visible = visible;
+        if !visible {
+            // The menus are anchored to the bar's own title; with the bar hidden the anchor
+            // degenerates to nothing and the panel would be painted over the grid while the
+            // press path that could close it is gated on `navigation_bar_visible`.
+            self.month_menu_open = false;
+            self.year_menu_open = false;
+        }
         self.base.request_redraw();
     }
     /// Returns whether horizontal header is visible.
@@ -1044,13 +1070,15 @@ impl Calendar {
     }
     /// Shows next year in the grid (does not change selected date).
     pub fn show_next_year(&mut self) {
-        if let Some(next) = self.display_month.with_year(self.display_month.year() + 1) {
+        // Going through `advance_month` clamps the day: `with_year` returns `None` for a
+        // February 29 page stepping into a common year, which made the button a silent no-op.
+        if let Some(next) = advance_month(self.display_month, 12) {
             self.show_page(next);
         }
     }
     /// Shows previous year in the grid (does not change selected date).
     pub fn show_previous_year(&mut self) {
-        if let Some(prev) = self.display_month.with_year(self.display_month.year() - 1) {
+        if let Some(prev) = advance_month(self.display_month, -12) {
             self.show_page(prev);
         }
     }
@@ -1128,8 +1156,16 @@ impl Calendar {
         self.disabled_dates.binary_search(&date).is_ok()
     }
 
-    /// Selects `date` on behalf of the user, refusing a disabled day.
+    /// Selects `date` on behalf of the user, refusing a disabled or out-of-range day.
+    ///
+    /// The pointer path used to check the bounds itself while the keyboard path reached this
+    /// helper directly; `Single`/`Multi` happened to be covered by `set_selected_date`, but the
+    /// `Range` arm writes `selected_date`/`selected_dates` directly, so an arrow key could walk
+    /// the selection past `maximum_date` (and the paint path drew it as selected).
     fn select_from_user(&mut self, date: chrono::NaiveDate) {
+        if date < self.minimum_date || date > self.maximum_date {
+            return;
+        }
         if self.is_date_disabled(date) {
             return;
         }
@@ -1139,13 +1175,17 @@ impl Calendar {
                 if let Ok(index) = self.selected_dates.binary_search(&date) {
                     self.selected_dates.remove(index);
                     let mut affected = vec![date];
+                    // `selection_changed` names the new primary, and is silent when the primary
+                    // did not move. Emitting the removed date told hosts that a day the user just
+                    // deselected was the new selection; removing a non-primary row announced a
+                    // change that did not exist.
                     if self.selected_date == date {
                         if let Some(first) = self.selected_dates.first().copied() {
                             self.selected_date = first;
                             affected.push(first);
+                            self.selection_changed.emit(first);
                         }
                     }
-                    self.selection_changed.emit(date);
                     self.damage_dates(affected);
                 } else {
                     self.set_selected_date(date);
@@ -1555,13 +1595,13 @@ impl Calendar {
             Some(d) => d,
             None => return 0,
         };
-        let wd = first.weekday();
-        let from_mon = wd.num_days_from_monday();
-        match self.first_day_of_week {
-            chrono::Weekday::Mon => from_mon,
-            chrono::Weekday::Sun => (from_mon + 1) % 7,
-            _ => from_mon, // fallback
-        }
+        let from_mon = first.weekday().num_days_from_monday();
+        // Rotate by the *actual* first column. The previous form special-cased Monday and
+        // Sunday and fell back to Monday for Tuesday..Saturday, so the header (which rotates
+        // generically in `weekday_name_order`) and the day grid disagreed for five of the seven
+        // settings — the label above a column named a different weekday than the dates in it.
+        let first_column = self.first_day_of_week.num_days_from_monday();
+        (from_mon + 7 - first_column) % 7
     }
 
     /// The ISO-8601 week number of `date`, as the vertical header's label.
@@ -1817,14 +1857,10 @@ impl WidgetProperties for Calendar {
                         CapabilityValue::String(text),
                     )?);
                 }
-                self.selected_dates = dates;
-                self.selected_dates.sort_unstable();
-                self.selected_dates.dedup();
-                if let Some(last) = self.selected_dates.last().copied() {
-                    self.selected_date = last;
-                    self.show_page(last);
-                }
-                self.base.request_redraw();
+                // Go through the public setter: it is the one place that enforces the published
+                // invariants (bounds filter, Single-mode collapse, anchor reset, one signal, per-
+                // cell damage). Writing the field here skipped all five.
+                self.set_selected_dates(&dates);
                 Ok(())
             }
             "navigation_bar_visible" => {
@@ -1892,6 +1928,12 @@ impl EventHandler for Calendar {
         let _ = self.poll_calendar_mark_layer();
         self.base.handle_event(event);
         if !self.base.is_enabled() {
+            // A disable mid-hover must drop the wash: every event, including `MouseLeave`, is
+            // refused below, so a hovered day would stay highlighted for as long as the control
+            // remained disabled.
+            if self.hovered_date.take().is_some() {
+                self.base.request_redraw();
+            }
             return;
         }
         match event {
@@ -1943,7 +1985,8 @@ impl EventHandler for Calendar {
                         if panel.contains_point(*pos) {
                             let row = ((pos.y - panel.y) / 20).clamp(0, 4) as u32;
                             if let Some(year) = self.year_menu_option(row) {
-                                if let Some(date) = self.display_month.with_year(year) {
+                                let months = year - self.display_month.year();
+                                if let Some(date) = advance_month(self.display_month, months * 12) {
                                     self.show_page(date);
                                 }
                             }
@@ -2482,6 +2525,7 @@ impl Draw for Calendar {
                     // A hovered cell is a pointer affordance, not a state: one faint wash,
                     // skipped when the cell already owns a state colour or cannot be chosen.
                     if !blocked
+                        && self.base.is_enabled()
                         && self.hovered_date == Some(date)
                         && date != today
                         && !self.is_date_selected(date)
@@ -3678,5 +3722,160 @@ mod tests {
         assert!(cal.poll_calendar_mark_layer(), "a pending activation is applied");
         assert_eq!(*lock(&seen), Some(date(2026, 6, 3)));
         assert!(!cal.poll_calendar_mark_layer(), "the activation is drained once");
+    }
+
+    /// The header and the day grid must rotate by the same first column for **every**
+    /// `first_day_of_week`. The previous form special-cased Monday and Sunday and fell back to
+    /// Monday for the other five, so a column labelled `Wed` held another weekday's dates and a
+    /// click under the label selected the wrong day.
+    #[test]
+    fn every_first_day_of_week_aligns_the_header_with_the_day_columns() {
+        // 2026-07-01 is a Wednesday (`num_days_from_monday() == 2`).
+        for (first, column) in [
+            (chrono::Weekday::Mon, 2u32),
+            (chrono::Weekday::Tue, 1),
+            (chrono::Weekday::Wed, 0),
+            (chrono::Weekday::Thu, 6),
+            (chrono::Weekday::Fri, 5),
+            (chrono::Weekday::Sat, 4),
+            (chrono::Weekday::Sun, 3),
+        ] {
+            let mut cal = Calendar::new(Rect::new(0, 0, 300, 250));
+            cal.set_first_day_of_week(first);
+            cal.set_display_month(date(2026, 7, 1));
+            assert_eq!(cal.leading_blank_count(), column, "first column {first:?}");
+            let cell = cal.date_cell_rect(date(2026, 7, 1)).expect("day 1 is on the page");
+            let grid = cal.grid_rect();
+            assert_eq!(cell.x, grid.x + column as i32 * (grid.width / 7).max(1) as i32);
+        }
+    }
+
+    /// The keyboard path reaches `select_from_user`, which the pointer path bounded itself.
+    /// In `Range` mode the selection write is direct, so an arrow key walked past the bound.
+    #[test]
+    fn arrow_keys_in_range_mode_respect_minimum_and_maximum() {
+        let mut cal = Calendar::new(Rect::new(0, 0, 300, 250));
+        cal.set_minimum_date(date(2026, 6, 1));
+        cal.set_maximum_date(date(2026, 6, 10));
+        cal.set_selection_mode(CalendarSelectionMode::Range);
+        cal.set_selected_date(date(2026, 6, 10));
+        cal.handle_event(&Event::FocusGained { reason: FocusReason::Tab });
+
+        cal.handle_event(&Event::key_press(39, 0)); // Right
+        assert_eq!(cal.selected_date(), date(2026, 6, 10), "61 clamped to 10");
+        assert_eq!(cal.selected_dates(), &[date(2026, 6, 10)]);
+
+        cal.handle_event(&Event::key_press(37, 0)); // Left is still free to move
+        assert_eq!(cal.selected_date(), date(2026, 6, 9));
+    }
+
+    /// Stepping years on a February 29 page used `with_year`, which returns `None` for a
+    /// common year. The page silently stayed put; it must clamp to the 28th instead.
+    #[test]
+    fn year_navigation_from_feb_29_clamps_to_feb_28() {
+        let mut cal = Calendar::new(Rect::new(0, 0, 300, 250));
+        cal.set_display_month(date(2024, 2, 29));
+        cal.show_next_year();
+        assert_eq!(cal.display_month(), date(2025, 2, 28));
+        cal.show_previous_year();
+        assert_eq!(cal.display_month(), date(2024, 2, 28));
+    }
+
+    /// A tightened bound must prune the multi/range set, not only the primary date. Otherwise
+    /// the out-of-range dates stayed painted as selected and could no longer be clicked off.
+    #[test]
+    fn lowering_the_maximum_prunes_out_of_range_multi_selections() {
+        let mut cal = Calendar::new(Rect::new(0, 0, 300, 250));
+        cal.set_selection_mode(CalendarSelectionMode::Multi);
+        cal.set_selected_dates(&[date(2026, 6, 1), date(2026, 6, 2), date(2026, 6, 3)]);
+        cal.set_maximum_date(date(2026, 6, 2));
+        assert_eq!(cal.selected_dates(), &[date(2026, 6, 1), date(2026, 6, 2)]);
+    }
+
+    /// Deselecting in `Multi` mode used to announce the date that was just removed. The signal
+    /// names the new primary and stays silent when the removal did not move it.
+    #[test]
+    fn deselecting_in_multi_mode_announces_the_remaining_primary() {
+        use std::sync::{Arc, Mutex};
+
+        let mut cal = Calendar::new(Rect::new(0, 0, 300, 250));
+        cal.set_selection_mode(CalendarSelectionMode::Multi);
+        cal.set_selected_dates(&[date(2026, 6, 1), date(2026, 6, 2)]);
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        {
+            let sink = Arc::clone(&seen);
+            let scope = cal.connection_scope();
+            cal.selection_changed.connect_scoped(scope, move |day| sink.lock().unwrap().push(*day));
+        }
+
+        // The primary is the latest date; removing it promotes the remaining one.
+        cal.select_from_user(date(2026, 6, 2));
+        assert_eq!(cal.selected_date(), date(2026, 6, 1));
+        assert_eq!(*seen.lock().unwrap(), vec![date(2026, 6, 1)]);
+
+        // Removing a non-primary row changes no primary, so it must not announce one.
+        cal.set_selected_dates(&[date(2026, 6, 1), date(2026, 6, 2)]);
+        seen.lock().unwrap().clear();
+        cal.select_from_user(date(2026, 6, 1)); // primary is 06-02; this removes 06-01
+        assert_eq!(cal.selected_date(), date(2026, 6, 2));
+        assert!(seen.lock().unwrap().is_empty(), "no primary change, no signal");
+    }
+
+    /// Hiding the navigation bar has to close the menus it anchors, or the panel is painted
+    /// over the grid with no press path that can dismiss it.
+    #[test]
+    fn hiding_the_navigation_bar_closes_an_open_menu() {
+        let mut cal = Calendar::new(Rect::new(0, 0, 300, 260));
+        cal.set_dropdown_navigation(true);
+        let title = cal.month_title_rect();
+        cal.handle_event(&Event::mouse_press(title.x + 4, title.y + 4, 1));
+        assert!(cal.is_month_menu_open());
+
+        cal.set_navigation_bar_visible(false);
+        assert!(!cal.is_month_menu_open());
+    }
+
+    /// A disable mid-hover must drop the wash. Every event, `MouseLeave` included, is refused
+    /// while disabled, so the leave path alone cannot clear it.
+    #[test]
+    fn disabling_clears_the_hovered_day() {
+        let mut cal = Calendar::new(Rect::new(0, 0, 300, 250));
+        let day = date(2026, 6, 10);
+        cal.set_display_month(day);
+        let cell = cal.date_cell_rect(day).expect("the day is on the page");
+        cal.handle_event(&Event::mouse_move(cell.x + 4, cell.y + 4));
+        assert_eq!(cal.hovered_date, Some(day));
+
+        cal.set_enabled(false);
+        cal.handle_event(&Event::mouse_move(cell.x + 4, cell.y + 4));
+        assert_eq!(cal.hovered_date, None);
+    }
+
+    /// The `selected_dates` property must obey the same invariants as the method: bounds
+    /// filtering, one signal, and no stale anchor.
+    #[test]
+    fn the_selected_dates_property_obeys_mode_bounds_and_emits_once() {
+        use crate::widget::capability::{CapabilityValue, WidgetProperties};
+        use std::sync::{Arc, Mutex};
+
+        let mut cal = Calendar::new(Rect::new(0, 0, 300, 250));
+        cal.set_selection_mode(CalendarSelectionMode::Multi);
+        cal.set_minimum_date(date(2026, 6, 1));
+        cal.set_maximum_date(date(2026, 6, 2));
+        let announced = Arc::new(Mutex::new(0usize));
+        {
+            let sink = Arc::clone(&announced);
+            let scope = cal.connection_scope();
+            cal.selection_changed.connect_scoped(scope, move |_| *sink.lock().unwrap() += 1);
+        }
+
+        let value = CapabilityValue::Tuple(crate::compat::Vec::from([
+            CapabilityValue::String("2026-06-01".into()),
+            CapabilityValue::String("2026-06-05".into()),
+        ]));
+        WidgetProperties::set(&mut cal, "selected_dates", value).expect("the list is accepted");
+
+        assert_eq!(cal.selected_dates(), &[date(2026, 6, 1)], "06-05 is out of bounds");
+        assert_eq!(*announced.lock().unwrap(), 1, "the set change is announced once");
     }
 }

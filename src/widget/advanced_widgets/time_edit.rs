@@ -463,6 +463,11 @@ impl TimeEdit {
         }
         TimeSection::ORDER
             .into_iter()
+            // A 24-hour field paints no meridiem, so the fourth zone is blank space; a
+            // click there must not select a section whose value it cannot show.
+            .filter(|section| {
+                *section != TimeSection::AmPm || self.time_format == TimeFormat::TwelveHour
+            })
             .find(|section| self.section_zone(*section).contains_point(pos))
     }
 
@@ -501,7 +506,8 @@ impl TimeEdit {
             }
             TimeSection::AmPm => {
                 // Stepping the meridiem moves the hour by half a day, which is the only value
-                // change an AM/PM segment can express.
+                // change an AM/PM segment can express. A 24-hour field does not offer the
+                // segment in its hit test, but a caller may still select it programmatically.
                 if delta != 0 {
                     next.set_hour((next.hour() as i32 + 12).rem_euclid(24) as u8);
                 }
@@ -579,6 +585,16 @@ impl TimeEdit {
         )
     }
 
+    /// Whether the face is wide enough to be painted.
+    ///
+    /// The paint path refuses a face narrower than half the nominal diameter, because the
+    /// numerals would overlap into noise. The pointer path has to refuse the same box: a
+    /// face that is not drawn must not accept a click on the invisible rectangle below
+    /// the field.
+    fn clock_face_is_drawn(&self) -> bool {
+        self.clock_rect().width >= CLOCK_DIAMETER / 2
+    }
+
     /// The clock face's centre.
     fn clock_centre(&self) -> Point {
         let face = self.clock_rect();
@@ -597,7 +613,7 @@ impl TimeEdit {
     /// Returns `None` for the face's centre hole and for anything outside its rim, so a click that is
     /// not on either ring is not silently taken as one.
     fn hand_at_point(&self, point: Point) -> Option<ClockHand> {
-        if !self.clock_popup {
+        if !self.clock_popup || !self.clock_face_is_drawn() {
             return None;
         }
         let face = self.clock_rect();
@@ -743,10 +759,21 @@ impl TimeEdit {
             return;
         }
         self.time_format = format;
-        self.display_format = match format {
-            TimeFormat::TwentyFourHour => "HH:mm:ss".to_string(),
-            TimeFormat::TwelveHour => "hh:mm:ss AP".to_string(),
-        };
+        // Only replace a pattern this control wrote itself. An unconditional rewrite threw
+        // away a caller's `set_display_format(..)` on the next format switch, contradicting
+        // the field's own note that "a caller-supplied pattern is left untouched".
+        if matches!(self.display_format.as_str(), "HH:mm:ss" | "hh:mm:ss AP") {
+            self.display_format = match format {
+                TimeFormat::TwentyFourHour => "HH:mm:ss".to_string(),
+                TimeFormat::TwelveHour => "hh:mm:ss AP".to_string(),
+            };
+        }
+        // A 24-hour field has no meridiem segment to underline; keeping `AmPm` selected
+        // would leave a caret over a component the field does not paint.
+        if format == TimeFormat::TwentyFourHour && self.current_section == Some(TimeSection::AmPm) {
+            self.current_section = None;
+            self.digit_buffer.clear();
+        }
         self.base.request_redraw();
     }
     /// Sets the current time, subject to validity and the accepted range.
@@ -785,33 +812,42 @@ impl TimeEdit {
     ///
     /// The current time is clamped up into the new range, so the widget never holds
     /// a value below its own minimum — which would make every later
-    /// [`TimeEdit::set_time`] call fail silently.
+    /// [`TimeEdit::set_time`] call fail silently. A minimum above the current maximum
+    /// raises the maximum with it, so the accepted range is never empty.
     pub fn set_minimum_time(&mut self, time: Time) {
-        if self.minimum == time {
+        if self.minimum == time && self.maximum >= time {
             return;
         }
         self.minimum = time;
+        if self.maximum < time {
+            self.maximum = time;
+        }
         self.clamp_to_range();
         self.base.request_redraw();
     }
-    /// Sets the inclusive upper bound for accepted times.
-    ///
-    /// The current time is clamped down into the new range, like
-    /// [`TimeEdit::set_minimum_time`] clamps up.
+    /// Lowering the maximum below the minimum keeps the minimum authoritative: the
+    /// maximum rises back to it instead of dragging the minimum down, so the value stays at
+    /// a bound the widget accepts.
     pub fn set_maximum_time(&mut self, time: Time) {
-        if self.maximum == time {
+        let maximum = time.max(self.minimum);
+        if self.maximum == maximum {
             return;
         }
-        self.maximum = time;
+        self.maximum = maximum;
         self.clamp_to_range();
         self.base.request_redraw();
     }
     /// Sets both ends of the accepted range in one call.
     ///
-    /// The current time is clamped into the new range. If `min > max` (caller error)
-    /// the minimum wins, so the widget stays pinned at a bound it would accept rather
-    /// than being wedged at a value no write can replace.
+    /// The current time is clamped into the new range. An inverted pair (`min > max`)
+    /// is normalised to `max = min`: storing it as given left the clamp at a value above
+    /// `maximum`, so the documented "pinned at a bound it would accept" outcome was the
+    /// one state `set_time` refused.
     pub fn set_time_range(&mut self, min: Time, max: Time) {
+        let max = max.max(min);
+        if self.minimum == min && self.maximum == max {
+            return;
+        }
         self.minimum = min;
         self.maximum = max;
         self.clamp_to_range();
@@ -820,9 +856,18 @@ impl TimeEdit {
     /// Moves the current time inside `minimum..=maximum` if it fell outside.
     ///
     /// Called by every bound setter so "the value is within the range" holds after
-    /// any sequence of calls. See [`clamp_ordered_range`] for the inverted-range rule.
+    /// any sequence of calls. The move emits `time_changed` and keeps the history mirror on
+    /// the value the widget now holds; no undo entry is pushed, because undoing a bound
+    /// change would restore a time below the new minimum. See [`clamp_ordered_range`] for
+    /// the inverted-range rule.
     fn clamp_to_range(&mut self) {
-        self.time = super::clamp_ordered_range(self.time, self.minimum, self.maximum);
+        let clamped = super::clamp_ordered_range(self.time, self.minimum, self.maximum);
+        if clamped != self.time {
+            self.time = clamped;
+            *self.history_target.borrow_mut() = clamped;
+            self.time_changed.emit(clamped);
+            self.base.request_redraw();
+        }
     }
     /// Stores the display-format pattern.
     ///
@@ -837,11 +882,11 @@ impl TimeEdit {
     }
     /// Advances the time by one second, carrying into minutes and hours.
     ///
-    /// The millisecond component is left unchanged. The hour **does not wrap**:
-    /// from `23:59:59` the carry resets the minute and second to `0` but leaves
-    /// the hour at `23`, and the resulting time passes through
-    /// [`TimeEdit::set_time`], so a value beyond [`TimeEdit::maximum_time`] is
-    /// rejected and the time stays put. A successful step is undoable.
+    /// The millisecond component is left unchanged. The hour **does not wrap**: a step
+    /// from `23:59:59` is a no-op. (The previous form reset the minute and second while
+    /// leaving the hour at `23`, producing `23:00:00` — a value *earlier* than the one it
+    /// started from, and one `set_time` accepted because it is still inside the range.)
+    /// A successful step is undoable.
     pub fn step_up(&mut self) {
         let mut t = self.time;
         let new_sec = t.second() + 1;
@@ -849,10 +894,13 @@ impl TimeEdit {
             t.second = 0;
             let new_min = t.minute() + 1;
             if new_min >= 60 {
-                t.minute = 0;
-                if t.hour() < 23 {
-                    t.hour = t.hour() + 1;
+                if t.hour() >= 23 {
+                    // No hour to carry into, so the day would have to change; stepping is
+                    // second-based and does not wrap, so the value stays put.
+                    return;
                 }
+                t.minute = 0;
+                t.hour += 1;
             } else {
                 t.minute = new_min;
             }
@@ -1146,8 +1194,10 @@ impl EventHandler for TimeEdit {
                     // A press on the face that is **not** on a ring is a miss, and a miss must not
                     // throw away the hour the user just set: it is absorbed and the face stays open.
                     // Closing on a miss would mean a click a few pixels off the rim discarded the
-                    // edit *and* dismissed the picker -- two losses from one near miss.
-                    if self.clock_rect().contains_point(*pos) {
+                    // edit *and* dismissed the picker -- two losses from one near miss. A face too
+                    // narrow to paint is not a face, so a press in its box falls through to the
+                    // field/dismiss rules instead of being absorbed by an invisible target.
+                    if self.clock_face_is_drawn() && self.clock_rect().contains_point(*pos) {
                         return;
                     }
                 }
@@ -1185,6 +1235,13 @@ impl EventHandler for TimeEdit {
                     }
                 }
             }
+            Event::MouseLeave { .. } => {
+                // The pointer is no longer over the face; without this the ring under the
+                // last moved-over pixel stays highlighted until the pointer re-enters.
+                if self.hovered_hand.take().is_some() {
+                    self.base.request_redraw();
+                }
+            }
             #[cfg(feature = "touch")]
             Event::Tap { pos } => {
                 if self.clock_popup {
@@ -1195,11 +1252,16 @@ impl EventHandler for TimeEdit {
                     if self.pick_at(*pos) {
                         return;
                     }
-                    if self.clock_rect().contains_point(*pos) {
+                    if self.clock_face_is_drawn() && self.clock_rect().contains_point(*pos) {
                         return;
                     }
                 }
                 if self.geometry().contains_point(*pos) {
+                    // Same section target the mouse path selects; without it a touch user could
+                    // open the picker but never aim the arrow/digit keys at a component.
+                    if let Some(section) = self.section_at(*pos) {
+                        self.set_current_section(Some(section));
+                    }
                     self.toggle_clock_popup();
                 } else if self.clock_popup {
                     self.set_clock_popup(false);
@@ -1231,13 +1293,23 @@ impl EventHandler for TimeEdit {
                 40 => self.step_current_section(-1),
                 37 => {
                     if let Some(section) = self.current_section {
-                        let previous = section.previous();
+                        let mut previous = section.previous();
+                        if previous == TimeSection::AmPm
+                            && self.time_format == TimeFormat::TwentyFourHour
+                        {
+                            previous = previous.previous();
+                        }
                         self.set_current_section(Some(previous));
                     }
                 }
                 39 => {
                     if let Some(section) = self.current_section {
-                        let next = section.next();
+                        let mut next = section.next();
+                        if next == TimeSection::AmPm
+                            && self.time_format == TimeFormat::TwentyFourHour
+                        {
+                            next = next.next();
+                        }
                         self.set_current_section(Some(next));
                     }
                 }
@@ -1411,7 +1483,7 @@ impl TimeEdit {
         ink: Color,
     ) {
         let face = self.clock_rect();
-        if face.width < CLOCK_DIAMETER / 2 {
+        if !self.clock_face_is_drawn() {
             // Too small to read: a shrunken clock is worse than none, because its numerals overlap
             // into a ring of noise that still looks like a control.
             return;
@@ -1765,13 +1837,15 @@ mod tests {
         assert_eq!(editor.time(), Time::new(11, 0, 0, 0));
     }
 
+    /// End of day has no in-range successor. The old carry reset the minute and second and
+    /// left the hour behind, producing `23:00:00` — an earlier value that the range check
+    /// accepted.
     #[test]
-    fn time_edit_step_up_from_23_59_59_wraps_minutes_and_seconds() {
+    fn time_edit_step_up_from_23_59_59_stays_at_the_end_of_day() {
         let mut editor = TimeEdit::new(Rect::new(0, 0, 200, 30));
         editor.set_time(Time::new(23, 59, 59, 0));
         editor.step_up();
-        // Seconds and minutes wrap to 0, hour stays at 23 (no day wrap in TimeEdit)
-        assert_eq!(editor.time(), Time::new(23, 0, 0, 0));
+        assert_eq!(editor.time(), Time::new(23, 59, 59, 0));
     }
 
     #[test]
@@ -2306,5 +2380,105 @@ mod tests {
         assert_eq!(*finished.lock().unwrap(), 1, "the second confirms it");
         edit.handle_event(&Event::FocusLost);
         assert_eq!(*finished.lock().unwrap(), 2);
+    }
+
+    /// The step must not wrap through midnight. The old carry reset the minute and second
+    /// while leaving the hour at 23, producing `23:00:00` — an *earlier* value that the range
+    /// check happily accepted.
+    #[test]
+    fn step_up_at_end_of_day_does_not_move_backwards() {
+        let mut edit = TimeEdit::new(Rect::new(0, 0, 200, 30));
+        let end = Time::new(23, 59, 59, 0);
+        edit.set_time(end);
+        edit.step_up();
+        assert_eq!(edit.time(), end, "23:59:59 has no in-range successor");
+
+        let nearly = Time::new(23, 59, 58, 0);
+        edit.set_time(nearly);
+        edit.step_up();
+        assert_eq!(edit.time(), end);
+    }
+
+    /// A bound change that moves the value must emit `time_changed`; the old clamp wrote the
+    /// field directly and left subscribers reading the pre-clamp value.
+    #[test]
+    fn changing_the_range_emits_time_changed() {
+        let mut edit = TimeEdit::new(Rect::new(0, 0, 200, 30));
+        edit.set_time(Time::new(10, 0, 0, 0));
+        let announced = Arc::new(Mutex::new(None));
+        let sink = Arc::clone(&announced);
+        edit.time_changed.connect(move |time| *sink.lock().unwrap() = Some(*time));
+
+        edit.set_minimum_time(Time::new(12, 0, 0, 0));
+
+        assert_eq!(edit.time(), Time::new(12, 0, 0, 0));
+        assert_eq!(*announced.lock().unwrap(), Some(Time::new(12, 0, 0, 0)));
+    }
+
+    /// An inverted pair is normalised to `max = min`; the old clamp left the value above
+    /// `maximum`, which is the one state `set_time` refused.
+    #[test]
+    fn an_inverted_range_keeps_the_value_inside_the_range() {
+        let mut edit = TimeEdit::new(Rect::new(0, 0, 200, 30));
+        edit.set_time_range(Time::new(20, 0, 0, 0), Time::new(10, 0, 0, 0));
+        assert_eq!(edit.minimum_time(), Time::new(20, 0, 0, 0));
+        assert_eq!(edit.maximum_time(), Time::new(20, 0, 0, 0));
+        assert_eq!(edit.time(), Time::new(20, 0, 0, 0));
+    }
+
+    /// Switching the clock presentation rewrites only the default pattern. A caller's own
+    /// `set_display_format` must survive the switch, as the setter's own doc promises.
+    #[test]
+    fn switching_time_format_keeps_a_custom_display_format() {
+        let mut edit = TimeEdit::new(Rect::new(0, 0, 200, 30));
+        edit.set_display_format("h:mm AP".to_string());
+        edit.set_time_format(TimeFormat::TwelveHour);
+        assert_eq!(edit.display_format(), "h:mm AP");
+
+        let mut untouched = TimeEdit::new(Rect::new(0, 0, 200, 30));
+        untouched.set_time_format(TimeFormat::TwelveHour);
+        assert_eq!(untouched.display_format(), "hh:mm:ss AP");
+    }
+
+    /// A 24-hour field paints no meridiem, so the fourth fifth of the value run must not name
+    /// a section. Selecting it let arrow keys flip the hour by 12 with no visible component.
+    #[test]
+    fn meridiem_section_is_unreachable_on_a_24_hour_field() {
+        let mut edit = TimeEdit::new(Rect::new(0, 0, 200, 30));
+        assert_eq!(edit.time_format(), TimeFormat::TwentyFourHour);
+        // Zone 3 occupies x = 6 + 3 * (188 / 5) .. 6 + 4 * (188 / 5).
+        edit.handle_event(&Event::mouse_press(130, 15, 1));
+        assert_eq!(edit.current_section(), None, "no meridiem to select");
+    }
+
+    /// The paint path refuses a face narrower than half the nominal diameter; the pointer
+    /// path must refuse the same box instead of editing through an invisible face.
+    #[test]
+    fn a_face_too_narrow_to_paint_is_not_clickable() {
+        let mut edit = TimeEdit::new(Rect::new(0, 0, 40, 30));
+        edit.set_clock_popup(true);
+        let time_before = edit.time();
+        let face = edit.clock_rect();
+        assert!(!edit.clock_face_is_drawn(), "40 px is below the half-diameter floor");
+
+        edit.handle_event(&Event::mouse_press(face.x + 4, face.y + 4, 1));
+
+        assert_eq!(edit.time(), time_before, "an unpainted face must not change the value");
+        assert!(!edit.clock_popup(), "the press falls through and dismisses the popup");
+    }
+
+    /// The ring highlight is a pointer affordance; leaving the widget has to clear it.
+    #[test]
+    fn leaving_the_widget_clears_the_ring_highlight() {
+        let mut edit = TimeEdit::new(Rect::new(0, 0, 200, 30));
+        edit.set_clock_popup(true);
+        let face = edit.clock_rect();
+        let centre = edit.clock_centre();
+        let outer = face.width as i32 / 2;
+        edit.handle_event(&Event::mouse_move(centre.x + outer * 9 / 10, centre.y));
+        assert!(edit.hovered_hand.is_some(), "the rim highlights the hour ring");
+
+        edit.handle_event(&Event::MouseLeave { pos: crate::core::Point::new(0, 0) });
+        assert_eq!(edit.hovered_hand, None);
     }
 }

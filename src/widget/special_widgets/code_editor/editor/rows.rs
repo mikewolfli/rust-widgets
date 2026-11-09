@@ -390,7 +390,12 @@ impl CodeEditor {
         } else {
             rows
         };
-        rows.saturating_add(self.inline_diagnostics().len())
+        // No addition for inline diagnostics: they are painted inside their line (an
+        // underline / an end-of-line label), not as extra visual rows, and neither the
+        // prefix table nor `line_to_visual_row` accounts for them. Adding them here made
+        // `visual_row_count` exceed the rows the painter can address, which skewed the
+        // scrollbar and let scroll offsets land past the real last row.
+        rows
     }
 
     /// Estimates the wrapped row count without walking every line.

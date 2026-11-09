@@ -141,7 +141,12 @@ impl KeyTipBadge {
     /// a host that does not care about the face sees. A host that draws the badge over its own
     /// chrome passes the font it resolved, so the chip and the control cannot disagree.
     pub fn set_font(&mut self, font: Font) {
+        if self.font.as_ref() == Some(&font) {
+            return;
+        }
         self.font = Some(font);
+        // The face is what the tip is painted with, so it is a visible change.
+        self.base.request_redraw();
     }
 
     /// Sets the chip size and resizes the badge to match.

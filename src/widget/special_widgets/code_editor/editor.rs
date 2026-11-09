@@ -1034,9 +1034,29 @@ impl CodeEditor {
     pub fn set_config(&mut self, config: CodeEditorConfig) -> Result<(), &'static str> {
         config.validate()?;
         let undo_limit = config.undo_stack_limit;
+        let language_changed = self.config.language != config.language;
+        let wrap_geometry_changed = self.config.word_wrap != config.word_wrap
+            || self.config.tab_width != config.tab_width
+            || self.config.show_line_numbers != config.show_line_numbers
+            || self.config.show_minimap != config.show_minimap
+            || self.config.font_size.to_bits() != config.font_size.to_bits()
+            || self.config.font_family != config.font_family;
         self.config = config;
         self.document.set_history_limit(undo_limit);
+        if language_changed {
+            self.invalidate_line_states();
+        }
+        if wrap_geometry_changed {
+            // The wrap geometry feeds the row-prefix table and the measured cell width;
+            // without these the document keeps the old ruler until the next edit.
+            self.measured_geometry = None;
+            self.refresh_derived_state();
+        }
+        // The occurrence list depends on `highlight_occurrences`, which is not part of
+        // the cache key.
+        self.occurrence_cache = None;
         self.mark_display_damage();
+        self.base.request_layout();
         Ok(())
     }
 
@@ -1046,7 +1066,11 @@ impl CodeEditor {
             return;
         }
         self.config.show_line_numbers = show;
+        // The gutter width is part of `text_columns`, so the wrapped-row table has to be
+        // rebuilt with it; otherwise row/line mapping keeps using the old width.
+        self.refresh_derived_state();
         self.mark_display_damage();
+        self.base.request_layout();
     }
 
     /// Shows or hides the minimap at runtime (RW-112).
@@ -1055,7 +1079,9 @@ impl CodeEditor {
             return;
         }
         self.config.show_minimap = show;
+        self.refresh_derived_state();
         self.mark_display_damage();
+        self.base.request_layout();
     }
 
     /// Turns soft wrapping on or off at runtime (RW-112).
@@ -1064,7 +1090,9 @@ impl CodeEditor {
             return;
         }
         self.config.word_wrap = wrap;
+        self.refresh_derived_state();
         self.mark_display_damage();
+        self.base.request_layout();
     }
 
     /// Shows or hides the whitespace dots and tab arrows at runtime (RW-112).
@@ -1492,7 +1520,11 @@ impl CodeEditor {
         if width == 0 || width > 16 {
             return;
         }
+        if self.config.tab_width == width {
+            return;
+        }
         self.config.tab_width = width;
+        self.refresh_derived_state();
         self.base.request_layout();
         self.base.request_redraw();
     }

@@ -169,6 +169,9 @@ impl CodeEditor {
         self.invalidate_line_states();
         self.minimap_line_count = 0;
         self.completion_index = None;
+        // Occurrence highlights are document content and are keyed by (selection, revision);
+        // the revision is shared across buffers, so a switch can hit the old cache.
+        self.occurrence_cache = None;
         // The incoming buffer may be far larger or smaller than the outgoing one, and the
         // reduced-behaviour level is derived from the line count.
         self.scale = DocumentScale::for_lines(self.line_count());

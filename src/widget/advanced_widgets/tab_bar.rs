@@ -586,6 +586,7 @@ impl TabBar {
         if index >= self.tabs.len() {
             return;
         }
+        let before_current = self.current_index;
         self.tabs.remove(index);
         // Adjust current_index.
         match self.current_index {
@@ -606,14 +607,47 @@ impl TabBar {
             // No action needed for this transition
             _ => {}
         }
+        if self.current_index != before_current {
+            match self.current_index {
+                Some(next) => self.current_changed.emit(next),
+                None => self.base.changed.emit(),
+            }
+        }
+        // The remaining index-addressed latches have to follow the removal as well: a hover
+        // on a later tab, an armed drag, and a scroll offset that is now past the end all
+        // named slots that the removal moved or shortened.
+        self.hovered_index = match self.hovered_index {
+            Some(hovered) if hovered == index => None,
+            Some(hovered) if hovered > index => Some(hovered - 1),
+            other => other,
+        };
+        self.dragging_from = match self.dragging_from {
+            Some(from) if from == index => None,
+            Some(from) if from > index => Some(from - 1),
+            other => other,
+        };
+        self.drag_target = match self.drag_target {
+            Some(target) if target == index => None,
+            Some(target) if target > index => Some(target - 1),
+            other => other,
+        };
+        self.scroll_offset = self.scroll_offset.min(self.max_scroll_offset());
+        self.sync_hover_tooltip();
         self.base.request_redraw();
     }
 
     /// Removes all tabs.
     pub fn clear(&mut self) {
+        let had_current = self.current_index.is_some();
         self.tabs.clear();
         self.current_index = None;
         self.hovered_index = None;
+        self.dragging_from = None;
+        self.drag_target = None;
+        self.scroll_offset = 0;
+        if had_current {
+            self.base.changed.emit();
+        }
         self.base.request_redraw();
     }
 
@@ -668,9 +702,21 @@ impl TabBar {
 
     /// Sets the enabled state of the tab at the given index.
     pub fn set_tab_enabled(&mut self, index: usize, enabled: bool) {
-        if let Some(tab) = self.tabs.get_mut(index) {
-            tab.enabled = enabled;
+        let Some(tab) = self.tabs.get_mut(index) else {
+            return;
+        };
+        if tab.enabled == enabled {
+            return;
         }
+        tab.enabled = enabled;
+        // `enabled` decides the fill, the label ink and whether a press selects the tab, so
+        // the toggle has to repaint. A tab that just became disabled also cannot keep the
+        // hover highlight it was showing.
+        if !enabled && self.hovered_index == Some(index) {
+            self.hovered_index = None;
+            self.sync_hover_tooltip();
+        }
+        self.base.request_redraw();
     }
 
     // ---------------------------------------------------------------------------
@@ -798,6 +844,12 @@ impl TabBar {
             return;
         }
         self.movable = movable;
+        if !movable {
+            // A gesture armed by a press must not complete after the caller revoked the
+            // capability mid-drag: the release path would still move the tab.
+            self.dragging_from = None;
+            self.drag_target = None;
+        }
         self.base.request_redraw();
     }
 
@@ -841,8 +893,22 @@ impl TabBar {
                 c => c,
             });
         }
-
+        // The hover follows the same tab, and the drop target has been consumed by this
+        // move. Without the remap the highlight and the tooltip stayed on the old slot.
+        if let Some(hovered) = self.hovered_index {
+            self.hovered_index = Some(match hovered {
+                h if h == from => to,
+                h if from < h && h <= to => h - 1,
+                h if to <= h && h < from => h + 1,
+                h => h,
+            });
+            self.sync_hover_tooltip();
+        }
+        self.drag_target = None;
         self.tab_moved.emit((from, to));
+        // `add`/`insert`/`remove` all mark damage; this is the fourth way to change the
+        // painted order, so it must too.
+        self.base.request_redraw();
         true
     }
 
@@ -909,8 +975,12 @@ impl TabBar {
     }
 
     /// Shifts the visible run by `delta` tabs, clamped to the list.
+    ///
+    /// Reports `false` (and changes nothing) unless the scroll buttons are enabled: the
+    /// buttons are the only chrome that can show a shifted run, so a wheel notch on a strip
+    /// without them must neither move an invisible offset nor claim the wheel.
     pub fn scroll_by(&mut self, delta: i32) -> bool {
-        if !self.is_overflowing() {
+        if !self.scroll_buttons || !self.is_overflowing() {
             return false;
         }
         let max = self.max_scroll_offset();
@@ -976,7 +1046,9 @@ impl TabBar {
     fn max_scroll_offset(&self) -> usize {
         let g = self.base.geometry();
         let available = g.width.saturating_sub(32) as usize;
-        let tab = self.tab_min_width.max(1) as usize + TAB_SPACING as usize;
+        // Use the width the strip actually paints, not the minimum: `tab_rect` shifts by the
+        // painted pitch, so a minimum-width estimate can leave the last tab off the far edge.
+        let tab = self.fitted_tab_width().max(1) as usize + TAB_SPACING as usize;
         let visible = (available / tab).max(1);
         self.tabs.len().saturating_sub(visible)
     }
@@ -1130,14 +1202,26 @@ impl TabBar {
         match self.tab_position {
             TabPosition::North | TabPosition::South => {
                 let tab_width = self.fitted_tab_width();
-                let shift = if self.scroll_buttons && self.is_overflowing() {
-                    16 + self.scroll_offset as i32 * (self.tab_min_width as i32 + spacing)
+                // The buttons own 16 px at each end and the run slides under them. The shift
+                // must use the *painted* pitch; using `tab_min_width` here moved the run by a
+                // different step than the one it was laid out with, which threw every tab off
+                // screen at the first notch.
+                let scrolling = self.scroll_buttons && self.is_overflowing();
+                let button = if scrolling { 16 } else { 0 };
+                let shift = if scrolling {
+                    // The run slides under the buttons; the button inset is applied to the
+                    // origin below, not to the shift, or it was subtracted twice and every tab
+                    // started one inset too far left.
+                    self.scroll_offset as i32 * (tab_width as i32 + spacing)
                 } else {
                     0
                 };
                 let offset = (tab_width as i32 + spacing) * index as i32 - shift;
-                let x =
-                    if rtl { rect.right() - offset - tab_width as i32 } else { rect.x + offset };
+                let x = if rtl {
+                    rect.right() - button - offset - tab_width as i32
+                } else {
+                    rect.x + button + offset
+                };
                 // The last tab must end *inside* the strip. `fitted_tab_width` divides by the count
                 // and subtracts the whole gap budget, so a tab entirely on screen needs the whole
                 // run to fit; the clamp still holds for a tab whose own measured width is larger
@@ -1148,9 +1232,9 @@ impl TabBar {
                 // measured from the strip's left edge — the mirror of the LTR clamp, not a second
                 // rule.
                 let width = if rtl {
-                    tab_width.min((x + tab_width as i32 - rect.x).max(0) as u32)
+                    tab_width.min((x + tab_width as i32 - (rect.x + button)).max(0) as u32)
                 } else {
-                    tab_width.min((rect.right() - x).max(0) as u32)
+                    tab_width.min((rect.right() - button - x).max(0) as u32)
                 };
                 let y = if self.tab_position == TabPosition::North {
                     rect.y
@@ -1188,6 +1272,13 @@ impl TabBar {
         let count = self.tabs.len();
         if count == 0 {
             return 0;
+        }
+        // With the scroll buttons on, a tab keeps its natural width and the run overflows:
+        // that overflow is exactly what the buttons walk through. Shrinking every tab to fit
+        // and *then* shifting by a minimum-width step was two layouts of the same run, and the
+        // second one moved the already-fitted tabs off the left edge.
+        if self.scroll_buttons && self.is_overflowing() {
+            return self.compute_tab_width(0).max(1);
         }
         let count = count as u32;
         let gaps = (TAB_SPACING as u32).saturating_mul(count.saturating_sub(1));
@@ -1895,6 +1986,13 @@ impl EventHandler for TabBar {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
         if !self.base.is_enabled() {
+            // A disable mid-drag has to drop the latch: `set_enabled` only stores the flag, and
+            // the arms below (including the release that commits the move) never run again.
+            let had_drag = self.dragging_from.take().is_some();
+            let had_target = self.drag_target.take().is_some();
+            if had_drag || had_target {
+                self.base.request_redraw();
+            }
             return;
         }
         if self.auto_hide && self.tabs.len() <= 1 {
@@ -1959,7 +2057,7 @@ impl EventHandler for TabBar {
                     }
                 }
             }
-            Event::MouseRelease { pos, .. } => {
+            Event::MouseRelease { pos, button: 1, .. } => {
                 // Completing the move on release, and only on release, is what makes
                 // `movable` mean "drag to reorder" rather than "reorder on click".
                 if let Some(from) = self.dragging_from.take() {
@@ -1968,6 +2066,16 @@ impl EventHandler for TabBar {
                     if let Some(to) = target {
                         self.move_tab(from, to);
                     }
+                    self.base.request_redraw();
+                }
+            }
+            Event::MouseRelease { .. } => {
+                // A release of another button while the primary is still down is not the end
+                // of the drag. Committing here let a right-click move a tab the user was
+                // still dragging.
+                let had_drag = self.dragging_from.take().is_some();
+                let had_target = self.drag_target.take().is_some();
+                if had_drag || had_target {
                     self.base.request_redraw();
                 }
             }
@@ -2155,6 +2263,7 @@ impl Draw for TabBar {
 mod tests {
     use super::*;
     use crate::core::Rect;
+    use std::sync::Arc;
 
     #[test]
     fn tabbar_creation_defaults() {
@@ -3101,5 +3210,192 @@ mod tests {
         let tab = bar.tab_rect(0).expect("the tab has a box");
         bar.handle_event(&Event::mouse_double_click(tab.x + 2, tab.y + 2, 1));
         assert_eq!(requests.load(Ordering::SeqCst), 1, "a tab is not empty space");
+    }
+
+    /// Only the primary release completes a drag. A right/middle release while the user is
+    /// still dragging must cancel it rather than reorder the strip.
+    #[test]
+    fn non_primary_release_does_not_commit_a_drag() {
+        let mut bar = TabBar::new(Rect::new(0, 0, 300, 30));
+        bar.add_tab("A".into());
+        bar.add_tab("B".into());
+        bar.set_movable(true);
+        let first = bar.tab_rect(0).expect("tab 0 has a box");
+        bar.handle_event(&Event::mouse_press(first.x + 2, first.y + 2, 1));
+        assert!(bar.is_dragging());
+
+        let second = bar.tab_rect(1).expect("tab 1 has a box");
+        bar.handle_event(&Event::mouse_release(second.x + 2, second.y + 2, 3));
+
+        assert!(!bar.is_dragging(), "the non-primary release cancels");
+        assert_eq!(bar.tab_text(0), Some("A"), "no reorder happened");
+    }
+
+    /// Revoking `movable` mid-drag must cancel the armed gesture; the release path otherwise
+    /// still moved the tab. Disabling the strip entirely must do the same.
+    #[test]
+    fn canceling_mid_drag_drops_the_pending_move() {
+        let mut bar = TabBar::new(Rect::new(0, 0, 300, 30));
+        bar.add_tab("A".into());
+        bar.add_tab("B".into());
+        bar.set_movable(true);
+        let first = bar.tab_rect(0).expect("tab 0 has a box");
+        bar.handle_event(&Event::mouse_press(first.x + 2, first.y + 2, 1));
+        bar.set_movable(false);
+        assert!(!bar.is_dragging());
+        let second = bar.tab_rect(1).expect("tab 1 has a box");
+        bar.handle_event(&Event::mouse_release(second.x + 2, second.y + 2, 1));
+        assert_eq!(bar.tab_text(0), Some("A"));
+
+        bar.set_movable(true);
+        bar.handle_event(&Event::mouse_press(first.x + 2, first.y + 2, 1));
+        assert!(bar.is_dragging());
+        bar.set_enabled(false);
+        bar.handle_event(&Event::mouse_move(second.x + 2, second.y + 2));
+        assert!(!bar.is_dragging(), "a disable drops the latch");
+    }
+
+    /// The wheel/inherent scroll path may only move the run when the buttons that can show a
+    /// shifted run are on. Otherwise it changed an invisible offset and claimed the wheel.
+    #[test]
+    fn scrolling_requires_the_scroll_buttons() {
+        let mut bar = TabBar::new(Rect::new(0, 0, 80, 30));
+        for index in 0..6 {
+            bar.add_tab(format!("Tab {index}"));
+        }
+        bar.set_tab_min_width(60);
+        assert!(bar.is_overflowing());
+
+        assert!(!bar.scroll_by(1), "no buttons, nothing to scroll");
+        assert_eq!(bar.scroll_offset(), 0);
+
+        bar.set_scroll_buttons(true);
+        assert!(bar.scroll_by(1));
+        assert_eq!(bar.scroll_offset(), 1);
+    }
+
+    /// A scrolled overflowing strip slides the run under the buttons: the tab at the current
+    /// offset starts at the inner left edge, and the tabs before it are hidden. The old shift
+    /// subtracted the button inset twice and could push every tab off screen.
+    #[test]
+    fn scrolled_overflowing_strip_keeps_tabs_on_screen() {
+        let mut bar = TabBar::new(Rect::new(0, 0, 80, 30));
+        for index in 0..6 {
+            bar.add_tab(format!("Tab {index}"));
+        }
+        bar.set_tab_min_width(60);
+        bar.set_scroll_buttons(true);
+        assert!(bar.scroll_by(1));
+
+        let strip = bar.geometry();
+        let visible = bar.tab_rect(1).expect("the scrolled-to tab has a box");
+        assert_eq!(visible.x, strip.x + 16, "the run starts past the left button");
+        assert!(
+            visible.x + visible.width as i32 <= strip.right() - 16,
+            "the visible tab stays clear of the right button"
+        );
+        let scrolled_away = bar.tab_rect(0).expect("the previous tab still has a box");
+        assert!(scrolled_away.x < strip.x, "the previous tab slid out of view");
+    }
+
+    /// Removing the current tab is a selection change; hosts subscribed to `current_changed`
+    /// must hear it, because the control itself picked the successor.
+    #[test]
+    fn removing_current_tab_emits_current_changed() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let mut bar = TabBar::new(Rect::new(0, 0, 300, 30));
+        for index in 0..3 {
+            bar.add_tab(format!("Tab {index}"));
+        }
+        bar.set_current_index(1);
+        let fired = Arc::new(AtomicBool::new(false));
+        {
+            let sink = Arc::clone(&fired);
+            bar.current_changed.connect(move |_| sink.store(true, Ordering::SeqCst));
+        }
+
+        bar.remove_tab(1);
+
+        assert!(fired.load(Ordering::SeqCst));
+        assert_eq!(bar.current_index(), Some(0));
+    }
+
+    /// Removing a tab shifts the index-addressed latches with it, and clamps the scroll run.
+    #[test]
+    fn removing_a_tab_repairs_hover_and_scroll() {
+        let mut bar = TabBar::new(Rect::new(0, 0, 100, 30));
+        for index in 0..6 {
+            bar.add_tab(format!("Tab {index}"));
+        }
+        bar.set_tab_min_width(60);
+        bar.set_scroll_buttons(true);
+        bar.scroll_by(3);
+        let hovered = bar.tab_rect(2).expect("tab 2 has a box");
+        bar.handle_event(&Event::mouse_move(hovered.x + 2, hovered.y + 2));
+        assert_eq!(bar.hovered_index, Some(2));
+
+        bar.remove_tab(0);
+
+        assert_eq!(bar.hovered_index, Some(1), "the highlight follows the same tab");
+        assert!(
+            bar.scroll_offset() <= bar.max_scroll_offset(),
+            "the offset cannot point past the shortened run"
+        );
+    }
+
+    /// `move_tab` is the fourth way to change the painted order; it must repaint and keep the
+    /// hover on the tab it was on, like the selection does.
+    #[test]
+    fn move_tab_repaints_and_keeps_hover_on_the_same_tab() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let mut bar = TabBar::new(Rect::new(0, 0, 300, 30));
+        bar.add_tab("A".into());
+        bar.add_tab("B".into());
+        let first = bar.tab_rect(0).expect("tab 0 has a box");
+        bar.handle_event(&Event::mouse_move(first.x + 2, first.y + 2));
+        assert_eq!(bar.hovered_index, Some(0));
+        let fired = Arc::new(AtomicBool::new(false));
+        {
+            let sink = Arc::clone(&fired);
+            let scope = bar.connection_scope();
+            bar.redraw_requested_signal().connect_scoped(scope, move || {
+                sink.store(true, Ordering::SeqCst);
+            });
+        }
+
+        assert!(bar.move_tab(0, 1));
+
+        assert!(fired.load(Ordering::SeqCst), "the reorder repaints");
+        assert_eq!(bar.hovered_index, Some(1), "the hover follows the moved tab");
+    }
+
+    /// `enabled` is painted and hit-tested, so toggling it repaints; disabling the hovered tab
+    /// also drops the highlight it can no longer own.
+    #[test]
+    fn set_tab_enabled_repaints_and_clears_hover() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let mut bar = TabBar::new(Rect::new(0, 0, 300, 30));
+        bar.add_tab("A".into());
+        bar.add_tab("B".into());
+        let second = bar.tab_rect(1).expect("tab 1 has a box");
+        bar.handle_event(&Event::mouse_move(second.x + 2, second.y + 2));
+        assert_eq!(bar.hovered_index, Some(1));
+        let fired = Arc::new(AtomicBool::new(false));
+        {
+            let sink = Arc::clone(&fired);
+            let scope = bar.connection_scope();
+            bar.redraw_requested_signal().connect_scoped(scope, move || {
+                sink.store(true, Ordering::SeqCst);
+            });
+        }
+
+        bar.set_tab_enabled(1, false);
+
+        assert!(fired.load(Ordering::SeqCst));
+        assert_eq!(bar.hovered_index, None);
+        assert_eq!(bar.tab_enabled(1), Some(false));
     }
 }

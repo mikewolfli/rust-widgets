@@ -213,9 +213,18 @@ impl MarkdownEditor {
         next.push_str(&self.text[..start_byte]);
         next.push_str(insert);
         next.push_str(&self.text[end_byte..]);
-        let (line, col) = self.line_col_of(start);
+        // The caret goes after the whole insertion. The line/column has to be read from the
+        // **new** text: adding the inserted character count to the starting column ignored
+        // newlines in the payload, and reading the offset from the old text mapped it to the
+        // wrong line. Both left the next keystroke inside the pasted block.
+        let caret_byte = start_byte + insert.len();
+        let line = next[..caret_byte].matches('\n').count();
+        let col = match next[..caret_byte].rfind('\n') {
+            Some(index) => next[index + 1..caret_byte].chars().count(),
+            None => next[..caret_byte].chars().count(),
+        };
         self.cursor_line = line;
-        self.cursor_col = col + insert.chars().count();
+        self.cursor_col = col;
         self.selection_anchor = None;
         self.apply_selection(None);
         self.commit_text(next);
@@ -372,6 +381,10 @@ impl MarkdownEditor {
         };
         self.cursor_line = entry.line;
         self.cursor_col = 0;
+        // A jump is a move, not an edit. Leaving the old selection behind meant the next
+        // keystroke replaced text the reader could no longer see (most of it off screen).
+        self.selection_anchor = None;
+        self.apply_selection(None);
         // Scroll the target into view rather than leaving it off screen.
         if entry.line < self.first_visible_line {
             self.first_visible_line = entry.line;
@@ -632,7 +645,12 @@ impl MarkdownEditor {
         let len = self.text.len();
         let mut last_start = len;
         for &(start, end) in request.ranges.iter().rev() {
-            if start > end || end > len || end > last_start {
+            if start > end
+                || end > len
+                || end > last_start
+                || !self.text.is_char_boundary(start)
+                || !self.text.is_char_boundary(end)
+            {
                 return 0;
             }
             last_start = start;
@@ -858,7 +876,16 @@ impl MarkdownEditor {
     pub(crate) fn find_search_origin(&self, forward: bool) -> usize {
         let caret = self.cursor_byte_offset();
         match self.find.current {
-            Some(current) if forward => current + 1,
+            Some(current) if forward => {
+                // `+1` can land inside a multi-byte character, where `str::get` returns
+                // `None` and the caller falls back to a search from byte 0 — which finds
+                // the same match again, so `find_next` never advances.
+                let mut next = (current + 1).min(self.text.len());
+                while next < self.text.len() && !self.text.is_char_boundary(next) {
+                    next += 1;
+                }
+                next
+            }
             Some(current) => current,
             None if forward => caret,
             None => caret,
@@ -1001,7 +1028,10 @@ impl MarkdownEditor {
 
     /// The first line the viewport actually starts at, clamped to the last full window.
     pub(crate) fn visible_start(&self) -> usize {
-        let max_first = self.line_count().saturating_sub(self.visible_line_count());
+        // The painter splits on `\n` (`edit_line_count`), so the scroll limit has to use the
+        // same unit. `line_count` is `str::lines`, which drops the empty line a trailing
+        // newline creates; clamping to it made that last line unreachable.
+        let max_first = self.edit_line_count().saturating_sub(self.visible_line_count());
         self.first_visible_line.min(max_first)
     }
 
@@ -1013,7 +1043,7 @@ impl MarkdownEditor {
         if lines == 0 {
             return false;
         }
-        let max_first = self.line_count().saturating_sub(self.visible_line_count());
+        let max_first = self.edit_line_count().saturating_sub(self.visible_line_count());
         let next =
             (self.first_visible_line as i64 + lines as i64).clamp(0, max_first as i64) as usize;
         if next == self.first_visible_line {

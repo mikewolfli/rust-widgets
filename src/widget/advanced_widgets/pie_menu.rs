@@ -581,9 +581,11 @@ impl PieMenu {
     /// index is **not** updated for an item that is disabled.
     pub fn set_current_index(&mut self, idx: usize) {
         if idx < self.items.len() {
-            // Mirror the click/hit-test paths: a disabled item is not selectable,
-            // so the index is left untouched and no signal fires.
-            if !self.items[idx].is_enabled() {
+            // Mirror the click/hit-test paths: a disabled item is not selectable, and a
+            // separator is a gap, not a command, so neither changes the index or fires
+            // `triggered`. Only the disabled half was checked, so a programmatic write could
+            // make a gap the "selected" item and report it as a choice.
+            if !self.items[idx].is_enabled() || self.items[idx].is_separator() {
                 return;
             }
             self.current_index = idx;
@@ -727,13 +729,15 @@ impl PieMenu {
         }
     }
 
-    /// Removes all menu items and clears the hover highlight.
+    /// Removes all menu items and clears the hover highlight and any open submenu path.
     ///
     /// [`PieMenu::current_index`] is left as-is even though it now names no
-    /// item.
+    /// item. Clearing the path matters because `active_items` descends it: leaving it
+    /// behind meant a re-filled menu opened an extra ring the user never entered.
     pub fn clear(&mut self) {
         self.items.clear();
         self.hovered_index = None;
+        self.submenu_path.clear();
         self.base.request_redraw();
     }
 
@@ -863,6 +867,9 @@ impl PieMenu {
     /// pointing at the previous target would animate away from where it was just placed).
     pub fn set_animation_progress(&mut self, progress: f32) {
         self.animation_progress.jump_to(progress.clamp(0.0, 1.0));
+        // `jump_to` only writes the driver's current/target; the painted radii come from
+        // `value()`, so without this the new picture waits for an unrelated frame.
+        self.request_frame_repaint(Some(self.damage_bounds()));
     }
 
     /// Advances the opening reveal by `delta_ms`, reporting whether another frame is needed.
@@ -1394,6 +1401,10 @@ impl Widget for PieMenu {
     fn hide(&mut self) {
         self.base.hide();
         self.hovered_index = None;
+        // The inherent `hide` clears this too; the trait path is the one a host reaches
+        // through `&mut dyn Widget`, and leaving the path behind made a later `show` paint a
+        // submenu the user had not opened.
+        self.submenu_path.clear();
         self.about_to_hide.emit();
     }
 
@@ -3201,5 +3212,75 @@ mod tests {
         menu.set_radius(60.0);
         let _ = render_to_svg(&mut menu);
         assert_ne!(menu.slice_paths.borrow().key, Some(key), "a resize rebuilds the paths");
+    }
+
+    /// `clear` must drop the open branch path: `active_items` descends it, so a re-filled
+    /// menu would open a ring the user never entered.
+    #[test]
+    fn clear_resets_the_open_submenu_path() {
+        let mut menu = PieMenu::new(Point::new(100, 100), 80.0);
+        let mut parent = PieMenuItem::new("File");
+        parent.set_children(vec![PieMenuItem::new("Open")]);
+        menu.add_existing_item(parent);
+        assert!(menu.open_submenu(0));
+        assert_eq!(menu.submenu_depth(), 1);
+
+        menu.clear();
+
+        assert_eq!(menu.submenu_depth(), 0);
+        assert_eq!(menu.open_submenu_index(), None);
+    }
+
+    /// A separator is a gap, not a command. The programmatic selector checked `enabled` but
+    /// not `separator`, so it could "trigger" a gap and report it as a choice.
+    #[test]
+    fn set_current_index_refuses_a_separator() {
+        let mut menu = PieMenu::new(Point::new(100, 100), 80.0);
+        let mut gap = PieMenuItem::new("");
+        gap.set_separator(true);
+        menu.add_existing_item(gap);
+        menu.add_item("Open");
+        menu.set_current_index(1);
+        assert_eq!(menu.selected_index(), Some(1));
+
+        menu.set_current_index(0);
+        assert_eq!(menu.selected_index(), Some(1), "the gap is not selectable");
+    }
+
+    /// The progress scales the painted radii, so setting it must ask for a frame. `jump_to`
+    /// only writes the driver's state and notifies nobody.
+    #[test]
+    fn set_animation_progress_repaints() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let mut menu = PieMenu::new(Point::new(100, 100), 80.0);
+        let fired = Arc::new(AtomicBool::new(false));
+        {
+            let sink = Arc::clone(&fired);
+            let scope = menu.connection_scope();
+            menu.redraw_requested_signal().connect_scoped(scope, move || {
+                sink.store(true, Ordering::SeqCst);
+            });
+        }
+
+        menu.set_animation_progress(0.5);
+        assert!(fired.load(Ordering::SeqCst));
+        assert_eq!(menu.animation_progress(), 0.5);
+    }
+
+    /// The inherent `hide` resets the path; the trait hook a `&mut dyn Widget` reaches must
+    /// do the same, or a later `show` paints a submenu the user never opened.
+    #[test]
+    fn trait_hide_clears_submenu_path() {
+        let mut menu = PieMenu::new(Point::new(100, 100), 80.0);
+        let mut parent = PieMenuItem::new("File");
+        parent.set_children(vec![PieMenuItem::new("Open")]);
+        menu.add_existing_item(parent);
+        menu.show_at(Point::new(100, 100));
+        assert!(menu.open_submenu(0));
+
+        Widget::hide(&mut menu);
+
+        assert_eq!(menu.submenu_depth(), 0);
     }
 }

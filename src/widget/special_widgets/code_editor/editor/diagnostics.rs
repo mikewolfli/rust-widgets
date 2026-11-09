@@ -133,7 +133,10 @@ impl CodeEditor {
         // message in context, and a line pinned to the viewport edge shows none of it.
         let row = self.line_to_visual_row(self.cursor.head.line);
         let rows = self.visible_rows().max(1);
-        let target = row.saturating_sub(rows / 2);
+        // Clamp like every other scroll entry point: jumping to the last marker used to set
+        // a first row past the end, leaving the viewport blank below the document.
+        let max_first = self.total_visual_rows().saturating_sub(rows);
+        let target = row.saturating_sub(rows / 2).min(max_first);
         self.scroll_visual_row = target;
         self.scroll_line = self.visual_row_to_line(target);
         self.emit_cursor_and_selection();

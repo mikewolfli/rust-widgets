@@ -69,6 +69,11 @@ pub struct InplaceEditor {
     text: String,
     is_editing: bool,
     original_text: String,
+    /// The undo depth when this edit session began.
+    ///
+    /// Cancelling restores `original_text`; the entries pushed during the session describe
+    /// edits the user just discarded, so they have to be dropped with it.
+    undo_depth_at_edit_start: usize,
     font_size: f32,
     padding: i32,
     cursor_position: usize,
@@ -122,6 +127,7 @@ impl InplaceEditor {
             text: text.to_string(),
             is_editing: false,
             original_text: text.to_string(),
+            undo_depth_at_edit_start: 0,
             font_size: 14.0,
             // Seeded from the shared text-field inset rather than a second literal: the field *is*
             // that inset, so a default-built editor renders exactly as it did when `draw` read the
@@ -152,6 +158,10 @@ impl InplaceEditor {
         if !self.is_editing {
             self.is_editing = true;
             self.original_text = self.text.clone();
+            // The session is its own undo unit: remember how deep the history was, and stop
+            // the next keystroke from merging into an entry from before the session.
+            self.undo_depth_at_edit_start = self.undo_stack.undo_count();
+            self.undo_stack.seal_merge_run();
             self.cursor_position = self.text.chars().count();
             self.selection_anchor = None;
             // Entering edit mode is entering the state the caret blinks in, so the blink starts
@@ -164,6 +174,10 @@ impl InplaceEditor {
 
     /// Finishes editing mode. If `accept` is true, the current text is kept;
     /// otherwise it reverts to the original text.
+    ///
+    /// Cancelling also discards the undo entries the session pushed: they describe text the
+    /// user just threw away, so leaving them would make `undo` replay the cancelled edit onto
+    /// the restored value.
     pub fn finish_edit(&mut self, accept: bool) {
         if !self.is_editing {
             return;
@@ -176,6 +190,10 @@ impl InplaceEditor {
             self.edit_accepted.emit(self.text.clone());
         } else {
             self.text = self.original_text.clone();
+            self.undo_stack.truncate_undo(self.undo_depth_at_edit_start);
+            // The spliced commands moved the shared history mirror forward; a cancel has to
+            // put it back too, or the stack and the value disagree.
+            *self.history_target.borrow_mut() = self.original_text.clone();
             self.edit_canceled.emit();
         }
         self.base.request_redraw();
@@ -1669,5 +1687,52 @@ mod tests {
         assert_eq!(ie.advance_of_prefix(0), 0);
         assert_eq!(ie.advance_of_prefix(5), *first.last().expect("the last cut"));
         assert_eq!(ie.advance_of_prefix(99), *first.last().expect("clamped to the value"));
+    }
+
+    /// Cancelling restores the value, so the undo entries describing the discarded text must
+    /// go with it. Leaving them made `undo` splice the cancelled edit back in.
+    #[test]
+    fn canceling_an_edit_discards_its_undo_steps() {
+        let mut ie = InplaceEditor::new("hello", Rect::new(0, 0, 200, 30));
+        ie.start_edit();
+        ie.set_text("hello world");
+        assert!(ie.can_undo(), "the open edit is undoable while it is open");
+
+        ie.finish_edit(false);
+
+        assert_eq!(ie.text(), "hello");
+        assert!(!ie.can_undo(), "the cancelled edit left no history");
+        assert_eq!(&*ie.history_target.borrow(), "hello", "the mirror follows the restore");
+    }
+
+    /// A cancel only drops the session's own entries: history from before it remains undoable.
+    #[test]
+    fn canceling_keeps_history_from_before_the_edit() {
+        let mut ie = InplaceEditor::new("", Rect::new(0, 0, 200, 30));
+        ie.set_text("a");
+        ie.start_edit();
+        ie.set_text("ab");
+
+        ie.finish_edit(false);
+
+        assert_eq!(ie.text(), "a");
+        assert!(ie.undo());
+        assert_eq!(ie.text(), "", "the pre-edit step is still there");
+    }
+
+    /// An edit session is one undo unit: the first keystroke must not merge into the entry
+    /// that preceded the session, or cancelling the session could not separate them.
+    #[test]
+    fn an_edit_session_starts_a_new_undo_step() {
+        let mut ie = InplaceEditor::new("", Rect::new(0, 0, 200, 30));
+        ie.set_text("a");
+        ie.start_edit();
+        ie.set_text("ab");
+        ie.finish_edit(true);
+
+        assert!(ie.undo());
+        assert_eq!(ie.text(), "a", "the session is its own step");
+        assert!(ie.undo());
+        assert_eq!(ie.text(), "");
     }
 }

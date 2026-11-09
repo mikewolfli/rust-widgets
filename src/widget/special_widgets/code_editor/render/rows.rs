@@ -67,7 +67,6 @@ impl CodeEditor {
         // shape; the row loop clears and refills this one instead (G-316).
         let mut row_run_buffer = self.row_run_scratch.borrow_mut();
 
-        let mut row = 0usize;
         // An empty document shows its placeholder instead of an empty box. The
         // placeholder is chrome, so it uses the chrome font and the dim ink.
         let placeholder_shown = {
@@ -91,6 +90,16 @@ impl CodeEditor {
             }
         }
         self.fill_viewport_document_lines();
+        // `fill_viewport_document_lines` starts at `scroll - slack` (or at the first visible
+        // line under folds), not at row 0. Counting from 0 and comparing that count with the
+        // absolute `scroll_visual_row` skipped every row once the scroll passed the slack, so
+        // the source pane painted nothing after scrolling. Start the counter at the window's
+        // own absolute row instead.
+        let window_first_line = {
+            let window = self.viewport_lines_scratch.borrow();
+            window.first().copied().unwrap_or(0)
+        };
+        let mut row = self.line_to_visual_row(window_first_line);
         let viewport_len = self.viewport_lines_scratch.borrow().len();
         for viewport_index in 0..viewport_len {
             let line = self.viewport_lines_scratch.borrow()[viewport_index];
@@ -132,11 +141,11 @@ impl CodeEditor {
                 measured
             };
             let layout = if wrapped { None } else { Some(line_layout.clone()) };
-            if layout.is_some() {
-                self.row_runs_into(line, text, &mut row_run_buffer);
-            } else {
-                row_run_buffer.clear();
-            }
+            // The run list is independent of wrapping: it is the tokenizer's spans over the
+            // whole line, and `draw_row_text` clips them to the current segment. Clearing it
+            // for a wrapped row left `draw_row_text` with nothing to draw, so soft-wrapped
+            // text painted only selection/chrome and no glyphs at all.
+            self.row_runs_into(line, text, &mut row_run_buffer);
             let runs = &row_run_buffer;
             // How far a continuation row is indented: the line's own leading
             // whitespace, clamped so it can never push the wrapped text off the row.

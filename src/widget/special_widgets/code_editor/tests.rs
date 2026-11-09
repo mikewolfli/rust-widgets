@@ -1145,3 +1145,89 @@ fn toggling_a_breakpoint_reports_the_new_state() {
     assert!(!editor.toggle_breakpoint(1));
     assert_eq!(*events.lock().unwrap(), vec![(1, true), (1, false)]);
 }
+
+/// Shift+Tab is the outdent gesture. Only Alt was checked, so Shift+Tab inserted another
+/// indent unit and outdent was unreachable on Windows/Linux (where Alt+Tab is the window
+/// manager's).
+#[test]
+fn shift_tab_outdents_without_a_snippet() {
+    let mut editor = editor();
+    editor.set_text("    let x = 1;");
+    editor.set_cursor(0, 4, false);
+
+    editor.handle_key_press(9, 1); // Tab + Shift
+
+    assert_eq!(editor.text(), "let x = 1;");
+}
+
+/// AltGr arrives as Ctrl+Alt on Windows. The Ctrl shortcuts must not fire for it, or
+/// typing an AltGr character also cuts/undoes/selects all.
+#[test]
+fn altgr_does_not_run_control_shortcuts() {
+    let mut editor = editor();
+    editor.set_text("abc\ndef");
+    editor.select_line(0);
+
+    editor.handle_key_press(88, 2 | 4); // Ctrl + Alt + X (AltGr+X)
+
+    assert_eq!(editor.text(), "abc\ndef", "the document is untouched");
+}
+
+/// A find/goto query is chrome, not document content: a read-only buffer can still be
+/// searched. The editable gate used to reject the text before the find branch ran.
+#[test]
+fn a_read_only_editor_accepts_find_query_text() {
+    let mut editor = editor();
+    editor.set_read_only(true);
+    editor.open_find(false);
+
+    editor.input_text("needle");
+
+    assert_eq!(editor.find_state().query, "needle");
+}
+
+/// `a{2,}` is open-ended; parsing the empty second component as a failed number collapsed
+/// it to “exactly two” and produced the wrong spans for find/replace.
+#[test]
+fn open_ended_repetition_matches_the_whole_run() {
+    let editor = {
+        let mut editor = editor();
+        editor.set_text("aaaaaaaa");
+        editor
+    };
+    let matches = editor
+        .find_all_with("a{2,}", SearchOptions { use_regex: true, ..SearchOptions::default() });
+    assert_eq!(matches.len(), 1, "one greedy run, got {matches:?}");
+    assert_eq!((matches[0].start_column, matches[0].end_column), (0, 8));
+}
+
+/// Tab on a multi-line selection is a block indent regardless of where the anchor column
+/// falls. Requiring the selection to start in the indentation replaced the whole block with
+/// one indent unit instead.
+#[test]
+fn tab_over_a_mid_line_multiline_selection_indents_instead_of_replacing() {
+    let mut editor = editor();
+    editor.set_text("a\nb\nc");
+    editor.set_cursor(2, 1, false);
+    editor.set_cursor(0, 0, true);
+
+    editor.handle_key_press(9, 0);
+
+    assert_eq!(editor.text(), "    a\n    b\n    c");
+}
+
+/// Sorting a selected range must leave that range selected. The old code hard-coded the
+/// anchor to `(0,0)`, so the next typed character replaced almost the whole document.
+#[test]
+fn sorting_a_selected_range_leaves_only_that_range_selected() {
+    let mut editor = editor();
+    editor.set_text("c\nb\na\n");
+    editor.set_cursor(1, 0, false);
+    editor.set_cursor(0, 0, true);
+
+    editor.sort_lines();
+
+    assert_eq!(editor.text(), "b\nc\na\n");
+    assert_eq!(editor.cursor.anchor.line, 0);
+    assert_eq!(editor.cursor.head.line, 1);
+}

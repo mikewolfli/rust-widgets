@@ -243,15 +243,27 @@ impl KeySequenceEdit {
         if self.key_sequence == seq {
             return;
         }
+        self.chords = if seq.is_empty() { Vec::new() } else { vec![seq.clone()] };
+        self.announce_sequence_change(seq);
+    }
+
+    /// Records a new effective sequence: history, `key_sequence_changed`, conflict check, display
+    /// invalidation and a redraw.
+    ///
+    /// Split out of [`KeySequenceEdit::set_key_sequence`] because the multi-chord recording path
+    /// and `set_max_chords` change the effective sequence while **keeping** the chord list they
+    /// built. Routing every write through one place is what makes "the signal fires whenever the
+    /// value changes" true for the recording path, which previously wrote the field directly and
+    /// left hosts and the undo stack behind.
+    fn announce_sequence_change(&mut self, seq: KeySequence) {
         let before = self.key_sequence.clone();
         self.key_sequence = seq.clone();
-        self.chords = if seq.is_empty() { Vec::new() } else { vec![seq.clone()] };
         if !self.restoring_history {
-            *self.history_target.borrow_mut() = self.key_sequence.clone();
+            *self.history_target.borrow_mut() = seq.clone();
             self.undo_stack.push(Box::new(ValueCommand::new(
                 self.history_target.clone(),
                 before,
-                self.key_sequence.clone(),
+                seq.clone(),
                 "Edit key sequence",
                 "key_sequence_edit",
             )));
@@ -308,9 +320,15 @@ impl KeySequenceEdit {
             return;
         }
         self.max_chords = max_chords;
-        self.chords.truncate(max_chords);
-        if let Some(last) = self.chords.last().cloned() {
-            self.key_sequence = last;
+        if self.chords.len() > max_chords {
+            self.chords.truncate(max_chords);
+            // The effective (last) chord can change here. Writing the field directly lost the
+            // change: no `key_sequence_changed`, no undo entry, no conflict check.
+            match self.chords.last().cloned() {
+                Some(last) if last != self.key_sequence => self.announce_sequence_change(last),
+                None => self.announce_sequence_change(KeySequence::empty()),
+                _ => {}
+            }
         }
         self.invalidate_display();
         self.base.request_redraw();
@@ -380,6 +398,9 @@ impl KeySequenceEdit {
             self.recording = true;
             self.pending_modifiers = 0;
             self.invalidate_display();
+            // `recording` decides both the background and the prompt text, so the state
+            // change is visible and has to ask for a frame.
+            self.base.request_redraw();
         }
     }
     /// Ends recording.
@@ -392,6 +413,7 @@ impl KeySequenceEdit {
             self.recording = false;
             self.pending_modifiers = 0;
             self.invalidate_display();
+            self.base.request_redraw();
             self.editing_finished.emit();
         }
     }
@@ -430,6 +452,12 @@ impl KeySequenceEdit {
         self.restoring_history = true;
         let seq = self.history_target.borrow().clone();
         self.key_sequence = seq.clone();
+        // Undo restores the effective sequence, so the chord list it publishes has to be
+        // rebuilt from it too. Leaving the old list in place made `chords()`, `sequence_len()`
+        // and `conflicts_with()` answer the pre-undo recording while the displayed value was
+        // the restored one. (A multi-chord history is not recorded as a list, so the restored
+        // effective chord is the single chord the history can name.)
+        self.chords = if seq.is_empty() { Vec::new() } else { vec![seq.clone()] };
         self.restoring_history = false;
         self.invalidate_display();
         self.key_sequence_changed.emit(seq);
@@ -560,13 +588,12 @@ impl EventHandler for KeySequenceEdit {
                 }
             }
             Event::KeyPress { key, modifiers } if self.recording => {
-                // Escape clears recording without saving
+                // Escape clears recording without saving, but it is still the end of the
+                // edit: `editing_finished` is documented to fire for a cancelled recording
+                // too, and a host waiting for it to restore its UI would otherwise hang in
+                // "recording" state.
                 if *key == key_codes::ESCAPE {
-                    if self.recording {
-                        self.recording = false;
-                        self.pending_modifiers = 0;
-                        self.invalidate_display();
-                    }
+                    self.stop_recording();
                     return;
                 }
                 // A modifier-only key records no chord, but it is the first half of one: show
@@ -593,9 +620,10 @@ impl EventHandler for KeySequenceEdit {
                     if self.chords.len() < self.max_chords {
                         self.chords.push(chord.clone());
                     }
-                    self.key_sequence = chord;
-                    self.invalidate_display();
-                    self.base.request_redraw();
+                    // Record the completed chord through the same announcement path a
+                    // single-chord capture uses: the effective sequence changed, so it must
+                    // emit `key_sequence_changed` (with conflict detection) and be undoable.
+                    self.announce_sequence_change(chord);
                     if self.chords.len() >= self.max_chords {
                         self.stop_recording();
                     }
@@ -633,6 +661,7 @@ fn key_code_to_name(key: u32) -> String {
         38 => "Up".into(),
         39 => "Right".into(),
         40 => "Down".into(),
+        45 => "Insert".into(),
         46 => "Delete".into(),
         112 => "F1".into(),
         113 => "F2".into(),
@@ -694,7 +723,11 @@ fn key_code_from_name(name: &str) -> Option<u32> {
         "UP" => 38,
         "RIGHT" => 39,
         "DOWN" => 40,
-        "DELETE" | "DEL" | "INSERT" | "INS" => 46,
+        "DELETE" | "DEL" => 46,
+        // VK_INSERT is 45. Sharing the Delete arm made the round trip impossible: the
+        // display name read "Insert" while the stored code bound Delete (and `45` had no
+        // name at all, falling back to "Key45").
+        "INSERT" | "INS" => 45,
         other => {
             if other.len() == 1 {
                 let ch = other.as_bytes()[0];
@@ -1415,5 +1448,118 @@ mod tests {
         editor.handle_event(&Event::key_press(67, 0b0010)); // Ctrl+C
         editor.refresh_display_text();
         assert_eq!(editor.display_text, "Ctrl+C");
+    }
+
+    /// Escape is documented as a way to cancel recording that still ends the edit. The old
+    /// branch stopped recording by hand, so `editing_finished` never fired.
+    #[test]
+    fn escape_recording_emits_editing_finished() {
+        let mut editor = KeySequenceEdit::new(Rect::new(0, 0, 200, 30));
+        editor.start_recording();
+        let finished = Arc::new(Mutex::new(0u32));
+        let sink = Arc::clone(&finished);
+        editor.editing_finished.connect(move || *sink.lock().unwrap() += 1);
+
+        editor.handle_event(&Event::key_press(crate::event::key_codes::ESCAPE, 0));
+
+        assert!(!editor.is_recording());
+        assert_eq!(*finished.lock().unwrap(), 1);
+        assert!(editor.key_sequence().is_empty(), "cancel keeps the value");
+    }
+
+    /// Each completed chord of a multi-chord recording changes the effective sequence, so each
+    /// has to be announced. The old path wrote the field directly and emitted nothing.
+    #[test]
+    fn multi_chord_recording_emits_key_sequence_changed() {
+        let mut editor = KeySequenceEdit::new(Rect::new(0, 0, 200, 30));
+        editor.set_max_chords(2);
+        let changes = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&changes);
+        editor
+            .key_sequence_changed
+            .connect(move |seq| sink.lock().unwrap().push(seq.to_display_string()));
+
+        editor.start_recording();
+        editor.handle_event(&Event::key_press(17, 0b0010)); // Ctrl (prefix)
+        editor.handle_event(&Event::key_press(67, 0b0010)); // Ctrl+C
+        assert_eq!(*changes.lock().unwrap(), vec!["Ctrl+C".to_string()]);
+
+        editor.handle_event(&Event::key_press(86, 0b0010)); // Ctrl+V
+        assert_eq!(*changes.lock().unwrap(), vec!["Ctrl+C".to_string(), "Ctrl+V".to_string()]);
+        assert!(!editor.is_recording(), "the second chord finishes the capture");
+    }
+
+    /// Undo/redo restores the effective sequence; the chord mirror has to follow, or
+    /// `chords()`/`sequence_len()`/`conflicts_with()` keep answering the undone value.
+    #[test]
+    fn undo_redo_updates_the_chords_mirror() {
+        let mut editor = KeySequenceEdit::new(Rect::new(0, 0, 200, 30));
+        editor.set_key_sequence(KeySequence::new(0x01, 67, "C"));
+        assert_eq!(editor.chords().len(), 1);
+
+        assert!(editor.undo());
+        assert!(editor.key_sequence().is_empty());
+        assert!(editor.chords().is_empty(), "the mirror follows the undo");
+
+        assert!(editor.redo());
+        assert_eq!(editor.chords().len(), 1);
+        assert_eq!(editor.chords()[0], *editor.key_sequence());
+    }
+
+    /// Shrinking `max_chords` can change the effective sequence; that change is announced
+    /// instead of being written into the field silently.
+    #[test]
+    fn reducing_max_chords_emits_sequence_changed() {
+        let mut editor = KeySequenceEdit::new(Rect::new(0, 0, 200, 30));
+        editor.set_max_chords(3);
+        let first = KeySequence::new(0, 65, "A");
+        let second = KeySequence::new(0, 66, "B");
+        let third = KeySequence::new(0, 67, "C");
+        editor.set_chords(vec![first.clone(), second, third.clone()]);
+        assert_eq!(*editor.key_sequence(), third);
+
+        let changes = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&changes);
+        editor
+            .key_sequence_changed
+            .connect(move |seq| sink.lock().unwrap().push(seq.to_display_string()));
+
+        editor.set_max_chords(1);
+
+        assert_eq!(editor.chords(), &[first]);
+        assert_eq!(*changes.lock().unwrap(), vec!["A".to_string()]);
+    }
+
+    /// VK_INSERT is 45; sharing Delete's 46 made the name/code round trip lie.
+    #[test]
+    fn insert_key_maps_to_vk_45() {
+        assert_eq!(key_code_from_name("Insert"), Some(45));
+        assert_eq!(key_code_from_name("Ins"), Some(45));
+        assert_eq!(key_code_to_name(45), "Insert");
+        assert_eq!(key_code_from_name("Delete"), Some(46));
+    }
+
+    /// Recording paints a different background and prompt, so both public entry points must
+    /// ask for a frame.
+    #[test]
+    fn start_and_stop_recording_request_repaint() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let mut editor = KeySequenceEdit::new(Rect::new(0, 0, 200, 30));
+        let fired = Arc::new(AtomicBool::new(false));
+        {
+            let sink = Arc::clone(&fired);
+            let scope = editor.connection_scope();
+            editor.redraw_requested_signal().connect_scoped(scope, move || {
+                sink.store(true, Ordering::SeqCst);
+            });
+        }
+
+        editor.start_recording();
+        assert!(fired.load(Ordering::SeqCst), "entering recording repaints");
+
+        fired.store(false, Ordering::SeqCst);
+        editor.stop_recording();
+        assert!(fired.load(Ordering::SeqCst), "leaving recording repaints");
     }
 }

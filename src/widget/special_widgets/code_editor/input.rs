@@ -34,9 +34,11 @@ impl CodeEditor {
 
     /// Applies a committed text or IME payload.
     pub fn input_text(&mut self, text: &str) {
-        if !self.is_editable() || text.is_empty() {
+        if text.is_empty() {
             return;
         }
+        // The find/goto bar is chrome, not document content: a read-only document can
+        // still be searched, so this branch must come before the editable gate.
         if self.find.visible {
             let printable: String = text.chars().filter(|ch| !ch.is_control()).collect();
             if self.goto_mode {
@@ -52,6 +54,9 @@ impl CodeEditor {
             if !printable.is_empty() {
                 self.append_find_query(&printable);
             }
+            return;
+        }
+        if !self.is_editable() {
             return;
         }
         let printable: String = text.chars().filter(|ch| *ch != '\r').collect();
@@ -104,6 +109,10 @@ impl CodeEditor {
         // macOS. Treating only Control as primary made every documented `Cmd+…`
         // binding unreachable on macOS.
         let ctrl = modifiers & (MODIFIER_CONTROL | MODIFIER_META) != 0;
+        // Windows reports AltGr as Ctrl+Alt. Every single-modifier shortcut below must
+        // ignore that pair, or typing an AltGr character (e.g. `ź` as AltGr+X) would also
+        // cut the selection / undo / select all before the character is delivered.
+        let ctrl_chord = ctrl && !alt;
 
         if self.context_menu.visible && self.handle_menu_key(key, ctrl).is_some() {
             return;
@@ -115,8 +124,8 @@ impl CodeEditor {
         match key {
             // Word-wise movement and selection (Zed/VS Code bindings) must be
             // matched before the plain arrow arms or they become unreachable.
-            37 if ctrl => self.move_word(-1, shift),
-            39 if ctrl => self.move_word(1, shift),
+            37 if ctrl_chord => self.move_word(-1, shift),
+            39 if ctrl_chord => self.move_word(1, shift),
             // Multi-cursor carets: Control+Alt+Up/Down, the VS Code gesture.
             38 if ctrl && alt => {
                 self.add_cursor_above();
@@ -134,14 +143,14 @@ impl CodeEditor {
             38 => self.move_cursor_with_selection(-1, 0, shift),
             40 => self.move_cursor_with_selection(1, 0, shift),
             36 => {
-                if ctrl {
+                if ctrl_chord {
                     self.move_to_document_edge(-1, shift);
                 } else {
                     self.move_to_line_edge(-1, shift);
                 }
             }
             35 => {
-                if ctrl {
+                if ctrl_chord {
                     self.move_to_document_edge(1, shift);
                 } else {
                     self.move_to_line_edge(1, shift);
@@ -166,7 +175,7 @@ impl CodeEditor {
             13 => {
                 if self.find.visible {
                     self.find_next(shift);
-                } else if ctrl {
+                } else if ctrl_chord {
                     if shift {
                         self.insert_line_above();
                     } else {
@@ -193,13 +202,15 @@ impl CodeEditor {
                     // is the unchanged indent/outdent behaviour.
                 } else if self.is_in_snippet() && !shift && self.next_placeholder() {
                     // The session owns Tab while it runs.
-                } else if alt {
+                } else if alt || shift {
                     self.outdent_selection();
                 } else {
                     self.insert_tab();
                 }
             }
-            27 => {
+            27 | 0x84 => {
+                // `0x84` is the X11-style ESC some platform layers map; both codes have to
+                // leave the same state, including the rectangular gesture and the caret set.
                 if self.context_menu.visible {
                     self.close_context_menu();
                 } else if self.completion.visible {
@@ -222,25 +233,17 @@ impl CodeEditor {
                     self.collapse_cursors();
                 }
             }
-            // Escape is `27`, but the widget also accepts `0x84` (X11-style ESC)
-            // for platform layers that map it that way.
-            0x84 => {
-                self.dismiss_completion();
-                self.close_context_menu();
-                let _ = self.cancel_snippet_session();
-                self.base.request_redraw();
-            }
             // Ctrl/Meta chords.
-            90 if ctrl && shift => {
+            90 if ctrl_chord && shift => {
                 let _ = self.redo();
             }
-            90 if ctrl => {
+            90 if ctrl_chord => {
                 let _ = self.undo();
             }
-            89 if ctrl && shift => {
+            89 if ctrl_chord && shift => {
                 let _ = self.redo();
             }
-            89 if ctrl => {
+            89 if ctrl_chord => {
                 let _ = self.redo();
             }
             // Find next/previous, the F3 convention (framework F-key range).
@@ -248,48 +251,48 @@ impl CodeEditor {
                 let _ = self.find_next(shift);
             }
             // Multi-caret and line commands (Zed / VS Code bindings).
-            68 if ctrl && shift => self.duplicate_line(),
-            68 if ctrl => {
+            68 if ctrl_chord && shift => self.duplicate_line(),
+            68 if ctrl_chord => {
                 self.select_next_occurrence();
             }
             // Ctrl+L selects the caret's line.
-            76 if ctrl && !shift => self.select_line(self.cursor.head.line),
-            76 if ctrl && shift => {
+            76 if ctrl_chord && !shift => self.select_line(self.cursor.head.line),
+            76 if ctrl_chord && shift => {
                 self.select_all_occurrences();
             }
-            75 if ctrl && shift => self.delete_line(),
+            75 if ctrl_chord && shift => self.delete_line(),
             // Join Lines is `J`; it must be matched before the plain-`J` arm or
             // the later arm swallows it (the two arms share a key and the first
             // match wins).
-            74 if ctrl => self.join_lines(),
+            74 if ctrl_chord => self.join_lines(),
             // Transpose the two characters around the caret.
-            84 if ctrl => self.transpose_characters(),
-            65 if ctrl => self.select_all(),
-            67 if ctrl => {
+            84 if ctrl_chord => self.transpose_characters(),
+            65 if ctrl_chord => self.select_all(),
+            67 if ctrl_chord => {
                 self.copy();
             }
-            88 if ctrl => {
+            88 if ctrl_chord => {
                 self.cut();
             }
-            86 if ctrl => {
+            86 if ctrl_chord => {
                 self.paste();
             }
-            70 if ctrl => self.open_find(false),
-            72 if ctrl => self.open_find(true),
+            70 if ctrl_chord => self.open_find(false),
+            72 if ctrl_chord => self.open_find(true),
             // Go to line, reusing the find bar's input row.
-            71 if ctrl => self.open_goto_bar(),
-            47 if ctrl => self.toggle_line_comment(),
-            32 if ctrl => {
+            71 if ctrl_chord => self.open_goto_bar(),
+            47 if ctrl_chord => self.toggle_line_comment(),
+            32 if ctrl_chord => {
                 self.trigger_completion();
             }
-            73 if ctrl => self.indent_selection(),
-            91 if ctrl => {
+            73 if ctrl_chord => self.indent_selection(),
+            91 if ctrl_chord => {
                 let line = self.cursor.head.line;
                 self.toggle_fold(line);
             }
-            93 if ctrl => self.unfold_all(),
-            61 if ctrl => self.scroll_by(self.visible_rows() as isize),
-            45 if ctrl => self.scroll_by(-(self.visible_rows() as isize)),
+            93 if ctrl_chord => self.unfold_all(),
+            61 if ctrl_chord => self.scroll_by(self.visible_rows() as isize),
+            45 if ctrl_chord => self.scroll_by(-(self.visible_rows() as isize)),
             _ => {}
         }
     }
@@ -364,7 +367,7 @@ impl CodeEditor {
                 true
             }
             9 => {
-                if !self.goto_mode {
+                if !self.goto_mode && self.find.replace_visible {
                     self.find.focus_replace = !self.find.focus_replace;
                     self.base.request_redraw();
                 }
@@ -424,6 +427,7 @@ impl CodeEditor {
             }
         }
         if self.context_menu.visible {
+            self.mouse_selecting = false;
             self.dismiss_completion();
             match self.hit_menu_row(pos) {
                 Some(index) => {
@@ -438,6 +442,7 @@ impl CodeEditor {
             return;
         }
         if self.completion.visible {
+            self.mouse_selecting = false;
             if let Some(index) = self.hit_completion_row(pos) {
                 self.completion.selected = index;
                 self.accept_completion();
@@ -460,6 +465,7 @@ impl CodeEditor {
             return;
         }
         if let Some(line) = self.hit_fold_marker(pos) {
+            self.mouse_selecting = false;
             self.toggle_fold(line);
             return;
         }
@@ -467,13 +473,17 @@ impl CodeEditor {
         // gutter is the one place where a click can only mean "this line", and
         // dragging from it is how a range of whole lines is chosen.
         if let Some(line) = self.hit_gutter_line(pos) {
+            // A gutter press is a line gesture, never a text-selection gesture: the
+            // branch below starts its own drag, and the breakpoint arm returns without
+            // one. Leaving `mouse_selecting` set turned a later 1 px move into a text
+            // selection expanding from the caret.
+            self.mouse_selecting = false;
             // Ctrl (or Command) on the gutter is the debugger gesture: it toggles a
             // breakpoint instead of selecting the line.
             if modifiers & (MODIFIER_CONTROL | MODIFIER_META) != 0 {
                 self.toggle_breakpoint(line);
                 return;
             }
-            self.mouse_selecting = false;
             self.gutter_dragging = true;
             self.gutter_anchor = Some(line);
             // A marker-bearing line reports activation, so a host can open the
@@ -642,6 +652,10 @@ impl CodeEditor {
         self.mouse_selecting = false;
         self.cursor = Cursor { head: position, anchor: position };
         self.extra_cursors.clear();
+        // Placing the caret explicitly cancels the sticky goal column, like every other
+        // "put the caret here" path; otherwise the next vertical move jumps back to the
+        // column the user chose before the Alt-click.
+        self.goal.active = false;
         self.emit_cursor_and_selection();
         self.base.request_redraw();
     }
@@ -682,8 +696,15 @@ impl CodeEditor {
         if carets.is_empty() {
             return;
         }
-        // The focus line's caret is the primary one, matching where the pointer is.
-        let primary = carets.pop().unwrap_or(self.cursor);
+        // The focus line's caret is the primary one, matching where the pointer is. The
+        // vector is in ascending line order, so `pop` named the *end* line and an upward
+        // drag put the primary caret on the anchor line instead of under the pointer.
+        let primary = carets
+            .iter()
+            .position(|caret| caret.head.line == focus.line)
+            .map(|index| carets.remove(index))
+            .or_else(|| carets.pop())
+            .unwrap_or(self.cursor);
         self.cursor = primary;
         self.extra_cursors = carets;
         self.goal.active = false;

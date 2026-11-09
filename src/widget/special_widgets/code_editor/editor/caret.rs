@@ -231,13 +231,12 @@ impl CodeEditor {
                 (head.line as isize + delta_line).clamp(0, lines.saturating_sub(1) as isize);
             head.line = target as usize;
             let provider = self.model.borrow();
-            head.column = if self.goal.active {
-                provider.clamp_column(head.line, self.goal.column)
-            } else {
-                provider.clamp_column(head.line, head.column)
-            };
+            // The sticky goal is the column the user *wants*, not the column a short line
+            // allowed. Storing the clamped value made the very next vertical move forget it.
+            let desired = if self.goal.active { self.goal.column } else { head.column };
+            head.column = provider.clamp_column(head.line, desired);
             drop(provider);
-            self.goal = CursorGoal { active: true, column: head.column };
+            self.goal = CursorGoal { active: true, column: desired };
         } else {
             self.goal.active = false;
             let direction: isize = if delta_column < 0 { -1 } else { 1 };
@@ -467,10 +466,11 @@ impl CodeEditor {
         let rows = self.visible_rows().max(1) as isize;
         let last = self.line_count().saturating_sub(1) as isize;
         let target = (self.cursor.head.line as isize + pages * rows).clamp(0, last) as usize;
-        let column = if self.goal.active { self.goal.column } else { self.cursor.head.column };
-        let column = self.model.borrow().clamp_column(target, column);
+        let desired = if self.goal.active { self.goal.column } else { self.cursor.head.column };
+        let column = self.model.borrow().clamp_column(target, desired);
         let head = TextPosition::new(target, column);
-        self.goal = CursorGoal { active: true, column };
+        // Keep the wanted column, not the one this short line could offer.
+        self.goal = CursorGoal { active: true, column: desired };
         self.cursor.head = head;
         if !extend_selection {
             self.cursor.anchor = head;
@@ -496,11 +496,5 @@ impl CodeEditor {
         self.ensure_caret_visible();
         self.emit_cursor_and_selection();
         self.base.request_redraw();
-    }
-
-    pub(super) fn selection_aligns_with_indent(&self) -> bool {
-        let (start, _) = self.cursor.bounds();
-        let chars: Vec<char> = self.model.borrow().line(start.line).chars().collect();
-        chars[..start.column.min(chars.len())].iter().all(|ch| ch.is_whitespace())
     }
 }

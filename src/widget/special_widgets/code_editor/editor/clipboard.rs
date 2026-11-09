@@ -103,7 +103,10 @@ impl CodeEditor {
         if !text.contains('\n') {
             return text.to_string();
         }
-        let indent = self.line_indent(self.cursor.head.line);
+        // The insert point is the *start* of the selection, which is `anchor.line` for a
+        // forward selection — not `head.line`. Reindenting by the tail line put the block
+        // at the wrong nesting depth.
+        let indent = self.line_indent(self.cursor.bounds().0.line);
         let common = common_leading_whitespace(text);
         let mut out = String::with_capacity(text.len() + indent.len() * 4);
         for (index, line) in text.split('\n').enumerate() {

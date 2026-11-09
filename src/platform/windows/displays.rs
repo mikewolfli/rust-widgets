@@ -135,8 +135,8 @@ unsafe fn window_dpi(hwnd: HWND) -> Option<u32> {
     if module.is_null() {
         return None;
     }
-    // SAFETY: the name is a NUL-terminated ASCII buffer that outlives the call.
-    let symbol = GetProcAddress(module, b"GetDpiForWindow\0".as_ptr() as *const i8);
+    // SAFETY: the name is a NUL-terminated ASCII C string that outlives the call.
+    let symbol = GetProcAddress(module, c"GetDpiForWindow".as_ptr());
     if symbol.is_null() {
         return None;
     }

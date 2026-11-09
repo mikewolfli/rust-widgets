@@ -26,6 +26,12 @@ const NON_WRAPPING_START: f64 = -std::f64::consts::PI * 0.75;
 /// The angular sweep, in radians, of a non-wrapping dial's scale (270°).
 const NON_WRAPPING_SWEEP: f64 = std::f64::consts::PI * 1.5;
 
+/// The radius of the hub painted over the needle's pivot.
+///
+/// The press/drag path treats this disc as a dead zone, so the area the user sees as "the
+/// centre" is the area that leaves the value alone.
+const HUB_RADIUS: i32 = 3;
+
 /// Dial (rotary knob) widget.
 ///
 /// Holds an integer value in an inclusive `minimum ..= maximum` range and
@@ -296,11 +302,14 @@ impl Dial {
     /// notch ring then use — so a dial with `minimum == maximum` still draws them *in phase*
     /// rather than falling back to two different defaults.
     fn ratio(&self) -> f64 {
-        let range = (self.maximum - self.minimum) as f64;
+        // Both differences are taken in `f64`. `set_minimum(i32::MIN)`/`set_maximum(i32::MAX)`
+        // is a reachable pair, and `maximum - minimum` overflows `i32` — a panic in debug and a
+        // wrapped (wrong) fraction in release. `set_value` already widens for the same reason.
+        let range = self.maximum as f64 - self.minimum as f64;
         if range == 0.0 {
             0.0
         } else {
-            (self.value - self.minimum) as f64 / range
+            (self.value as f64 - self.minimum as f64) / range
         }
     }
     /// The angle, in radians, at a `0.0 ..= 1.0` position along the dial's own sweep.
@@ -402,14 +411,18 @@ impl Dial {
 
     /// The value a drag position names, snapped to the configured step.
     ///
-    /// A position at the dial's exact centre names the current value rather than
-    /// a new one (see [`Dial::value_at_point`]), so it is left unsnapped: pressing
-    /// the hub must not move a value the user did not point at.
+    /// A position inside the painted hub names the current value rather than a new one: the
+    /// hub is the disc of radius [`HUB_RADIUS`] the draw path paints at the centre, and the
+    /// angle a point a pixel or two off the centre describes can jump across the whole scale.
+    /// Snapping is skipped for the same reason — a dead-zone press must not move the value.
     fn drag_value_at(&self, pos: Point) -> i32 {
         let rect = self.geometry();
         let centre_x = rect.x as f64 + rect.width as f64 / 2.0;
         let centre_y = rect.y as f64 + rect.height as f64 / 2.0;
-        if pos.x as f64 == centre_x && pos.y as f64 == centre_y {
+        let dx = pos.x as f64 - centre_x;
+        let dy = pos.y as f64 - centre_y;
+        let hub = f64::from(HUB_RADIUS);
+        if dx * dx + dy * dy <= hub * hub {
             return self.value;
         }
         self.snap_value(self.value_at_point(pos))
@@ -549,6 +562,13 @@ impl EventHandler for Dial {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
         if !self.base.is_enabled() {
+            // A disable mid-drag must end the drag. `set_enabled` only stores the flag, so
+            // without this the dial would resume following the pointer on the next move,
+            // with no button held, as soon as it was re-enabled.
+            if self.dragging {
+                self.dragging = false;
+                self.base.request_redraw();
+            }
             return;
         }
         match event {
@@ -710,9 +730,12 @@ impl Draw for Dial {
             // small dial that has a large target. Painting ticks outside the control is the
             // bounded-extent defect the census checks for, so the outer edge is also floored at
             // 1 px and the inner edge at 2 px less, which keeps `inner < outer` by construction.
-            let inset = (radius_f * 0.20).round().clamp(4.0, radius_f * 0.35);
+            let inset = (radius_f * 0.20).round().min(radius_f * 0.35).max(0.0);
             let tick_outer = ((radius_f - inset).round() as i32).max(1);
-            let tick_inner = ((tick_outer as f64 * 0.55).round() as i32).clamp(1, tick_outer - 1);
+            // `clamp(1, tick_outer - 1)` panicked on a one-pixel ring (`min > max`). A zero
+            // inner radius is a degenerate tick, not a crash; the outer `inset` clamp above
+            // had the same inverted-bound panic when `radius_f * 0.35 < 4`.
+            let tick_inner = ((tick_outer as f64 * 0.55).round() as i32).clamp(0, tick_outer - 1);
 
             // Every tick is placed from the *same* fraction-to-angle mapping the needle uses
             // ([`Self::angle_at_fraction`]), so the ring cannot land out of phase with the
@@ -764,7 +787,7 @@ impl Draw for Dial {
             y: center.y + (needle_len as f32 * angle.sin() as f32) as i32,
         };
         context.draw_line(center, to, accent);
-        context.fill_circle(center, 3, ink);
+        context.fill_circle(center, HUB_RADIUS as u32, ink);
     }
 }
 
@@ -1221,5 +1244,53 @@ mod tests {
         // The scale sweeps three quarters of a turn, leaving the bottom gap.
         assert!((NON_WRAPPING_SWEEP - 1.5 * std::f64::consts::PI).abs() < 1e-12);
         assert!((NON_WRAPPING_START + 0.75 * std::f64::consts::PI).abs() < 1e-12);
+    }
+
+    /// The notch ring used `f64::clamp(4.0, radius * 0.35)`, which panics when the cap is
+    /// below the floor. That is every dial whose radius is 1..=11 (16x16 through 30x30).
+    #[test]
+    fn notch_ring_draws_at_small_radii_without_panicking() {
+        for side in 10..=32u32 {
+            let mut d = Dial::new(Rect::new(0, 0, side, side));
+            d.set_notches_visible(true);
+            let svg = crate::widget::svg::render_to_svg(&mut d);
+            assert!(!svg.is_empty(), "a {side}px dial still paints its face");
+        }
+    }
+
+    /// `ratio` used `i32` subtraction, which overflows for the legal full-range pair
+    /// `i32::MIN ..= i32::MAX` (panic in debug, a wrapped fraction in release).
+    #[test]
+    fn ratio_handles_full_i32_range_without_overflow() {
+        let mut d = Dial::new(Rect::new(0, 0, 64, 64));
+        d.set_range(i32::MIN, i32::MAX);
+        d.set_value(0);
+        assert!((d.ratio() - 0.5).abs() < 1e-6, "0 is the midpoint of the full range");
+        let svg = crate::widget::svg::render_to_svg(&mut d);
+        assert!(!svg.is_empty());
+    }
+
+    /// A disable mid-drag must drop the latch; otherwise the re-enabled dial follows the
+    /// next pointer move with no button held.
+    #[test]
+    fn disabling_mid_drag_clears_the_drag_latch() {
+        let mut d = Dial::new(Rect::new(0, 0, 64, 64));
+        d.handle_event(&Event::mouse_press(40, 32, 1));
+        assert!(d.is_dragging());
+
+        d.set_enabled(false);
+        d.handle_event(&Event::mouse_move(50, 32));
+        assert!(!d.is_dragging(), "the disabled dial drops the drag");
+    }
+
+    /// The hub is the visible dead zone; a press inside it must not snap the value to the
+    /// angle of a pixel or two off the centre.
+    #[test]
+    fn pressing_the_hub_does_not_jump_the_value() {
+        let mut d = Dial::new(Rect::new(0, 0, 64, 64));
+        d.set_range(0, 100);
+        d.set_value(50);
+        d.handle_event(&Event::mouse_press(34, 32, 1));
+        assert_eq!(d.value(), 50);
     }
 }

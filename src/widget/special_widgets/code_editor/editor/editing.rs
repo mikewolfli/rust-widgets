@@ -549,15 +549,18 @@ impl CodeEditor {
         let (start, end) = self.cursor.bounds();
         let before = self.text();
         let mut lines: Vec<String> = before.split('\n').map(|line| line.to_string()).collect();
-        let last = end.line.min(lines.len().saturating_sub(1));
-        let block: Vec<String> = lines[start.line..=last].to_vec();
+        // Both ends are clamped: a shared document can be shortened under a caret the
+        // control still holds, and `start.line..=last` with `start > last` panics.
+        let start_line = start.line.min(lines.len().saturating_sub(1));
+        let last = end.line.min(lines.len().saturating_sub(1)).max(start_line);
+        let block: Vec<String> = lines[start_line..=last].to_vec();
         let insert_at = last + 1;
         for (offset, line) in block.into_iter().enumerate() {
             lines.insert(insert_at + offset, line);
         }
         let after = join_lines(&lines);
         let first_copy = insert_at;
-        let copy_count = end.line - start.line;
+        let copy_count = last - start_line;
         self.commit_edit(before, after, TextPosition::new(first_copy, 0));
         // Select the duplicated block using the freshly written model.
         let select_last = first_copy + copy_count;
@@ -574,13 +577,14 @@ impl CodeEditor {
         let (start, end) = self.cursor.bounds();
         let before = self.text();
         let mut lines: Vec<String> = before.split('\n').map(|line| line.to_string()).collect();
-        let last = end.line.min(lines.len().saturating_sub(1));
-        lines.drain(start.line..=last);
+        let start_line = start.line.min(lines.len().saturating_sub(1));
+        let last = end.line.min(lines.len().saturating_sub(1)).max(start_line);
+        lines.drain(start_line..=last);
         if lines.is_empty() {
             lines.push(String::new());
         }
         let after = join_lines(&lines);
-        let head_line = start.line.min(lines.len().saturating_sub(1));
+        let head_line = start_line.min(lines.len().saturating_sub(1));
         let head = TextPosition::new(head_line, 0);
         self.commit_edit(before, after, head);
     }
@@ -647,14 +651,13 @@ impl CodeEditor {
         // terminator's artefact, not a line the user can see or reorder.
         let trailing_blank = lines.last().is_some_and(|line| line.is_empty());
         let sortable = if trailing_blank { lines.len() - 1 } else { lines.len() };
+        // The sorted range is also the range the caret selection must cover afterwards.
+        let (first, last) = if has_selection {
+            (start.line.min(sortable.saturating_sub(1)), end.line.min(sortable.saturating_sub(1)))
+        } else {
+            (0, sortable.saturating_sub(1))
+        };
         if sortable > 0 {
-            // No selection: the whole sortable document. Otherwise the lines the
-            // selection touches, inclusive of both ends.
-            let (first, last) = if has_selection {
-                (start.line.min(sortable - 1), end.line.min(sortable - 1))
-            } else {
-                (0, sortable - 1)
-            };
             lines[first..=last].sort();
             if descending {
                 lines[first..=last].reverse();
@@ -675,9 +678,12 @@ impl CodeEditor {
         if after == before {
             return;
         }
-        let head = TextPosition::new(sortable.saturating_sub(1), 0);
-        self.commit_edit(before, after, head);
-        self.cursor.anchor = TextPosition::new(0, 0);
+        self.commit_edit(before, after, TextPosition::new(last, 0));
+        // The selection used to be hard-coded from `(0,0)` to the second-to-last line, so
+        // sorting a three-line range selected almost the whole document and the next typed
+        // character replaced it. Keep it on the block that was actually sorted.
+        self.cursor.head.column = self.line_len(last);
+        self.cursor.anchor = TextPosition::new(first, 0);
         self.emit_cursor_and_selection();
     }
 
@@ -994,10 +1000,11 @@ impl CodeEditor {
         if !self.is_editable() {
             return;
         }
-        if self.has_selection()
-            && self.cursor.line_span() > 1
-            && self.selection_aligns_with_indent()
-        {
+        // A multi-line selection is a block indent regardless of where the anchor column
+        // falls. Requiring the selection to start in the indentation made the common
+        // mid-line block selection fall through to `insert`, which replaced the whole
+        // selected block with one indent unit.
+        if self.has_selection() && self.cursor.line_span() > 1 {
             self.indent_selection();
             return;
         }

@@ -23,7 +23,7 @@
 //! * Dates are compared and ordered by year, then month, then day.
 use super::calendar::Calendar;
 use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
-use crate::event::{Event, EventHandler};
+use crate::event::{Event, EventHandler, FocusReason};
 use crate::render::RenderContext;
 use crate::shortcut::Key;
 use crate::signal::{GenericSignal, Signal1};
@@ -772,12 +772,17 @@ impl DateEdit {
     ///
     /// The current date is re-clamped into the new range, so raising the minimum
     /// moves a now-out-of-range value up to the boundary rather than leaving the
-    /// widget holding a date below its own minimum.
+    /// widget holding a date below its own minimum. A minimum above the current
+    /// maximum raises the maximum with it, so the range a caller can write is never
+    /// empty.
     pub fn set_minimum_date(&mut self, date: Date) {
-        if self.minimum == date {
+        if self.minimum == date && self.maximum >= date {
             return;
         }
         self.minimum = date;
+        if self.maximum < date {
+            self.maximum = date;
+        }
         // The embedded calendar mirrors the range, so it has to be pushed again (K-P02).
         self.calendar_sync_dirty = true;
         // Re-clamp the current value into the new range. Without this the widget could
@@ -788,25 +793,28 @@ impl DateEdit {
     }
     /// Sets the inclusive upper bound for accepted dates.
     ///
-    /// The current date is clamped into the new range, so lowering the maximum moves
-    /// a now-out-of-range value down to the boundary rather than leaving the widget
-    /// holding a date it would itself reject.
+    /// The current date is clamped into the new range, so lowering the maximum
+    /// moves a now-out-of-range value down to the boundary rather than leaving the
+    /// widget holding a date it would itself reject. A maximum below the current
+    /// minimum keeps the minimum authoritative: the maximum rises back to it.
     pub fn set_maximum_date(&mut self, date: Date) {
-        if self.maximum == date {
+        let maximum = date.max(self.minimum);
+        if self.maximum == maximum {
             return;
         }
-        self.maximum = date;
+        self.maximum = maximum;
         self.calendar_sync_dirty = true;
         self.clamp_to_range();
         self.base.request_redraw();
     }
     /// Sets both ends of the accepted range in one call.
     ///
-    /// The current date is clamped into the new range. `min` is not required to be
-    /// less than or equal to `max`; if the two are inverted the minimum wins, so a
-    /// caller that swaps its arguments gets a working widget pinned at `min` rather
-    /// than one where every subsequent [`DateEdit::set_date`] silently fails.
+    /// The current date is clamped into the new range. `max` is raised to `min` when
+    /// the caller passes an inverted pair: the alternative — storing the inversion —
+    /// left every subsequent [`DateEdit::set_date`] failing its own range check, so
+    /// the documented "pinned at `min`, still writable" outcome was unreachable.
     pub fn set_date_range(&mut self, min: Date, max: Date) {
+        let max = max.max(min);
         if self.minimum == min && self.maximum == max {
             return;
         }
@@ -819,10 +827,22 @@ impl DateEdit {
     /// Moves the current date inside `minimum..=maximum` if it fell outside.
     ///
     /// Called by every bound setter so the invariant "the value is within the range"
-    /// holds after any sequence of calls. The inverted-range rule lives in
-    /// [`clamp_ordered_range`], shared with the sibling time widgets.
+    /// holds after any sequence of calls. A bound change that moves the visible value is a
+    /// change the caller must hear about, so it emits `date_changed` and keeps the history
+    /// mirror on the value the widget now holds. It deliberately does **not** push an undo
+    /// entry: undoing a bound change would restore a date the new range refuses, which is
+    /// the wedged state this clamp exists to prevent.
+    ///
+    /// The inverted-range rule lives in [`clamp_ordered_range`], shared with the sibling
+    /// time widgets.
     fn clamp_to_range(&mut self) {
-        self.date = super::clamp_ordered_range(self.date, self.minimum, self.maximum);
+        let clamped = super::clamp_ordered_range(self.date, self.minimum, self.maximum);
+        if clamped != self.date {
+            self.date = clamped;
+            *self.history_target.borrow_mut() = clamped;
+            self.date_changed.emit(clamped);
+            self.base.request_redraw();
+        }
     }
     /// Stores the display-format pattern.
     ///
@@ -871,6 +891,13 @@ impl DateEdit {
         }
         if open {
             self.sync_calendar_open_state();
+            // The popup owns the keyboard while it is open: the embedded calendar only
+            // accepts arrow/Page keys while it holds focus, and this field never forwards
+            // `FocusGained` to an instance it lays out itself. Without this the popup's
+            // documented arrow-key navigation was unreachable.
+            self.calendar.base_mut().set_focus_reason(Some(FocusReason::Programmatic));
+        } else {
+            self.calendar.base_mut().set_focus_reason(None);
         }
         self.calendar_open = open;
         self.calendar_reveal.set_open(open);
@@ -1243,6 +1270,12 @@ impl DateEdit {
                 return;
             }
         }
+        // Year/month stepping must keep the day: `Date::set_month`/`set_year` do not
+        // adjust it, so `2024-01-31` stepped to February (or the 29th stepped into a
+        // common year) became an invalid combination that `set_date` rejects — the
+        // control looked frozen instead of moving to the month's last day.
+        let day = next.day().min(next.days_in_month());
+        next.set_day(day);
         self.set_date(next);
     }
 
@@ -1277,6 +1310,10 @@ impl DateEdit {
             }
             DateSection::Month => next.set_month(value as u8),
             DateSection::Day => next.set_day(value as u8),
+        }
+        if matches!(section, DateSection::Year | DateSection::Month) {
+            let day = next.day().min(next.days_in_month());
+            next.set_day(day);
         }
         self.set_date(next);
         true
@@ -2850,5 +2887,74 @@ mod tests {
         // The pointer target is the same measured box the underline uses.
         edit.handle_event(&Event::mouse_press(year.x + 2, year.y + 2, 1));
         assert_eq!(edit.current_section(), Some(DateSection::Year));
+    }
+
+    /// A year/month step must keep the day valid by clamping it to the target month.
+    /// `Date::set_month`/`set_year` leave the day alone, so the old step built `2024-02-31`
+    /// and `set_date` refused the whole change — the control looked frozen.
+    #[test]
+    fn stepping_year_and_month_sections_clamps_the_day() {
+        let mut edit = DateEdit::new(Rect::new(0, 0, 200, 30));
+        edit.set_date(Date::new(2024, 1, 31));
+        edit.set_current_section(Some(DateSection::Month));
+        edit.step_current_section(1);
+        assert_eq!(edit.date(), Date::new(2024, 2, 29), "the leap day is the month's last");
+
+        edit.set_date(Date::new(2024, 2, 29));
+        edit.set_current_section(Some(DateSection::Year));
+        edit.step_current_section(1);
+        assert_eq!(edit.date(), Date::new(2025, 2, 28));
+    }
+
+    /// An inverted pair is stored as `max = min`, so the widget is pinned at a value it
+    /// still accepts. Storing the inversion made every `set_date` fail, including a write of
+    /// the boundary itself.
+    #[test]
+    fn an_inverted_range_still_accepts_a_write_at_the_minimum() {
+        let mut edit = DateEdit::new(Rect::new(0, 0, 200, 30));
+        edit.set_date_range(Date::new(2026, 5, 10), Date::new(2026, 5, 1));
+        assert_eq!(edit.minimum_date(), Date::new(2026, 5, 10));
+        assert_eq!(edit.maximum_date(), Date::new(2026, 5, 10));
+        assert_eq!(edit.date(), Date::new(2026, 5, 10), "clamped to the only accepted value");
+        edit.set_date(Date::new(2026, 5, 10));
+        assert_eq!(edit.date(), Date::new(2026, 5, 10));
+    }
+
+    /// A bound change that moves the value is a value change: it must be announced, and the
+    /// history mirror must follow so a later undo cannot restore a date outside the range.
+    #[test]
+    fn clamping_the_value_on_a_bound_change_emits_date_changed() {
+        let mut edit = DateEdit::new(Rect::new(0, 0, 200, 30));
+        edit.set_date(Date::new(2026, 1, 1));
+        let announced = Arc::new(Mutex::new(None));
+        let sink = Arc::clone(&announced);
+        edit.date_changed.connect(move |day| *sink.lock().unwrap() = Some(*day));
+
+        edit.set_minimum_date(Date::new(2026, 6, 1));
+
+        assert_eq!(edit.date(), Date::new(2026, 6, 1));
+        assert_eq!(*announced.lock().unwrap(), Some(Date::new(2026, 6, 1)));
+    }
+
+    /// The popup forwards keys to the embedded calendar, which only accepts them while it
+    /// holds focus. The field never sent it a `FocusGained`, so the documented arrow-key
+    /// navigation was dead.
+    #[test]
+    fn popup_arrow_key_moves_calendar_selection() {
+        let mut edit = DateEdit::new(Rect::new(0, 0, 200, 30));
+        edit.set_calendar_popup(true);
+        edit.set_date(Date::new(2026, 6, 10));
+        edit.open_calendar();
+        assert!(edit.calendar_open());
+        assert_eq!(
+            edit.calendar().selected_date(),
+            chrono::NaiveDate::from_ymd_opt(2026, 6, 10).unwrap()
+        );
+
+        edit.handle_event(&Event::key_press(39, 0)); // Right
+        assert_eq!(
+            edit.calendar().selected_date(),
+            chrono::NaiveDate::from_ymd_opt(2026, 6, 11).unwrap()
+        );
     }
 }

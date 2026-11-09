@@ -34,6 +34,13 @@ pub struct UndoStack {
     base_revision: u64,
     /// Monotonic source of the next revision number.
     next_revision: u64,
+    /// Whether the next push must start a new entry instead of merging.
+    ///
+    /// A control that wants an edit session to be its own undo step (an in-place editor
+    /// cancels the whole session as one unit) seals the run at its boundary. Without this,
+    /// the first keystroke of the session could fold into the entry on top and the session
+    /// would no longer be separable from the edit before it.
+    merge_barrier: bool,
 }
 
 /// A command on the stack, paired with the document revision it produces.
@@ -70,6 +77,7 @@ impl UndoStack {
             saved_reachable: true,
             base_revision: 0,
             next_revision: 1,
+            merge_barrier: false,
         }
     }
 
@@ -79,8 +87,12 @@ impl UndoStack {
     /// attempt to merge the new command into the previous one instead of
     /// pushing a separate entry.
     pub fn push(&mut self, command: Box<dyn UndoCommand>) {
-        // Try merging with the last command.
-        if self.merge_policy_allows(&*command) {
+        // Try merging with the last command, unless a boundary was declared since the last
+        // push. The barrier is one-shot: the command that crosses it is stored separately,
+        // and the next push may merge into it normally.
+        let may_merge = !self.merge_barrier;
+        self.merge_barrier = false;
+        if may_merge && self.merge_policy_allows(&*command) {
             if let Some(last) = self.undo_stack.back_mut() {
                 if last.command.try_merge(command.as_ref()) {
                     // Merge succeeded: no new entry, but the content changed, so the merged
@@ -184,6 +196,15 @@ impl UndoStack {
         }
     }
 
+    /// Declares that the next pushed command must not merge into the entry on top.
+    ///
+    /// This is the "this is a new edit session" signal: the caller wants the next edit to
+    /// be undoable on its own rather than folded into the run that preceded it. The barrier
+    /// is consumed by the next [`Self::push`], whether or not that push stores an entry.
+    pub fn seal_merge_run(&mut self) {
+        self.merge_barrier = true;
+    }
+
     /// Returns `true` if there are commands available to undo.
     pub fn can_undo(&self) -> bool {
         !self.undo_stack.is_empty()
@@ -242,6 +263,25 @@ impl UndoStack {
         self.saved_reachable = true;
         self.base_revision = 0;
         self.next_revision = 1;
+        self.merge_barrier = false;
+    }
+
+    /// Discards the newest undo entries until at most `len` remain.
+    ///
+    /// The discarded commands are **not** applied: the caller is responsible for the
+    /// document's current content (an in-place editor that cancels has already restored its
+    /// own copy). The redo stack is cleared, because the discarded entries are the branch
+    /// redo would have extended. If the saved state was one of the discarded entries it is
+    /// no longer reachable through undo, so the stack reports dirty rather than clean.
+    pub fn truncate_undo(&mut self, len: usize) {
+        self.redo_stack.clear();
+        while self.undo_stack.len() > len {
+            let Some(entry) = self.undo_stack.pop_back() else { break };
+            if self.saved_revision == Some(entry.after_revision) {
+                self.saved_reachable = false;
+            }
+        }
+        self.merge_barrier = false;
     }
 
     /// Set the maximum capacity, dropping oldest commands if the new limit

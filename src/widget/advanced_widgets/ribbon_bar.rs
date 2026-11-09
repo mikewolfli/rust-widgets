@@ -539,6 +539,33 @@ impl RibbonBar {
         let before = self.current_tab_index;
         self.tabs.remove(index);
         self.groups.remove(index);
+        // Everything addressed by a tab index has to follow the removal: context tabs tint,
+        // key tips, and the keyboard focus all name a tab. Without this the tint and the tips
+        // moved onto whichever tab shifted into the slot, and Enter activated an item the user
+        // had not focused.
+        self.context_tabs.retain(|tab| *tab != index);
+        for tab in &mut self.context_tabs {
+            if *tab > index {
+                *tab -= 1;
+            }
+        }
+        self.key_tips.retain(|(tab, _, _, _)| *tab != index);
+        for (tab, _, _, _) in self.key_tips.iter_mut() {
+            if *tab > index {
+                *tab -= 1;
+            }
+        }
+        let remap = |slot: &mut Option<(usize, usize, usize)>| {
+            if slot.is_some_and(|(tab, _, _)| tab == index) {
+                *slot = None;
+            } else if let Some((tab, _, _)) = slot {
+                if *tab > index {
+                    *tab -= 1;
+                }
+            }
+        };
+        remap(&mut self.focused_item);
+        remap(&mut self.hovered_item);
         if self.tabs.is_empty() {
             self.current_tab_index = 0;
         } else if index < before {
@@ -796,13 +823,21 @@ impl RibbonBar {
 
     /// Removes all tabs, groups, and items.
     pub fn clear(&mut self) {
+        let before = self.current_tab_index;
         self.tabs.clear();
         self.groups.clear();
         self.current_tab_index = 0;
+        // Tab-scoped side tables must go too: a re-filled ribbon would otherwise tint and
+        // tip (and focus) indices that name entirely different tabs.
+        self.context_tabs.clear();
+        self.key_tips.clear();
         self.hovered_tab = None;
         self.hovered_item = None;
         self.focused_item = None;
         self.temporarily_expanded = false;
+        if before != 0 {
+            self.current_tab_changed.emit(0);
+        }
         self.base.request_redraw();
     }
 
@@ -1165,6 +1200,10 @@ impl RibbonBar {
             item.set_checked(!item.is_checked());
         }
         self.item_triggered.emit((tab, gi, ii));
+        // A checkable item's tick is painted, so the activation has to ask for a frame. The
+        // mouse path does this after `trigger_item`; the keyboard path did not, so Enter/Space
+        // toggled the state in the model and left the old picture on screen.
+        self.base.request_redraw();
         true
     }
 
@@ -1682,7 +1721,15 @@ impl RibbonBar {
         // Get current tab groups
         let groups = match self.groups.get(self.current_tab_index) {
             Some(g) if !g.is_empty() => g,
-            _ => return,
+            _ => {
+                // The clip pushed above has to be popped on every exit path. `panel_reveal`
+                // starts open, so `revealing` is true for any ordinary frame; an empty tab made
+                // this early return leak the clip and crop the rest of the frame.
+                if revealing {
+                    context.pop_clip();
+                }
+                return;
+            }
         };
 
         let layout = self.item_layout();
@@ -2170,6 +2217,15 @@ impl EventHandler for RibbonBar {
                     self.application_clicked.emit();
                     return;
                 }
+                // The marker is checked first and returns: it sits above the panel's box, so
+                // handling it after the "press outside the panel closes it" rule meant one
+                // click closed and then immediately re-toggled it open.
+                if self.quick_access_overflow_rect().is_some_and(|rect| rect.contains_point(*pos)) {
+                    self.quick_access_overflow_open = !self.quick_access_overflow_open;
+                    self.quick_access_overflow_clicked.emit();
+                    self.base.request_redraw();
+                    return;
+                }
                 // An open overflow panel takes the press before the items behind it.
                 if let Some(panel) = self.quick_access_overflow_panel_rect() {
                     if panel.contains_point(*pos) {
@@ -2186,12 +2242,6 @@ impl EventHandler for RibbonBar {
                         self.quick_access_overflow_open = false;
                         self.base.request_redraw();
                     }
-                }
-                if self.quick_access_overflow_rect().is_some_and(|rect| rect.contains_point(*pos)) {
-                    self.quick_access_overflow_open = !self.quick_access_overflow_open;
-                    self.quick_access_overflow_clicked.emit();
-                    self.base.request_redraw();
-                    return;
                 }
                 for index in 0..self.visible_quick_access_items() {
                     if self
@@ -2983,5 +3033,86 @@ mod tests {
         // An out-of-range index writes nothing and paints nothing.
         ribbon.set_tab_title(9, "Nowhere");
         assert_eq!(redraws.load(Ordering::SeqCst), 1);
+    }
+
+    /// A tab index is not just a title slot: context tints, KeyTips and the keyboard focus
+    /// are all addressed by it. Removing an earlier tab has to move them with the tabs, or
+    /// Enter activates an item the user never focused.
+    #[test]
+    fn removing_a_tab_remaps_index_keyed_state() {
+        let mut ribbon = RibbonBar::new(Rect::new(0, 0, 600, 160));
+        let home = ribbon.add_tab("Home");
+        let home_group = ribbon.add_group(home, "Clipboard");
+        ribbon.add_item(home, home_group, "Paste");
+        let insert = ribbon.add_tab("Insert");
+        let insert_group = ribbon.add_group(insert, "Tables");
+        let insert_item = ribbon.add_item(insert, insert_group, "Table");
+        ribbon.set_context_tabs(vec![insert]);
+        ribbon.set_key_tip(insert, insert_group, insert_item, "T");
+        ribbon.set_focused_item(Some((insert, insert_group, insert_item)));
+
+        ribbon.remove_tab(home);
+
+        assert_eq!(ribbon.context_tabs(), &[0]);
+        assert_eq!(ribbon.key_tip(0, insert_group, insert_item), Some("T"));
+        assert_eq!(ribbon.key_tips.len(), 1);
+        assert_eq!(ribbon.focused_item(), Some((0, insert_group, insert_item)));
+    }
+
+    /// `clear` drops the tab-scoped side tables and announces the selection reset, so a
+    /// re-filled ribbon starts with no stale tint, tip or focus.
+    #[test]
+    fn clearing_the_ribbon_resets_tab_scoped_state() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let mut ribbon = RibbonBar::new(Rect::new(0, 0, 600, 160));
+        ribbon.add_tab("Home");
+        let insert = ribbon.add_tab("Insert");
+        let group = ribbon.add_group(insert, "Tables");
+        let item = ribbon.add_item(insert, group, "Table");
+        ribbon.set_current_tab(insert);
+        ribbon.set_context_tabs(vec![insert]);
+        ribbon.set_key_tip(insert, group, item, "T");
+        let announced = std::sync::Arc::new(AtomicBool::new(false));
+        {
+            let sink = std::sync::Arc::clone(&announced);
+            ribbon.current_tab_changed.connect(move |_| sink.store(true, Ordering::SeqCst));
+        }
+
+        ribbon.clear();
+
+        assert!(announced.load(Ordering::SeqCst), "the selection reset is announced");
+        assert!(ribbon.context_tabs().is_empty());
+        assert!(ribbon.key_tips.is_empty());
+        assert_eq!(ribbon.current_tab(), 0);
+    }
+
+    /// Activating a checkable item with Enter changes its painted tick, so the keyboard path
+    /// must request a frame like the mouse path does.
+    #[test]
+    fn keyboard_toggle_repaints_checkable_item() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let mut ribbon = RibbonBar::new(Rect::new(0, 0, 400, 160));
+        let tab = ribbon.add_tab("Home");
+        let group = ribbon.add_group(tab, "Format");
+        let item = ribbon.add_item(tab, group, "Bold");
+        ribbon.item_mut(tab, group, item).expect("the item exists").set_checkable(true);
+
+        ribbon.handle_event(&Event::key_press(crate::event::key_codes::DOWN, 0));
+        assert_eq!(ribbon.focused_item(), Some((tab, group, item)));
+        let fired = std::sync::Arc::new(AtomicBool::new(false));
+        {
+            let sink = std::sync::Arc::clone(&fired);
+            let scope = ribbon.connection_scope();
+            ribbon.redraw_requested_signal().connect_scoped(scope, move || {
+                sink.store(true, Ordering::SeqCst);
+            });
+        }
+
+        ribbon.handle_event(&Event::key_press(crate::event::key_codes::ENTER, 0));
+
+        assert_eq!(ribbon.item_checked(tab, group, item), Some(true));
+        assert!(fired.load(Ordering::SeqCst), "the tick change repaints");
     }
 }
