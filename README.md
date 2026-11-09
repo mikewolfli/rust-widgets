@@ -218,6 +218,20 @@ exercised in CI, and the generated header is checked for drift by `tools/check_a
 | [`docs/reports/`](docs/reports/) | Audit and quality reports |
 | [`control.md`](control.md) | The widget gallery, generated from the registry |
 
+## Agent skills (DSH)
+
+[`dsh-plugin/`](dsh-plugin/) packages the `rust-widgets-maintainer` skill for
+[DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) — the repository
+rules, the control/capability checklist and the validation gates as one bundle.
+Installing the bundle is the whole setup:
+
+```sh
+dsh plugin --profile web add "git+https://github.com/mikewolfli/rust-widgets.git#main&path:/dsh-plugin"
+```
+
+The same bundle is listed in a format-1 index for **Plugins → Discover**:
+<https://cdn.jsdelivr.net/gh/mikewolfli/rust-widgets@main/dsh-plugin/market-index.json>.
+
 ## Verifying a change
 
 ```bash
