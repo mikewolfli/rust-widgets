@@ -612,9 +612,11 @@ impl GanttWidget {
         if !self.dependency_editor.add_dependency(dependency.clone()) {
             return false;
         }
-        self.invalidate_critical_path();
+        // The task model is what the arrows and the critical path read; the editor alone was a
+        // second schedule the chart never drew. A successor that is not on the chart yet leaves
+        // the model untouched, so an editor-only edge is still accepted exactly as before.
+        self.sync_tasks_from_dependencies();
         self.dependency_added.emit(dependency);
-        self.base.request_redraw();
         true
     }
 
@@ -628,17 +630,15 @@ impl GanttWidget {
         if !self.dependency_editor.remove_dependency(&dependency) {
             return false;
         }
-        self.invalidate_critical_path();
+        self.sync_tasks_from_dependencies();
         self.dependency_removed.emit(dependency);
-        self.base.request_redraw();
         true
     }
 
     /// Replaces the editable edge list without re-emitting additions.
     pub fn set_dependencies(&mut self, dependencies: Vec<Dependency>) {
         self.dependency_editor.set_dependencies(dependencies);
-        self.invalidate_critical_path();
-        self.base.request_redraw();
+        self.sync_tasks_from_dependencies();
     }
 
     /// Rebuilds the editor's edges from the tasks' two dependency spellings.
@@ -920,18 +920,24 @@ impl GanttWidget {
                 if candidate > finish[*successor] {
                     finish[*successor] = candidate;
                     previous[*successor] = Some(node);
+                } else if previous[*successor].is_none() && candidate == finish[*successor] {
+                    // A milestone predecessor adds no duration, so its edge only ever ties. Without
+                    // recording it a connected all-milestone chain reported no critical path, and
+                    // a milestone gating a real task was dropped from the chain.
+                    previous[*successor] = Some(node);
                 }
             }
         }
         // Only nodes that reached a topological position can be on a chain. A node inside a cycle
         // never did, and reporting it as "critical" would invent a path through a schedule error.
-        let Some(end) = (0..count)
-            .filter(|index| ordered[*index])
-            .max_by_key(|index| finish[*index].saturating_add(duration(*index)))
-        else {
+        // Among equal-length chains prefer one that has a predecessor, so an isolated zero-length
+        // node cannot hide a connected chain.
+        let Some(end) = (0..count).filter(|index| ordered[*index]).max_by_key(|index| {
+            (finish[*index].saturating_add(duration(*index)), previous[*index].is_some(), *index)
+        }) else {
             return Vec::new();
         };
-        if finish[end] == 0 && previous[end].is_none() && duration(end) == 0 {
+        if duration(end) == 0 && edges.iter().all(Vec::is_empty) {
             // Every task is a zero-length isolated node: there is no chain to mark, and naming an
             // arbitrary one would be a claim the data does not support.
             return Vec::new();
@@ -1075,10 +1081,10 @@ impl GanttWidget {
             let start = self.viewport_start.saturating_sub(step);
             self.set_viewport(start, start.saturating_add(span));
         } else if pos.x > rect.x + rect.width as i32 - band {
-            self.set_viewport(
-                self.viewport_start.saturating_add(step),
-                self.viewport_end.saturating_add(step),
-            );
+            // Mirror the left branch: advancing both endpoints independently saturated the end at
+            // `i64::MAX` while the start kept moving, shrinking the window on every move.
+            let start = self.viewport_start.saturating_add(step);
+            self.set_viewport(start, start.saturating_add(span));
         }
         if pos.y < rect.y + band {
             self.scroll_by(-1);
@@ -1142,7 +1148,10 @@ impl GanttWidget {
             // It used to be undraggable at all, which left the one point-shaped mark on the
             // chart as the only thing a user could not move.
             let half = (self.row_height.saturating_sub(10) / 2) as i32;
-            if (pos.x - x0).abs() > half + 2 {
+            // The diamond is painted from `cy - half` to `cy + half`; testing only x made the
+            // lane's margins above and below it start a drag on the milestone.
+            let cy = lane_y + 5 + half;
+            if (pos.x - x0).abs() > half + 2 || pos.y < cy - half || pos.y > cy + half {
                 return false;
             }
             GanttDragKind::Move
@@ -1313,6 +1322,9 @@ impl GanttWidget {
         if was_empty {
             self.recompute_viewport();
         }
+        // The mounted editor lists the same schedule the chart draws; a new task's own edges have
+        // to reach it, or a later reverse sync deletes them.
+        self.sync_dependencies_from_tasks();
         self.base.request_layout();
         self.base.request_redraw();
         self.tasks.len() - 1
@@ -1331,6 +1343,7 @@ impl GanttWidget {
         self.tasks_revision = self.tasks_revision.wrapping_add(1);
         self.invalidate_critical_path();
         self.rebuild_task_index();
+        self.sync_dependencies_from_tasks();
         self.base.request_layout();
         self.base.request_redraw();
         true
@@ -1361,11 +1374,17 @@ impl GanttWidget {
             Some(selected) if selected > index => Some(selected - 1),
             other => other,
         };
-        // A hover below the removed row now names a different task, so the change is reported; a
-        // hover on the removed row is an exit.
+        // A hover on the removed row is an exit; a hover below it re-resolves against the pointer,
+        // because the row that slid up is a different task even when its index shifted down.
         let next_hover = match self.hovered_task {
             Some(hovered) if hovered == index => None,
-            Some(hovered) if hovered > index => Some(hovered - 1),
+            Some(hovered) if hovered > index => {
+                if self.pointer_known {
+                    self.row_at(self.hover_position).or(Some(hovered - 1))
+                } else {
+                    Some(hovered - 1)
+                }
+            }
             other => other,
         };
         if next_hover != self.hovered_task {
@@ -1400,7 +1419,11 @@ impl GanttWidget {
             .cloned()
             .collect();
         self.dependency_editor.set_dependencies(kept);
-        self.recompute_viewport();
+        // An incremental edit must not discard the reader's zoom/pan; only an emptied schedule
+        // has nothing left to frame.
+        if self.tasks.is_empty() {
+            self.recompute_viewport();
+        }
         self.set_scroll_offset(self.scroll_offset);
         self.base.request_layout();
         self.base.request_redraw();
@@ -1456,19 +1479,21 @@ impl GanttWidget {
         if factor <= 0.0 {
             return;
         }
-        let span = self.viewport_end.saturating_sub(self.viewport_start).max(1) as f32;
+        let span = self.viewport_end.saturating_sub(self.viewport_start).max(1) as f64;
+        let factor = f64::from(factor);
         let half = (span / factor / 2.0).max(1.0);
         let new_span = half * 2.0;
         let ratio = match anchor_x {
             Some(x) => {
                 let (track_x, track_w) = self.track_geometry();
-                ((x - track_x) as f32 / track_w.max(1) as f32).clamp(0.0, 1.0)
+                (f64::from(x - track_x) / f64::from(track_w.max(1))).clamp(0.0, 1.0)
             }
             None => 0.5,
         };
         // The axis value under the anchor is the fixed point: it keeps the same relative position
-        // in the new window instead of being recomputed from the window's centre.
-        let anchor = self.viewport_start as f32 + span * ratio;
+        // in the new window instead of being recomputed from the window's centre. `f64`: the unit
+        // is `i64` (milliseconds since epoch), where an `f32` ulp is over two minutes.
+        let anchor = self.viewport_start as f64 + span * ratio;
         let start = anchor - new_span * ratio;
         match anchor_x {
             // A pointer anchor rounds to the nearest endpoint: an integer axis cannot hold a
@@ -1669,6 +1694,7 @@ impl GanttWidget {
     }
 
     fn recompute_viewport(&mut self) {
+        let previous = (self.viewport_start, self.viewport_end);
         let (start, end) = if self.tasks.is_empty() {
             (0, 100)
         } else {
@@ -1684,7 +1710,11 @@ impl GanttWidget {
         self.viewport_start = start;
         self.viewport_end = end;
         self.axis.set_range(start, end);
-        self.viewport_changed.emit((start, end));
+        // `viewport_changed` reports a change; an identical fit (a repeated `set_tasks`, or an
+        // empty schedule already at 0..100) is not one.
+        if previous != (start, end) {
+            self.viewport_changed.emit((start, end));
+        }
     }
 
     fn row_at(&self, pos: Point) -> Option<usize> {
@@ -2435,6 +2465,11 @@ impl Draw for GanttWidget {
                 let Some(pred) = self.tasks.get(pred_index) else {
                     continue;
                 };
+                // A self-link is not an edge the critical path or the editor recognises; painting
+                // it drew an elbow and arrowhead across the task's own bar.
+                if pred_index == index {
+                    continue;
+                }
                 // A predecessor scrolled out of view still has a known **axis** position — only its
                 // lane is off screen. The elbow is clipped to the visible band instead of dropped,
                 // which is what keeps a dependency visible when the task it comes from is above or
@@ -4141,5 +4176,126 @@ mod issue_2_8_tests {
             "a right-to-left connector has its base on the right"
         );
         assert_eq!(backward[0], Point::new(100, 10), "the apex enters the bar");
+    }
+
+    /// A chain of zero-duration milestones is a real critical path.
+    #[test]
+    fn a_milestone_chain_has_a_critical_path() {
+        let mut gantt = GanttWidget::new(Rect::new(0, 0, 700, 240));
+        let mut first = GanttTask::new("a", "A", 10, 10, 0);
+        first.milestone = true;
+        let mut second = GanttTask::new("b", "B", 20, 20, 0);
+        second.milestone = true;
+        second.depends_on.push(String::from("a"));
+        gantt.set_tasks(vec![first, second]);
+
+        assert_eq!(gantt.critical_path(), vec![String::from("a"), String::from("b")]);
+    }
+
+    /// An editor edge reaches the task model the arrows are painted from.
+    #[test]
+    fn an_added_dependency_reaches_the_task_model() {
+        let mut gantt = GanttWidget::new(Rect::new(0, 0, 700, 240));
+        gantt.set_tasks(vec![
+            GanttTask::new("a", "A", 0, 10, 0),
+            GanttTask::new("b", "B", 20, 30, 0),
+        ]);
+        assert!(gantt.add_dependency("a", "b"));
+        assert_eq!(gantt.tasks()[1].depends_on, vec![String::from("a")]);
+        assert!(gantt.remove_dependency("a", "b"));
+        assert!(gantt.tasks()[1].depends_on.is_empty());
+    }
+
+    /// An incremental `add_task` with its own edges also updates the editor.
+    #[test]
+    fn adding_a_task_with_edges_updates_the_editor() {
+        let mut gantt = GanttWidget::new(Rect::new(0, 0, 700, 240));
+        gantt.add_task(GanttTask::new("a", "A", 0, 10, 0));
+        let mut second = GanttTask::new("b", "B", 20, 30, 0);
+        second.depends_on.push(String::from("a"));
+        gantt.add_task(second);
+
+        assert!(
+            gantt
+                .dependency_editor()
+                .dependencies()
+                .iter()
+                .any(|edge| edge.predecessor == "a" && edge.successor == "b"),
+            "the editor lists the schedule the chart draws"
+        );
+    }
+
+    /// Only the diamond itself starts a milestone drag, not the lane margins around it.
+    #[test]
+    fn a_milestone_is_grabbed_only_inside_its_diamond() {
+        let mut gantt = GanttWidget::new(Rect::new(0, 0, 700, 240));
+        let mut task = GanttTask::new("m", "M", 100, 100, 0);
+        task.milestone = true;
+        gantt.set_tasks(vec![task]);
+
+        let (track_x, track_w) = gantt.track_geometry();
+        let x = gantt.project_x(100, track_x, track_w);
+        let lane_y = gantt.lane_rect(0).y;
+        let half = (gantt.row_height().saturating_sub(10) / 2) as i32;
+        let cy = lane_y + 5 + half;
+
+        assert!(!gantt.begin_bar_drag(Point::new(x, cy - half - 2)), "the margin above is empty");
+        assert!(gantt.begin_bar_drag(Point::new(x, cy)), "the diamond is grabbable");
+    }
+
+    /// An identical fit reports no viewport change the second time.
+    #[test]
+    fn refitting_the_same_tasks_does_not_republish_the_viewport() {
+        let mut gantt = GanttWidget::new(Rect::new(0, 0, 700, 240));
+        let tasks = vec![GanttTask::new("a", "A", 0, 10, 0), GanttTask::new("b", "B", 20, 30, 0)];
+        let emitted = Arc::new(Mutex::new(Vec::<(i64, i64)>::new()));
+        let sink = Arc::clone(&emitted);
+        gantt.viewport_changed.connect(move |range| {
+            if let Ok(mut guard) = sink.lock() {
+                guard.push(*range);
+            }
+        });
+
+        gantt.set_tasks(tasks.clone());
+        gantt.set_tasks(tasks);
+        assert_eq!(
+            emitted.lock().map(|guard| guard.len()).unwrap_or(0),
+            1,
+            "an identical refit is not a change"
+        );
+    }
+
+    /// Removing a row keeps the reader's zoom/pan; only an emptied schedule re-fits.
+    #[test]
+    fn removing_a_task_keeps_the_viewport() {
+        let mut gantt = GanttWidget::new(Rect::new(0, 0, 700, 240));
+        gantt.set_tasks(vec![
+            GanttTask::new("a", "A", 0, 10, 0),
+            GanttTask::new("b", "B", 20, 30, 0),
+        ]);
+        gantt.set_viewport(5, 25);
+        assert!(gantt.remove_task(0).is_some());
+        assert_eq!(gantt.viewport(), (5, 25), "an edit must not discard the view");
+
+        assert!(gantt.remove_task(0).is_some());
+        assert_eq!(gantt.viewport(), (0, 100), "an empty schedule re-fits");
+    }
+
+    /// Zoom anchoring keeps the axis value under the pointer to within rounding at epoch scale.
+    #[test]
+    fn zoom_keeps_the_anchor_at_epoch_scale() {
+        let mut gantt = GanttWidget::new(Rect::new(0, 0, 700, 240));
+        let base = 1_700_000_000_000i64;
+        gantt.set_tasks(vec![GanttTask::new("a", "A", base, base + 1_000_000, 0)]);
+        gantt.set_viewport(base, base + 1_000_000);
+
+        let (track_x, track_w) = gantt.track_geometry();
+        gantt.zoom_at(2.0, track_x + track_w as i32 / 2);
+        let (start, end) = gantt.viewport();
+        let anchor = start + (end - start) / 2;
+        assert!(
+            (anchor - (base + 500_000)).abs() <= 1024,
+            "the axis value under the pointer must stay put, got {anchor}"
+        );
     }
 }

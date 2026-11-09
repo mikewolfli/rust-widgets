@@ -63,6 +63,11 @@ pub struct IndexAxis {
     pub slot_width: i32,
     /// How many bars the axis holds.
     pub count: usize,
+    /// The space the axis was built for, in pixels.
+    ///
+    /// Kept because the 1-pixel slot floor can make [`Self::total_width`] exceed the plot:
+    /// hit-testing must stop at the plot's right edge, not at the last (overflowing) slot.
+    pub width: i32,
 }
 
 impl IndexAxis {
@@ -76,8 +81,9 @@ impl IndexAxis {
     /// `count == 0` yields a zero-width axis; nothing is drawn from it, and the 1-pixel
     /// floor is only applied when there is at least one bar to place.
     pub fn new(origin_x: i32, width: i32, count: usize) -> Self {
-        let slot_width = if count == 0 { 0 } else { (width.max(0) / count as i32).max(1) };
-        Self { origin_x, slot_width, count }
+        let width = width.max(0);
+        let slot_width = if count == 0 { 0 } else { (width / count as i32).max(1) };
+        Self { origin_x, slot_width, count, width }
     }
 
     /// The left edge of bar `index`'s column.
@@ -123,16 +129,21 @@ impl IndexAxis {
     /// chart" is a different answer from "the pointer is over the first bar", and a caller
     /// that needs a clamped index can ask for one.
     ///
-    /// Both edges are honoured: an `x` left of `origin_x` **or** past `total_width()` is
-    /// outside the plot. Checking only the left edge — as this did — meant an axis with a
+    /// Both edges are honoured: an `x` left of `origin_x` **or** past the plot's own width is
+    /// outside. Checking only the left edge — as this did — meant an axis with a
     /// negative origin reported a bar for a point to the left of the whole plot, because
     /// the offset there is still positive.
+    ///
+    /// The right edge is the *plot's* width rather than [`Self::total_width`]: when the
+    /// 1-pixel slot floor makes the slots overflow (more bars than pixels), the overflowing
+    /// columns are clipped by the painter, so a pointer past the plot cannot be over them.
     pub fn index_at(&self, x: i32) -> Option<usize> {
         if self.slot_width <= 0 || self.count == 0 {
             return None;
         }
         let offset = x - self.origin_x;
-        if offset < 0 || offset >= self.slot_width * self.count as i32 {
+        let extent = self.total_width().min(self.width);
+        if offset < 0 || offset >= extent {
             return None;
         }
         Some((offset / self.slot_width) as usize)
@@ -179,6 +190,12 @@ impl PriceAxis {
             adjusted_low = 0.0;
             adjusted_high = 1.0;
         } else if adjusted_high <= adjusted_low {
+            // A caller that passes its bounds the wrong way round still gets an ascending
+            // range: widening a `high < low` pair in place left it inverted, so every
+            // `y_for` clamped to the bottom and the series collapsed onto one edge.
+            if adjusted_high < adjusted_low {
+                core::mem::swap(&mut adjusted_low, &mut adjusted_high);
+            }
             // Widen by a thousandth of the level, or by 1.0 at zero, so a flat or
             // single-valued series still has a non-zero span to divide by.
             let magnitude = adjusted_low.abs().max(1.0) * 0.001;
@@ -219,7 +236,7 @@ impl PriceAxis {
     /// tooltip. Not clamped, because a readout should be able to report "above the top of
     /// the scale" rather than lying about a value that is visibly off-chart.
     pub fn price_at(&self, y: i32) -> f64 {
-        let height = (self.bottom - self.top) as f64;
+        let height = self.height() as f64;
         if height == 0.0 {
             return self.low;
         }
@@ -434,6 +451,43 @@ mod tests {
             caller_derived.surface, caller_choice,
             "the caller's colour is honoured verbatim"
         );
+    }
+
+    /// Hit-testing stops at the plot's own right edge, not at the last rounded-up slot.
+    ///
+    /// Regression: the 1-pixel slot floor makes `total_width()` exceed the plot when there
+    /// are more bars than pixels, and the right-edge test used that oversized extent — so
+    /// points past the pane reported a bar the painter had clipped away.
+    #[test]
+    fn index_at_stops_at_the_plots_own_edge_when_slots_overflow() {
+        let axis = IndexAxis::new(0, 4, 10);
+        assert_eq!(axis.slot_width, 1);
+        assert_eq!(axis.total_width(), 10, "the slots still describe the layout");
+        assert_eq!(axis.index_at(3), Some(3), "the plot's last pixel is a bar");
+        assert_eq!(axis.index_at(4), None, "the first pixel past the plot is outside");
+    }
+
+    /// A caller that hands the bounds over the wrong way round still gets an ascending range.
+    ///
+    /// Regression: a `high < low` pair was widened in place, staying inverted, so every
+    /// `y_for` clamped to the bottom and the series collapsed onto one edge.
+    #[test]
+    fn inverted_price_bounds_are_put_back_in_order() {
+        let axis = PriceAxis::new(0, 100, 110.0, 90.0);
+        assert!(axis.high > axis.low, "the range must be ascending");
+        assert_eq!(axis.y_for(110.0), 0, "the high price is at the top");
+        assert_eq!(axis.y_for(90.0), 100, "the low price is at the bottom");
+    }
+
+    /// `price_at` is the inverse of `y_for`, so a crosshair round-trips its own gridline.
+    #[test]
+    fn price_at_inverts_y_for() {
+        let axis = PriceAxis::new(10, 210, 50.0, 150.0);
+        for price in [50.0, 75.0, 100.0, 137.5, 150.0] {
+            let y = axis.y_for(price);
+            assert!((axis.price_at(y) - price).abs() < 1.0, "{price} at y {y}");
+        }
+        assert!(axis.height() > 0);
     }
 }
 

@@ -394,6 +394,17 @@ pub struct WebEngineView {
     download_total: Option<u64>,
     /// Lifecycle state of that download.
     download_state: WebEngineDownloadState,
+    /// The URL [`Self::request_download`] was called with.
+    ///
+    /// The progress readout names the file from this URL, not from the page URL: a download of
+    /// `…/file.zip` started from a page named `…/index.html` was reported under the page's last
+    /// segment, so the name the host was writing and the name the readout showed disagreed.
+    download_url: Option<String>,
+    /// The `(can_go_back, can_go_forward)` pair last published.
+    ///
+    /// `navigation_state_changed` is an edge, so a navigation that leaves both flags where they
+    /// were must not publish them again.
+    published_navigation_state: (bool, bool),
     /// Visited pages, oldest first.
     history: Vec<HistoryEntry>,
     /// Index of the current entry in [`Self::history`].
@@ -902,6 +913,8 @@ impl WebEngineView {
             download_received: 0,
             download_total: None,
             download_state: WebEngineDownloadState::Idle,
+            download_url: None,
+            published_navigation_state: (false, false),
             history: Vec::new(),
             history_index: 0,
             load_progress: 0,
@@ -1011,10 +1024,17 @@ impl WebEngineView {
     }
 
     fn begin_loading(&mut self) {
+        // The reset is a change in the published percentage. Assigning the field announced
+        // nothing, so a host mirroring `load_progress` kept the previous page's 100% until the
+        // next host report (or forever, for a load that finished without one).
+        let had_progress = self.load_progress != 0;
         self.loading = true;
         self.pending_load = true;
         self.load_progress = 0;
         self.loading_started.emit(self.url.clone());
+        if had_progress {
+            self.load_progress_changed.emit(0);
+        }
         self.base.request_redraw();
     }
 
@@ -1218,8 +1238,10 @@ impl WebEngineView {
 
     /// Records the current page's scroll position on its history entry.
     ///
-    /// A navigation that leaves the page calls this so going back restores where the reader was,
-    /// not just which document was open.
+    /// A host about to navigate calls this so going back restores where the reader was, not just
+    /// which document was open. The view does not record it on its own: `scroll_offset` belongs
+    /// to the page being left only until the next document resets it, and a host that has already
+    /// decided the entry's position must not have it overwritten.
     pub fn set_history_scroll(&mut self, scroll_pos: f32) {
         if !scroll_pos.is_finite() {
             return;
@@ -1601,12 +1623,17 @@ impl WebEngineView {
             });
             return false;
         }
-        if let Some(existing) = self.cookies.iter_mut().find(|stored| {
+        let existing = self.cookies.iter().position(|stored| {
             stored.name == cookie.name
                 && stored.domain == cookie.domain
                 && stored.path == cookie.path
-        }) {
-            *existing = cookie.clone();
+        });
+        if let Some(index) = existing {
+            self.cookies[index] = cookie.clone();
+            // A successful store also prunes residents that have expired since they were
+            // written. The replacement branch used to skip the sweep the new-entry branch
+            // performs, so a replaced cookie kept its dead neighbours alive in `cookies()`.
+            self.cookies.retain(|stored| !stored.is_expired());
         } else {
             self.cookies.retain(|stored| !stored.is_expired());
             if self.cookies.len() >= MAX_WEB_COOKIE_ENTRIES {
@@ -1982,10 +2009,13 @@ impl WebEngineView {
             Some(total) if total > 0 && received >= total => WebEngineDownloadState::Completed,
             _ => WebEngineDownloadState::InProgress,
         };
-        // The progress readout names the file the host is writing: the last path segment of
-        // the current URL is the only name this control has (MW-10).
+        // The progress readout names the file the host is writing. The download's own URL is
+        // the only name this control has; the page URL is a fallback for a host that started
+        // the download itself and never told this view about it.
         let name = self
-            .url
+            .download_url
+            .as_deref()
+            .unwrap_or(&self.url)
             .rsplit('/')
             .find(|segment| !segment.is_empty())
             .unwrap_or("download")
@@ -2007,8 +2037,13 @@ impl WebEngineView {
     pub fn download_state(&self) -> WebEngineDownloadState {
         self.download_state
     }
-    fn update_navigation_state(&self) {
-        self.navigation_state_changed.emit((self.can_go_back, self.can_go_forward));
+    fn update_navigation_state(&mut self) {
+        let current = (self.can_go_back, self.can_go_forward);
+        if self.published_navigation_state == current {
+            return;
+        }
+        self.published_navigation_state = current;
+        self.navigation_state_changed.emit(current);
     }
 
     /// Reports a load failure, emitting [`WebEngineView::error_occurred`] and ending
@@ -2059,10 +2094,12 @@ impl WebEngineView {
     /// requested so it can decide what to do, which is the only part this widget can
     /// honestly do without an I/O stack.
     pub fn request_download(&mut self, url: impl Into<String>) {
+        let url = url.into();
+        self.download_url = Some(url.clone());
         self.download_received = 0;
         self.download_total = None;
         self.download_state = WebEngineDownloadState::Requested;
-        self.download_requested.emit(url.into());
+        self.download_requested.emit(url);
     }
 
     /// Records that a child page was created, emitting
@@ -2504,8 +2541,12 @@ impl EventHandler for WebEngineView {
             }
             Event::Wheel { delta, .. } => {
                 // One notch scrolls roughly three text lines; the page clamps the offset to
-                // the height its last frame measured.
-                self.set_scroll_offset(self.scroll_offset - delta.y * 48);
+                // the height its last frame measured. Both operations saturate because `delta`
+                // is event-supplied and a huge synthetic notch must not overflow before the
+                // clamp sees it.
+                self.set_scroll_offset(
+                    self.scroll_offset.saturating_sub(delta.y.saturating_mul(48)),
+                );
             }
             Event::KeyPress { key, modifiers } => {
                 if self.url_edit.is_some() {
@@ -3466,6 +3507,87 @@ mod tests {
         );
         view.load_html("<p>new</p>");
         assert!(view.page_layout.is_none(), "a new document invalidates the layout");
+    }
+
+    /// A new load announces the progress reset, not only the field's new value.
+    ///
+    /// Regression: `begin_loading` assigned `load_progress = 0` directly, so a host mirroring
+    /// the percentage kept the previous page's 100% until the next host report.
+    #[test]
+    fn a_new_load_announces_the_progress_reset() {
+        let mut view = WebEngineView::new(Rect::new(0, 0, 300, 200));
+        view.set_url("https://example.com/a".to_string());
+        view.report_load_progress(60);
+
+        let seen = Arc::new(Mutex::new(Vec::<u32>::new()));
+        let sink = Arc::clone(&seen);
+        view.load_progress_changed.connect(move |value: Arc<u32>| {
+            sink.lock().unwrap().push(*value);
+        });
+        view.set_url("https://example.com/b".to_string());
+        assert_eq!(view.load_progress(), 0);
+        assert_eq!(*seen.lock().unwrap(), vec![0], "the reset is a published change");
+    }
+
+    /// `navigation_state_changed` is an edge: an unchanged pair is not republished.
+    #[test]
+    fn navigation_state_is_published_only_on_a_change() {
+        let mut view = WebEngineView::new(Rect::new(0, 0, 300, 200));
+        let seen = Arc::new(Mutex::new(Vec::<(bool, bool)>::new()));
+        let sink = Arc::clone(&seen);
+        view.navigation_state_changed.connect(move |pair: Arc<(bool, bool)>| {
+            sink.lock().unwrap().push(*pair);
+        });
+
+        view.set_url("https://example.com/a".to_string());
+        assert!(seen.lock().unwrap().is_empty(), "the first page leaves both flags false");
+        view.set_url("https://example.com/b".to_string());
+        assert_eq!(*seen.lock().unwrap(), vec![(true, false)], "back becomes available");
+        view.set_url("https://example.com/c".to_string());
+        assert_eq!(seen.lock().unwrap().len(), 1, "an unchanged pair is not republished");
+
+        view.go_back();
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec![(true, false), (true, true)],
+            "going back makes forward available"
+        );
+    }
+
+    /// The download readout names the download's file, not the page's last segment.
+    #[test]
+    fn download_progress_names_the_downloads_file() {
+        let mut view = WebEngineView::new(Rect::new(0, 0, 300, 200));
+        view.set_url("https://example.com/docs/index.html".to_string());
+        let seen = Arc::new(Mutex::new(Vec::<(String, f32)>::new()));
+        let sink = Arc::clone(&seen);
+        view.download_progress_changed.connect(move |pair: Arc<(String, f32)>| {
+            sink.lock().unwrap().push(pair.as_ref().clone());
+        });
+
+        view.request_download("https://example.com/files/report.zip");
+        view.report_download_progress(50, Some(100));
+        assert_eq!(
+            seen.lock().unwrap().first().map(|(name, _)| name.as_str()),
+            Some("report.zip"),
+            "the readout names the requested download"
+        );
+    }
+
+    /// A replacement cookie sweeps expired residents like a new one does.
+    #[test]
+    fn replacing_a_cookie_prunes_expired_residents() {
+        let mut view = WebEngineView::new(Rect::new(0, 0, 300, 200));
+        assert!(view.set_cookie("live", "1", "example.com"));
+        let mut dead = Cookie::new("dead", "x", "example.com");
+        dead.expires_ms = Some(0);
+        view.cookies.push(dead);
+
+        assert!(view.set_cookie("live", "2", "example.com"), "the second write replaces");
+        assert!(
+            view.cookies().iter().all(|cookie| cookie.name != "dead"),
+            "the expired resident must not survive a replacement"
+        );
     }
 }
 

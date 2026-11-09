@@ -1606,9 +1606,12 @@ impl RiveWidget {
     }
 
     /// Pauses playback, keeping the current animation state.
+    ///
+    /// Only a *playing* animation moves to `Paused`. A pause on a finished one left it in
+    /// `Paused`, erasing the `Completed` fact the state signal had already published.
     pub fn pause(&mut self) {
         self.is_playing = false;
-        if self.animation_data.is_some() {
+        if self.state == RiveState::Playing {
             self.set_state(RiveState::Paused);
         }
         self.base.request_redraw();
@@ -1624,6 +1627,9 @@ impl RiveWidget {
         self.release_progress_pin();
         self.animation_progress = 0.0;
         self.frame_timer = 0;
+        // The completed count belongs to the run that just ended; keeping it made a later
+        // `play()` start one loop into its budget.
+        self.loops_completed = 0;
         self.set_state(if self.animation_data.is_some() {
             RiveState::Paused
         } else {
@@ -1707,6 +1713,16 @@ impl RiveWidget {
     /// The names `"progress"` (numeric) and `"playing"` (boolean) carry the
     /// documented conventions described on [`Self::tick`].
     pub fn set_input(&mut self, name: &str, value: RiveInputValue) {
+        // A non-finite scrub is refused, exactly as [`Self::set_progress`] refuses it. Stored
+        // as a pin it would survive `clamp` unchanged (`f32::clamp(NaN, ..)` is `NaN`), so the
+        // playhead became `NaN` and never moved again.
+        if name == "progress" {
+            if let RiveInputValue::Number(value) = &value {
+                if !value.is_finite() {
+                    return;
+                }
+            }
+        }
         if let Some(input) = self.state_machine_inputs.iter_mut().find(|i| i.name == name) {
             input.value = value;
         } else {
@@ -1808,7 +1824,9 @@ impl RiveWidget {
         let pinned_progress =
             self.state_machine_inputs.iter().find(|input| input.name == "progress").and_then(
                 |input| match &input.value {
-                    RiveInputValue::Number(value) => Some(*value),
+                    // A non-finite value is not a scrub position. `get_input_mut` can put one
+                    // there after `set_input` has refused it, and `clamp` would pass it through.
+                    RiveInputValue::Number(value) if value.is_finite() => Some(*value),
                     _ => None,
                 },
             );
@@ -1987,8 +2005,14 @@ impl Widget for RiveWidget {
 
     impl_widget_property_hooks!();
     // Trait contract: `u32` ms. This control's own `tick` takes `u64`; widen at the boundary.
+    //
+    // The inherent answer is "this tick completed a finite loop", which is `true` on the very
+    // frame the animation *stops*; the trait asks whether another frame is owed. Forwarding the
+    // former inverted the answer for the whole run: a playing animation reported that it needed
+    // no more frames, and the frame on which it finished reported that it did.
     fn tick(&mut self, delta_ms: u32) -> bool {
-        RiveWidget::tick(self, u64::from(delta_ms))
+        RiveWidget::tick(self, u64::from(delta_ms));
+        self.is_playing()
     }
 
     fn is_animating(&self) -> bool {
@@ -2052,9 +2076,13 @@ impl WidgetProperties for RiveWidget {
                 Ok(())
             }
             "loop_count" => {
+                // Saturate rather than `as i32`: a value outside `i32` wrapped, and a count
+                // that wrapped to zero read as "loop forever".
                 let count = match value {
-                    CapabilityValue::Int(value) => value as i32,
-                    CapabilityValue::UInt(value) => value as i32,
+                    CapabilityValue::Int(value) => {
+                        i32::try_from(value).unwrap_or(if value < 0 { 0 } else { i32::MAX })
+                    }
+                    CapabilityValue::UInt(value) => i32::try_from(value).unwrap_or(i32::MAX),
                     _ => return Err(CapabilityAccessError::TypeMismatch),
                 };
                 self.set_loop_count(count);
@@ -2918,5 +2946,86 @@ mod tests {
         assert!(rive.tick(1000));
         assert_eq!(rive.loops_completed(), 1);
         assert_eq!(*finished.lock().unwrap(), 2);
+    }
+
+    /// `stop` clears the completed count so the next run gets a full budget.
+    #[test]
+    fn stopping_clears_the_completed_loop_count() {
+        let mut rive = RiveWidget::new(Rect::new(0, 0, 200, 200));
+        rive.load_animation_from_json("walk", &make_rive_json()).unwrap();
+        rive.set_loop_count(3);
+        rive.play();
+        rive.tick(1000);
+        assert_eq!(rive.loops_completed(), 1);
+        assert!(rive.is_playing(), "one of three loops is done");
+
+        rive.stop();
+        assert_eq!(rive.loops_completed(), 0, "the ended run's count is not carried over");
+        assert!((rive.animation_progress() - 0.0).abs() < 1e-6);
+    }
+
+    /// A non-finite `"progress"` input cannot pin the playhead.
+    ///
+    /// Regression: `f32::clamp(NaN, 0.0, 1.0)` is `NaN`, so the pin stored a `NaN` playhead that
+    /// never moved and never reached the end.
+    #[test]
+    fn a_non_finite_progress_input_cannot_pin_the_playhead() {
+        let mut rive = RiveWidget::new(Rect::new(0, 0, 200, 200));
+        rive.load_animation_from_json("walk", &make_rive_json()).unwrap();
+        rive.play();
+
+        rive.set_input("progress", RiveInputValue::Number(f32::NAN));
+        assert!(rive.get_input("progress").is_none(), "the non-finite scrub is refused");
+        assert!(rive.animation_progress().is_finite());
+        let before = rive.animation_progress();
+        rive.tick(17);
+        assert!(rive.animation_progress() > before, "playback still advances");
+
+        // `get_input_mut` can bypass `set_input`, so `tick` must refuse the value as well.
+        rive.set_input("progress", RiveInputValue::Number(0.5));
+        if let Some(input) = rive.get_input_mut("progress") {
+            input.value = RiveInputValue::Number(f32::INFINITY);
+        }
+        rive.tick(17);
+        assert!(rive.animation_progress().is_finite(), "the playhead never becomes non-finite");
+    }
+
+    /// Pausing a finished animation does not rewrite its `Completed` state.
+    #[test]
+    fn pausing_a_finished_animation_keeps_its_completed_state() {
+        let mut rive = RiveWidget::new(Rect::new(0, 0, 200, 200));
+        rive.load_animation_from_json("walk", &make_rive_json()).unwrap();
+        rive.set_loop_count(1);
+        rive.play();
+        assert!(rive.tick(1000));
+        assert_eq!(rive.state(), RiveState::Completed);
+
+        rive.pause();
+        assert_eq!(rive.state(), RiveState::Completed, "a finished run stays finished");
+    }
+
+    /// The trait's `tick` answers "another frame is owed", not "a loop completed".
+    #[test]
+    fn the_trait_tick_reports_whether_another_frame_is_owed() {
+        let mut rive = RiveWidget::new(Rect::new(0, 0, 200, 200));
+        rive.load_animation_from_json("walk", &make_rive_json()).unwrap();
+        rive.set_loop_count(1);
+        rive.play();
+
+        assert!(Widget::tick(&mut rive, 17), "a playing animation owes the next frame");
+        assert!(!Widget::tick(&mut rive, 1000), "the frame that finishes it owes no more");
+        assert!(!rive.is_playing());
+    }
+
+    /// A loop count outside `i32` saturates instead of wrapping to zero ("loop forever").
+    #[test]
+    fn a_huge_loop_count_saturates_instead_of_reading_as_infinite() {
+        use rust_widgets::widget::capability::WidgetProperties;
+        let mut rive = RiveWidget::new(Rect::new(0, 0, 200, 200));
+        rive.load_animation_from_json("walk", &make_rive_json()).unwrap();
+        rive.set("loop_count", CapabilityValue::Int(i64::from(i32::MAX) + 1)).unwrap();
+        assert_eq!(rive.loop_count(), i32::MAX);
+        rive.set("loop_count", CapabilityValue::UInt(u64::MAX)).unwrap();
+        assert_eq!(rive.loop_count(), i32::MAX);
     }
 }

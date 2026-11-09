@@ -1906,11 +1906,11 @@ impl EventHandler for CandlestickChart {
                     self.base.request_redraw();
                 }
                 // The horizontal crosshair's price is the inverse mapping of the pointer's y
-                // through the same price axis the candles are drawn with.
+                // through the same price axis the candles are drawn with, so the readout
+                // cannot disagree with the gridline it sits on.
                 let (low, high) = self.effective_price_extent();
-                let plot_height = (area.bottom() - area.rect.y).max(1);
-                let ratio = ((pos.y - area.rect.y) as f64 / plot_height as f64).clamp(0.0, 1.0);
-                let price = high - (high - low) * ratio;
+                let price_axis = area.price_axis(low, high);
+                let price = price_axis.price_at(pos.y).clamp(price_axis.low, price_axis.high);
                 if self.hovered_price != Some(price) {
                     self.hovered_price = Some(price);
                     self.base.request_redraw();

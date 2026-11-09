@@ -75,6 +75,13 @@ pub struct DepthChart {
     pub level_clicked: rust_widgets::signal::Signal1<f64>,
     /// The price of the level the pointer is nearest, once snapped.
     hovered_level: Option<f64>,
+    /// Which side of the book that level belongs to.
+    ///
+    /// A price can hold a bid and an ask at the same time (a crossed book, or one level on
+    /// either side of the mid at the same tick). The price alone cannot say which curve
+    /// point the pointer meant, so the read-out used to resolve such a level to the bid —
+    /// whichever the cache happened to hold first — even when the pointer was over the ask.
+    hovered_side: Option<DepthSide>,
     /// The usable levels and the accumulated curve, rebuilt when the book or depth changes.
     bid_levels: Vec<BookLevel>,
     ask_levels: Vec<BookLevel>,
@@ -95,6 +102,7 @@ impl DepthChart {
             level_hovered: rust_widgets::signal::Signal1::new(),
             level_clicked: rust_widgets::signal::Signal1::new(),
             hovered_level: None,
+            hovered_side: None,
             bid_levels: Vec::new(),
             ask_levels: Vec::new(),
             curve_cache: Vec::new(),
@@ -135,8 +143,14 @@ impl DepthChart {
         self.max_cumulative_cache = peak(&self.bid_levels).max(peak(&self.ask_levels));
         self.price_bounds_cache = Self::compute_price_bounds(&self.bid_levels, &self.ask_levels);
         if let Some(price) = self.hovered_level {
-            if !self.curve_cache.iter().any(|point| point.price == price) {
+            let side = self.hovered_side;
+            if !self
+                .curve_cache
+                .iter()
+                .any(|point| point.price == price && side.is_none_or(|side| point.side == side))
+            {
                 self.hovered_level = None;
+                self.hovered_side = None;
             }
         }
     }
@@ -165,7 +179,7 @@ impl DepthChart {
     pub fn hover_anchor(
         &self,
     ) -> Option<(Point, Vec<rust_widgets::widget::companions::TooltipLine>)> {
-        let level = self.hovered_level?;
+        let point = self.hovered_point()?;
         let area = self.plot_area();
         if area.rect.width == 0 || area.rect.height == 0 {
             return None;
@@ -174,12 +188,11 @@ impl DepthChart {
         if !low.is_finite() || !high.is_finite() || high <= low {
             return None;
         }
-        let point = self.curve_cache.iter().find(|point| point.price == level)?;
         let max = self.max_cumulative();
         if max <= 0.0 {
             return None;
         }
-        let fraction = ((level - low) / (high - low)).clamp(0.0, 1.0);
+        let fraction = ((point.price - low) / (high - low)).clamp(0.0, 1.0);
         let x = area.rect.x + (fraction * area.rect.width as f64).round() as i32;
         let y = area.bottom()
             - ((point.cumulative_quantity / max).clamp(0.0, 1.0) * area.rect.height as f64).round()
@@ -288,10 +301,8 @@ impl DepthChart {
     /// taken from the same `curve_cache` the step curve is drawn from (COMP-J02).
     pub fn hovered_summary(&self) -> Vec<rust_widgets::widget::companions::TooltipLine> {
         use rust_widgets::widget::companions::TooltipLine;
-        let Some(price) = self.hovered_level else { return Vec::new() };
-        let Some(point) = self.curve_cache.iter().find(|point| point.price == price) else {
-            return Vec::new();
-        };
+        let Some(point) = self.hovered_point() else { return Vec::new() };
+        let price = point.price;
         let color = match point.side {
             DepthSide::Bid => self.bid_color,
             DepthSide::Ask => self.ask_color,
@@ -310,20 +321,59 @@ impl DepthChart {
         ]
     }
 
+    /// The curve point the pointer is on, honouring the side it was snapped to.
+    ///
+    /// A price may appear on both sides of a crossed book, so a price-only lookup could
+    /// report the bid's cumulative total while the pointer was over the ask's point.
+    fn hovered_point(&self) -> Option<DepthPoint> {
+        let price = self.hovered_level?;
+        let side = self.hovered_side;
+        self.curve_cache
+            .iter()
+            .copied()
+            .find(|point| point.price == price && side.is_none_or(|side| point.side == side))
+    }
+
     /// The level price nearest `price`, across both sides of the book.
     ///
     /// The chart's hover used to report the interpolated pointer position, which is not a
     /// price any order rests at: a caller highlighting the reported level had to search the
     /// book for an approximate match. Snapping answers the question the signal asks.
-    fn nearest_level(&self, price: f64) -> Option<f64> {
-        let mut best: Option<(f64, f64)> = None;
+    ///
+    /// The side travels with the price so the read-out can pick the same curve point the
+    /// pointer is nearest when both sides hold a level at that price. A crossed book puts a
+    /// bid and an ask at the same x, so the pointer's height is the tie-break that says
+    /// which of the two curve points it is on.
+    fn nearest_level(&self, price: f64, pos_y: i32) -> Option<(f64, DepthSide)> {
+        let area = self.plot_area();
+        let max = self.max_cumulative();
+        let to_y = |cumulative: f64| -> i32 {
+            if max <= 0.0 {
+                area.bottom()
+            } else {
+                let fraction = (cumulative / max).clamp(0.0, 1.0);
+                area.bottom() - (fraction * area.rect.height as f64).round() as i32
+            }
+        };
+        let mut best: Option<(DepthPoint, f64, f64)> = None;
         for point in &self.curve_cache {
-            let distance = (point.price - price).abs();
-            if best.is_none_or(|(_, near)| distance < near) {
-                best = Some((point.price, distance));
+            let price_distance = (point.price - price).abs();
+            let pixel_distance = (to_y(point.cumulative_quantity) - pos_y).abs() as f64;
+            let better = match best {
+                None => true,
+                Some((_, best_price, best_pixel)) => {
+                    if (price_distance - best_price).abs() > f64::EPSILON {
+                        price_distance < best_price
+                    } else {
+                        pixel_distance < best_pixel
+                    }
+                }
+            };
+            if better {
+                best = Some((*point, price_distance, pixel_distance));
             }
         }
-        best.map(|(price, _)| price)
+        best.map(|(point, _, _)| (point.price, point.side))
     }
 
     /// The spread between the best bid and best ask that the curve plots, if both sides have one.
@@ -348,12 +398,18 @@ impl DepthChart {
     /// data that is never drawn and a skipped level silently removes a segment.
     /// Skipping inside the loop while the bounds still counted the skipped level was
     /// exactly that bug: one zero-size level could erase the whole curve.
+    ///
+    /// The filter runs **before** the depth cut, so `depth` counts levels that are actually
+    /// plotted: cutting first let zero-size levels at the top of the book consume the
+    /// budget and keep real size out of the curve.
     fn fill_plottable_into(out: &mut Vec<BookLevel>, levels: &[BookLevel], depth: usize) {
         out.clear();
-        let count = if depth == 0 { levels.len() } else { levels.len().min(depth) };
-        out.extend(levels[..count].iter().copied().filter(|level| {
+        out.extend(levels.iter().copied().filter(|level| {
             level.price.is_finite() && level.quantity.is_finite() && level.quantity > 0.0
         }));
+        if depth > 0 {
+            out.truncate(depth);
+        }
     }
 
     /// The quantity the plot scales against: the largest cumulative total on either side.
@@ -400,6 +456,41 @@ impl DepthChart {
             area.bottom() - (fraction * area.rect.height as f64).round() as i32
         };
 
+        // A filled area under the curve, so the two sides read as volumes of available
+        // size rather than as two lines crossing.
+        //
+        // The wash is a step from the side's own colour toward the pane's surface, so it
+        // follows the appearance instead of being one of two near-black slabs. It is
+        // painted **before** the stroke: the fill is near-opaque, so painting it afterwards
+        // covered the very line it is meant to sit under.
+        //
+        // Each band spans the prices between two levels and hangs from the *previous*
+        // cumulative total — the value the step carries across that span. Anchoring it at
+        // the current level's total made every band one level taller than the curve.
+        let wash = color.blend(&self.chrome().surface, 0.80);
+        let mut running = 0.0;
+        let mut previous: Option<(i32, i32)> = None;
+        for level in levels {
+            running += level.quantity;
+            let x = to_x(level.price);
+            let y = to_y(running);
+            if let Some((from_x, from_y)) = previous {
+                // `from_x.min(x)`: bids are ordered best-first, so `x` decreases as the loop
+                // advances. Anchoring at `from` with an unsigned width painted the band one
+                // step toward the spread instead of the span it belongs to.
+                context.fill_rect(
+                    Rect::new(
+                        from_x.min(x),
+                        from_y,
+                        (x - from_x).unsigned_abs().max(1),
+                        (area.bottom() - from_y).max(0) as u32,
+                    ),
+                    wash,
+                );
+            }
+            previous = Some((x, y));
+        }
+
         let mut previous: Option<(i32, i32)> = None;
         let mut running = 0.0;
         // Walk away from the touch, so the curve starts at the spread and grows outward.
@@ -438,35 +529,6 @@ impl DepthChart {
                 }
             }
             previous = Some((x, y));
-        }
-
-        // A filled area under the curve, so the two sides read as volumes of available
-        // size rather than as two lines crossing.
-        //
-        // The wash is a step from the side's own colour toward the pane's surface, so it
-        // follows the appearance instead of being one of two near-black slabs.
-        let wash = color.blend(&self.chrome().surface, 0.80);
-        let mut running = 0.0;
-        let mut previous_x: Option<i32> = None;
-        for level in levels {
-            running += level.quantity;
-            let x = to_x(level.price);
-            let y = to_y(running);
-            if let Some(from) = previous_x {
-                // `from.min(x)`: bids are ordered best-first, so `x` decreases as the loop
-                // advances. Anchoring at `from` with an unsigned width painted the band one
-                // step toward the spread instead of the span it belongs to.
-                context.fill_rect(
-                    Rect::new(
-                        from.min(x),
-                        y,
-                        (x - from).unsigned_abs().max(1),
-                        (area.bottom() - y).max(0) as u32,
-                    ),
-                    wash,
-                );
-            }
-            previous_x = Some(x);
         }
     }
 
@@ -560,19 +622,24 @@ impl rust_widgets::event::EventHandler for DepthChart {
                     let fraction = (pos.x - area.rect.x) as f64 / area.rect.width as f64;
                     if (0.0..=1.0).contains(&fraction) {
                         let pointer = low + fraction * (high - low);
-                        next = self.nearest_level(pointer);
+                        next = self.nearest_level(pointer, pos.y);
                     }
                 }
-                if next != self.hovered_level {
-                    self.hovered_level = next;
-                    if let Some(level) = next {
+                let next_price = next.map(|(price, _)| price);
+                let next_side = next.map(|(_, side)| side);
+                if next_price != self.hovered_level || next_side != self.hovered_side {
+                    self.hovered_level = next_price;
+                    self.hovered_side = next_side;
+                    if let Some(level) = next_price {
                         self.level_hovered.emit(level);
                     }
                     self.base.request_redraw();
                 }
             }
             Event::MouseLeave { .. } => {
-                if self.hovered_level.take().is_some() {
+                let had_level = self.hovered_level.take().is_some();
+                self.hovered_side = None;
+                if had_level {
                     self.base.request_redraw();
                 }
             }
@@ -584,8 +651,16 @@ impl rust_widgets::event::EventHandler for DepthChart {
                     let fraction = (pos.x - area.rect.x) as f64 / area.rect.width as f64;
                     if (0.0..=1.0).contains(&fraction) {
                         let pointer = low + fraction * (high - low);
-                        if let Some(level) = self.nearest_level(pointer) {
-                            self.hovered_level = Some(level);
+                        if let Some((level, side)) = self.nearest_level(pointer, pos.y) {
+                            // A press between two moves changes the hover too, so the
+                            // `level_hovered` contract holds for clicks as well rather than
+                            // the press silently moving the mark the signal did not report.
+                            if self.hovered_level != Some(level) || self.hovered_side != Some(side)
+                            {
+                                self.hovered_level = Some(level);
+                                self.hovered_side = Some(side);
+                                self.level_hovered.emit(level);
+                            }
                             self.level_clicked.emit(level);
                             self.base.request_redraw();
                         }
@@ -732,17 +807,13 @@ impl Draw for DepthChart {
 
         // The hovered level gets a visible mark and its quantity, so the already-emitted
         // `level_hovered` signal is not information the picture withholds.
-        if let Some(level) = self.hovered_level {
+        if let Some(point) = self.hovered_point() {
+            let level = point.price;
+            let quantity = point.cumulative_quantity;
             let (low, high) = self.price_bounds();
             if high > low {
                 let fraction = (level - low) / (high - low);
                 let x = area.rect.x + (fraction * area.rect.width as f64).round() as i32;
-                let quantity = self
-                    .curve_cache
-                    .iter()
-                    .find(|point| point.price == level)
-                    .map(|point| point.cumulative_quantity)
-                    .unwrap_or(0.0);
                 let fraction_y = (quantity / max_cumulative).clamp(0.0, 1.0);
                 let y = area.bottom() - (fraction_y * area.rect.height as f64).round() as i32;
                 context.fill_circle(rust_widgets::core::Point { x, y }, 3, chrome.crosshair);
@@ -1168,5 +1239,100 @@ mod tests {
         let (low, high) = chart.price_bounds();
         let mid = (chart.bid_levels[0].price + chart.ask_levels[0].price) / 2.0;
         assert!(low <= mid && mid <= high, "the mid must sit inside the painted bounds");
+    }
+
+    /// The depth cut counts levels the curve actually plots.
+    ///
+    /// Regression: the cut ran before the zero-size filter, so an exchange's empty levels at
+    /// the top of the book consumed the budget and the curve could be blank at `depth = 2`
+    /// even with real size resting further out.
+    #[test]
+    fn a_zero_size_level_does_not_consume_the_depth_budget() {
+        let mut chart = DepthChart::new(Rect::new(0, 0, 400, 200));
+        let mut book = crate::finance::types::OrderBook::new();
+        book.set_bids(alloc::vec![
+            crate::finance::types::BookLevel::new(100.5, 0.0),
+            crate::finance::types::BookLevel::new(100.4, 0.0),
+            crate::finance::types::BookLevel::new(100.3, 4.0),
+            crate::finance::types::BookLevel::new(100.2, 5.0),
+        ]);
+        book.set_asks(alloc::vec![crate::finance::types::BookLevel::new(100.6, 4.0)]);
+        chart.set_book(book);
+        chart.set_depth(2);
+
+        let bids: Vec<f64> = chart
+            .curve()
+            .iter()
+            .filter(|point| point.side == DepthSide::Bid)
+            .map(|point| point.price)
+            .collect();
+        assert_eq!(
+            bids,
+            alloc::vec![100.3, 100.2],
+            "the two plotted levels are the first two with size, not the two empty ones"
+        );
+    }
+
+    /// A price that holds both a bid and an ask resolves to the point the pointer is on.
+    ///
+    /// Regression: the hover carried only a price, and the read-out resolved it by price
+    /// alone, so it reported the bid's cumulative total for a pointer over the ask's point.
+    #[test]
+    fn a_crossed_level_reports_the_point_the_pointer_is_on() {
+        let mut chart = DepthChart::new(Rect::new(0, 0, 400, 200));
+        let mut book = crate::finance::types::OrderBook::new();
+        book.set_bids(alloc::vec![crate::finance::types::BookLevel::new(100.0, 5.0)]);
+        book.set_asks(alloc::vec![crate::finance::types::BookLevel::new(100.0, 7.0)]);
+        chart.set_book(book);
+
+        let area = chart.plot_area();
+        let (low, high) = chart.price_bounds();
+        let fraction = (100.0 - low) / (high - low);
+        let x = area.rect.x + (fraction * area.rect.width as f64).round() as i32;
+
+        // The ask's cumulative total is the taller point, so a pointer near the top of the
+        // pane is on it; the bid's point sits lower.
+        chart.handle_event(&rust_widgets::event::Event::MouseMove {
+            pos: rust_widgets::core::Point { x, y: area.rect.y + 2 },
+        });
+        assert_eq!(chart.hovered_level(), Some(100.0));
+        assert_eq!(chart.hovered_side, Some(DepthSide::Ask));
+        assert_eq!(chart.hovered_point().map(|point| point.side), Some(DepthSide::Ask));
+        assert_eq!(
+            chart.hovered_point().map(|point| point.cumulative_quantity),
+            Some(7.0),
+            "the read-out reports the ask's total, not the bid's"
+        );
+
+        chart.handle_event(&rust_widgets::event::Event::MouseMove {
+            pos: rust_widgets::core::Point { x, y: area.bottom() - 2 },
+        });
+        assert_eq!(chart.hovered_side, Some(DepthSide::Bid));
+        assert_eq!(chart.hovered_point().map(|point| point.cumulative_quantity), Some(5.0));
+    }
+
+    /// A press that creates the hover reports it on `level_hovered` too.
+    ///
+    /// Regression: the press path assigned `hovered_level` directly, so a click without a
+    /// preceding move moved the mark while the hover signal stayed silent.
+    #[test]
+    fn a_press_without_a_move_emits_the_hover_it_creates() {
+        let mut chart = DepthChart::new(Rect::new(0, 0, 400, 200));
+        chart.set_book(fixtures::sample_book(4));
+        let area = chart.plot_area();
+        let x = area.rect.x + area.rect.width as i32 / 2;
+
+        let hovered = std::sync::Arc::new(std::sync::Mutex::new(Vec::<f64>::new()));
+        let sink = hovered.clone();
+        chart.level_hovered.connect(move |level: std::sync::Arc<f64>| {
+            sink.lock().unwrap().push(*level);
+        });
+        chart.handle_event(&rust_widgets::event::Event::MousePress {
+            pos: rust_widgets::core::Point { x, y: area.rect.y + 40 },
+            button: 1,
+            modifiers: 0,
+        });
+        assert_eq!(chart.hovered_level(), hovered.lock().unwrap().last().copied());
+        assert_eq!(hovered.lock().unwrap().len(), 1, "the press reported the hover once");
     }
 }

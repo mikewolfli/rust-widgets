@@ -40,6 +40,13 @@ const MAX_LOTTIE_FRAMES: u32 = 1_000_000;
 const MIN_LOTTIE_FPS: f32 = 0.01;
 const MAX_LOTTIE_FPS: f32 = 1000.0;
 
+/// How many frames one [`LottieWidget::tick`] call may advance.
+///
+/// A stalled event loop hands `tick` one huge `delta_ms`; without the cap the catch-up loop
+/// would run once per elapsed frame — up to millions for a long stall. The excess is dropped
+/// instead: the animation catches up rather than replaying every missed frame.
+const MAX_FRAMES_PER_TICK: u64 = 600;
+
 /// A single keyframe for an animated property.
 #[derive(Debug, Clone)]
 pub struct LottieKeyFrame {
@@ -973,6 +980,13 @@ pub struct LottieWidget {
     /// instead of being rediscovered every frame. `tp` names the source explicitly; without it the
     /// source is the layer above the content.
     layer_paint: Vec<LayerPaint>,
+    /// Whether each slot of [`Self::layer_order`] supplies coverage for another layer, parallel to
+    /// it.
+    ///
+    /// Such a slot is painted only *through* its consumer. Without this the renderer painted a
+    /// chained matte's source twice: once as coverage inside the consumer's matte, and again as
+    /// ordinary content when its own slot came up.
+    layer_coverage: Vec<bool>,
     /// Composition width from Lottie JSON.
     comp_width: f64,
     /// Composition height from Lottie JSON.
@@ -1029,6 +1043,7 @@ impl LottieWidget {
             layers: Vec::new(),
             layer_order: Vec::new(),
             layer_paint: Vec::new(),
+            layer_coverage: Vec::new(),
             comp_width: 100.0,
             comp_height: 100.0,
             frame_offset: 0.0,
@@ -1113,6 +1128,13 @@ impl LottieWidget {
         // hostile `fr` of `1e38` becomes `inf` as an `f32`, and an infinite rate
         // makes the frame timer advance by zero every tick — an animation that can
         // never finish.
+        //
+        // The defaults are restored first: a new document that omits `fr`/`w`/`h` must not
+        // inherit the previous document's rate or composition size, which drew the new
+        // animation at the old scale and tempo.
+        self.frame_rate = 30.0;
+        self.comp_width = 100.0;
+        self.comp_height = 100.0;
         if let Some(fr) = parsed.get("fr").and_then(|v| v.as_f64()) {
             if fr.is_finite() && fr > 0.0 {
                 self.frame_rate = fr.clamp(MIN_LOTTIE_FPS as f64, MAX_LOTTIE_FPS as f64) as f32;
@@ -1231,6 +1253,19 @@ impl LottieWidget {
             }
         }
         self.layer_order = order;
+        // Which slots supply coverage for another layer. Tracked separately from `layer_paint`
+        // because a source may itself be matted content (a chain): replacing its `MatteContent`
+        // with `MatteSource` would erase the nested matte its consumer needs, while leaving it
+        // as content made the renderer paint it a second time when its own slot came up.
+        let mut coverage = rust_widgets::compat::vec![false; paint.len()];
+        for entry in &paint {
+            if let LayerPaint::MatteContent { source, .. } = entry {
+                if let Some(flag) = coverage.get_mut(*source) {
+                    *flag = true;
+                }
+            }
+        }
+        self.layer_coverage = coverage;
         self.layer_paint = paint;
 
         // Record every shape type the renderer cannot draw. This is the queryable
@@ -1254,10 +1289,37 @@ impl LottieWidget {
         Ok(())
     }
 
+    /// The first frame of a run, in the current direction.
+    ///
+    /// Forward playback starts at the in-point. Reverse playback starts at the out-point,
+    /// because stepping *back* from frame 0 is what ends a reverse run: treating 0 as the
+    /// start made `play()` count a loop before drawing a single frame.
+    fn start_frame(&self) -> u32 {
+        match self.direction {
+            LottieDirection::Forward => 0,
+            LottieDirection::Reverse => self.total_frames.saturating_sub(1),
+        }
+    }
+
     /// Starts playback of the animation.
     pub fn play(&mut self) {
         if self.total_frames == 0 {
             return;
+        }
+        // A finished animation replays from the start. Its playhead sat at the end and its loop
+        // count was spent, so the first tick re-completed it and emitted a second
+        // `animation_finished` without showing a frame (the Rive widget carries the same fix).
+        let finished = self.loop_count > 0 && self.loops_completed >= self.loop_count;
+        if finished {
+            self.loops_completed = 0;
+            self.frame_timer_us = 0;
+            self.current_frame = self.start_frame();
+        } else if self.direction == LottieDirection::Reverse
+            && self.current_frame == 0
+            && self.loops_completed == 0
+        {
+            // A reverse run that would begin at frame 0 is already at its end.
+            self.current_frame = self.start_frame();
         }
         self.playing = true;
         self.base.request_redraw();
@@ -1269,14 +1331,18 @@ impl LottieWidget {
         self.base.request_redraw();
     }
 
-    /// Stops playback and resets to the first frame.
+    /// Stops playback and resets to the first frame of the current direction.
     pub fn stop(&mut self) {
         self.playing = false;
-        if self.current_frame != 0 {
-            self.current_frame = 0;
-            // The frame is a published fact; rewinding to zero is a frame change, not only a
+        // The completed count describes the run that just ended. Leaving it behind meant a
+        // later `play()` was one loop into its budget before it drew a frame.
+        self.loops_completed = 0;
+        let frame = self.start_frame();
+        if self.current_frame != frame {
+            self.current_frame = frame;
+            // The frame is a published fact; rewinding is a frame change, not only a
             // paint change (RW-83).
-            self.frame_changed.emit(0);
+            self.frame_changed.emit(frame);
         }
         self.frame_timer_us = 0;
         self.base.request_redraw();
@@ -1517,6 +1583,15 @@ impl LottieWidget {
     /// rate — truncated to the same 16 ms. Accumulating in microseconds keeps the
     /// long-run rate equal to the requested one, since the sub-millisecond part is no
     /// longer discarded on each tick.
+    ///
+    /// # Why every elapsed frame is walked
+    ///
+    /// Advancing one frame per call let the accumulator grow without bound: a stalled event
+    /// loop handed one long `delta_ms`, the animation moved a single frame, and the surplus
+    /// stayed in the timer where it could never be spent — the clip fell further behind the
+    /// wall clock on every stall. The elastic-catch-up rule is the Rive widget's: whole
+    /// periods are consumed (at most `MAX_FRAMES_PER_TICK` per call) and the sub-period
+    /// remainder is kept as phase.
     pub fn tick(&mut self, delta_ms: u64) -> bool {
         if !self.playing || self.total_frames == 0 {
             return false;
@@ -1533,17 +1608,22 @@ impl LottieWidget {
             33_000
         };
 
+        // `saturating_add`: `frame_timer_us` is a `u64` fed by a public `tick`. A plain `+=`
+        // could wrap to a small value and replay the wrapped remainder.
         self.frame_timer_us = self.frame_timer_us.saturating_add(delta_ms.saturating_mul(1000));
-        if self.frame_timer_us >= period_us {
-            // Consume one period rather than resetting to zero: a long `delta_ms` (a
-            // stalled event loop) advances exactly one frame and keeps the surplus as
-            // the phase of the next one, so the animation does not lose time.
-            self.frame_timer_us -= period_us;
-            self.advance_frame();
-            true
-        } else {
-            false
+        let elapsed_frames = self.frame_timer_us / period_us;
+        self.frame_timer_us %= period_us;
+
+        let mut progressed = false;
+        for _ in 0..elapsed_frames.min(MAX_FRAMES_PER_TICK) {
+            if !self.advance_frame() {
+                // The run ended (a finite loop completed) or playback was stopped by a
+                // callback; the rest of the surplus is time the animation no longer owns.
+                break;
+            }
+            progressed = true;
         }
+        progressed
     }
 
     /// Returns a reference to the raw JSON data, if loaded.
@@ -1764,7 +1844,9 @@ impl LottieWidget {
             comp_draw_h.round().max(0.0) as u32,
         );
         for slot in 0..self.layer_order.len() {
-            if self.layer_paint.get(slot) == Some(&LayerPaint::MatteSource) {
+            if self.layer_paint.get(slot) == Some(&LayerPaint::MatteSource)
+                || self.layer_coverage.get(slot).copied().unwrap_or(false)
+            {
                 continue;
             }
             self.draw_paint_unit(
@@ -2413,8 +2495,14 @@ impl Widget for LottieWidget {
     // because an animation can legitimately run long enough that the millisecond count
     // would wrap. Widening at the boundary keeps the trait uniform without narrowing the
     // animation's own clock.
+    //
+    // The inherent answer is "did a frame change", which is `true` on the very tick that
+    // finishes the last loop; the trait's question is "is another frame owed", and a
+    // finished animation owes none. Answering the inherent question here asked the frame
+    // bus for one more pass after the animation had already stopped.
     fn tick(&mut self, delta_ms: u32) -> bool {
-        LottieWidget::tick(self, u64::from(delta_ms))
+        LottieWidget::tick(self, u64::from(delta_ms));
+        self.is_playing()
     }
 
     fn is_animating(&self) -> bool {
@@ -2486,9 +2574,13 @@ impl WidgetProperties for LottieWidget {
                 Ok(())
             }
             "loop_count" => {
+                // Saturate rather than `as i32`: a value outside `i32` wrapped, and a count
+                // that wrapped to zero read as "loop forever".
                 let count = match value {
-                    CapabilityValue::Int(value) => value as i32,
-                    CapabilityValue::UInt(value) => value as i32,
+                    CapabilityValue::Int(value) => {
+                        i32::try_from(value).unwrap_or(if value < 0 { 0 } else { i32::MAX })
+                    }
+                    CapabilityValue::UInt(value) => i32::try_from(value).unwrap_or(i32::MAX),
                     _ => return Err(CapabilityAccessError::TypeMismatch),
                 };
                 self.set_loop_count(count);
@@ -4136,5 +4228,161 @@ mod tests {
         lottie.set_current_frame(5);
         lottie.stop();
         assert_eq!(*seen.lock().unwrap(), vec![5, 0], "each real frame change is announced once");
+    }
+
+    /// A finished animation replays from the start instead of completing again.
+    ///
+    /// Regression: `play` left the playhead at the end and `loops_completed` spent, so the first
+    /// tick re-completed the run and emitted a second `animation_finished` without drawing a frame.
+    #[test]
+    fn play_replays_a_finished_lottie_animation() {
+        let mut lottie = LottieWidget::new(Rect::new(0, 0, 200, 200));
+        lottie.load_json(&make_lottie_json(3.0, 0.0, 30.0)).unwrap();
+        lottie.set_loop_count(1);
+        let finished = Arc::new(Mutex::new(0usize));
+        let sink = Arc::clone(&finished);
+        lottie.animation_finished.connect(move || {
+            *sink.lock().unwrap() += 1;
+        });
+
+        lottie.play();
+        assert!(lottie.advance_frame());
+        assert!(lottie.advance_frame());
+        assert!(lottie.advance_frame());
+        assert!(!lottie.is_playing());
+        assert_eq!(*finished.lock().unwrap(), 1);
+
+        lottie.play();
+        assert_eq!(lottie.current_frame(), 0, "the replay starts at the beginning");
+        assert_eq!(lottie.loops_completed(), 0, "a replay starts a fresh loop count");
+        assert!(lottie.advance_frame());
+        assert_eq!(lottie.current_frame(), 1);
+        assert_eq!(*finished.lock().unwrap(), 1, "no second completion signal");
+    }
+
+    /// A reverse run begins at the out-point, so its first step is not a completed loop.
+    ///
+    /// Regression: a reverse animation started at frame 0, where the very first `advance_frame`
+    /// wrapped and counted a loop before drawing a frame.
+    #[test]
+    fn a_reverse_run_starts_at_the_end_and_does_not_count_a_loop() {
+        let mut lottie = LottieWidget::new(Rect::new(0, 0, 200, 200));
+        lottie.load_json(&make_lottie_json(4.0, 0.0, 10.0)).unwrap();
+        lottie.set_loop_count(1);
+        lottie.set_direction(LottieDirection::Reverse);
+        lottie.play();
+
+        assert_eq!(lottie.current_frame(), 3, "reverse begins at the out-point");
+        assert!(lottie.advance_frame());
+        assert_eq!(lottie.current_frame(), 2);
+        assert_eq!(lottie.loops_completed(), 0, "stepping back is not a loop");
+    }
+
+    /// `stop` clears the completed count so the next run gets a full budget.
+    #[test]
+    fn stopping_clears_the_completed_loop_count() {
+        let mut lottie = LottieWidget::new(Rect::new(0, 0, 200, 200));
+        lottie.load_json(&make_lottie_json(3.0, 0.0, 30.0)).unwrap();
+        lottie.set_loop_count(3);
+        lottie.play();
+        for _ in 0..3 {
+            lottie.advance_frame();
+        }
+        assert_eq!(lottie.loops_completed(), 1);
+
+        lottie.stop();
+        assert_eq!(lottie.loops_completed(), 0, "the ended run's count is not carried over");
+        lottie.play();
+        for _ in 0..3 {
+            lottie.advance_frame();
+        }
+        assert_eq!(lottie.loops_completed(), 1, "a fresh run counts its own loops");
+    }
+
+    /// A long tick catches up every frame it covers instead of advancing one and banking the rest.
+    #[test]
+    fn a_long_tick_catches_up_every_elapsed_frame() {
+        let mut lottie = LottieWidget::new(Rect::new(0, 0, 200, 200));
+        lottie.load_json(&make_lottie_json(1000.0, 0.0, 10.0)).unwrap();
+        lottie.set_frame_rate(10.0);
+        lottie.play();
+
+        // 10 fps is 100 ms per frame: 350 ms is three frames and a half.
+        assert!(lottie.tick(350));
+        assert_eq!(lottie.current_frame(), 3, "three elapsed frames are all consumed");
+        // The half period is phase, not discarded time.
+        assert!(lottie.tick(50));
+        assert_eq!(lottie.current_frame(), 4);
+    }
+
+    /// A chained matte's source is coverage, not ordinary content.
+    ///
+    /// Regression: the source was painted twice — once through its consumer's matte, and again
+    /// when its own slot came up — because nothing recorded that a matted layer can also supply
+    /// coverage.
+    #[test]
+    fn a_chained_matte_source_is_not_painted_as_content() {
+        // `ind` 1 is the topmost layer and is painted last; it is the middle layer's default
+        // source (the layer above it) and declares a matte of its own on the bottom layer.
+        let json = r#"{"op":10,"ip":0,"fr":30,"w":100,"h":100,
+            "layers":[
+                {"ind":1,"ty":4,"tt":1,"tp":3,"ks":{},"shapes":[]},
+                {"ind":2,"ty":4,"tt":1,"ks":{},"shapes":[]},
+                {"ind":3,"ty":4,"ks":{},"shapes":[]}
+            ]}"#;
+        let mut lottie = LottieWidget::new(Rect::new(0, 0, 200, 200));
+        lottie.load_json(json).expect("the fixture must parse");
+        assert_eq!(
+            lottie.layer_paint,
+            vec![
+                LayerPaint::MatteSource,
+                LayerPaint::MatteContent { source: 2, mode: 1 },
+                LayerPaint::MatteContent { source: 0, mode: 1 },
+            ],
+            "the nested matte is kept on the source so its consumer can resolve it"
+        );
+        assert_eq!(
+            lottie.layer_coverage,
+            vec![true, false, true],
+            "both coverage sources are painted only through their consumers"
+        );
+    }
+
+    /// A document that omits `fr`/`w`/`h` must not inherit the previous document's values.
+    #[test]
+    fn a_second_document_does_not_inherit_the_first_documents_rate_or_size() {
+        let mut lottie = LottieWidget::new(Rect::new(0, 0, 200, 200));
+        lottie.load_json(r#"{"op":10,"ip":0,"fr":60,"w":200,"h":150,"layers":[]}"#).unwrap();
+        assert_eq!(lottie.frame_rate(), 60.0);
+        assert_eq!(lottie.comp_width(), 200.0);
+
+        lottie.load_json(r#"{"op":10,"ip":0,"layers":[]}"#).unwrap();
+        assert_eq!(lottie.frame_rate(), 30.0, "the omitted rate falls back to the default");
+        assert_eq!(lottie.comp_width(), 100.0, "the omitted width falls back to the default");
+        assert_eq!(lottie.comp_height(), 100.0, "the omitted height falls back to the default");
+    }
+
+    /// The trait's `tick` answers "another frame is owed", not "a frame changed".
+    #[test]
+    fn the_trait_tick_reports_whether_another_frame_is_owed() {
+        let mut lottie = LottieWidget::new(Rect::new(0, 0, 200, 200));
+        lottie.load_json(&make_lottie_json(2.0, 0.0, 30.0)).unwrap();
+        lottie.set_loop_count(1);
+        lottie.play();
+
+        assert!(Widget::tick(&mut lottie, 34), "a playing animation owes the next frame");
+        assert!(!Widget::tick(&mut lottie, 34), "the frame that finishes it owes no more");
+        assert!(!lottie.is_playing());
+    }
+
+    /// A loop count outside `i32` saturates instead of wrapping to zero ("loop forever").
+    #[test]
+    fn a_huge_loop_count_saturates_instead_of_reading_as_infinite() {
+        use rust_widgets::widget::capability::WidgetProperties;
+        let mut lottie = LottieWidget::new(Rect::new(0, 0, 200, 200));
+        lottie.set("loop_count", CapabilityValue::Int(i64::from(i32::MAX) + 1)).unwrap();
+        assert_eq!(lottie.loop_count(), i32::MAX);
+        lottie.set("loop_count", CapabilityValue::UInt(u64::MAX)).unwrap();
+        assert_eq!(lottie.loop_count(), i32::MAX);
     }
 }
