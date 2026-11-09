@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 use super::*;
+use rust_widgets::event::key_codes::{BACKSPACE, ENTER, ESCAPE, F2, SPACE};
 use rust_widgets::impl_draw_bridge;
 
 /// Padding inside a card, and the gap between its stacked lines.
@@ -31,7 +32,6 @@ pub struct KanbanCardView {
     done: bool,
     tags: Vec<String>,
     assignee: String,
-    draggable: bool,
     /// The in-progress title edit, when the card is being renamed.
     edit_buffer: Option<String>,
     /// Emitted when the card body is clicked (not its done box).
@@ -52,7 +52,6 @@ impl KanbanCardView {
             done: false,
             tags: Vec::new(),
             assignee: String::new(),
-            draggable: true,
             edit_buffer: None,
             card_clicked: GenericSignal::new(),
             card_edited: Signal1::new(),
@@ -128,16 +127,6 @@ impl KanbanCardView {
         self.base.request_redraw();
     }
 
-    /// Whether a board may drag this card.
-    pub fn is_draggable(&self) -> bool {
-        self.draggable
-    }
-
-    /// Enables or disables dragging for this card.
-    pub fn set_draggable(&mut self, draggable: bool) {
-        self.draggable = draggable;
-    }
-
     /// Whether the title is being edited.
     pub fn is_editing(&self) -> bool {
         self.edit_buffer.is_some()
@@ -169,7 +158,12 @@ impl KanbanCardView {
 
     /// Cancels the in-progress title edit, restoring the old title.
     pub fn cancel_title_edit(&mut self) -> bool {
-        self.edit_buffer.take().is_some()
+        if self.edit_buffer.take().is_none() {
+            return false;
+        }
+        // Dropping the buffer changes what paints; the sibling paths all request the frame.
+        self.base.request_redraw();
+        true
     }
 
     /// The painted box of the done box.
@@ -200,6 +194,13 @@ impl Widget for KanbanCardView {
     fn size_hint(&self) -> rust_widgets::core::Size {
         rust_widgets::core::Size::new(220, 72)
     }
+
+    /// A card takes keyboard focus so F2/Enter can start a title edit. The kind's stripped build
+    /// does not list every companion, so the control states it directly.
+    fn is_focusable(&self) -> bool {
+        true
+    }
+
     impl_draw_bridge!();
     impl_widget_property_hooks!();
     /// Resolves the card's three events; see `DiffViewer`'s note for why the arms are explicit.
@@ -230,7 +231,6 @@ impl WidgetProperties for KanbanCardView {
                 self.tags.iter().map(|tag| CapabilityValue::String(tag.clone())).collect(),
             )),
             "assignee" => Ok(CapabilityValue::String(self.assignee.clone())),
-            "draggable" => Ok(CapabilityValue::Bool(self.draggable)),
             "editing" => Ok(CapabilityValue::Bool(self.is_editing())),
             _ => base_property_get(self, name),
         }
@@ -259,10 +259,6 @@ impl WidgetProperties for KanbanCardView {
                 self.set_assignee(expect_string(value)?);
                 Ok(())
             }
-            "draggable" => {
-                self.set_draggable(expect_bool(value)?);
-                Ok(())
-            }
             "editing" => Err(CapabilityAccessError::ReadOnlyProperty),
             _ => base_property_set(self, name, value),
         }
@@ -275,7 +271,6 @@ impl WidgetProperties for KanbanCardView {
             "done",
             "tags",
             "assignee",
-            "draggable",
             "editing",
             BASE_PROPERTY_NAMES
         ]
@@ -297,14 +292,14 @@ impl EventHandler for KanbanCardView {
                     self.base.request_redraw();
                 }
                 Event::KeyPress { key, .. } => match *key {
-                    13 => {
+                    ENTER => {
                         let _ = self.commit_title_edit();
                     }
-                    27 => {
+                    ESCAPE => {
                         self.cancel_title_edit();
                         self.base.request_redraw();
                     }
-                    8 => {
+                    BACKSPACE => {
                         if let Some(buffer) = self.edit_buffer.as_mut() {
                             buffer.pop();
                         }
@@ -317,6 +312,18 @@ impl EventHandler for KanbanCardView {
             return;
         }
         match event {
+            Event::KeyPress { key, .. }
+                if self.base.focus_reason().is_some() && matches!(*key, ENTER | F2) =>
+            {
+                let _ = self.begin_title_edit();
+            }
+            // Space is the keyboard equivalent of pressing the done box. The box was reachable
+            // with the pointer only: a focused card could be edited with F2/Enter but not marked
+            // done without a mouse, even though the control is focusable and publishes
+            // `card_done_toggled`.
+            Event::KeyPress { key, .. } if self.base.focus_reason().is_some() && *key == SPACE => {
+                self.set_done(!self.done);
+            }
             Event::MousePress { pos, button: 1, .. } => {
                 if self.done_box_rect().contains_point(*pos) {
                     self.set_done(!self.done);

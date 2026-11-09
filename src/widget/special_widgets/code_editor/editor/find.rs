@@ -300,15 +300,30 @@ impl CodeEditor {
             return;
         };
         let options = self.find.options;
+        // A selection-limited search depends on the live selection as well as the
+        // document, and an edit does not describe the selection. The incremental path
+        // cannot reuse its list without re-filtering every retained hit, so it falls
+        // back to the full scan that applies `in_selection` once.
+        if options.in_selection && !self.cursor.is_collapsed() {
+            self.recompute_match_cache();
+            return;
+        }
         // Drop the hits of the replaced lines from the existing list.
         let last_old = first.saturating_add(removed);
         self.find.matches.retain(|hit| hit.line < first || hit.line >= last_old);
-        // Rescan only the lines that now exist at that position.
+        // Rescan only the lines that now exist at that position. The query is prepared
+        // once for the whole run: `collect_matches_in_line` used to lowercase the needle
+        // for every line it scanned, which made a multi-line edit pay `O(lines x query)`.
+        let Some(needle) = SearchNeedle::new(&query) else {
+            self.find.matches.clear();
+            self.find.current = 0;
+            return;
+        };
         let last_new = first.saturating_add(inserted).min(self.line_count());
         let mut fresh: Vec<SearchMatch> = Vec::new();
         for line in first..last_new {
-            let Some(text) = self.line_text(line) else { break };
-            self.collect_matches_in_line(line, &text, &query, options, &mut fresh);
+            let text = self.line_text_borrowed(line);
+            self.collect_matches_in_line(line, &text, &needle, options, &mut fresh);
         }
         // Hits after the edited region keep their relative order; shift them by
         // the line-count delta so they point at the right lines.
@@ -329,24 +344,18 @@ impl CodeEditor {
         };
     }
 
-    /// Appends every match of `query` within one line to `out`.
-    pub(super) fn collect_matches_in_line(
+    /// Appends every match of `needle` within one line to `out`.
+    fn collect_matches_in_line(
         &self,
         line_index: usize,
         text: &str,
-        query: &str,
+        needle: &SearchNeedle,
         options: SearchOptions,
         out: &mut Vec<SearchMatch>,
     ) {
-        let needle: Vec<char> = query.chars().collect();
-        if needle.is_empty() {
-            return;
-        }
-        let needle_lower = lowercase_chars(&needle);
-        let needle_ascii = needle.iter().all(|ch| ch.is_ascii());
         if options.use_regex {
             let haystack: Vec<char> = text.chars().collect();
-            for (start, end) in regex_matches(&haystack, &needle, options.case_sensitive) {
+            for (start, end) in regex_matches(&haystack, &needle.chars, options.case_sensitive) {
                 if whole_word_ok(&haystack, start, end - start, options, self.config.language) {
                     out.push(SearchMatch {
                         line: line_index,
@@ -357,12 +366,12 @@ impl CodeEditor {
             }
             return;
         }
-        if text.len() < needle.len() {
+        if text.len() < needle.chars.len() {
             return;
         }
         let language = self.config.language;
         for (start, end) in
-            scan_literal_line(text, &needle, &needle_lower, needle_ascii, options, language)
+            scan_literal_line(text, &needle.chars, &needle.lower, needle.ascii, options, language)
         {
             out.push(SearchMatch { line: line_index, start_column: start, end_column: end });
         }
@@ -440,14 +449,33 @@ impl CodeEditor {
         };
         let replacement = self.find.replacement.clone();
         let start = TextPosition::new(hit.line, hit.start_column);
+        let end = TextPosition::new(hit.line, hit.end_column);
+        // `splice_range` refuses a locked range silently. Reporting success for a
+        // refused edit would let a host mark the document saved over text that never
+        // changed, so the refusal is answered here before anything is emitted.
+        if !self.is_range_editable(start, end) {
+            return false;
+        }
         let head = TextPosition::new(hit.line, hit.start_column + replacement.chars().count());
-        self.splice_range(start, TextPosition::new(hit.line, hit.end_column), &replacement, head);
+        self.splice_range(start, end, &replacement, head);
         self.find_next(false)
     }
 
     /// Replaces every hit in one undoable step; returns how many were replaced.
     pub fn replace_all(&mut self) -> usize {
         if !self.is_editable() || self.find.matches.is_empty() {
+            return 0;
+        }
+        // A batch that touches any locked hit is refused as a whole, the same rule
+        // `apply_caret_edits` uses for a multi-caret batch: replacing the rest would
+        // report a count the document does not agree with, and the diff span would
+        // still be blocked by the locked range.
+        if self.find.matches.iter().any(|hit| {
+            !self.is_range_editable(
+                TextPosition::new(hit.line, hit.start_column),
+                TextPosition::new(hit.line, hit.end_column),
+            )
+        }) {
             return 0;
         }
         let replacement = self.find.replacement.clone();
@@ -485,7 +513,12 @@ impl CodeEditor {
         }
         let after = join_lines(&lines);
         let head = self.cursor.head;
-        self.commit_edit(before, after, head);
+        // `commit_edit` reports `false` when the diffed span is locked even though
+        // every hit passed the per-hit check (a locked range can sit between hits).
+        // Nothing changed in that case, so no count and no signal is published.
+        if !self.commit_edit(before, after, head) {
+            return 0;
+        }
         self.recompute_match_cache();
         self.search_changed.emit(self.find.match_count());
         self.emit_search_result();
@@ -637,8 +670,17 @@ impl CodeEditor {
     }
 
     /// Returns every occurrence of the currently selected word.
+    ///
+    /// The cheap bounds checks run before the selection is materialised: a drag that
+    /// spans lines (or selects more than 64 characters) can never be a word, and the
+    /// old order built the whole selected string first — on a 200-line drag that was
+    /// one document-sized allocation per pointer move.
     pub fn occurrences_of_selection(&self) -> Vec<SearchMatch> {
         if !self.config.highlight_occurrences {
+            return Vec::new();
+        }
+        let (start, end) = self.cursor.bounds();
+        if start.line != end.line || end.column.saturating_sub(start.column) > 64 {
             return Vec::new();
         }
         let Some(selected) = self.selected_text() else { return Vec::new() };
@@ -662,13 +704,19 @@ impl CodeEditor {
     pub(crate) fn prepare_occurrences(&mut self) {
         let bounds = self.cursor.bounds();
         let revision = self.revision.get();
+        // `highlight_occurrences` toggles the whole computation, so it belongs in the
+        // key alongside the two inputs the search reads. Relying on `set_config` to
+        // clear the cache left the flag-change path to one caller, and a cache hit
+        // silently kept highlighting occurrences the reader had switched off.
+        let highlight = self.config.highlight_occurrences;
         if let Some(cache) = &self.occurrence_cache {
-            if cache.bounds == bounds && cache.revision == revision {
+            if cache.bounds == bounds && cache.revision == revision && cache.highlight == highlight
+            {
                 return;
             }
         }
         let matches = self.occurrences_of_selection();
-        self.occurrence_cache = Some(OccurrenceCache { bounds, revision, matches });
+        self.occurrence_cache = Some(OccurrenceCache { bounds, revision, highlight, matches });
     }
 }
 
@@ -970,6 +1018,28 @@ fn chars_eq(left: char, right: char, case_sensitive: bool) -> bool {
         left.eq_ignore_ascii_case(&right)
     } else {
         left.to_lowercase().eq(right.to_lowercase())
+    }
+}
+
+/// The search query, prepared for repeated line scanning.
+///
+/// The character form, its lowercase form and the ASCII fast-path flag are the same for
+/// every line of one search, so they are built once per query rather than per line.
+struct SearchNeedle {
+    chars: Vec<char>,
+    lower: Vec<char>,
+    ascii: bool,
+}
+
+impl SearchNeedle {
+    fn new(query: &str) -> Option<Self> {
+        let chars: Vec<char> = query.chars().collect();
+        if chars.is_empty() {
+            return None;
+        }
+        let lower = lowercase_chars(&chars);
+        let ascii = chars.iter().all(|ch| ch.is_ascii());
+        Some(Self { chars, lower, ascii })
     }
 }
 

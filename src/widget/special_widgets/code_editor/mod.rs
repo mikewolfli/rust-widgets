@@ -119,6 +119,9 @@ mod tests_batch8;
 #[cfg(test)]
 mod tests_batch9;
 
+#[cfg(test)]
+mod tests_batch10;
+
 pub use editor::{CodeEditor, CodeEditorDocument, MiniTone, MinimapBucket, MAX_NAVIGATION_HISTORY};
 pub use multicursor::MultiCursor;
 pub use overlays::{CodeLens, InlayHint, InlayHintKind, SnippetSession, SnippetStop};

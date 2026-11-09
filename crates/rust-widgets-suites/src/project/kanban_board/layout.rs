@@ -17,18 +17,26 @@ impl KanbanBoard {
             return None;
         }
         let rect = self.geometry();
-        // Clamped on read as well as on write: a board that shrank after its offset was set would
-        // otherwise paint past its content and show empty space.
-        let scroll = self.horizontal_scroll.min(self.max_horizontal_scroll());
-        // In lane mode the left strip names the lanes, so the columns begin after it.
-        let origin = rect.x + if self.lanes_active() { LANE_HEADER_WIDTH as i32 } else { 0 };
         // Per-column widths make the stride non-uniform, so the column's left edge is the sum of
         // the widths and gaps before it rather than `index * stride`.
-        let mut x = origin - scroll;
+        let mut x = self.first_column_x();
         for previous in 0..index {
-            x += self.column_width_at(previous) as i32 + COLUMN_GAP;
+            x = x.saturating_add(self.column_width_at(previous) as i32).saturating_add(COLUMN_GAP);
         }
         Some(Rect::new(x, rect.y, self.column_width_at(index), rect.height))
+    }
+
+    /// The left edge of the first column, with the horizontal scroll applied.
+    ///
+    /// The paint path advances one running x from here instead of calling `column_rect` per column
+    /// (which re-sums every preceding width); the hit path uses the same origin.
+    pub(super) fn first_column_x(&self) -> i32 {
+        let rect = self.geometry();
+        // In lane mode the left strip names the lanes, so the columns begin after it.
+        let origin = rect.x + if self.lanes_active() { LANE_HEADER_WIDTH as i32 } else { 0 };
+        // Clamped on read as well as on write: a board that shrank after its offset was set would
+        // otherwise paint past its content and show empty space.
+        origin - self.horizontal_scroll.min(self.max_horizontal_scroll())
     }
 
     /// The width column `index` is painted at: its override, or the board-wide default.
@@ -42,7 +50,7 @@ impl KanbanBoard {
 
     /// Overrides the width of column `index`, or clears the override when `width` is `None`.
     ///
-    /// Returns whether `index` named a column. The width is floored at [`MIN_COLUMN_WIDTH`], the
+    /// Returns whether `index` named a column. The width is floored at `MIN_COLUMN_WIDTH`, the
     /// same floor [`Self::set_column_width`] applies, so an override cannot produce a column that
     /// no longer has room for a card title.
     pub fn set_column_width_at(&mut self, index: usize, width: Option<u32>) -> bool {
@@ -113,11 +121,20 @@ impl KanbanBoard {
     /// A collapsed column lays out no cards, so its cards report `None` rather than
     /// a rectangle inside the collapsed header.
     pub fn card_rect(&self, position: CardPosition) -> Option<Rect> {
+        let column_rect = self.column_rect(position.column)?;
+        self.card_rect_in(column_rect, position)
+    }
+
+    /// [`Self::card_rect`] with the column's rectangle already resolved.
+    ///
+    /// The paint path resolves each column once per frame and then places every card in it; calling
+    /// the public `card_rect` per card made one frame O(cards × columns) because each call re-summed
+    /// the preceding column widths and the horizontal-scroll clamp.
+    pub(super) fn card_rect_in(&self, column_rect: Rect, position: CardPosition) -> Option<Rect> {
         let column = self.columns.get(position.column)?;
         if column.collapsed || position.card >= column.cards.len() {
             return None;
         }
-        let column_rect = self.column_rect(position.column)?;
         // In lane mode the band owns the row: the same card index inside a column can sit at a
         // different y in every lane, so the ordinal is the one the cached layout derived.
         if self.lanes_active() {
@@ -130,7 +147,7 @@ impl KanbanBoard {
             let y = band.y + LANE_HEADER_HEIGHT + ordinal as i32 * (CARD_HEIGHT as i32 + CARD_GAP);
             return Some(Rect::new(column_rect.x, y, column_rect.width, CARD_HEIGHT));
         }
-        let scroll = self.column_scroll.get(position.column).copied().unwrap_or(0);
+        let scroll = self.column_scroll_offset(position.column);
         let y = column_rect.y
             + HEADER_HEIGHT as i32
             + ((position.card.saturating_sub(scroll)) as i32) * (CARD_HEIGHT as i32 + CARD_GAP);
@@ -198,7 +215,7 @@ impl KanbanBoard {
         }
         let stride = CARD_HEIGHT as i32 + CARD_GAP;
         let slot = ((pos.y - first_y) / stride) as usize;
-        let scroll = self.column_scroll.get(column).copied().unwrap_or(0);
+        let scroll = self.column_scroll_offset(column);
         let position = CardPosition { column, card: scroll + slot };
         // The gap between two cards belongs to neither, and a slot past the column's last card
         // names no card; `card_rect` returns `None` in both cases.
@@ -218,7 +235,7 @@ impl KanbanBoard {
         if self.lanes_active() {
             return (0, entries.cards.len());
         }
-        let scroll = self.column_scroll.get(column).copied().unwrap_or(0).min(entries.cards.len());
+        let scroll = self.column_scroll_offset(column);
         // One extra card past the last fully visible row: a partially visible card still paints.
         let end = scroll
             .saturating_add(self.visible_cards_per_column())
@@ -236,6 +253,11 @@ impl KanbanBoard {
         let Some(entries) = self.columns.get(column) else {
             return 0;
         };
+        // A collapsed column paints no rows, so there is no pointer position to invert. Appending
+        // keeps the hidden order untouched instead of guessing a slot from rows nobody can see.
+        if entries.collapsed {
+            return entries.cards.len();
+        }
         let Some(column_rect) = self.column_rect(column) else {
             return 0;
         };
@@ -275,10 +297,12 @@ impl KanbanBoard {
                 lane_indices.last().copied().unwrap_or(0) + 1
             };
         }
-        // Cards start below the header; a drop in the header goes to the top.
+        // Cards start below the header; a drop in the header goes to the top of the painted
+        // window, not of the model. Returning 0 committed a scroll-topped column at model row 0
+        // (off-screen above the viewport) while the insertion line was drawn at the window's top.
         let first_card_y = column_rect.y + HEADER_HEIGHT as i32;
         if pos.y <= first_card_y {
-            return 0;
+            return self.column_scroll_offset(column).min(entries.cards.len());
         }
         // The midpoint rule: a pointer past a card's vertical centre inserts after
         // it. This is what makes the drop land where the user's cursor is rather
@@ -286,7 +310,7 @@ impl KanbanBoard {
         // the column's scroll offset is added back to name an index in the model.
         let stride = CARD_HEIGHT as i32 + CARD_GAP;
         let offset = pos.y - first_card_y;
-        let scroll = self.column_scroll.get(column).copied().unwrap_or(0);
+        let scroll = self.column_scroll_offset(column);
         let index = (offset + stride / 2) / stride;
         // Clamped to the column's length: a pointer below the last card appends.
         (scroll + index as usize).min(entries.cards.len())
@@ -308,13 +332,23 @@ impl DropTarget for KanbanBoard {
     /// adds to the full column, and the exemption let it through. The limit is about
     /// what the destination holds, so the destination is what this asks.
     ///
-    /// A board with no columns accepts nothing: there is nowhere to put the card.
+    /// # Why a card already on this board is still accepted
+    ///
+    /// This question has no position, so it cannot tell a reorder within a full column
+    /// (legal — it adds nothing) from an arrival into that column (illegal). The exact
+    /// rule lives in [`Self::on_drop`], where the destination column is known. Answering
+    /// `false` for every full-board payload made the legal reorder unreachable through a
+    /// real gesture; `on_drop` still refuses the arrival.
     fn can_accept(&self, payload: &DragPayload) -> bool {
         if !payload.is_type(CARD_PAYLOAD_TYPE) {
             return false;
         }
         if self.columns.is_empty() {
             return false;
+        }
+        // The dragged card is already here, so its own column can take it back as a reorder.
+        if self.position_of(&payload.item_id).is_some() {
+            return true;
         }
         // Every column being full means there is nowhere for a new card to land.
         // Which column the pointer is over is checked at the drop site, where the
@@ -360,6 +394,15 @@ impl DropTarget for KanbanBoard {
             return None;
         }
         let column = self.column_at(pos)?;
+        // A destination that cannot accept the arrival gets no highlight or insertion line: the
+        // commit (`on_drop`) refuses a WIP-full column unless the card is already in it, so the
+        // preview must not promise that drop.
+        let arriving_from_here = self.drag_origin.is_some_and(|origin| origin.column == column);
+        if !arriving_from_here
+            && self.columns.get(column).is_some_and(|target| target.is_at_wip_limit())
+        {
+            return None;
+        }
         let mut rect = self.column_rect(column)?;
         // In lane mode the landing place is a cell, not the whole column: the preview must show
         // the band the release would put the card in.

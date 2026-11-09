@@ -328,6 +328,9 @@ impl CameraPreview {
     }
 
     /// Sets the requested capture rate. Zero is raised to one.
+    ///
+    /// The rate is not part of the negotiated `(width, height)` format, so it does not announce
+    /// `format_negotiated`; a real resolution or pixel-layout change still does.
     pub fn set_target_fps(&mut self, fps: u32) {
         let fps = fps.max(1);
         if self.target_fps == fps {
@@ -335,7 +338,6 @@ impl CameraPreview {
         }
         self.target_fps = fps;
         self.present_elapsed_ms = 0;
-        self.announce_format();
         self.base.request_redraw();
     }
 
@@ -399,6 +401,10 @@ impl CameraPreview {
 
     /// Sets the zoom level (1.0 = normal, 2.0 = 2x, etc.).
     pub fn set_zoom(&mut self, level: f32) {
+        // `f32::clamp` propagates `NaN`, which would leave the level and its caption non-finite.
+        if !level.is_finite() {
+            return;
+        }
         let level = level.clamp(1.0, 10.0);
         if self.zoom_level == level {
             return;
@@ -496,7 +502,10 @@ impl CameraPreview {
         let negotiated = self.resolution != resolution;
         self.resolution = resolution;
         self.processed = None;
-        self.present_elapsed_ms = 0;
+        // The presentation clock measures time since the last **present**, not since the last
+        // capture: resetting it here made a steady stream (a frame every 16 ms against a 33 ms
+        // target period) restart the interval on every frame, so the slot never came due and
+        // the viewfinder froze on the first frame.
         self.frame_available.emit(frame.pts_ms);
         self.back = Some(frame);
         if negotiated {
@@ -781,7 +790,15 @@ impl Widget for CameraPreview {
         if self.present_elapsed_ms < interval {
             return false;
         }
-        self.present_frame()
+        // Carry the surplus into the next interval. A present zeroes the accumulator, and
+        // resetting it to zero instead of to the remainder made 16 ms ticks against a 33 ms
+        // period present at the tick rate (~21 fps) rather than at the requested rate.
+        let surplus = self.present_elapsed_ms - interval;
+        let presented = self.present_frame();
+        if presented {
+            self.present_elapsed_ms = surplus;
+        }
+        presented
     }
 
     /// Whether a captured frame is waiting for its presentation slot.
@@ -917,7 +934,10 @@ impl Draw for CameraPreview {
                     Some(processed) if needs_processing => &processed.data,
                     _ => frame.data.as_ref(),
                 };
-                context.draw_image(dx.max(0), dy.max(0), frame.width, frame.height, pixels);
+                // A frame larger than the preview has a negative origin, and that is what
+                // centres it; clamping to zero pinned the image's top-left corner to the
+                // viewfinder and cropped the wrong part of the picture.
+                context.draw_image(dx, dy, frame.width, frame.height, pixels);
                 context.pop_clip();
             }
 
@@ -1052,33 +1072,32 @@ impl Draw for CameraPreview {
 
 impl EventHandler for CameraPreview {
     fn handle_event(&mut self, event: &Event) {
+        // The base always sees the gesture: it arms `pressed`/`grabbed` on the press and emits
+        // `mouse_down`, which a press handled only here would skip while the release still routed
+        // (a host saw `mouse_up` with no `mouse_down`).
+        self.base.handle_event(event);
         if !self.base.is_enabled() {
             return;
         }
-        match event {
-            Event::MousePress { pos, button, .. } => {
-                if *button != 1 || !self.geometry().contains_point(*pos) {
+        if let Event::MousePress { pos, button, .. } = event {
+            if *button != 1 || !self.geometry().contains_point(*pos) {
+                return;
+            }
+            let rect = self.geometry();
+            if self.show_controls {
+                if self.zoom_in_rect(rect).contains_point(*pos) {
+                    self.zoom_in();
                     return;
                 }
-                let rect = self.geometry();
-                if self.show_controls {
-                    if self.zoom_in_rect(rect).contains_point(*pos) {
-                        self.zoom_in();
-                        return;
-                    }
-                    if self.zoom_out_rect(rect).contains_point(*pos) {
-                        self.zoom_out();
-                        return;
-                    }
+                if self.zoom_out_rect(rect).contains_point(*pos) {
+                    self.zoom_out();
+                    return;
                 }
-                // The press must land on the preview. Discarding the position meant a
-                // click anywhere in the window started or stopped the camera -- a
-                // side-effecting device action taken on an unrelated click.
-                self.toggle_preview();
             }
-            _ => {
-                self.base.handle_event(event);
-            }
+            // The press must land on the preview. Discarding the position meant a
+            // click anywhere in the window started or stopped the camera -- a
+            // side-effecting device action taken on an unrelated click.
+            self.toggle_preview();
         }
     }
 }
@@ -1412,5 +1431,120 @@ mod tests {
         assert_eq!(preview.frame().map(|frame| frame.pts_ms), Some(7));
         assert_eq!(presented.load(std::sync::atomic::Ordering::SeqCst), 7);
         assert!(!preview.is_animating(), "nothing waits after the present");
+    }
+
+    #[test]
+    fn a_non_finite_zoom_is_ignored() {
+        let mut preview = CameraPreview::new(Rect::new(0, 0, 320, 240));
+        for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            preview.set_zoom(bad);
+            assert!(
+                (preview.zoom_level() - 1.0).abs() < f32::EPSILON,
+                "set_zoom({bad}) must be ignored"
+            );
+        }
+        preview.set_zoom(2.0);
+        assert!((preview.zoom_level() - 2.0).abs() < f32::EPSILON);
+    }
+
+    /// A frame larger than the preview is centred and clipped, not pinned to the origin.
+    #[test]
+    fn a_frame_larger_than_the_preview_keeps_its_centre() {
+        use rust_widgets::render::{PaintBackend, SoftwarePaintBackend};
+
+        let mut preview = CameraPreview::new(Rect::new(0, 0, 20, 20));
+        preview.start_preview();
+        preview.hide_controls();
+        // A 40x40 frame whose red channel is its column and green channel its row.
+        let mut data = vec![0u8; 40 * 40 * 4];
+        for y in 0..40u32 {
+            for x in 0..40u32 {
+                let index = ((y * 40 + x) * 4) as usize;
+                data[index] = (x * 5) as u8;
+                data[index + 1] = (y * 5) as u8;
+                data[index + 3] = 255;
+            }
+        }
+        preview.set_frame(40, 40, &data).expect("a matching byte count is accepted");
+        assert!(preview.present_frame());
+
+        let mut backend = SoftwarePaintBackend::new(rust_widgets::core::Size::new(20, 20), 1.0);
+        backend.begin_frame(Color::BLACK);
+        {
+            let mut context = RenderContext::new(&mut backend);
+            preview.draw(&mut context);
+        }
+        backend.end_frame();
+        let frame = backend.frame_rgba();
+        let index = ((4 * 20 + 4) * 4) as usize;
+        let pixel = &frame[index..index + 4];
+        // The frame's origin is (-10, -10), so the pixel at 4,4 is the frame's own 14,14.
+        assert_eq!((pixel[0], pixel[1]), (70, 70), "the visible window must be the frame's centre");
+    }
+
+    /// A steady stream must still be presented at the requested rate.
+    ///
+    /// Publishing a frame used to reset the presentation clock, so a frame delivered more often
+    /// than the target period restarted the interval every time and the slot never came due:
+    /// the back slot kept being overwritten and the viewfinder froze. Discarding the surplus
+    /// after a present had the opposite error, presenting at the tick rate.
+    #[test]
+    fn a_steady_stream_is_presented_at_the_target_rate() {
+        let mut preview = CameraPreview::new(Rect::new(0, 0, 320, 240));
+        preview.start_preview();
+        preview.set_target_fps(30);
+        let mut presents = 0usize;
+        for index in 0..62u8 {
+            let data: std::sync::Arc<[u8]> = std::sync::Arc::from(vec![index; 4 * 4 * 4]);
+            preview
+                .set_frame_shared(std::sync::Arc::new(CameraFrame::new(4, 4, 0, data)))
+                .expect("a matching frame is accepted");
+            if preview.tick(16) {
+                presents += 1;
+            }
+        }
+        // 992 ms of 16 ms ticks at a 33 ms period is 30 presentations; the failures above give
+        // 0 (publish resets) or ~20 (surplus dropped).
+        assert!(presents >= 28, "a 30 fps preview presented {presents} frames in ~1 s");
+    }
+
+    /// The capture rate is not part of the negotiated `(width, height)` format, so changing it
+    /// must not re-announce that format; a real resolution change still does.
+    #[test]
+    fn changing_the_target_rate_does_not_re_announce_the_format() {
+        let mut preview = CameraPreview::new(Rect::new(0, 0, 320, 240));
+        let formats = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = formats.clone();
+        preview.format_negotiated.connect(move |value: std::sync::Arc<(u32, u32)>| {
+            sink.lock().unwrap().push(*value);
+        });
+
+        preview.set_target_fps(60);
+        assert!(
+            formats.lock().unwrap().is_empty(),
+            "fps is not part of the negotiated format: {:?}",
+            formats.lock().unwrap()
+        );
+
+        preview.set_resolution(1280, 720);
+        assert_eq!(
+            *formats.lock().unwrap(),
+            vec![(1280, 720)],
+            "a real format change is still announced"
+        );
+    }
+
+    /// A press reaches the base widget, which arms the gesture and emits `mouse_down`.
+    #[test]
+    fn a_camera_press_arms_the_base_gesture() {
+        let mut preview = CameraPreview::new(Rect::new(0, 0, 320, 240));
+        let active = preview.is_active();
+
+        preview.handle_event(&Event::mouse_press(10, 10, 1));
+        assert!(preview.base().is_pressed(), "the base routed the press");
+        assert_ne!(preview.is_active(), active, "the click still toggles the preview");
+
+        preview.handle_event(&Event::MouseRelease { pos: Point::new(10, 10), button: 1 });
+        assert!(!preview.base().is_pressed(), "the release clears the gesture");
     }
 }

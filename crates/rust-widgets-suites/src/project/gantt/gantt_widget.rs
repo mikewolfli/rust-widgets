@@ -22,6 +22,21 @@ const LINK_STUB: i32 = 4;
 /// The half-width of a dependency arrow head, in pixels.
 const LINK_HEAD: i32 = 4;
 
+/// The three points of a dependency arrow head whose apex enters the successor at `to`.
+///
+/// `from_right` says the connector arrives from the right: the base then sits to the right of the
+/// apex, so the head points left into the bar. A right-pointing head on an edge whose successor
+/// lies left of its predecessor (`StartToFinish`, or any hand-written edge) aimed back into its
+/// own wire and stated the opposite of what the elbow is meant to say.
+fn link_head_points(to_x: i32, to_y: i32, from_right: bool) -> [Point; 3] {
+    let dir = if from_right { 1 } else { -1 };
+    [
+        Point::new(to_x, to_y),
+        Point::new(to_x + dir * LINK_HEAD, to_y - LINK_HEAD / 2),
+        Point::new(to_x + dir * LINK_HEAD, to_y + LINK_HEAD / 2),
+    ]
+}
+
 /// The width of a bar's start/end resize handle, in pixels.
 const RESIZE_HANDLE: i32 = 5;
 
@@ -89,6 +104,26 @@ struct GanttReadoutCache {
     height: i32,
 }
 
+/// Reused traversal state for [`GanttWidget::task_rollup`].
+///
+/// A roll-up walks one task's subtree; the epoch marks stop a row being counted twice without
+/// allocating a fresh visited buffer per call. The paint path asks for a roll-up of every visible
+/// parent row on every frame, so the buffers live on the widget and are reused.
+struct GanttRollupScratch {
+    /// The epoch in which each task index was last visited; `0` means never.
+    marks: Vec<u32>,
+    /// The pending traversal stack.
+    stack: Vec<usize>,
+    /// The current epoch, bumped at the start of each walk.
+    epoch: u32,
+}
+
+impl GanttRollupScratch {
+    fn new() -> Self {
+        Self { marks: Vec::new(), stack: Vec::new(), epoch: 0 }
+    }
+}
+
 /// One gantt task bar.
 ///
 /// Describes a single bar on the timeline. The widget treats `start` and `end`
@@ -147,7 +182,7 @@ impl GanttTask {
         progress: u8,
     ) -> Self {
         let s = start;
-        let e = end.max(s + 1);
+        let e = end.max(s.saturating_add(1));
         Self {
             id: id.into(),
             label: label.into(),
@@ -415,6 +450,13 @@ pub struct GanttWidget {
     tasks_revision: u64,
     /// The cached hover read-out, so an unchanged hover pays no formatting or measurement.
     readout_cache: RefCell<Option<GanttReadoutCache>>,
+    /// Direct children per parent id, rebuilt when the hierarchy changes.
+    ///
+    /// Roll-up used to scan every task and walk each candidate's parent chain for every painted
+    /// row. The index makes a leaf an O(1) `None` and an aggregate cost only its own subtree.
+    children_cache: RefCell<Option<HashMap<String, Vec<usize>>>>,
+    /// Reused visited marks and stack for [`Self::task_rollup`].
+    rollup_scratch: RefCell<GanttRollupScratch>,
     /// The pointer position that produced [`Self::hovered_task`], for the read-out anchor.
     hover_position: Point,
     /// Whether [`Self::hover_position`] names a real pointer position.
@@ -492,6 +534,8 @@ impl GanttWidget {
             hovered_task: None,
             tasks_revision: 0,
             readout_cache: RefCell::new(None),
+            children_cache: RefCell::new(None),
+            rollup_scratch: RefCell::new(GanttRollupScratch::new()),
             hover_position: Point::new(0, 0),
             pointer_known: false,
             pan: None,
@@ -521,6 +565,11 @@ impl GanttWidget {
     }
 
     /// The date axis, for a host that changes its format or tick density.
+    ///
+    /// The axis is mounted inside this chart, so its `range` mirrors [`Self::viewport`] and is
+    /// re-applied on every layout and paint. A range or `zoom_level` written through this handle is
+    /// therefore transient: it survives only until the next `Self::layout_companions`. Change the
+    /// viewport through [`Self::set_viewport`] / [`Self::zoom`] instead of the axis itself.
     pub fn timeline_axis_mut(&mut self) -> &mut TimelineAxis {
         &mut self.axis
     }
@@ -622,15 +671,24 @@ impl GanttWidget {
     /// This is the other direction of [`Self::sync_dependencies_from_tasks`]. Together they make
     /// the editor's relationship kinds survive a round trip instead of being lost at one end.
     pub fn sync_tasks_from_dependencies(&mut self) {
+        // Both spellings are rebuilt: an edge the editor dropped has to leave the task too, and a
+        // finish-to-start edge keeps its untyped spelling so a reader of `depends_on` still sees it.
+        // Leaving `depends_on` untouched used to resurrect every removed untyped edge in the arrow
+        // paint and the critical path.
         for task in &mut self.tasks {
+            task.depends_on.clear();
             task.dependencies.clear();
         }
         let edges = self.dependency_editor.dependencies().to_vec();
         for edge in edges {
             if let Some(index) = self.id_index.get(&edge.successor).copied() {
                 if let Some(task) = self.tasks.get_mut(index) {
-                    task.dependencies
-                        .push(GanttDependency { id: edge.predecessor, kind: edge.kind });
+                    if edge.kind == DependencyKind::FinishToStart {
+                        task.depends_on.push(edge.predecessor);
+                    } else {
+                        task.dependencies
+                            .push(GanttDependency { id: edge.predecessor, kind: edge.kind });
+                    }
                 }
             }
         }
@@ -705,6 +763,9 @@ impl GanttWidget {
             return;
         }
         self.show_time_axis = show;
+        // The header takes a band away from the lanes, so a scroll offset that no longer names a
+        // visible row has to come back into range instead of leaving a blank plot.
+        self.set_scroll_offset(self.scroll_offset);
         self.base.request_layout();
         self.base.request_redraw();
     }
@@ -736,6 +797,10 @@ impl GanttWidget {
             return;
         }
         self.row_height = row_height;
+        self.set_scroll_offset(self.scroll_offset);
+        // The offset may already have been at its maximum, so `set_scroll_offset` returns early; the
+        // row under a stationary pointer still moved.
+        self.refresh_hover_for_pointer();
         self.row_height_changed.emit(row_height);
         self.base.request_layout();
         self.base.request_redraw();
@@ -818,7 +883,7 @@ impl GanttWidget {
             return Vec::new();
         }
         let duration = |index: usize| -> i64 {
-            self.tasks.get(index).map_or(0, |task| (task.end - task.start).max(0))
+            self.tasks.get(index).map_or(0, |task| task.end.saturating_sub(task.start).max(0))
         };
         // Kahn's topological order. `edges[pred]` lists the successors that wait on it.
         let mut edges: Vec<Vec<usize>> = vec![Vec::new(); count];
@@ -850,7 +915,7 @@ impl GanttWidget {
         let mut ordered = vec![false; count];
         for node in order {
             ordered[node] = true;
-            let candidate = finish[node] + duration(node);
+            let candidate = finish[node].saturating_add(duration(node));
             for successor in &edges[node] {
                 if candidate > finish[*successor] {
                     finish[*successor] = candidate;
@@ -862,7 +927,7 @@ impl GanttWidget {
         // never did, and reporting it as "critical" would invent a path through a schedule error.
         let Some(end) = (0..count)
             .filter(|index| ordered[*index])
-            .max_by_key(|index| finish[*index] + duration(*index))
+            .max_by_key(|index| finish[*index].saturating_add(duration(*index)))
         else {
             return Vec::new();
         };
@@ -950,7 +1015,27 @@ impl GanttWidget {
         }
         self.scroll_offset = next;
         self.scroll_changed.emit(next);
+        // The rows moved under a stationary pointer, so the hover is re-resolved instead of
+        // continuing to name the row that used to be there.
+        self.refresh_hover_for_pointer();
         self.base.request_redraw();
+    }
+
+    /// Re-resolves the hovered row against the current list, scroll offset and row height.
+    ///
+    /// Scrolling and row-height changes move the rows under a pointer that has not moved. The
+    /// latch used to keep naming the previous row, so the read-out painted a task the pointer had
+    /// left and `task_hovered` never reported the change.
+    fn refresh_hover_for_pointer(&mut self) {
+        if self.drag.is_some() || !self.pointer_known {
+            return;
+        }
+        let hovered = self.row_at(self.hover_position);
+        if hovered != self.hovered_task {
+            self.hovered_task = hovered;
+            self.task_hovered.emit(hovered);
+            self.base.request_redraw();
+        }
     }
 
     /// Whether the hover read-out bubble is painted.
@@ -981,12 +1066,19 @@ impl GanttWidget {
             return;
         }
         let band = DRAG_EDGE_BAND;
-        let step = ((self.viewport_end - self.viewport_start).max(1) / 20).max(1);
+        let span = self.viewport_end.saturating_sub(self.viewport_start).max(1);
+        let step = (span / 20).max(1);
         if pos.x < rect.x + band {
-            let start = (self.viewport_start - step).max(0);
-            self.set_viewport(start, start + step + (self.viewport_end - self.viewport_start));
+            // Translate both endpoints. Clamping only the start while adding the span to the end
+            // widened the window on every move once the viewport reached 0, so holding the pointer
+            // at the left edge zoomed the schedule out instead of panning it.
+            let start = self.viewport_start.saturating_sub(step);
+            self.set_viewport(start, start.saturating_add(span));
         } else if pos.x > rect.x + rect.width as i32 - band {
-            self.set_viewport(self.viewport_start + step, self.viewport_end + step);
+            self.set_viewport(
+                self.viewport_start.saturating_add(step),
+                self.viewport_end.saturating_add(step),
+            );
         }
         if pos.y < rect.y + band {
             self.scroll_by(-1);
@@ -998,7 +1090,7 @@ impl GanttWidget {
     /// Maps a pointer x to an axis position.
     ///
     /// The mounted [`TimelineAxis`] owns the mapping, so a drag cannot disagree with the labels
-    /// above it; [`Self::layout_companions`] keeps the axis range on the viewport.
+    /// above it; `Self::layout_companions` keeps the axis range on the viewport.
     fn axis_value_at(&self, x: i32) -> i64 {
         self.axis.pixel_to_date(x)
     }
@@ -1021,18 +1113,25 @@ impl GanttWidget {
 
     /// Starts a bar drag when `pos` lands on a task's bar or milestone.
     ///
-    /// Returns whether a drag began. A press that names a row but misses its bar is not a drag:
-    /// the caller treats the empty plot as a timeline pan instead.
+    /// Returns whether a drag began. A press on the label column selects the row; a press on the
+    /// **empty plot** of a lane neither selects nor drags, so the caller's timeline pan does not
+    /// also fire `task_selected`. Only a press that actually reaches the bar or diamond selects and
+    /// starts the gesture.
     fn begin_bar_drag(&mut self, pos: Point) -> bool {
         let Some(index) = self.row_at(pos) else {
             return false;
         };
-        let _ = self.select_index(index);
         let Some(task) = self.tasks.get(index) else {
             return false;
         };
         let (start, end, milestone, id) = (task.start, task.end, task.milestone, task.id.clone());
         let (track_x, track_w) = self.track_geometry();
+        // The label column is a selection target, not a drag or pan surface: it sits outside the
+        // track, so no pan starts from it either.
+        if pos.x < track_x {
+            let _ = self.select_index(index);
+            return false;
+        }
         let x0 = self.project_x(start, track_x, track_w);
         let x1 = self.project_x(end, track_x, track_w).max(x0 + 2);
         let lane_y = self.lane_rect(index - self.scroll_offset).y;
@@ -1064,6 +1163,8 @@ impl GanttWidget {
                 GanttDragKind::Move
             }
         };
+        // The gesture reached a mark, so the row is now the selected one.
+        let _ = self.select_index(index);
         self.drag = Some(GanttDrag {
             task: index,
             origin_value: self.axis_value_at(pos.x),
@@ -1089,7 +1190,7 @@ impl GanttWidget {
         let (track_x, track_w) = self.track_geometry();
         let x0 = self.project_x(start, track_x, track_w);
         let x1 = self.project_x(end, track_x, track_w).max(x0 + 2);
-        let ratio = ((x - x0) as f32 / (x1 - x0) as f32).clamp(0.0, 1.0);
+        let ratio = ((x as i64 - i64::from(x0)) as f32 / (x1 - x0) as f32).clamp(0.0, 1.0);
         if let Some(task) = self.tasks.get_mut(index) {
             let progress = (ratio * 100.0).round() as u8;
             if task.progress != progress {
@@ -1124,12 +1225,35 @@ impl GanttWidget {
 
     /// Sets tasks.
     pub fn set_tasks(&mut self, tasks: Vec<GanttTask>) {
+        // The old list's drag is closed before it is replaced: a resize/progress gesture reports
+        // both ends, and a host that opened a group on the start would otherwise never see the
+        // finish.
+        let abandoned_resize = self.drag.take().and_then(|drag| {
+            (drag.kind != GanttDragKind::Move)
+                .then(|| self.tasks.get(drag.task).map(|task| task.id.clone()))
+                .flatten()
+        });
         self.tasks = tasks;
         self.tasks_revision = self.tasks_revision.wrapping_add(1);
         self.invalidate_critical_path();
         self.rebuild_task_index();
         self.selected_index = None;
+        if let Some(id) = abandoned_resize {
+            self.task_resize_finished.emit(id);
+        }
+        // The hover named a row of the old list; exiting it keeps the read-out and the published
+        // hover event from reporting a task the pointer never entered.
+        if self.hovered_task.take().is_some() {
+            self.task_hovered.emit(None);
+        }
+        // The dependency editor shows the schedule the chart draws, not the one it replaced. This
+        // used to live only in the `tasks` property write, so calling `set_tasks` directly left the
+        // editor describing the previous list.
+        self.sync_dependencies_from_tasks();
+        // A whole-schedule assignment fits the view to the schedule. Incremental `add_task` /
+        // `update_task` deliberately do not, so a reader's zoom and pan survive edits.
         self.recompute_viewport();
+        self.set_scroll_offset(self.scroll_offset);
         self.base.request_layout();
         self.base.request_redraw();
     }
@@ -1150,18 +1274,45 @@ impl GanttWidget {
         self.task_parents.retain(|child, parent| {
             self.id_index.contains_key(child) && self.id_index.contains_key(parent)
         });
+        // Both the surviving edges and the row indices may have moved.
+        self.invalidate_children_cache();
+    }
+
+    /// Marks the parent → children snapshot stale.
+    fn invalidate_children_cache(&mut self) {
+        *self.children_cache.borrow_mut() = None;
+    }
+
+    /// The direct child indices per parent id, built on a miss.
+    fn children_index(&self) -> Ref<'_, HashMap<String, Vec<usize>>> {
+        if self.children_cache.borrow().is_none() {
+            let mut map: HashMap<String, Vec<usize>> = HashMap::new();
+            for (index, task) in self.tasks.iter().enumerate() {
+                if let Some(parent) = self.task_parents.get(&task.id) {
+                    map.entry(parent.clone()).or_default().push(index);
+                }
+            }
+            *self.children_cache.borrow_mut() = Some(map);
+        }
+        Ref::map(self.children_cache.borrow(), |slot| {
+            slot.as_ref().expect("children_index() populates the snapshot")
+        })
     }
 
     /// Appends one task, returning its row index.
     ///
-    /// The incremental counterpart of [`Self::set_tasks`]: the existing rows and their
-    /// selection are left alone, which is what a schedule editor adding one row needs.
+    /// The incremental counterpart of [`Self::set_tasks`]: the existing rows, their selection and
+    /// the current viewport are left alone, which is what a schedule editor adding one row needs.
+    /// The view is only fitted when this is the first task of an empty schedule.
     pub fn add_task(&mut self, task: GanttTask) -> usize {
+        let was_empty = self.tasks.is_empty();
         self.tasks.push(task);
         self.tasks_revision = self.tasks_revision.wrapping_add(1);
         self.invalidate_critical_path();
         self.rebuild_task_index();
-        self.recompute_viewport();
+        if was_empty {
+            self.recompute_viewport();
+        }
         self.base.request_layout();
         self.base.request_redraw();
         self.tasks.len() - 1
@@ -1170,7 +1321,8 @@ impl GanttWidget {
     /// Replaces the task at `index`, returning whether the index named a row.
     ///
     /// Renaming a task's id rebuilds the dependency index, so an arrow that named the old id
-    /// stops resolving exactly as it would after [`Self::set_tasks`] with the new list.
+    /// stops resolving exactly as it would after [`Self::set_tasks`] with the new list. The
+    /// viewport is kept: changing one row's dates must not throw away the reader's zoom or pan.
     pub fn update_task(&mut self, index: usize, task: GanttTask) -> bool {
         let Some(slot) = self.tasks.get_mut(index) else {
             return false;
@@ -1179,7 +1331,6 @@ impl GanttWidget {
         self.tasks_revision = self.tasks_revision.wrapping_add(1);
         self.invalidate_critical_path();
         self.rebuild_task_index();
-        self.recompute_viewport();
         self.base.request_layout();
         self.base.request_redraw();
         true
@@ -1194,6 +1345,14 @@ impl GanttWidget {
             return None;
         }
         let task = self.tasks.remove(index);
+        let removed_id = task.id.clone();
+        // A gesture on the removed row ends here; a resize/progress reports its finish like any
+        // other, or a host that opened a group on the start never sees it close.
+        let abandoned_resize = self
+            .drag
+            .as_ref()
+            .filter(|drag| drag.task == index && drag.kind != GanttDragKind::Move)
+            .map(|_| removed_id.clone());
         self.tasks_revision = self.tasks_revision.wrapping_add(1);
         self.invalidate_critical_path();
         self.rebuild_task_index();
@@ -1202,12 +1361,47 @@ impl GanttWidget {
             Some(selected) if selected > index => Some(selected - 1),
             other => other,
         };
-        self.hovered_task = match self.hovered_task {
+        // A hover below the removed row now names a different task, so the change is reported; a
+        // hover on the removed row is an exit.
+        let next_hover = match self.hovered_task {
             Some(hovered) if hovered == index => None,
             Some(hovered) if hovered > index => Some(hovered - 1),
             other => other,
         };
+        if next_hover != self.hovered_task {
+            self.hovered_task = next_hover;
+            self.task_hovered.emit(next_hover);
+        }
+        // A drag holds a row index too: dropping the dragged row cancels the gesture and a row
+        // below it shifts up, matching the selection and hover rules above.
+        self.drag = match self.drag.take() {
+            Some(drag) if drag.task == index => None,
+            Some(mut drag) if drag.task > index => {
+                drag.task -= 1;
+                Some(drag)
+            }
+            other => other,
+        };
+        if let Some(id) = abandoned_resize {
+            self.task_resize_finished.emit(id);
+        }
+        // Edges that name the removed task leave every surviving task and the editor. An arrow at a
+        // row that is gone has nothing to point at, and the editor would hand it back through the
+        // reverse sync for a successor that still exists.
+        for remaining in &mut self.tasks {
+            remaining.depends_on.retain(|id| id != &removed_id);
+            remaining.dependencies.retain(|dependency| dependency.id != removed_id);
+        }
+        let kept: Vec<Dependency> = self
+            .dependency_editor
+            .dependencies()
+            .iter()
+            .filter(|edge| edge.predecessor != removed_id && edge.successor != removed_id)
+            .cloned()
+            .collect();
+        self.dependency_editor.set_dependencies(kept);
         self.recompute_viewport();
+        self.set_scroll_offset(self.scroll_offset);
         self.base.request_layout();
         self.base.request_redraw();
         Some(task)
@@ -1225,7 +1419,9 @@ impl GanttWidget {
 
     /// Sets viewport range.
     pub fn set_viewport(&mut self, start: i64, end: i64) {
-        let end = end.max(start + 1);
+        // Keep the span at least one unit without ever computing `i64::MAX + 1`.
+        let start = start.min(i64::MAX - 1);
+        let end = end.max(start.saturating_add(1));
         if self.viewport_start == start && self.viewport_end == end {
             return;
         }
@@ -1260,7 +1456,7 @@ impl GanttWidget {
         if factor <= 0.0 {
             return;
         }
-        let span = (self.viewport_end - self.viewport_start).max(1) as f32;
+        let span = self.viewport_end.saturating_sub(self.viewport_start).max(1) as f32;
         let half = (span / factor / 2.0).max(1.0);
         let new_span = half * 2.0;
         let ratio = match anchor_x {
@@ -1327,6 +1523,7 @@ impl GanttWidget {
         let changed = self.task_parents.insert(child_id.to_string(), parent_id.to_string())
             != Some(parent_id.to_string());
         if changed {
+            self.invalidate_children_cache();
             self.base.request_redraw();
         }
         true
@@ -1336,6 +1533,7 @@ impl GanttWidget {
     pub fn clear_task_parent(&mut self, child_id: &str) -> bool {
         let removed = self.task_parents.remove(child_id).is_some();
         if removed {
+            self.invalidate_children_cache();
             self.base.request_redraw();
         }
         removed
@@ -1373,21 +1571,54 @@ impl GanttWidget {
     /// The range is the span of every descendant, and the progress is their duration-weighted
     /// average, so a long child moves the summary more than a short one. `None` for a leaf: a
     /// summary row only exists where there is something to summarise.
+    ///
+    /// The walk starts from the cached direct-children index and descends through it, so a leaf
+    /// answers `None` after one lookup instead of the path scanning every row of the schedule.
     pub fn task_rollup(&self, index: usize) -> Option<(i64, i64, u8)> {
         let task = self.tasks.get(index)?;
+        let children = self.children_index();
+        let roots = children.get(&task.id)?;
+        // The marks are reused across calls. The epoch tells "visited during this walk" apart from
+        // any earlier one, so clearing the buffer is not needed; the wrap guard is the only reset.
+        let mut scratch = self.rollup_scratch.borrow_mut();
+        let scratch = &mut *scratch;
+        if scratch.marks.len() != self.tasks.len() {
+            scratch.marks.resize(self.tasks.len(), 0);
+        }
+        let next_epoch = scratch.epoch.wrapping_add(1);
+        scratch.epoch = if next_epoch == 0 {
+            // Wrapping back to the "never visited" value would resurrect old marks.
+            scratch.marks.fill(0);
+            1
+        } else {
+            next_epoch
+        };
+        let epoch = scratch.epoch;
+        scratch.stack.clear();
+        scratch.stack.extend(roots.iter().copied());
         let mut start = i64::MAX;
         let mut end = i64::MIN;
         let mut weight = 0i64;
         let mut weighted_progress = 0i128;
-        for descendant in &self.tasks {
-            if !self.is_descendant_of(&descendant.id, &task.id) {
+        while let Some(descendant_index) = scratch.stack.pop() {
+            let Some(mark) = scratch.marks.get_mut(descendant_index) else {
+                continue;
+            };
+            if *mark == epoch {
                 continue;
             }
+            *mark = epoch;
+            let Some(descendant) = self.tasks.get(descendant_index) else {
+                continue;
+            };
             start = start.min(descendant.start);
             end = end.max(descendant.end);
-            let duration = (descendant.end - descendant.start).max(1);
+            let duration = descendant.end.saturating_sub(descendant.start).max(1);
             weight = weight.saturating_add(duration);
             weighted_progress += i128::from(descendant.progress) * i128::from(duration);
+            if let Some(grandchildren) = children.get(&descendant.id) {
+                scratch.stack.extend(grandchildren.iter().copied());
+            }
         }
         if start == i64::MAX || end == i64::MIN {
             return None;
@@ -1398,23 +1629,6 @@ impl GanttWidget {
             0
         };
         Some((start, end, progress))
-    }
-
-    /// Whether `child_id` is somewhere below `ancestor_id`.
-    fn is_descendant_of(&self, child_id: &str, ancestor_id: &str) -> bool {
-        let mut cursor = self.task_parents.get(child_id);
-        let mut steps = 0usize;
-        while let Some(parent_id) = cursor {
-            if parent_id == ancestor_id {
-                return true;
-            }
-            steps += 1;
-            if steps > self.tasks.len() {
-                return false;
-            }
-            cursor = self.task_parents.get(parent_id);
-        }
-        false
     }
 
     /// Select task by index.
@@ -1464,7 +1678,8 @@ impl GanttWidget {
                 min_start = min_start.min(task.start);
                 max_end = max_end.max(task.end);
             }
-            (min_start, max_end.max(min_start + 1))
+            let min_start = min_start.min(i64::MAX - 1);
+            (min_start, max_end.max(min_start.saturating_add(1)))
         };
         self.viewport_start = start;
         self.viewport_end = end;
@@ -1492,10 +1707,12 @@ impl GanttWidget {
 
     fn project_x(&self, value: i64, track_x: i32, track_w: u32) -> i32 {
         let start = self.viewport_start;
-        let end = self.viewport_end.max(start + 1);
-        let span = (end - start) as f32;
-        let ratio = ((value - start) as f32 / span).clamp(0.0, 1.0);
-        track_x + (ratio * track_w as f32) as i32
+        let end = self.viewport_end.max(start.saturating_add(1));
+        // Both endpoints are converted to `f64` separately: computing `value - start` in `i64`
+        // overflows when a schedule spans the whole axis, and the ratio only needs float precision.
+        let span = end.saturating_sub(start).max(1) as f64;
+        let ratio = ((value as f64 - start as f64) / span).clamp(0.0, 1.0);
+        track_x + (ratio * f64::from(track_w)) as i32
     }
 }
 
@@ -1653,9 +1870,8 @@ impl WidgetProperties for GanttWidget {
 
     fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
         match name {
-            // A whole-schedule replacement through the control's own `set_tasks`. The dependency
-            // editor is re-synced afterwards so the edge list it shows is the schedule the chart
-            // now draws, instead of the one from the previous task list.
+            // A whole-schedule replacement through the control's own `set_tasks`, which re-syncs
+            // the dependency editor so the edge list it shows is the schedule the chart now draws.
             "tasks" => {
                 let CapabilityValue::Records(list) = value else {
                     return Err(CapabilityAccessError::TypeMismatch);
@@ -1673,7 +1889,6 @@ impl WidgetProperties for GanttWidget {
                     .map(gantt_task_from_record)
                     .collect::<Result<Vec<_>, CapabilityAccessError>>()?;
                 self.set_tasks(tasks);
-                self.sync_dependencies_from_tasks();
                 Ok(())
             }
             "viewport_start" => {
@@ -1774,8 +1989,12 @@ impl EventHandler for GanttWidget {
                 // widget re-emits it, so a host connects to the chart rather than to a child it
                 // never mounted itself.
                 self.dependency_editor.handle_event(event);
-                if let Some(dependency) = self.dependency_at(*pos) {
-                    self.link_selected.emit(dependency);
+                // A read-only editor selects nothing, so the chart must not report a selection it
+                // did not make. The editor's own `editable` switch is the one rule both paths obey.
+                if self.dependency_editor.editable() {
+                    if let Some(dependency) = self.dependency_at(*pos) {
+                        self.link_selected.emit(dependency);
+                    }
                 }
                 self.base.request_redraw();
             }
@@ -1802,9 +2021,15 @@ impl EventHandler for GanttWidget {
                     // The pan is a pixel translation, so the grabbed date stays under the pointer
                     // whatever the viewport does between events.
                     let (_, track_w) = self.track_geometry();
-                    let span = (pan.end - pan.start).max(1);
-                    let shift = i64::from(pos.x - pan.origin_x) * span / i64::from(track_w.max(1));
-                    self.set_viewport(pan.start - shift, pan.end - shift);
+                    // Saturating: the viewport can legitimately span the whole `i64` range (a task
+                    // at `i64::MIN` and one at `i64::MAX`), and the subtraction used to panic there.
+                    let span = pan.end.saturating_sub(pan.start).max(1);
+                    let shift = i64::from(pos.x - pan.origin_x).saturating_mul(span)
+                        / i64::from(track_w.max(1));
+                    self.set_viewport(
+                        pan.start.saturating_sub(shift),
+                        pan.end.saturating_sub(shift),
+                    );
                     return;
                 }
                 if self.drag.is_none() {
@@ -1835,7 +2060,7 @@ impl EventHandler for GanttWidget {
                 // constant, so the bar tracks the pointer at any zoom level. Both endpoints are
                 // recomputed from the **press** value, so a drag that reverses direction across the
                 // origin lands where the pointer is rather than drifting by the distance travelled.
-                let shift = self.axis_value_at(pos.x) - origin_value;
+                let shift = self.axis_value_at(pos.x).saturating_sub(origin_value);
                 if kind == GanttDragKind::Progress {
                     self.set_progress_from_pointer(index, start, end, pos.x);
                     return;
@@ -1848,20 +2073,23 @@ impl EventHandler for GanttWidget {
                 };
                 match kind {
                     GanttDragKind::Move => {
-                        if start + shift >= 0 {
-                            task.start = start + shift;
-                            task.end = end + shift;
-                        }
+                        // No zero floor: the axis unit is the caller's (a pre-epoch date schedule is
+                        // negative), `saturating_add` already prevents overflow, and the other
+                        // resize arm already produces negative positions.
+                        task.start = start.saturating_add(shift);
+                        task.end = end.saturating_add(shift);
                     }
                     // A resize keeps the opposite edge pinned and never crosses it: a reversed
                     // range would paint a negative-width bar, which reads as a rendering fault.
+                    // `min` rather than `clamp`: a task whose end is at or before the axis origin
+                    // gives `end - 1 < 0`, which `clamp(0, …)` rejects by panicking.
                     GanttDragKind::ResizeStart => {
-                        task.start = (start + shift).clamp(0, end - 1);
+                        task.start = start.saturating_add(shift).min(end.saturating_sub(1));
                         task.end = end;
                     }
                     GanttDragKind::ResizeEnd => {
                         task.start = start;
-                        task.end = (end + shift).max(start + 1);
+                        task.end = end.saturating_add(shift).max(start.saturating_add(1));
                     }
                     GanttDragKind::Progress => unreachable!("progress returned above"),
                 }
@@ -1887,7 +2115,9 @@ impl EventHandler for GanttWidget {
                 let modifiers = rust_widgets::shortcut::Modifiers::from_event_bits(*modifiers);
                 if modifiers.contains(rust_widgets::shortcut::Modifiers::SHIFT) {
                     if delta.y != 0 {
-                        self.scroll_by(if delta.y > 0 { 1 } else { -1 });
+                        // Positive delta is the wheel turning toward the user, which moves the
+                        // content down, so the visible row window moves back one row.
+                        self.scroll_by(if delta.y > 0 { -1 } else { 1 });
                     }
                 } else if delta.y != 0 {
                     // The date under the pointer is the fixed point of the zoom; with no pointer
@@ -2254,15 +2484,9 @@ impl Draw for GanttWidget {
                 );
                 context.draw_line(Point::new(mid_x, from_y), Point::new(mid_x, to_y), link_color);
                 context.draw_line(Point::new(mid_x, to_y), Point::new(to_x, to_y), link_color);
-                // The head: a small solid triangle at the successor's left edge, pointing right.
-                let head = LINK_HEAD;
-                // A stack array: the arrow head's three points are a constant of the drawing, not a
-                // per-arrow list.
-                let arrow_head = [
-                    Point::new(to_x, to_y),
-                    Point::new(to_x - head, to_y - head / 2),
-                    Point::new(to_x - head, to_y + head / 2),
-                ];
+                // The head: a small solid triangle at the successor's entry edge, aimed along the
+                // connector it arrives on.
+                let arrow_head = link_head_points(to_x, to_y, mid_x > to_x);
                 context.execute_command(rust_widgets::render::RenderCommand::DrawPath {
                     points: arrow_head.into(),
                     closed: true,
@@ -3302,6 +3526,336 @@ mod tests {
         assert!(gantt.clear_task_parent("grand"));
         assert_eq!(gantt.task_depth(2), 0);
     }
+
+    /// A positive wheel delta moves the content down, so the visible rows move back.
+    #[test]
+    fn shift_wheel_scrolls_in_the_event_delta_direction() {
+        let mut gantt = GanttWidget::new(Rect::new(0, 0, 700, 60));
+        gantt.set_tasks(sample_tasks());
+        assert_eq!(gantt.scroll_offset(), 0);
+
+        // A negative delta scrolls forward through the list.
+        gantt.handle_event(&Event::wheel(0, -120, 0x0001));
+        assert_eq!(gantt.scroll_offset(), 1);
+        // The opposite delta comes back.
+        gantt.handle_event(&Event::wheel(0, 120, 0x0001));
+        assert_eq!(gantt.scroll_offset(), 0);
+    }
+
+    /// A shrinking schedule must pull the scroll offset back into range, or the plot goes blank.
+    #[test]
+    fn removing_tasks_clamps_the_scroll_offset() {
+        let mut gantt = GanttWidget::new(Rect::new(0, 0, 700, 60));
+        gantt.set_tasks(sample_tasks());
+        gantt.set_scroll_offset(1);
+        assert_eq!(gantt.scroll_offset(), 1);
+
+        gantt.remove_task(2);
+        // Two rows fit in 60 px, so two tasks leave room for no offset at all.
+        assert_eq!(gantt.scroll_offset(), 0);
+        assert!(gantt.row_at(Point::new(80, 10)).is_some(), "the first row is still visible");
+    }
+
+    /// Removing the dragged row abandons the gesture, and removing a row above it shifts it up.
+    #[test]
+    fn removing_a_task_keeps_the_drag_index_honest() {
+        let mut gantt = GanttWidget::new(Rect::new(0, 0, 700, 180));
+        gantt.set_tasks(sample_tasks());
+        let (track_x, track_w) = gantt.track_geometry();
+        let x = gantt.project_x(15, track_x, track_w);
+        let y = gantt.lane_rect(1).y + 10;
+        gantt.handle_event(&Event::mouse_press(x, y, 1));
+        assert_eq!(gantt.drag.as_ref().map(|drag| drag.task), Some(1));
+
+        gantt.remove_task(0);
+        assert_eq!(gantt.drag.as_ref().map(|drag| drag.task), Some(0), "the drag follows the row");
+
+        gantt.handle_event(&Event::mouse_release(x, y, 1));
+        assert!(gantt.drag.is_none());
+
+        // A fresh drag whose own row disappears is cancelled, not committed elsewhere.
+        let x = gantt.project_x(15, track_x, track_w);
+        let y = gantt.lane_rect(0).y + 10;
+        gantt.handle_event(&Event::mouse_press(x, y, 1));
+        assert!(gantt.drag.is_some());
+        gantt.remove_task(0);
+        assert!(gantt.drag.is_none(), "the dragged row is gone, so the drag is abandoned");
+    }
+
+    /// Replacing the schedule mid-gesture cancels it rather than naming a row of the new list.
+    #[test]
+    fn replacing_tasks_cancels_an_in_progress_drag() {
+        let mut gantt = GanttWidget::new(Rect::new(0, 0, 700, 180));
+        gantt.set_tasks(sample_tasks());
+        let (track_x, track_w) = gantt.track_geometry();
+        let x = gantt.project_x(5, track_x, track_w);
+        let y = gantt.lane_rect(0).y + 10;
+        gantt.handle_event(&Event::mouse_press(x, y, 1));
+        assert!(gantt.drag.is_some());
+
+        gantt.set_tasks(vec![GanttTask::new("other", "Other", 0, 5, 0)]);
+        assert!(gantt.drag.is_none());
+    }
+
+    /// The editor is the whole edge list, so syncing back must delete an edge it no longer holds.
+    #[test]
+    fn syncing_tasks_from_the_editor_drops_a_removed_untyped_edge() {
+        let mut gantt = GanttWidget::new(Rect::new(0, 0, 700, 180));
+        gantt.set_tasks(vec![
+            GanttTask::new("a", "Design", 0, 5, 0),
+            GanttTask::new("b", "Build", 5, 9, 0).depends_on(["a"]),
+        ]);
+        gantt.sync_dependencies_from_tasks();
+        assert!(gantt.dependency_editor_mut().remove_dependency(&Dependency::new("a", "b")));
+        gantt.sync_tasks_from_dependencies();
+
+        assert!(gantt.tasks()[1].depends_on.is_empty(), "the removed untyped edge is gone");
+        assert!(gantt.tasks()[1].dependencies.is_empty());
+
+        // A finish-to-start edge added back keeps the untyped spelling; a typed one does not.
+        assert!(gantt.dependency_editor_mut().add_dependency(Dependency::new("a", "b")));
+        gantt.sync_tasks_from_dependencies();
+        assert_eq!(gantt.tasks()[1].depends_on, [String::from("a")]);
+        assert!(gantt.tasks()[1].dependencies.is_empty());
+    }
+
+    /// A read-only mounted editor selects nothing, and the chart must not report otherwise.
+    #[test]
+    fn a_read_only_editor_does_not_report_a_selection_through_the_chart() {
+        let mut gantt = GanttWidget::new(Rect::new(0, 0, 700, 240));
+        gantt.set_tasks(sample_tasks());
+        assert!(gantt.add_dependency("t1", "t2"));
+        gantt.set_show_dependency_editor(true);
+
+        let selected = Arc::new(Mutex::new(Vec::<Dependency>::new()));
+        let sink = selected.clone();
+        gantt.link_selected.connect(move |edge| {
+            if let Ok(mut guard) = sink.lock() {
+                guard.push((*edge).clone());
+            }
+        });
+
+        gantt.dependency_editor_mut().set_editable(false);
+        gantt.handle_event(&Event::mouse_press(520, 30, 1));
+        assert!(
+            selected.lock().ok().map(|guard| guard.clone()).unwrap_or_default().is_empty(),
+            "a read-only editor must not select"
+        );
+
+        gantt.dependency_editor_mut().set_editable(true);
+        gantt.handle_event(&Event::mouse_press(520, 30, 1));
+        assert_eq!(
+            selected.lock().ok().map(|guard| guard.clone()).unwrap_or_default(),
+            vec![Dependency::new("t1", "t2")]
+        );
+    }
+
+    /// Extreme axis values are clamped rather than overflowing a debug-mode subtraction.
+    #[test]
+    fn extreme_viewport_and_task_values_do_not_panic() {
+        let mut gantt = GanttWidget::new(Rect::new(0, 0, 700, 180));
+        gantt.set_viewport(i64::MAX, i64::MAX);
+        let (start, end) = gantt.viewport();
+        assert!(end > start, "the viewport keeps its one-unit span");
+        gantt.zoom(2.0);
+        gantt.set_tasks(vec![GanttTask::new("edge", "Edge", i64::MAX, i64::MAX, 0)]);
+        let (start, end) = gantt.viewport();
+        assert!(end > start);
+        assert_eq!(gantt.tasks()[0].start, i64::MAX);
+        let _ = gantt.critical_path();
+
+        // A schedule spanning the whole integer axis projects both ends without subtracting one
+        // extreme from another in `i64`.
+        gantt.set_tasks(vec![
+            GanttTask::new("low", "Low", i64::MIN, i64::MIN, 0),
+            GanttTask::new("high", "High", i64::MAX, i64::MAX, 0),
+        ]);
+        let (track_x, track_w) = gantt.track_geometry();
+        let left = gantt.project_x(i64::MIN, track_x, track_w);
+        let right = gantt.project_x(i64::MAX, track_x, track_w);
+        assert!(left <= right);
+    }
+
+    /// Removing the hovered row reports the pointer as having left it.
+    #[test]
+    fn removing_the_hovered_task_reports_the_exit() {
+        let mut gantt = GanttWidget::new(Rect::new(0, 0, 700, 180));
+        gantt.set_tasks(sample_tasks());
+        let seen = Arc::new(Mutex::new(Vec::<Option<usize>>::new()));
+        let sink = seen.clone();
+        gantt.task_hovered.connect(move |value| {
+            if let Ok(mut guard) = sink.lock() {
+                guard.push(*value);
+            }
+        });
+
+        gantt.handle_event(&Event::mouse_move(80, 10));
+        gantt.remove_task(0);
+
+        let seen = seen.lock().ok().map(|guard| guard.clone()).unwrap_or_default();
+        assert_eq!(seen, vec![Some(0), None], "the removed row cannot stay hovered");
+    }
+
+    /// An empty-plot press pans without selecting; the label column selects without panning.
+    #[test]
+    fn empty_plot_press_pans_without_selecting() {
+        let mut gantt = GanttWidget::new(Rect::new(0, 0, 700, 180));
+        gantt.set_tasks(sample_tasks());
+        let seen = Arc::new(Mutex::new(Vec::<String>::new()));
+        let sink = seen.clone();
+        gantt.task_selected.connect(move |id| {
+            if let Ok(mut guard) = sink.lock() {
+                guard.push(id.as_ref().clone());
+            }
+        });
+
+        let (track_x, track_w) = gantt.track_geometry();
+        let lane = gantt.lane_rect(0);
+        let empty = Point::new(track_x + track_w as i32 - 8, lane.y + 10);
+        gantt.handle_event(&Event::mouse_press(empty.x, empty.y, 1));
+        assert!(gantt.is_panning(), "the empty plot starts a pan");
+        assert!(gantt.drag.is_none());
+        assert_eq!(gantt.selected_id(), None, "a pan is not a selection");
+        assert!(seen.lock().ok().map(|guard| guard.clone()).unwrap_or_default().is_empty());
+        gantt.handle_event(&Event::mouse_release(empty.x, empty.y, 1));
+
+        // The label gutter is a selection target and lies outside the pan surface.
+        gantt.handle_event(&Event::mouse_press(10, lane.y + 10, 1));
+        assert!(!gantt.is_panning());
+        assert_eq!(gantt.selected_id(), Some("t1"));
+        let seen = seen.lock().ok().map(|guard| guard.clone()).unwrap_or_default();
+        assert_eq!(seen, vec![String::from("t1")], "only the label press selects");
+    }
+
+    /// Incremental edits keep the reader's view; only a whole-schedule assignment re-fits it.
+    #[test]
+    fn incremental_task_edits_keep_the_current_view() {
+        let mut gantt = GanttWidget::new(Rect::new(0, 0, 700, 180));
+        gantt.set_tasks(sample_tasks());
+        gantt.set_viewport(5, 25);
+
+        gantt.add_task(GanttTask::new("t4", "Ship", 100, 140, 0));
+        assert_eq!(gantt.viewport(), (5, 25), "adding a row must not re-fit the view");
+
+        assert!(gantt.update_task(3, GanttTask::new("t4", "Ship", 200, 240, 0)));
+        assert_eq!(gantt.viewport(), (5, 25), "editing a row must not re-fit the view");
+    }
+
+    /// The first task added to an empty schedule is fitted, because there is no view to keep.
+    #[test]
+    fn adding_the_first_task_fits_the_view() {
+        let mut gantt = GanttWidget::new(Rect::new(0, 0, 700, 180));
+        assert_eq!(gantt.viewport(), (0, 100));
+        gantt.add_task(GanttTask::new("a", "A", 10, 30, 0));
+        assert_eq!(gantt.viewport(), (10, 30));
+    }
+
+    /// The roll-up cache follows hierarchy edits and still aggregates every descendant.
+    #[test]
+    fn rollup_follows_hierarchy_edits() {
+        let mut gantt = GanttWidget::new(Rect::new(0, 0, 700, 180));
+        gantt.set_tasks(vec![
+            GanttTask::new("root", "Root", 0, 10, 100),
+            GanttTask::new("child", "Child", 2, 6, 50),
+            GanttTask::new("grand", "Grand", 7, 12, 0),
+            GanttTask::new("late", "Late", 20, 30, 0),
+        ]);
+        assert!(gantt.set_task_parent("child", "root"));
+        assert!(gantt.set_task_parent("grand", "child"));
+        assert_eq!(gantt.task_rollup(0), Some((2, 12, 22)));
+
+        // The cached child index sees a later assignment.
+        assert!(gantt.set_task_parent("late", "root"));
+        assert_eq!(gantt.task_rollup(0), Some((2, 30, 10)));
+
+        // Clearing a parent removes that whole subtree from the aggregate.
+        assert!(gantt.clear_task_parent("child"));
+        assert_eq!(gantt.task_rollup(0), Some((20, 30, 0)));
+        assert_eq!(gantt.task_rollup(1), Some((7, 12, 0)), "child now summarises grand");
+    }
+
+    /// A wide hierarchy aggregates correctly through the child index.
+    #[test]
+    fn rollup_aggregates_a_wide_hierarchy() {
+        let mut tasks = vec![GanttTask::new("root", "Root", 0, 1, 0)];
+        tasks.extend(
+            (0..200)
+                .map(|index| GanttTask::new(format!("c{index}"), "Child", index, index + 10, 50)),
+        );
+        let mut gantt = GanttWidget::new(Rect::new(0, 0, 700, 180));
+        gantt.set_tasks(tasks);
+        for index in 0..200 {
+            assert!(gantt.set_task_parent(&format!("c{index}"), "root"));
+        }
+
+        assert_eq!(gantt.task_rollup(0), Some((0, 209, 50)));
+    }
+
+    /// The reused scratch marks must not leak a visit from an earlier aggregation.
+    #[test]
+    fn rollup_scratch_is_reused_across_calls() {
+        let mut gantt = GanttWidget::new(Rect::new(0, 0, 700, 180));
+        gantt.set_tasks(vec![
+            GanttTask::new("root", "Root", 0, 1, 0),
+            GanttTask::new("child", "Child", 4, 6, 50),
+            GanttTask::new("grand", "Grand", 7, 12, 0),
+            GanttTask::new("leaf", "Leaf", 20, 30, 0),
+        ]);
+        assert!(gantt.set_task_parent("child", "root"));
+        assert!(gantt.set_task_parent("grand", "child"));
+
+        for _ in 0..5 {
+            assert_eq!(gantt.task_rollup(0), Some((4, 12, 14)));
+            assert_eq!(gantt.task_rollup(3), None, "a leaf stays a leaf");
+            assert_eq!(gantt.task_rollup(1), Some((7, 12, 0)));
+        }
+
+        // A later row resizes the marks and participates in the next walk.
+        gantt.add_task(GanttTask::new("later", "Later", 40, 50, 0));
+        assert!(gantt.set_task_parent("later", "root"));
+        assert_eq!(gantt.task_rollup(0), Some((4, 50, 5)));
+    }
+
+    /// Two rows sharing an id are each counted once, exactly as the row scan did.
+    #[test]
+    fn rollup_dedups_repeated_row_ids() {
+        let mut gantt = GanttWidget::new(Rect::new(0, 0, 700, 180));
+        gantt.set_tasks(vec![
+            GanttTask::new("root", "Root", 0, 1, 0),
+            GanttTask::new("dup", "First", 2, 4, 100),
+            GanttTask::new("dup", "Second", 6, 8, 0),
+            GanttTask::new("g1", "Grand one", 10, 12, 100),
+            GanttTask::new("g2", "Grand two", 14, 16, 0),
+        ]);
+        assert!(gantt.set_task_parent("dup", "root"));
+        assert!(gantt.set_task_parent("g1", "dup"));
+        assert!(gantt.set_task_parent("g2", "dup"));
+
+        // Four unique 2-unit descendants, weighted progress (2×100 + 2×100) / 8 = 50.
+        assert_eq!(gantt.task_rollup(0), Some((2, 16, 50)));
+    }
+
+    /// The mounted axis is a view of the viewport: a host-set range/zoom is overwritten.
+    #[test]
+    fn the_mounted_axis_discards_a_host_set_range() {
+        use rust_widgets::render::{PaintBackend, SoftwarePaintBackend};
+        let mut gantt = GanttWidget::new(Rect::new(0, 0, 700, 180));
+        gantt.set_show_time_axis(true);
+        gantt.set_tasks(sample_tasks());
+        gantt.timeline_axis_mut().set_range(0, 10);
+        assert!(gantt.timeline_axis_mut().set_zoom_level(2.0));
+
+        let mut backend = SoftwarePaintBackend::new(rust_widgets::core::Size::new(700, 180), 1.0);
+        backend.begin_frame(Color::WHITE);
+        {
+            let mut context = RenderContext::new(&mut backend);
+            gantt.draw(&mut context);
+        }
+        backend.end_frame();
+
+        assert_eq!(gantt.timeline_axis().range(), gantt.viewport());
+        assert!((gantt.timeline_axis().zoom_level() - 1.0).abs() < f32::EPSILON);
+    }
 }
 
 #[cfg(test)]
@@ -3376,5 +3930,216 @@ mod issue_2_8_tests {
         assert_eq!(gantt.id_index.get("t4"), None);
         assert_eq!(gantt.selected_index, None, "the selection follows the removal");
         assert!(gantt.remove_task(9).is_none());
+    }
+
+    use std::sync::{Arc, Mutex};
+
+    fn sample_tasks() -> Vec<GanttTask> {
+        vec![
+            GanttTask::new("t1", "Design", 0, 10, 100),
+            GanttTask::new("t2", "Build", 8, 22, 60),
+            GanttTask::new("t3", "Verify", 20, 30, 20),
+        ]
+    }
+
+    /// Resizing the start of a task whose end is at or before the axis origin does not panic.
+    ///
+    /// The arm used `clamp(0, end - 1)`, and `Ord::clamp` panics when `min > max` — which a task
+    /// with a negative `end` (legal: the axis unit is the caller's) produces.
+    #[test]
+    fn dragging_the_start_of_a_task_that_ends_before_zero_does_not_panic() {
+        let mut gantt = GanttWidget::new(Rect::new(0, 0, 700, 180));
+        gantt.set_tasks(vec![GanttTask::new("a", "A", -10, -5, 0)]);
+        let (track_x, track_w) = gantt.track_geometry();
+        let x0 = gantt.project_x(-10, track_x, track_w);
+        let y = gantt.lane_rect(0).y + 10;
+
+        gantt.handle_event(&Event::mouse_press(x0 + 1, y, 1));
+        gantt.handle_event(&Event::mouse_move(x0 + 80, y));
+
+        let task = &gantt.tasks()[0];
+        assert_eq!(task.end, -5, "the opposite edge stays pinned");
+        assert!(task.start < task.end, "the range never reverses");
+    }
+
+    /// Edge autoscroll pans; it does not widen the viewport.
+    ///
+    /// Only the start was clamped while the end gained the span, so once the viewport reached 0
+    /// every pointer move at the left edge zoomed the schedule out.
+    #[test]
+    fn autoscroll_at_the_left_edge_keeps_the_span() {
+        let mut gantt = GanttWidget::new(Rect::new(0, 0, 700, 180));
+        gantt.set_tasks(sample_tasks());
+        gantt.set_viewport(0, 30);
+        let (track_x, track_w) = gantt.track_geometry();
+        let x = gantt.project_x(5, track_x, track_w);
+        let y = gantt.lane_rect(0).y + 10;
+        gantt.handle_event(&Event::mouse_press(x, y, 1));
+        let before = gantt.viewport();
+
+        gantt.handle_event(&Event::mouse_move(10, y));
+
+        let after = gantt.viewport();
+        assert_eq!(
+            after.1 - after.0,
+            before.1 - before.0,
+            "the span must survive an edge autoscroll"
+        );
+        assert!(after.0 <= before.0, "the window moved left, not right");
+    }
+
+    /// Panning a viewport that spans the whole `i64` range does not overflow.
+    #[test]
+    fn panning_a_whole_axis_span_does_not_overflow() {
+        let mut gantt = GanttWidget::new(Rect::new(0, 0, 700, 180));
+        gantt.set_tasks(vec![
+            GanttTask::new("lo", "Lo", i64::MIN, i64::MIN.saturating_add(1), 0),
+            GanttTask::new("hi", "Hi", i64::MAX - 1, i64::MAX, 0),
+        ]);
+        let before = gantt.viewport();
+        let (track_x, track_w) = gantt.track_geometry();
+        let empty_y = gantt.axis_height() + 2 * gantt.row_height() as i32 + 5;
+        let x = track_x + track_w as i32 / 2;
+        gantt.handle_event(&Event::mouse_press(x, empty_y, 1));
+        assert!(gantt.pan.is_some(), "an empty plot starts a pan");
+
+        gantt.handle_event(&Event::mouse_move(x - 10, empty_y));
+
+        let after = gantt.viewport();
+        assert_eq!(
+            after.1.saturating_sub(after.0),
+            before.1.saturating_sub(before.0),
+            "a pan translates the window"
+        );
+    }
+
+    /// A whole-schedule replacement re-syncs the dependency editor.
+    #[test]
+    fn replacing_the_schedule_re_syncs_the_dependency_editor() {
+        let mut gantt = GanttWidget::new(Rect::new(0, 0, 700, 180));
+        let mut dependent = GanttTask::new("b", "B", 10, 20, 0);
+        dependent.depends_on.push("a".to_string());
+        gantt.set_tasks(vec![GanttTask::new("a", "A", 0, 10, 0), dependent]);
+        assert_eq!(
+            gantt.dependency_editor().dependencies().len(),
+            1,
+            "the editor describes the schedule"
+        );
+
+        gantt.set_tasks(vec![
+            GanttTask::new("a", "A", 0, 10, 0),
+            GanttTask::new("b", "B", 10, 20, 0),
+        ]);
+        assert!(
+            gantt.dependency_editor().dependencies().is_empty(),
+            "the edge belonged to the replaced list"
+        );
+        gantt.sync_tasks_from_dependencies();
+        assert!(gantt.tasks()[1].depends_on.is_empty(), "the editor cannot resurrect it");
+    }
+
+    /// Removing a task drops the edges that named it.
+    #[test]
+    fn removing_a_task_drops_the_edges_that_named_it() {
+        let mut gantt = GanttWidget::new(Rect::new(0, 0, 700, 180));
+        let mut dependent = GanttTask::new("b", "B", 10, 20, 0);
+        dependent.depends_on.push("a".to_string());
+        gantt.set_tasks(vec![GanttTask::new("a", "A", 0, 10, 0), dependent]);
+
+        gantt.remove_task(0);
+
+        assert!(gantt.dependency_editor().dependencies().is_empty());
+        assert!(gantt.tasks()[0].depends_on.is_empty(), "the edge lost its predecessor");
+    }
+
+    /// A bar can be dragged past the axis origin.
+    ///
+    /// Nothing restricts the axis unit to non-negative values (a pre-epoch date schedule is
+    /// negative), and the resize arm already produced negative positions; only `Move` refused.
+    #[test]
+    fn a_bar_can_be_dragged_past_the_axis_origin() {
+        let mut gantt = GanttWidget::new(Rect::new(0, 0, 700, 180));
+        gantt.set_tasks(vec![GanttTask::new("a", "A", 5, 15, 0)]);
+        gantt.set_viewport(-20, 20);
+        let (track_x, track_w) = gantt.track_geometry();
+        let x = gantt.project_x(10, track_x, track_w);
+        let y = gantt.lane_rect(0).y + 10;
+
+        gantt.handle_event(&Event::mouse_press(x, y, 1));
+        gantt.handle_event(&Event::mouse_move(track_x + 1, y));
+
+        let task = &gantt.tasks()[0];
+        assert!(task.start < 0, "the bar moved left of the origin: {}", task.start);
+        assert_eq!(task.end - task.start, 10, "the width is preserved");
+    }
+
+    /// A started resize whose list is replaced still reports its finish.
+    #[test]
+    fn abandoning_a_resize_reports_its_finish() {
+        let mut gantt = GanttWidget::new(Rect::new(0, 0, 700, 180));
+        gantt.set_tasks(sample_tasks());
+        let finished = Arc::new(Mutex::new(Vec::<String>::new()));
+        let sink = finished.clone();
+        gantt.task_resize_finished.connect(move |id| {
+            if let Ok(mut guard) = sink.lock() {
+                guard.push(id.as_ref().clone());
+            }
+        });
+        let (track_x, track_w) = gantt.track_geometry();
+        let end = gantt.tasks()[0].end;
+        let x1 = gantt.project_x(end, track_x, track_w);
+        let y = gantt.lane_rect(0).y + 10;
+        gantt.handle_event(&Event::mouse_press(x1 - 1, y, 1));
+        assert!(gantt.drag.is_some(), "the press started a resize");
+
+        gantt.set_tasks(sample_tasks());
+
+        assert!(gantt.drag.is_none(), "the gesture is abandoned");
+        assert_eq!(
+            finished.lock().ok().map(|guard| guard.clone()).unwrap_or_default(),
+            vec!["t1".to_string()],
+            "the finish half is still reported"
+        );
+    }
+
+    /// Scrolling re-resolves the row under a stationary pointer.
+    #[test]
+    fn scrolling_re_resolves_the_row_under_a_still_pointer() {
+        let mut gantt = GanttWidget::new(Rect::new(0, 0, 700, 60));
+        gantt.set_tasks(sample_tasks());
+        let seen = Arc::new(Mutex::new(Vec::<Option<usize>>::new()));
+        let sink = seen.clone();
+        gantt.task_hovered.connect(move |index: Arc<Option<usize>>| {
+            if let Ok(mut guard) = sink.lock() {
+                guard.push(*index);
+            }
+        });
+        let y = gantt.axis_height() + 5;
+        gantt.handle_event(&Event::mouse_move(80, y));
+        assert_eq!(gantt.hovered_task, Some(0));
+
+        gantt.scroll_by(1);
+
+        assert_eq!(gantt.hovered_task, Some(1), "the row under the pointer changed");
+        assert_eq!(
+            seen.lock().ok().map(|guard| guard.clone()).unwrap_or_default(),
+            vec![Some(0), Some(1)]
+        );
+    }
+
+    /// A backward link's arrow head points along its connector, not away from its bar.
+    #[test]
+    fn a_backward_links_arrowhead_points_along_its_connector() {
+        let forward = link_head_points(100, 10, false);
+        assert!(
+            forward[1].x < 100 && forward[2].x < 100,
+            "a left-to-right connector has its base on the left"
+        );
+        let backward = link_head_points(100, 10, true);
+        assert!(
+            backward[1].x > 100 && backward[2].x > 100,
+            "a right-to-left connector has its base on the right"
+        );
+        assert_eq!(backward[0], Point::new(100, 10), "the apex enters the bar");
     }
 }

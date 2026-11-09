@@ -136,6 +136,19 @@ impl Draw for MarkdownEditor {
         let scrollbar_width = if self.scrollbar_track().is_some() { 12 } else { 0 };
         let outline_width = self.outline_rect().map_or(0, |panel| panel.width as i32);
         let row_width = rect.width.saturating_sub(24 + scrollbar_width + outline_width as u32);
+        // `measure_text` returns device-scaled widths, so the DPI scale is part of a preview
+        // row's measurement and therefore part of its cache key.
+        let dpi_scale = context.dpi_scale();
+        // A preview row can be wider than the column reserved for it (long inline runs, a
+        // table, a heading at an ever-larger size). Clip to the text column so it cannot paint
+        // over the outline panel or past the control's own edge.
+        let clip_height = (rect.height as i32 - TEXT_TOP - TEXT_BOTTOM_INSET).max(0) as u32;
+        context.push_clip(
+            rect.x,
+            rect.y + TEXT_TOP,
+            rect.width.saturating_sub(outline_width.max(0) as u32),
+            clip_height,
+        );
 
         {
             let text = &self.text;
@@ -186,6 +199,7 @@ impl Draw for MarkdownEditor {
                         highlight,
                         table_headers.get(idx).copied().unwrap_or(false),
                         font,
+                        dpi_scale,
                     );
                     let parsed = match cache.get(&key).cloned() {
                         Some(parsed) => parsed,
@@ -233,12 +247,14 @@ impl Draw for MarkdownEditor {
                             highlight,
                             table_headers.get(index).copied().unwrap_or(false),
                             font,
+                            dpi_scale,
                         )
                     })
                     .collect();
                 cache.retain(|key, _| live.contains(key));
             }
         }
+        context.pop_clip();
 
         if let Some(track) = self.scrollbar_track() {
             context.fill_rect(track, ink.blend(&surface, 0.10));

@@ -222,6 +222,35 @@ impl LineIndex {
     }
 }
 
+/// The single heading rule shared by the metrics, the outline and the preview.
+///
+/// A heading is one to six leading `#` followed by whitespace (or nothing) on a line whose
+/// indentation is insignificant. `#hashtag` is prose, and seven hashes are prose too; the three
+/// callers each used to answer this differently.
+pub(crate) fn heading_of(line: &str) -> Option<(u8, &str)> {
+    let trimmed = line.trim_start();
+    let hashes = trimmed.chars().take_while(|ch| *ch == '#').count();
+    if hashes == 0 || hashes > 6 {
+        return None;
+    }
+    let rest = &trimmed[hashes..];
+    if !rest.is_empty() && !rest.starts_with([' ', '\t']) {
+        return None;
+    }
+    Some((hashes as u8, rest.trim()))
+}
+
+/// Converts a document's line terminators to the `\n` the editor stores internally.
+///
+/// A `\r` left in the text is a character like any other: it counts as a column, survives a
+/// line merge at a backspace, and made `\r\n` documents show a stray carriage-return cell.
+pub(crate) fn normalize_line_endings(text: String) -> String {
+    if !text.contains('\r') {
+        return text;
+    }
+    text.replace("\r\n", "\n").replace('\r', "\n")
+}
+
 /// The largest character boundary at or below `offset`.
 ///
 /// A platform-supplied byte offset is usually a boundary, but slicing on one that is not would

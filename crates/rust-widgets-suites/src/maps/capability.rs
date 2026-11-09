@@ -106,11 +106,31 @@ pub const COMPASS_PROPERTIES: &[PropertySchema] = &[
     PropertySchema::new("geometry", PropertyValueKind::String, false, false),
 ];
 
+/// Anchored information window for a marker or cluster (`COMP-13`).
+///
+/// The anchor and the content are written through `open_for_marker`/`open_at`/`set_content`,
+/// so `anchor` and `line_count` are read-only and the two content commands report that they need
+/// a payload.
+pub const MAP_MARKER_DETAIL_PROPERTIES: &[PropertySchema] = &[
+    PropertySchema::new("anchor", PropertyValueKind::String, true, false),
+    PropertySchema::new("title", PropertyValueKind::String, true, true),
+    PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+    PropertySchema::new("follow_marker", PropertyValueKind::Bool, true, true),
+    PropertySchema::new("dismiss_on_map_press", PropertyValueKind::Bool, true, true),
+    PropertySchema::new("max_width", PropertyValueKind::UInt, true, true),
+    PropertySchema::new("action_label", PropertyValueKind::String, true, true),
+    PropertySchema::new("line_count", PropertyValueKind::UInt, true, false),
+    PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+    PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+    PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+];
+
 /// `map_view`'s published events.
 const MAP_VIEW_EVENTS: &[EventSchema] = &[
     EventSchema { name: "center_changed", payload: Some(K::Float), shape: Some(S::Tuple2) },
     EventSchema { name: "cluster_clicked", payload: Some(K::Float), shape: Some(S::Tuple2) },
     EventSchema { name: "marker_clicked", payload: Some(K::String), shape: Some(S::Scalar) },
+    EventSchema { name: "marker_deselected", payload: Some(K::String), shape: Some(S::Scalar) },
     EventSchema { name: "marker_selected", payload: Some(K::String), shape: Some(S::Scalar) },
     EventSchema { name: "tile_requested", payload: Some(K::String), shape: Some(S::Mixed) },
     EventSchema { name: "zoom_changed", payload: Some(K::Float), shape: Some(S::Scalar) },
@@ -136,6 +156,12 @@ const ZOOM_CONTROL_EVENTS: &[EventSchema] =
 
 /// `compass`'s published events.
 const COMPASS_EVENTS: &[EventSchema] = &[EventSchema::unit("reset_north_requested")];
+
+/// `map_marker_detail`'s published events.
+const MAP_MARKER_DETAIL_EVENTS: &[EventSchema] = &[
+    EventSchema::unit("closed"),
+    EventSchema { name: "action_triggered", payload: Some(K::String), shape: Some(S::Scalar) },
+];
 
 pub fn map_view_capability() -> WidgetCapability {
     WidgetCapability {
@@ -227,6 +253,24 @@ pub fn compass_capability() -> WidgetCapability {
     }
 }
 
+/// `map_marker_detail` — the anchored marker/cluster window (`COMP-13`).
+///
+/// It shares `WidgetKind::Tooltip` with other anchored bubbles but has its own concrete type, so
+/// the kind tie-break resolves it the same way the other composites do.
+pub fn map_marker_detail_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::Tooltip,
+        canonical_name: "map_marker_detail",
+        aliases: &[],
+        properties: MAP_MARKER_DETAIL_PROPERTIES,
+        events: MAP_MARKER_DETAIL_EVENTS,
+        // Every commands entry must resolve from a property so the designer manifest can describe
+        // it. `close`/`open_*`/`set_content` take a payload or act on the window, not on a
+        // property, so they stay a Rust-side API instead of an undescribable command.
+        commands: &[],
+    }
+}
+
 /// Creates a map view with no tiles or markers. `text` is applied as the
 /// control's label.
 pub fn create_map_view(geometry: Rect, text: &str) -> Box<dyn Widget> {
@@ -267,6 +311,11 @@ pub fn create_compass(geometry: Rect, _text: &str) -> Box<dyn Widget> {
     Box::new(crate::maps::map_view::Compass::new(geometry))
 }
 
+/// Creates a hidden marker detail window (`COMP-13`).
+pub fn create_map_marker_detail(geometry: Rect, _text: &str) -> Box<dyn Widget> {
+    Box::new(crate::maps::map_view::MapMarkerDetail::new(geometry))
+}
+
 /// A registered control: its capability row, its constructor, and its defaults provider.
 type MapRow = (WidgetCapability, WidgetCtor, fn(&str) -> Option<CapabilityValue>);
 
@@ -276,7 +325,7 @@ type MapRow = (WidgetCapability, WidgetCtor, fn(&str) -> Option<CapabilityValue>
 /// names (a host that installed twice, or a build that ships a control of the same name) is
 /// reported rather than silently shadowed.
 pub fn install(factory: &mut WidgetFactory) -> Result<(), RegistrationError> {
-    let rows: [MapRow; 7] = [
+    let rows: [MapRow; 8] = [
         (map_view_capability(), create_map_view, |p| default_property_value("map_view", p)),
         (map_overview_capability(), create_map_overview, |p| {
             default_property_value("map_overview", p)
@@ -292,6 +341,9 @@ pub fn install(factory: &mut WidgetFactory) -> Result<(), RegistrationError> {
         }),
         (scale_bar_capability(), create_scale_bar, |p| default_property_value("scale_bar", p)),
         (compass_capability(), create_compass, |p| default_property_value("compass", p)),
+        (map_marker_detail_capability(), create_map_marker_detail, |p| {
+            default_property_value("map_marker_detail", p)
+        }),
     ];
     for (capability, ctor, defaults) in rows {
         let name = capability.canonical_name;
@@ -316,17 +368,9 @@ pub fn default_property_value(kind: &str, name: &str) -> Option<CapabilityValue>
             }
             "center_x" | "center_y" => Some(CapabilityValue::Float(0.0)),
             "zoom" => Some(CapabilityValue::Float(1.0)),
-            "marker_count" | "layer_count" => Some(CapabilityValue::UInt(0)),
+            "marker_count" => Some(CapabilityValue::UInt(0)),
             "selected_marker_id" => Some(CapabilityValue::Null),
             "projection" => Some(CapabilityValue::String("linear".to_string())),
-            "anti_alias" => Some(CapabilityValue::Bool(true)),
-            "show_grid" | "snap_to_grid" => Some(CapabilityValue::Bool(false)),
-            "grid_step" => Some(CapabilityValue::UInt(20)),
-            "zoom_range" => Some(CapabilityValue::Tuple(rust_widgets::compat::Vec::from([
-                CapabilityValue::Float(0.125),
-                CapabilityValue::Float(16.0),
-            ]))),
-            "zoom_step" => Some(CapabilityValue::Float(1.1)),
             _ => None,
         },
         "map_overview" => match name {
@@ -372,6 +416,18 @@ pub fn default_property_value(kind: &str, name: &str) -> Option<CapabilityValue>
             "clickable" => Some(CapabilityValue::Bool(true)),
             _ => None,
         },
+        // A fresh window is hidden with no anchor, follows its anchor and dismisses on a map
+        // press — the values `MapMarkerDetail::new` sets.
+        "map_marker_detail" => match name {
+            "anchor" => Some(CapabilityValue::Null),
+            "title" => Some(CapabilityValue::String(String::new())),
+            "visible" => Some(CapabilityValue::Bool(false)),
+            "follow_marker" | "dismiss_on_map_press" => Some(CapabilityValue::Bool(true)),
+            "max_width" => Some(CapabilityValue::UInt(220)),
+            "action_label" => Some(CapabilityValue::Null),
+            "line_count" => Some(CapabilityValue::UInt(0)),
+            _ => None,
+        },
         _ => None,
     }
 }
@@ -386,6 +442,10 @@ pub fn published_property_names() -> Vec<(&'static str, Vec<&'static str>)> {
         ("zoom_control", ZOOM_CONTROL_PROPERTIES.iter().map(|schema| schema.name).collect()),
         ("scale_bar", SCALE_BAR_PROPERTIES.iter().map(|schema| schema.name).collect()),
         ("compass", COMPASS_PROPERTIES.iter().map(|schema| schema.name).collect()),
+        (
+            "map_marker_detail",
+            MAP_MARKER_DETAIL_PROPERTIES.iter().map(|schema| schema.name).collect(),
+        ),
     ]
 }
 
@@ -400,5 +460,6 @@ pub fn published_event_names() -> Vec<(&'static str, Vec<&'static str>)> {
         ("scale_bar", Vec::new()),
         ("zoom_control", ZOOM_CONTROL_EVENTS.iter().map(|schema| schema.name).collect()),
         ("compass", COMPASS_EVENTS.iter().map(|schema| schema.name).collect()),
+        ("map_marker_detail", MAP_MARKER_DETAIL_EVENTS.iter().map(|schema| schema.name).collect()),
     ]
 }

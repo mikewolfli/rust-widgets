@@ -106,6 +106,16 @@ impl IndexAxis {
         }
     }
 
+    /// The left edge a bar body should be painted at.
+    ///
+    /// The body is centred on [`Self::center_for`], which is also where a line series, the wick
+    /// and the hover crosshair are drawn. Offsetting it from [`Self::x_for`] instead left the body
+    /// without the one-pixel gap its width documents and put its centre a pixel off the marker that
+    /// names it whenever the slot was wider than one pixel.
+    pub fn body_x_for(&self, index: usize) -> i32 {
+        self.center_for(index) - self.body_width() / 2
+    }
+
     /// The bar index under a screen x, if any.
     ///
     /// The inverse mapping the pointer path needs for a crosshair or a tooltip. Returns
@@ -264,6 +274,31 @@ mod tests {
         let axis = IndexAxis::new(0, 10, 10);
         assert_eq!(axis.slot_width, 1);
         assert_eq!(axis.body_width(), 1);
+    }
+
+    /// A bar body is centred on the same centre the wick and the crosshair use.
+    ///
+    /// The body was painted at the slot origin, so its documented one-pixel gap was one-sided and
+    /// its centre sat a pixel off `center_for` on every slot wider than one pixel.
+    #[test]
+    fn a_body_is_centred_on_the_centre_the_wick_uses() {
+        for (width, count) in [(100, 10), (100, 25), (100, 40), (10, 10)] {
+            let axis = IndexAxis::new(0, width, count);
+            for index in 0..count {
+                let body = axis.body_x_for(index);
+                assert_eq!(
+                    body + axis.body_width() / 2,
+                    axis.center_for(index),
+                    "slot {} of {count} in {width}px",
+                    axis.slot_width
+                );
+                assert!(body >= axis.x_for(index), "the body starts inside its slot");
+                assert!(
+                    body + axis.body_width() <= axis.x_for(index) + axis.slot_width,
+                    "the body ends inside its slot"
+                );
+            }
+        }
     }
 
     /// A flat series must draw through the middle rather than divide by zero.
@@ -552,10 +587,19 @@ impl PlotArea {
         self.rect.y + self.rect.height as i32
     }
 
+    /// Whether `y` falls inside the plot band.
+    ///
+    /// The band stops at [`Self::bottom`]: everything below it is the index axis, whose row of
+    /// ticks must not hover or click the bar that happens to share its column. Testing only x let
+    /// the axis row report a bar the pointer is not over.
+    pub fn contains_y(&self, y: i32) -> bool {
+        y >= self.rect.y && y < self.bottom()
+    }
+
     /// The x where the left-hand axis labels are right-aligned.
     ///
-    /// One pixel inside the plot, because a label touching the first bar reads as part of
-    /// it. Named so every pane's labels line up on the same column.
+    /// Four pixels outside the plot, in the left margin, so a label's last glyph does not touch
+    /// bar zero. Named so every pane's labels line up on the same column.
     pub fn label_x(&self) -> i32 {
         self.rect.x - 4
     }

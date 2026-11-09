@@ -2547,3 +2547,24 @@ fn the_renderer_drives_the_adaptive_manager_it_owns() {
         "drawing a frame must feed the monitor, or the adaptive half is dead state"
     );
 }
+
+/// RD3-04: the same caption must upload its glyph coverage once, not once per frame.
+///
+/// The counter is the direct witness: a cache-length assertion would still pass if the
+/// renderer rasterised and uploaded again and stored the result under the same key.
+#[test]
+fn a_repeated_caption_uploads_its_coverage_once() {
+    let Some(renderer) = renderer() else { return };
+    let rect = PixelRect { x: 0, y: 0, width: 40, height: 16 };
+    let color = Rgba8 { r: 255, g: 255, b: 255, a: 255 };
+
+    let first = renderer.upload_text_draw(rect, "Ag", color);
+    let second = renderer.upload_text_draw(rect, "Ag", color);
+
+    assert_eq!(
+        renderer.text_coverage_uploads(),
+        1,
+        "a repeated, unchanged caption must reuse its coverage texture"
+    );
+    drop((first, second));
+}

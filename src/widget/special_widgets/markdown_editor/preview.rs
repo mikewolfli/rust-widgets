@@ -89,8 +89,8 @@ fn text_hash(text: &str) -> u64 {
 ///
 /// A key is the row's text plus every input the parse reads: its block context (a fenced-code
 /// line is tokenised differently from prose), the GFM and highlighting flags, whether a table
-/// divider follows, and the font size its runs were measured at. The row's position is not an
-/// input to the parse, so it is not part of the key.
+/// divider follows, and the font size and DPI scale its runs were measured at. The row's
+/// position is not an input to the parse, so it is not part of the key.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct PreviewKey {
     /// Hash of the row's source text.
@@ -101,6 +101,12 @@ pub(crate) struct PreviewKey {
     flags: u8,
     /// The measurement font size, as raw bits.
     font_size_bits: u32,
+    /// The backend DPI scale, as raw bits.
+    ///
+    /// `measure_text` returns device-scaled widths, so the same row measured on a 1x and a 2x
+    /// surface is not the same layout. Leaving this out of the key reused the 1x widths after
+    /// the window moved to a high-DPI display.
+    dpi_scale_bits: u32,
 }
 
 impl PreviewKey {
@@ -112,12 +118,14 @@ impl PreviewKey {
         highlight: bool,
         table_follows: bool,
         font: &Font,
+        dpi_scale: f32,
     ) -> Self {
         Self {
             text: text_hash(line),
             block: block_cache_key(block),
             flags: u8::from(gfm) | (u8::from(highlight) << 1) | (u8::from(table_follows) << 2),
             font_size_bits: font.size().to_bits(),
+            dpi_scale_bits: dpi_scale.to_bits(),
         }
     }
 }
@@ -138,10 +146,21 @@ fn block_cache_key(block: BlockStart) -> u64 {
     hasher.finish()
 }
 
-/// The info string of a fenced code block opener, if `trimmed` opens one.
-pub(crate) fn fence_marker(trimmed: &str) -> Option<&str> {
-    let rest = trimmed.strip_prefix("```").or_else(|| trimmed.strip_prefix("~~~"))?;
-    Some(rest.trim())
+/// The marker character, its run length and the info string of a fence opener.
+///
+/// The closing fence must use the same character and at least as many of them (GFM), so the
+/// caller needs the run, not only the info string; treating any `` ``` ``/`~~~` line as a
+/// closer let a four-backtick block end at a three-backtick line it contained.
+pub(crate) fn fence_marker(trimmed: &str) -> Option<(char, usize, &str)> {
+    let marker = trimmed.chars().next()?;
+    if marker != '`' && marker != '~' {
+        return None;
+    }
+    let run = trimmed.chars().take_while(|ch| *ch == marker).count();
+    if run < 3 {
+        return None;
+    }
+    Some((marker, run, trimmed[run..].trim()))
 }
 
 /// Maps a fence's info string onto one of the shared lexer's languages.
@@ -252,11 +271,10 @@ pub(crate) fn parse_preview_line(
     let indent = line.len() - trimmed.len();
 
     // Heading: the leading `#` markers are syntax, so they are consumed rather than rendered.
-    let hashes = trimmed.chars().take_while(|ch| *ch == '#').count();
-    if hashes > 0 && hashes <= 6 && trimmed[hashes..].starts_with(' ') {
-        let level = hashes as u8;
-        let heading_font = font.with_size(font.size() + (7 - hashes) as f32);
-        let body = trimmed[hashes..].trim_start();
+    // The rule is shared with the outline and the metrics (`heading_of`); the preview used to
+    // accept only `# ` while the outline also accepted 7+ hashes and `#tag`.
+    if let Some((level, body)) = heading_of(line) {
+        let heading_font = font.with_size(font.size() + (7 - level as usize) as f32);
         parse_inline(body, gfm, &heading_font, context, &mut runs);
         return ParsedLine { runs, row: PreviewRow::Heading(level) };
     }
@@ -484,13 +502,23 @@ fn parse_inline(
             '`' => {
                 push_run(runs, &core::mem::take(&mut plain), PreviewStyle::Text, font, context);
                 let mut inner = String::new();
+                let mut closed = false;
                 for next in chars.by_ref() {
                     if next == '`' {
+                        closed = true;
                         break;
                     }
                     inner.push(next);
                 }
-                push_run(runs, &inner, PreviewStyle::Code, font, context);
+                if closed {
+                    push_run(runs, &inner, PreviewStyle::Code, font, context);
+                } else {
+                    // An unmatched backtick is literal text, not an unclosed code span: the
+                    // old arm painted the rest of the line as code, swallowing every following
+                    // word on the row.
+                    inner.insert(0, '`');
+                    push_run(runs, &inner, PreviewStyle::Text, font, context);
+                }
             }
             '!' if chars.peek() == Some(&'[') => {
                 chars.next();

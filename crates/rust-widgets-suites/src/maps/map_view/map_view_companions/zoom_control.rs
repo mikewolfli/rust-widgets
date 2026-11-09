@@ -132,10 +132,12 @@ impl ZoomControl {
 
         self.zoom_pan = Some(ZoomPanBinding { zoom, target, _scope: scope });
         // Adopt the controller's current level now, so attaching does not wait for the next
-        // controller gesture before the two agree.
+        // controller gesture before the two agree. This is a binding, not a user gesture: mirroring
+        // silently keeps a host that forwards `zoom_requested` back from overwriting the
+        // controller's own level with the strip's clamped/mapped copy.
         let range = (self.min, self.max);
         let mapped = ZoomPanController::map_zoom_to_range(controller.zoom_level(), source, range);
-        self.set_zoom(mapped);
+        self.mirror_zoom(mapped);
     }
 
     /// Stops following the attached controller; the last applied level stays.
@@ -152,25 +154,38 @@ impl ZoomControl {
 
     /// Applies the level the attached controller reported since the last poll.
     ///
-    /// Called from `draw` and `handle_event`, so a controller gesture is reflected by the next
-    /// frame. Returns whether a level was pending. The value goes through [`Self::set_zoom`], so
-    /// `zoom_requested` fires for a controller-driven change too: a host that refetches tiles on
-    /// that signal needs no second subscription. A host that forwards `zoom_requested` back into
-    /// the controller cannot loop, because `set_zoom` refuses an unchanged level.
+    /// Called from `handle_event`; the paint path uses [`Self::sync_zoom_pan`] instead, because a
+    /// signal emitted during `draw` cannot be handled by a host that owns the map. Returns whether
+    /// a level was pending. The value goes through [`Self::set_zoom`], so `zoom_requested` fires
+    /// for a controller-driven change too: a host that refetches tiles on that signal needs no
+    /// second subscription. A host that forwards `zoom_requested` back into the controller cannot
+    /// loop, because `set_zoom` refuses an unchanged level.
     pub fn poll_zoom_pan(&mut self) -> bool {
-        let level = {
-            let Some(binding) = self.zoom_pan.as_ref() else {
-                return false;
-            };
-            lock(&binding.zoom).take()
-        };
-        match level {
+        match self.take_pending_pan() {
             Some(level) => {
                 let _ = self.set_zoom(level);
                 true
             }
             None => false,
         }
+    }
+
+    /// Applies the pending controller level without emitting `zoom_requested`.
+    ///
+    /// The paint path owns this: `draw` may run inside the map's own paint pass, where a host
+    /// callback cannot legally touch the map. A controller gesture still reaches such a host
+    /// through the controller's own `zoom_changed`; the strip is the view, not the authority.
+    pub fn sync_zoom_pan(&mut self) -> bool {
+        match self.take_pending_pan() {
+            Some(level) => self.mirror_zoom(level),
+            None => false,
+        }
+    }
+
+    /// Takes the level the bound controller queued, if any.
+    fn take_pending_pan(&mut self) -> Option<f32> {
+        let binding = self.zoom_pan.as_ref()?;
+        lock(&binding.zoom).take()
     }
 
     /// Returns the current zoom level.
@@ -193,6 +208,23 @@ impl ZoomControl {
     /// Returns `false` when the value is non-finite or unchanged; a no-op emits
     /// nothing.
     pub fn set_zoom(&mut self, zoom_level: f32) -> bool {
+        if !self.mirror_zoom(zoom_level) {
+            return false;
+        }
+        self.zoom_requested.emit(self.zoom_level);
+        true
+    }
+
+    /// Applies `zoom_level` without emitting [`Self::zoom_requested`].
+    ///
+    /// A map's overlay strip is a *view* of the camera rather than a second source of truth: when
+    /// the camera changed from the outside (a wheel, a key, a host's `set_zoom`), the strip is
+    /// brought in step silently. Going through [`Self::set_zoom`] there would report the host's
+    /// own change back to it as if the user had pressed the strip, and that report happens during
+    /// the map's paint pass, where a host callback cannot legally touch the map.
+    ///
+    /// Returns `false` when the value is non-finite or unchanged.
+    pub fn mirror_zoom(&mut self, zoom_level: f32) -> bool {
         if !zoom_level.is_finite() {
             return false;
         }
@@ -201,7 +233,6 @@ impl ZoomControl {
             return false;
         }
         self.zoom_level = level;
-        self.zoom_requested.emit(level);
         self.base.request_redraw();
         true
     }
@@ -231,8 +262,14 @@ impl ZoomControl {
             return;
         }
         self.min = min;
+        let before = self.zoom_level;
         self.zoom_level = self.zoom_level.clamp(self.min, self.max);
         self.refresh_zoom_pan_target();
+        if (self.zoom_level - before).abs() >= f32::EPSILON {
+            // A range change that moves the level is a committed zoom change; without this a host
+            // that mirrors `zoom_requested` kept the level the old range allowed.
+            self.zoom_requested.emit(self.zoom_level);
+        }
         self.base.request_redraw();
     }
 
@@ -246,8 +283,13 @@ impl ZoomControl {
             return;
         }
         self.max = max;
+        let before = self.zoom_level;
         self.zoom_level = self.zoom_level.clamp(self.min, self.max);
         self.refresh_zoom_pan_target();
+        if (self.zoom_level - before).abs() >= f32::EPSILON {
+            // See `set_min`: the clamp is a change the strip's listeners have to see.
+            self.zoom_requested.emit(self.zoom_level);
+        }
         self.base.request_redraw();
     }
 
@@ -392,8 +434,9 @@ impl EventHandler for ZoomControl {
 impl Draw for ZoomControl {
     fn draw(&mut self, context: &mut RenderContext) {
         // Drain a level the bound controller reported, so the paint shows the state the controller
-        // is in rather than the one from before its gesture (chapter 3, gap 12).
-        self.poll_zoom_pan();
+        // is in rather than the one from before its gesture (chapter 3, gap 12). Silent: this runs
+        // during the map's paint pass, and `zoom_requested` is a user gesture.
+        self.sync_zoom_pan();
         let rect = self.geometry();
         let style = self.base.style();
         let (surface, border, ink) = companion_palette(style, "zoom_control");

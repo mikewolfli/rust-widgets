@@ -451,7 +451,7 @@ impl CodeEditor {
         if !self.config.word_wrap {
             return (0, length);
         }
-        let text = self.line_text(position.line).unwrap_or_default();
+        let text = self.line_text_borrowed(position.line);
         let grid = LineGrid::new(&text, self.config.tab_width);
         let columns = self.text_columns().max(1);
         grid.segment_range(grid.segment_of_char(position.column.min(length), columns).0, columns)

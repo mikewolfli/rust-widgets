@@ -20,7 +20,7 @@
 
 use alloc::vec::Vec;
 
-use crate::finance::layout::{panel_colors, PanelColors, PlotArea, PANEL_MIN_CONTRAST};
+use crate::finance::layout::{panel_colors, IndexAxis, PanelColors, PlotArea, PANEL_MIN_CONTRAST};
 use crate::finance::types::Bar;
 use crate::finance::types::PriceSeries;
 use rust_widgets::core::{Color, Point, Rect};
@@ -117,7 +117,11 @@ impl VolumeChart {
     /// Replaces the series and requests a repaint.
     pub fn set_series(&mut self, series: PriceSeries) {
         self.series = series;
-        self.view = self.clamped_view(self.view);
+        // The window was measured against the old bars, so it is re-clamped through the one
+        // emitting entry point; assigning the clamped value directly moved the view silently and
+        // left a host mirroring `view_changed` showing the old window. The K-line pane already
+        // routes its replacement this way.
+        self.set_view_range(self.view);
         if self.hovered_index.is_some_and(|index| index >= self.series.len()) {
             self.hovered_index = None;
         }
@@ -131,7 +135,7 @@ impl VolumeChart {
     /// exactly as they are after a full replacement.
     pub fn append_point(&mut self, bar: Bar) -> usize {
         self.series.push(bar);
-        self.view = self.clamped_view(self.view);
+        self.set_view_range(self.view);
         self.base.request_redraw();
         self.series.len() - 1
     }
@@ -154,8 +158,10 @@ impl VolumeChart {
     /// Removes every bar and restores the full-series view.
     pub fn clear(&mut self) {
         self.series = PriceSeries::new();
-        self.view = None;
         self.hovered_index = None;
+        // Routed through the emitting entry point for the same reason as `set_series`: a host
+        // mirroring `view_changed` must learn that the window is gone.
+        self.set_view_range(None);
         self.base.request_redraw();
     }
 
@@ -231,11 +237,16 @@ impl VolumeChart {
     }
 
     fn clamped_view(&self, range: Option<(usize, usize)>) -> Option<(usize, usize)> {
-        range.map(|(start, end)| {
+        range.and_then(|(start, end)| {
             let total = self.series.len();
-            let start = start.min(total.saturating_sub(1));
-            let end = end.clamp(start + 1, total.max(start + 1));
-            (start, end)
+            // A window over no bars names nothing; keeping one would also make the first bar
+            // appended later inherit a one-bar window instead of the full view.
+            if total == 0 {
+                return None;
+            }
+            let start = start.min(total - 1);
+            let end = end.clamp(start + 1, total);
+            Some((start, end))
         })
     }
 
@@ -341,9 +352,9 @@ impl VolumeChart {
 
     /// The plot area for this control's geometry.
     fn plot_area(&self) -> PlotArea {
-        // No bottom margin: a volume pane carries no index labels of its own, because
-        // the price pane above already has them and a second copy would be misleading
-        // about which rows they belong to.
+        // `volume_pane` reserves the shared horizontal margins and a bottom row for the
+        // index ticks this pane draws itself (FIN-01), so bar 17 here sits under bar 17 in
+        // the price pane above.
         PlotArea::volume_pane(self.base.geometry())
     }
 
@@ -434,10 +445,16 @@ impl EventHandler for VolumeChart {
                 let (start, end) = self.view_bounds();
                 let visible = end.saturating_sub(start);
                 let index_axis = area.index_axis(visible);
-                let next = index_axis
-                    .index_at(pos.x)
-                    .map(|index| start + index)
-                    .filter(|index| *index < end);
+                // The pane's bottom strip is its index axis, so a y test is part of "inside":
+                // testing only x let the axis row hover a bar.
+                let next = if area.contains_y(pos.y) {
+                    index_axis
+                        .index_at(pos.x)
+                        .map(|index| start + index)
+                        .filter(|index| *index < end)
+                } else {
+                    None
+                };
                 if next != self.hovered_index {
                     if let Some(index) = next {
                         self.bar_hovered.emit(index);
@@ -462,7 +479,14 @@ impl EventHandler for VolumeChart {
                     let new_span = ((span as f64 * factor).round() as usize).clamp(4, total);
                     let half = new_span / 2;
                     let new_start = anchor.saturating_sub(half).min(total - new_span);
-                    self.set_view_range(Some((new_start, new_start + new_span)));
+                    // `None` is the spelling for "every bar", the same one `reset_view` and the
+                    // strip's Fit produce.
+                    let range = if new_span >= total {
+                        None
+                    } else {
+                        Some((new_start, new_start + new_span))
+                    };
+                    self.set_view_range(range);
                 }
             }
             Event::MousePress { pos, .. } | Event::PointerPress { pos, .. } => {
@@ -470,12 +494,14 @@ impl EventHandler for VolumeChart {
                 let (start, end) = self.view_bounds();
                 let visible = end.saturating_sub(start);
                 let index_axis = area.index_axis(visible);
-                if let Some(index) = index_axis
-                    .index_at(pos.x)
-                    .map(|index| start + index)
-                    .filter(|index| *index < end)
-                {
-                    self.bar_clicked.emit(index);
+                if area.contains_y(pos.y) {
+                    if let Some(index) = index_axis
+                        .index_at(pos.x)
+                        .map(|index| start + index)
+                        .filter(|index| *index < end)
+                    {
+                        self.bar_clicked.emit(index);
+                    }
                 }
             }
             _ => {}
@@ -526,14 +552,17 @@ impl Draw for VolumeChart {
         let label_width = (area.label_x() - label_left).max(0) as u32;
         for step in 0..=3 {
             let fraction = step as f64 / 3.0;
-            let y = area.rect.y + area.rect.height as i32 * step / 3;
+            // The gridlines cover the same band the bars are scaled into. Spanning the full
+            // height labelled the top line `max_volume` at a y no bar could reach, so every bar
+            // read back as `headroom ×` its value.
+            let y = baseline - (usable_height * fraction).round() as i32;
             context.draw_line(
                 rust_widgets::core::Point { x: area.rect.x, y },
                 rust_widgets::core::Point { x: area.right(), y },
                 chrome.grid,
             );
             // The quantity that gridline stands for, so the bars have a readable scale.
-            let value = max_volume * (1.0 - fraction);
+            let value = max_volume * fraction;
             with_axis_label(|text| {
                 let _ = core::fmt::Write::write_fmt(&mut *text, format_args!("{value:.0}"));
                 let line_height = context.measure_text(text, &axis_font).height.max(1);
@@ -554,7 +583,9 @@ impl Draw for VolumeChart {
             let height = (bar.volume / max_volume * usable_height).round().max(1.0) as u32;
             context.fill_rect(
                 Rect::new(
-                    index_axis.x_for(offset),
+                    // The body starts one pixel inside its slot and is centred on the marker
+                    // that names it; `x_for` left it flush left and off-centre.
+                    index_axis.body_x_for(offset),
                     baseline - height as i32,
                     body_width as u32,
                     height,
@@ -649,15 +680,13 @@ pub(crate) fn draw_index_ticks(
     let target = (area.rect.width as i32 / 80).max(1) as usize;
     let step = visible.div_ceil(target).max(1);
     let band_width = (axis.slot_width * step as i32).max(28) as u32;
-    let y = area.bottom() + 2;
-    let height = (area.bottom_margin - 2).max(10) as u32;
     let mut index = start;
     while index < end {
-        let x = axis.center_for(index - start);
+        let band = index_tick_band(area, &axis, index, start, band_width);
         with_axis_label(|text| {
             label_at(index, text);
             context.draw_text_fitted_ellipsis(
-                Rect::new(x - band_width as i32 / 2, y, band_width, height),
+                band,
                 text,
                 font,
                 ink,
@@ -666,6 +695,30 @@ pub(crate) fn draw_index_ticks(
         });
         index += step;
     }
+}
+
+/// The band one index tick's label occupies, kept inside the plot area.
+///
+/// A band centred on the tick ran past the plot's right edge, so a long label from the host
+/// (a date rather than a bar index) could be painted over the control beside it. Sliding the
+/// band inward, and narrowing a band wider than the plot, is the treatment the depth pane
+/// already gives its own tick bands.
+///
+/// The trade is exact centring at the two edges: the first and last labels sit against the
+/// plot's edge instead of being split around their bar. Keeping the label inside the pane it
+/// describes is worth more than a half-outside glyph, and interior ticks stay centred.
+fn index_tick_band(
+    area: &PlotArea,
+    axis: &IndexAxis,
+    index: usize,
+    start: usize,
+    band_width: u32,
+) -> Rect {
+    let plot_width = area.rect.width as i32;
+    let band = (band_width as i32).max(1).min(plot_width.max(1));
+    let x = axis.center_for(index - start);
+    let left = (x - band / 2).clamp(area.rect.x, (area.right() - band).max(area.rect.x));
+    Rect::new(left, area.bottom() + 2, band as u32, (area.bottom_margin - 2).max(10) as u32)
 }
 
 /// Draws a pane's frame and a `No data` message for a pane with nothing to plot.
@@ -871,6 +924,40 @@ mod tests {
         assert_eq!(*seen.lock().unwrap(), vec![(2, 4), (0, 5)]);
     }
 
+    /// Replacing the series with a shorter one re-clamps the window *and* reports it.
+    ///
+    /// `set_series` assigned the clamped view directly, so a host mirroring `view_changed`
+    /// (scrollbar, linked panes) kept showing the old window over bars that no longer existed.
+    #[test]
+    fn replacing_with_a_shorter_series_reports_the_clamped_view() {
+        let mut chart = VolumeChart::new(Rect::new(0, 0, 240, 80));
+        let mut series = PriceSeries::new();
+        for value in [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0] {
+            series.push(Bar::flat(0.0, value));
+        }
+        chart.set_series(series);
+        chart.set_view_range(Some((8, 10)));
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::<(usize, usize)>::new()));
+        let sink = std::sync::Arc::clone(&seen);
+        chart.view_changed.connect(move |range| sink.lock().unwrap().push(*range));
+
+        let mut shorter = PriceSeries::new();
+        for value in [1.0, 2.0, 3.0, 4.0, 5.0] {
+            shorter.push(Bar::flat(0.0, value));
+        }
+        chart.set_series(shorter);
+        assert_eq!(chart.view_range(), Some((4, 5)));
+        assert_eq!(*seen.lock().unwrap(), vec![(4, 5)], "the clamped window is published");
+
+        chart.clear();
+        assert_eq!(chart.view_range(), None);
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec![(4, 5), (0, 0)],
+            "clearing reports the empty window"
+        );
+    }
+
     #[test]
     fn an_empty_series_draws_without_panicking() {
         let mut chart = VolumeChart::new(Rect::new(0, 0, 320, 160));
@@ -957,6 +1044,64 @@ mod tests {
             modifiers: 0,
         });
         assert_eq!(count.load(Ordering::SeqCst), 1, "a press on the axis emits nothing");
+
+        // The tick row below the plot is inside the widget but outside the bars.
+        chart.handle_event(&rust_widgets::event::Event::MousePress {
+            pos: rust_widgets::core::Point { x: 300, y: 159 },
+            button: 0,
+            modifiers: 0,
+        });
+        assert_eq!(count.load(Ordering::SeqCst), 1, "the index-axis strip is not a bar");
+        chart.handle_event(&rust_widgets::event::Event::MouseMove {
+            pos: rust_widgets::core::Point { x: 300, y: 159 },
+        });
+        assert_eq!(chart.hovered_index(), None, "and it does not hover one either");
+    }
+
+    /// A tick label's band is kept inside the pane, even for the last bar.
+    ///
+    /// Regression: the band was centred on the tick unconditionally, so the final tick's
+    /// band ran past the plot's right edge and a long host-supplied label (a date) could be
+    /// painted over the control beside the pane.
+    #[test]
+    fn an_index_tick_band_stays_inside_the_plot() {
+        let area = PlotArea::volume_pane(Rect::new(0, 0, 240, 80));
+        let count = 40;
+        let axis = area.index_axis(count);
+        let band_width = (axis.slot_width * 8).max(28) as u32;
+        for index in [0, 1, count / 2, count - 1] {
+            let band = index_tick_band(&area, &axis, index, 0, band_width);
+            assert!(band.x >= area.rect.x, "tick {index} starts left of the plot: {band:?}");
+            assert!(
+                band.x + band.width as i32 <= area.right(),
+                "tick {index} ends past the plot: {band:?}"
+            );
+        }
+
+        let wide = index_tick_band(&area, &axis, 0, 0, 10_000);
+        assert_eq!(
+            wide.width as i32, area.rect.width as i32,
+            "a band wider than the plot is narrowed rather than allowed to overflow"
+        );
+        assert_eq!((wide.x, wide.x + wide.width as i32), (area.rect.x, area.right()));
+    }
+
+    /// A view cannot outlive the series it was measured against.
+    ///
+    /// Regression: `clamped_view` kept a `Some` window for an empty series (clamping it to
+    /// `(0, 1)`), so the first bar appended afterwards was shown alone instead of starting
+    /// from the full view that `clear` promises.
+    #[test]
+    fn a_view_over_an_emptied_series_is_cleared() {
+        let mut chart = VolumeChart::new(Rect::new(0, 0, 240, 80));
+        chart.set_series(fixtures::sample_series(10));
+        chart.set_view_range(Some((2, 5)));
+
+        chart.set_series(PriceSeries::new());
+        assert_eq!(chart.view_range(), None, "no window can name bars that do not exist");
+
+        assert_eq!(chart.append_point(Bar::flat(0.0, 1.0)), 0);
+        assert_eq!(chart.view_range(), None, "the first new bar is shown in the full view");
     }
 
     /// Replacing the series drops a hover that no longer points at a bar.
@@ -991,5 +1136,25 @@ mod tests {
         assert_eq!(chart.series().len(), 0);
         assert_eq!(chart.view_range(), None);
         assert!(!chart.update_last(Bar::flat(1.0, 1.0)), "an empty series has no last bar");
+    }
+
+    /// Zooming all the way out restores the unzoomed spelling of the view.
+    #[test]
+    fn zooming_out_to_the_whole_series_restores_the_unzoomed_view() {
+        let mut chart = VolumeChart::new(Rect::new(0, 0, 240, 80));
+        let mut series = PriceSeries::new();
+        for value in 1..=20 {
+            series.push(Bar::flat(0.0, f64::from(value)));
+        }
+        chart.set_series(series);
+        chart.set_view_range(Some((5, 15)));
+
+        for _ in 0..12 {
+            chart.handle_event(&rust_widgets::event::Event::Wheel {
+                delta: rust_widgets::core::Point::new(0, 1),
+                modifiers: 0,
+            });
+        }
+        assert_eq!(chart.view_range(), None, "a full zoom-out is `reset_view`'s spelling");
     }
 }

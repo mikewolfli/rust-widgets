@@ -86,10 +86,15 @@ impl Draw for CodeEditor {
         self.prepare_occurrences();
         // Measured row layouts are keyed by everything they were measured from: the text
         // revision, the font (family and size), the tab stops, the measured cell, the row
-        // width, the language and the lexer generation. A change to any of them makes every
-        // cached x a statement about text, glyphs or runs that are no longer on screen. When
-        // the key matches, the measurement is **reused** rather than re-shaped: `draw_source_rows`
-        // reads the cache before measuring.
+        // width, the column budget, the language and the lexer generation. A change to any of
+        // them makes every cached x a statement about text, glyphs or runs that are no longer
+        // on screen. When the key matches, the measurement is **reused** rather than re-shaped:
+        // `draw_source_rows` reads the cache before measuring.
+        //
+        // `text_columns()` is in the key because it is not a pure function of the width: the
+        // gutter's digit count (line count) and the scrollbar/minimap reserve subtract from it,
+        // so a document that grew a digit changed the wrap budget without changing the widget
+        // width — and the cached wrap measurements were reused against a different budget.
         let layout_key = (
             self.revision(),
             font_family_hash(&self.config.font_family),
@@ -97,6 +102,7 @@ impl Draw for CodeEditor {
             self.config.tab_width,
             self.cell_width().to_bits(),
             self.geometry().width,
+            self.text_columns(),
             self.active_language(),
             self.layout_lexer_generation,
         );

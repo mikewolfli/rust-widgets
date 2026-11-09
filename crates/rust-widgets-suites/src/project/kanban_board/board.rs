@@ -98,9 +98,19 @@ impl Widget for KanbanBoard {
     fn size_hint(&self) -> Size {
         // Wide enough for two columns, which is the smallest useful board. An overridden column
         // contributes its own width, so the hint does not under-report a widened board.
+        let lane_strip = if self.lanes_active() { LANE_HEADER_WIDTH } else { 0 };
+        // In lane mode the painted content is the left strip plus stacked bands, whose heights the
+        // cached layout owns; the flat hint described neither.
+        let height = if self.lanes_active() {
+            let bands: i32 =
+                (0..self.lanes.len()).map(|index| self.lane_height(index) + LANE_GAP).sum();
+            (HEADER_HEIGHT as i32 + bands) as u32
+        } else {
+            HEADER_HEIGHT + (CARD_HEIGHT + CARD_GAP as u32) * 3
+        };
         Size::new(
-            self.column_width_at(0) + self.column_width_at(1) + COLUMN_GAP as u32,
-            HEADER_HEIGHT + (CARD_HEIGHT + CARD_GAP as u32) * 3,
+            lane_strip + self.column_width_at(0) + self.column_width_at(1) + COLUMN_GAP as u32,
+            height,
         )
     }
     impl_draw_bridge!();
@@ -156,6 +166,78 @@ impl Widget for KanbanBoard {
             _ => None,
         }
     }
+}
+
+/// `position` after the card at `removed` left the board.
+///
+/// Removing a row shifts every later row of the same column down by one, while the removed row
+/// itself no longer names a card.
+fn position_after_removal(
+    position: Option<CardPosition>,
+    removed: CardPosition,
+) -> Option<CardPosition> {
+    match position {
+        Some(current) if current.column == removed.column && current.card == removed.card => None,
+        Some(current) if current.column == removed.column && current.card > removed.card => {
+            Some(CardPosition { column: current.column, card: current.card - 1 })
+        }
+        other => other,
+    }
+}
+
+/// The position a row-indexed value takes after a row is inserted at `at`.
+///
+/// The mirror of [`position_after_removal`]: an insertion pushes every later row of that column
+/// down by one, so a focus/hover that named "the card at row N" must follow it rather than naming
+/// whichever card slid into slot N.
+fn position_after_insertion(
+    position: Option<CardPosition>,
+    at: CardPosition,
+) -> Option<CardPosition> {
+    position.map(|current| {
+        if current.column == at.column && current.card >= at.card {
+            CardPosition { column: current.column, card: current.card + 1 }
+        } else {
+            current
+        }
+    })
+}
+
+/// `position` when it still names a card of `columns`.
+fn live_position(columns: &[KanbanColumn], position: Option<CardPosition>) -> Option<CardPosition> {
+    position.filter(|current| {
+        columns.get(current.column).is_some_and(|column| current.card < column.cards.len())
+    })
+}
+
+/// `position` after the column at `removed` left the board.
+fn position_after_column_removal(
+    position: Option<CardPosition>,
+    removed: usize,
+) -> Option<CardPosition> {
+    match position {
+        Some(current) if current.column == removed => None,
+        Some(current) if current.column > removed => {
+            Some(CardPosition { column: current.column - 1, card: current.card })
+        }
+        other => other,
+    }
+}
+
+/// `position` moved to the new index of the column id it named.
+///
+/// A `columns` write may reorder or remove columns; the slot index is not the identity, so every
+/// index-keyed piece of state (focus, hover, drag origin) follows its column's id. A removed id
+/// resolves to `None`.
+pub(super) fn remap_by_column_id(
+    position: Option<CardPosition>,
+    old_ids: &[String],
+    columns: &[KanbanColumn],
+) -> Option<CardPosition> {
+    let current = position?;
+    let id = old_ids.get(current.column)?;
+    let column = columns.iter().position(|entry| entry.id == *id)?;
+    Some(CardPosition { column, card: current.card })
 }
 
 impl KanbanBoard {
@@ -228,9 +310,29 @@ impl KanbanBoard {
             self.rebuild_selected_set();
             self.selection_changed.emit(self.selected_cards.clone());
         }
-        // A drag whose origin no longer exists is abandoned, so the release does
-        // not try to remove a card from a column that is gone.
-        if self.drag_origin.is_some_and(|origin| origin.column >= self.columns.len()) {
+        // Every index-keyed piece of state follows the shift: the column left, so a later column's
+        // per-column scroll belongs one slot earlier, and the focus/hover/drag that named a row in
+        // the removed column no longer names anything.
+        if index < self.column_scroll.len() {
+            self.column_scroll.remove(index);
+        }
+        self.focused_card = position_after_column_removal(self.focused_card, index);
+        // A hover that named a row in the removed column leaves with it; the card under the
+        // pointer is now none, so the exit is reported rather than only clearing the latch.
+        let hover_was_set = self.hovered_card.is_some();
+        self.hovered_card = position_after_column_removal(self.hovered_card, index);
+        if hover_was_set && self.hovered_card.is_none() {
+            self.card_hovered.emit(None);
+        }
+        self.drag_origin = position_after_column_removal(self.drag_origin, index);
+        self.hovered_column = match self.hovered_column {
+            Some(column) if column == index => None,
+            Some(column) if column > index => Some(column - 1),
+            other => other,
+        };
+        // A drag whose card left with the column is abandoned, so the release does not try to
+        // remove a card from a column that is gone.
+        if self.drag_origin.is_none() && self.drag.is_some() {
             self.cancel_drag();
         }
         self.invalidate_layout();
@@ -322,6 +424,21 @@ impl KanbanBoard {
             self.rebuild_selected_set();
             self.selection_changed.emit(self.selected_cards.clone());
         }
+        // The row indices below it shift, so every index-keyed piece of state follows.
+        self.focused_card = position_after_removal(self.focused_card, position);
+        // Removing the hovered card changes what is under the pointer, so the exit is reported;
+        // clearing the latch alone left a host mirroring `card_hovered` showing a card that is
+        // gone. A hover below the removed row shifts to the same card and stays silent.
+        let hover_was_set = self.hovered_card.is_some();
+        self.hovered_card = position_after_removal(self.hovered_card, position);
+        if hover_was_set && self.hovered_card.is_none() {
+            self.card_hovered.emit(None);
+        }
+        self.drag_origin = position_after_removal(self.drag_origin, position);
+        if self.drag_origin.is_none() && self.drag.is_some() {
+            // The dragged card itself was removed: there is nothing left to commit.
+            self.cancel_drag();
+        }
         self.invalidate_layout();
         self.base.request_redraw();
         Some((card, position))
@@ -341,12 +458,21 @@ impl KanbanBoard {
         index: usize,
         card: KanbanCard,
     ) -> Option<CardPosition> {
-        let column_ref = self.columns.get_mut(column)?;
-        let index = index.min(column_ref.cards.len());
-        column_ref.cards.insert(index, card);
+        let index = {
+            let column_ref = self.columns.get_mut(column)?;
+            let index = index.min(column_ref.cards.len());
+            column_ref.cards.insert(index, card);
+            index
+        };
+        // The rows below the insertion shift down, so the position-keyed state follows them; the
+        // removal path maintains the mirrored rule.
+        let at = CardPosition { column, card: index };
+        self.focused_card = position_after_insertion(self.focused_card, at);
+        self.hovered_card = position_after_insertion(self.hovered_card, at);
+        self.drag_origin = position_after_insertion(self.drag_origin, at);
         self.invalidate_layout();
         self.base.request_redraw();
-        Some(CardPosition { column, card: index })
+        Some(at)
     }
 
     /// Moves the card at `from` to `to` in one step.
@@ -368,10 +494,32 @@ impl KanbanBoard {
         }
         // Removing first makes an in-column move's target index refer to the list
         // the card is being inserted into, not the one it is leaving.
+        let focused_here = self.focused_card == Some(from);
+        let hovered_here = self.hovered_card == Some(from);
         let card = self.columns[from.column].cards.remove(from.card);
         let card_id = card.id.clone();
+        // The rows below the removal shift up; only the moved card itself is re-pointed at its
+        // destination afterwards. `insert_card` then applies the mirrored insertion shift.
+        if !focused_here {
+            self.focused_card = position_after_removal(self.focused_card, from);
+        }
+        if !hovered_here {
+            self.hovered_card = position_after_removal(self.hovered_card, from);
+        }
+        if self.drag_origin != Some(from) {
+            self.drag_origin = position_after_removal(self.drag_origin, from);
+        }
         let target = self.insert_card(to.column, to.card, card)?;
+        // The focus and hover rings named the card, not its slot, so they follow the move.
+        if focused_here {
+            self.focused_card = Some(target);
+        }
+        if hovered_here {
+            self.hovered_card = Some(target);
+        }
         self.invalidate_layout();
+        // The selection's documented order is display order, and the move changed it.
+        self.sort_selection();
         self.base.request_redraw();
         self.card_moved.emit((card_id, target));
         Some(target)
@@ -566,6 +714,59 @@ impl KanbanBoard {
         let rect = self.geometry();
         ((rect.height.saturating_sub(HEADER_HEIGHT)) / (CARD_HEIGHT + CARD_GAP as u32)).max(1)
             as usize
+    }
+
+    /// The scroll offset painted for `column`, clamped to the cards it currently holds.
+    ///
+    /// The stored offset is allowed to lag behind a shrunken card list (a `cards` write, a removal
+    /// or a taller board), and clamping on read is what keeps paint and hit testing in step instead
+    /// of letting the whole column scroll past its last row and paint blank.
+    pub(super) fn column_scroll_offset(&self, column: usize) -> usize {
+        let cards = self.columns.get(column).map_or(0, |entry| entry.cards.len());
+        self.column_scroll
+            .get(column)
+            .copied()
+            .unwrap_or(0)
+            .min(cards.saturating_sub(self.visible_cards_per_column()))
+    }
+
+    /// Drops the state that named a card the board no longer has.
+    ///
+    /// The two record writes replace whole levels of the model, so the focus, the hover, the drag
+    /// origin and the selection are re-checked against the new shape rather than left pointing at
+    /// rows that left with the old one.
+    pub(super) fn prune_card_state(&mut self) {
+        self.focused_card = live_position(&self.columns, self.focused_card);
+        let hover_was_set = self.hovered_card.is_some();
+        self.hovered_card = live_position(&self.columns, self.hovered_card);
+        // The record writes replace whole levels of the model; a hover whose card left is cleared
+        // and reported, matching the removal paths.
+        if hover_was_set && self.hovered_card.is_none() {
+            self.card_hovered.emit(None);
+        }
+        self.drag_origin = live_position(&self.columns, self.drag_origin);
+        self.hovered_column = self.hovered_column.filter(|column| *column < self.columns.len());
+        if self.drag_origin.is_none() && self.drag.is_some() {
+            self.cancel_drag();
+        }
+        if !self.selected_cards.is_empty() {
+            let live: HashSet<String> = self
+                .columns
+                .iter()
+                .flat_map(|column| column.cards.iter().map(|card| card.id.clone()))
+                .collect();
+            let before = self.selected_cards.len();
+            self.selected_cards.retain(|id| live.contains(id));
+            if self.selected_cards.len() != before {
+                self.rebuild_selected_set();
+                self.selection_changed.emit(self.selected_cards.clone());
+                self.base.request_redraw();
+            }
+        }
+        // A column list of a different length invalidates the per-index scroll vector's tail.
+        let column_count = self.columns.len();
+        self.column_scroll.truncate(column_count);
+        self.column_scroll.resize(column_count, 0);
     }
 
     /// Scrolls `column` by `delta` cards.

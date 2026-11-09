@@ -788,12 +788,22 @@ impl CodeEditor {
     /// Callers either spliced the model themselves (`splice_payload`,
     /// `splice_range`) or rebuilt the text by hand (line commands); this writes
     /// the result back so both paths agree, then records one undo checkpoint.
-    pub(super) fn commit_edit(&mut self, before: String, after: String, head: TextPosition) {
+    ///
+    /// Returns `false` when the diffed span touches a locked range and nothing was
+    /// written; `true` covers both an applied edit and the no-op `before == after`
+    /// case. Callers that publish a count (replace-all) use it to avoid reporting
+    /// work the document refused.
+    pub(super) fn commit_edit(
+        &mut self,
+        before: String,
+        after: String,
+        head: TextPosition,
+    ) -> bool {
         // A line transform that changes nothing must not mark the document dirty
         // or fire `text_changed`: the text is byte-for-byte what it already was,
         // so there is no edit to commit or undo.
         if before == after {
-            return;
+            return true;
         }
         // RW-114: a saved structural selection addresses the pre-edit text.
         self.structural_selection_history.clear();
@@ -815,7 +825,7 @@ impl CodeEditor {
             // `start + removed_len + inserted.len()` can exceed the pre-edit
             // length, so `guard_end` is clamped to the document by the helper.
             if !self.is_range_editable(guard_start, guard_end) {
-                return;
+                return false;
             }
         }
         let removed = range.as_ref().map(|(start, removed_len, _)| {
@@ -823,6 +833,7 @@ impl CodeEditor {
         });
         let checkpoint = Checkpoint { range, removed, before: Some(before) };
         self.record_and_settle_inner(Some(after), checkpoint, head);
+        true
     }
 
     /// Writes the spliced text back, records one checkpoint and refreshes state.
@@ -975,11 +986,15 @@ impl CodeEditor {
         }
         self.cursor = Cursor { head: self.clamp_position(head), anchor: self.clamp_position(head) };
         self.goal.active = false;
-        // Re-lex only from the first line the edit could have changed. The
-        // caret lands at or after the edited region in every caller, so taking
-        // the minimum of the two ends is a safe lower bound: re-lexing a line or
-        // two too many is harmless, missing one would leave stale colours.
-        self.invalidate_line_states_from(self.cursor.head.line.min(head.line));
+        // Re-lex from the first line the edit could have changed. `dirty` names that
+        // line; the old `min(cursor, head)` was a no-op because both are the caret after
+        // the edit, and a block transform (indent/outdent/comment) starts on a line
+        // *above* the caret whose colours were then never re-derived. When the caller
+        // could not describe the edit, the caret lines remain the safe lower bound.
+        let relex_from = dirty
+            .map(|(first, _, _)| first)
+            .unwrap_or_else(|| self.cursor.head.line.min(head.line));
+        self.invalidate_line_states_from(relex_from);
         // A keystroke inside the document is a modification by definition, so the
         // flag is set directly rather than re-derived by comparing the whole
         // document against its save point.

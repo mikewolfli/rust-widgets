@@ -54,13 +54,15 @@ impl EventHandler for KanbanBoard {
                     if rust_widgets::shortcut::event_carries_primary(*modifiers)
                         || pressed.contains(rust_widgets::shortcut::Modifiers::SHIFT)
                     {
-                        self.focused_card = Some(position);
+                        // Routing focus through the setter keeps the "focused row is visible"
+                        // invariant for a modified press too, which used to bypass it.
+                        self.set_focused_card(Some(position));
                         if let Some(card_id) = card_id {
                             self.toggle_card_selected(&card_id);
                         }
                         return;
                     }
-                    self.focused_card = Some(position);
+                    self.set_focused_card(Some(position));
                     if self.selected_cards.len() > 1
                         && card_id
                             .as_ref()
@@ -122,13 +124,25 @@ impl EventHandler for KanbanBoard {
                 if delta.y != 0 {
                     // Scroll the column under the pointer when one is known, otherwise the
                     // first column: a board with several columns scrolls them independently.
+                    // Positive delta means the content moves down, so the visible row moves back.
                     let column = self.hovered_column.unwrap_or(0);
-                    self.scroll_column(column, if delta.y > 0 { 1 } else { -1 });
+                    self.scroll_column(column, if delta.y > 0 { -1 } else { 1 });
                 }
             }
             Event::KeyPress { key, .. } => {
                 let key = rust_widgets::shortcut::Key::from_key_code(*key);
-                let current = self.focused_card.or_else(|| {
+                // A focus that names a removed row is cleared rather than trusted: indexing the
+                // column list with it used to panic on the navigation keys below.
+                let focused = self.focused_card.filter(|position| {
+                    self.columns
+                        .get(position.column)
+                        .is_some_and(|column| position.card < column.cards.len())
+                });
+                if focused.is_none() && self.focused_card.is_some() {
+                    self.focused_card = None;
+                    self.base.request_redraw();
+                }
+                let current = focused.or_else(|| {
                     self.columns
                         .iter()
                         .position(|column| !column.cards.is_empty())
@@ -201,8 +215,14 @@ impl EventHandler for KanbanBoard {
             Event::MouseLeave { .. } => {
                 self.cancel_drag();
                 let hover_changed = self.hovered_card.take().is_some();
-                if hover_changed {
-                    self.card_hovered.emit(None);
+                // The column half of the hover state leaves with the pointer too; otherwise the
+                // read-only `hovered_column` kept naming a column the pointer had left and the
+                // wheel kept scrolling it.
+                let column_hover_changed = self.hovered_column.take().is_some();
+                if hover_changed || column_hover_changed {
+                    if hover_changed {
+                        self.card_hovered.emit(None);
+                    }
                     self.base.request_redraw();
                 }
             }

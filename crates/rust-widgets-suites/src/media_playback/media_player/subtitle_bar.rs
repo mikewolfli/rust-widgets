@@ -83,20 +83,31 @@ impl SubtitleBar {
         }
     }
 
-    /// The current caption.
+    /// The explicit caption, used while the band is not following a player.
+    ///
+    /// While bound, the painted caption is [`Self::current_caption`]; `set_text` still writes this
+    /// fallback so stopping the follow returns to it.
     pub fn text(&self) -> &str {
         &self.text
     }
 
     /// Replaces the caption. Embedded `\n` starts a new line.
+    ///
+    /// While the band follows a player, an explicit write takes over: the binding is dropped, so
+    /// the new text is what paints and what `get("text")` returns. Writing the fallback while
+    /// bound used to change no pixel at all and still emitted `text_changed`.
     pub fn set_text(&mut self, text: impl Into<String>) {
         let text = text.into();
-        if self.text == text {
+        if self.text == text && self.binding.is_none() {
             return;
         }
+        let before = self.current_caption();
+        self.binding = None;
         self.text = text;
         self.base.request_redraw();
-        self.text_changed.emit();
+        if self.current_caption() != before {
+            self.text_changed.emit();
+        }
     }
 
     /// Empties the caption.
@@ -184,11 +195,20 @@ impl SubtitleBar {
         let scope = ConnectionScope::new();
         let sink = Arc::clone(&caption);
         let shared_cues = Arc::clone(&cues);
+        // A caption change is a repaint the widget owes; the clock's callback has no `&mut self`,
+        // so it wakes the host through the base's redraw signal. Without this a standalone band
+        // kept painting the cue it was bound at until something else dirtied it. The published
+        // `text_changed` fires too: it reports what the bar shows, and a followed cue is exactly
+        // that, which is why a bound band used to change its pixels in silence.
+        let redraw = self.base.redraw_requested_signal().clone();
+        let changed = self.text_changed.clone();
         player.time_updated.connect_ref_scoped(&scope, move |time| {
             let next = cue_at(&shared_cues, *time).map(|cue| cue.text.clone()).unwrap_or_default();
             let mut text = rust_widgets::compat::lock(&sink);
             if *text != next {
                 *text = next;
+                redraw.emit();
+                changed.emit();
             }
         });
         self.binding = Some(SubtitleBinding { caption, _scope: scope });
@@ -249,7 +269,9 @@ impl Widget for SubtitleBar {
 impl WidgetProperties for SubtitleBar {
     fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
         match name {
-            "text" => Ok(CapabilityValue::String(self.text().to_string())),
+            // The readout is the caption the band paints: while bound that is the followed cue, so
+            // reporting the explicit fallback here described a string that was not on screen.
+            "text" => Ok(CapabilityValue::String(self.current_caption())),
             "max_lines" => Ok(CapabilityValue::UInt(self.max_lines() as u64)),
             "font_scale" => Ok(CapabilityValue::Float(f64::from(self.font_scale()))),
             "background_opacity" => Ok(CapabilityValue::UInt(u64::from(self.background_opacity()))),
@@ -424,5 +446,108 @@ mod tests {
         bar.stop_following_player();
         assert!(!bar.is_following_player());
         assert_eq!(bar.current_caption(), "explicit");
+    }
+
+    /// A followed caption change is published, and `text` reports what the band shows.
+    ///
+    /// The signal is documented as reporting what the bar shows; the bound path repainted the
+    /// pixels in silence, and `get("text")` read the explicit fallback rather than the cue.
+    #[test]
+    fn a_followed_caption_reports_what_it_shows() {
+        use rust_widgets::widget::capability::WidgetProperties;
+
+        let mut player = VideoPlayer::new(Rect::new(0, 0, 320, 240));
+        player.set_duration(10.0);
+        player.set_subtitle_tracks(vec![crate::media_playback::video_player::SubtitleTrack::new(
+            "s1",
+            "English",
+            vec![SubtitleCue::new(0.0, 2.0, "hello"), SubtitleCue::new(2.0, 4.0, "world")],
+        )]);
+        player.set_subtitle_track(0).expect("the track exists");
+
+        let mut bar = SubtitleBar::new(Rect::new(0, 0, 320, 48));
+        bar.set_text("explicit");
+        bar.follow_video_player(&player);
+
+        let changes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = Arc::clone(&changes);
+        bar.text_changed.connect(move || {
+            counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        });
+
+        player.seek(3.0);
+        assert_eq!(bar.current_caption(), "world");
+        assert_eq!(
+            bar.get("text"),
+            Ok(CapabilityValue::String("world".into())),
+            "the readout is the caption on screen"
+        );
+        assert_eq!(changes.load(std::sync::atomic::Ordering::SeqCst), 1, "the change is published");
+
+        bar.stop_following_player();
+        assert_eq!(bar.get("text"), Ok(CapabilityValue::String("explicit".into())));
+    }
+
+    /// A followed caption change owes the band a repaint.
+    #[test]
+    fn a_changed_followed_caption_requests_a_redraw() {
+        let mut player = VideoPlayer::new(Rect::new(0, 0, 320, 240));
+        player.set_duration(10.0);
+        player.set_subtitle_tracks(vec![crate::media_playback::video_player::SubtitleTrack::new(
+            "s1",
+            "English",
+            vec![SubtitleCue::new(0.0, 2.0, "hello"), SubtitleCue::new(2.0, 4.0, "world")],
+        )]);
+        player.set_subtitle_track(0).expect("the track exists");
+
+        let mut bar = SubtitleBar::new(Rect::new(0, 0, 320, 48));
+        bar.follow_video_player(&player);
+        let redraws = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = Arc::clone(&redraws);
+        bar.base.redraw_requested.connect(move || {
+            counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        });
+
+        player.seek(3.0);
+        assert_eq!(bar.current_caption(), "world");
+        assert_eq!(
+            redraws.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "the caption changed, so the band must repaint"
+        );
+        // Seeking inside the same cue changes nothing, so it owes no frame.
+        player.seek(3.5);
+        assert_eq!(redraws.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    /// Writing the caption through the property takes over from the followed clock.
+    ///
+    /// While bound, `draw`/`get("text")` read the cue, so the write changed no pixel yet still
+    /// emitted `text_changed`; the property did not even round-trip.
+    #[test]
+    fn an_explicit_write_takes_over_from_the_followed_player() {
+        use rust_widgets::widget::capability::WidgetProperties;
+
+        let mut player = VideoPlayer::new(Rect::new(0, 0, 320, 240));
+        player.set_duration(10.0);
+        player.set_subtitle_tracks(vec![crate::media_playback::video_player::SubtitleTrack::new(
+            "s1",
+            "English",
+            vec![SubtitleCue::new(0.0, 2.0, "hello"), SubtitleCue::new(2.0, 4.0, "world")],
+        )]);
+        player.set_subtitle_track(0).expect("the track exists");
+
+        let mut bar = SubtitleBar::new(Rect::new(0, 0, 320, 48));
+        bar.follow_video_player(&player);
+        player.seek(3.0);
+        assert_eq!(bar.current_caption(), "world");
+
+        bar.set_text("manual");
+        assert!(!bar.is_following_player(), "the write takes over from the clock");
+        assert_eq!(bar.get("text"), Ok(CapabilityValue::String("manual".into())));
+
+        // The player is no longer followed, so its clock cannot overwrite the explicit text.
+        player.seek(3.5);
+        assert_eq!(bar.current_caption(), "manual");
     }
 }

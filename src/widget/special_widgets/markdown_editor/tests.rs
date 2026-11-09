@@ -5,7 +5,7 @@
 
 use super::outline::OUTLINE_ROW_HEIGHT;
 use super::*;
-use crate::core::{Color, Rect};
+use crate::core::{Color, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
@@ -711,4 +711,92 @@ fn outline_jump_clears_a_stale_selection() {
 
     assert!(editor.text().contains("alpha"), "the old selection was not replaced");
     assert!(editor.text().contains("# One"));
+}
+
+/// Typing while the replacement row is focused belongs to that row.
+///
+/// The editor used to append every `TextInput` to its own query state, so a host could show
+/// the replacement row but never fill it.
+#[test]
+fn typing_into_the_replacement_row_edits_the_replacement() {
+    let mut editor = MarkdownEditor::new(Rect::new(0, 0, 420, 240));
+    editor.set_text("alpha beta");
+    editor.show_find_bar();
+    editor.find_bar_mut().set_replace_visible(true);
+
+    let band = editor.find_bar_rect();
+    let press = Point::new(band.x + 10, band.y + band.height as i32 - 5);
+    editor.handle_event(&Event::mouse_press(press.x, press.y, 1));
+    editor.handle_event(&Event::text_input("beta"));
+
+    assert_eq!(editor.find_query(), "", "the query field was not focused");
+    assert_eq!(editor.find_bar().replace_text(), "beta");
+    assert_eq!(editor.text(), "alpha beta", "the document is untouched");
+}
+
+/// The outline, the metrics and the preview share one heading rule.
+#[test]
+fn headings_mean_the_same_thing_to_the_outline_metrics_and_preview() {
+    let mut editor = MarkdownEditor::new(Rect::new(0, 0, 420, 240));
+    // `#tag` has no space and seven hashes is not a heading (CommonMark/GFM).
+    editor.set_text("# One\n#tag\n####### seven\n## Two");
+
+    assert_eq!(editor.heading_count(), 2);
+    assert_eq!(editor.outline().len(), 2);
+
+    let parsed = with_context(|context| {
+        parse_preview_line(
+            "#tag",
+            BlockStart::Normal,
+            true,
+            true,
+            false,
+            effective_font(editor.base.style()),
+            context,
+        )
+    });
+    assert!(!matches!(parsed.row, PreviewRow::Heading(_)));
+}
+
+/// A fence closes only on its own marker, at least as long as the opener.
+#[test]
+fn a_longer_fence_is_not_closed_by_an_inner_shorter_one() {
+    let mut editor = MarkdownEditor::new(Rect::new(0, 0, 420, 240));
+    editor.set_text("````rust\n```\nlet x = 1;\n````\n");
+    editor.ensure_blocks();
+
+    assert!(matches!(editor.blocks[0], BlockStart::Fence));
+    assert!(matches!(editor.blocks[1], BlockStart::Code(_, _)), "``` cannot close a ```` block");
+    assert!(matches!(editor.blocks[2], BlockStart::Code(_, _)));
+    assert!(matches!(editor.blocks[3], BlockStart::Fence), "the four-backtick line closes it");
+}
+
+/// CRLF is normalised on load, so a line merge cannot leave a `\r` behind.
+#[test]
+fn a_crlf_document_stores_one_terminator_per_line() {
+    let mut editor = MarkdownEditor::new(Rect::new(0, 0, 420, 240));
+    editor.set_text("one\r\ntwo\r\n");
+    assert_eq!(editor.text(), "one\ntwo\n");
+    assert!(!editor.text().contains('\r'));
+}
+
+/// An unmatched backtick is literal text, not an unclosed code span.
+#[test]
+fn an_unclosed_backtick_does_not_style_the_rest_of_the_row_as_code() {
+    let editor = MarkdownEditor::new(Rect::new(0, 0, 420, 240));
+    let parsed = with_context(|context| {
+        parse_preview_line(
+            "a ` b",
+            BlockStart::Normal,
+            true,
+            true,
+            false,
+            effective_font(editor.base.style()),
+            context,
+        )
+    });
+    assert!(
+        parsed.runs.iter().all(|run| run.style != PreviewStyle::Code),
+        "an unmatched backtick must not paint the rest of the line as code"
+    );
 }

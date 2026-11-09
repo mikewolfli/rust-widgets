@@ -165,6 +165,10 @@ pub enum QuoteSort {
     SymbolAscending,
     /// By symbol, Z to A.
     SymbolDescending,
+    /// By display name, A to Z. A row with no name sorts by its symbol.
+    NameAscending,
+    /// By display name, Z to A. A row with no name sorts by its symbol.
+    NameDescending,
     /// By last price, low to high.
     LastAscending,
     /// By last price, high to low — the most active at the top.
@@ -173,6 +177,18 @@ pub enum QuoteSort {
     ChangeMagnitudeAscending,
     /// By absolute change, largest move first — the day's biggest movers.
     ChangeMagnitudeDescending,
+    /// By session high, low to high.
+    HighAscending,
+    /// By session high, high to low.
+    HighDescending,
+    /// By session low, low to high.
+    LowAscending,
+    /// By session low, high to low.
+    LowDescending,
+    /// By traded volume, smallest first.
+    VolumeAscending,
+    /// By traded volume, largest first.
+    VolumeDescending,
 }
 
 impl QuoteSort {
@@ -182,10 +198,18 @@ impl QuoteSort {
             QuoteSort::None => "none",
             QuoteSort::SymbolAscending => "symbol_ascending",
             QuoteSort::SymbolDescending => "symbol_descending",
+            QuoteSort::NameAscending => "name_ascending",
+            QuoteSort::NameDescending => "name_descending",
             QuoteSort::LastAscending => "last_ascending",
             QuoteSort::LastDescending => "last_descending",
             QuoteSort::ChangeMagnitudeAscending => "change_magnitude_ascending",
             QuoteSort::ChangeMagnitudeDescending => "change_magnitude_descending",
+            QuoteSort::HighAscending => "high_ascending",
+            QuoteSort::HighDescending => "high_descending",
+            QuoteSort::LowAscending => "low_ascending",
+            QuoteSort::LowDescending => "low_descending",
+            QuoteSort::VolumeAscending => "volume_ascending",
+            QuoteSort::VolumeDescending => "volume_descending",
         }
     }
 
@@ -198,14 +222,32 @@ impl QuoteSort {
             "none" => QuoteSort::None,
             "symbol" | "symbol_ascending" => QuoteSort::SymbolAscending,
             "symbol_descending" => QuoteSort::SymbolDescending,
+            "name_ascending" => QuoteSort::NameAscending,
+            "name_descending" => QuoteSort::NameDescending,
             "last_ascending" => QuoteSort::LastAscending,
             "last" | "last_descending" => QuoteSort::LastDescending,
             "change_magnitude" | "change_magnitude_descending" => {
                 QuoteSort::ChangeMagnitudeDescending
             }
             "change_magnitude_ascending" => QuoteSort::ChangeMagnitudeAscending,
+            "high_ascending" => QuoteSort::HighAscending,
+            "high_descending" => QuoteSort::HighDescending,
+            "low_ascending" => QuoteSort::LowAscending,
+            "low_descending" => QuoteSort::LowDescending,
+            "volume_ascending" => QuoteSort::VolumeAscending,
+            "volume_descending" => QuoteSort::VolumeDescending,
             _ => return None,
         })
+    }
+}
+
+/// The key the `Name` column sorts by: the display name, or the symbol when the feed
+/// supplied none, so an unnamed row still has a stable place instead of sorting as empty.
+fn name_key(quote: &Quote) -> &str {
+    if quote.name.is_empty() {
+        quote.symbol.as_str()
+    } else {
+        quote.name.as_str()
     }
 }
 
@@ -260,6 +302,13 @@ pub struct QuoteBoard {
     pub quote_clicked: Signal1<String>,
     /// Emitted with the symbol as the pointer moves onto a row.
     pub quote_hovered: Signal1<String>,
+    /// Emitted with the symbol of the row the pointer left.
+    ///
+    /// Every path that removes a hover reports it: leaving the board, moving onto another
+    /// row, scrolling the window, and replacing the rows with a list that no longer holds
+    /// the hovered index. Without it a host could only infer the exit from the next
+    /// `quote_hovered` or from the hover property, which the board does not publish.
+    pub quote_unhovered: Signal1<String>,
     /// Emitted with the symbol when the selected row changes.
     pub selection_changed: Signal1<Option<String>>,
 }
@@ -323,6 +372,7 @@ impl QuoteBoard {
             decimals_cache: core::cell::Cell::new(None),
             quote_clicked: Signal1::new(),
             quote_hovered: Signal1::new(),
+            quote_unhovered: Signal1::new(),
             selection_changed: Signal1::new(),
         }
     }
@@ -340,6 +390,12 @@ impl QuoteBoard {
     /// sort, and "no sort" would then mean "restore the order that happens to be left
     /// over", which is not the caller's order.
     pub fn set_quotes(&mut self, quotes: Vec<Quote>) {
+        // The selection names a row of the order being replaced, so its identity has to be
+        // read before the new snapshot lands; `apply_sort` is the pass that rebuilds the
+        // order and would otherwise re-read the index against the wrong list. The hover is
+        // captured for the same reason: a shorter list cannot resolve its old index.
+        let selected_symbol = self.selected_symbol().map(String::from);
+        let hovered_symbol = self.hovered_symbol();
         // A changed last price flashes in its direction, for the next few frames. The
         // previous snapshot is indexed by symbol once, so the comparison is linear rather
         // than the `O(n^2)` search the old form ran on every push (J-P14).
@@ -362,7 +418,8 @@ impl QuoteBoard {
         // The incoming snapshot replaces the caller's order, so the active filter and sort are
         // re-applied to it rather than left describing the previous rows.
         self.apply_sort();
-        self.revalidate_selection();
+        self.restore_selection(selected_symbol);
+        self.revalidate_selection(hovered_symbol);
         self.clamp_scroll();
         self.base.request_redraw();
     }
@@ -393,13 +450,15 @@ impl QuoteBoard {
     /// clearing it, which is what a table user expects (FIN-07).
     fn next_sort_for(&self, column: QuoteColumn) -> QuoteSort {
         let (preferred, opposite) = match column {
-            QuoteColumn::Symbol | QuoteColumn::Name => {
-                (QuoteSort::SymbolAscending, QuoteSort::SymbolDescending)
-            }
+            QuoteColumn::Symbol => (QuoteSort::SymbolAscending, QuoteSort::SymbolDescending),
+            QuoteColumn::Name => (QuoteSort::NameAscending, QuoteSort::NameDescending),
             QuoteColumn::Change | QuoteColumn::ChangePercent => {
                 (QuoteSort::ChangeMagnitudeDescending, QuoteSort::ChangeMagnitudeAscending)
             }
-            _ => (QuoteSort::LastDescending, QuoteSort::LastAscending),
+            QuoteColumn::Last => (QuoteSort::LastDescending, QuoteSort::LastAscending),
+            QuoteColumn::High => (QuoteSort::HighDescending, QuoteSort::HighAscending),
+            QuoteColumn::Low => (QuoteSort::LowDescending, QuoteSort::LowAscending),
+            QuoteColumn::Volume => (QuoteSort::VolumeDescending, QuoteSort::VolumeAscending),
         };
         if self.sort == preferred {
             opposite
@@ -417,8 +476,12 @@ impl QuoteBoard {
             return false;
         }
         let ranges = self.column_ranges();
-        for (index, (start, end)) in ranges.iter().enumerate() {
-            if pos.x >= *start && pos.x < *end {
+        for (index, (start, width)) in ranges.iter().enumerate() {
+            // `column_ranges` yields `(start, width)`, the pair the painter uses to place a
+            // heading and its cells. Comparing the pointer against the *width* treated it as a
+            // right edge, so every column but the first became unreachable and a press could
+            // sort a column it was not over.
+            if pos.x >= *start && pos.x < *start + *width {
                 if let Some(column) = self.columns.get(index).copied() {
                     let next = self.next_sort_for(column);
                     // Each click advances the three-state cycle; a fourth click on the same
@@ -453,9 +516,12 @@ impl QuoteBoard {
 
     /// Sets the sort and requests a repaint.
     pub fn set_sort(&mut self, sort: QuoteSort) {
+        let selected_symbol = self.selected_symbol().map(String::from);
+        let hovered_symbol = self.hovered_symbol();
         self.sort = sort;
         self.apply_sort();
-        self.revalidate_selection();
+        self.restore_selection(selected_symbol);
+        self.revalidate_selection(hovered_symbol);
         self.base.request_redraw();
     }
 
@@ -536,6 +602,12 @@ impl QuoteBoard {
             QuoteSort::SymbolDescending => {
                 rows.sort_by(|left, right| right.symbol.cmp(&left.symbol))
             }
+            QuoteSort::NameAscending => {
+                rows.sort_by(|left, right| name_key(left).cmp(name_key(right)))
+            }
+            QuoteSort::NameDescending => {
+                rows.sort_by(|left, right| name_key(right).cmp(name_key(left)))
+            }
             QuoteSort::LastAscending => rows.sort_by(|left, right| {
                 left.last.partial_cmp(&right.last).unwrap_or(core::cmp::Ordering::Equal)
             }),
@@ -552,6 +624,24 @@ impl QuoteBoard {
                 let right_magnitude = right.change().abs();
                 right_magnitude.partial_cmp(&left_magnitude).unwrap_or(core::cmp::Ordering::Equal)
             }),
+            QuoteSort::HighAscending => rows.sort_by(|left, right| {
+                left.high.partial_cmp(&right.high).unwrap_or(core::cmp::Ordering::Equal)
+            }),
+            QuoteSort::HighDescending => rows.sort_by(|left, right| {
+                right.high.partial_cmp(&left.high).unwrap_or(core::cmp::Ordering::Equal)
+            }),
+            QuoteSort::LowAscending => rows.sort_by(|left, right| {
+                left.low.partial_cmp(&right.low).unwrap_or(core::cmp::Ordering::Equal)
+            }),
+            QuoteSort::LowDescending => rows.sort_by(|left, right| {
+                right.low.partial_cmp(&left.low).unwrap_or(core::cmp::Ordering::Equal)
+            }),
+            QuoteSort::VolumeAscending => rows.sort_by(|left, right| {
+                left.volume.partial_cmp(&right.volume).unwrap_or(core::cmp::Ordering::Equal)
+            }),
+            QuoteSort::VolumeDescending => rows.sort_by(|left, right| {
+                right.volume.partial_cmp(&left.volume).unwrap_or(core::cmp::Ordering::Equal)
+            }),
         }
         self.quotes = rows;
         // The filter and the sort both change the measured sample and the row count, so the
@@ -560,15 +650,35 @@ impl QuoteBoard {
         self.clamp_scroll();
     }
 
+    /// Re-finds the selected instrument after a pass that permuted `quotes`.
+    ///
+    /// `selected` is an index into the display order, so a filter or a sort makes it name a
+    /// different instrument unless it is translated. The symbol is the row's identity (the
+    /// record schema's id field), so it is what is carried across the reorder; a row the new
+    /// order does not contain clears the selection, which the host has to hear about because
+    /// `selection_changed` is the only notification the board publishes.
+    fn restore_selection(&mut self, selected_symbol: Option<String>) {
+        self.selected = selected_symbol
+            .as_deref()
+            .and_then(|symbol| self.quotes.iter().position(|quote| quote.symbol == symbol));
+        let selection = self.selected_symbol().map(String::from);
+        if selection != selected_symbol {
+            self.selection_changed.emit(selection);
+        }
+    }
+
     /// Replaces the row filter, re-sorting the visible subset (FIN-08).
     ///
     /// `column` in a condition indexes [`Self::filter_columns`], which is a stable list
     /// independent of which columns are currently visible: hiding a column must not
     /// silently drop the filter that refers to it.
     pub fn set_filter(&mut self, conditions: &[FilterCondition]) {
+        let selected_symbol = self.selected_symbol().map(String::from);
+        let hovered_symbol = self.hovered_symbol();
         self.filters = conditions.to_vec();
         self.apply_sort();
-        self.revalidate_selection();
+        self.restore_selection(selected_symbol);
+        self.revalidate_selection(hovered_symbol);
         self.base.request_redraw();
     }
 
@@ -577,9 +687,12 @@ impl QuoteBoard {
         if self.filters.is_empty() {
             return;
         }
+        let selected_symbol = self.selected_symbol().map(String::from);
+        let hovered_symbol = self.hovered_symbol();
         self.filters.clear();
         self.apply_sort();
-        self.revalidate_selection();
+        self.restore_selection(selected_symbol);
+        self.revalidate_selection(hovered_symbol);
         self.base.request_redraw();
     }
 
@@ -655,14 +768,46 @@ impl QuoteBoard {
         })
     }
 
-    /// Drops a selection or hover that no longer points at a row.
-    fn revalidate_selection(&mut self) {
-        if self.selected.is_some_and(|index| index >= self.quotes.len()) {
-            self.selected = None;
+    /// Re-resolves the hover after the rows were rebuilt.
+    ///
+    /// `previous_hover` is the symbol the hover named before the rows were rebuilt. The index
+    /// cannot be reused: `apply_sort` may have permuted the rows, so the row that moved into the
+    /// old index is a different instrument. Re-resolving by symbol keeps the highlight on the row
+    /// the pointer is over; when the symbol is gone, the exit is reported from the captured
+    /// identity rather than looked up again.
+    fn revalidate_selection(&mut self, previous_hover: Option<String>) {
+        // `restore_selection` is the single owner of the selected index: every caller runs it
+        // first, and it either clears the selection or leaves a valid index.
+        let resolved = previous_hover
+            .as_deref()
+            .and_then(|symbol| self.quotes.iter().position(|quote| quote.symbol == symbol));
+        if resolved != self.hovered {
+            self.hovered = resolved;
+            self.base.request_redraw();
         }
-        if self.hovered.is_some_and(|index| index >= self.quotes.len()) {
-            self.hovered = None;
+        if resolved.is_none() {
+            if let Some(symbol) = previous_hover {
+                self.quote_unhovered.emit(symbol);
+            }
         }
+    }
+
+    /// The symbol of the hovered row, if the pointer is on one.
+    fn hovered_symbol(&self) -> Option<String> {
+        self.hovered.and_then(|index| self.quotes.get(index)).map(|quote| quote.symbol.clone())
+    }
+
+    /// Drops the hovered row and reports the symbol it named.
+    ///
+    /// The exit paths that still hold the row (leaving the board, moving off the rows,
+    /// scrolling the window) share this one place, so a host hears about every exit through
+    /// the same event.
+    fn clear_hover(&mut self) {
+        let Some(index) = self.hovered.take() else { return };
+        if let Some(symbol) = self.quotes.get(index).map(|quote| quote.symbol.clone()) {
+            self.quote_unhovered.emit(symbol);
+        }
+        self.base.request_redraw();
     }
 
     /// The height of one row.
@@ -681,10 +826,9 @@ impl QuoteBoard {
     /// The index of the row at a screen y, accounting for the header.
     /// The row index under a screen y, if any.
     ///
-    /// Bounded by the widget's own rectangle on both edges, matching `TreeTable::row_at`.
-    /// The upper bound is defensive: with today's row-height formula a pointer below the
-    /// board already exceeds `quotes.len()`, so the data bound rejected it. Stating it here
-    /// keeps the rejection from depending on that coincidence.
+    /// Bounded by the widget's own rectangle on both edges, matching `TreeTable::row_at`, and by
+    /// the rows the painter actually draws: the last band of a board whose height is not a whole
+    /// number of rows used to name a row that was never on screen.
     fn row_at(&self, y: i32) -> Option<usize> {
         let geometry = self.base.geometry();
         if y < geometry.y || y >= geometry.y + geometry.height as i32 {
@@ -695,7 +839,7 @@ impl QuoteBoard {
             return None;
         }
         let index = self.scroll_offset + (offset / self.row_height()) as usize;
-        if index < self.quotes.len() {
+        if index < self.scroll_offset + self.visible_row_count() && index < self.quotes.len() {
             Some(index)
         } else {
             None
@@ -721,6 +865,11 @@ impl QuoteBoard {
             return;
         }
         self.scroll_offset = offset;
+        // The row under the pointer is a different one once the window moves, so the old
+        // absolute index would highlight a row the pointer has left. Dropping it is the
+        // same rule the order-book ladder applies to a scrolled window, and the exit is
+        // reported as an unhover like every other path that removes a hover.
+        self.clear_hover();
         self.base.request_redraw();
     }
 
@@ -1007,7 +1156,7 @@ impl Widget for QuoteBoard {
         if self.flashes.is_empty() {
             return false;
         }
-        let decay = (delta_ms / 3).min(255) as u8;
+        let decay = (delta_ms / 3).clamp(1, 255) as u8;
         for (_, _, alpha) in &mut self.flashes {
             *alpha = alpha.saturating_sub(decay);
         }
@@ -1066,6 +1215,11 @@ impl Widget for QuoteBoard {
                     CapabilityValue::String(v.clone())
                 }))
             }
+            "quote_unhovered" => {
+                Some(EventSignalRef::mapped("quote_unhovered", &self.quote_unhovered, |v| {
+                    CapabilityValue::String(v.clone())
+                }))
+            }
             "selection_changed" => {
                 Some(EventSignalRef::mapped("selection_changed", &self.selection_changed, |v| {
                     match v {
@@ -1092,27 +1246,33 @@ impl rust_widgets::event::EventHandler for QuoteBoard {
             Event::MouseMove { pos } | Event::PointerMove { pos, .. } => {
                 let next = self.row_at(pos.y);
                 if next != self.hovered {
+                    // Moving off a row — onto another row, or off the rows into the header —
+                    // leaves the previous one, and the host is told before the new row is
+                    // reported.
+                    if let Some(previous) = self.hovered_symbol() {
+                        self.quote_unhovered.emit(previous);
+                    }
+                    self.hovered = next;
                     if let Some(index) = next {
                         if let Some(quote) = self.quotes.get(index) {
                             self.quote_hovered.emit(quote.symbol.clone());
                         }
                     }
-                    self.hovered = next;
                     self.base.request_redraw();
                 }
             }
-            Event::MouseLeave { .. } if self.hovered.take().is_some() => {
-                self.base.request_redraw();
-            }
+            Event::MouseLeave { .. } => self.clear_hover(),
             Event::MousePress { pos, .. } | Event::PointerPress { pos, .. } => {
-                if self.sort_header_at(*pos) {
-                    return;
-                }
-                if let Some(index) = self.row_at(pos.y) {
-                    if let Some(quote) = self.quotes.get(index) {
-                        self.quote_clicked.emit(quote.symbol.clone());
+                // A header press still reaches the base widget below: returning here consumed it,
+                // so a header click emitted no `mouse_down` and never focused the board, while a
+                // row press two lines down routed normally.
+                if !self.sort_header_at(*pos) {
+                    if let Some(index) = self.row_at(pos.y) {
+                        if let Some(quote) = self.quotes.get(index) {
+                            self.quote_clicked.emit(quote.symbol.clone());
+                        }
+                        self.select(Some(index));
                     }
-                    self.select(Some(index));
                 }
             }
             Event::Wheel { delta, .. } if delta.y != 0 => {
@@ -1785,6 +1945,217 @@ mod tests {
         assert_eq!(restored, original, "the caller's order must come back exactly");
     }
 
+    /// Sorting keeps the selected instrument selected; losing it is reported.
+    ///
+    /// Regression: `selected` is an index into `quotes`, which `apply_sort` permutes, so a
+    /// sort left the highlight on whatever row landed at the old position and
+    /// `selected_symbol()` silently changed without a `selection_changed` emission.
+    #[test]
+    fn sorting_and_filtering_keep_the_selected_instrument_selected() {
+        let mut board = QuoteBoard::new(Rect::new(0, 0, 480, 240));
+        board.set_quotes(alloc::vec![
+            Quote::new("B", 20.0, 10.0),
+            Quote::new("A", 10.0, 10.0),
+            Quote::new("C", 30.0, 10.0),
+        ]);
+        board.select(Some(0));
+        assert_eq!(board.selected_symbol(), Some("B"));
+
+        // A fresh snapshot in a different order keeps the selected instrument selected.
+        board.set_quotes(alloc::vec![
+            Quote::new("C", 30.0, 10.0),
+            Quote::new("B", 20.0, 10.0),
+            Quote::new("A", 10.0, 10.0),
+        ]);
+        assert_eq!(board.selected_symbol(), Some("B"), "a new order keeps the identity");
+        assert_eq!(board.selected_index(), Some(1), "its position in the new order");
+
+        let seen = Arc::new(std::sync::Mutex::new(alloc::vec::Vec::<Option<String>>::new()));
+        let sink = Arc::clone(&seen);
+        board.selection_changed.connect(move |value| sink.lock().unwrap().push((*value).clone()));
+
+        board.set_sort(QuoteSort::SymbolAscending);
+        assert_eq!(board.selected_symbol(), Some("B"), "the identity must follow the row");
+        assert_eq!(board.selected_index(), Some(1), "its new position in the sorted order");
+        assert!(seen.lock().unwrap().is_empty(), "a preserved selection is not a change");
+
+        // `Last` is filter column 2; only C remains, so B is gone and the host must be told.
+        board.set_filter(&[FilterCondition::new(2, FilterOperator::GreaterOrEqual, "25")]);
+        assert_eq!(board.selected_symbol(), None);
+        assert_eq!(*seen.lock().unwrap(), alloc::vec![None]);
+    }
+
+    /// Every header cell is a sort target, not just the first.
+    ///
+    /// `column_ranges` yields `(start, width)`; the hit test compared the pointer with that
+    /// width as if it were a right edge, so on a normal multi-column board a press over column 1
+    /// or later landed outside every range (or, when the board sat at a non-zero x, inside
+    /// column 0's).
+    #[test]
+    fn every_header_column_is_a_sort_target() {
+        let mut board = QuoteBoard::new(Rect::new(0, 0, 640, 240));
+        board.set_quotes(alloc::vec![
+            Quote::new("A", 10.0, 10.0),
+            Quote::new("B", 20.0, 20.0),
+            Quote::new("C", 30.0, 30.0),
+        ]);
+        board.set_sortable_headers(true);
+        board.set_columns(alloc::vec![QuoteColumn::Symbol, QuoteColumn::Last, QuoteColumn::Volume]);
+
+        for column in [QuoteColumn::Last, QuoteColumn::Volume] {
+            let index = board.columns().iter().position(|entry| *entry == column).expect("column");
+            let (start, width) = board.column_ranges()[index];
+            let expected = board.next_sort_for(column);
+            let before = board.sort();
+            board.handle_event(&Event::MousePress {
+                pos: Point::new(start + width / 2, 10),
+                button: 1,
+                modifiers: 0,
+            });
+            assert_ne!(board.sort(), before, "{column:?} header must be pressable");
+            assert_eq!(board.sort(), expected, "{column:?} header sorts by its own column");
+        }
+    }
+
+    /// A header press still reaches the base widget.
+    ///
+    /// The header branch used to `return` before `self.base.handle_event`, so a header click
+    /// emitted no `mouse_down` and never armed the board's own gesture state.
+    #[test]
+    fn a_header_press_still_reaches_the_base_state() {
+        let mut board = QuoteBoard::new(Rect::new(0, 0, 320, 240));
+        board.set_quotes(alloc::vec![Quote::new("A", 10.0, 10.0)]);
+        board.set_sortable_headers(true);
+        assert!(!board.base().is_pressed());
+
+        board.handle_event(&Event::MousePress { pos: Point::new(20, 10), button: 1, modifiers: 0 });
+        assert!(board.base().is_pressed(), "the base routed the press");
+    }
+
+    /// A header click sorts by the column it names.
+    ///
+    /// Regression: `next_sort_for` fell back to the last-price pair for `High`, `Low` and
+    /// `Volume`, so clicking the volume header ordered the rows by price while reporting a
+    /// price sort.
+    #[test]
+    fn header_clicks_sort_by_the_column_they_name() {
+        let mut board = QuoteBoard::new(Rect::new(0, 0, 320, 240));
+        let quote = |symbol: &str, name: &str, last: f64, high: f64, low: f64, volume: f64| {
+            let mut quote = Quote::new(symbol, last, last);
+            quote.name = alloc::string::String::from(name);
+            quote.high = high;
+            quote.low = low;
+            quote.volume = volume;
+            quote
+        };
+        board.set_quotes(alloc::vec![
+            quote("A", "Zulu", 10.0, 30.0, 5.0, 100.0),
+            quote("B", "Alpha", 20.0, 25.0, 4.0, 300.0),
+            quote("C", "Mike", 30.0, 20.0, 3.0, 200.0),
+        ]);
+        board.set_sortable_headers(true);
+        // A single visible column spans the board, so a press near the left edge is on its
+        // header whatever the measurement model says its exact width is.
+        board.set_columns(alloc::vec![QuoteColumn::High]);
+        board.handle_event(&Event::MousePress { pos: Point::new(20, 10), button: 1, modifiers: 0 });
+        assert_eq!(board.sort(), QuoteSort::HighDescending);
+        let highs: alloc::vec::Vec<f64> = board.quotes().iter().map(|quote| quote.high).collect();
+        assert_eq!(highs, alloc::vec![30.0, 25.0, 20.0], "the highest high comes first");
+
+        board.set_columns(alloc::vec![QuoteColumn::Volume]);
+        board.handle_event(&Event::MousePress { pos: Point::new(20, 10), button: 1, modifiers: 0 });
+        assert_eq!(board.sort(), QuoteSort::VolumeDescending);
+        let volumes: alloc::vec::Vec<f64> =
+            board.quotes().iter().map(|quote| quote.volume).collect();
+        assert_eq!(volumes, alloc::vec![300.0, 200.0, 100.0], "the largest volume comes first");
+
+        // `Name` orders by the display name, not by the symbol (which would be A, B, C).
+        board.set_columns(alloc::vec![QuoteColumn::Name]);
+        board.handle_event(&Event::MousePress { pos: Point::new(20, 10), button: 1, modifiers: 0 });
+        assert_eq!(board.sort(), QuoteSort::NameAscending);
+        let names: alloc::vec::Vec<&str> =
+            board.quotes().iter().map(|quote| quote.name.as_str()).collect();
+        assert_eq!(names, alloc::vec!["Alpha", "Mike", "Zulu"]);
+
+        board.handle_event(&Event::MousePress { pos: Point::new(20, 10), button: 1, modifiers: 0 });
+        assert_eq!(board.sort(), QuoteSort::NameDescending);
+        let names: alloc::vec::Vec<&str> =
+            board.quotes().iter().map(|quote| quote.name.as_str()).collect();
+        assert_eq!(names, alloc::vec!["Zulu", "Mike", "Alpha"]);
+    }
+
+    /// Sorting by name falls back to the symbol when the feed supplied no name.
+    #[test]
+    fn sorting_by_name_uses_the_symbol_for_unnamed_rows() {
+        let mut board = QuoteBoard::new(Rect::new(0, 0, 480, 240));
+        let mut alpha = Quote::new("AAA", 10.0, 10.0);
+        alpha.name = alloc::string::String::from("Zeta");
+        // The other two rows have no display name (`Quote::new` leaves it empty).
+        board.set_quotes(alloc::vec![
+            alpha,
+            Quote::new("BBB", 20.0, 20.0),
+            Quote::new("CCC", 30.0, 30.0)
+        ]);
+        board.set_sort(QuoteSort::NameAscending);
+        let keys: alloc::vec::Vec<&str> = board.quotes().iter().map(name_key).collect();
+        assert_eq!(keys, alloc::vec!["BBB", "CCC", "Zeta"], "an unnamed row sorts by its symbol");
+    }
+
+    /// Every path that removes a hover reports the symbol it left.
+    ///
+    /// `quote_unhovered` is the only notification for a pointer exit: the board publishes no
+    /// hover property, so without it a host could not clear a tooltip on leave, on a scroll
+    /// that moves the row away, or on a replacement list that no longer holds the row.
+    #[test]
+    fn hover_exits_are_published_on_quote_unhovered() {
+        use rust_widgets::widget::Widget as _;
+        let mut board = QuoteBoard::new(Rect::new(0, 0, 240, 120));
+        board.set_quotes(fixtures::sample_quotes(20));
+        let seen = Arc::new(std::sync::Mutex::new(alloc::vec::Vec::<String>::new()));
+        let sink = Arc::clone(&seen);
+        board.quote_unhovered.connect(move |symbol| sink.lock().unwrap().push((*symbol).clone()));
+        assert!(
+            board.event_signal_dyn("quote_unhovered").is_some(),
+            "the published event must resolve to the control's own signal"
+        );
+
+        let first_row = board.first_row_y();
+        // 1. Leaving the board.
+        board.handle_event(&Event::MouseMove { pos: Point::new(100, first_row + 1) });
+        board.handle_event(&Event::MouseLeave { pos: Point::new(0, 0) });
+
+        // 2. Scrolling the window out from under the pointer.
+        board.handle_event(&Event::MouseMove { pos: Point::new(100, first_row + 22 + 1) });
+        board.set_scroll_offset(5);
+
+        // 3. A replacement list that no longer holds the hovered index.
+        board.set_scroll_offset(0);
+        board.handle_event(&Event::MouseMove { pos: Point::new(100, first_row + 22 + 1) });
+        board.set_quotes(fixtures::sample_quotes(1));
+
+        assert_eq!(
+            *seen.lock().unwrap(),
+            alloc::vec![String::from("SYM0"), String::from("SYM1"), String::from("SYM1")],
+            "each exit reports the symbol the pointer actually left"
+        );
+    }
+
+    /// Scrolling moves the rows out from under the pointer, so the hover is dropped.
+    ///
+    /// Regression: `set_scroll_offset` kept `hovered`, leaving a highlight on a row that had
+    /// moved away from the pointer (the order-book ladder already cleared its hover here).
+    #[test]
+    fn scrolling_drops_the_hover_that_the_window_moved_away_from() {
+        let mut board = QuoteBoard::new(Rect::new(0, 0, 240, 120));
+        board.set_quotes(fixtures::sample_quotes(20));
+        let first_row = board.first_row_y();
+        board.handle_event(&Event::MouseMove { pos: Point::new(100, first_row + 1) });
+        assert_eq!(board.hovered_index(), Some(0));
+
+        board.set_scroll_offset(5);
+        assert_eq!(board.hovered_index(), None, "the pointer no longer names a visible row");
+    }
+
     /// Selecting a row emits its symbol, and selecting again does nothing.
     #[test]
     fn selection_emits_and_is_idempotent() {
@@ -2192,5 +2563,37 @@ mod tests {
         assert_eq!(hover_at(19), None, "above the widget");
         assert_eq!(hover_at(140), None, "the bottom edge is outside");
         assert_eq!(hover_at(500), None, "far below the widget");
+    }
+
+    /// The band below the last painted row names no row.
+    ///
+    /// `row_at` bounded only by the data: a board whose height is not a whole number of rows has
+    /// a leftover band that resolved to the next row, which the painter never draws.
+    #[test]
+    fn the_unpainted_band_below_the_last_row_names_no_row() {
+        let mut board = QuoteBoard::new(Rect::new(0, 0, 240, 100));
+        board.set_quotes(fixtures::sample_quotes(20));
+        assert_eq!(board.visible_row_count(), 3);
+
+        let first_row = board.first_row_y();
+        assert_eq!(board.row_at(first_row + 2 * 22 + 1), Some(2));
+        assert_eq!(board.row_at(first_row + 3 * 22 + 1), None, "row 3 is past the painted window");
+    }
+
+    /// A reorder keeps the hover on the instrument the pointer is over.
+    ///
+    /// `set_sort` permuted the rows while `hovered` kept its index, so the highlight named a
+    /// different instrument and the next exit reported a symbol that was never hovered.
+    #[test]
+    fn a_reorder_keeps_the_hover_on_the_same_instrument() {
+        let mut board = QuoteBoard::new(Rect::new(0, 0, 320, 200));
+        board.set_quotes(vec![Quote::new("AAA", 10.0, 9.0), Quote::new("BBB", 20.0, 21.0)]);
+        let first_row = board.first_row_y();
+        board.handle_event(&Event::MouseMove { pos: Point::new(100, first_row + 1) });
+        assert_eq!(board.hovered_index(), Some(0));
+
+        board.set_sort(QuoteSort::SymbolDescending);
+        assert_eq!(board.quotes()[0].symbol, "BBB", "the order really changed");
+        assert_eq!(board.hovered_index(), Some(1), "the hover follows AAA to its new index");
     }
 }

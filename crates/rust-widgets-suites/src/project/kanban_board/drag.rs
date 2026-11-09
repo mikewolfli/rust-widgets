@@ -201,11 +201,11 @@ impl KanbanBoard {
         let Some(session) = self.drag.take() else {
             return false;
         };
-        // Read `drag_origin` **without** taking it yet: the click branch below needs it,
-        // and the drop branch must still see it. Taking it up front forced an `Option`
-        // unwrap into the middle of the drop arithmetic, which is how an earlier
-        // revision of this function ended up shadowing the value it still needed.
-        let origin = self.drag_origin.take();
+        // Read `drag_origin` **without** taking it yet: the click branch below needs it, and the
+        // drop branch must still see it. `on_drop` reads it to exempt a move within its own
+        // column from the WIP limit, so consuming it here made that exemption unreachable through
+        // the pointer: every in-column reorder of a full column was refused.
+        let origin = self.drag_origin;
         self.hovered_column = None;
 
         // The press/release never became a drag, so the gesture is a click on the card
@@ -213,6 +213,7 @@ impl KanbanBoard {
         // verdict on "did the pointer travel far enough", so this stays in step with
         // the threshold constant rather than re-deriving it here.
         if !session.is_active() {
+            self.drag_origin = None;
             let activated = origin
                 .and_then(|start| {
                     self.columns.get(start.column).and_then(|c| c.cards.get(start.card))
@@ -228,8 +229,10 @@ impl KanbanBoard {
         let mut session = session;
 
         // The shared machine decides whether this drop may happen at all; the board
-        // only supplies the placement.
+        // only supplies the placement. `drag_origin` is still set for that decision and is
+        // cleared once it has been answered.
         let effect = session.drop_on(self, pos);
+        self.drag_origin = None;
         if !effect.is_accepted() {
             self.base.request_redraw();
             return false;
@@ -277,8 +280,8 @@ impl KanbanBoard {
             return false;
         }
         let moved = self.move_card(current, target).is_some();
-        if let Some(lane) = target_lane {
-            self.set_card_lane(&card_id, &lane);
+        if let Some(lane) = target_lane.as_ref() {
+            self.set_card_lane(&card_id, lane);
         }
         // A drop that carried a selected group moves the rest of the group with it, which is the
         // batch operation a multi-selection exists for. The batch is reported separately so the
@@ -286,9 +289,17 @@ impl KanbanBoard {
         if moved && self.selected_cards.len() > 1 && self.selected_cards.contains(&card_id) {
             let batch: Vec<String> =
                 self.selected_cards.iter().filter(|id| **id != card_id).cloned().collect();
+            // The acceptance check saw the destination *before* any card landed, so it cannot
+            // bound a group. The destination's own limit does: a batch into a column with room
+            // for one must not write past its WIP limit.
+            let room = self.columns.get(column).map_or(0, |target| {
+                target
+                    .wip_limit
+                    .map_or(usize::MAX, |limit| limit.saturating_sub(target.cards.len()))
+            });
             let mut destination = target.card + 1;
             let mut moved_ids = vec![card_id.clone()];
-            for id in batch {
+            for id in batch.into_iter().take(room) {
                 if let Some(position) = self.position_of(&id) {
                     if self
                         .move_card(position, CardPosition { column, card: destination })
@@ -297,6 +308,13 @@ impl KanbanBoard {
                         moved_ids.push(id);
                         destination += 1;
                     }
+                }
+            }
+            // The lane is part of the destination for the whole group: members that keep their
+            // old band would paint in a different lane from the preview the drop promised.
+            if let Some(lane) = target_lane.as_ref() {
+                for id in &moved_ids {
+                    self.set_card_lane(id, lane);
                 }
             }
             if moved_ids.len() > 1 {

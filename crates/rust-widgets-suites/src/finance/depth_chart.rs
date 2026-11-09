@@ -326,12 +326,15 @@ impl DepthChart {
         best.map(|(price, _)| price)
     }
 
-    /// The spread between the best bid and best ask, if the book has both sides.
+    /// The spread between the best bid and best ask that the curve plots, if both sides have one.
+    ///
+    /// Both come from the *plotted* levels: the bounds, scale and segments are built from them,
+    /// and reading the raw top of book instead let a zero-size level name a spread the picture
+    /// does not contain.
     fn spread(&self) -> Option<(f64, f64)> {
-        let bid =
-            self.book.bids().iter().map(|level| level.price).fold(f64::NEG_INFINITY, f64::max);
-        let ask = self.book.asks().iter().map(|level| level.price).fold(f64::INFINITY, f64::min);
-        (bid.is_finite() && ask.is_finite() && ask > bid).then_some((bid, ask))
+        let bid = self.bid_levels.first()?.price;
+        let ask = self.ask_levels.first()?.price;
+        (ask > bid).then_some((bid, ask))
     }
 
     /// Fills `out` with the plottable levels of one side, reusing its allocation.
@@ -546,20 +549,26 @@ impl rust_widgets::event::EventHandler for DepthChart {
             Event::MouseMove { pos } | Event::PointerMove { pos, .. } => {
                 let area = self.plot_area();
                 let (low, high) = self.price_bounds();
-                if high > low && area.rect.width > 0 {
+                // A pointer outside the plot (or over a curve with no usable level) has no
+                // snapped level, and the previous hover must be dropped rather than left
+                // marking a level the pointer has left. The pane's bottom strip is its price
+                // axis, so a y test is part of "inside": testing only x let the axis row hover
+                // (and click) a level.
+                let inside_y = pos.y >= area.rect.y && pos.y < area.bottom();
+                let mut next = None;
+                if inside_y && high > low && area.rect.width > 0 {
                     let fraction = (pos.x - area.rect.x) as f64 / area.rect.width as f64;
                     if (0.0..=1.0).contains(&fraction) {
                         let pointer = low + fraction * (high - low);
-                        // Snap to a resting level: the signal names an order's price, not an
-                        // arbitrary coordinate between two of them.
-                        if let Some(level) = self.nearest_level(pointer) {
-                            if self.hovered_level != Some(level) {
-                                self.hovered_level = Some(level);
-                                self.level_hovered.emit(level);
-                                self.base.request_redraw();
-                            }
-                        }
+                        next = self.nearest_level(pointer);
                     }
+                }
+                if next != self.hovered_level {
+                    self.hovered_level = next;
+                    if let Some(level) = next {
+                        self.level_hovered.emit(level);
+                    }
+                    self.base.request_redraw();
                 }
             }
             Event::MouseLeave { .. } => {
@@ -570,7 +579,8 @@ impl rust_widgets::event::EventHandler for DepthChart {
             Event::MousePress { pos, .. } | Event::PointerPress { pos, .. } => {
                 let area = self.plot_area();
                 let (low, high) = self.price_bounds();
-                if high > low && area.rect.width > 0 {
+                let inside_y = pos.y >= area.rect.y && pos.y < area.bottom();
+                if inside_y && high > low && area.rect.width > 0 {
                     let fraction = (pos.x - area.rect.x) as f64 / area.rect.width as f64;
                     if (0.0..=1.0).contains(&fraction) {
                         let pointer = low + fraction * (high - low);
@@ -643,12 +653,19 @@ impl Draw for DepthChart {
         self.draw_step_curve(context, &area, DepthSide::Bid, self.bid_color, max_cumulative);
         self.draw_step_curve(context, &area, DepthSide::Ask, self.ask_color, max_cumulative);
 
-        // The mid price, marked so the spread is readable without a separate label.
-        if let Some(mid) = self.book.mid_price() {
+        // The mid price, marked so the spread is readable without a separate label. Derived from
+        // the plotted top-of-book: the scale, bounds and segments all come from that set, so a
+        // raw mid could be painted outside the curve (and the control).
+        let mid = match (self.bid_levels.first(), self.ask_levels.first()) {
+            (Some(bid), Some(ask)) => Some((bid.price + ask.price) / 2.0),
+            _ => None,
+        };
+        if let Some(mid) = mid {
             let (low, high) = self.price_bounds();
             if high > low {
                 let fraction = (mid - low) / (high - low);
-                let x = area.rect.x + (fraction * area.rect.width as f64).round() as i32;
+                let x = (area.rect.x + (fraction * area.rect.width as f64).round() as i32)
+                    .clamp(area.rect.x, area.right());
                 context.draw_line_stroke(
                     rust_widgets::core::Point { x, y: area.rect.y },
                     rust_widgets::core::Point { x, y: area.bottom() },
@@ -830,6 +847,7 @@ impl WidgetProperties for DepthChart {
 mod tests {
     use super::*;
     use crate::finance::types::fixtures;
+    use rust_widgets::event::EventHandler;
 
     /// The chart carries the book it was given.
     #[test]
@@ -1052,6 +1070,30 @@ mod tests {
         rgba.as_chunks::<4>().0.contains(&target)
     }
 
+    /// A pointer that leaves the plot drops its hovered level.
+    ///
+    /// Regression: the move handler only acted when the pointer was inside the plot, so a
+    /// pointer that moved into the price axis kept the previous level marked and its readout
+    /// on screen.
+    #[test]
+    fn moving_the_pointer_off_the_plot_clears_the_hover() {
+        use rust_widgets::event::EventHandler as _;
+        let mut chart = DepthChart::new(Rect::new(0, 0, 400, 200));
+        chart.set_book(fixtures::sample_book(4));
+
+        chart.handle_event(&rust_widgets::event::Event::MouseMove {
+            pos: rust_widgets::core::Point { x: 200, y: 100 },
+        });
+        assert!(chart.hovered_level().is_some(), "the pointer is over the curve");
+
+        // The plot starts at x = 48 (the shared left margin), so x = 4 is in the price axis.
+        chart.handle_event(&rust_widgets::event::Event::MouseMove {
+            pos: rust_widgets::core::Point { x: 4, y: 100 },
+        });
+        assert_eq!(chart.hovered_level(), None, "a pointer outside the plot has no level");
+        assert!(chart.hovered_summary().is_empty());
+    }
+
     /// RW-80: a book tick can edit one level without a full snapshot.
     #[test]
     fn levels_can_be_applied_incrementally() {
@@ -1067,5 +1109,64 @@ mod tests {
         assert_eq!(chart.book().asks().len(), 1, "a zero quantity removes the level");
 
         assert!(!chart.apply_bid_level(f64::NAN, 1.0), "a non-finite price is refused");
+    }
+
+    /// The price-axis row is not a hover target.
+    ///
+    /// Only `pos.x` was tested, so a pointer on the tick strip at the bottom of the pane snapped
+    /// to a level the curve does not cover — and a press there emitted `level_clicked` for it.
+    #[test]
+    fn a_pointer_on_the_price_tick_row_has_no_level() {
+        let mut chart = DepthChart::new(Rect::new(0, 0, 400, 200));
+        chart.set_book(fixtures::sample_book(4));
+        let area = chart.plot_area();
+        let inside = area.rect.y + area.rect.height as i32 / 2;
+        chart.handle_event(&rust_widgets::event::Event::MouseMove {
+            pos: rust_widgets::core::Point { x: 200, y: inside },
+        });
+        assert!(chart.hovered_level().is_some(), "the curve's own row hovers a level");
+
+        let clicked = std::sync::Arc::new(std::sync::Mutex::new(Vec::<f64>::new()));
+        let sink = clicked.clone();
+        chart.level_clicked.connect(move |level: std::sync::Arc<f64>| {
+            sink.lock().unwrap().push(*level);
+        });
+        let on_axis = rust_widgets::core::Point { x: 200, y: area.bottom() + 2 };
+        chart.handle_event(&rust_widgets::event::Event::MouseMove { pos: on_axis });
+        assert_eq!(chart.hovered_level(), None, "the price axis is not the curve");
+        chart.handle_event(&rust_widgets::event::Event::MousePress {
+            pos: on_axis,
+            button: 1,
+            modifiers: 0,
+        });
+        assert!(clicked.lock().unwrap().is_empty(), "a press there clicks no level");
+    }
+
+    /// The mid and the spread come from the levels the curve plots.
+    ///
+    /// The curve filters zero-size levels; reading the raw top of book for the mid could put the
+    /// line at a price outside the painted bounds (and outside the control).
+    #[test]
+    fn the_mid_line_uses_the_levels_the_curve_plots() {
+        let mut chart = DepthChart::new(Rect::new(0, 0, 400, 200));
+        let mut book = crate::finance::types::OrderBook::new();
+        book.set_bids(alloc::vec![
+            crate::finance::types::BookLevel::new(105.0, 0.0),
+            crate::finance::types::BookLevel::new(99.0, 10.0),
+        ]);
+        book.set_asks(alloc::vec![
+            crate::finance::types::BookLevel::new(106.0, 0.0),
+            crate::finance::types::BookLevel::new(101.0, 10.0),
+        ]);
+        chart.set_book(book);
+
+        assert_eq!(
+            chart.spread(),
+            Some((99.0, 101.0)),
+            "the zero-size top levels are not in the picture"
+        );
+        let (low, high) = chart.price_bounds();
+        let mid = (chart.bid_levels[0].price + chart.ask_levels[0].price) / 2.0;
+        assert!(low <= mid && mid <= high, "the mid must sit inside the painted bounds");
     }
 }

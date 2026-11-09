@@ -6,10 +6,10 @@
 //! The widget draws vertical bars in one of two modes, selected with
 //! [`AudioVisualizer::set_mode`]:
 //!
-//! * [`VisualizerMode::Waveform`] (the default) splits the retained sample history into one chunk
+//! * `VisualizerMode::Waveform` (the default) splits the retained sample history into one chunk
 //!   per bar and draws each bar at that chunk's **mean absolute sample value**. That is a
 //!   time-domain loudness, not a frequency analysis — the bars are not frequency bands.
-//! * [`VisualizerMode::Spectrum`] draws one bar per **logarithmic frequency band**. Levels come
+//! * `VisualizerMode::Spectrum` draws one bar per **logarithmic frequency band**. Levels come
 //!   from host-supplied bins when the host runs its own transform
 //!   ([`AudioVisualizer::set_spectrum`]), and otherwise from a self-contained 256-point radix-2
 //!   FFT with a Hann window over the newest samples. The FFT path lays its bands out against the
@@ -174,6 +174,13 @@ pub struct AudioVisualizer {
     level_report_interval_ms: u32,
     /// Milliseconds accumulated towards the next throttled report.
     report_clock_ms: u32,
+    /// A sample change arrived whose level has not been reported yet.
+    ///
+    /// The report is emitted only from `tick`, and the frame bus decides whether to tick by
+    /// asking `is_animating`; with peak-hold and smoothing off that answer was always `false`, so a
+    /// host feeding samples never received a single `level_changed`. This flag makes the report
+    /// itself a reason to keep ticking until the throttle window has passed.
+    report_pending: bool,
     /// The level last announced, so an unchanged meter stays quiet.
     last_reported_level: f32,
     /// The peak last announced.
@@ -204,6 +211,29 @@ const SPECTRUM_BINS: usize = SPECTRUM_WINDOW / 2;
 /// waveform mode. The bound is what stops [`AudioVisualizer::add_sample`] from growing the buffer
 /// for the lifetime of the widget.
 const SAMPLE_HISTORY_LIMIT: usize = SPECTRUM_WINDOW * 2;
+
+/// The largest bar count the control accepts.
+///
+/// A bar is a drawn column, and four per-bar vectors are kept in step with it (`peak_values`,
+/// `peak_ages`, `bar_buffer` and the smoothed levels). The bound is what stops a hostile
+/// `bar_count` property write from asking the allocator for an unbounded vector — the same role
+/// `SAMPLE_HISTORY_LIMIT` plays for the sample history — while still leaving room for fa...
+/// bars than any display can resolve.
+pub const MAX_VISUALIZER_BARS: usize = 512;
+
+/// A sample clamped into the drawn range, with a non-finite value treated as silence.
+///
+/// `f32::clamp` propagates `NaN`, and one `NaN` in the history poisons every chunk mean and
+/// every FFT bin: the transform hands back `NaN` magnitudes, which the `.min(1.0)` turns into
+/// full-scale bars. Silence is the honest reading of "no value here", the same rule
+/// [`AudioVisualizer::set_spectrum`] applies to a bad bin.
+fn sanitized_sample(value: f32) -> f32 {
+    if value.is_finite() {
+        value.clamp(-1.0, 1.0)
+    } else {
+        0.0
+    }
+}
 
 impl AudioVisualizer {
     /// Creates a new AudioVisualizer widget with the given geometry.
@@ -239,6 +269,7 @@ impl AudioVisualizer {
             peak_threshold: 0.9,
             level_report_interval_ms: 50,
             report_clock_ms: 0,
+            report_pending: false,
             last_reported_level: 0.0,
             last_reported_peak: 0.0,
         }
@@ -251,9 +282,10 @@ impl AudioVisualizer {
     /// keeping whatever length the caller passed made a long stream grow the widget without limit.
     pub fn set_samples(&mut self, data: Vec<f32>) {
         let skip = data.len().saturating_sub(SAMPLE_HISTORY_LIMIT);
-        self.samples = data.into_iter().skip(skip).map(|v| v.clamp(-1.0, 1.0)).collect();
+        self.samples = data.into_iter().skip(skip).map(sanitized_sample).collect();
         self.spectrum_cache.set(None);
         self.invalidate_levels();
+        self.report_pending = true;
         if !self.smoothed_levels.is_empty() {
             self.smoothing_moving = true;
         }
@@ -277,6 +309,7 @@ impl AudioVisualizer {
         }
         self.spectrum_cache.set(None);
         self.invalidate_levels();
+        self.report_pending = true;
         if !self.smoothed_levels.is_empty() {
             self.smoothing_moving = true;
         }
@@ -288,7 +321,7 @@ impl AudioVisualizer {
         if self.samples.len() >= SAMPLE_HISTORY_LIMIT {
             self.samples.pop_front();
         }
-        self.samples.push_back(value.clamp(-1.0, 1.0));
+        self.samples.push_back(sanitized_sample(value));
     }
 
     /// Adds a single audio sample. Useful for streaming data.
@@ -299,6 +332,7 @@ impl AudioVisualizer {
         self.push_sample(value);
         self.spectrum_cache.set(None);
         self.invalidate_levels();
+        self.report_pending = true;
         if !self.smoothed_levels.is_empty() {
             self.smoothing_moving = true;
         }
@@ -450,9 +484,9 @@ impl AudioVisualizer {
         self.base.request_redraw();
     }
 
-    /// Sets the number of vertical bars to display.
+    /// Sets the number of vertical bars to display, clamped to `1..=MAX_VISUALIZER_BARS`.
     pub fn set_bar_count(&mut self, n: usize) {
-        let bar_count = n.max(1);
+        let bar_count = n.clamp(1, MAX_VISUALIZER_BARS);
         if self.bar_count == bar_count {
             return;
         }
@@ -1014,7 +1048,12 @@ impl Widget for AudioVisualizer {
         if peaked || smoothed {
             self.base.request_redraw();
         }
-        peaked || smoothed || reported
+        // A report that has not fired yet keeps the bus ticking; once the throttle window passed
+        // this turn the pending edge is satisfied.
+        if self.report_clock_ms == 0 {
+            self.report_pending = false;
+        }
+        peaked || smoothed || reported || self.report_pending
     }
 
     /// Whether the peak-hold markers are still falling, i.e. whether a frame is owed.
@@ -1029,7 +1068,7 @@ impl Widget for AudioVisualizer {
     /// `Self::advance_peak_hold`: a marker is in flight while peak-hold is on and it sits above the
     /// bar it tracks.
     fn is_animating(&self) -> bool {
-        self.peak_moving || self.smoothing_moving
+        self.peak_moving || self.smoothing_moving || self.report_pending
     }
 
     /// Reports this widget as the object that paints it.
@@ -1165,12 +1204,6 @@ impl Draw for AudioVisualizer {
             Color::BLACK,
         );
 
-        // Calculate bar layout
-        let total_spacing = self.bar_spacing * (self.bar_count as f32 + 1.0);
-        let bar_width = ((w - total_spacing) / self.bar_count as f32).max(1.0);
-        let center_y = rect.y as f32 + h / 2.0;
-        let half_height = h / 2.0 - 2.0;
-
         // Prepare sample data: one shared derivation, so the marker and its bar cannot measure
         // different samples. Empty samples yield the synthetic sweep, which is what makes a
         // data-less control still a usable preview. The buffer is the control's own and is
@@ -1188,10 +1221,23 @@ impl Draw for AudioVisualizer {
             return;
         }
 
-        for (i, &value) in self.bar_buffer.iter().enumerate() {
+        // Calculate bar layout. At most one bar per pixel is painted: `bar_count` is published up
+        // to 512, and a control narrower than that cannot resolve them. Sub-pixel bars would
+        // either overlap or — with the width clamped to one pixel and the spacing left alone —
+        // run hundreds of pixels past the right edge, where nothing clips a widget. The spacing
+        // shrinks with the width for the same reason.
+        let painted = self.bar_buffer.len().min(w.max(1.0) as usize).max(1);
+        let painted_f = painted as f32;
+        let spacing = self.bar_spacing.min(((w - painted_f) / (painted_f + 1.0)).max(0.0));
+        let total_spacing = spacing * (painted_f + 1.0);
+        let bar_width = ((w - total_spacing) / painted_f).max(1.0);
+        let center_y = rect.y as f32 + h / 2.0;
+        let half_height = h / 2.0 - 2.0;
+
+        for (i, &value) in self.bar_buffer.iter().take(painted).enumerate() {
             let value = value.min(1.0);
             let bar_height = (value * half_height).max(1.0);
-            let x = rect.x as f32 + self.bar_spacing + i as f32 * (bar_width + self.bar_spacing);
+            let x = rect.x as f32 + spacing + i as f32 * (bar_width + spacing);
             let bar_rect = Rect::new(
                 x as i32,
                 (center_y - bar_height) as i32,
@@ -1254,8 +1300,10 @@ impl EventHandler for AudioVisualizer {
             Event::MousePress { pos, button, .. }
                 if *button == 1 && self.geometry().contains_point(*pos) =>
             {
-                self.peak_hold = !self.peak_hold;
-                self.base.request_redraw();
+                // Route through the setter: it also starts the peak clock, which `is_animating`
+                // reports, so the bus keeps ticking while the newly enabled markers are raised
+                // and fall. Assigning the flag directly left them frozen.
+                self.set_peak_hold(!self.peak_hold);
             }
             _ => {
                 self.base.handle_event(event);
@@ -1290,6 +1338,29 @@ mod tests {
                 CapabilityValue::Float(0.25),
             ]))
         );
+    }
+
+    /// A dense bar count keeps every bar inside the control.
+    ///
+    /// `bar_count` is published up to 512. The old layout clamped the bar width to one pixel but
+    /// left the spacing alone, so on a narrow control the last bars started hundreds of pixels
+    /// past the right edge — and nothing clips a widget at this layer.
+    #[test]
+    fn a_dense_bar_count_keeps_every_bar_inside_the_control() {
+        let mut av = AudioVisualizer::new(Rect::new(0, 0, 100, 40));
+        av.set_bar_count(128);
+        let svg = render_to_svg(&mut av);
+        let xs: Vec<f64> = svg
+            .split("<rect")
+            .skip(1)
+            .filter_map(|chunk| {
+                let start = chunk.find("x=\"")? + 3;
+                let end = start + chunk[start..].find('"')?;
+                chunk[start..end].parse().ok()
+            })
+            .collect();
+        assert!(!xs.is_empty(), "the visualizer painted bars");
+        assert!(xs.iter().all(|x| *x <= 100.0), "every bar starts inside the rect, got {xs:?}");
     }
 
     #[test]
@@ -1876,7 +1947,9 @@ mod tests {
         av.set_peak_threshold(0.5);
         av.set_level_report_interval(50);
         av.set_samples(vec![1.0, -1.0, 0.5, 0.5]);
-        assert!(!av.tick(16), "a report is not due yet");
+        // A pending report is a reason to keep ticking; without that the frame bus never asked a
+        // default-configured meter to tick and the host never received a report at all.
+        assert!(av.tick(16), "the pending report keeps the bus ticking");
         assert_eq!(levels.load(std::sync::atomic::Ordering::SeqCst), 0);
         assert!(av.tick(50));
         assert_eq!(levels.load(std::sync::atomic::Ordering::SeqCst), 1);
@@ -1937,5 +2010,70 @@ mod tests {
         };
         assert_eq!(AudioVisualizer::new(Rect::new(0, 0, 10, 10)).shape(), VisualizerShape::Bars);
         assert_ne!(build(VisualizerShape::Bars), build(VisualizerShape::Circular));
+    }
+
+    /// A click that enables peak hold must also owe frames for the markers it enables.
+    #[test]
+    fn a_click_enables_peak_hold_and_owes_frames() {
+        let mut av = AudioVisualizer::new(Rect::new(0, 0, 300, 150));
+        assert!(!av.is_animating());
+        av.handle_event(&Event::MousePress { pos: Point::new(10, 10), button: 1, modifiers: 0 });
+        assert!(av.is_peak_hold_enabled(), "the click toggled peak hold");
+        assert!(av.is_animating(), "the enabled markers need a clock before they can move");
+    }
+
+    /// A non-finite sample must not poison the history or the meter built from it.
+    #[test]
+    fn a_non_finite_sample_is_treated_as_silence() {
+        let mut av = AudioVisualizer::new(Rect::new(0, 0, 300, 150));
+        av.set_samples(vec![f32::NAN, 0.5, f32::INFINITY, -2.0]);
+        let samples = av.samples();
+        assert!(samples.iter().all(|sample| sample.is_finite()), "{samples:?}");
+        assert_eq!(samples, vec![0.0, 0.5, 0.0, -1.0]);
+
+        av.clear_samples();
+        av.add_sample(f32::NAN);
+        assert_eq!(av.samples(), vec![0.0]);
+        // Every derived level stays a real number even in the spectrum path.
+        av.set_mode(VisualizerMode::Spectrum);
+        av.add_sample(0.5);
+        assert!((0..av.bar_count()).all(|index| av.bar_value(index).is_finite()));
+    }
+
+    /// A hostile bar count is clamped to the documented ceiling instead of asking the allocator
+    /// for an unbounded per-bar vector.
+    #[test]
+    fn an_extreme_bar_count_is_clamped() {
+        use rust_widgets::widget::capability::WidgetProperties;
+
+        let mut av = AudioVisualizer::new(Rect::new(0, 0, 300, 150));
+        av.set_bar_count(usize::MAX);
+        assert_eq!(av.bar_count(), MAX_VISUALIZER_BARS);
+        assert_eq!(av.peak_values.len(), MAX_VISUALIZER_BARS);
+        assert_eq!(av.peak_ages.len(), MAX_VISUALIZER_BARS);
+
+        av.set("bar_count", CapabilityValue::UInt(u64::MAX)).expect("bar_count is writable");
+        assert_eq!(av.bar_count(), MAX_VISUALIZER_BARS, "the property route clamps too");
+
+        av.set_bar_count(0);
+        assert_eq!(av.bar_count(), 1, "zero is still raised to one bar");
+    }
+
+    /// A meter in its default configuration still asks the frame bus for the frames its reports
+    /// need.
+    ///
+    /// `is_animating` only answered for peak-hold/smoothing, so a mounted meter with neither was
+    /// never ticked and its `level_changed`/`peak_exceeded` never fired.
+    #[test]
+    fn a_pending_report_is_a_reason_to_animate() {
+        let mut av = AudioVisualizer::new(Rect::new(0, 0, 300, 150));
+        assert!(!av.is_animating(), "a still meter owes no frames");
+
+        av.add_sample(0.75);
+        assert!(av.is_animating(), "a new sample carries a report that has not fired yet");
+
+        // With the default 50 ms throttle, a report runs once the window passes.
+        assert!(av.tick(50), "the meter still owes the throttled report until it fires");
+        assert!(!av.is_animating(), "once the report ran, a still meter settles");
     }
 }

@@ -41,6 +41,11 @@ impl KanbanBoard {
         let index = self.lanes.iter().position(|lane| lane.id == id)?;
         let removed = self.lanes.remove(index);
         self.card_lanes.retain(|_, lane| lane != &removed.id);
+        // The collapse flag belongs to the lane identity: leaving it behind would resurrect the
+        // removed lane collapsed the moment a lane with the same id was added again.
+        if let Some(collapsed) = self.collapsed_lanes.iter().position(|lane| lane == &removed.id) {
+            self.collapsed_lanes.remove(collapsed);
+        }
         self.invalidate_layout();
         self.base.request_redraw();
         Some(removed)
@@ -172,12 +177,18 @@ impl KanbanBoard {
         let mut rows: Vec<usize> = vec![0; lane_count];
         for (column_index, column) in self.columns.iter().enumerate() {
             let mut seen: Vec<usize> = vec![0; lane_count];
+            // A collapsed column paints no cards, so they must not reserve rows in the lane bands
+            // either; the slots stay index-aligned for the paint path that will skip them.
+            let hidden = column.collapsed;
             for card in &column.cards {
                 let lane =
                     self.card_lane_index(&card.id).unwrap_or(0).min(lane_count.saturating_sub(1));
                 card_lane[column_index].push(lane);
                 let ordinal = seen.get(lane).copied().unwrap_or(0);
                 card_ordinal[column_index].push(ordinal);
+                if hidden {
+                    continue;
+                }
                 if let Some(slot) = seen.get_mut(lane) {
                     *slot += 1;
                     if let Some(row) = rows.get_mut(lane) {
@@ -285,14 +296,28 @@ impl KanbanBoard {
         ))
     }
 
-    /// The lane whose band contains `pos`.
+    /// The lane whose band contains `pos`, or the nearest band when the point falls in the gap
+    /// between two bands.
+    ///
+    /// Resolving the gap instead of returning `None` is what keeps a drop's insertion index (which
+    /// already used the lane) and its lane assignment (which used `Option`) on the same band; a
+    /// gap used to move the card's slot while leaving its lane untouched.
     pub(super) fn lane_at(&self, pos: Point) -> Option<usize> {
         if !self.lanes_active() || !self.geometry().contains_point(pos) {
             return None;
         }
-        (0..self.lanes.len()).find(|index| {
-            let top = self.lane_top(*index);
-            pos.y >= top && pos.y < top + self.lane_height(*index)
-        })
+        let mut nearest: Option<(i32, usize)> = None;
+        for index in 0..self.lanes.len() {
+            let top = self.lane_top(index);
+            let bottom = top.saturating_add(self.lane_height(index));
+            if pos.y >= top && pos.y < bottom {
+                return Some(index);
+            }
+            let distance = if pos.y < top { top - pos.y } else { pos.y - bottom + 1 };
+            if nearest.is_none_or(|(best, _)| distance < best) {
+                nearest = Some((distance, index));
+            }
+        }
+        nearest.map(|(_, index)| index)
     }
 }

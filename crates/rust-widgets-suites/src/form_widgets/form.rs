@@ -38,12 +38,12 @@
 //!
 //! # Events and wiring
 //!
-//! Every published name has an arm in [`Widget::event_signal_dyn`], which is what makes
+//! Every published name has an arm in `Widget::event_signal_dyn`, which is what makes
 //! `connect_event`/`invoke_command` reach a real signal rather than a valid-but-inert name:
 //! `submitted`, `reset`, `cancel`, `submit_failed`, `validity_changed`, `dirty_changed`,
 //! `field_added`, `field_removed`, `field_changed` and `field_validated`.
 
-use rust_widgets::core::{Color, HorizontalAlignment, ObjectId, Rect, Size};
+use rust_widgets::core::{Color, HorizontalAlignment, ObjectId, Point, Rect, Size};
 use rust_widgets::event::{Event, EventHandler};
 use rust_widgets::impl_draw_bridge;
 use rust_widgets::render::RenderContext;
@@ -56,7 +56,7 @@ use rust_widgets::widget::input_widgets::input_validator::Validator;
 use rust_widgets::widget::metrics::role_font;
 use rust_widgets::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use rust_widgets::{impl_widget_property_hooks, property_names_of};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
@@ -88,9 +88,30 @@ const TITLE_H: u32 = 24;
 const BUTTON_H: u32 = 28;
 /// The narrowest action button the form lays out.
 const BUTTON_MIN_W: u32 = 72;
+/// The largest accepted column count.
+///
+/// A form is a row/column layout, not a grid of pixels: this bound keeps `columns` inside what a
+/// window can show and keeps the layout arithmetic away from integer overflow. `set_columns`
+/// clamps to it.
+const MAX_COLUMNS: u32 = 256;
 
-/// `(revision, x, y, width, boxes)` of the last computed layout.
-type LayoutCache = (u32, i32, i32, u32, Vec<FormFieldLayout>);
+/// The last computed layout: the boxes, the field each belongs to, and the content origin
+/// they were computed for.
+///
+/// `field_indices` stores the index into `Form::fields` of the field each box describes. It is
+/// captured with the boxes, so a frame pairs them in O(1) instead of scanning `fields` once per
+/// row (the old `field(&layout.key)` was O(n) per box). A structural edit (add/remove/clear)
+/// requests a layout, which rebuilds both halves together; a direct `field_mut` visibility edit
+/// leaves the indices pointing at the same fields the stale boxes describe, which is exactly the
+/// pairing the boxes themselves already assume.
+struct LayoutCache {
+    revision: u32,
+    x: i32,
+    y: i32,
+    width: u32,
+    layouts: Vec<FormFieldLayout>,
+    field_indices: Vec<usize>,
+}
 
 /// Where a field's label is drawn relative to its control.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -118,6 +139,18 @@ impl FormLabelPosition {
             _ => None,
         }
     }
+}
+
+/// The action row's buttons, for per-button hover feedback.
+///
+/// The base tracks hover and press for the control as a whole; a form's buttons are drawn by the
+/// control itself, so the button under the pointer is the extra fact that keeps the highlight on
+/// one button instead of all of them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FormAction {
+    Submit,
+    Reset,
+    Cancel,
 }
 
 /// The boxes one field occupies: its label, its control and its error/help line.
@@ -187,8 +220,13 @@ pub struct Form {
     observed: Vec<(String, Option<String>)>,
     /// Bumped whenever the control asks for a layout; keys the layout cache.
     layout_revision: Arc<AtomicU32>,
-    /// `(revision, x, y, width, boxes)` of the last computed layout.
+    /// The boxes, their field indices and the content origin of the last computed layout.
     layout_cache: RefCell<Option<LayoutCache>>,
+    /// Where the pointer last entered or moved inside this control; `None` after it leaves.
+    ///
+    /// Hover is derived from this position and the same rectangles hit-testing uses, so moving a
+    /// button (a new geometry or padding) cannot leave a highlight behind on a stale box.
+    pointer: Cell<Option<Point>>,
     /// Emitted after a successful submit.
     pub submitted: GenericSignal,
     /// Emitted after a reset restored the baseline values.
@@ -262,6 +300,7 @@ impl Form {
             observed: Vec::new(),
             layout_revision,
             layout_cache: RefCell::new(None),
+            pointer: Cell::new(None),
             submitted: GenericSignal::new(),
             reset_requested: GenericSignal::new(),
             submit_failed: Signal1::new(),
@@ -378,9 +417,9 @@ impl Form {
         self.columns
     }
 
-    /// Sets the column count (at least one).
+    /// Sets the column count (at least one, at most 256).
     pub fn set_columns(&mut self, columns: u32) {
-        self.columns = columns.max(1);
+        self.columns = columns.clamp(1, MAX_COLUMNS);
         self.base.request_layout();
         self.base.request_redraw();
     }
@@ -534,6 +573,13 @@ impl Form {
         }
         if let Some(widget) = field.widget {
             self.base.add_child_linked(widget);
+            // Adoption must restore the presentation flags a detached child kept: `remove_field`
+            // and `clear_fields` hide a removed control (C2-D1), so a row added again would sit in
+            // the layout while its control stayed invisible. `enabled` follows the same rule the
+            // container applies to every hosted field (FM-06), which also keeps a field added to a
+            // disabled form from staying interactive.
+            rust_widgets::set_widget_visible(widget, field.visible);
+            rust_widgets::set_widget_enabled(widget, self.base.is_enabled());
             field.baseline = read_field_value(widget);
         }
         let key = field.key.clone();
@@ -575,7 +621,33 @@ impl Form {
             rust_widgets::set_widget_visible(widget, false);
         }
         self.observed.retain(|(existing, _)| existing != key);
+        self.validators.remove(key);
         self.form_rules.remove(key);
+        // A rule attached to *another* field may name this one as its comparison target. Keeping
+        // it would make the surviving row report "Must match <gone field>" against a value nobody
+        // can set, so the incoming rules go with the field they depend on — and the verdicts they
+        // produced are retired with them.
+        let mut judged = Vec::new();
+        for (target, rules) in self.form_rules.iter_mut() {
+            let before = rules.len();
+            rules.retain(|rule| rule.other() != key);
+            if rules.len() != before {
+                judged.push(target.clone());
+            }
+        }
+        // `validation_error` carries no provenance, so a blind clear would also destroy a verdict
+        // the row's own closure/typed rule still produces. Re-deriving each judged row keeps the
+        // remaining rules honest (and repaints/publishes once per row).
+        for target in judged {
+            self.revalidate_field(&target);
+        }
+        // The detached field keeps its error slots otherwise, so re-adding the value a host kept
+        // (the doc says the control stays alive for its owner) resurrected a message from a rule
+        // that no longer exists and published `validity_changed(false)` for it.
+        let mut field = field;
+        field.validation_error = None;
+        field.external_error = None;
+        field.async_error = None;
         self.input_validators.remove(key);
         self.async_validators.remove(key);
         self.bump_validation_revision();
@@ -597,6 +669,7 @@ impl Form {
             self.field_removed.emit(field.key);
         }
         self.observed.clear();
+        self.validators.clear();
         self.form_rules.clear();
         self.input_validators.clear();
         self.async_validators.clear();
@@ -659,7 +732,14 @@ impl Form {
         field.set_required(required);
         self.base.request_layout();
         self.base.request_redraw();
-        self.publish_derived_state();
+        // Turning the flag off can retire a "Required" verdict the field is still holding; a
+        // fresh pass re-derives the row from the rules that remain. Turning it on adds a possible
+        // error rather than invalidating the current verdict, so it does not force one now.
+        if required {
+            self.publish_derived_state();
+        } else {
+            self.revalidate_field(key);
+        }
         true
     }
 
@@ -675,6 +755,13 @@ impl Form {
     }
 
     /// Shows or hides one row.
+    ///
+    /// A hidden row leaves the layout, the aggregate validity and `focus_first_invalid` together:
+    /// it paints nothing and cannot be focused, so it must not be the reason a submit is refused.
+    /// Its derived validation verdict is retired with it (a host-reported or asynchronous error is
+    /// the value's own fact and is kept), so showing it again cannot resurrect an error no pass
+    /// re-derived. Showing it again puts it back under all three rules, and the visibility edge
+    /// publishes the aggregate change it produced.
     pub fn set_field_visible(&mut self, key: &str, visible: bool) -> bool {
         let Some(field) = self.field_mut(key) else {
             return false;
@@ -685,6 +772,15 @@ impl Form {
         }
         self.base.request_layout();
         self.base.request_redraw();
+        // The value did not change, but the aggregate did: a hidden invalid row stops blocking
+        // and a shown one starts again. A hidden row cannot be corrected, so its frozen verdict is
+        // retired here rather than re-weighted on the next show.
+        if !visible {
+            if let Some(field) = self.field_mut(key) {
+                field.validation_error = None;
+            }
+        }
+        self.publish_derived_state();
         true
     }
 
@@ -707,7 +803,13 @@ impl Form {
 
     /// Removes the rule installed for `key`, returning whether one was installed.
     pub fn clear_field_validator(&mut self, key: &str) -> bool {
-        self.validators.remove(key).is_some()
+        if self.validators.remove(key).is_none() {
+            return false;
+        }
+        // The verdict on `key` was produced by a rule that no longer exists; the row is re-derived
+        // from the rules that remain instead of leaving the old message painted and counted.
+        self.revalidate_field(key);
+        true
     }
 
     /// Installs a typed rule from `rust_widgets`' input-validator family.
@@ -733,7 +835,11 @@ impl Form {
 
     /// Removes the typed rule for `key`, returning whether one was installed.
     pub fn clear_field_input_validator(&mut self, key: &str) -> bool {
-        self.input_validators.remove(key).is_some()
+        if self.input_validators.remove(key).is_none() {
+            return false;
+        }
+        self.revalidate_field(key);
+        true
     }
 
     /// Declares a field's value grammar and installs its validator.
@@ -755,8 +861,23 @@ impl Form {
                 self.input_validators.remove(key);
             }
         }
-        self.base.request_redraw();
+        // The typed rule that produced the row's message was just replaced or removed, so the old
+        // verdict cannot stand; re-derive it from the rules now installed.
+        self.revalidate_field(key);
         true
+    }
+
+    /// Re-runs validation for one field and publishes the result.
+    ///
+    /// Used after a rule, a kind or a required flag changed: `validation_error` carries no
+    /// provenance, so clearing the slot is not enough (it could hold a failure of a rule that
+    /// still exists) and leaving it is wrong (it could hold a failure of the rule just removed).
+    fn revalidate_field(&mut self, key: &str) {
+        self.apply_validation(Some(key));
+        self.bump_validation_revision();
+        self.base.request_layout();
+        self.base.request_redraw();
+        self.publish_derived_state();
     }
 
     /// Attaches a cross-field rule to the field it judges.
@@ -777,7 +898,20 @@ impl Form {
     /// Returns whether any rule was removed. Rules are attached to one field, so
     /// this is the whole lifetime of that field's cross-field rules.
     pub fn remove_form_rule(&mut self, key: &str) -> bool {
-        self.form_rules.remove(key).is_some()
+        if self.form_rules.remove(key).is_none() {
+            return false;
+        }
+        // The verdict on `key` was produced by a rule that no longer exists; retire it, repaint
+        // the form it was painted on and publish the new aggregate. Removing only the rule left
+        // the old error painted and still counted until an unrelated event forced a pass.
+        if let Some(field) = self.field_mut(key) {
+            field.validation_error = None;
+        }
+        self.bump_validation_revision();
+        self.base.request_layout();
+        self.base.request_redraw();
+        self.publish_derived_state();
+        true
     }
 
     /// The cross-field rules attached to `key`, in evaluation order.
@@ -893,15 +1027,32 @@ impl Form {
         let Some(widget) = field.widget else {
             return false;
         };
+        let before = read_field_value(widget);
         if !write_field_value(widget, value) {
             return false;
         }
+        // A write of the value the field already holds is not a change: reporting it would make
+        // `field_changed` fire from the form path only, while a child-driven write stays an edge
+        // (see `resync_derived`).
+        if read_field_value(widget) == before {
+            self.note_observed(key);
+            return true;
+        }
         // A stored asynchronous verdict describes the *old* text, so a write
         // retires it in the same step that bumps the revision.
-        if let Some(field) = self.field_mut(key) {
-            field.async_error = None;
-        }
+        let retired_verdict = match self.field_mut(key) {
+            Some(field) => {
+                let had_verdict = field.async_error().is_some();
+                field.async_error = None;
+                had_verdict
+            }
+            None => false,
+        };
         self.bump_validation_revision();
+        if retired_verdict {
+            // The retired verdict owned an error line; the row has to give that height back.
+            self.base.request_layout();
+        }
         self.base.request_redraw();
         self.note_observed(key);
         self.field_changed.emit(key.to_string());
@@ -936,9 +1087,16 @@ impl Form {
     /// domain rule a caller installed survives a validation pass (and can only be cleared by
     /// [`Self::clear_field_error`]). The same is true of an asynchronous result
     /// already stored on the field.
+    ///
+    /// Hidden rows are not judged, because [`Self::is_valid`] does not count them; the two rules
+    /// are one contract (see [`Self::set_field_visible`]).
     pub fn validate(&mut self) -> bool {
         self.apply_validation(None);
         self.base.request_layout();
+        // The pass writes the derived error slots, so the error/help lines it produced (and the
+        // lines it retired) are pixel changes. A layout request alone only invalidates the cached
+        // boxes; without the repaint the row keeps painting the verdict from the previous pass.
+        self.base.request_redraw();
         let valid = self.is_valid();
         self.publish_validity(valid);
         valid
@@ -948,13 +1106,15 @@ impl Form {
     ///
     /// Returns `false` for an unknown key. A host that validates field by field still sees one
     /// `validity_changed` edge for the form as a whole, because the aggregate is republished after
-    /// the single-field pass — the same rule [`Self::validate`] follows.
+    /// the single-field pass — the same rule [`Self::validate`] follows. A hidden field is a
+    /// successful no-op: it owns no verdict while it is outside the aggregate.
     pub fn validate_field(&mut self, key: &str) -> bool {
         if self.field(key).is_none() {
             return false;
         }
         self.apply_validation(Some(key));
         self.base.request_layout();
+        self.base.request_redraw();
         self.publish_derived_state();
         true
     }
@@ -971,6 +1131,14 @@ impl Form {
             let input_validators = &self.input_validators;
             let rules = &self.form_rules;
             for field in &mut self.fields {
+                // A hidden row is outside the aggregate: it paints no error, `focus_first_invalid`
+                // skips it and `is_valid` ignores it, so judging it here would produce a verdict
+                // the user has no way to see or fix. Its old verdict is retired for the same
+                // reason: keeping it resurfaced a stale error when the row was shown again.
+                if !field.visible {
+                    field.validation_error = None;
+                    continue;
+                }
                 if only.is_some_and(|key| key != field.key.as_str()) {
                     continue;
                 }
@@ -989,10 +1157,15 @@ impl Form {
         }
     }
 
-    /// Every field's current value, with unbound fields reported as empty.
+    /// Every visible field's current value, with unbound fields reported as empty.
+    ///
+    /// Hidden rows are omitted: a cross-field rule must not compare against a value the reader
+    /// cannot see or edit, which is the same reason `apply_validation` skips them as the judged
+    /// row.
     fn current_values(&self) -> BTreeMap<String, String> {
         self.fields
             .iter()
+            .filter(|field| field.visible)
             .map(|field| {
                 (field.key.clone(), field.widget.and_then(read_field_value).unwrap_or_default())
             })
@@ -1004,9 +1177,14 @@ impl Form {
         self.validation_revision = self.validation_revision.wrapping_add(1);
     }
 
-    /// Whether every field currently reports no error and every required field has a value.
+    /// Whether every visible field currently reports no error and every required field has a
+    /// value.
+    ///
+    /// A hidden row is outside the aggregate: it cannot be painted, focused or corrected, so it
+    /// never blocks a submit. [`Self::set_field_visible`] publishes the resulting edge, which is
+    /// what keeps the visible/hidden transition and this predicate from disagreeing.
     pub fn is_valid(&self) -> bool {
-        self.fields.iter().all(|field| {
+        self.fields.iter().filter(|field| field.visible).all(|field| {
             if field.error().is_some() {
                 return false;
             }
@@ -1017,9 +1195,9 @@ impl Form {
         })
     }
 
-    /// How many fields currently show an error.
+    /// How many visible fields currently show an error.
     pub fn error_count(&self) -> usize {
-        self.fields.iter().filter(|field| field.error().is_some()).count()
+        self.fields.iter().filter(|field| field.visible && field.error().is_some()).count()
     }
 
     /// Submits the form: validates, then emits `submitted` or `submit_failed`.
@@ -1042,21 +1220,46 @@ impl Form {
     /// row have nothing to focus and are skipped; `false` is the honest answer for "there is
     /// nowhere to put the caret".
     pub fn focus_first_invalid(&mut self) -> bool {
-        let target = self
-            .fields
-            .iter()
-            .find(|field| field.visible && field.error().is_some())
-            .and_then(|field| field.widget);
-        target.is_some_and(rust_widgets::widget::runtime::focus_widget)
+        for field in &self.fields {
+            if !field.visible || field.error().is_none() {
+                continue;
+            }
+            let Some(widget) = field.widget else {
+                continue;
+            };
+            // `focus_widget` only checks mount and modals; a disabled control and a control that
+            // reports `is_focusable() == false` must not receive the caret, so the row is skipped
+            // (and the search moves on instead of answering `false` for the whole form).
+            if !rust_widgets::widget::runtime::widget_wants_keyboard_focus(widget) {
+                continue;
+            }
+            if rust_widgets::widget::runtime::has_focus(widget) {
+                return true;
+            }
+            if rust_widgets::widget::runtime::focus_widget(widget) {
+                return true;
+            }
+        }
+        false
     }
 
     /// Restores every baseline value and clears the errors, then emits `reset`.
-    pub fn reset(&mut self) {
+    ///
+    /// Returns whether every baseline write succeeded. A bound control that publishes none of
+    /// `text`/`current_text`/`value` cannot be restored; such a field keeps its edited value and
+    /// its error, and the `false` tells the host the reset was partial rather than silent.
+    pub fn reset(&mut self) -> bool {
+        let mut restored = true;
         for field in &mut self.fields {
             if let (Some(widget), Some(baseline)) = (field.widget, field.baseline.clone()) {
-                let _ = write_field_value(widget, &baseline);
+                if write_field_value(widget, &baseline) {
+                    field.clear_error();
+                } else {
+                    restored = false;
+                }
+            } else {
+                field.clear_error();
             }
-            field.clear_error();
         }
         self.bump_validation_revision();
         self.base.request_layout();
@@ -1064,6 +1267,7 @@ impl Form {
         self.sync_observed();
         self.reset_requested.emit();
         self.publish_derived_state();
+        restored
     }
 
     /// Abandons the validation state without restoring the baseline.
@@ -1085,11 +1289,40 @@ impl Form {
         self.publish_derived_state();
     }
 
-    /// Requests a layout pass and a repaint.
+    /// Re-applies the fields' presentation and requests a layout pass and a repaint.
     ///
     /// Call this after a direct [`Self::field_mut`] edit that changed a label, the required flag,
-    /// the help text or a visibility flag.
+    /// the help text or a visibility flag. `refresh` is the *presentation* half: it writes each
+    /// hidden/shown field's flag into its control and invalidates the cached boxes. It does not
+    /// re-read values or publish events — [`Self::resync`] is the half that does.
     pub fn refresh(&self) {
+        // A `field_mut` edit flips the field's own `visible` flag, while the child control keeps
+        // its own; without this reconcile the row leaves the layout but the control stays painted,
+        // which is exactly the draw/hit mismatch the documented visibility edit could produce.
+        for field in &self.fields {
+            if let Some(widget) = field.widget {
+                rust_widgets::set_widget_visible(widget, field.visible);
+            }
+        }
+        self.base.request_layout();
+        self.base.request_redraw();
+    }
+
+    /// Re-reads every bound field and publishes the edges a direct write produced.
+    ///
+    /// This is the mutable counterpart of [`Self::refresh`]. A user's keystrokes, or a host that
+    /// writes a child behind the form's back, change the child's value without telling the form;
+    /// `resync` re-reads every field, retires asynchronous verdicts for text that changed, and
+    /// publishes `field_changed`, `dirty_changed` and `validity_changed`. The value of record stays
+    /// in the child — the observation is an edge detector, not a second store.
+    ///
+    /// Call `refresh` for a presentation-only edit and `resync` when the signals matter too; a
+    /// host that wants both calls both (the two are additive and idempotent).
+    pub fn resync(&mut self) {
+        self.resync_derived();
+        // A direct edit can change validity without changing a value — the required flag and a
+        // visibility flag both do — and `resync_derived` only publishes on a value edge.
+        self.publish_derived_state();
         self.base.request_layout();
         self.base.request_redraw();
     }
@@ -1123,12 +1356,18 @@ impl Form {
         if changed {
             // An asynchronous result for the previous text is no longer an
             // answer about the current one.
+            let mut retired_verdict = false;
             for field in &mut self.fields {
-                if changed_keys.contains(&field.key) {
+                if changed_keys.contains(&field.key) && field.async_error.is_some() {
                     field.async_error = None;
+                    retired_verdict = true;
                 }
             }
             self.bump_validation_revision();
+            if retired_verdict {
+                // A retired verdict frees the error line it reserved, so the boxes move too.
+                self.base.request_layout();
+            }
             self.base.request_redraw();
             self.publish_derived_state();
         }
@@ -1167,7 +1406,7 @@ impl Form {
 
     /// The exact box of each field's label, control and error/help line.
     pub fn field_layouts(&self) -> Vec<FormFieldLayout> {
-        self.with_layouts(|layouts| layouts.to_vec())
+        self.with_layouts(|layouts, _| layouts.to_vec())
     }
 
     /// Whether the fields need more height than the control currently has.
@@ -1188,31 +1427,37 @@ impl Form {
         let revision = self.layout_revision.load(Ordering::Relaxed);
         let fresh = matches!(
             self.layout_cache.borrow().as_ref(),
-            Some((cached, x, y, width, _))
-                if *cached == revision
-                    && *x == content.x
-                    && *y == content.y
-                    && *width == content.width
+            Some(cache)
+                if cache.revision == revision
+                    && cache.x == content.x
+                    && cache.y == content.y
+                    && cache.width == content.width
         );
         if fresh {
             return;
         }
-        let layouts = self.compute_layouts(content.x, content.y, content.width).0;
-        *self.layout_cache.borrow_mut() =
-            Some((revision, content.x, content.y, content.width, layouts));
+        let (layouts, field_indices, _) = self.compute_layouts(content.x, content.y, content.width);
+        *self.layout_cache.borrow_mut() = Some(LayoutCache {
+            revision,
+            x: content.x,
+            y: content.y,
+            width: content.width,
+            layouts,
+            field_indices,
+        });
     }
 
-    /// Runs `f` over the current boxes without cloning them.
-    fn with_layouts<R>(&self, f: impl FnOnce(&[FormFieldLayout]) -> R) -> R {
+    /// Runs `f` over the current boxes and their field indices without cloning them.
+    fn with_layouts<R>(&self, f: impl FnOnce(&[FormFieldLayout], &[usize]) -> R) -> R {
         self.ensure_layouts();
         let cache = self.layout_cache.borrow();
-        let (_, _, _, _, layouts) = cache.as_ref().expect("ensure_layouts stored the boxes");
-        f(layouts)
+        let cache = cache.as_ref().expect("ensure_layouts stored the boxes");
+        f(&cache.layouts, &cache.field_indices)
     }
 
     /// The control box of `key`, if the field is visible.
     pub fn control_rect_of(&self, key: &str) -> Option<Rect> {
-        self.with_layouts(|layouts| {
+        self.with_layouts(|layouts, _| {
             layouts.iter().find(|layout| layout.key == key).map(|layout| layout.control)
         })
     }
@@ -1250,6 +1495,50 @@ impl Form {
         Some(Rect::new(reset.x - self.row_spacing as i32 - width as i32, reset.y, width, BUTTON_H))
     }
 
+    /// The action button under `pos`, or `None` when the row is hidden or the point misses.
+    ///
+    /// Draw and hit-testing both call this, so the button that is highlighted is exactly the one
+    /// a press activates. The predicate also reads the live rectangles, which is what lets a
+    /// geometry or padding change move the highlight with the button instead of leaving it on a
+    /// remembered box.
+    fn action_at(&self, pos: Point) -> Option<FormAction> {
+        if !self.show_buttons {
+            return None;
+        }
+        if self.submit_rect().contains_point(pos) {
+            return Some(FormAction::Submit);
+        }
+        if self.reset_rect().contains_point(pos) {
+            return Some(FormAction::Reset);
+        }
+        if self.cancel_rect().is_some_and(|rect| rect.contains_point(pos)) {
+            return Some(FormAction::Cancel);
+        }
+        None
+    }
+
+    /// Records the pointer position the per-button hover is derived from.
+    fn update_hover(&self, event: &Event) {
+        match event {
+            Event::MouseEnter { pos } | Event::MouseMove { pos } => self.pointer.set(Some(*pos)),
+            Event::MouseLeave { .. } => self.pointer.set(None),
+            _ => {}
+        }
+    }
+
+    /// The action button the pointer is over, as its published-style token.
+    ///
+    /// Test observability for the per-button hover state; the capability surface does not expose
+    /// hover, because it is pointer feedback rather than model state.
+    #[cfg(test)]
+    pub(crate) fn hovered_action(&self) -> Option<&'static str> {
+        self.pointer.get().and_then(|pos| self.action_at(pos)).map(|action| match action {
+            FormAction::Submit => "submit",
+            FormAction::Reset => "reset",
+            FormAction::Cancel => "cancel",
+        })
+    }
+
     fn title_band_height(&self) -> u32 {
         if self.show_title && !self.title.is_empty() {
             TITLE_H
@@ -1268,27 +1557,40 @@ impl Form {
 
     /// The row-and-column arithmetic, shared by `field_layouts` and `size_hint`.
     ///
-    /// Returns the layouts and the total height they occupy. The x/y origin is a parameter because
-    /// `size_hint` asks the same question at a synthetic origin.
-    fn compute_layouts(&self, x0: i32, y0: i32, width: u32) -> (Vec<FormFieldLayout>, u32) {
-        let columns = self.columns.max(1) as usize;
-        let gap = self.column_spacing as i32;
-        let total_gap = gap.saturating_mul(columns as i32 - 1).max(0);
-        let usable = (width as i32 - total_gap).max(0) as u32;
-        let column_width = usable / columns as u32;
-        let visible: Vec<&FormField> = self.fields.iter().filter(|field| field.visible).collect();
+    /// Returns the layouts, the `fields` index each layout belongs to, and the total height they
+    /// occupy. The x/y origin is a parameter because `size_hint` asks the same question at a
+    /// synthetic origin.
+    fn compute_layouts(
+        &self,
+        x0: i32,
+        y0: i32,
+        width: u32,
+    ) -> (Vec<FormFieldLayout>, Vec<usize>, u32) {
+        // `i64` for the width arithmetic: the public column count is a `u32`, and casting it to
+        // `i32` turned `2^31` into `i32::MIN`, whose `- 1` overflows (panic in debug, an inverted
+        // gap in release). The clamped count keeps the row/index maths in `usize`.
+        let columns = self.columns.clamp(1, MAX_COLUMNS) as usize;
+        let gap = i64::from(self.column_spacing);
+        let column_count = columns as i64;
+        let total_gap = (gap * (column_count - 1)).max(0);
+        let usable = (i64::from(width) - total_gap).max(0);
+        let column_width = (usable / column_count) as u32;
+        let visible: Vec<(usize, &FormField)> =
+            self.fields.iter().enumerate().filter(|(_, field)| field.visible).collect();
         let mut layouts = Vec::with_capacity(visible.len());
+        let mut field_indices = Vec::with_capacity(visible.len());
         let mut y = y0;
         let mut index = 0;
         while index < visible.len() {
             let end = visible.len().min(index + columns);
             let row = &visible[index..end];
             let mut row_height = 0u32;
-            for field in row {
+            for (_, field) in row {
                 row_height = row_height.max(self.field_height(field));
             }
-            for (column, field) in row.iter().enumerate() {
-                let x = x0 + column as i32 * (column_width as i32 + gap);
+            for (column, (field_index, field)) in row.iter().enumerate() {
+                let x = i64::from(x0) + column as i64 * (i64::from(column_width) + gap);
+                let x = x.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32;
                 let line_height = self.line_height(field);
                 let top_height = row_height.saturating_sub(line_height);
                 let (label, control) = match self.label_position {
@@ -1332,12 +1634,17 @@ impl Form {
                     control,
                     error: Rect::new(x, y + top_height as i32, column_width, line_height),
                 });
+                field_indices.push(*field_index);
             }
             y += row_height as i32 + self.row_spacing as i32;
             index += columns;
         }
-        let used = (y - y0).max(0) as u32;
-        (layouts, used)
+        // The loop advances past the last row's gap as well, but the gap after the final row is
+        // not height the fields ask for: counting it would make `size_hint` (and therefore
+        // `overflows`) claim a form needs one row spacing more than it does.
+        let trailing_gap = if layouts.is_empty() { 0 } else { self.row_spacing as i32 };
+        let used = (y - y0 - trailing_gap).max(0) as u32;
+        (layouts, field_indices, used)
     }
 
     /// The total height one field asks for.
@@ -1354,8 +1661,12 @@ impl Form {
 
     /// The reserved error/help line height for one field.
     fn line_height(&self, field: &FormField) -> u32 {
+        // Only reserve the line for text `draw` will actually paint. An error that `show_errors`
+        // hides also shadows the help text (the error slot wins), so that combination paints
+        // nothing and must not hold a blank line under the control.
         let shows_error = self.show_errors && field.error().is_some();
-        if shows_error || !field.help().is_empty() {
+        let shows_help = field.error().is_none() && !field.help().is_empty();
+        if shows_error || shows_help {
             ERROR_ROW_H
         } else {
             0
@@ -1368,22 +1679,27 @@ impl Form {
     /// answer to "where does that child live". `draw` passes the boxes it already computed, so a
     /// frame costs one layout pass rather than two; `place_field_widgets` is the wrapper for the
     /// callers that do not hold them (`set_geometry`).
-    fn place_layouts(&self, layouts: &[FormFieldLayout]) {
-        for layout in layouts {
-            if let Some(widget) = self.field(&layout.key).and_then(FormField::widget_id) {
-                rust_widgets::set_widget_geometry(
-                    widget,
-                    layout.control.x,
-                    layout.control.y,
-                    layout.control.width,
-                    layout.control.height,
-                );
-            }
+    fn place_layouts(&self, layouts: &[FormFieldLayout], field_indices: &[usize]) {
+        for (layout, field_index) in layouts.iter().zip(field_indices) {
+            // The index came from the same computation as the box; `get` keeps a broken invariant
+            // from panicking rather than trusting it.
+            let Some(widget) = self.fields.get(*field_index).and_then(FormField::widget_id) else {
+                continue;
+            };
+            rust_widgets::set_widget_geometry(
+                widget,
+                layout.control.x,
+                layout.control.y,
+                layout.control.width,
+                layout.control.height,
+            );
         }
     }
 
     fn place_field_widgets(&self) {
-        self.place_layouts(&self.field_layouts());
+        self.with_layouts(|layouts, field_indices| {
+            self.place_layouts(layouts, field_indices);
+        });
     }
 
     fn publish_validity(&mut self, valid: bool) {
@@ -1408,18 +1724,30 @@ impl Form {
         self.publish_dirty();
     }
 
-    fn draw_button(&self, context: &mut RenderContext, rect: Rect, label: &str, ink: Color) {
+    fn draw_button(
+        &self,
+        context: &mut RenderContext,
+        rect: Rect,
+        label: &str,
+        ink: Color,
+        action: FormAction,
+    ) {
         if rect.width == 0 || rect.height == 0 {
             return;
         }
-        // Hover and press are tracked by `BaseWidget` from the runtime's hover/press transitions;
-        // a disabled form paints the row faded instead of leaving it looking live.
+        // Hover and press are per button: the pointer over submit must not light reset and cancel
+        // too. The base tracks them for the control as a whole, so the action under the pointer is
+        // the discriminator; draw and hit-testing share `action_at`, so a highlighted button is
+        // always the one a press activates.
         let enabled = self.base.is_enabled();
+        let hovered =
+            enabled && self.pointer.get().is_some_and(|pos| self.action_at(pos) == Some(action));
+        let pressed = hovered && self.base.is_pressed();
         let fill_alpha = if !enabled {
             8
-        } else if self.base.is_pressed() {
+        } else if pressed {
             30
-        } else if self.base.is_hovered() {
+        } else if hovered {
             24
         } else {
             18
@@ -1498,6 +1826,33 @@ impl Widget for Form {
         &mut self.base
     }
 
+    /// Disables the form **and the fields it hosts**, whichever spelling of the call a host uses.
+    ///
+    /// The property route has always propagated (FM-06); the trait method is the other entry
+    /// point, so it follows the same rule here. The container's own bookkeeping is the trait
+    /// default, written out in `super::state::apply_enabled_state` because an override cannot
+    /// call the implementation it replaces.
+    fn set_enabled(&mut self, enabled: bool) {
+        // Propagate only on a real transition: adoption already applies the container's flag
+        // (FM-06), and a per-frame container sync that reasserts the same value must not descend
+        // into every field again.
+        let changed = self.base.is_enabled() != enabled;
+        super::state::apply_enabled_state(self, enabled);
+        if !changed {
+            return;
+        }
+        if !enabled {
+            // A disabled form paints no hover, and the remembered position would otherwise light
+            // a button again the moment it is enabled.
+            self.pointer.set(None);
+        }
+        for field in &self.fields {
+            if let Some(widget) = field.widget {
+                rust_widgets::set_widget_enabled(widget, enabled);
+            }
+        }
+    }
+
     fn set_state_theme_hook(&mut self) {
         rust_widgets::style::reapply_active_theme_state(self);
     }
@@ -1534,7 +1889,7 @@ impl Widget for Form {
 
     fn size_hint(&self) -> Size {
         let width = self.geometry().width.max(DEFAULT_WIDTH);
-        let (_, content) = self.compute_layouts(0, 0, width);
+        let (_, _, content) = self.compute_layouts(0, 0, width);
         Size::new(
             width,
             self.title_band_height()
@@ -1713,15 +2068,10 @@ impl WidgetProperties for Form {
             }
             // A disabled container disables the controls it hosts: the fields are separate
             // widgets and the router can dispatch to them directly, so writing this control's
-            // own flag alone would leave them interactive (FM-06).
+            // own flag alone would leave them interactive (FM-06). The trait override owns that
+            // propagation, so the property route and `Widget::set_enabled` now agree.
             "enabled" => {
-                let enabled = expect_bool(value)?;
-                self.base.set_enabled(enabled);
-                for field in &self.fields {
-                    if let Some(widget) = field.widget {
-                        rust_widgets::set_widget_enabled(widget, enabled);
-                    }
-                }
+                self.set_enabled(expect_bool(value)?);
                 Ok(())
             }
             // Derived from the field list and the controls' values; a writer would be a second
@@ -1833,9 +2183,9 @@ impl Draw for Form {
         let error_ink =
             rust_widgets::style::semantic_color(rust_widgets::style::SemanticColor::Error)
                 .unwrap_or_else(|| Color::rgba(190, 40, 40, 255));
-        self.with_layouts(|layouts| {
-            for layout in layouts {
-                let Some(field) = self.field(&layout.key) else {
+        self.with_layouts(|layouts, field_indices| {
+            for (layout, field_index) in layouts.iter().zip(field_indices) {
+                let Some(field) = self.fields.get(*field_index) else {
                     continue;
                 };
                 if self.show_labels {
@@ -1876,40 +2226,51 @@ impl Draw for Form {
         });
 
         if self.show_buttons {
-            self.draw_button(context, self.submit_rect(), &self.submit_label, ink);
-            self.draw_button(context, self.reset_rect(), &self.reset_label, ink);
+            self.draw_button(
+                context,
+                self.submit_rect(),
+                &self.submit_label,
+                ink,
+                FormAction::Submit,
+            );
+            self.draw_button(context, self.reset_rect(), &self.reset_label, ink, FormAction::Reset);
             if let Some(rect) = self.cancel_rect() {
-                self.draw_button(context, rect, &self.cancel_label, ink);
+                self.draw_button(context, rect, &self.cancel_label, ink, FormAction::Cancel);
             }
         }
 
         // The children are drawn by the tree painter; this only has to keep their boxes current
         // for a frame that served the layout from cache. The boxes come from the same cache, so
         // the frame pays for one layout pass and clones nothing.
-        self.with_layouts(|layouts| self.place_layouts(layouts));
+        self.with_layouts(|layouts, field_indices| {
+            self.place_layouts(layouts, field_indices);
+        });
     }
 }
 
 impl EventHandler for Form {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
+        // Record the pointer before the enabled guard: hover is a position, and draw decides
+        // whether it is painted. MouseLeave clears it.
+        self.update_hover(event);
         if !self.base.is_enabled() {
             return;
         }
         if let Event::MousePress { pos, button: 1, .. } = event {
-            if self.show_buttons {
-                if self.submit_rect().contains_point(*pos) {
-                    let _ = self.submit();
-                    return;
+            // One predicate for drawing and activation: the box the pointer highlights is the box
+            // the press reaches.
+            if let Some(action) = self.action_at(*pos) {
+                match action {
+                    FormAction::Submit => {
+                        let _ = self.submit();
+                    }
+                    FormAction::Reset => {
+                        self.reset();
+                    }
+                    FormAction::Cancel => self.cancel(),
                 }
-                if self.cancel_rect().is_some_and(|rect| rect.contains_point(*pos)) {
-                    self.cancel();
-                    return;
-                }
-                if self.reset_rect().contains_point(*pos) {
-                    self.reset();
-                    return;
-                }
+                return;
             }
         }
         // Enter submits when the form itself receives the key. A text field that consumes Enter

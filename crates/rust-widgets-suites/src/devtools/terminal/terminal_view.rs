@@ -10,6 +10,13 @@
 //! does not allocate a PTY and does not spawn a process. A host that owns a process feeds its
 //! output through [`TerminalView::append_output`] and executes the strings published by
 //! `command_submitted` (or by `interrupt_requested` for a signal request).
+//!
+//! # Screen-grid bound
+//!
+//! A program that addresses the cursor switches the control from the line buffer to a grid. The
+//! grid's rows are capped at [`MAX_SCREEN_ROWS`]: a malformed cursor address is clamped to the
+//! last row instead of allocating an unbounded number of cells, while every real terminal is far
+//! below the bound.
 
 use rust_widgets::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use rust_widgets::event::wheel::WheelScroll;
@@ -74,6 +81,15 @@ impl OutputSelectionMode {
 /// context. They agree at the default body font size.
 const OUTPUT_LINE_HEIGHT: i32 = 14;
 
+/// The tallest screen grid this control will materialise.
+///
+/// A full-screen program addresses cells by number, and a CSI can name any row. Without a ceiling
+/// a malformed `ESC[4294967295H` made `ScreenBuffer::ensure_row` allocate that many rows before
+/// the next scrollback trim, which is a memory-exhaustion path from untrusted output. The bound is
+/// far above any real terminal (a 4K display at the default cell height is about 150 rows) and is
+/// the default scrollback depth, so legitimate output is unaffected.
+pub const MAX_SCREEN_ROWS: usize = DEFAULT_SCROLLBACK_LINES;
+
 /// Terminal-like text view with input line and command history.
 pub struct TerminalView {
     base: BaseWidget,
@@ -130,6 +146,18 @@ pub struct TerminalView {
     /// independently derived row count. The draw path refreshes it; the constructor seeds it from
     /// the geometry so scrolling works before the first frame.
     visible_output_rows: usize,
+    /// The output row pitch measured by the last painted frame, in pixels.
+    ///
+    /// The paint path is the only place with real font metrics, so it records the pitch here and
+    /// the hit-test, scrollbar and IME paths read it back. Before the first frame the constant
+    /// estimate stands in for it; a font-size change updates it on the next paint instead of
+    /// leaving those paths on a stale 14 px pitch.
+    output_row_height: i32,
+    /// The prompt's measured advance from the last painted frame, in pixels.
+    ///
+    /// Written by the paint path and read by the input-line hit test and the IME anchor, so those
+    /// two cannot disagree with where the prompt glyphs were actually drawn.
+    prompt_width: i32,
     /// The caret at the end of the input line, which blinks while the terminal is enabled.
     ///
     /// # Why a terminal needs one more than most fields
@@ -214,6 +242,8 @@ impl TerminalView {
             revision: 0,
             scroll_offset: 0,
             visible_output_rows,
+            output_row_height: OUTPUT_LINE_HEIGHT,
+            prompt_width: 0,
             cursor,
             input_cursor: 0,
             selection_anchor: None,
@@ -284,9 +314,14 @@ impl TerminalView {
         let drop_count = self.lines.len() - self.scrollback_lines;
         self.lines.drain(0..drop_count);
         self.scroll_offset = self.scroll_offset.saturating_sub(drop_count);
-        self.output_selection = None;
+        // A trim removes the rows the selection names, so the selection is gone as well. Routed
+        // through `apply_output_selection` so subscribers hear the disappearance; the previous
+        // direct store left `selection_changed` silent and kept `selecting_output` latched for a
+        // drag that could no longer resolve.
         self.output_anchor = None;
         self.output_head = None;
+        self.selecting_output = false;
+        self.apply_output_selection(None);
         self.revision = self.revision.wrapping_add(1);
         self.clamp_selection_offset();
     }
@@ -498,18 +533,36 @@ impl TerminalView {
             return None;
         }
         let rect = self.geometry();
-        let prompt_row_height = OUTPUT_LINE_HEIGHT + 6;
+        let prompt_row_height = self.output_row_height.max(1) + 6;
         let y = (rect.y + rect.height as i32 - prompt_row_height + 3).max(rect.y);
         let font = effective_font(self.base.style());
-        let prompt_width =
-            rust_widgets::widget::metrics::estimate_text_width(&self.prompt, font, 1.0) as i32;
-        let before: String = self.preedit.chars().take(self.preedit_cursor_chars()).collect();
-        let x = rect.x
-            + 8
-            + prompt_width
-            + self.prefix_width(font)
-            + rust_widgets::widget::metrics::estimate_text_width(&before, font, 1.0) as i32;
+        let prompt_width = self.prompt_advance(font);
+        let before_width: i32 = self
+            .preedit
+            .chars()
+            .take(self.preedit_cursor_chars())
+            .map(|ch| self.char_advance(ch, font))
+            .sum();
+        let x = rect.x + 8 + prompt_width + self.prefix_width(font) + before_width;
         Some(Point::new(x, y))
+    }
+
+    /// The prompt's advance, preferring the paint path's measurement.
+    ///
+    /// The estimate is only the pre-first-frame fallback; after a frame the value is the same
+    /// `measure_text` result the prompt was drawn with, so the IME anchor and the input hit test
+    /// line up with the glyphs.
+    fn prompt_advance(&self, font: &Font) -> i32 {
+        if self.prompt_width > 0 {
+            self.prompt_width
+        } else {
+            rust_widgets::widget::metrics::estimate_text_width(&self.prompt, font, 1.0) as i32
+        }
+    }
+
+    /// The measured advance of one character, falling back to the estimate until it is cached.
+    fn char_advance(&self, ch: char, font: &Font) -> i32 {
+        self.char_widths.measured(ch, font).unwrap_or_else(|| glyph_width(ch, font))
     }
 
     /// The composition caret as a character offset inside the preedit text.
@@ -519,8 +572,7 @@ impl TerminalView {
 
     /// The measured advance of the input characters before the caret.
     fn prefix_width(&self, font: &Font) -> i32 {
-        let chars: String = self.input_line.chars().take(self.input_cursor).collect();
-        rust_widgets::widget::metrics::estimate_text_width(&chars, font, 1.0) as i32
+        self.input_line.chars().take(self.input_cursor).map(|ch| self.char_advance(ch, font)).sum()
     }
 
     /// The character grid: the declared size, or a geometry-derived default.
@@ -674,7 +726,7 @@ impl TerminalView {
         }
         let rect = self.geometry();
         let top = rect.y + 16;
-        let bottom = rect.y + rect.height as i32 - OUTPUT_LINE_HEIGHT - 6;
+        let bottom = rect.y + rect.height as i32 - self.output_row_height.max(1) - 6;
         if bottom <= top {
             return None;
         }
@@ -723,47 +775,71 @@ impl TerminalView {
         }
     }
 
-    /// The logical output line under `pos`, or `None` when the pointer is outside the output area.
-    fn output_line_at(&self, pos: Point) -> Option<usize> {
+    /// The first on-screen logical line under `pos`, with the painted row it was found at.
+    ///
+    /// The painted row is returned because a soft-wrapped logical line occupies several of them;
+    /// character hit testing needs the row to know where its characters start.
+    fn output_line_at(&self, pos: Point) -> Option<(usize, usize)> {
         let rect = self.geometry();
         let body_top = rect.y + 16;
-        let prompt_top = rect.y + rect.height as i32 - OUTPUT_LINE_HEIGHT - 6;
+        let row_height = self.output_row_height.max(1);
+        let prompt_top = rect.y + rect.height as i32 - row_height - 6;
         if pos.y < body_top || pos.y >= prompt_top {
             return None;
         }
-        let row_height = OUTPUT_LINE_HEIGHT.max(1);
         let first_row = self
             .total_output_rows()
             .saturating_sub(self.visible_output_rows.max(1))
             .saturating_sub(self.scroll_offset.min(self.max_scroll_offset()));
         let row = first_row + ((pos.y - body_top) / row_height) as usize;
         if self.output_cache.revision == self.revision {
-            self.output_cache.origins.get(row).copied()
+            self.output_cache.origins.get(row).copied().map(|line| (line, row))
         } else if row < self.lines.len() {
-            Some(row)
+            Some((row, row))
         } else {
             None
         }
     }
 
-    /// The character offset in `line` nearest to `x`.
-    fn output_char_at(&self, line: usize, x: i32) -> usize {
+    /// The character offset in the logical line under `painted_row` nearest to `x`.
+    ///
+    /// `painted_row` is the row as painted, not the logical line: a wrapped line contributes
+    /// several rows, and a continuation row starts at that row's first character. Starting every
+    /// row at character 0 mapped x≈0 on a continuation row back to the line's first character, so
+    /// a drag that crossed a wrapped row selected nothing.
+    fn output_char_at(&self, painted_row: usize, x: i32) -> usize {
         let cached = if self.output_cache.revision == self.revision {
-            self.output_cache.plain.get(line).map(String::as_str)
+            self.output_cache
+                .origins
+                .get(painted_row)
+                .copied()
+                .and_then(|line| self.output_cache.plain.get(line))
+                .map(String::as_str)
         } else {
             None
         };
         // The stripped form is cached per revision, so a pointer move does not re-strip the line.
+        let line = if self.output_cache.revision == self.revision {
+            self.output_cache.origins.get(painted_row).copied().unwrap_or(painted_row)
+        } else {
+            painted_row
+        };
         let owned =
             cached.is_none().then(|| self.lines.get(line).map(|raw| strip_ansi(raw))).flatten();
         let Some(text) = cached.or(owned.as_deref()) else {
             return 0;
         };
+        // Characters the rows above this one already painted on the same logical line.
+        let first = if self.output_cache.revision == self.revision {
+            self.output_cache.row_char_starts.get(painted_row).copied().unwrap_or(0)
+        } else {
+            0
+        };
         let font = effective_font(self.base.style());
         let mut offset = 0i32;
-        let mut index = 0usize;
-        for ch in text.chars() {
-            let width = glyph_width(ch, font);
+        let mut index = first;
+        for ch in text.chars().skip(first) {
+            let width = self.char_advance(ch, font);
             if x < offset + width / 2 {
                 break;
             }
@@ -796,13 +872,16 @@ impl TerminalView {
     }
 
     /// Stores an output selection and reports the presence change.
+    ///
+    /// The published payload describes presence, not the range: a drag that extends an existing
+    /// selection reported `true` again on every pointer move even though the selection had not
+    /// appeared a second time.
     fn apply_output_selection(&mut self, next: Option<(usize, usize)>) {
-        if self.output_selection == next {
-            self.base.request_redraw();
-            return;
-        }
+        let presence_changed = self.output_selection.is_some() != next.is_some();
         self.output_selection = next;
-        self.selection_changed.emit(next.is_some());
+        if presence_changed {
+            self.selection_changed.emit(next.is_some());
+        }
         self.base.request_redraw();
     }
 
@@ -824,6 +903,16 @@ impl TerminalView {
 
     /// Advances the caret's blink by `delta_ms` and reports whether another frame is owed.
     pub fn tick(&mut self, delta_ms: u32) -> bool {
+        // The frame bus can reach a control that was disabled after the last event, so the two
+        // steady-caret states are checked here as well as in `handle_event`. Otherwise a disabled
+        // terminal kept owning a running blink and asked for frames it never drew differently.
+        if !self.base.is_enabled() || !self.caret_blink_enabled {
+            self.cursor.stop();
+            return false;
+        }
+        if !self.cursor.is_running() {
+            self.cursor.start();
+        }
         let owes_frame = self.cursor.tick(delta_ms);
         if owes_frame {
             // The caret's two halves are different pictures, so the frame that flips it must
@@ -902,7 +991,7 @@ impl TerminalView {
     /// `use_regex` is accepted so this API matches the other find bars, but **this build has no
     /// regular-expression engine** — the crate has no `regex` dependency and compiles none in.
     /// Matching is therefore always literal, and the flag is deliberately not allowed to change
-    /// the result silently: [`TerminalFindBar::regex_supported`] reports `false` for this build,
+    /// the result silently: [`TerminalFindBar::regex_supported`](crate::devtools::terminal::terminal_find_bar::TerminalFindBar::regex_supported) reports `false` for this build,
     /// so a caller can disable the option rather than assume it works. An empty `needle` matches
     /// nothing.
     pub fn find_matches(
@@ -982,20 +1071,24 @@ impl TerminalView {
             self.base.request_redraw();
             return;
         }
-        if line.contains("\u{1b}[2J") {
-            self.lines.clear();
-            self.scroll_offset = 0;
-        }
-        // A carriage return without a line feed overwrites the current line, which is how a
-        // progress indicator repaints itself.
-        if let Some(rest) = line.strip_prefix('\r') {
-            if let Some(last) = self.lines.last_mut() {
-                *last = rest.to_string();
+        // A carriage return returns the cursor to column 0, so the text after it overwrites the
+        // current row — the way a progress indicator repaints itself. The old check only matched a
+        // *leading* CR, so the equally standard trailing form (`"50%\r"`) became a new row with a
+        // raw control character in it. A trailing CR (or a lone one at the end of a chain) leaves
+        // the text before it on screen instead of erasing the row.
+        if let Some(text) = Self::carriage_return_text(&line) {
+            if !text.is_empty() {
+                match self.lines.last_mut() {
+                    Some(last) => *last = text.clone(),
+                    None => self.lines.push(text.clone()),
+                }
                 self.revision = self.revision.wrapping_add(1);
-                self.output_received.emit(rest.to_string());
+                self.output_received.emit(text);
                 self.base.request_redraw();
                 return;
             }
+            // A CR with nothing after it only moves the cursor; the row is unchanged.
+            return;
         }
         self.lines.push(line.clone());
         self.trim_scrollback();
@@ -1008,43 +1101,78 @@ impl TerminalView {
         self.base.request_redraw();
     }
 
+    /// The text a carriage return leaves on the current row, or `None` when `line` has none.
+    ///
+    /// A CR moves the cursor to column 0: text after the last one overwrites the row. A trailing
+    /// CR writes nothing, so the row keeps the segment before it (the progress-line form), which is
+    /// why this does not simply return everything after the last CR.
+    fn carriage_return_text(line: &str) -> Option<String> {
+        let (before, after) = line.rsplit_once('\r')?;
+        let text = if after.is_empty() { before.rsplit('\r').next().unwrap_or("") } else { after };
+        Some(text.to_string())
+    }
+
     /// Feeds `line` to the screen grid and republishes the rows it changed.
     ///
     /// Only the rows the program actually touched are turned back into text. Materialising the
     /// whole grid on every chunk made per-write cost O(grid) instead of O(written cells).
     fn feed_screen(&mut self, line: &str) {
         let columns = self.grid().0.max(1) as usize;
-        let Some(screen) = self.screen.as_mut() else {
-            return;
-        };
-        screen.resize(columns);
-        screen.feed(line);
-        let Some((first, last)) = screen.take_dirty() else {
-            return;
-        };
-        // The grid is authoritative in screen mode, so a line that is not a grid row (for example
-        // one `submit` appended) is dropped, exactly as the full materialisation dropped it. Rows
-        // that were trimmed as empty still exist in the grid and may carry text now, so the buffer
-        // is then grown to the grid before any row is patched into it.
-        self.lines.truncate(screen.cells.len());
-        while self.lines.len() < screen.cells.len() {
-            self.lines.push(String::new());
-        }
-        if first == 0 && last >= screen.cells.len() {
-            self.lines = screen.render_lines();
-            return;
-        }
-        for row in first..last.min(screen.cells.len()) {
-            if let Some(text) = screen.row_text(row) {
-                if let Some(slot) = self.lines.get_mut(row) {
-                    *slot = text;
+        {
+            let Some(screen) = self.screen.as_mut() else {
+                return;
+            };
+            screen.resize(columns);
+            screen.feed(line);
+            let Some((first, last)) = screen.take_dirty() else {
+                return;
+            };
+            // The grid is authoritative in screen mode, so a line that is not a grid row (for
+            // example one `submit` appended) is dropped, exactly as the full materialisation
+            // dropped it. Rows that were trimmed as empty still exist in the grid and may carry
+            // text now, so the buffer is then grown to the grid before any row is patched into it.
+            self.lines.truncate(screen.cells.len());
+            while self.lines.len() < screen.cells.len() {
+                self.lines.push(String::new());
+            }
+            if first == 0 && last >= screen.cells.len() {
+                self.lines = screen.render_lines();
+            } else {
+                for row in first..last.min(screen.cells.len()) {
+                    if let Some(text) = screen.row_text(row) {
+                        if let Some(slot) = self.lines.get_mut(row) {
+                            *slot = text;
+                        }
+                    }
+                }
+                // Trailing empty rows are not part of the buffer, exactly as `render_lines`
+                // drops them.
+                while self.lines.len() > 1 && self.lines.last().is_some_and(|line| line.is_empty())
+                {
+                    self.lines.pop();
                 }
             }
         }
-        // Trailing empty rows are not part of the buffer, exactly as `render_lines` drops them.
-        while self.lines.len() > 1 && self.lines.last().is_some_and(|line| line.is_empty()) {
-            self.lines.pop();
+        // A row that was popped or replaced may have been the last row the selection named.
+        self.prune_lost_output_selection();
+    }
+
+    /// Drops an output selection whose rows the buffer no longer contains.
+    ///
+    /// The grid mode can pop trailing empty rows or replace the buffer wholesale, which left the
+    /// stored inclusive range pointing past the end: the property and the paint band still reported
+    /// it, and no signal said the selection was gone. The copy path guarded separately.
+    fn prune_lost_output_selection(&mut self) {
+        let Some((start, end)) = self.output_selection else {
+            return;
+        };
+        if start < self.lines.len() && end < self.lines.len() {
+            return;
         }
+        self.output_anchor = None;
+        self.output_head = None;
+        self.selecting_output = false;
+        self.apply_output_selection(None);
     }
 
     /// Appends several output lines with one layout pass.
@@ -1058,14 +1186,22 @@ impl TerminalView {
             if self.screen.is_none() && contains_cursor_control(&line) {
                 self.screen = Some(ScreenBuffer::new(self.grid().0.max(1) as usize));
             }
-            self.output_received.emit(line.clone());
             if self.screen.is_some() {
+                self.output_received.emit(line.clone());
                 self.feed_screen(&line);
-            } else {
-                if line.contains("\u{1b}[2J") {
-                    self.lines.clear();
-                    self.scroll_offset = 0;
+            } else if let Some(text) = Self::carriage_return_text(&line) {
+                // A carriage return overwrites the current row, exactly as the single-line
+                // `append_output` path does. The batch path used to push it as a new row, so a
+                // progress indicator sent in a burst appended one row per update.
+                if !text.is_empty() {
+                    match self.lines.last_mut() {
+                        Some(last) => *last = text.clone(),
+                        None => self.lines.push(text.clone()),
+                    }
+                    self.output_received.emit(text);
                 }
+            } else {
+                self.output_received.emit(line.clone());
                 self.lines.push(line);
             }
             changed = true;
@@ -1108,7 +1244,9 @@ impl TerminalView {
 
         let next_index = match (self.history_index, up) {
             (None, true) => Some(self.history.len() - 1),
-            (None, false) => None,
+            // A `Down` with no recall in progress has no history entry to move to; clearing the
+            // line here discarded the command the reader had typed but not submitted yet.
+            (None, false) => return,
             (Some(index), true) => Some(index.saturating_sub(1)),
             (Some(index), false) if index + 1 < self.history.len() => Some(index + 1),
             (Some(_), false) => None,
@@ -1157,7 +1295,7 @@ impl Widget for TerminalView {
     /// A blinking caret always owes frames while it runs; a disabled terminal's steady caret
     /// does not, which is what `CursorBlink::stop` is for.
     fn is_animating(&self) -> bool {
-        self.cursor.is_running()
+        self.base.is_enabled() && self.caret_blink_enabled && self.cursor.is_running()
     }
 
     impl_widget_property_hooks!();
@@ -1332,10 +1470,10 @@ impl WidgetProperties for TerminalView {
 
     /// Runs one of the commands `terminal_view` publishes.
     ///
-    /// `submit` maps onto the widget's real `submit`, which reports `false` for
-    /// an empty input line; that is reported as needing a payload rather than as
-    /// a submitted command. `append_output` carries the line to append, so a bare
-    /// invocation is answered the same way rather than being called unknown.
+    /// `submit` maps onto the widget's real `submit`, which reports `false` for an empty input
+    /// line; that is reported as needing a payload. `append_output` takes its line as an
+    /// argument, so it is not a published command at all (the capability table lists only
+    /// `submit`) and a bare invocation is `UnknownCommand`.
     fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
         match name {
             "submit" => {
@@ -1345,7 +1483,6 @@ impl WidgetProperties for TerminalView {
                     Err(CapabilityAccessError::OutOfRange)
                 }
             }
-            "append_output" => Err(CapabilityAccessError::OutOfRange),
             _ => Err(CapabilityAccessError::UnknownCommand),
         }
     }
@@ -1369,10 +1506,14 @@ impl EventHandler for TerminalView {
         }
 
         // Typed input and keys belong to the focused terminal; without this an unfocused view
-        // still appends text and runs its key bindings.
+        // still appends text and runs its key bindings. A composition is typed text too, so an
+        // unfocused terminal must not display or keep one either.
         if matches!(
             event,
-            Event::KeyPress { .. } | Event::TextInput { .. } | Event::ImeCommit { .. }
+            Event::KeyPress { .. }
+                | Event::TextInput { .. }
+                | Event::ImeCommit { .. }
+                | Event::ImePreedit { .. }
         ) && self.base.focus_reason().is_none()
         {
             return;
@@ -1467,40 +1608,62 @@ impl EventHandler for TerminalView {
                     }
                     Some(rust_widgets::shortcut::Key::Backspace) => self.delete_input(1),
                     Some(rust_widgets::shortcut::Key::Delete) => {
-                        let length = self.input_line.chars().count();
-                        if self.input_cursor < length {
+                        // With a selection, Delete removes it, exactly as Backspace does; only an
+                        // empty selection advances the caret over the character it deletes.
+                        // Advancing first grew the selection by one character and cut the wrong
+                        // run, and after Ctrl+A the guard skipped the key entirely.
+                        if self.selection_range().is_some() {
+                            self.delete_input(1);
+                        } else if self.input_cursor < self.input_line.chars().count() {
                             self.input_cursor += 1;
                             self.delete_input(1);
                         }
                     }
                     Some(rust_widgets::shortcut::Key::Left) => {
+                        let previous = self.input_cursor;
                         self.input_cursor = self.input_cursor.saturating_sub(1);
                         if shift {
-                            self.selection_anchor.get_or_insert(self.input_cursor + 1);
+                            // The anchor is the caret's *previous* position; using the moved-to
+                            // position invented a one-character selection when the caret was
+                            // already at the start and could not move.
+                            self.selection_anchor.get_or_insert(previous);
                         } else {
                             self.selection_anchor = None;
                         }
                         self.base.request_redraw();
                     }
                     Some(rust_widgets::shortcut::Key::Right) => {
+                        let previous = self.input_cursor;
                         let length = self.input_line.chars().count();
                         self.input_cursor = (self.input_cursor + 1).min(length);
                         if shift {
-                            self.selection_anchor
-                                .get_or_insert(self.input_cursor.saturating_sub(1));
+                            self.selection_anchor.get_or_insert(previous);
                         } else {
                             self.selection_anchor = None;
                         }
                         self.base.request_redraw();
                     }
                     Some(rust_widgets::shortcut::Key::Home) => {
+                        let previous = self.input_cursor;
                         self.input_cursor = 0;
-                        self.selection_anchor = None;
+                        // Shift+Home extends the selection back to the caret's previous position,
+                        // the same rule the arrow keys follow; clearing the anchor here made the
+                        // key a move-and-deselect instead of an extension.
+                        if shift {
+                            self.selection_anchor.get_or_insert(previous);
+                        } else {
+                            self.selection_anchor = None;
+                        }
                         self.base.request_redraw();
                     }
                     Some(rust_widgets::shortcut::Key::End) => {
+                        let previous = self.input_cursor;
                         self.input_cursor = self.input_line.chars().count();
-                        self.selection_anchor = None;
+                        if shift {
+                            self.selection_anchor.get_or_insert(previous);
+                        } else {
+                            self.selection_anchor = None;
+                        }
                         self.base.request_redraw();
                     }
                     Some(rust_widgets::shortcut::Key::Up) => self.recall_history(true),
@@ -1519,17 +1682,15 @@ impl EventHandler for TerminalView {
             }
             Event::MousePress { pos, button: 1, modifiers, .. } => {
                 let rect = self.geometry();
-                let row_top = rect.y + rect.height as i32 - OUTPUT_LINE_HEIGHT - 6;
+                let row_top = rect.y + rect.height as i32 - self.output_row_height.max(1) - 6;
                 if pos.y >= row_top {
                     let font = effective_font(self.base.style());
-                    let prefix_width =
-                        rust_widgets::widget::metrics::estimate_text_width(&self.prompt, font, 1.0)
-                            as i32;
+                    let prefix_width = self.prompt_advance(font);
                     let click_x = pos.x - rect.x - 8 - prefix_width;
                     let mut offset = 0i32;
                     self.input_cursor = 0;
                     for ch in self.input_line.chars() {
-                        let width = glyph_width(ch, font);
+                        let width = self.char_advance(ch, font);
                         if click_x < offset + width / 2 {
                             break;
                         }
@@ -1548,11 +1709,11 @@ impl EventHandler for TerminalView {
                     self.scroll_to_track(pos.y);
                     return;
                 }
-                if let Some(line) = self.output_line_at(*pos) {
+                if let Some((line, row)) = self.output_line_at(*pos) {
                     let shift = rust_widgets::shortcut::Modifiers::from_event_bits(*modifiers)
                         .contains(rust_widgets::shortcut::Modifiers::SHIFT);
                     let character = if self.selection_mode == OutputSelectionMode::Characters {
-                        self.output_char_at(line, pos.x - rect.x - 8)
+                        self.output_char_at(row, pos.x - rect.x - 8)
                     } else {
                         0
                     };
@@ -1567,7 +1728,7 @@ impl EventHandler for TerminalView {
             // Double-clicking an output row selects the whole row; dragging has no other way to
             // say "this row, not the one above it".
             Event::MouseDoubleClick { pos, button: 1 } => {
-                if let Some(line) = self.output_line_at(*pos) {
+                if let Some((line, _row)) = self.output_line_at(*pos) {
                     let length =
                         self.lines.get(line).map(|l| strip_ansi(l).chars().count()).unwrap_or(0);
                     self.output_anchor = Some((line, 0));
@@ -1578,10 +1739,10 @@ impl EventHandler for TerminalView {
             }
             Event::MouseMove { pos } => {
                 if self.selecting_output {
-                    if let Some(line) = self.output_line_at(*pos) {
+                    if let Some((line, row)) = self.output_line_at(*pos) {
                         let rect = self.geometry();
                         let character = if self.selection_mode == OutputSelectionMode::Characters {
-                            self.output_char_at(line, pos.x - rect.x - 8)
+                            self.output_char_at(row, pos.x - rect.x - 8)
                         } else {
                             0
                         };
@@ -1592,6 +1753,17 @@ impl EventHandler for TerminalView {
             }
             Event::MouseRelease { .. } => {
                 self.selecting_output = false;
+            }
+            Event::FocusLost => {
+                // A drag that lost its window never receives its release, so the latch is
+                // dropped here; keeping it let the next hover extend a selection the reader had
+                // already let go of. An uncommitted composition belongs to the lost focus too.
+                self.selecting_output = false;
+                if !self.preedit.is_empty() {
+                    self.preedit.clear();
+                    self.preedit_cursor = 0;
+                    self.base.request_redraw();
+                }
             }
             Event::MouseLeave { .. } => {
                 // A release outside the control is not delivered to it, so leaving is the last
@@ -1715,6 +1887,9 @@ impl Draw for TerminalView {
         // subtracts that row from the output area below so the two cannot overlap.
         let prompt_font = effective_font(style);
         let prompt_line_height = context.measure_text("M", prompt_font).height.max(1);
+        // The paint path is the single source for the output pitch: the hit-test, scrollbar and
+        // IME paths read this back instead of assuming the default face's 14 px.
+        self.output_row_height = prompt_line_height.max(1) as i32;
         let prompt_row_height = prompt_line_height + 6;
         let body_height = rect.height.saturating_sub(prompt_row_height);
 
@@ -1846,6 +2021,7 @@ impl Draw for TerminalView {
 
         let prompt_y = (rect.y + rect.height as i32 - prompt_row_height as i32 + 3).max(rect.y);
         let prefix_width = context.measure_text(&self.prompt, prompt_font).width as i32;
+        self.prompt_width = prefix_width;
         context.draw_text(
             rust_widgets::core::Point::new(rect.x + 8, prompt_y),
             &self.prompt,
@@ -2081,7 +2257,11 @@ impl ScreenBuffer {
     }
 
     /// Ensures the cursor's row exists.
+    ///
+    /// The cursor row is clamped to [`MAX_SCREEN_ROWS`] first, so a CSI naming an absurd row
+    /// cannot make the grid allocate without bound.
     fn ensure_row(&mut self) {
+        self.row = self.row.min(MAX_SCREEN_ROWS - 1);
         while self.cells.len() <= self.row {
             self.cells.push(vec![ScreenCell::default(); self.columns]);
         }
@@ -2092,26 +2272,32 @@ impl ScreenBuffer {
         let mut chars = text.chars().peekable();
         while let Some(ch) = chars.next() {
             match ch {
-                '\u{1b}' => {
-                    if chars.peek() != Some(&'[') {
-                        continue;
-                    }
-                    chars.next();
-                    let mut params = String::new();
-                    let mut final_byte = None;
-                    for next in chars.by_ref() {
-                        if next.is_ascii_alphabetic() || next == '@' || next == '`' {
-                            final_byte = Some(next);
-                            break;
+                '\u{1b}' => match chars.peek().copied() {
+                    Some('[') => {
+                        chars.next();
+                        let mut params = String::new();
+                        let mut final_byte = None;
+                        for next in chars.by_ref() {
+                            if is_csi_final_byte(next) {
+                                final_byte = Some(next);
+                                break;
+                            }
+                            params.push(next);
                         }
-                        params.push(next);
+                        if let Some(final_byte) = final_byte {
+                            self.control(&params, final_byte);
+                        }
                     }
-                    if let Some(final_byte) = final_byte {
-                        self.control(&params, final_byte);
+                    // An OSC payload is not text; writing it into the grid leaked a window title
+                    // or hyperlink into the transcript.
+                    Some(']') => {
+                        chars.next();
+                        skip_osc(&mut chars);
                     }
-                }
+                    _ => skip_esc(&mut chars),
+                },
                 '\n' => {
-                    self.row += 1;
+                    self.row = (self.row + 1).min(MAX_SCREEN_ROWS - 1);
                     self.column = 0;
                     self.ensure_row();
                 }
@@ -2130,7 +2316,7 @@ impl ScreenBuffer {
     /// Writes one printable character at the cursor and advances it.
     fn write(&mut self, ch: char) {
         if self.column >= self.columns {
-            self.row += 1;
+            self.row = (self.row + 1).min(MAX_SCREEN_ROWS - 1);
             self.column = 0;
         }
         self.ensure_row();
@@ -2145,27 +2331,29 @@ impl ScreenBuffer {
 
     /// Applies one CSI sequence.
     fn control(&mut self, params: &str, final_byte: char) {
+        // Empty fields are defaults (zero), not absent fields: dropping them shifted every later
+        // parameter, so `ESC[;5H` was read as row 5 column 1 instead of row 1 column 5.
         let values: Vec<u32> =
-            params.split(';').filter_map(|part| part.parse::<u32>().ok()).collect();
+            params.split(';').map(|part| part.parse::<u32>().unwrap_or(0)).collect();
         let first = values.first().copied().unwrap_or(0) as usize;
         let second = values.get(1).copied().unwrap_or(0) as usize;
         match final_byte {
             'm' => self.apply_style(&values),
             'H' | 'f' => {
-                self.row = first.max(1).saturating_sub(1);
+                self.row = first.max(1).saturating_sub(1).min(MAX_SCREEN_ROWS - 1);
                 self.column = second.max(1).saturating_sub(1).min(self.columns - 1);
                 self.ensure_row();
             }
             'A' => self.row = self.row.saturating_sub(first.max(1)),
             'B' => {
-                self.row += first.max(1);
+                self.row = self.row.saturating_add(first.max(1)).min(MAX_SCREEN_ROWS - 1);
                 self.ensure_row();
             }
             'C' => self.column = (self.column + first.max(1)).min(self.columns - 1),
             'D' => self.column = self.column.saturating_sub(first.max(1)),
             'G' => self.column = first.max(1).saturating_sub(1).min(self.columns - 1),
             'd' => {
-                self.row = first.max(1).saturating_sub(1);
+                self.row = first.max(1).saturating_sub(1).min(MAX_SCREEN_ROWS - 1);
                 self.ensure_row();
             }
             'J' => self.clear_screen(first),
@@ -2399,6 +2587,47 @@ fn extended_sgr_color(values: &[u32], index: usize) -> Option<(SgrColor, usize)>
     }
 }
 
+/// Whether `ch` terminates a CSI sequence.
+///
+/// ANSI defines the final byte as `0x40..=0x7E`. The parsers used to stop only at ASCII letters
+/// (plus two punctuation marks in the grid), so a non-letter final such as `~` swallowed the text
+/// after it instead of ending the sequence.
+fn is_csi_final_byte(ch: char) -> bool {
+    matches!(ch, '\u{40}'..='\u{7e}')
+}
+
+/// Consumes an OSC payload, which runs to `BEL` or to `ST` (`ESC \`).
+///
+/// An OSC (`ESC ]`) carries a title, a hyperlink or a clipboard request. Its payload is not text
+/// the reader should see, and it may contain bytes that look like CSI parameters, so it is skipped
+/// without interpretation. An unterminated OSC consumes the rest of the line rather than leaking
+/// its payload into the transcript.
+fn skip_osc(chars: &mut core::iter::Peekable<core::str::Chars<'_>>) {
+    while let Some(next) = chars.next() {
+        if next == '\u{7}' {
+            return;
+        }
+        if next == '\u{1b}' && chars.peek() == Some(&'\\') {
+            chars.next();
+            return;
+        }
+    }
+}
+
+/// Consumes an `ESC` sequence that is neither CSI (`ESC [`) nor OSC (`ESC ]`).
+///
+/// Those are two-byte sequences (`ESC 7` save cursor, `ESC c` reset) or an intermediate-byte form
+/// such as the `ESC ( B` charset designation `tput sgr0` emits. Consuming nothing let the outer
+/// loop push the following bytes out as visible text — `ESC 7` showed a `7`, `ESC ( B` showed
+/// `(B` — which contradicts the parser's rule that a control sequence cannot leak its bytes.
+fn skip_esc(chars: &mut core::iter::Peekable<core::str::Chars<'_>>) {
+    // Intermediates are 0x20..=0x2F; the sequence ends with one final byte.
+    while chars.peek().is_some_and(|ch| ('\u{20}'..='\u{2f}').contains(ch)) {
+        chars.next();
+    }
+    chars.next();
+}
+
 /// Whether `text` carries a cursor-addressing or clearing sequence.
 ///
 /// Only those sequences need a grid; SGR colouring is still a line-buffer concern, so a shell's
@@ -2406,17 +2635,29 @@ fn extended_sgr_color(values: &[u32], index: usize) -> Option<(SgrColor, usize)>
 fn contains_cursor_control(text: &str) -> bool {
     let mut chars = text.chars().peekable();
     while let Some(ch) = chars.next() {
-        if ch != '\u{1b}' || chars.peek() != Some(&'[') {
+        if ch != '\u{1b}' {
             continue;
         }
-        chars.next();
-        for next in chars.by_ref() {
-            if next.is_ascii_alphabetic() {
-                if matches!(next, 'H' | 'f' | 'A' | 'B' | 'C' | 'D' | 'J' | 'K' | 'G' | 'd') {
-                    return true;
+        match chars.peek().copied() {
+            Some('[') => {
+                chars.next();
+                for next in chars.by_ref() {
+                    if is_csi_final_byte(next) {
+                        if matches!(next, 'H' | 'f' | 'A' | 'B' | 'C' | 'D' | 'J' | 'K' | 'G' | 'd')
+                        {
+                            return true;
+                        }
+                        break;
+                    }
                 }
-                break;
             }
+            // An OSC payload can contain text that looks like a cursor sequence; skipping it is
+            // what keeps `ESC ] 0;2J BEL` from being mistaken for a clear-screen request.
+            Some(']') => {
+                chars.next();
+                skip_osc(&mut chars);
+            }
+            _ => skip_esc(&mut chars),
         }
     }
     false
@@ -2451,8 +2692,17 @@ struct OutputLineCache {
     /// `row_starts[i]` is the index in [`Self::rows`] of logical line `i`'s first painted row.
     /// The final entry is the length of [`Self::rows`] itself.
     row_starts: Vec<usize>,
+    /// `row_char_starts[r]` is the character offset in its logical line where painted row `r`
+    /// begins. Wrapped rows continue a line, so character hit testing needs this to know which
+    /// characters a row actually covers.
+    row_char_starts: Vec<usize>,
     /// The buffer revision the rows were parsed from.
     revision: u64,
+    /// The face the rows and their measured advances were parsed with.
+    ///
+    /// A same-size family, weight or style change has different advances, so the layout key alone
+    /// (width, wrapping, palette) would keep rows measured for a face no longer in use.
+    font: Option<Font>,
     /// The layout key (wrap width, wrapping on/off, palette), or `None` after an invalidation.
     key: Option<(u32, bool, u64)>,
     /// How many logical lines have been parsed in total. Read by the tests that pin the
@@ -2479,15 +2729,19 @@ impl OutputLineCache {
 /// pass per character per frame. Advances depend only on the face, so they are kept per size.
 #[derive(Default)]
 struct CharWidthCache {
-    font_size: f32,
+    /// The face the entries were measured with.
+    ///
+    /// A family, weight or style change at the same size has different advances, so the whole face
+    /// is the key rather than just its size.
+    font: Option<Font>,
     entries: Vec<(char, i32)>,
 }
 
 impl CharWidthCache {
-    /// The advance of `ch`, measured once per font size.
+    /// The advance of `ch`, measured once per face.
     fn width(&mut self, ch: char, font: &Font, context: &mut RenderContext) -> i32 {
-        if (self.font_size - font.size()).abs() > f32::EPSILON {
-            self.font_size = font.size();
+        if self.font.as_ref() != Some(font) {
+            self.font = Some(font.clone());
             self.entries.clear();
         }
         if let Some((_, width)) = self.entries.iter().find(|(candidate, _)| *candidate == ch) {
@@ -2498,6 +2752,24 @@ impl CharWidthCache {
         let width = context.measure_text(glyph, font).width as i32;
         self.entries.push((ch, width));
         width
+    }
+
+    /// The already-measured advance of `ch`, if this face was measured for it.
+    ///
+    /// The hit-test paths have no [`RenderContext`], so they read the values the paint/parse path
+    /// measured with one. `None` means "not measured for this face yet", never "zero".
+    fn measured(&self, ch: char, font: &Font) -> Option<i32> {
+        if self.font.as_ref() != Some(font) {
+            return None;
+        }
+        self.entries.iter().find(|(candidate, _)| *candidate == ch).map(|(_, width)| *width)
+    }
+
+    /// Measures every character of `text` so later hit tests share the paint path's advances.
+    fn warm(&mut self, text: &str, font: &Font, context: &mut RenderContext) {
+        for ch in text.chars() {
+            let _ = self.width(ch, font, context);
+        }
     }
 }
 
@@ -2515,7 +2787,7 @@ fn ensure_output_rows(
     palette: &[Color; 16],
 ) {
     let key = (width.max(0) as u32, wrap, palette_key(palette));
-    let layout_changed = cache.key != Some(key);
+    let layout_changed = cache.key != Some(key) || cache.font.as_ref() != Some(font);
     if !layout_changed && cache.revision == revision {
         return;
     }
@@ -2524,6 +2796,7 @@ fn ensure_output_rows(
     let split = if layout_changed {
         cache.rows.clear();
         cache.origins.clear();
+        cache.row_char_starts.clear();
         cache.plain.clear();
         cache.sources.clear();
         cache.row_starts.clear();
@@ -2555,6 +2828,7 @@ fn ensure_output_rows(
                 let row_start = cache.row_starts.get(shift).copied().unwrap_or(cache.rows.len());
                 drop(cache.rows.drain(0..row_start));
                 drop(cache.origins.drain(0..row_start));
+                drop(cache.row_char_starts.drain(0..row_start));
                 for origin in cache.origins.iter_mut() {
                     *origin = origin.saturating_sub(shift);
                 }
@@ -2570,6 +2844,7 @@ fn ensure_output_rows(
         let row_start = cache.row_starts.get(common).copied().unwrap_or(cache.rows.len());
         cache.rows.truncate(row_start);
         cache.origins.truncate(row_start);
+        cache.row_char_starts.truncate(row_start);
         cache.plain.truncate(common);
         cache.sources.truncate(common);
         cache.row_starts.truncate(common + 1);
@@ -2579,6 +2854,12 @@ fn ensure_output_rows(
         let (rows, plain) =
             parse_output_line(line, char_widths, context, font, width, wrap, palette);
         let painted = rows.len();
+        // Each painted row's first character, relative to its logical line.
+        let mut char_start = 0usize;
+        for row in &rows {
+            cache.row_char_starts.push(char_start);
+            char_start += row.iter().map(|run| run.text.chars().count()).sum::<usize>();
+        }
         cache.rows.extend(rows);
         cache.origins.extend(std::iter::repeat_n(index, painted));
         cache.plain.push(plain);
@@ -2591,6 +2872,7 @@ fn ensure_output_rows(
     }
     cache.revision = revision;
     cache.key = Some(key);
+    cache.font = Some(font.clone());
 }
 
 /// Parses one logical output line and splits it into painted rows no wider than `width`.
@@ -2608,6 +2890,9 @@ fn parse_output_line(
     palette: &[Color; 16],
 ) -> (Vec<Vec<AnsiRun>>, String) {
     let plain = strip_ansi(line);
+    // Character hit-testing reads these advances. Measuring them here means it shares the paint
+    // path's `measure_text` source instead of a second estimate table that could disagree.
+    char_widths.warm(&plain, font, context);
     let mut runs = ansi_runs(line, palette);
     // Widths are resolved here, once per change, rather than for every run on every frame.
     for run in &mut runs {
@@ -2673,16 +2958,22 @@ fn strip_ansi_into(line: &str, out: &mut String) {
             out.push(ch);
             continue;
         }
-        if chars.peek() != Some(&'[') {
-            continue;
-        }
-        chars.next();
-        // A CSI sequence ends at its final byte, which in the SGR subset a shell emits is an
-        // ASCII letter. Anything else is consumed so its bytes cannot leak into copied text.
-        for next in chars.by_ref() {
-            if next.is_ascii_alphabetic() {
-                break;
+        match chars.peek().copied() {
+            Some('[') => {
+                chars.next();
+                for next in chars.by_ref() {
+                    if is_csi_final_byte(next) {
+                        break;
+                    }
+                }
             }
+            // An OSC payload is not visible text; skipping it keeps a window title or hyperlink
+            // from being copied as if the reader had selected it.
+            Some(']') => {
+                chars.next();
+                skip_osc(&mut chars);
+            }
+            _ => skip_esc(&mut chars),
         }
     }
 }
@@ -2787,32 +3078,40 @@ fn ansi_runs(line: &str, palette: &[Color; 16]) -> Vec<AnsiRun> {
             current.push(ch);
             continue;
         }
-        if chars.peek() != Some(&'[') {
-            continue;
-        }
-        chars.next();
-        let mut params = String::new();
-        for next in chars.by_ref() {
-            if next.is_ascii_alphabetic() {
-                if !current.is_empty() {
-                    runs.push(AnsiRun {
-                        text: core::mem::take(&mut current),
-                        color: style.color,
-                        bg: style.background,
-                        dim: style.dim,
-                        bold: style.bold,
-                        italic: style.italic,
-                        underline: style.underline,
-                        reverse: style.reverse,
-                        width: 0,
-                    });
+        match chars.peek().copied() {
+            Some('[') => {
+                chars.next();
+                let mut params = String::new();
+                for next in chars.by_ref() {
+                    if is_csi_final_byte(next) {
+                        if !current.is_empty() {
+                            runs.push(AnsiRun {
+                                text: core::mem::take(&mut current),
+                                color: style.color,
+                                bg: style.background,
+                                dim: style.dim,
+                                bold: style.bold,
+                                italic: style.italic,
+                                underline: style.underline,
+                                reverse: style.reverse,
+                                width: 0,
+                            });
+                        }
+                        if next == 'm' {
+                            apply_sgr(&params, &mut style, palette);
+                        }
+                        break;
+                    }
+                    params.push(next);
                 }
-                if next == 'm' {
-                    apply_sgr(&params, &mut style, palette);
-                }
-                break;
             }
-            params.push(next);
+            // An OSC payload must not become visible text; its style is the style of the run that
+            // surrounds it, so the buffered text is left untouched.
+            Some(']') => {
+                chars.next();
+                skip_osc(&mut chars);
+            }
+            _ => skip_esc(&mut chars),
         }
     }
     if !current.is_empty() {
@@ -2841,11 +3140,9 @@ fn resolve_sgr_color(color: SgrColor, palette: &[Color; 16]) -> Color {
 
 /// Applies one SGR parameter list to the current run's style.
 fn apply_sgr(params: &str, style: &mut RunStyle, palette: &[Color; 16]) {
-    let values: Vec<u32> = params.split(';').filter_map(|part| part.parse::<u32>().ok()).collect();
-    if values.is_empty() {
-        *style = RunStyle::default();
-        return;
-    }
+    // An empty parameter is SGR 0 (reset), not a missing field; filtering the empty fields out
+    // made `ESC[1;;31m` keep the bold bit that the reset between them was meant to clear.
+    let values: Vec<u32> = params.split(';').map(|part| part.parse::<u32>().unwrap_or(0)).collect();
     let mut index = 0usize;
     while index < values.len() {
         match values[index] {
@@ -3396,6 +3693,419 @@ mod tests {
         assert_eq!(lines, vec!["one".to_string(), "two".to_string(), "three".to_string()]);
     }
 
+    /// Shift+arrow at a line edge moves nothing, so it must select nothing.
+    #[test]
+    fn shift_arrow_at_the_line_edges_selects_nothing() {
+        let shift = rust_widgets::shortcut::Modifiers::SHIFT.bits() as u32;
+        let mut terminal = TerminalView::new(Rect::new(0, 0, 500, 260));
+        terminal
+            .handle_event(&Event::FocusGained { reason: rust_widgets::event::FocusReason::Tab });
+        terminal.set_input_line("ab");
+
+        terminal.handle_event(&Event::key_press(39, shift));
+        assert_eq!(terminal.selected_input(), None, "the caret is already at the end");
+
+        terminal.handle_event(&Event::key_press(37, shift));
+        assert_eq!(terminal.selected_input().as_deref(), Some("b"), "a real move extends it");
+
+        terminal.handle_event(&Event::key_press(36, 0));
+        terminal.handle_event(&Event::key_press(37, shift));
+        assert_eq!(terminal.input_cursor(), 0);
+        assert_eq!(terminal.selected_input(), None, "the caret is already at the start");
+    }
+
+    /// A trim drops the rows a selection names, and reports that the selection disappeared.
+    #[test]
+    fn trimming_the_scrollback_reports_the_lost_selection() {
+        let mut terminal = TerminalView::new(Rect::new(0, 0, 500, 260));
+        terminal.append_output("one");
+        terminal.append_output("two");
+        let seen = Arc::new(Mutex::new(Vec::<bool>::new()));
+        let sink = seen.clone();
+        terminal.selection_changed.connect(move |present| {
+            if let Ok(mut guard) = sink.lock() {
+                guard.push(*present);
+            }
+        });
+
+        terminal.handle_event(&Event::mouse_double_click(40, 16, 1));
+        assert_eq!(terminal.output_selection(), Some((0, 0)));
+
+        terminal.set_scrollback_lines(1);
+        assert_eq!(terminal.output_selection(), None, "the selected row was trimmed away");
+        let seen = seen.lock().ok().map(|guard| guard.clone()).unwrap_or_default();
+        assert_eq!(seen, vec![true, false], "the loss is published, not just stored");
+    }
+
+    /// The presence signal fires once per drag, not once per pointer move.
+    #[test]
+    fn extending_the_output_selection_does_not_repeat_the_presence_signal() {
+        let mut terminal = TerminalView::new(Rect::new(0, 0, 500, 260));
+        for line in ["one", "two", "three"] {
+            terminal.append_output(line);
+        }
+        let seen = Arc::new(Mutex::new(Vec::<bool>::new()));
+        let sink = seen.clone();
+        terminal.selection_changed.connect(move |present| {
+            if let Ok(mut guard) = sink.lock() {
+                guard.push(*present);
+            }
+        });
+
+        terminal.handle_event(&Event::mouse_press(40, 16, 1));
+        terminal.handle_event(&Event::mouse_move(40, 16 + OUTPUT_LINE_HEIGHT));
+        terminal.handle_event(&Event::mouse_move(40, 16 + 2 * OUTPUT_LINE_HEIGHT));
+        assert_eq!(terminal.output_selection(), Some((0, 2)));
+
+        let seen = seen.lock().ok().map(|guard| guard.clone()).unwrap_or_default();
+        assert_eq!(seen, vec![true], "the selection appeared once and only grew");
+    }
+
+    /// Down with no recall in progress must not erase the command being typed.
+    #[test]
+    fn down_without_a_history_cursor_keeps_the_draft() {
+        let mut terminal = TerminalView::new(Rect::new(0, 0, 500, 260));
+        terminal
+            .handle_event(&Event::FocusGained { reason: rust_widgets::event::FocusReason::Tab });
+        terminal.set_input_line("draft");
+
+        terminal.handle_event(&Event::key_press(40, 0));
+        assert_eq!(terminal.input_line(), "draft", "a Down with no recall leaves the draft");
+    }
+
+    /// Disabling the control stops its blink even without a further event.
+    #[test]
+    fn a_disabled_terminal_owes_no_blink_frames() {
+        let mut terminal = TerminalView::new(Rect::new(0, 0, 400, 200));
+        assert!(terminal.is_animating());
+
+        terminal.set_enabled(false);
+        assert!(!terminal.is_animating(), "a disabled terminal is not animating");
+        assert!(!terminal.tick(600), "and it owes no frame");
+        assert!(terminal.is_caret_visible(), "its steady caret stays visible");
+
+        terminal.set_enabled(true);
+        assert!(terminal.tick(1), "re-enabling resumes the blink");
+    }
+
+    /// Forward-Delete removes the selection when there is one.
+    ///
+    /// The arm advanced the caret before delegating, which grew the selection by one character
+    /// and cut the wrong run; after Ctrl+A the advance was refused, so Delete did nothing.
+    #[test]
+    fn forward_delete_removes_the_selection_instead_of_the_next_character() {
+        let mut terminal = TerminalView::new(Rect::new(0, 0, 500, 260));
+        terminal
+            .handle_event(&Event::FocusGained { reason: rust_widgets::event::FocusReason::Tab });
+        terminal.set_input_line("abc");
+        terminal.handle_event(&Event::key_press(36, 0));
+
+        // Shift+Right selects `a`.
+        terminal.handle_event(&Event::key_press(39, 1));
+        assert_eq!(terminal.selected_input().as_deref(), Some("a"));
+        terminal.handle_event(&Event::key_press(46, 0));
+        assert_eq!(terminal.input_line(), "bc", "the selected run is deleted");
+        assert_eq!(terminal.input_cursor(), 0);
+
+        // A whole-line selection ends with the caret at the line's length; Delete must still act.
+        terminal.handle_event(&Event::key_press(36, 0));
+        terminal.handle_event(&Event::key_press(35, 1));
+        assert_eq!(terminal.selected_input().as_deref(), Some("bc"));
+        terminal.handle_event(&Event::key_press(46, 0));
+        assert_eq!(terminal.input_line(), "");
+    }
+
+    /// Shift+Home and Shift+End extend the input selection to the line edges.
+    #[test]
+    fn shift_home_and_end_extend_the_input_selection() {
+        let mut terminal = TerminalView::new(Rect::new(0, 0, 500, 260));
+        terminal
+            .handle_event(&Event::FocusGained { reason: rust_widgets::event::FocusReason::Tab });
+        terminal.set_input_line("abcd");
+
+        // From the start, Shift+End selects the whole line.
+        terminal.handle_event(&Event::key_press(36, 0));
+        terminal.handle_event(&Event::key_press(35, 1));
+        assert_eq!(terminal.selected_input().as_deref(), Some("abcd"));
+
+        // From the middle, Shift+End selects the tail and Shift+Home extends back to the start.
+        terminal.handle_event(&Event::key_press(36, 0));
+        terminal.handle_event(&Event::key_press(39, 0));
+        terminal.handle_event(&Event::key_press(39, 0));
+        terminal.handle_event(&Event::key_press(35, 1));
+        assert_eq!(terminal.selected_input().as_deref(), Some("cd"));
+        terminal.handle_event(&Event::key_press(36, 1));
+        assert_eq!(
+            terminal.selected_input().as_deref(),
+            Some("ab"),
+            "the anchor stays where Shift+End began, so Shift+Home selects back to the start from it"
+        );
+
+        // A plain Home still moves without selecting.
+        terminal.handle_event(&Event::key_press(36, 0));
+        assert_eq!(terminal.selected_input(), None);
+        assert_eq!(terminal.input_cursor(), 0);
+    }
+
+    /// A character drag into a wrapped row selects the run it covered.
+    ///
+    /// Character hit testing started every painted row at the logical line's first character, so
+    /// on a continuation row both ends of the drag mapped to character 0 and the selection was
+    /// empty.
+    #[test]
+    fn a_character_drag_on_a_wrapped_row_selects_the_run_it_covered() {
+        let mut terminal = TerminalView::new(Rect::new(0, 0, 500, 260));
+        terminal.append_output("a".repeat(200));
+        terminal.set_selection_mode(OutputSelectionMode::Characters);
+        rust_widgets::widget::svg::render_to_svg(&mut terminal);
+
+        let row_height = terminal.output_row_height.max(1);
+        terminal.handle_event(&Event::mouse_press(40, 16, 1));
+        terminal.handle_event(&Event::mouse_move(200, 16 + row_height));
+
+        assert!(terminal.output_selection().is_some(), "the drag selects across the wrap");
+        let selected = terminal.selected_output().expect("a run is selected");
+        assert!(!selected.is_empty(), "the copied run covers the characters dragged over");
+    }
+
+    /// An `ESC` sequence that is neither CSI nor OSC is consumed, not leaked.
+    #[test]
+    fn a_two_byte_escape_sequence_does_not_leak_its_final_byte() {
+        assert_eq!(strip_ansi("\u{1b}(Bok\u{1b}7x"), "okx");
+        let palette = default_ansi_palette(true);
+        let text: String =
+            ansi_runs("\u{1b}(Bok", &palette).iter().map(|run| run.text.as_str()).collect();
+        assert_eq!(text, "ok");
+
+        // A clear-screen sequence switches to the grid, whose parser has its own `ESC` arm.
+        let mut terminal = TerminalView::new(Rect::new(0, 0, 400, 200));
+        terminal.append_output("\u{1b}[2J\u{1b}(Bok");
+        let materialised: String = terminal.lines().iter().map(|line| strip_ansi(line)).collect();
+        assert!(materialised.contains("ok"), "got {materialised:?}");
+        assert!(!materialised.contains('('), "the charset designation leaked: {materialised:?}");
+    }
+
+    /// A composition belongs to the focused terminal, like every other typed input.
+    #[test]
+    fn an_unfocused_terminal_ignores_ime_preedit() {
+        let mut terminal = TerminalView::new(Rect::new(0, 0, 500, 260));
+        terminal.handle_event(&Event::ime_preedit("你", 0));
+        assert!(terminal.preedit_screen_point().is_none(), "no composition without focus");
+
+        terminal
+            .handle_event(&Event::FocusGained { reason: rust_widgets::event::FocusReason::Tab });
+        terminal.handle_event(&Event::ime_preedit("你", 0));
+        assert!(terminal.preedit_screen_point().is_some(), "a focused terminal shows it");
+    }
+
+    /// Losing focus ends a drag and discards an uncommitted composition.
+    #[test]
+    fn losing_focus_drops_the_drag_and_the_composition() {
+        let mut terminal = TerminalView::new(Rect::new(0, 0, 500, 260));
+        terminal.append_output("one");
+        terminal.append_output("two");
+        terminal
+            .handle_event(&Event::FocusGained { reason: rust_widgets::event::FocusReason::Tab });
+
+        terminal.handle_event(&Event::mouse_press(40, 16, 1));
+        assert_eq!(terminal.output_selection(), Some((0, 0)));
+        terminal.handle_event(&Event::ime_preedit("你", 0));
+        terminal.handle_event(&Event::FocusLost);
+
+        assert!(terminal.preedit_screen_point().is_none(), "the composition is dropped");
+        terminal.handle_event(&Event::mouse_move(40, 16 + OUTPUT_LINE_HEIGHT));
+        assert_eq!(
+            terminal.output_selection(),
+            Some((0, 0)),
+            "a hover after focus loss must not extend the drag"
+        );
+    }
+
+    /// An empty CSI field is a default, not a dropped field that shifts the rest.
+    #[test]
+    fn an_empty_csi_parameter_is_a_default() {
+        let mut terminal = TerminalView::new(Rect::new(0, 0, 320, 200));
+        terminal.append_output("\u{1b}[;5Hx");
+        assert_eq!(terminal.lines()[0], "    x", "row 1 column 5, not row 5 column 1");
+    }
+
+    /// An empty SGR field is a reset, so it clears the attributes before it.
+    #[test]
+    fn an_empty_sgr_parameter_resets_the_style() {
+        let palette = default_ansi_palette(true);
+        let mut style = RunStyle::default();
+        apply_sgr("1;;31", &mut style, &palette);
+        assert!(!style.bold, "the empty field is SGR 0 and clears the bold bit");
+        assert_eq!(style.color, Some(palette[1]), "the colour after it still applies");
+    }
+
+    /// A carriage return in a batch rewrites the current row, as the single-line path does.
+    #[test]
+    fn a_batch_overwrites_the_line_for_a_carriage_return() {
+        let mut terminal = TerminalView::new(Rect::new(0, 0, 500, 260));
+        terminal.append_output("progress 0%");
+        terminal.append_output_batch(["\rprogress 50%", "\rprogress 100%"]);
+        assert_eq!(terminal.lines(), &["progress 100%".to_string()]);
+    }
+
+    /// A font-size change must move the hit test with the painted rows.
+    #[test]
+    fn a_click_follows_the_measured_row_pitch_after_a_font_change() {
+        let mut terminal = TerminalView::new(Rect::new(0, 0, 500, 260));
+        for n in 0..5 {
+            terminal.append_output(format!("line{n}"));
+        }
+        terminal.set_font(Some(rust_widgets::core::Font::default().with_size(28.0)));
+        rust_widgets::widget::svg::render_to_svg(&mut terminal);
+
+        let pitch = terminal.output_row_height;
+        assert!(pitch > OUTPUT_LINE_HEIGHT, "the larger face measures a taller row");
+        terminal.handle_event(&Event::mouse_press(40, 16 + pitch + pitch / 2, 1));
+        assert_eq!(
+            terminal.output_selection(),
+            Some((1, 1)),
+            "row 1 is hit at the pitch the paint path measured"
+        );
+
+        terminal
+            .handle_event(&Event::FocusGained { reason: rust_widgets::event::FocusReason::Tab });
+        terminal.handle_event(&Event::ime_preedit("x", 0));
+        let anchor = terminal.preedit_screen_point().expect("a composition has an anchor");
+        assert_eq!(anchor.y, 260 - pitch - 6 + 3, "the IME anchor uses the same row pitch");
+    }
+
+    /// Character hit-testing reads the advances the paint path measured, not a second estimate.
+    #[test]
+    fn output_hit_testing_uses_the_measured_advances() {
+        let mut terminal = TerminalView::new(Rect::new(0, 0, 500, 260));
+        terminal.append_output("iiiiWWWW");
+        rust_widgets::widget::svg::render_to_svg(&mut terminal);
+
+        let font = rust_widgets::widget::metrics::effective_font(terminal.style()).clone();
+        let plain = terminal.plain_row_text(0).expect("row 0 exists");
+        let mut x = 0i32;
+        for (index, ch) in plain.chars().enumerate() {
+            let width = terminal
+                .char_widths
+                .measured(ch, &font)
+                .expect("the parse path measured every painted character");
+            if width > 0 {
+                assert_eq!(terminal.output_char_at(0, x), index, "character {index} at x={x}");
+            }
+            x += width;
+        }
+    }
+
+    /// A same-size face change must re-measure instead of reusing the old face's advances.
+    #[test]
+    fn a_same_size_face_change_invalidates_the_measured_advances() {
+        let mut terminal = TerminalView::new(Rect::new(0, 0, 500, 260));
+        terminal.append_output("abc");
+        rust_widgets::widget::svg::render_to_svg(&mut terminal);
+        let base = rust_widgets::widget::metrics::effective_font(terminal.style()).clone();
+        assert!(terminal.char_widths.measured('a', &base).is_some());
+
+        let bold = base.with_bold(true);
+        assert!(
+            terminal.char_widths.measured('a', &bold).is_none(),
+            "a same-size face change is not the measured face"
+        );
+        terminal.set_font(Some(bold.clone()));
+        rust_widgets::widget::svg::render_to_svg(&mut terminal);
+        assert!(
+            terminal.char_widths.measured('a', &bold).is_some(),
+            "the new face is measured on the next frame"
+        );
+    }
+
+    /// A CSI naming an absurd row must be clamped, not allocated.
+    #[test]
+    fn an_extreme_cursor_address_is_clamped_to_the_screen_bound() {
+        let mut terminal = TerminalView::new(Rect::new(0, 0, 320, 200));
+        terminal.append_output("\u{1b}[4294967295Hx");
+        let screen = terminal.screen.as_ref().expect("cursor addressing uses the grid");
+        assert_eq!(screen.cells.len(), MAX_SCREEN_ROWS, "the grid stops at the documented bound");
+        assert_eq!(screen.row, MAX_SCREEN_ROWS - 1);
+
+        terminal.append_output("\u{1b}[G\u{1b}[4294967295Bx");
+        let screen = terminal.screen.as_ref().expect("cursor addressing uses the grid");
+        assert_eq!(screen.cells.len(), MAX_SCREEN_ROWS);
+        assert_eq!(screen.row, MAX_SCREEN_ROWS - 1);
+        assert_eq!(terminal.lines().last().map(String::as_str), Some("x"));
+    }
+
+    /// The removed line-buffer clear branch is not a behaviour: the grid handles `ESC[2J`.
+    #[test]
+    fn a_clear_screen_line_still_clears_through_the_grid() {
+        let mut terminal = TerminalView::new(Rect::new(0, 0, 320, 200));
+        terminal.append_output("before");
+        terminal.append_output("\u{1b}[2Jafter");
+        assert!(terminal.screen.is_some(), "a clear-screen line selects the grid");
+        assert_eq!(terminal.lines(), &["after".to_string()]);
+    }
+
+    /// A CSI ends at any final byte in `0x40..=0x7E`, not only at a letter.
+    #[test]
+    fn a_non_letter_csi_final_byte_ends_the_sequence() {
+        assert_eq!(strip_ansi("\u{1b}[3~abc"), "abc");
+        let palette = default_ansi_palette(true);
+        let runs = ansi_runs("\u{1b}[3~abc", &palette);
+        let text: String = runs.iter().map(|run| run.text.as_str()).collect();
+        assert_eq!(text, "abc", "the sequence ends at `~`, so the text after it survives");
+
+        let mut terminal = TerminalView::new(Rect::new(0, 0, 320, 200));
+        terminal.append_output("\u{1b}[2J\u{1b}[3~abc");
+        assert_eq!(terminal.lines()[0], "abc", "the grid parser ends at the same byte");
+    }
+
+    /// An OSC payload (title, hyperlink) is skipped to BEL or ST and never becomes text.
+    #[test]
+    fn an_osc_payload_is_skipped_without_leaking_text() {
+        assert_eq!(strip_ansi("\u{1b}]0;window title\u{7}visible"), "visible");
+        assert_eq!(strip_ansi("\u{1b}]8;;https://example.com\u{1b}\\link"), "link");
+
+        let palette = default_ansi_palette(true);
+        let runs = ansi_runs("\u{1b}]0;title\u{7}\u{1b}[31mred", &palette);
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].text, "red");
+        assert_eq!(runs[0].color, Some(palette[1]), "the SGR after the OSC still applies");
+
+        assert!(contains_cursor_control("\u{1b}]0;title\u{7}\u{1b}[2J"));
+        assert!(
+            !contains_cursor_control("\u{1b}]0;\u{1b}[2J\u{7}"),
+            "a clear sequence inside the payload is not a clear request"
+        );
+
+        let mut terminal = TerminalView::new(Rect::new(0, 0, 320, 200));
+        terminal.append_output("\u{1b}[2J\u{1b}]0;title\u{7}abc");
+        assert_eq!(terminal.lines()[0], "abc", "the grid skips the OSC payload too");
+    }
+
+    /// Dropping a screen row also drops a selection that named it, and reports the loss.
+    #[test]
+    fn a_screen_row_removal_drops_the_selection_it_named() {
+        let mut terminal = TerminalView::new(Rect::new(0, 0, 500, 260));
+        terminal.append_output("\u{1b}[2J\u{1b}[1;1Hone");
+        terminal.append_output("\u{1b}[2;1Htwo");
+        let seen = Arc::new(Mutex::new(Vec::<bool>::new()));
+        let sink = seen.clone();
+        terminal.selection_changed.connect(move |present| {
+            if let Ok(mut guard) = sink.lock() {
+                guard.push(*present);
+            }
+        });
+
+        terminal.handle_event(&Event::mouse_double_click(40, 16 + OUTPUT_LINE_HEIGHT, 1));
+        assert_eq!(terminal.output_selection(), Some((1, 1)));
+
+        // Erasing the second screen row makes it a trailing empty row, which the buffer drops.
+        terminal.append_output("\u{1b}[2;1H\u{1b}[K");
+        assert_eq!(terminal.lines().len(), 1, "the empty trailing row is not kept");
+        assert_eq!(terminal.output_selection(), None);
+        let seen = seen.lock().ok().map(|guard| guard.clone()).unwrap_or_default();
+        assert_eq!(seen, vec![true, false], "the loss is published");
+    }
+
     /// Soft wrapping splits an over-wide row into several painted rows.
     #[test]
     fn wrap_output_splits_an_over_wide_row() {
@@ -3654,5 +4364,24 @@ mod find_tests {
         terminal.append_output("the failing command");
 
         assert_eq!(terminal.find_matches("failing", true, false), vec![(80, 4)]);
+    }
+
+    /// A carriage return rewrites the current row wherever it appears in the chunk.
+    ///
+    /// Only a *leading* CR was handled, so the equally standard trailing form (`"50%\r"`) — what a
+    /// progress indicator writes — appended one row per update and painted the control character.
+    #[test]
+    fn a_carriage_return_rewrites_the_current_row() {
+        let mut terminal = TerminalView::new(Rect::new(0, 0, 500, 160));
+        terminal.append_output("progress 50%");
+        terminal.append_output("progress 75%\r");
+        assert_eq!(terminal.lines(), ["progress 75%"], "a trailing CR keeps one row");
+
+        terminal.append_output("xy\rz");
+        assert_eq!(terminal.lines(), ["z"], "text after a middle CR overwrites the row");
+
+        let mut batch = TerminalView::new(Rect::new(0, 0, 500, 160));
+        batch.append_output_batch(["progress 10%", "progress 20%\r"]);
+        assert_eq!(batch.lines(), ["progress 20%"], "the batch path agrees");
     }
 }

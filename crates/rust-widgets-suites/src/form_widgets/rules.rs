@@ -253,6 +253,12 @@ pub(crate) fn field_validation_error(
     }
     if let Some(attached) = rules.get(key) {
         for rule in attached {
+            // A rule whose comparison target is not in this pass (a hidden or removed field) has
+            // nothing to judge against; running it would report an error about a value the
+            // reader can neither see nor fix.
+            if !values.contains_key(rule.other()) {
+                continue;
+            }
             if let Some(error) = rule.evaluate(value, values) {
                 return Some(error);
             }

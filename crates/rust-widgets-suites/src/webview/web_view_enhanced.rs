@@ -3,7 +3,7 @@
 
 //! WebViewEnhanced widget — a web view wrapper.
 //!
-//! This type shares ~95% of its implementation with [`WebEngineViewEnhanced`](crate::webview::web_engine_enhanced::WebEngineViewEnhanced).
+//! This type shares ~95% of its implementation with [`WebEngineViewEnhanced`].
 //! Both delegate to a common [`WebViewCore`] to avoid code duplication.
 //!
 //! **Unique to this type:**
@@ -25,16 +25,44 @@ use std::cell::RefCell;
 /// Enhanced web view widget.
 pub struct WebViewEnhanced {
     core: WebViewCore,
+    painter: WebViewPainter,
+}
+
+/// The browser-chrome and body preview painter shared by [`WebViewEnhanced`] and
+/// [`WebEngineViewEnhanced`](crate::webview::web_engine_enhanced::WebEngineViewEnhanced).
+///
+/// Both wrappers own a [`WebViewCore`] but only one of them used to know how to paint it, so the
+/// engine-flavoured wrapper produced an empty frame. The drawing lives here rather than in either
+/// wrapper so the two cannot drift into two slightly different pictures of the same state.
+pub(crate) struct WebViewPainter {
     /// Fonts are constructed once rather than three times per painted frame. A `Font` owns
     /// its family name, so `Font::new` in `draw` was three heap allocations per frame.
     url_font: Font,
     title_font: Font,
     content_font: Font,
     placeholder_font: Font,
-    /// Content-preview cache. Keyed by `(len, first, last)` — the preview is a fixed 200-byte
-    /// prefix, so a content edit is almost always visible in that key, and a hit avoids
-    /// rebuilding the `String` on every frame.
-    snippet_cache: RefCell<Option<(usize, u8, u8, String)>>,
+    /// Content-preview cache, keyed by [`WebViewCore::content_revision`]. The revision changes
+    /// exactly when the body does, so a hit cannot show a preview of a different document —
+    /// the previous key (length plus first/last byte) could be shared by distinct bodies.
+    snippet_cache: RefCell<Option<SnippetCache>>,
+}
+
+/// One cached body preview and the content revision it was built from.
+struct SnippetCache {
+    revision: u64,
+    text: String,
+}
+
+impl WebViewPainter {
+    pub(crate) fn new() -> Self {
+        Self {
+            url_font: Font::new("Arial", 12.0, false, false),
+            title_font: Font::bold("Arial", 14.0),
+            content_font: Font::new("monospace", 10.0, false, false),
+            placeholder_font: Font::new("Arial", 13.0, false, false),
+            snippet_cache: RefCell::new(None),
+        }
+    }
 }
 
 impl WebViewEnhanced {
@@ -48,11 +76,7 @@ impl WebViewEnhanced {
     pub fn new(geometry: Rect) -> Self {
         Self {
             core: WebViewCore::new(WidgetKind::WebEngineView, geometry, "WebView", "about:blank"),
-            url_font: Font::new("Arial", 12.0, false, false),
-            title_font: Font::bold("Arial", 14.0),
-            content_font: Font::new("monospace", 10.0, false, false),
-            placeholder_font: Font::new("Arial", 13.0, false, false),
-            snippet_cache: RefCell::new(None),
+            painter: WebViewPainter::new(),
         }
     }
 
@@ -160,7 +184,7 @@ impl WebViewEnhanced {
         self.core.load_url(url);
     }
     /// Navigates to `url`, taking ownership of it. Same scheme validation as
-    /// [`Self::load_url`].
+    /// [`Self::load_url`]; navigating to the URL already displayed is a no-op.
     pub fn set_url(&mut self, url: String) {
         self.core.set_url(url);
     }
@@ -274,16 +298,20 @@ impl EventHandler for WebViewEnhanced {
     }
 }
 
-impl Draw for WebViewEnhanced {
-    fn draw(&mut self, context: &mut RenderContext) {
-        let rect = self.geometry();
-        let enabled = self.base().is_enabled();
+impl WebViewPainter {
+    /// Paints `core`'s browser chrome, loading indicator and body preview.
+    ///
+    /// Taking the core by reference is what lets both enhanced wrappers share one picture of
+    /// the same state instead of one of them delegating to the other's instance.
+    pub(crate) fn draw(&self, core: &WebViewCore, context: &mut RenderContext) {
+        let rect = core.base.geometry();
+        let enabled = core.base.is_enabled();
 
         // Same three-level resolution `WebEngineView::draw` uses: the control's explicit style
         // first, then the theme's resolved style for this control, then the shared palette. The
         // literal fallbacks are the pre-theme colours this draw used to hardcode, so a build with
         // no theme at all paints exactly what it painted before.
-        let style = self.base().style();
+        let style = core.base.style();
         let theme = rust_widgets::style::resolved_theme_style_shared("web_engine_view");
         let palette = rust_widgets::style::palette_shared();
         let window_fill = style
@@ -329,22 +357,21 @@ impl Draw for WebViewEnhanced {
         let url_color = if enabled { ink } else { ink.blend(&window_fill, 0.6) };
         context.draw_text(
             Point::new(addr_rect.x + 6, addr_rect.y + 8),
-            &self.core.url,
+            &core.url,
             &self.url_font,
             url_color,
             HorizontalAlignment::Left,
         );
 
         // ── Loading indicator ──
-        if self.core.loading {
+        if core.loading {
             let bar_y = addr_rect.y + addr_rect.height as i32;
-            let bar_w = (rect.width * self.core.load_progress as u32 / 100).max(1);
+            let bar_w = (rect.width * core.load_progress as u32 / 100).max(1);
             context.fill_rect(Rect::new(rect.x + 1, bar_y, bar_w, 3), accent);
         }
 
         // ── Content area ──
-        let content_y =
-            addr_rect.y + addr_rect.height as i32 + if self.core.loading { 3 } else { 0 };
+        let content_y = addr_rect.y + addr_rect.height as i32 + if core.loading { 3 } else { 0 };
         let content_h = (rect.y + rect.height as i32) - content_y - 1;
         if content_h > 0 {
             let content_rect =
@@ -353,49 +380,50 @@ impl Draw for WebViewEnhanced {
             context.fill_rect(content_rect, bg_color);
 
             // Title display
-            if !self.core.title.is_empty() {
+            if !core.title.is_empty() {
                 let title_color = if enabled { ink } else { ink.blend(&window_fill, 0.55) };
                 context.draw_text(
                     Point::new(content_rect.x + 4, content_rect.y + 4),
-                    &self.core.title,
+                    &core.title,
                     &self.title_font,
                     title_color,
                     HorizontalAlignment::Left,
                 );
             }
 
-            // Content snippet preview (first line of HTML content)
-            if !self.core.content.is_empty() {
-                let content = &self.core.content;
-                let key = (
-                    content.len(),
-                    content.as_bytes().first().copied().unwrap_or(0),
-                    content.as_bytes().last().copied().unwrap_or(0),
-                );
-                let cached = self.snippet_cache.borrow();
-                match cached.as_ref() {
-                    Some((len, first, last, _)) if (*len, *first, *last) == key => {}
-                    _ => {
-                        drop(cached);
-                        let text = if content.len() > 200 {
-                            let boundary =
-                                rust_widgets::widget::text_utils::floor_char_boundary(content, 197);
-                            format!("{}...", &content[..boundary])
-                        } else {
-                            content.clone()
-                        };
-                        *self.snippet_cache.borrow_mut() = Some((key.0, key.1, key.2, text));
+            // Content snippet preview (the body's first line).
+            if !core.content.is_empty() {
+                let content = &core.content;
+                // The cache key is the core's monotonic content revision, so a different body
+                // can never reuse the previous preview even when the two share a length and
+                // their first and last bytes.
+                let revision = core.content_revision();
+                let stale = {
+                    let cache = self.snippet_cache.borrow();
+                    match cache.as_ref() {
+                        Some(cached) => cached.revision != revision,
+                        None => true,
                     }
+                };
+                if stale {
+                    let text = if content.len() > 200 {
+                        let boundary =
+                            rust_widgets::widget::text_utils::floor_char_boundary(content, 197);
+                        format!("{}...", &content[..boundary])
+                    } else {
+                        content.clone()
+                    };
+                    *self.snippet_cache.borrow_mut() = Some(SnippetCache { revision, text });
                 }
                 let snippet_guard = self.snippet_cache.borrow();
                 let snippet =
-                    snippet_guard.as_ref().map(|(_, _, _, text)| text.as_str()).unwrap_or("");
+                    snippet_guard.as_ref().map(|cached| cached.text.as_str()).unwrap_or("");
                 let text_color = if enabled {
                     ink.blend(&window_fill, 0.1)
                 } else {
                     ink.blend(&window_fill, 0.7)
                 };
-                let text_y = content_rect.y + (if self.core.title.is_empty() { 4 } else { 24 });
+                let text_y = content_rect.y + (if core.title.is_empty() { 4 } else { 24 });
                 context.draw_text(
                     Point::new(content_rect.x + 4, text_y),
                     snippet,
@@ -406,7 +434,7 @@ impl Draw for WebViewEnhanced {
             }
 
             // Empty state: show "about:blank" placeholder
-            if self.core.url == "about:blank" && self.core.content.is_empty() {
+            if core.url == "about:blank" && core.content.is_empty() {
                 let placeholder_color = ink.blend(&window_fill, 0.75);
                 context.draw_text(
                     Point::new(content_rect.x + 4, content_rect.y + 4),
@@ -417,6 +445,12 @@ impl Draw for WebViewEnhanced {
                 );
             }
         }
+    }
+}
+
+impl Draw for WebViewEnhanced {
+    fn draw(&mut self, context: &mut RenderContext) {
+        self.painter.draw(&self.core, context);
     }
 }
 
@@ -436,6 +470,35 @@ mod tests {
         assert_eq!(view.load_progress(), 0);
         assert!(!view.can_go_back());
         assert!(!view.can_go_forward());
+    }
+
+    /// The wrapper forwards the core's duplicate-URL no-op.
+    ///
+    /// `load_url`/`set_url` only delegate; this pins that a repeated current URL does not start
+    /// a second load or append history through the wrapper either.
+    #[test]
+    fn repeating_the_current_url_is_a_no_op_through_the_wrapper() {
+        use std::sync::{Arc, Mutex};
+
+        let mut view = WebViewEnhanced::new(Rect::new(0, 0, 800, 600));
+        let starts = Arc::new(Mutex::new(0usize));
+        let sink = starts.clone();
+        view.core.loading_started.connect(move |_| {
+            *sink.lock().unwrap() += 1;
+        });
+
+        view.set_url("https://example.com/".to_string());
+        assert_eq!(*starts.lock().unwrap(), 1);
+        let back_entries = view.history().back_entries().len();
+
+        view.set_url("https://example.com/".to_string());
+        assert_eq!(*starts.lock().unwrap(), 1, "the load must not restart");
+        assert_eq!(
+            view.history().back_entries().len(),
+            back_entries,
+            "the repeat must not record another history entry"
+        );
+        assert_eq!(view.url(), "https://example.com/");
     }
 
     #[cfg(not(feature = "web-http"))]
@@ -524,6 +587,34 @@ mod tests {
         view.load_html(&long_multibyte_html, None);
         let svg = render_to_svg(&mut view);
         assert!(!svg.is_empty(), "drawing web view with multibyte HTML content must not panic");
+    }
+
+    /// Two bodies that share a length and first/last byte must not share a cached preview.
+    ///
+    /// The old cache key was `(len, first, last)`, so `<p>AAAA</p>` and `<p>BBBB</p>` collided
+    /// and the second document painted the first one's text until something else changed.
+    #[test]
+    fn bodies_with_the_same_shape_do_not_share_a_preview() {
+        let _theme_guard = rust_widgets::style::theme_test_guard();
+        let mut view = WebViewEnhanced::new(Rect::new(0, 0, 400, 240));
+
+        view.load_html("<p>AAAA</p>", None);
+        let _ = rust_widgets::widget::svg::render_to_svg(&mut view);
+        let first = {
+            let cache = view.painter.snippet_cache.borrow();
+            cache.as_ref().map(|cached| cached.text.clone()).expect("the first preview was built")
+        };
+
+        // Same length and same first/last byte as the previous body.
+        view.load_html("<p>BBBB</p>", None);
+        let _ = rust_widgets::widget::svg::render_to_svg(&mut view);
+        let second = {
+            let cache = view.painter.snippet_cache.borrow();
+            cache.as_ref().map(|cached| cached.text.clone()).expect("the second preview was built")
+        };
+
+        assert_eq!(first, "<p>AAAA</p>");
+        assert_eq!(second, "<p>BBBB</p>", "the preview follows the new body, not the old key");
     }
 
     #[test]

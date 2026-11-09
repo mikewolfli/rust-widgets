@@ -104,6 +104,7 @@ impl ZoomStripBinding {
 
         // Mirror the current view before subscribing: a level pushed now must not come back as a
         // fresh request.
+        let factor = mirrored_zoom(factor);
         strip.set_zoom(factor);
         strip.accept_zoom_updates(Arc::clone(&mirrors));
 
@@ -137,12 +138,31 @@ impl ZoomStripBinding {
     ///
     /// Returns whether a level was queued.
     pub(crate) fn push(&mut self, factor: f32) -> bool {
+        let factor = mirrored_zoom(factor);
         if (self.last_pushed - factor).abs() < f32::EPSILON {
             return false;
         }
         self.last_pushed = factor;
         *lock(&self.mirrors) = Some(factor);
         true
+    }
+}
+
+/// The highest factor [`ZoomStrip`] can display.
+///
+/// The strip resolves a level into its own `0.1..=8.0` range, so a wider view (5 of 1000 bars is
+/// a factor of 200) would paint `800%` while the pane is far past it — and the next `+` press
+/// would be a no-op because the strip is already at its maximum. Mirroring the strip's own
+/// ceiling keeps the readout and the queued level in step; the pane itself stays where the host
+/// put it.
+const MAX_MIRRORED_ZOOM: f32 = 8.0;
+
+/// Clamps a pane's factor into the strip's display range.
+fn mirrored_zoom(factor: f32) -> f32 {
+    if factor.is_finite() {
+        factor.clamp(1.0, MAX_MIRRORED_ZOOM)
+    } else {
+        1.0
     }
 }
 
@@ -221,7 +241,7 @@ pub(crate) fn poll_zoom_strip(
         current = range;
     }
     if let Some(binding) = binding.as_mut() {
-        binding.push(zoom_factor(total, current));
+        changed |= binding.push(zoom_factor(total, current));
     }
     changed
 }
@@ -302,5 +322,38 @@ mod tests {
         assert!(chart.view_range().is_none(), "a 1x level restores the full series");
         chart.detach_zoom_strip();
         assert!(!chart.is_zoom_strip_attached());
+    }
+
+    /// A pane that moves its own view still queues the new level, and that mirror counts as a
+    /// change; the poll used to return `false` while carrying a level for the strip.
+    #[test]
+    fn a_host_driven_view_change_is_reported_as_a_mirror() {
+        let mut chart = pane();
+        let mut strip = ZoomStrip::new(Rect::new(0, 0, 120, 24));
+        chart.attach_zoom_strip(&mut strip);
+
+        chart.set_view_range(Some((0, 5)));
+        assert!(chart.poll_zoom_strip(), "a mirrored level is a change");
+        assert!(strip.sync_zoom_updates(), "the pane's own view reaches the readout");
+        assert!((strip.zoom_level() - 4.0).abs() < 0.001);
+    }
+
+    /// A view narrower than the strip's ceiling mirrors at the ceiling, not past it.
+    ///
+    /// The strip clamps a mirrored level to `0.1..=8.0`, so a factor of 20 painted `800%` while
+    /// the queued factor kept claiming 20 — and the next `+` press was a no-op.
+    #[test]
+    fn a_view_narrower_than_the_strip_mirrors_at_its_ceiling() {
+        let mut chart = pane();
+        let mut strip = ZoomStrip::new(Rect::new(0, 0, 120, 24));
+        chart.attach_zoom_strip(&mut strip);
+
+        chart.set_view_range(Some((0, 1)));
+        assert!(chart.poll_zoom_strip());
+        assert!(strip.sync_zoom_updates());
+        assert!(
+            (strip.zoom_level() - 8.0).abs() < 0.001,
+            "the readout stops at the strip's ceiling"
+        );
     }
 }

@@ -204,6 +204,11 @@ impl CodeEditor {
     /// The scan runs once over the document with a stack, so a nested pair is
     /// found even when several later pairs are closed on the same line. `braces`
     /// restricts the result to `{ … }`, which is what `Block` means.
+    ///
+    /// Brackets inside a string or a comment are text, not structure: the lexer has
+    /// already classified those spans, so they are skipped exactly as bracket matching
+    /// skips them. Without this, `expand_selection(Block)` on a line holding `"{"`
+    /// selected from that quote to the next brace in the file.
     fn enclosing_pairs(
         &self,
         head: TextPosition,
@@ -213,7 +218,19 @@ impl CodeEditor {
         let head_byte = self.offset_of(head);
         let mut stack: Vec<(usize, char)> = Vec::new();
         let mut pairs: Vec<(TextPosition, TextPosition)> = Vec::new();
+        let mut line = 0usize;
+        let mut line_start = 0usize;
+        let mut skip = self.skipped_spans(0);
         for (byte, ch) in text.char_indices() {
+            if ch == '\n' {
+                line += 1;
+                line_start = byte + 1;
+                skip = self.skipped_spans(line);
+                continue;
+            }
+            if is_skipped(byte.saturating_sub(line_start), &skip) {
+                continue;
+            }
             if is_opening_bracket(ch) {
                 stack.push((byte, ch));
                 continue;

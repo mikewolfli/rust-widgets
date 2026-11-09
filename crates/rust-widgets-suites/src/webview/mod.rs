@@ -28,7 +28,8 @@
 //! * [`js_engine`] — an engine-neutral JavaScript subset ([`JsValue`], [`JsContext`]), the
 //!   dependency-free [`SimpleJsEngine`], and [`BoaJsEngine`] when `js-engine` is enabled.
 //! * [`history`] / [`navigation`] — [`history::HistoryEntry`], [`BrowserHistory`],
-//!   [`SessionHistory`], [`NavigationHistory`], [`LoadStatus`], [`WebSettings`].
+//!   [`SessionHistory`], [`history::PageSnapshot`], [`NavigationHistory`], [`LoadStatus`],
+//!   [`WebSettings`].
 //! * [`privacy`] — [`PrivacySettings`], [`CookieJar`], [`TrackingProtection`].
 //! * [`plugins`] — [`PluginManager`] and the [`Plugin`] trait.
 //! * [`web_engine`] / [`web_view`] / [`web_history_panel`] / [`find_bar`] — the controls.

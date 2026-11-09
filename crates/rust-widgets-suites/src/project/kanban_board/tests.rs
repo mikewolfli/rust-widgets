@@ -22,6 +22,7 @@ fn primary_modifier_event_bits() -> u32 {
 // the same name trips clippy::module_inception.
 mod cases {
     use super::*;
+    use rust_widgets::event::{key_codes, FocusReason};
     use rust_widgets::render::{PaintBackend, SoftwarePaintBackend};
     // The activation tests observe delivery through a shared sink, so they need the
     // same Arc/Mutex the signal machinery uses.
@@ -427,14 +428,16 @@ mod cases {
         board.add_column(KanbanColumn::new("full", "Full").with_wip_limit(1));
         board.add_card(0, KanbanCard::new("only", "Only"));
 
-        // A limit caps *arrivals*, not movement. `can_accept` is the
-        // position-independent question and a full board answers `false` to it — the
-        // destination's own limit is what `on_drop` consults, where the column is
-        // known. Asserting both halves pins which method owns which rule.
+        // A limit caps *arrivals*, not movement. `can_accept` has no position, so it can only
+        // answer "is there any destination?" — a card that is already on the board has its own
+        // column as a destination (a reorder), and the destination's own limit is what `on_drop`
+        // consults, where the column is known. Asserting both halves pins which method owns which
+        // rule, including that the arrival rule still refuses a full destination.
         let payload = DragPayload::new(CARD_PAYLOAD_TYPE, "only");
+        assert!(board.can_accept(&payload), "the card's own column can take it back as a reorder");
         assert!(
-            !board.can_accept(&payload),
-            "a board whose only column is full has nowhere to put a card"
+            !KanbanBoard::new(Rect::new(0, 0, 800, 400)).can_accept(&payload),
+            "a board with no columns has nowhere to put a card"
         );
 
         // And the full column still accepts a card that is already inside it.
@@ -446,6 +449,62 @@ mod cases {
             DropEffect::Move,
             "a card already in the full column may be reordered within it"
         );
+    }
+
+    /// A pointer drop reorders inside a full column.
+    ///
+    /// `finish_card_drag` took `drag_origin` before `drop_on`, and `on_drop` reads it to exempt
+    /// an in-column move from the WIP limit — so through the real gesture the exemption never
+    /// applied and the drop was refused. The existing unit test set `drag_origin` by hand and
+    /// passed while the gesture failed.
+    #[test]
+    fn kanban_pointer_drop_reorders_inside_a_full_column() {
+        let mut board = KanbanBoard::new(Rect::new(0, 0, 400, 400));
+        board.add_column(KanbanColumn::new("only", "Only").with_wip_limit(3));
+        for id in ["a", "b", "c"] {
+            board.add_card(0, KanbanCard::new(id, id));
+        }
+        let moved = Arc::new(Mutex::new(Vec::<String>::new()));
+        let sink = Arc::clone(&moved);
+        board.card_moved.connect(move |value: Arc<(String, CardPosition)>| {
+            sink.lock().expect("move sink poisoned").push(value.0.clone())
+        });
+
+        let first = card_center(&board, CardPosition { column: 0, card: 0 });
+        let last = board.card_rect(CardPosition { column: 0, card: 2 }).expect("card 2");
+        board.handle_event(&Event::mouse_press(first.x, first.y, 1));
+        // Cross the drag threshold, then release over the lower half of the last card so the
+        // card lands after it.
+        board.handle_event(&Event::mouse_move(first.x, last.y + last.height as i32 - 2));
+        board.handle_event(&Event::mouse_release(first.x, last.y + last.height as i32 - 2, 1));
+
+        assert_eq!(
+            board.position_of("a"),
+            Some(CardPosition { column: 0, card: 2 }),
+            "the full column accepted a move within itself"
+        );
+        assert_eq!(*moved.lock().expect("move sink poisoned"), ["a"]);
+    }
+
+    /// Removing the hovered card reports the hover exit.
+    #[test]
+    fn removing_the_hovered_card_reports_its_exit() {
+        let mut board = board();
+        let centre = card_center(&board, CardPosition { column: 0, card: 0 });
+        board.handle_event(&Event::mouse_move(centre.x, centre.y));
+        assert!(board.hovered_card().is_some());
+
+        let exits = Arc::new(Mutex::new(0usize));
+        let sink = Arc::clone(&exits);
+        board.card_hovered.connect(move |id: Arc<Option<String>>| {
+            if id.is_none() {
+                *sink.lock().expect("hover sink poisoned") += 1;
+            }
+        });
+
+        board.remove_card("a");
+        assert_eq!(board.hovered_card(), None);
+        assert_eq!(*exits.lock().expect("hover sink poisoned"), 1, "the exit is reported");
     }
 
     #[test]
@@ -858,6 +917,492 @@ mod cases {
         assert_eq!(board.command("set_columns"), Err(CapabilityAccessError::OutOfRange));
         assert_eq!(board.command("set_cards"), Err(CapabilityAccessError::OutOfRange));
     }
+
+    /// Removing a column shifts the per-column scroll vector with it.
+    #[test]
+    fn removing_a_column_shifts_the_per_column_scroll_state() {
+        let mut board = KanbanBoard::new(Rect::new(0, 0, 800, 120));
+        for id in ["a", "b", "c"] {
+            board.add_column(KanbanColumn::new(id, id));
+        }
+        for index in 0..10 {
+            board.add_card(1, KanbanCard::new(format!("c{index}"), "Card"));
+        }
+        board.scroll_column(1, 5);
+        assert_eq!(board.column_scroll_offset(1), 5);
+
+        board.remove_column(0);
+        assert_eq!(board.column_scroll_offset(0), 5, "the scroll belongs to its column");
+        assert_eq!(board.column_scroll_offset(1), 0, "the next column keeps its own offset");
+    }
+
+    /// A focus naming a removed column is cleared, not used to index the column list.
+    #[test]
+    fn a_stale_focus_is_cleared_before_keyboard_navigation() {
+        let mut board = board();
+        board.add_card(0, KanbanCard::new("a2", "Alpha again"));
+        board.add_card(2, KanbanCard::new("z", "Last"));
+        board.set_focused_card(Some(CardPosition { column: 2, card: 0 }));
+        assert_eq!(board.focused_card(), Some(CardPosition { column: 2, card: 0 }));
+
+        board.remove_column(2);
+        assert_eq!(board.focused_card(), None, "the focused row left with its column");
+
+        board.handle_event(&Event::FocusGained { reason: rust_widgets::event::FocusReason::Tab });
+        // Down used to index `columns[2]`, which no longer exists.
+        board.handle_event(&Event::key_press(40, 0));
+        assert!(board.focused_card().is_some());
+
+        board.set_focused_card(Some(CardPosition { column: 0, card: 0 }));
+        board.remove_card("a");
+        assert_eq!(board.focused_card(), None, "removing the focused card clears the focus");
+    }
+
+    /// A removed lane does not resurrect its collapse flag when its id is added again.
+    #[test]
+    fn removing_a_lane_forgets_its_collapse_flag() {
+        let mut board = lane_board();
+        assert!(board.set_lane_collapsed("slow", true));
+        assert!(board.remove_lane("slow").is_some());
+        board.add_lane(KanbanLane::new("slow", "Slow"));
+        assert!(!board.is_lane_collapsed("slow"), "the flag belonged to the removed lane");
+    }
+
+    /// A release in the gap between two lane bands lands in the nearest band instead of keeping
+    /// the card's old lane while moving its slot.
+    #[test]
+    fn dropping_in_the_gap_between_lanes_assigns_the_nearest_band() {
+        let mut board = lane_board();
+        assert!(board.set_card_lane("b", "slow"));
+        let b = board.card_rect(CardPosition { column: 0, card: 1 }).expect("b is laid out");
+        let first = board.lane_band_rect(0).expect("lane 0");
+        let second = board.lane_band_rect(1).expect("lane 1");
+        // One pixel into the gap, still nearer the first band's edge.
+        let gap_y = first.y + first.height as i32 + 1;
+        assert!(gap_y < second.y, "the point is between the bands");
+        let column_x = board.column_rect(0).expect("column 0").x + 10;
+
+        board.handle_event(&Event::mouse_press(b.x + 10, b.y + 10, 1));
+        board.handle_event(&Event::mouse_move(column_x, gap_y));
+        board.handle_event(&Event::mouse_release(column_x, gap_y, 1));
+
+        assert_eq!(board.card_lane("b"), Some("fast"), "the nearest band wins");
+    }
+
+    /// Replacing the cards must not leave a column scrolled past its last remaining row.
+    #[test]
+    fn a_cards_write_keeps_a_scrolled_column_visible() {
+        let mut board = KanbanBoard::new(Rect::new(0, 0, 800, 120));
+        board.add_column(KanbanColumn::new("only", "Only"));
+        for index in 0..20 {
+            board.add_card(0, KanbanCard::new(format!("c{index}"), "Card"));
+        }
+        board.scroll_column(0, 10);
+
+        let CapabilityValue::Records(list) = board.get("cards").expect("readable") else {
+            panic!("cards must read as records");
+        };
+        let kept: Vec<_> = list.items().iter().take(5).cloned().collect();
+        let replacement =
+            rust_widgets::widget::capability::RecordList::from_items(&KANBAN_CARD_SCHEMA, kept);
+        board.set("cards", CapabilityValue::Records(replacement)).expect("writable");
+
+        let last = CardPosition { column: 0, card: 4 };
+        let rect = board.card_rect(last).expect("the last card is still painted");
+        assert_eq!(board.card_at(Point::new(rect.x + 4, rect.y + 4)), Some(last));
+    }
+
+    /// A card write drops the selection of every card it removed.
+    #[test]
+    fn a_cards_write_prunes_the_selection() {
+        let mut board = board();
+        assert!(board.set_card_selected("a", true));
+
+        let empty = rust_widgets::widget::capability::RecordList::from_items(
+            &KANBAN_CARD_SCHEMA,
+            Vec::new(),
+        );
+        board.set("cards", CapabilityValue::Records(empty)).expect("an empty list is valid");
+
+        assert!(board.selected_cards().is_empty());
+        assert!(!board.selected_set.contains("a"));
+    }
+
+    /// A positive wheel delta moves the content down, so the row window moves back.
+    #[test]
+    fn wheel_down_scrolls_the_column_forward() {
+        let mut board = KanbanBoard::new(Rect::new(0, 0, 800, 120));
+        board.add_column(KanbanColumn::new("only", "Only"));
+        for index in 0..10 {
+            board.add_card(0, KanbanCard::new(format!("c{index}"), "Card"));
+        }
+        board.scroll_column(0, 5);
+
+        board.handle_event(&Event::wheel(0, 120, 0));
+        assert_eq!(board.column_scroll[0], 4, "the content moves down one row");
+        board.handle_event(&Event::wheel(0, -120, 0));
+        assert_eq!(board.column_scroll[0], 5);
+    }
+
+    /// The focus ring follows the card through a drop instead of staying on its old slot.
+    #[test]
+    fn a_moved_card_keeps_the_focus_ring() {
+        let mut board = board();
+        let start = card_center(&board, CardPosition { column: 0, card: 0 });
+        let target_column = board.column_rect(2).expect("column 2");
+        let target = Point::new(target_column.x + 100, target_column.y + HEADER_HEIGHT as i32 + 20);
+
+        board.handle_event(&Event::mouse_press(start.x, start.y, 1));
+        board.handle_event(&Event::mouse_move(start.x + 40, start.y + 10));
+        board.handle_event(&Event::mouse_move(target.x, target.y));
+        board.handle_event(&Event::mouse_release(target.x, target.y, 1));
+
+        let position = board.position_of("a").expect("a moved");
+        assert_eq!(position, CardPosition { column: 2, card: 0 });
+        assert_eq!(board.focused_card(), Some(position), "the ring follows the card");
+    }
+
+    /// The hovered column follows the same index shift a removal applies to every other position.
+    #[test]
+    fn removing_a_column_shifts_the_hovered_column() {
+        let mut board = board();
+        let second = board.column_rect(1).expect("column 1");
+        board
+            .handle_event(&Event::mouse_move(second.x + 10, second.y + HEADER_HEIGHT as i32 + 300));
+        assert_eq!(board.hovered_column(), Some(1));
+
+        board.remove_column(0);
+        assert_eq!(board.hovered_column(), Some(0), "the hover names the same column");
+    }
+
+    /// The insertion indicator sits in the pointer's row, not at `scroll + slot` rows down.
+    #[test]
+    fn insertion_line_uses_the_pointer_slot() {
+        let mut board = KanbanBoard::new(Rect::new(0, 0, 800, 400));
+        board.add_column(KanbanColumn::new("only", "Only"));
+        for index in 0..20 {
+            board.add_card(0, KanbanCard::new(format!("c{index}"), "Card"));
+        }
+        board.scroll_column(0, 5);
+        let column = board.column_rect(0).expect("column");
+        let first_row = column.y + HEADER_HEIGHT as i32;
+        let stride = CARD_HEIGHT as i32 + CARD_GAP;
+        let pos = Point::new(column.x + 10, first_row + 4 * stride + 10);
+        assert_eq!(
+            board.insertion_line_y(pos),
+            Some(first_row + 4 * stride - CARD_GAP / 2),
+            "the line follows the fourth painted row, not model index scroll + 4"
+        );
+
+        // Lane mode measures the slot inside the target band.
+        let mut lanes = lane_board();
+        assert!(lanes.set_card_lane("b", "slow"));
+        let band = lanes.lane_band_rect(1).expect("lane 1");
+        let column = lanes.column_rect(0).expect("column");
+        let lane_pos = Point::new(column.x + 10, band.y + LANE_HEADER_HEIGHT + 10);
+        assert_eq!(
+            lanes.insertion_line_y(lane_pos),
+            Some(band.y + LANE_HEADER_HEIGHT - CARD_GAP / 2)
+        );
+    }
+
+    /// The per-frame column rectangle is exactly what the public helper derives.
+    #[test]
+    fn first_column_x_matches_the_first_column_rect() {
+        let mut board = board();
+        board.set_column_width(400);
+        board.set_horizontal_scroll(120);
+        assert_eq!(board.column_rect(0).map(|rect| rect.x), Some(board.first_column_x()));
+
+        let lanes = lane_board();
+        assert_eq!(lanes.column_rect(0).map(|rect| rect.x), Some(lanes.first_column_x()));
+    }
+
+    /// Resolving a column once per frame must not change any card's rectangle.
+    #[test]
+    fn card_rect_in_matches_card_rect() {
+        let mut board = board();
+        board.add_card(0, KanbanCard::new("a2", "Second"));
+        for (position, _) in board.cards() {
+            let column_rect = board.column_rect(position.column).expect("column");
+            assert_eq!(
+                board.card_rect_in(column_rect, position),
+                board.card_rect(position),
+                "{position:?}"
+            );
+        }
+
+        let mut lanes = lane_board();
+        assert!(lanes.set_card_lane("b", "slow"));
+        for (position, _) in lanes.cards() {
+            let column_rect = lanes.column_rect(position.column).expect("column");
+            assert_eq!(lanes.card_rect_in(column_rect, position), lanes.card_rect(position));
+        }
+    }
+
+    /// A frame over many columns and cards still paints within the control's bounds.
+    #[test]
+    fn a_wide_board_paints_once_per_column() {
+        let mut board = KanbanBoard::new(Rect::new(0, 0, 800, 400));
+        for column in 0..40 {
+            board.add_column(KanbanColumn::new(format!("c{column}"), format!("C{column}")));
+            for card in 0..5 {
+                board.add_card(column, KanbanCard::new(format!("c{column}-{card}"), "Card"));
+            }
+        }
+        let rgba = render(&mut board, Size::new(800, 400));
+        assert!(!rgba.is_empty());
+    }
+
+    /// A focused card starts a title edit with F2 or Enter; Esc cancels and Enter commits.
+    #[test]
+    fn card_view_enters_edit_from_the_keyboard_when_focused() {
+        let mut card = KanbanCardView::new(Rect::new(0, 0, 220, 72), "Write spec");
+        assert!(card.is_focusable(), "the card must be reachable from the keyboard");
+
+        // An unfocused control does not take the key.
+        card.handle_event(&Event::key_press(key_codes::F2, 0));
+        assert!(!card.is_editing());
+
+        card.handle_event(&Event::FocusGained { reason: FocusReason::Tab });
+        card.handle_event(&Event::key_press(key_codes::F2, 0));
+        assert!(card.is_editing(), "F2 starts the edit");
+        card.handle_event(&Event::text_input("!"));
+        card.handle_event(&Event::key_press(key_codes::ESCAPE, 0));
+        assert!(!card.is_editing());
+        assert_eq!(card.title(), "Write spec", "Esc cancels the edit");
+
+        card.handle_event(&Event::key_press(key_codes::ENTER, 0));
+        assert!(card.is_editing(), "Enter starts the edit when focused");
+        card.handle_event(&Event::text_input("?"));
+        card.handle_event(&Event::key_press(key_codes::ENTER, 0));
+        assert!(!card.is_editing());
+        assert_eq!(card.title(), "Write spec?", "Enter commits the edit");
+    }
+
+    /// Space is the keyboard path to the card's done box, which used to be pointer-only.
+    #[test]
+    fn card_view_toggles_done_from_the_keyboard_when_focused() {
+        let mut card = KanbanCardView::new(Rect::new(0, 0, 220, 72), "Write spec");
+        let toggles = Arc::new(Mutex::new(Vec::<bool>::new()));
+        let sink = Arc::clone(&toggles);
+        card.card_done_toggled.connect(move |flag: Arc<bool>| {
+            sink.lock().expect("done sink").push(*flag);
+        });
+
+        // An unfocused card does not take the key.
+        card.handle_event(&Event::key_press(key_codes::SPACE, 0));
+        assert!(!card.is_done());
+
+        card.handle_event(&Event::FocusGained { reason: FocusReason::Tab });
+        card.handle_event(&Event::key_press(key_codes::SPACE, 0));
+        assert!(card.is_done());
+        card.handle_event(&Event::key_press(key_codes::SPACE, 0));
+        assert!(!card.is_done());
+        assert_eq!(*toggles.lock().expect("done sink"), vec![true, false]);
+    }
+
+    /// A focused header renames with F2 or Enter, and still refuses to edit when read-only.
+    #[test]
+    fn column_header_enters_rename_from_the_keyboard_when_focused() {
+        let mut header = KanbanColumnHeader::new(Rect::new(0, 0, 220, 32), "Todo");
+        assert!(header.is_focusable(), "the header must be reachable from the keyboard");
+
+        header.handle_event(&Event::key_press(key_codes::F2, 0));
+        assert!(!header.is_editing());
+
+        header.handle_event(&Event::FocusGained { reason: FocusReason::Tab });
+        header.set_editable(false);
+        header.handle_event(&Event::key_press(key_codes::ENTER, 0));
+        assert!(!header.is_editing(), "a read-only header cannot be renamed");
+        header.set_editable(true);
+
+        header.handle_event(&Event::key_press(key_codes::ENTER, 0));
+        assert!(header.is_editing());
+        header.handle_event(&Event::text_input("s"));
+        header.handle_event(&Event::key_press(key_codes::ESCAPE, 0));
+        assert!(!header.is_editing());
+        assert_eq!(header.title(), "Todo", "Esc cancels the rename");
+
+        header.handle_event(&Event::key_press(key_codes::F2, 0));
+        header.handle_event(&Event::text_input("s"));
+        header.handle_event(&Event::key_press(key_codes::ENTER, 0));
+        assert_eq!(header.title(), "Todos", "Enter commits the rename");
+    }
+
+    /// A batch drop is bounded by the destination's WIP limit.
+    #[test]
+    fn a_batch_drop_respects_the_destination_wip_limit() {
+        let mut board = KanbanBoard::new(Rect::new(0, 0, 800, 400));
+        board.add_column(KanbanColumn::new("src", "Src"));
+        board.add_column(KanbanColumn::new("dst", "Dst").with_wip_limit(2));
+        for id in ["a", "b", "c"] {
+            board.add_card(0, KanbanCard::new(id, id));
+            assert!(board.set_card_selected(id, true));
+        }
+
+        let start = card_center(&board, CardPosition { column: 0, card: 0 });
+        let dst = board.column_rect(1).expect("destination");
+        let target = Point::new(dst.x + dst.width as i32 / 2, dst.y + HEADER_HEIGHT as i32 + 10);
+        board.handle_event(&Event::mouse_press(start.x, start.y, 1));
+        board.handle_event(&Event::mouse_move(target.x, target.y));
+        board.handle_event(&Event::mouse_release(target.x, target.y, 1));
+
+        assert!(
+            board.column(1).expect("dst").cards.len() <= 2,
+            "the WIP limit bounds a whole batch, not only the primary card"
+        );
+        assert_eq!(
+            board.position_of("c").map(|position| position.column),
+            Some(0),
+            "the member without room stayed"
+        );
+    }
+
+    /// A drop on a collapsed column appends instead of guessing a hidden slot.
+    #[test]
+    fn dropping_on_a_collapsed_column_appends() {
+        let mut board = KanbanBoard::new(Rect::new(0, 0, 800, 400));
+        board.add_column(KanbanColumn::new("src", "Src"));
+        board.add_column(KanbanColumn::new("dst", "Dst"));
+        board.add_card(0, KanbanCard::new("a", "A"));
+        for index in 0..5 {
+            board.add_card(1, KanbanCard::new(format!("d{index}"), "D"));
+        }
+        assert!(board.set_column_collapsed(1, true));
+        let rect = board.column_rect(1).expect("column 1");
+        let pos = Point::new(rect.x + 10, rect.y + HEADER_HEIGHT as i32 + 100);
+
+        assert_eq!(board.card_at(pos), None, "a collapsed column paints no card rows");
+        assert_eq!(board.insert_index_at(1, pos), 5, "a hidden drop appends");
+    }
+
+    /// A `columns` write drops the width override of a column it removes.
+    #[test]
+    fn a_columns_write_drops_the_override_of_a_removed_column() {
+        let mut board = board();
+        assert!(board.set_column_width_at(0, Some(300)));
+        let CapabilityValue::Records(list) = board.get("columns").expect("columns reads") else {
+            panic!("columns must read as records")
+        };
+        let kept: Vec<_> = list.items().iter().skip(1).cloned().collect();
+        let list =
+            rust_widgets::widget::capability::RecordList::from_items(&KANBAN_COLUMN_SCHEMA, kept);
+        board.set("columns", CapabilityValue::Records(list)).expect("columns is writable");
+
+        assert!(
+            !board.column_widths.contains_key("todo"),
+            "the override belongs to the column that left"
+        );
+    }
+
+    /// Moving a card re-orders the selection into the new display order.
+    #[test]
+    fn a_move_re_orders_the_selection_into_display_order() {
+        let mut board = KanbanBoard::new(Rect::new(0, 0, 400, 400));
+        board.add_column(KanbanColumn::new("only", "Only"));
+        for id in ["a", "b", "c"] {
+            board.add_card(0, KanbanCard::new(id, id));
+        }
+        assert!(board.set_card_selected("c", true));
+        assert!(board.set_card_selected("a", true));
+        assert_eq!(board.selected_cards(), ["a", "c"]);
+
+        assert!(board
+            .move_card(CardPosition { column: 0, card: 2 }, CardPosition { column: 0, card: 0 })
+            .is_some());
+        assert_eq!(
+            board.selected_cards(),
+            ["c", "a"],
+            "the documented order is display order, and the move changed it"
+        );
+    }
+
+    /// A collapsed column reserves no rows in the lane bands.
+    #[test]
+    fn collapsing_a_column_shrinks_its_lane_band() {
+        let mut board = KanbanBoard::new(Rect::new(0, 0, 700, 400));
+        board.add_column(KanbanColumn::new("c0", "C0"));
+        board.add_column(KanbanColumn::new("c1", "C1"));
+        board.add_lane(KanbanLane::new("fast", "Fast"));
+        board.set_lane_mode(KanbanLaneMode::Lanes);
+        board.add_card(0, KanbanCard::new("a", "A"));
+        for index in 0..4 {
+            board.add_card(1, KanbanCard::new(format!("b{index}"), "B"));
+        }
+
+        let before = board.lane_band_rect(0).expect("lane 0").height;
+        assert!(board.set_column_collapsed(1, true));
+        let after = board.lane_band_rect(0).expect("lane 0").height;
+        assert!(after < before, "a collapsed column reserves no rows: {before} -> {after}");
+    }
+
+    /// A batch drop puts every moved card in the destination lane.
+    #[test]
+    fn a_batch_drop_moves_every_card_into_the_target_lane() {
+        let mut board = lane_board();
+        assert!(board.set_card_selected("a", true));
+        assert!(board.set_card_selected("b", true));
+
+        let start = card_center(&board, CardPosition { column: 0, card: 0 });
+        let slow = board.lane_band_rect(1).expect("slow band");
+        let target = Point::new(start.x, slow.y + slow.height as i32 / 2);
+        board.handle_event(&Event::mouse_press(start.x, start.y, 1));
+        board.handle_event(&Event::mouse_move(target.x, target.y));
+        board.handle_event(&Event::mouse_release(target.x, target.y, 1));
+
+        assert_eq!(board.card_lane("a"), Some("slow"));
+        assert_eq!(
+            board.card_lane("b"),
+            Some("slow"),
+            "the whole group follows the destination lane"
+        );
+    }
+
+    /// Inserting a row shifts the focus and hover that named a card below it.
+    #[test]
+    fn inserting_a_row_shifts_the_focus_and_hover() {
+        let mut board = KanbanBoard::new(Rect::new(0, 0, 400, 400));
+        board.add_column(KanbanColumn::new("only", "Only"));
+        for id in ["a", "b", "c"] {
+            board.add_card(0, KanbanCard::new(id, id));
+        }
+        let b = card_center(&board, CardPosition { column: 0, card: 1 });
+        board.handle_event(&Event::mouse_move(b.x, b.y));
+        board.set_focused_card(Some(CardPosition { column: 0, card: 1 }));
+
+        assert!(board.insert_card(0, 0, KanbanCard::new("new", "New")).is_some());
+
+        assert_eq!(board.focused_card(), Some(CardPosition { column: 0, card: 2 }));
+        assert_eq!(board.hovered_card(), Some(CardPosition { column: 0, card: 2 }));
+        assert_eq!(
+            board.column(0).expect("column").cards[2].id,
+            "b",
+            "the ring still names the card the user pointed at"
+        );
+    }
+
+    /// `size_hint` covers the lane strip and the stacked bands.
+    #[test]
+    fn size_hint_covers_the_lane_strip_and_bands() {
+        let mut board = lane_board();
+        assert!(board.set_card_lane("b", "slow"));
+
+        let hint = board.size_hint();
+        assert_eq!(
+            hint.width,
+            LANE_HEADER_WIDTH
+                + board.column_width_at(0)
+                + board.column_width_at(1)
+                + COLUMN_GAP as u32,
+            "the lane strip is part of the painted width"
+        );
+        let band = board.lane_band_rect(1).expect("slow band");
+        assert!(
+            hint.height as i32 >= band.y + band.height as i32 - board.geometry().y,
+            "the hint covers every painted band"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -1088,5 +1633,102 @@ mod issue_2_8_tests {
         board.clear_selection();
         assert!(board.selected_cards().is_empty());
         assert!(board.selected_set.is_empty());
+    }
+
+    /// A drop in the header of a scrolled column lands at the top of the painted window.
+    ///
+    /// The header case returned model index 0 while the insertion line was drawn at the window's
+    /// top, so a scrolled column committed the card far off-screen above the viewport.
+    #[test]
+    fn a_header_drop_in_a_scrolled_column_keeps_the_scroll() {
+        let mut board = KanbanBoard::new(Rect::new(0, 0, 800, 400));
+        board.add_column(KanbanColumn::new("big", "Big"));
+        for index in 0..50 {
+            board.add_card(0, KanbanCard::new(format!("c{index}"), format!("C{index}")));
+        }
+        board.scroll_column(0, 10);
+        let column = board.column_rect(0).expect("column 0");
+        let first_y = column.y + HEADER_HEIGHT as i32;
+        assert_eq!(
+            board.insert_index_at(0, Point::new(column.x + 4, first_y)),
+            10,
+            "the header slot is the first visible row, not model row 0"
+        );
+    }
+
+    /// Re-writing the same column list keeps every column's scroll offset.
+    ///
+    /// The write cleared the whole per-index scroll vector unconditionally, so the identity
+    /// round-trip a binding sync performs jumped every column back to row 0.
+    #[test]
+    fn an_identity_columns_write_keeps_the_scroll_offsets() {
+        let mut board = KanbanBoard::new(Rect::new(0, 0, 800, 400));
+        board.add_column(KanbanColumn::new("big", "Big"));
+        for index in 0..50 {
+            board.add_card(0, KanbanCard::new(format!("c{index}"), format!("C{index}")));
+        }
+        board.scroll_column(0, 7);
+
+        board.set("columns", board.get("columns").unwrap()).expect("columns is writable");
+        let column = board.column_rect(0).expect("column 0");
+        let first_y = column.y + HEADER_HEIGHT as i32;
+        assert_eq!(
+            board.insert_index_at(0, Point::new(column.x + 4, first_y + 4)),
+            7,
+            "the scroll survived the identity write"
+        );
+    }
+
+    /// A `columns` write that moves a column moves the hover with that column's identity.
+    #[test]
+    fn a_columns_reorder_moves_the_hovered_column() {
+        let mut board = KanbanBoard::new(Rect::new(0, 0, 800, 400));
+        board.add_column(KanbanColumn::new("a", "A"));
+        board.add_column(KanbanColumn::new("b", "B"));
+        let first = board.column_rect(0).expect("column 0");
+        board.handle_event(&Event::MouseMove { pos: Point::new(first.x + 10, first.y + 10) });
+        assert_eq!(board.hovered_column(), Some(0));
+
+        let CapabilityValue::Records(list) = board.get("columns").expect("columns reads") else {
+            panic!("columns is records");
+        };
+        let mut items = list.items().to_vec();
+        items.reverse();
+        let reversed =
+            rust_widgets::widget::capability::RecordList::from_items(&KANBAN_COLUMN_SCHEMA, items);
+        board.set("columns", CapabilityValue::Records(reversed)).expect("columns is writable");
+        assert_eq!(board.hovered_column(), Some(1), "the hover followed column A");
+    }
+
+    /// Leaving the board clears both halves of the hover state.
+    #[test]
+    fn leaving_the_board_clears_the_hovered_column() {
+        let mut board = KanbanBoard::new(Rect::new(0, 0, 800, 400));
+        board.add_column(KanbanColumn::new("a", "A"));
+        let column = board.column_rect(0).expect("column 0");
+        board.handle_event(&Event::MouseMove { pos: Point::new(column.x + 10, column.y + 10) });
+        assert_eq!(board.hovered_column(), Some(0));
+
+        board.handle_event(&Event::MouseLeave { pos: Point::new(900, 900) });
+        assert_eq!(board.hovered_column(), None, "the pointer no longer names a column");
+    }
+
+    /// Cancelling a title edit repaints, like every other edit path.
+    #[test]
+    fn cancelling_a_card_edit_requests_a_redraw() {
+        let mut card = KanbanCardView::new(Rect::new(0, 0, 220, 72), "Card");
+        assert!(card.begin_title_edit());
+        let redraws = rust_widgets::compat::Arc::new(rust_widgets::compat::Mutex::new(0usize));
+        let sink = rust_widgets::compat::Arc::clone(&redraws);
+        card.base().redraw_requested.connect(move || {
+            *rust_widgets::compat::lock(&sink) += 1;
+        });
+
+        assert!(card.cancel_title_edit());
+        assert_eq!(
+            *rust_widgets::compat::lock(&redraws),
+            1,
+            "the discarded buffer changes the pixels"
+        );
     }
 }

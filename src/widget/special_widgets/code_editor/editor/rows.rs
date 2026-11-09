@@ -586,17 +586,26 @@ impl CodeEditor {
     }
 
     /// Returns the visual rows of the whole document.
+    ///
+    /// `start_column`/`end_column` are **character** columns, the same coordinate the
+    /// caret and every edit use. They used to be `segment * text_columns`, i.e. grid
+    /// cells: a CJK line (one character, two cells) reported a range that started
+    /// past its own text, and a tab line reported a width the line did not have.
+    /// `LineGrid::segment_range` is the same boundary function the painter uses, so
+    /// the two cannot disagree about which characters a row shows.
     pub fn visual_lines(&self) -> Vec<VisualLine> {
         let columns = self.text_columns().max(1);
         let mut result = Vec::new();
+        let model = self.model.borrow();
         for line in self.visible_document_lines() {
+            let text = model.line(line);
+            let grid = LineGrid::new(text, self.config.tab_width);
             let segments = self.wrap_segments(line);
             for segment in 0..segments {
-                let start_column = segment * columns;
-                let end_column = if self.config.word_wrap {
-                    ((segment + 1) * columns).min(self.line_len(line))
+                let (start_column, end_column) = if self.config.word_wrap {
+                    grid.segment_range(segment, columns)
                 } else {
-                    self.line_len(line)
+                    (0, grid.char_len())
                 };
                 result.push(VisualLine { line, segment, start_column, end_column });
             }

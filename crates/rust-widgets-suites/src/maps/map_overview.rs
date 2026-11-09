@@ -310,7 +310,12 @@ impl MapOverviewPanel {
         Some(Rect::new(rect.x + OVERVIEW_INSET, rect.y + OVERVIEW_INSET, width, height))
     }
 
-    /// The viewport box, in the widget's own coordinates.
+    /// The viewport box, in the same coordinate space as [`Widget::geometry`] (parent/window
+    /// coordinates, including the panel's origin and inset).
+    ///
+    /// It is **not** widget-local: a caller painting into a local canvas must subtract the
+    /// geometry origin. `normalized_at` compares against the same rectangle, so hit testing and
+    /// this value agree.
     pub fn viewport_box_rect(&self) -> Option<Rect> {
         let area = self.overview_rect()?;
         let width = ((area.width as f32 * self.viewport_ratio).round() as u32).clamp(1, area.width);
@@ -464,9 +469,14 @@ impl EventHandler for MapOverviewPanel {
         match event {
             Event::MousePress { pos, button: 1, .. } => {
                 if let Some((x, y)) = self.normalized_at(*pos) {
-                    let _ = self.set_normalized_center(x, y);
+                    // The gesture starts even when the press lands on the centre the panel already
+                    // holds; only the published position change is suppressed (the signal reports
+                    // a change, and every other setter guards the same way).
+                    let moved = self.set_normalized_center(x, y);
                     self.dragging = true;
-                    self.on_overview_drag.emit((x, y));
+                    if moved {
+                        self.on_overview_drag.emit((x, y));
+                    }
                 }
             }
             Event::MouseMove { pos } => {
@@ -474,11 +484,16 @@ impl EventHandler for MapOverviewPanel {
                     return;
                 }
                 if let Some((x, y)) = self.normalized_at(*pos) {
-                    let _ = self.set_normalized_center(x, y);
-                    self.on_overview_drag.emit((x, y));
+                    if self.set_normalized_center(x, y) {
+                        self.on_overview_drag.emit((x, y));
+                    }
                 }
             }
-            Event::MouseRelease { button: 1, .. } => self.dragging = false,
+            // A release outside the panel is not delivered to it, and focus can move
+            // mid-drag; both end the gesture rather than leaving the latch set.
+            Event::MouseRelease { button: 1, .. } | Event::MouseLeave { .. } | Event::FocusLost => {
+                self.dragging = false
+            }
             _ => { /* Other events are not relevant. */ }
         }
     }
@@ -560,7 +575,8 @@ mod tests {
         emitted.lock().ok().map(|guard| guard.clone()).unwrap_or_default()
     }
 
-    /// Press and drag map a point inside the overview to normalised coordinates and emit each one.
+    /// Press and drag map a point inside the overview to normalised coordinates; the press itself
+    /// is silent when it lands on the centre the panel already holds.
     #[test]
     fn dragging_maps_to_normalized_coordinates_and_emits() {
         // The 1 px inset leaves a 200x100 overview at (1, 1), so the arithmetic is exact.
@@ -574,11 +590,13 @@ mod tests {
             ],
         );
 
-        assert_eq!(emitted.len(), 2, "the press and the move both report a position");
-        assert!((emitted[0].0 - 0.5).abs() < 1e-5);
-        assert!((emitted[0].1 - 0.5).abs() < 1e-5);
-        assert!((emitted[1].0 - 0.25).abs() < 1e-5);
-        assert!((emitted[1].1 - 0.25).abs() < 1e-5);
+        assert_eq!(
+            emitted.len(),
+            1,
+            "a press on the current centre reports no change; the move does"
+        );
+        assert!((emitted[0].0 - 0.25).abs() < 1e-5);
+        assert!((emitted[0].1 - 0.25).abs() < 1e-5);
         let center = panel.normalized_viewport_center();
         assert!((center.0 - 0.25).abs() < 1e-5);
         assert!((center.1 - 0.25).abs() < 1e-5);

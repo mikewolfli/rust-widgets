@@ -62,14 +62,22 @@ impl CodeEditor {
             if visible.binary_search(&line).is_err() {
                 continue;
             }
-            let text = self.line_text(line).unwrap_or_default();
+            // Borrowed so a frame with many markers does not clone each line; the
+            // measurement below only needs the characters, not an owned copy.
+            let text = self.line_text_borrowed(line);
             let grid = LineGrid::new(&text, self.config.tab_width);
+            // `DiagnosticMarker` publishes **one-based inclusive** columns (what a compiler
+            // reports), while every index below is a zero-based character offset. Converting
+            // once here is what keeps the underline under the named glyphs; passing the
+            // raw values through shifted it one cell right and then measured again.
+            let from_char = marker.start_column().saturating_sub(1);
+            let to_char = marker.finish_column().max(marker.start_column());
             // The marker may sit on a wrapped continuation row. The underline belongs
             // on the row that actually shows those characters, and its x is measured
             // from that row's first column — the same rule the caret and the text use,
             // or the underline is drawn a segment away from the code it names.
             let (segment, segment_start) =
-                if wrapped { grid.segment_of_char(marker.start_column(), columns) } else { (0, 0) };
+                if wrapped { grid.segment_of_char(from_char, columns) } else { (0, 0) };
             let row = self.line_to_visual_row(line) + segment;
             if row < self.scroll_visual_row {
                 continue;
@@ -87,10 +95,8 @@ impl CodeEditor {
             } else {
                 (grid.char_len(), 0.0)
             };
-            let from_index =
-                grid.column_of_char(marker.start_column().max(segment_start).min(segment_end));
-            let to_index =
-                grid.column_of_char(marker.finish_column().min(segment_end)).max(from_index + 1);
+            let from_index = grid.column_of_char(from_char.max(segment_start).min(segment_end));
+            let to_index = grid.column_of_char(to_char.min(segment_end)).max(from_index + 1);
             let first_column = grid.column_of_char(segment_start);
             // Measured where available, so the underline sits under the glyphs it
             // names rather than under the grid cells they would have occupied. Wrapped

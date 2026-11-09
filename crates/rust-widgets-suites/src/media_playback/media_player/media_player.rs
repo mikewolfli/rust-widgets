@@ -3,6 +3,7 @@
 
 //! MediaPlayer widget.
 
+use core::cell::Cell;
 use core::fmt::Write as _;
 
 use alloc::sync::Arc;
@@ -246,8 +247,18 @@ pub struct MediaPlayer {
     seek_preview_ms: Option<u64>,
     /// Buffered ranges as `(start_ms, end_ms)`, painted on the transport rule (SP-106).
     buffer_ranges: Vec<(u64, u64)>,
-    /// Subtitle cues, painted while the clock is inside one (SP-106).
+    /// Subtitle cues, painted while the clock is inside one (SP-106). Sorted by `start_ms`, so
+    /// the per-frame lookup can keep a cursor instead of scanning the whole track.
     subtitles: Vec<SubtitleCue>,
+    /// Cached cue index for [`Self::subtitle_at`], so a forward-playing clock is O(1).
+    subtitle_cursor: Cell<usize>,
+    /// Prefix maxima of the cue end times, index-aligned with the sorted cue list.
+    ///
+    /// The walk-back in [`Self::subtitle_at`] must know whether *any* earlier cue can still reach
+    /// the position. Checking only the cue under the probe stopped at the first short cue and
+    /// missed an enclosing one (a `0..3000` cue behind a `1000..2000` cue); walking every cue
+    /// back would make the per-frame lookup linear. The prefix maximum answers it in one compare.
+    subtitle_max_end: Vec<u64>,
     /// Emitted with the seek position while the pointer hovers the transport rule, and with
     /// `None` when it leaves. Nothing is emitted with no subscribers (SP-106).
     pub seek_preview: Signal1<Option<u64>>,
@@ -290,6 +301,8 @@ impl MediaPlayer {
             seek_preview_ms: None,
             buffer_ranges: Vec::new(),
             subtitles: Vec::new(),
+            subtitle_cursor: Cell::new(0),
+            subtitle_max_end: Vec::new(),
             seek_preview: Signal1::new(),
         }
     }
@@ -356,22 +369,81 @@ impl MediaPlayer {
     }
 
     /// Replaces the subtitle cues. An empty list is the default and paints nothing.
-    pub fn set_subtitles(&mut self, cues: Vec<SubtitleCue>) {
+    ///
+    /// Cues are sorted by start time here, so the per-frame lookup can walk a cursor instead of
+    /// scanning the track; [`Self::subtitles`] reports the sorted list.
+    ///
+    /// Overlapping cues are allowed, and overlap is resolved at lookup time rather than by
+    /// trimming the track: where two cues cover the same position the one with the **latest
+    /// start** wins, so a cue that refines the timing of one still on screen takes over. See
+    /// [`Self::subtitle_at`].
+    pub fn set_subtitles(&mut self, mut cues: Vec<SubtitleCue>) {
+        cues.sort_by_key(|cue| cue.start_ms);
         if self.subtitles == cues {
             return;
         }
         self.subtitles = cues;
+        self.subtitle_cursor.set(0);
+        self.rebuild_subtitle_max_end();
         self.base.request_redraw();
     }
 
-    /// The subtitle cues as configured.
+    /// Recomputes the end-time prefix maxima after the cue list changed.
+    fn rebuild_subtitle_max_end(&mut self) {
+        self.subtitle_max_end.clear();
+        self.subtitle_max_end.reserve(self.subtitles.len());
+        let mut max_end = 0;
+        for cue in &self.subtitles {
+            max_end = max_end.max(cue.end_ms);
+            self.subtitle_max_end.push(max_end);
+        }
+    }
+
+    /// The subtitle cues as configured, in start order.
     pub fn subtitles(&self) -> &[SubtitleCue] {
         &self.subtitles
     }
 
-    /// The first cue covering `position_ms`.
+    /// The cue visible at `position_ms`.
+    ///
+    /// # Why this is not a linear scan
+    ///
+    /// `draw` calls this every frame, so a full `iter().find` made the cost grow with the length
+    /// of the track. The cues are sorted by start, so a monotonically advancing clock keeps a
+    /// cursor and answers in one comparison; a backwards seek binary-searches for the first cue
+    /// that could contain the position. Overlapping cues resolve to the one with the latest start
+    /// that covers the position, walking back over earlier cues whose end is still ahead of it.
     pub fn subtitle_at(&self, position_ms: u64) -> Option<&str> {
-        self.subtitles.iter().find(|cue| cue.contains(position_ms)).map(|cue| cue.text.as_str())
+        if self.subtitles.is_empty() {
+            return None;
+        }
+        let mut index = self.subtitle_cursor.get().min(self.subtitles.len() - 1);
+        if self.subtitles[index].start_ms > position_ms {
+            // The clock moved backwards: find the last cue whose start is at or before it.
+            index =
+                self.subtitles.partition_point(|cue| cue.start_ms <= position_ms).saturating_sub(1);
+        } else {
+            while index + 1 < self.subtitles.len()
+                && self.subtitles[index + 1].start_ms <= position_ms
+            {
+                index += 1;
+            }
+        }
+        self.subtitle_cursor.set(index);
+        let mut probe = index + 1;
+        while probe > 0 {
+            probe -= 1;
+            let cue = &self.subtitles[probe];
+            if cue.contains(position_ms) {
+                return Some(cue.text.as_str());
+            }
+            // No cue at or before this one reaches past the position, so none of them can cover
+            // it. Testing the cue's own end instead pruned a still-covering enclosing cue.
+            if self.subtitle_max_end.get(probe).is_none_or(|max| *max <= position_ms) {
+                break;
+            }
+        }
+        None
     }
 
     /// The cue covering the current clock position.
@@ -430,6 +502,12 @@ impl MediaPlayer {
         let source = source.into();
         self.title_cache = source.rsplit('/').next().unwrap_or(source.as_str()).to_string();
         self.source = Some(source.clone());
+        // The decoded picture belongs to the source it came from; a new source starts with no
+        // frame rather than showing the previous media under the new title.
+        self.frame = None;
+        // The cursor names the entry that is loaded, so it follows a source set directly (and
+        // becomes `None` for a source outside the list).
+        self.playlist_index = self.playlist.iter().position(|item| *item == source);
         self.duration_ms = duration_ms;
         self.seek_preview_ms = None;
         self.clock.stop();
@@ -446,6 +524,11 @@ impl MediaPlayer {
         self.title_cache = String::from("No media");
         self.duration_ms = 0;
         self.seek_preview_ms = None;
+        // The picture and the queue cursor were facts about the source; keeping them would show
+        // the old frame over the "No media" title and let `next_track` resume from a media that
+        // is no longer loaded.
+        self.frame = None;
+        self.playlist_index = None;
         self.clock.stop();
         self.clock.set_duration(0.0);
         self.playback_changed.emit(false);
@@ -491,7 +574,13 @@ impl MediaPlayer {
             return false;
         }
         if !self.is_playing_internal() {
+            // The clock rewinds a finished track, which is a position change the host mirrors.
+            let was_ended = self.clock.state() == rust_widgets::core::PlaybackState::Ended;
             self.clock.play();
+            if was_ended {
+                let position = self.position_ms();
+                self.position_changed.emit(position);
+            }
             self.playback_changed.emit(true);
             self.base.request_redraw();
         }
@@ -521,8 +610,14 @@ impl MediaPlayer {
     pub fn seek_to(&mut self, position_ms: u64) {
         let next = position_ms.min(self.duration_ms);
         if next != self.position_ms() {
+            let was_playing = self.is_playing_internal();
             self.clock.seek(next as f64 / 1000.0);
             self.position_changed.emit(self.position_ms());
+            // `MediaClock::seek` reports `Ended` when the position lands exactly on the
+            // duration, so the playing fact changed and must be announced.
+            if was_playing && !self.is_playing_internal() {
+                self.playback_changed.emit(false);
+            }
             self.base.request_redraw();
         }
     }
@@ -669,8 +764,14 @@ impl MediaPlayer {
         let Some(source) = self.playlist.get(index).cloned() else {
             return false;
         };
+        // A queue hop keeps the known timeline bound. Passing 0 told the clock "duration
+        // unknown": every seek then clamped to zero and the track could never reach `Ended`, so
+        // `media_ended` stopped firing (and `RepeatMode::All` stopped wrapping).
+        let duration_ms = self.duration_ms;
+        self.set_source(source, duration_ms);
+        // `set_source` matched the source back to its first occurrence; a duplicate entry has to
+        // take the position that was asked for.
         self.playlist_index = Some(index);
-        self.set_source(source, 0);
         true
     }
 
@@ -723,7 +824,14 @@ impl MediaPlayer {
     /// The volume rail's rectangle, to the right of the transport buttons.
     fn volume_rect(&self) -> Rect {
         let bar = self.progress_rect();
-        Rect::new(bar.x.saturating_add(42), bar.y.saturating_sub(12), 64.min(bar.width), 6)
+        // The rail starts 42 px into the rule, so its width is what remains after that offset.
+        // `64.min(bar.width)` made the right edge exceed `bar.right()` for every rule narrower
+        // than 106 px, painting the rail over the control's edge and its neighbour.
+        let width = 64.min(bar.width.saturating_sub(42));
+        // When the rule is shorter than the offset itself the rail has no width; placing it at
+        // the rule's right edge keeps it inside the control instead of 42 px past it.
+        let x = bar.x.saturating_add(42u32.min(bar.width) as i32);
+        Rect::new(x, bar.y.saturating_sub(12), width, 6)
     }
 
     /// The play/pause button, leading the transport row above the progress rule.
@@ -743,7 +851,10 @@ impl MediaPlayer {
     /// The chapter marker under `pos`, with its index.
     fn chapter_at(&self, pos: Point) -> Option<usize> {
         let bar = self.progress_rect();
-        if self.duration_ms == 0 || bar.width == 0 {
+        // The marker is painted as a notch across the transport rule, so it is only hit there:
+        // testing x alone made a press on the volume rail (or the title band) at the notch's
+        // column select a chapter instead of the control that is actually drawn there.
+        if self.duration_ms == 0 || bar.width == 0 || !bar.contains_point(pos) {
             return None;
         }
         self.chapters.iter().position(|(position, _)| {
@@ -1176,6 +1287,12 @@ impl EventHandler for MediaPlayer {
                 self.scrubbing = false;
                 self.adjusting_volume = false;
                 self.update_seek_preview(None);
+            }
+            // Focus can move mid-drag; without this the drag latches stayed set and the next
+            // pointer move moved the timeline nobody was holding.
+            Event::FocusLost => {
+                self.scrubbing = false;
+                self.adjusting_volume = false;
             }
             // Other events are not relevant for this widget
             _ => {}
@@ -2000,5 +2117,198 @@ mod tests {
         // An inverted range is normalised rather than drawn backwards.
         player.set_buffer_ranges(vec![(30_000, 10_000), (40_000, 60_000)]);
         assert_eq!(player.buffer_ranges(), &[(10_000, 30_000), (40_000, 60_000)]);
+    }
+
+    /// An enclosing cue still covers a position after a nested cue has ended.
+    ///
+    /// The lookup walked back over earlier cues but stopped at the first one whose end was behind
+    /// the position, so a short cue nested inside a longer one hid the longer one for the rest of
+    /// its span.
+    #[test]
+    fn an_enclosing_cue_still_covers_after_a_nested_cue_ends() {
+        let mut player = MediaPlayer::new(Rect::new(0, 0, 320, 240));
+        player.set_source("clip.mp4", 10_000);
+        player.set_subtitles(vec![
+            SubtitleCue::new(0, 3_000, "outer"),
+            SubtitleCue::new(1_000, 2_000, "inner"),
+        ]);
+
+        player.seek_to(1_500);
+        assert_eq!(player.active_subtitle(), Some("inner"), "the latest start wins");
+        player.seek_to(2_500);
+        assert_eq!(player.active_subtitle(), Some("outer"), "the enclosing cue still covers it");
+        player.seek_to(3_000);
+        assert_eq!(player.active_subtitle(), None, "the interval is half-open");
+    }
+
+    /// The chapter notch is only hit on the transport rule it is painted on.
+    #[test]
+    fn a_press_on_the_volume_rail_does_not_select_a_chapter() {
+        let mut player = MediaPlayer::new(Rect::new(0, 0, 320, 200));
+        player.set_source("movie.mp4", 100_000);
+        player.set_chapters(vec![(20_000, "Intro".to_string())]);
+        let selected = Arc::new(Mutex::new(Vec::<usize>::new()));
+        let sink = Arc::clone(&selected);
+        player.chapter_selected.connect(move |index: Arc<usize>| sink.lock().unwrap().push(*index));
+
+        let bar = player.progress_rect();
+        let chapter_x = bar.x + (bar.width as f64 * 0.2) as i32;
+        let rail = player.volume_rect();
+        let pos = Point::new(chapter_x, rail.y + 2);
+        assert!(rail.contains_point(pos), "the fixture must overlap the volume rail");
+
+        player.handle_event(&Event::mouse_press(pos.x, pos.y, 1));
+        assert!(selected.lock().unwrap().is_empty(), "the rail is not a chapter marker");
+        assert_eq!(player.position_ms(), 0, "a rail press does not seek");
+        assert!(player.volume() < 80, "it sets the volume instead");
+    }
+
+    /// A focus change mid-scrub must drop the drag latch.
+    #[test]
+    fn losing_focus_drops_the_scrub_latch() {
+        let mut player = MediaPlayer::new(Rect::new(0, 0, 320, 200));
+        player.set_source("clip.mp4", 100_000);
+        let bar = player.progress_rect();
+        player.handle_event(&Event::mouse_press(bar.x + 10, bar.y + 1, 1));
+        let pressed_at = player.position_ms();
+        player.handle_event(&Event::FocusLost);
+        player.handle_event(&Event::mouse_move(bar.x + bar.width as i32 - 2, bar.y + 1));
+        assert_eq!(player.position_ms(), pressed_at, "a move after focus loss must not scrub");
+    }
+
+    /// Landing on the duration ends the clock, so the playing fact must be announced.
+    #[test]
+    fn seeking_to_the_end_announces_that_playback_stopped() {
+        let mut player = MediaPlayer::new(Rect::new(0, 0, 320, 200));
+        player.set_source("clip.mp4", 10_000);
+        let seen = Arc::new(Mutex::new(Vec::<bool>::new()));
+        let sink = Arc::clone(&seen);
+        player
+            .playback_changed
+            .connect(move |playing: Arc<bool>| sink.lock().unwrap().push(*playing));
+
+        assert!(player.play());
+        player.seek_to(10_000);
+        assert!(!player.is_playing(), "landing on the duration ends the clock");
+        assert_eq!(*seen.lock().unwrap(), vec![true, false], "the stop is announced");
+    }
+
+    /// A cleared source must not leave its picture or its queue cursor behind.
+    #[test]
+    fn clearing_the_source_removes_the_picture_and_the_queue_cursor() {
+        let mut player = MediaPlayer::new(Rect::new(0, 0, 320, 200));
+        player.set_playlist(vec!["a.mp4".to_string(), "b.mp4".to_string()]);
+        assert!(player.select_track(1));
+        assert_eq!(player.playlist_index(), Some(1));
+        player.set_frame(MediaFrame::new(2, 2, vec![7u8; 16]).expect("a 2x2 frame is valid"));
+        assert!(player.frame().is_some());
+
+        player.clear_source();
+        assert!(player.frame().is_none(), "the old picture must not outlive its source");
+        assert_eq!(player.playlist_index(), None, "nor may the queue cursor");
+    }
+
+    /// A source written directly names the playlist entry it is, exactly as `VideoPlayer` does.
+    #[test]
+    fn a_source_written_directly_moves_the_queue_cursor() {
+        let mut player = MediaPlayer::new(Rect::new(0, 0, 320, 200));
+        player.set_playlist(vec!["a.mp4".to_string(), "b.mp4".to_string()]);
+        player.set_source("b.mp4", 1_000);
+        assert_eq!(player.playlist_index(), Some(1));
+        player.set_source("outside.mp4", 1_000);
+        assert_eq!(player.playlist_index(), None, "a source outside the list has no cursor");
+    }
+
+    /// The per-frame cue lookup keeps a cursor, and it must still sort, handle long tracks and
+    /// find earlier cues after a backwards seek.
+    #[test]
+    fn subtitle_lookup_handles_a_long_track_and_backwards_seeks() {
+        let mut player = MediaPlayer::new(Rect::new(0, 0, 320, 240));
+        player.set_source("clip.mp4", 1_000_000);
+        let cues: Vec<SubtitleCue> = (0..500u64)
+            .map(|index| {
+                let start = index * 2_000;
+                SubtitleCue::new(start, start + 1_000, format!("cue {index}"))
+            })
+            .collect();
+        // Installed in reverse to prove the setter sorts them for the cursor.
+        player.set_subtitles(cues.into_iter().rev().collect());
+        assert_eq!(player.subtitles()[0].start_ms, 0, "the list is stored in start order");
+
+        for index in [0usize, 10, 100, 499] {
+            let position = index as u64 * 2_000 + 500;
+            let expected = format!("cue {index}");
+            assert_eq!(
+                player.subtitle_at(position).map(str::to_string),
+                Some(expected),
+                "the cursor finds cue {index}"
+            );
+        }
+        // A backwards seek must find an earlier cue rather than staying on the cursor.
+        player.seek_to(500);
+        assert_eq!(player.active_subtitle(), Some("cue 0"));
+        assert!(player.subtitle_at(1_500).is_none(), "the gap between cues holds no cue");
+
+        // Replacing the list resets the cursor, so a shorter track cannot index past its end.
+        player.set_subtitles(vec![SubtitleCue::new(0, 1_000, "replacement")]);
+        assert_eq!(player.active_subtitle(), Some("replacement"));
+
+        // Overlaps resolve to the covering cue with the latest start, which the cursor reaches
+        // by walking forward and then back.
+        player.set_subtitles(vec![
+            SubtitleCue::new(0, 3_000, "outer"),
+            SubtitleCue::new(1_000, 2_000, "inner"),
+        ]);
+        assert_eq!(player.subtitle_at(1_500), Some("inner"));
+        assert_eq!(player.subtitle_at(500), Some("outer"));
+    }
+
+    /// A queue hop keeps the known timeline bound.
+    #[test]
+    fn a_queue_hop_keeps_the_timeline_bound() {
+        let mut player = MediaPlayer::new(Rect::new(0, 0, 320, 200));
+        player.set_playlist(vec!["a.mp3".to_string(), "b.mp3".to_string()]);
+        player.set_source("a.mp3", 10_000);
+
+        assert!(player.next_track());
+        assert_eq!(player.duration_ms(), 10_000, "the queue must not erase the known duration");
+        player.seek_to(5_000);
+        assert_eq!(player.position_ms(), 5_000, "a seek inside the track still lands");
+    }
+
+    /// Replaying a finished track announces the rewind the clock performs.
+    #[test]
+    fn replaying_after_the_end_announces_the_rewind() {
+        let mut player = MediaPlayer::new(Rect::new(0, 0, 320, 200));
+        player.set_source("short.mp3", 1_000);
+        assert!(player.play());
+        assert!(player.tick(5.0), "the track runs past its end");
+
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::<u64>::new()));
+        let sink = seen.clone();
+        player.position_changed.connect(move |position: Arc<u64>| {
+            sink.lock().unwrap().push(*position);
+        });
+
+        assert!(player.play());
+        assert_eq!(player.position_ms(), 0, "a finished clock restarts at zero");
+        assert_eq!(*seen.lock().unwrap(), vec![0], "and the rewind is a position change");
+    }
+
+    /// A narrow player keeps its volume rail inside the progress rule.
+    ///
+    /// The rail starts 42 px into the rule but its width was `min(64, bar.width)`, so its right
+    /// edge exceeded the rule for anything narrower than 106 px and painted over the neighbour.
+    #[test]
+    fn a_narrow_player_keeps_its_volume_rail_inside_the_rule() {
+        for width in [40u32, 80, 90, 160, 320] {
+            let player = MediaPlayer::new(Rect::new(0, 0, width, 200));
+            let rule = player.progress_rect();
+            let rail = player.volume_rect();
+            assert!(
+                rail.right() <= rule.right(),
+                "width {width}: rail {rail:?} must stay inside rule {rule:?}"
+            );
+        }
     }
 }

@@ -46,7 +46,7 @@
 //! Attaching a data table to a control that cannot hide a row would give the table a toggle
 //! that changes nothing — the “reported success for something that did not happen” the suite’s
 //! contracts forbid. Those controls expose their rows as writable record properties instead
-//! (`bids` / `asks`, `levels`, `quotes`), which is the design-time surface they can honour.
+//! (`bids` / `asks`, `quotes`), which is the design-time surface they can honour.
 
 pub mod candlestick_chart;
 mod capability;

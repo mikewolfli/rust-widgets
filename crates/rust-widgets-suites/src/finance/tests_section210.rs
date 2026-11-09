@@ -180,16 +180,35 @@ fn clicking_a_header_cycles_ascending_descending_and_none() {
 /// The property spelling round-trips and still accepts the old tokens.
 #[test]
 fn sort_names_round_trip_and_accept_legacy_tokens() {
+    let sort_schema = super::QUOTE_BOARD_PROPERTIES
+        .iter()
+        .find(|schema| schema.name == "sort")
+        .expect("the sort property is published");
     for sort in [
         QuoteSort::None,
         QuoteSort::SymbolAscending,
         QuoteSort::SymbolDescending,
+        QuoteSort::NameAscending,
+        QuoteSort::NameDescending,
         QuoteSort::LastAscending,
         QuoteSort::LastDescending,
         QuoteSort::ChangeMagnitudeAscending,
         QuoteSort::ChangeMagnitudeDescending,
+        QuoteSort::HighAscending,
+        QuoteSort::HighDescending,
+        QuoteSort::LowAscending,
+        QuoteSort::LowDescending,
+        QuoteSort::VolumeAscending,
+        QuoteSort::VolumeDescending,
     ] {
         assert_eq!(QuoteSort::from_name(sort.as_str()), Some(sort));
+        // The published enum vocabulary must offer the same spelling the parser accepts,
+        // or a property write passes validation and then fails in `set`.
+        assert!(
+            sort_schema.accepted_tokens.contains(&sort.as_str()),
+            "{:?} is not offered by the published `sort` property",
+            sort
+        );
     }
     assert_eq!(QuoteSort::from_name("symbol"), Some(QuoteSort::SymbolAscending));
     assert_eq!(

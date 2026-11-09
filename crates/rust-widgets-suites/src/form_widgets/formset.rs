@@ -7,7 +7,7 @@
 //!
 //! A long form is usually split into pages: contact details, shipping, payment. `FormSet` owns the
 //! order, the page titles, the completed flags and the aggregate validity; each page's fields and
-//! rules stay in its own [`Form`](crate::form_widgets::Form). The set highlights the current page,
+//! rules stay in its own `Form`. The set highlights the current page,
 //! shows only that page's form, and offers previous/next/submit navigation.
 //!
 //! # Layout
@@ -26,7 +26,7 @@
 //!
 //! # Events and wiring
 //!
-//! Every published name resolves to a real signal in [`Widget::event_signal_dyn`]:
+//! Every published name resolves to a real signal in `Widget::event_signal_dyn`:
 //! `current_changed`, `page_added`, `page_removed`, `completed_changed`, `validity_changed`,
 //! `dirty_changed`, `submitted`, `submit_failed` and `reset`.
 
@@ -43,6 +43,7 @@ use rust_widgets::widget::capability::WidgetProperties;
 use rust_widgets::widget::metrics::role_font;
 use rust_widgets::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use rust_widgets::{impl_widget_property_hooks, property_names_of};
+use std::cell::Cell;
 
 use super::model::FormPage;
 
@@ -78,6 +79,17 @@ const STEP_RADIUS: u32 = 9;
 const BUTTON_MIN_W: u32 = 72;
 const BUTTON_H: u32 = 28;
 
+/// The navigation row's buttons, for per-button hover feedback.
+///
+/// The base tracks hover and press for the control as a whole; the set draws its own buttons, so
+/// the button under the pointer is the extra fact that keeps the highlight on one of them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SetAction {
+    Previous,
+    Next,
+    Submit,
+}
+
 /// A set of forms with one active page.
 pub struct FormSet {
     base: BaseWidget,
@@ -96,7 +108,17 @@ pub struct FormSet {
     last_dirty: bool,
     /// The step number painted on the current header cell, reused across pages and frames.
     step_scratch: String,
-    /// Emitted with the new zero-based current index.
+    /// Where the pointer last entered or moved inside this control; `None` after it leaves.
+    ///
+    /// Hover is derived from this position and the same rectangles hit-testing uses, so a moved
+    /// button (a new geometry or padding) cannot leave a highlight behind on a stale box.
+    pointer: Cell<Option<Point>>,
+    /// Emitted with the new zero-based current index when the active page changes.
+    ///
+    /// The active page changes when the key at the current index changes (the active page was
+    /// removed), when the same page moves to another index (a page before it was removed, or the
+    /// page itself was moved), or when the set becomes empty. An empty set that stays empty
+    /// changed nothing and announces nothing.
     pub current_changed: Signal1<usize>,
     /// Emitted with the key of an added page.
     pub page_added: Signal1<String>,
@@ -135,6 +157,7 @@ impl FormSet {
             last_valid: true,
             last_dirty: false,
             step_scratch: String::new(),
+            pointer: Cell::new(None),
             current_changed: Signal1::new(),
             page_added: Signal1::new(),
             page_removed: Signal1::new(),
@@ -286,29 +309,27 @@ impl FormSet {
     /// Adds a page, linking its form into this set.
     ///
     /// Returns `false` for a duplicate key. The first page added becomes current and is shown;
-    /// every other form starts hidden.
+    /// every other form starts hidden. Adding the first page changes the active page, so it
+    /// publishes `current_changed`; adding a later page does not.
     pub fn add_page(&mut self, page: FormPage) -> bool {
         if self.page(&page.key).is_some() {
             return false;
         }
+        let before_key = self.current_key().map(str::to_string);
+        let before_index = self.current;
         if let Some(form) = page.form {
             self.base.add_child_linked(form);
         }
         let key = page.key.clone();
         self.pages.push(page);
-        let was_empty = self.pages.len() == 1;
-        if was_empty {
+        if self.pages.len() == 1 {
             self.current = 0;
         }
         self.apply_page_visibility();
         self.base.request_layout();
         self.base.request_redraw();
         self.page_added.emit(key);
-        if was_empty {
-            // The set went from "no current page" to the first one, which is a real change a
-            // host may be waiting for (to move focus or to reveal the page).
-            self.current_changed.emit(0);
-        }
+        self.publish_current_change(before_key, before_index);
         self.publish_validity(self.is_valid());
         self.publish_dirty();
         true
@@ -326,11 +347,13 @@ impl FormSet {
 
     /// Removes the page with `key`, returning it.
     ///
-    /// The form itself is not destroyed or hidden by the removal — the set never owned it — but the
-    /// page that referenced it is gone, so the next layout drops the link.
+    /// The form itself is not destroyed — the set never owned it — but it is unlinked and hidden
+    /// (C2-D1), so a page added again must re-show it. If the active page changes (it was removed,
+    /// or its index moved), `current_changed` reports the new index.
     pub fn remove_page(&mut self, key: &str) -> Option<FormPage> {
         let index = self.pages.iter().position(|page| page.key == key)?;
-        let before = self.current;
+        let before_key = self.current_key().map(str::to_string);
+        let before_index = self.current;
         let page = self.pages.remove(index);
         if let Some(form) = page.form {
             self.base.remove_child_linked(form);
@@ -344,21 +367,30 @@ impl FormSet {
         if self.current >= self.pages.len() {
             self.current = self.pages.len().saturating_sub(1);
         }
+        // The same premise `set_current_index`/`advance` keep: a disabled page is outside the
+        // aggregate, so it must not be the active page either. Landing the removal on one showed
+        // an invalid form that `is_valid`/`submit` ignored.
+        if let Some(index) = self.nearest_enabled_page() {
+            self.current = index;
+        }
         self.apply_page_visibility();
         self.base.request_layout();
         self.base.request_redraw();
         self.page_removed.emit(key.to_string());
-        if self.current != before {
-            self.current_changed.emit(self.current);
-        }
+        self.publish_current_change(before_key, before_index);
         self.publish_validity(self.is_valid());
         self.publish_dirty();
         Some(page)
     }
 
     /// Removes every page.
+    ///
+    /// Every removed form is detached and hidden. When a page was active, `current_changed`
+    /// reports the index the set now carries (0, with no page behind it) so a host tracking the
+    /// active page learns that it disappeared; an already-empty set announces nothing.
     pub fn clear_pages(&mut self) {
-        let before = self.current;
+        let before_key = self.current_key().map(str::to_string);
+        let before_index = self.current;
         while let Some(page) = self.pages.pop() {
             if let Some(form) = page.form {
                 self.base.remove_child_linked(form);
@@ -370,9 +402,7 @@ impl FormSet {
         self.current = 0;
         self.base.request_layout();
         self.base.request_redraw();
-        if before != 0 {
-            self.current_changed.emit(0);
-        }
+        self.publish_current_change(before_key, before_index);
         self.publish_validity(true);
         self.publish_dirty();
     }
@@ -397,10 +427,12 @@ impl FormSet {
         if index == self.current {
             return true;
         }
+        let before_key = self.current_key().map(str::to_string);
+        let before_index = self.current;
         self.current = index;
         self.apply_page_visibility();
         self.base.request_redraw();
-        self.current_changed.emit(index);
+        self.publish_current_change(before_key, before_index);
         true
     }
 
@@ -424,7 +456,8 @@ impl FormSet {
     ///
     /// Returns `false` for an unknown key or an out-of-range index: a move silently clamped to
     /// the end would put the page somewhere the caller did not name. The active page is tracked
-    /// by identity, so the move does not change which form is visible.
+    /// by identity, so the move does not change which form is visible; its index does change, and
+    /// `current_changed` reports that new index.
     pub fn move_page(&mut self, key: &str, index: usize) -> bool {
         if index >= self.pages.len() {
             return false;
@@ -435,7 +468,9 @@ impl FormSet {
         if from == index {
             return true;
         }
-        let active = self.current_key().map(str::to_string);
+        let before_key = self.current_key().map(str::to_string);
+        let before_index = self.current;
+        let active = before_key.clone();
         let page = self.pages.remove(from);
         self.pages.insert(index, page);
         if let Some(key) = active {
@@ -445,6 +480,7 @@ impl FormSet {
         }
         self.base.request_layout();
         self.base.request_redraw();
+        self.publish_current_change(before_key, before_index);
         true
     }
 
@@ -466,6 +502,19 @@ impl FormSet {
     /// Moves to the previous enabled page, wrapping at the start.
     pub fn previous_page(&mut self) -> bool {
         self.advance(-1)
+    }
+
+    /// The nearest enabled page to `self.current`, preferring forward, then backward.
+    ///
+    /// `None` when every page is disabled: the caller keeps the clamped index rather than
+    /// pretending there is an enabled page to activate.
+    fn nearest_enabled_page(&self) -> Option<usize> {
+        if self.pages.get(self.current).is_some_and(|page| page.enabled) {
+            return Some(self.current);
+        }
+        (self.current + 1..self.pages.len())
+            .chain((0..self.current.min(self.pages.len())).rev())
+            .find(|index| self.pages[*index].enabled)
     }
 
     fn advance(&mut self, delta: i32) -> bool {
@@ -514,30 +563,40 @@ impl FormSet {
         self.pages.iter().filter(|page| page.is_completed()).count()
     }
 
-    /// Requests a layout pass and a repaint.
-    pub fn refresh(&self) {
+    /// Requests a layout pass and a repaint, and republishes the aggregate edges.
+    ///
+    /// This is the mutation-aware repair point: a direct edit through [`Self::page_mut`] can
+    /// change a hosted form's `valid`/`dirty` without the set hearing about it, and the aggregate
+    /// signals are edge detectors that only a publish can fire. A presentation-only change still
+    /// costs nothing extra (the publish is a comparison).
+    pub fn refresh(&mut self) {
         self.base.request_layout();
         self.base.request_redraw();
+        self.publish_validity(self.is_valid());
+        self.publish_dirty();
     }
 
     // ── Validity and actions ─────────────────────────────────────────────────
 
-    /// Whether every page reports valid.
+    /// Whether every enabled page reports valid.
     ///
     /// A page with no form has nothing to validate and never blocks the set. A bound control that
     /// does not publish `valid` is treated the same way: it has no validity to report, so the set
-    /// does not invent one.
+    /// does not invent one. A **disabled** page is outside the aggregate: navigation refuses it
+    /// (`set_current_index`, `goto_page`, `advance`), so an error there could never be corrected;
+    /// the same rule `Form::is_valid` applies to hidden rows.
     pub fn is_valid(&self) -> bool {
-        self.pages.iter().all(|page| match page.form {
+        self.pages.iter().filter(|page| page.enabled).all(|page| match page.form {
             Some(form) => read_form_flag(form, "valid").unwrap_or(true),
             None => true,
         })
     }
 
-    /// How many bound forms currently report at least one error.
+    /// How many enabled bound forms currently report at least one error.
     pub fn error_count(&self) -> usize {
         self.pages
             .iter()
+            .filter(|page| page.enabled)
             .filter_map(|page| page.form)
             .filter(|form| !read_form_flag(*form, "valid").unwrap_or(true))
             .count()
@@ -555,9 +614,14 @@ impl FormSet {
         })
     }
 
-    /// Runs every bound form's own `validate` command and publishes the aggregate validity.
+    /// Runs every enabled bound form's own `validate` command and publishes the aggregate
+    /// validity.
+    ///
+    /// Disabled pages are skipped for the same reason `is_valid` excludes them: the reader cannot
+    /// reach the page, so a failure there could never be corrected. A page enabled later is
+    /// validated by the next call (every `submit` makes one).
     pub fn validate_all(&mut self) -> bool {
-        for form in self.pages.iter().filter_map(FormPage::form_id) {
+        for form in self.pages.iter().filter(|page| page.enabled).filter_map(FormPage::form_id) {
             run_form_command(form, "validate");
         }
         let valid = self.is_valid();
@@ -657,6 +721,49 @@ impl FormSet {
         Rect::new(x, y, BUTTON_MIN_W, BUTTON_H)
     }
 
+    /// The navigation button under `pos`, or `None` when the row is hidden or the point misses.
+    ///
+    /// Draw and hit-testing both call this, so the button that is highlighted is exactly the one
+    /// a press activates. Reading the live rectangles is what lets a geometry or padding change
+    /// move the highlight with the button instead of leaving it on a remembered box.
+    fn action_at(&self, pos: Point) -> Option<SetAction> {
+        if !self.show_navigation {
+            return None;
+        }
+        if self.submit_rect().contains_point(pos) {
+            return Some(SetAction::Submit);
+        }
+        if self.next_rect().contains_point(pos) {
+            return Some(SetAction::Next);
+        }
+        if self.previous_rect().contains_point(pos) {
+            return Some(SetAction::Previous);
+        }
+        None
+    }
+
+    /// Records the pointer position the per-button hover is derived from.
+    fn update_hover(&self, event: &Event) {
+        match event {
+            Event::MouseEnter { pos } | Event::MouseMove { pos } => self.pointer.set(Some(*pos)),
+            Event::MouseLeave { .. } => self.pointer.set(None),
+            _ => {}
+        }
+    }
+
+    /// The navigation button the pointer is over, as its published-style token.
+    ///
+    /// Test observability for the per-button hover state; the capability surface does not expose
+    /// hover, because it is pointer feedback rather than model state.
+    #[cfg(test)]
+    pub(crate) fn hovered_action(&self) -> Option<&'static str> {
+        self.pointer.get().and_then(|pos| self.action_at(pos)).map(|action| match action {
+            SetAction::Previous => "previous",
+            SetAction::Next => "next",
+            SetAction::Submit => "submit",
+        })
+    }
+
     /// Writes the active page's form into the content area and shows only that form.
     fn apply_page_visibility(&self) {
         let content = self.content_rect();
@@ -664,7 +771,10 @@ impl FormSet {
             let Some(form) = page.form else {
                 continue;
             };
-            let active = index == self.current;
+            // A disabled page is outside the aggregate (`is_valid`, `submit`, navigation), so it
+            // must not be the *shown* page either — otherwise a visible invalid form is ignored
+            // by the very submit that reads it.
+            let active = index == self.current && page.enabled;
             rust_widgets::set_widget_visible(form, active);
             // A disabled set disables the forms it hosts, the same propagation `visible` gets
             // (FM-06). The router can dispatch to a child form directly, so the container's own
@@ -679,6 +789,21 @@ impl FormSet {
                     content.height,
                 );
             }
+        }
+    }
+
+    /// Emits `current_changed` when a mutation changed the active page.
+    ///
+    /// The two published facts are the index and the key, and a mutation can change either one
+    /// alone: removing a page before the active one changes the index, removing the active page
+    /// changes the key at the same index, and moving the active page changes the index while
+    /// keeping the key. `before_key`/`before_index` are the values from before the mutation; the
+    /// payload is the new index, which is the published contract. An empty set that stays empty
+    /// changed nothing and stays silent.
+    fn publish_current_change(&mut self, before_key: Option<String>, before_index: usize) {
+        let after_key = self.current_key().map(str::to_string);
+        if before_key != after_key || before_index != self.current {
+            self.current_changed.emit(self.current);
         }
     }
 
@@ -697,17 +822,29 @@ impl FormSet {
         }
     }
 
-    fn draw_button(&self, context: &mut RenderContext, rect: Rect, label: &str, ink: Color) {
+    fn draw_button(
+        &self,
+        context: &mut RenderContext,
+        rect: Rect,
+        label: &str,
+        ink: Color,
+        action: SetAction,
+    ) {
         if rect.width == 0 || rect.height == 0 {
             return;
         }
-        // Hover and press are tracked by `BaseWidget`; a disabled set paints the row faded.
+        // Hover and press are per button: the pointer over submit must not light next and previous
+        // too. The base tracks them for the control as a whole, so the action under the pointer is
+        // the discriminator; draw and hit-testing share `action_at`.
         let enabled = self.base.is_enabled();
+        let hovered =
+            enabled && self.pointer.get().is_some_and(|pos| self.action_at(pos) == Some(action));
+        let pressed = hovered && self.base.is_pressed();
         let fill_alpha = if !enabled {
             8
-        } else if self.base.is_pressed() {
+        } else if pressed {
             30
-        } else if self.base.is_hovered() {
+        } else if hovered {
             24
         } else {
             18
@@ -748,6 +885,31 @@ impl Widget for FormSet {
 
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
+    }
+
+    /// Disables the set **and the forms it pages**, whichever spelling of the call a host uses.
+    ///
+    /// The property route has always propagated (FM-06); the trait method is the other entry
+    /// point, so it follows the same rule here. The container's own bookkeeping is the trait
+    /// default, written out in `super::state::apply_enabled_state` because an override cannot
+    /// call the implementation it replaces. Each hosted form propagates to its own fields in turn.
+    fn set_enabled(&mut self, enabled: bool) {
+        // Propagate only on a real transition: `add_page`/`apply_page_visibility` already apply
+        // the set's flag when a form is adopted, and the per-frame page sync must not re-descend
+        // into every hosted form (and its fields) with an unchanged value.
+        let changed = self.base.is_enabled() != enabled;
+        super::state::apply_enabled_state(self, enabled);
+        if !changed {
+            return;
+        }
+        if !enabled {
+            // A disabled set paints no hover, and the remembered position would otherwise light a
+            // navigation button again the moment it is enabled.
+            self.pointer.set(None);
+        }
+        for form in self.pages.iter().filter_map(FormPage::form_id) {
+            rust_widgets::set_widget_enabled(form, enabled);
+        }
     }
 
     fn set_state_theme_hook(&mut self) {
@@ -914,13 +1076,10 @@ impl WidgetProperties for FormSet {
                 Ok(())
             }
             // A disabled set disables the forms it hosts, the same propagation `visible` gets
-            // (FM-06).
+            // (FM-06). The trait override owns that propagation, so the property route and
+            // `Widget::set_enabled` now agree.
             "enabled" => {
-                let enabled = expect_bool(value)?;
-                self.base.set_enabled(enabled);
-                for form in self.pages.iter().filter_map(FormPage::form_id) {
-                    rust_widgets::set_widget_enabled(form, enabled);
-                }
+                self.set_enabled(expect_bool(value)?);
                 Ok(())
             }
             // Derived from the page list and the forms' own state.
@@ -1099,9 +1258,21 @@ impl Draw for FormSet {
         }
 
         if self.show_navigation {
-            self.draw_button(context, self.previous_rect(), &self.previous_label, ink);
-            self.draw_button(context, self.next_rect(), &self.next_label, ink);
-            self.draw_button(context, self.submit_rect(), &self.submit_label, ink);
+            self.draw_button(
+                context,
+                self.previous_rect(),
+                &self.previous_label,
+                ink,
+                SetAction::Previous,
+            );
+            self.draw_button(context, self.next_rect(), &self.next_label, ink, SetAction::Next);
+            self.draw_button(
+                context,
+                self.submit_rect(),
+                &self.submit_label,
+                ink,
+                SetAction::Submit,
+            );
         }
 
         // The active page's form is a linked child: the tree painter draws it. Re-writing its box
@@ -1113,6 +1284,9 @@ impl Draw for FormSet {
 impl EventHandler for FormSet {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
+        // Record the pointer before the enabled guard: hover is a position, and draw decides
+        // whether it is painted. MouseLeave clears it.
+        self.update_hover(event);
         if !self.base.is_enabled() {
             return;
         }
@@ -1129,19 +1303,21 @@ impl EventHandler for FormSet {
                     return;
                 }
             }
-            if self.show_navigation {
-                if self.submit_rect().contains_point(*pos) {
-                    let _ = self.submit();
-                    return;
+            // One predicate for drawing and activation: the box the pointer highlights is the box
+            // the press reaches.
+            if let Some(action) = self.action_at(*pos) {
+                match action {
+                    SetAction::Submit => {
+                        let _ = self.submit();
+                    }
+                    SetAction::Next => {
+                        let _ = self.next_page();
+                    }
+                    SetAction::Previous => {
+                        let _ = self.previous_page();
+                    }
                 }
-                if self.next_rect().contains_point(*pos) {
-                    let _ = self.next_page();
-                    return;
-                }
-                if self.previous_rect().contains_point(*pos) {
-                    let _ = self.previous_page();
-                    return;
-                }
+                return;
             }
         }
         match event {

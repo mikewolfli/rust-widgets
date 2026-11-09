@@ -21,7 +21,7 @@
 //!
 //! # Swimlanes
 //!
-//! A lane is a second coordinate beside the column. [`KanbanLane`]s are board-level
+//! A lane is a second coordinate beside the column. `KanbanLane`s are board-level
 //! values, and [`KanbanBoard::set_card_lane`] assigns a card (by its board-wide id) to
 //! one lane; [`KanbanBoard::lane_mode`] decides whether lanes affect layout at all.
 //! With lanes on, each lane is a horizontal band whose height is set by the fullest
@@ -32,11 +32,11 @@
 //!
 //! # This is the first consumer of `event::dnd`
 //!
-//! The drag state machine is [`DragSession`], not a hand-written press/move/release
+//! The drag state machine is `DragSession`, not a hand-written press/move/release
 //! loop. The board supplies the two domain decisions the shared machine cannot make:
 //! **which card was grabbed** (a geometry question about this control's layout) and
 //! **what a drop means** (an index inside a column). `KanbanBoard` implements
-//! [`DropTarget`] on itself, so a card dropped anywhere over the board resolves
+//! `DropTarget` on itself, so a card dropped anywhere over the board resolves
 //! through the same `can_accept` / `on_drop` path a foreign drag would.
 //!
 //! # Reachability

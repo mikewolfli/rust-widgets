@@ -113,6 +113,9 @@ impl EventHandler for CodeEditor {
                 self.set_focused(true);
             }
             Event::FocusLost => {
+                // A press that lost its window never gets its release; keeping the
+                // latches would make the next motion edit text nobody is dragging.
+                self.cancel_pointer_gestures();
                 self.set_focused(false);
             }
             _ => {}

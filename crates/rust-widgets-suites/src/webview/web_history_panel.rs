@@ -13,7 +13,8 @@
 //!
 //! [`HistoryEntry`] carries no timestamp — the engine records *what* was visited, not *when*.
 //! The panel therefore stores an optional visit time beside each entry. [`set_entries`] leaves
-//! that time unknown (and the panel then paints no timestamp), while [`set_records`] attaches
+//! that time unknown (and the panel then paints no timestamp), while `set_records`
+//! (see [`WebHistoryPanel::set_records`]) attaches
 //! the times a host already knows. Both grouping and the time column read only those supplied
 //! values; nothing is stamped with an invented clock reading.
 //!
@@ -38,12 +39,24 @@ use rust_widgets::widget::capability::types::{
 use rust_widgets::widget::capability::{
     RecordField, RecordList, RecordSchema, RecordValue, WidgetProperties,
 };
-use rust_widgets::widget::metrics::{dimensions, role_font, ControlMetrics};
+use rust_widgets::widget::metrics::{dimensions, estimate_text_width, role_font, ControlMetrics};
 use rust_widgets::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use std::cell::{Ref, RefCell};
 
 /// Height of one history row when the host does not choose one, in logical pixels.
 const DEFAULT_ROW_HEIGHT: u32 = 44;
+
+/// The narrowest width [`WebHistoryPanel::size_hint`] reports.
+///
+/// It is the fixed width the control used to report, so a short history does not shrink a
+/// drop-down a host has already laid out around that column.
+const MIN_PANEL_WIDTH: u32 = 320;
+
+/// The widest width [`WebHistoryPanel::size_hint`] reports.
+///
+/// A single very long URL must not stretch the drop-down across the window; the paint path
+/// ellipsises a row that still does not fit at this width.
+const MAX_PANEL_WIDTH: u32 = 640;
 
 /// RW-106: the history rows as records, so a design document can carry example history.
 ///
@@ -130,7 +143,7 @@ const UNDATED_LABEL: &str = "Undated";
 ///
 /// The engine's [`HistoryEntry`] has no timestamp, so the companion keeps one beside it rather
 /// than fabricating a time. An entry with `visited_ms: None` paints no time and, when grouping is
-/// on, joins the [`UNDATED_LABEL`] group.
+/// on, joins the `UNDATED_LABEL` group.
 #[derive(Debug, Clone, PartialEq)]
 pub struct WebHistoryRecord {
     /// The engine history entry this row shows.
@@ -275,6 +288,9 @@ impl WebHistoryPanel {
             return;
         }
         self.show_timestamps = show;
+        // The timestamp column is part of `content_width_hint`, which `size_hint` publishes:
+        // without a layout request a host sizing from `size_hint` kept the old width.
+        self.base.request_layout();
         self.base.request_redraw();
     }
 
@@ -366,7 +382,7 @@ impl WebHistoryPanel {
 
     /// The number of rows the panel currently shows, after filtering and the entry cap.
     pub fn visible_count(&self) -> usize {
-        self.visible_indices().len()
+        self.visible_entry_count()
     }
 
     /// The URL of visible entry `index` (`0` is the newest), when the index names one.
@@ -422,6 +438,70 @@ impl WebHistoryPanel {
         self.set_entries(view.history_entries());
         self.base.request_layout();
         self.base.request_redraw();
+    }
+
+    /// The width the widest visible row needs, clamped to the panel's width band.
+    ///
+    /// The hint used to be a fixed `320`, so a long title or URL was ellipsised even when the
+    /// host had room, while a list of short rows still reserved the same column. The estimate
+    /// uses the crate's shared text metric (the same font the paint path draws with) and is
+    /// recomputed only when `size_hint` is asked, never per frame.
+    fn content_width_hint(&self) -> u32 {
+        let style = self.base.style();
+        let title_font = role_font(style, 12.5);
+        let secondary_font = role_font(style, 11.0);
+        let mut text_width = 0u32;
+        for record in self.visible_records() {
+            let title = if record.entry.title.is_empty() {
+                record.entry.url.as_str()
+            } else {
+                record.entry.title.as_str()
+            };
+            text_width = text_width
+                .max(estimate_text_width(title, &title_font, 1.0))
+                .max(estimate_text_width(&record.entry.url, &secondary_font, 1.0));
+        }
+        let timestamp_room = if self.show_timestamps { TIMESTAMP_WIDTH } else { 0 };
+        text_width
+            .saturating_add(PANEL_INSET * 2)
+            .saturating_add(timestamp_room)
+            .clamp(MIN_PANEL_WIDTH, MAX_PANEL_WIDTH)
+    }
+
+    /// The records the panel shows, newest first, filtered and capped.
+    ///
+    /// The iterator borrows the records, so counting rows costs no allocation; the older
+    /// `visible_indices().len()` built a `Vec` for a single length.
+    fn visible_records(&self) -> impl Iterator<Item = &WebHistoryRecord> + '_ {
+        self.records
+            .iter()
+            .rev()
+            .filter(|record| self.matches_filter(record))
+            .take(self.max_entries)
+    }
+
+    /// How many entry rows [`Self::size_hint`] must account for.
+    fn visible_entry_count(&self) -> usize {
+        self.visible_records().count()
+    }
+
+    /// How many day headers the current grouping paints above the visible entries.
+    ///
+    /// Mirrors [`Self::build_rows`]'s day-change rule exactly, without building the rows.
+    fn visible_header_count(&self) -> usize {
+        if !self.group_by_day {
+            return 0;
+        }
+        let mut headers = 0usize;
+        let mut last_day: Option<Option<i64>> = None;
+        for record in self.visible_records() {
+            let day = record.visited_ms.map(day_index);
+            if last_day != Some(day) {
+                headers += 1;
+                last_day = Some(day);
+            }
+        }
+        headers
     }
 
     /// Record indices the panel shows, newest first, filtered and capped.
@@ -515,12 +595,15 @@ impl Widget for WebHistoryPanel {
 
     fn size_hint(&self) -> Size {
         let row_height = self.row_height.max(1);
+        let entry_height = (self.visible_entry_count() as u32).saturating_mul(row_height);
+        let header_height =
+            (self.visible_header_count() as u32).saturating_mul(GROUP_HEADER_HEIGHT);
         rust_widgets::widget::metrics::ControlMetrics::implicit_size(
             Size::new(0, 0),
             rust_widgets::style::EdgeOffsets::all(0),
             Size::new(
-                320,
-                (self.visible_count() as u32).saturating_mul(row_height).max(row_height),
+                self.content_width_hint(),
+                entry_height.saturating_add(header_height).max(row_height),
             ),
         )
     }
@@ -928,6 +1011,63 @@ mod tests {
             rust_widgets::widget::svg::text_ink_boxes(&with_times).len(),
             runs_without_times + 3,
             "each dated row paints its time"
+        );
+    }
+
+    /// The size hint counts entry rows and day headers without allocating the row list.
+    #[test]
+    fn the_size_hint_includes_day_headers_and_agrees_with_the_layout() {
+        const DAY_MS: i64 = 86_400_000;
+        let mut panel = WebHistoryPanel::new(Rect::new(0, 0, 320, 240));
+        panel.set_records(&[
+            WebHistoryRecord::visited_at(entry("https://a.example/", "A"), 0),
+            WebHistoryRecord::visited_at(entry("https://b.example/", "B"), 60_000),
+            WebHistoryRecord::visited_at(entry("https://c.example/", "C"), DAY_MS + 1_000),
+        ]);
+
+        assert_eq!(panel.visible_count(), 3);
+        assert_eq!(
+            panel.size_hint().height,
+            3 * DEFAULT_ROW_HEIGHT,
+            "no headers are painted while grouping is off"
+        );
+
+        panel.set_group_by_day(true);
+        assert_eq!(panel.visible_count(), 3);
+        assert_eq!(
+            panel.size_hint().height,
+            3 * DEFAULT_ROW_HEIGHT + 2 * GROUP_HEADER_HEIGHT,
+            "two days paint two headers on top of the three rows"
+        );
+
+        // The count and the cached layout must describe the same set of rows.
+        let painted_entries =
+            panel.layout_rows().iter().filter(|row| matches!(row.kind, RowKind::Entry(_))).count();
+        assert_eq!(painted_entries, panel.visible_count());
+    }
+
+    /// The width hint follows the widest visible row and stays inside its band.
+    #[test]
+    fn the_size_hint_width_follows_the_widest_visible_row() {
+        let mut panel = WebHistoryPanel::new(Rect::new(0, 0, MIN_PANEL_WIDTH, 240));
+        assert_eq!(
+            panel.size_hint().width,
+            MIN_PANEL_WIDTH,
+            "an empty list keeps the control's established width"
+        );
+
+        let long_url = format!("https://example.com/{}", "d".repeat(120));
+        panel.set_entries(&[entry(&long_url, "Short")]);
+        let widened = panel.size_hint().width;
+        assert!(widened > MIN_PANEL_WIDTH, "a long URL widens the hint, got {widened}");
+        assert!(widened <= MAX_PANEL_WIDTH, "the widening is bounded, got {widened}");
+
+        let huge_url = format!("https://example.com/{}", "e".repeat(4_000));
+        panel.set_entries(&[entry(&huge_url, "Huge")]);
+        assert_eq!(
+            panel.size_hint().width,
+            MAX_PANEL_WIDTH,
+            "one very long row cannot stretch the panel past the upper bound"
         );
     }
 

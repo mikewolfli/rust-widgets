@@ -73,6 +73,7 @@ impl Widget for CodeEditor {
                 0,
                 0,
                 0,
+                0,
                 LanguageId::PlainText,
                 u64::MAX,
             ));

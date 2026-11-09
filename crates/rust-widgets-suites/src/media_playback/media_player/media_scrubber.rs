@@ -117,6 +117,14 @@ impl MediaScrubber {
         &self.chapters
     }
 
+    /// Whether a pointer drag is in flight.
+    ///
+    /// A host that mirrors a clock into this track skips the value write while a drag is
+    /// active, so the gesture owns the handle until it commits.
+    pub fn is_dragging(&self) -> bool {
+        self.dragging
+    }
+
     /// The drag snap in milliseconds; `0` disables snapping.
     pub fn step_ms(&self) -> u64 {
         self.step_ms
@@ -374,6 +382,16 @@ impl EventHandler for MediaScrubber {
                 self.scrubbing.emit((false, self.value));
                 self.committed.emit(self.value);
             }
+            // A release outside the control is not delivered to it, and a window can
+            // lose focus mid-drag. Either way the latch must drop: keeping it made the
+            // next pointer report scrub a bar nobody is holding. The handle stays at the
+            // drag's last sample, so that value is committed rather than left as a preview
+            // the player's clock never adopts.
+            Event::MouseLeave { .. } | Event::FocusLost if self.dragging => {
+                self.dragging = false;
+                self.scrubbing.emit((false, self.value));
+                self.committed.emit(self.value);
+            }
             _ => {}
         }
     }
@@ -431,5 +449,56 @@ mod tests {
         assert!(seen.len() >= 2, "a drag reports more than the press");
         assert!(seen.last().expect("a sample").1 > 0.4);
         assert_eq!(*committed.lock().unwrap(), 1);
+    }
+
+    /// A drag that ends off-widget commits the handle position it reached.
+    ///
+    /// The leave/focus-loss arm dropped the latch but never emitted `committed`, so the track
+    /// showed a new position while the player's clock — which only follows `committed` — stayed
+    /// where it was. A half-aborted, half-committed gesture is the one reading that cannot be
+    /// true.
+    #[test]
+    fn a_drag_ended_by_leaving_commits_its_handle_position() {
+        let mut scrubber = MediaScrubber::new(Rect::new(0, 0, 200, 24));
+        let committed = std::sync::Arc::new(std::sync::Mutex::new(Vec::<f64>::new()));
+        let sink = committed.clone();
+        scrubber.committed.connect(move |value: std::sync::Arc<f64>| {
+            sink.lock().unwrap().push(*value);
+        });
+
+        scrubber.handle_event(&Event::MousePress {
+            pos: Point::new(8, 12),
+            button: 1,
+            modifiers: 0,
+        });
+        scrubber.handle_event(&Event::Drag {
+            pos: Point::new(108, 12),
+            touch_id: 0,
+            delta: Point::new(100, 0),
+        });
+        scrubber.handle_event(&Event::mouse_leave(0, 0));
+
+        assert!(!scrubber.is_dragging());
+        let committed = committed.lock().unwrap().clone();
+        assert_eq!(committed, vec![scrubber.value()], "the painted position is the committed one");
+        assert!(scrubber.value() > 0.4);
+    }
+
+    #[test]
+    fn losing_focus_or_leaving_drops_the_drag_latch() {
+        let mut scrubber = MediaScrubber::new(Rect::new(0, 0, 200, 24));
+        scrubber.handle_event(&Event::MousePress {
+            pos: Point::new(8, 12),
+            button: 1,
+            modifiers: 0,
+        });
+        let pressed = scrubber.value();
+        scrubber.handle_event(&Event::FocusLost);
+        scrubber.handle_event(&Event::Drag {
+            pos: Point::new(180, 12),
+            touch_id: 0,
+            delta: Point::new(172, 0),
+        });
+        assert_eq!(scrubber.value(), pressed, "a drag after focus loss must be ignored");
     }
 }

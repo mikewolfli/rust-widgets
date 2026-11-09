@@ -105,6 +105,13 @@ impl MapProjection {
 /// The latitude Web Mercator truncates at, so the projection stays finite.
 const MERCATOR_MAX_LATITUDE: f32 = 85.051_13;
 
+/// The most tile columns and rows one paint enumerates on one axis.
+///
+/// A tile is never drawn smaller than one logical pixel, so a normal pane needs far fewer than
+/// this. The cap only bites when the loader's `min_zoom` is finer than the camera, where covering
+/// the pane would otherwise ask for one tile per pixel across its whole width and height.
+const MAX_PAINTED_TILES_PER_AXIS: i64 = 256;
+
 /// Hands out the identities the render layer cache uses to recognise an unchanged map grid.
 ///
 /// Globally unique because the cache belongs to the surface: two maps that both started at `1`
@@ -321,6 +328,13 @@ pub struct MapView {
     pub zoom_changed: Signal1<f32>,
     /// Emitted when marker is selected. Payload is marker id.
     pub marker_selected: Signal1<String>,
+    /// Emitted with the id of a selected marker that disappeared from the list or was removed.
+    ///
+    /// Selection is a state of the map, so a list replacement that drops the selected id must
+    /// report the end of that state rather than silently naming a different marker at the same
+    /// index. Keeping the id separate from [`Self::marker_selected`] means a listener can tell
+    /// "selected" from "no longer selected" without treating an empty id as a marker.
+    pub marker_deselected: Signal1<String>,
     /// Emitted when a marker is clicked. Payload is marker id.
     ///
     /// Distinct from [`Self::marker_selected`] because a click is an *act* and a selection is a
@@ -409,6 +423,7 @@ impl MapView {
             center_changed: Signal1::new(),
             zoom_changed: Signal1::new(),
             marker_selected: Signal1::new(),
+            marker_deselected: Signal1::new(),
             marker_clicked: Signal1::new(),
             cluster_clicked: Signal1::new(),
             tile_requested: Signal1::new(),
@@ -438,9 +453,36 @@ impl MapView {
         &self.tile_loader
     }
 
-    /// The tile source, for a host that delivers pixels or changes the template.
+    /// The tile source, for a host that delivers pixels or changes the loader directly.
+    ///
+    /// A change made through this borrow cannot tell the map to repaint or re-request tiles.
+    /// After changing the template, edge length or cache through it, call [`Self::refresh_tiles`]
+    /// and request a redraw, or use [`Self::set_tile_url_template`] / [`Self::set_tile_size`],
+    /// which do both. The borrow remains for hosts that deliver pixels themselves or read loader
+    /// state without changing its geometry.
     pub fn tile_loader_mut(&mut self) -> &mut TileLoader {
         &mut self.tile_loader
+    }
+
+    /// Sets the tile source's URL template and repaints the map for it.
+    ///
+    /// The loader drops its addresses when the template changes; this wrapper also refreshes the
+    /// viewport the host is asked to fetch, so a new source is requested immediately instead of
+    /// after the next pan or zoom.
+    pub fn set_tile_url_template(&mut self, template: impl Into<String>) {
+        self.tile_loader.set_url_template(template);
+        self.refresh_tiles();
+        self.base.request_redraw();
+    }
+
+    /// Sets the tile source's edge length and repaints the map for it.
+    ///
+    /// The loader drops payloads decoded at the old extent; this wrapper refreshes the tile
+    /// window and requests a repaint as well.
+    pub fn set_tile_size(&mut self, tile_size: u32) {
+        self.tile_loader.set_tile_size(tile_size);
+        self.refresh_tiles();
+        self.base.request_redraw();
     }
 
     /// The zoom strip painted over the map.
@@ -521,26 +563,75 @@ impl MapView {
     /// at tile zoom 0. The tile zoom follows the painted zoom's `log2`, so a fractional pinch does
     /// not ask for a new level on every intermediate frame.
     pub fn tile_viewport(&self) -> TileViewport {
+        self.tile_viewport_at(self.painted_zoom())
+    }
+
+    /// The tile window a camera at `camera_zoom` covers.
+    ///
+    /// The paint asks for the painted zoom; the camera writers ask for their destination zoom, so
+    /// the level an animation is heading for is requested before it arrives rather than after the
+    /// next gesture.
+    fn tile_viewport_at(&self, camera_zoom: f32) -> TileViewport {
         let rect = self.geometry();
-        let painted = self.painted_zoom().max(0.0001);
+        let painted = camera_zoom.max(0.0001);
         let raw_zoom = (painted.log2().round() as i32)
             .clamp(self.tile_loader.min_zoom() as i32, self.tile_loader.max_zoom() as i32);
         let zoom = raw_zoom as u8;
-        let scale = 2f64.powi(zoom as i32);
-        let tile_world = (self.tile_loader.tile_size().max(1) as f64 / scale).max(1.0);
-        let world_w = rect.width as f64 / painted as f64;
-        let world_h = rect.height as f64 / painted as f64;
-        let x = (self.center_x as f64 - world_w / 2.0) / tile_world;
-        let y = (self.project_world_y(self.center_y) as f64 - world_h / 2.0) / tile_world;
-        TileViewport::new(zoom, x, y, rect.width, rect.height)
+        let tile_world = self.tile_world_extent(zoom, painted);
+        let world_w = rect.width as f64 / f64::from(painted);
+        let world_h = rect.height as f64 / f64::from(painted);
+        let x = (f64::from(self.center_x) - world_w / 2.0) / tile_world;
+        let y = (f64::from(self.project_world_y(self.center_y)) - world_h / 2.0) / tile_world;
+        // The size a tile is actually painted at, which is the loader's source extent only when
+        // the camera sits exactly on a power-of-two zoom. The prefetch counts its columns from
+        // this, so the requested grid is the one the paint draws at a fractional zoom.
+        let tile_pixels = (tile_world * f64::from(painted)).max(1.0);
+        TileViewport::new(zoom, x, y, rect.width, rect.height).with_tile_pixels(tile_pixels)
+    }
+
+    /// The world extent of one tile at `zoom`, as this map paints it.
+    ///
+    /// A tile of `zoom` covers `tile_size / 2^zoom` world units. When the loader's `min_zoom` is
+    /// finer than the camera, that extent would be smaller than the pixel it lands on, and the
+    /// paint would enumerate one tile per screen pixel. The floor is therefore one **screen
+    /// pixel** worth of world (`1 / painted`), not the arbitrary one-world-unit floor this used
+    /// to keep: it is the smallest clamp that keeps a tile renderable, and it scales with the
+    /// camera instead of overriding the tile level at every zoom.
+    fn tile_world_extent(&self, zoom: u8, painted: f32) -> f64 {
+        let tile_size = self.tile_loader.tile_size().max(1) as f64;
+        let true_extent = tile_size / 2f64.powi(i32::from(zoom));
+        true_extent.max(1.0 / f64::from(painted.max(0.0001)))
+    }
+
+    /// The columns and rows one paint enumerates, capped on each axis.
+    ///
+    /// The cap is the recorded bound for a source whose `min_zoom` is finer than the camera: the
+    /// paint covers at most `MAX_PAINTED_TILES_PER_AXIS` columns and rows, rather than asking for
+    /// one tile per screen pixel across the whole pane.
+    fn painted_tile_spans(&self, viewport: &TileViewport) -> (i64, i64) {
+        let tile_px = viewport
+            .tile_pixels
+            .unwrap_or(self.tile_loader.tile_size().max(1) as f64)
+            .round()
+            .max(1.0);
+        let cols = (f64::from(viewport.width) / tile_px).ceil() as i64 + 1;
+        let rows = (f64::from(viewport.height) / tile_px).ceil() as i64 + 1;
+        (cols.min(MAX_PAINTED_TILES_PER_AXIS), rows.min(MAX_PAINTED_TILES_PER_AXIS))
     }
 
     /// Asks the tile source for every tile the visible viewport touches.
     ///
     /// A request the loader already remembers reports `cached: true`; only a first request is
     /// re-emitted through [`Self::tile_requested`], so a host can fetch exactly once per address.
+    /// At most `MAX_PAINTED_TILES_PER_AXIS` columns and rows are enumerated per axis, which bounds
+    /// a loader whose `min_zoom` is finer than the camera; a normal viewport is far below it.
     pub fn prefetch_tiles(&mut self) -> Vec<TileRequest> {
-        let viewport = self.tile_viewport();
+        self.prefetch_tiles_at(self.painted_zoom())
+    }
+
+    /// Asks the tile source for the tiles a camera at `camera_zoom` covers.
+    fn prefetch_tiles_at(&mut self, camera_zoom: f32) -> Vec<TileRequest> {
+        let viewport = self.tile_viewport_at(camera_zoom);
         let requests = self.tile_loader.prefetch(viewport);
         for request in &requests {
             if !request.cached {
@@ -596,12 +687,29 @@ impl MapView {
     /// Mirrors the map's camera into the overlay controls, once per paint.
     fn sync_map_controls(&mut self) {
         // The strip is a view of the map's zoom, not a second source of truth: a wheel or a key
-        // that changed the map is reflected here, and a press here changes the map.
+        // that changed the map is reflected here, and a press here changes the map. The mirror is
+        // silent, because `zoom_requested` is a user gesture and this runs during the paint pass.
         if (self.zoom_control.zoom_level() - self.zoom).abs() > f32::EPSILON {
-            self.zoom_control.set_zoom(self.zoom);
+            self.zoom_control.mirror_zoom(self.zoom);
         }
         let meters_per_pixel = 1.0 / self.painted_zoom().max(0.0001) as f64;
         self.scale_bar.set_scale(meters_per_pixel);
+    }
+
+    /// Whether `rect` lies entirely inside the map's own box.
+    ///
+    /// A companion that does not fit is neither painted nor hit-tested. Painting it outside the
+    /// pane drew over neighbouring widgets, while its presses could never arrive (events stop at
+    /// the map's own bounds), so the out-of-bounds part was ink and a dead target at once.
+    fn control_fits(&self, rect: Rect) -> bool {
+        if rect.width == 0 || rect.height == 0 {
+            return false;
+        }
+        let area = self.geometry();
+        rect.x >= area.x
+            && rect.y >= area.y
+            && rect.right() <= area.right()
+            && rect.bottom() <= area.bottom()
     }
 
     /// Returns map center.
@@ -628,10 +736,15 @@ impl MapView {
     /// Asks the tile source for the viewport the camera now covers.
     ///
     /// Called from the camera writers rather than from `draw`, so the paint never performs the
-    /// sweep and a still map issues no requests at all (SP-P60).
-    fn refresh_tiles(&mut self) {
+    /// sweep and a still map issues no requests at all (SP-P60). The sweep uses the destination
+    /// zoom: `painted_zoom` still reports the old zoom on the frame a transition starts, so asking
+    /// through it made a zoom request the level it was leaving.
+    ///
+    /// Public for a host that changed the loader through [`Self::tile_loader_mut`] and now needs
+    /// the map's own window refreshed; the setters above call it for you.
+    pub fn refresh_tiles(&mut self) {
         if self.prefetch_on_paint {
-            let _ = self.prefetch_tiles();
+            let _ = self.prefetch_tiles_at(self.zoom);
         }
     }
 
@@ -705,6 +818,10 @@ impl MapView {
             return;
         }
         self.projection = projection;
+        // The projection moves the rows the visible viewport covers, so the levels the host has
+        // already fetched no longer describe the pane; ask for the new window in the same way a
+        // camera move does.
+        self.refresh_tiles();
         self.base.request_redraw();
     }
 
@@ -713,7 +830,17 @@ impl MapView {
     /// [`Self::set_markers`] replaces the whole list and was the only way to change the marker set;
     /// adding or removing one pin therefore meant cloning the entire list, which also dropped the
     /// selection whenever the replace happened to reorder it.
+    ///
+    /// A marker whose `id` is already present replaces that entry: the id is the marker's identity
+    /// (`MAP_MARKER_SCHEMA` declares ids unique), so a second pin with the same id was unreachable
+    /// by id and made the published `markers` list fail its own schema on the way back in.
     pub fn add_marker(&mut self, marker: MapMarker) -> usize {
+        if let Some(index) = self.markers.iter().position(|existing| existing.id == marker.id) {
+            self.markers[index] = marker;
+            self.markers_revision = self.markers_revision.wrapping_add(1);
+            self.base.request_redraw();
+            return index;
+        }
         let index = self.markers.len();
         self.markers.push(marker);
         self.markers_revision = self.markers_revision.wrapping_add(1);
@@ -725,9 +852,11 @@ impl MapView {
     ///
     /// The selected index is adjusted rather than cleared: removing a pin *above* the selected one
     /// shifts it down by one, and clearing the selection there would report a selection the caller
-    /// never changed.
+    /// never changed. Removing the selected marker itself clears the selection and emits
+    /// [`Self::marker_deselected`] with its id.
     pub fn remove_marker(&mut self, id: &str) -> Option<MapMarker> {
         let index = self.markers.iter().position(|marker| marker.id == id)?;
+        let was_selected = self.selected_marker == Some(index);
         let removed = self.markers.remove(index);
         self.markers_revision = self.markers_revision.wrapping_add(1);
         self.selected_marker = match self.selected_marker {
@@ -735,6 +864,9 @@ impl MapView {
             Some(selected) if selected > index => Some(selected - 1),
             other => other,
         };
+        if was_selected {
+            self.marker_deselected.emit(removed.id.clone());
+        }
         self.base.request_redraw();
         Some(removed)
     }
@@ -771,12 +903,24 @@ impl MapView {
         if (self.zoom - before).abs() < f32::EPSILON {
             return;
         }
-        let zoom_after = self.painted_zoom().max(0.0001);
-        self.center_x = world_x - (anchor.x as f32 - center_px) / zoom_after;
-        self.center_y =
-            self.unproject_world_y(world_y - (anchor.y as f32 - center_py) / zoom_after);
-        self.invalidate_status();
-        self.center_changed.emit((self.center_x, self.center_y));
+        // The anchor must sit under the pointer at the **destination** zoom, not at the zoom the
+        // driver happens to paint on this frame: `set_zoom` leaves `zoom_t` at 0 (its "from"
+        // endpoint), so `painted_zoom` would still report the old level and the centre would not
+        // move at all.
+        let zoom_after = self.zoom.max(0.0001);
+        let next_x = world_x - (anchor.x as f32 - center_px) / zoom_after;
+        let next_y = self.unproject_world_y(world_y - (anchor.y as f32 - center_py) / zoom_after);
+        // A wheel with no prior pointer move anchors on the pane centre, where the centre does not
+        // move at all; publishing `center_changed` for it woke every mirror of the camera for a
+        // non-change.
+        if (self.center_x - next_x).abs() >= f32::EPSILON
+            || (self.center_y - next_y).abs() >= f32::EPSILON
+        {
+            self.center_x = next_x;
+            self.center_y = next_y;
+            self.invalidate_status();
+            self.center_changed.emit((self.center_x, self.center_y));
+        }
         // The centre moved after `set_zoom` already asked for tiles, so the viewport the host is
         // asked for is refreshed once more at the final camera (SP-P60).
         self.refresh_tiles();
@@ -821,12 +965,54 @@ impl MapView {
     }
 
     /// Replaces map markers.
+    ///
+    /// A `marker.id` is the marker's stable identity, and `MAP_MARKER_SCHEMA` declares ids unique.
+    /// A list handed straight to this method is not schema-validated, so duplicate ids are dropped
+    /// after their first occurrence and one `log::warn!` reports how many were ignored; the event
+    /// and hit-test paths therefore never point at a marker this method discarded.
+    ///
+    /// The selection follows that id, not its position: reordering the list keeps the same marker
+    /// selected, while dropping the selected id clears the selection and emits
+    /// [`Self::marker_deselected`] with it. Keeping the old index would have silently selected
+    /// whichever marker happened to move into that slot.
     pub fn set_markers(&mut self, markers: Vec<MapMarker>) {
-        self.markers = markers;
+        let previous = self
+            .selected_marker
+            .and_then(|index| self.markers.get(index))
+            .map(|marker| marker.id.clone());
+
+        // Dedupe by id without cloning: the set borrows the ids while the flags are built, then
+        // is dropped before the list is moved into place.
+        let (keep, dropped) = {
+            let mut seen = alloc::collections::BTreeSet::new();
+            let mut keep = Vec::with_capacity(markers.len());
+            let mut dropped = 0usize;
+            for marker in &markers {
+                if seen.insert(marker.id.as_str()) {
+                    keep.push(true);
+                } else {
+                    keep.push(false);
+                    dropped += 1;
+                }
+            }
+            (keep, dropped)
+        };
+        if dropped > 0 {
+            log::warn!("map_view.set_markers dropped {dropped} duplicate marker id(s)");
+        }
+        self.markers = markers
+            .into_iter()
+            .zip(keep)
+            .filter_map(|(marker, keep)| keep.then_some(marker))
+            .collect();
+
         self.markers_revision = self.markers_revision.wrapping_add(1);
-        if let Some(index) = self.selected_marker {
-            if index >= self.markers.len() {
-                self.selected_marker = None;
+        self.selected_marker = previous.as_deref().and_then(|selected_id| {
+            self.markers.iter().position(|marker| marker.id == selected_id)
+        });
+        if let Some(selected_id) = previous {
+            if self.selected_marker.is_none() {
+                self.marker_deselected.emit(selected_id);
             }
         }
         self.base.request_redraw();
@@ -878,23 +1064,88 @@ impl MapView {
             return;
         }
         let tile_size = self.tile_loader.tile_size().max(1) as f64;
-        let tile_world = tile_size / 2f64.powi(i32::from(zoom));
-        let painted = self.painted_zoom().max(0.0001) as f64;
+        let painted_f32 = self.painted_zoom().max(0.0001);
+        let painted = f64::from(painted_f32);
+        let tile_world = self.tile_world_extent(zoom, painted_f32);
         let center_proj_y = self.project_world_y(self.center_y) as f64;
         let center_screen_x = rect.x as f64 + rect.width as f64 / 2.0;
         let center_screen_y = rect.y as f64 + rect.height as f64 / 2.0;
-        let tile_px = (tile_world * painted).round().max(1.0) as u32;
+        // The pixel size the paint actually uses. Counting columns from the loader's
+        // `tile_size` instead under-requests the right and bottom edges whenever a fractional
+        // zoom paints a tile smaller than its source, leaving those edges unpainted.
+        let tile_px = viewport.tile_pixels.unwrap_or(tile_size).round().max(1.0);
+        let tile_px_u32 = tile_px as u32;
 
         let first_col = viewport.x.floor() as i64;
         let first_row = viewport.y.floor() as i64;
-        let cols = (viewport.width as f64 / tile_size).ceil() as i64 + 2;
-        let rows = (viewport.height as f64 / tile_size).ceil() as i64 + 2;
+        let (cols, rows) = self.painted_tile_spans(&viewport);
         // Parents already painted this frame, so a fallback tile is blitted once rather than once
         // per child that needs it. The buffer is a field: allocating it per frame was a steady
         // cost for every painted map.
         let mut painted_parents = self.painted_parents_scratch.borrow_mut();
         painted_parents.clear();
 
+        // Pass 1: the fallbacks a missing cell needs, deduplicated so one parent is blitted once
+        // for the whole 2×2 block it covers.
+        if zoom > 0 {
+            for row in 0..rows {
+                for col in 0..cols {
+                    let x = first_col + col;
+                    let y = first_row + row;
+                    if x < 0 || y < 0 || x >= per_axis || y >= per_axis {
+                        continue;
+                    }
+                    if self
+                        .tile_loader
+                        .tile_pixels(TileKey::new(zoom, x as u32, y as u32))
+                        .is_some()
+                    {
+                        continue;
+                    }
+                    let parent = TileKey::new(zoom - 1, (x / 2) as u32, (y / 2) as u32);
+                    if painted_parents.contains(&parent)
+                        || self.tile_loader.tile_pixels(parent).is_none()
+                    {
+                        continue;
+                    }
+                    painted_parents.push(parent);
+                }
+            }
+        }
+
+        // The enumerated span deliberately covers one extra column and row (a tile can start
+        // before the pane), so the blit is clipped to the pane: without this, imagery was painted
+        // over whatever the layout put right of and below the map.
+        context.push_clip(rect.x, rect.y, rect.width, rect.height);
+
+        // Pass 2: the fallbacks first. A parent covers all four children of its block, so painting
+        // it while walking the cells replaced any delivered sibling that came before it in the
+        // loop; the delivered tiles go on top below.
+        for parent in painted_parents.iter() {
+            let Some(pixels) = self.tile_loader.tile_pixels(*parent) else {
+                continue;
+            };
+            // The parent covers a 2×2 block of the child level, so it is drawn at twice the
+            // size, anchored at the parent's own origin.
+            let parent_world = tile_world * 2.0;
+            let parent_x = center_screen_x
+                + (f64::from(parent.x) * parent_world - f64::from(self.center_x)) * painted;
+            let parent_y =
+                center_screen_y + (f64::from(parent.y) * parent_world - center_proj_y) * painted;
+            let size = (tile_px * 2.0).round().max(1.0) as u32;
+            let source = self.tile_loader.tile_size();
+            context.draw_image_scaled(
+                parent_x.round() as i32,
+                parent_y.round() as i32,
+                size,
+                size,
+                source,
+                source,
+                pixels,
+            );
+        }
+
+        // Pass 3: the delivered tiles, last so they are never covered by a fallback.
         for row in 0..rows {
             for col in 0..cols {
                 let x = first_col + col;
@@ -908,46 +1159,25 @@ impl MapView {
                 let screen_x = screen_x.round() as i32;
                 let screen_y = screen_y.round() as i32;
                 let key = TileKey::new(zoom, x as u32, y as u32);
-                if let Some(pixels) = self.tile_loader.tile_pixels(key) {
-                    // Host tiles are decoded at the loader's tile extent and painted at the
-                    // camera's scale, so the two sizes differ whenever the view is zoomed.
-                    let source = self.tile_loader.tile_size();
-                    context.draw_image_scaled(
-                        screen_x, screen_y, tile_px, tile_px, source, source, pixels,
-                    );
-                    continue;
-                }
-                if zoom == 0 {
-                    continue;
-                }
-                let parent = TileKey::new(zoom - 1, (x / 2) as u32, (y / 2) as u32);
-                if painted_parents.contains(&parent) {
-                    continue;
-                }
-                let Some(pixels) = self.tile_loader.tile_pixels(parent) else {
+                let Some(pixels) = self.tile_loader.tile_pixels(key) else {
                     continue;
                 };
-                painted_parents.push(parent);
-                // The parent covers a 2×2 block of the child level, so it is drawn at twice the
-                // size, anchored at the parent's own origin.
-                let parent_world = tile_world * 2.0;
-                let parent_x = center_screen_x
-                    + (f64::from(parent.x) * parent_world - f64::from(self.center_x)) * painted;
-                let parent_y = center_screen_y
-                    + (f64::from(parent.y) * parent_world - center_proj_y) * painted;
-                let size = (tile_px as f64 * 2.0).round().max(1.0) as u32;
+                // Host tiles are decoded at the loader's tile extent and painted at the camera's
+                // scale, so the two sizes differ whenever the view is zoomed.
                 let source = self.tile_loader.tile_size();
                 context.draw_image_scaled(
-                    parent_x.round() as i32,
-                    parent_y.round() as i32,
-                    size,
-                    size,
+                    screen_x,
+                    screen_y,
+                    tile_px_u32,
+                    tile_px_u32,
                     source,
                     source,
                     pixels,
                 );
             }
         }
+
+        context.pop_clip();
     }
 
     /// The zoom the projection is actually painted at.
@@ -976,6 +1206,46 @@ impl MapView {
         (sx, sy)
     }
 
+    /// The screen rectangle a marker's ink occupies.
+    ///
+    /// The paint, the pane test and the hit test all read this one box, so a pin's head, its
+    /// tip and its label cannot disagree with where the pointer has to be. An icon fills its
+    /// slot; a pin's head is centred `half` above the anchor and its tip reaches `half` below,
+    /// which is why the box is taller than it is wide.
+    fn marker_bounds(&self, index: usize) -> Option<Rect> {
+        let marker = self.markers.get(index)?;
+        // A non-finite world coordinate projects to `NaN`, and a `f32`-to-`i32` cast turns that
+        // into `0`: the pin would appear at the pane's origin and be clickable there. Marker
+        // coordinates are not validated where they are stored, so the consumer rejects them.
+        if !marker.x.is_finite() || !marker.y.is_finite() {
+            return None;
+        }
+        let (sx, sy) = self.world_to_screen(marker.x, marker.y);
+        let (sx, sy) = (sx.round() as i32, sy.round() as i32);
+        let size = self.marker_size(index);
+        let half = size as i32 / 2;
+        if marker.style.icon.is_some() {
+            return Some(Rect::new(
+                sx.saturating_sub(half),
+                sy.saturating_sub(half),
+                size.max(1),
+                size.max(1),
+            ));
+        }
+        // `draw_marker` floors the head's radius at 2, so a two-pixel pin is still four wide.
+        let reach = half.max(2);
+        let left = sx.saturating_sub(reach);
+        let top = sy.saturating_sub(half).saturating_sub(reach);
+        let right = sx.saturating_add(reach).saturating_add(1);
+        let bottom = sy.saturating_add(half).saturating_add(1);
+        Some(Rect::new(
+            left,
+            top,
+            right.saturating_sub(left) as u32,
+            bottom.saturating_sub(top) as u32,
+        ))
+    }
+
     /// Whether a marker's screen position falls inside the pane.
     ///
     /// # Why a marker can be outside at all
@@ -987,37 +1257,35 @@ impl MapView {
     /// area the same set: a marker outside the pane has neither a pin nor a hit box.
     fn marker_is_inside(&self, index: usize) -> bool {
         let rect = self.geometry();
-        let Some(marker) = self.markers.get(index) else {
+        let Some(bounds) = self.marker_bounds(index) else {
             return false;
         };
-        let (sx, sy) = self.world_to_screen(marker.x, marker.y);
-        let (px, py) = (sx.round() as i32, sy.round() as i32);
-        // The pin is the marker's own diameter across and centred on the point, so the whole pin —
-        // not just its centre — must fit inside the pane.
-        let half = self.marker_size(index) as i32 / 2;
-        px - half >= rect.x
-            && (px + half) < rect.x + rect.width as i32
-            && py - half >= rect.y
-            && (py + half) < rect.y + rect.height as i32
+        bounds.x >= rect.x
+            && bounds.y >= rect.y
+            && bounds.right() <= rect.right()
+            && bounds.bottom() <= rect.bottom()
     }
 
     fn hit_marker_index(&self, pos: Point) -> Option<usize> {
-        let px = pos.x as f32;
-        let py = pos.y as f32;
-        for index in 0..self.markers.len() {
-            if !self.marker_is_inside(index) {
-                continue;
+        // With clustering on, a member of a multi-marker cluster paints no pin of its own: only
+        // the badge is drawn, and `cluster_at` owns that target. Matching a member's hit box here
+        // selected a marker with no ink and changed the selection with no feedback.
+        let clusters = self.cluster_markers.then(|| self.clusters());
+        // Topmost painted first: pins are drawn in list order, so a later index covers an earlier
+        // one, and returning the first match selected the marker hidden underneath.
+        for index in (0..self.markers.len()).rev() {
+            if let Some(clusters) = &clusters {
+                let hidden = clusters
+                    .iter()
+                    .any(|cluster| cluster.indices.len() > 1 && cluster.indices.contains(&index));
+                if hidden {
+                    continue;
+                }
             }
-            let Some(marker) = self.markers.get(index) else {
+            let Some(bounds) = self.marker_bounds(index) else {
                 continue;
             };
-            let (sx, sy) = self.world_to_screen(marker.x, marker.y);
-            let dx = sx - px;
-            let dy = sy - py;
-            // The hit radius follows the pin's own size: a 24 px icon with an 8 px hit box is a
-            // target the user can see and cannot press.
-            let reach = (self.marker_size(index) as f32 / 2.0).max(2.0) + 2.0;
-            if dx * dx + dy * dy <= reach * reach {
+            if self.marker_is_inside(index) && bounds.contains_point(pos) {
                 return Some(index);
             }
         }
@@ -1081,19 +1349,23 @@ impl MapView {
             .filter_map(|indices| {
                 let mut screen = (0.0f32, 0.0f32);
                 let mut world = (0.0f32, 0.0f32);
+                let mut projected_y = 0.0f32;
                 for index in &indices {
                     let marker = self.markers.get(*index)?;
                     let (sx, sy) = self.world_to_screen(marker.x, marker.y);
                     screen.0 += sx;
                     screen.1 += sy;
                     world.0 += marker.x;
-                    world.1 += marker.y;
+                    projected_y += self.project_world_y(marker.y);
                 }
                 let count = indices.len() as f32;
                 Some(MapCluster {
                     indices,
                     screen: (screen.0 / count, screen.1 / count),
-                    world: (world.0 / count, world.1 / count),
+                    // The badge sits under the mean *projected* ordinate, so the world value the
+                    // press reports must be that ordinate unprojected; averaging raw latitudes
+                    // put the payload off the badge under Mercator.
+                    world: (world.0 / count, self.unproject_world_y(projected_y / count)),
                 })
             })
             .collect()
@@ -1142,8 +1414,8 @@ impl MapView {
 impl MapView {
     /// Paints one marker: its pin (or icon) and its label.
     ///
-    /// The paint and the hit test read the same `marker_is_inside` and `marker_size`, so a pin's ink
-    /// and its clickable area cannot disagree about either position or extent.
+    /// The paint and the hit test read the same `marker_bounds`, so a pin's ink and its
+    /// clickable area cannot disagree about either position or extent.
     fn draw_marker(
         &self,
         context: &mut RenderContext,
@@ -1193,10 +1465,12 @@ impl MapView {
         // A marker label is bounded by the pane: it is placed beside a point that may sit
         // anywhere, so unbounded it could start inside and end past the edge.
         let label_left = (sx as i32) + half + 3;
-        let label_width = (rect.x + rect.width as i32 - label_left).max(0) as u32;
-        if label_width > 0 {
+        let label_top = sy as i32 - half;
+        let label_width = (rect.right() - label_left).max(0) as u32;
+        let label_height = (rect.bottom() - label_top).clamp(0, 14) as u32;
+        if label_width > 0 && label_height > 0 {
             context.draw_text_fitted_ellipsis(
-                Rect::new(label_left, sy as i32 - half, label_width, 14),
+                Rect::new(label_left, label_top, label_width, label_height),
                 &marker.label,
                 effective_font(style),
                 ink,
@@ -1264,6 +1538,11 @@ impl Widget for MapView {
             }
             "marker_selected" => {
                 Some(EventSignalRef::mapped("marker_selected", &self.marker_selected, |v| {
+                    CapabilityValue::String(v.clone())
+                }))
+            }
+            "marker_deselected" => {
+                Some(EventSignalRef::mapped("marker_deselected", &self.marker_deselected, |v| {
                     CapabilityValue::String(v.clone())
                 }))
             }
@@ -1451,7 +1730,9 @@ impl EventHandler for MapView {
                     );
                 }
             }
-            Event::MouseRelease { button: 1, .. } => {
+            Event::MouseRelease { button: 1, .. } | Event::MouseLeave { .. } | Event::FocusLost => {
+                // A release outside the widget is not delivered to it, and focus can move
+                // mid-drag; both end the gesture rather than leaving the pan latch set.
                 self.drag = None;
             }
             // A two-finger pinch is a zoom around the gesture's midpoint. The recogniser already
@@ -1462,9 +1743,6 @@ impl EventHandler for MapView {
                     self.last_pointer = Some(*center);
                     self.zoom_at(*scale, *center);
                 }
-            }
-            Event::MouseLeave { .. } => {
-                self.drag = None;
             }
             Event::KeyPress { key, modifiers: _ } => match *key {
                 37 => self.pan_by(-20.0 / self.zoom, 0.0),
@@ -1477,7 +1755,13 @@ impl EventHandler for MapView {
             },
             Event::MousePress { pos, button: 1, .. } => {
                 if self.show_map_controls {
-                    if self.zoom_control.base().geometry().contains_point(*pos) {
+                    if self.control_fits(self.zoom_control.base().geometry())
+                        && self.zoom_control.base().geometry().contains_point(*pos)
+                    {
+                        // The camera may have moved since the last paint, and the strip is only
+                        // mirrored there: without this the press would step from a stale level
+                        // (a `+` press could even zoom the map out).
+                        self.sync_map_controls();
                         let before = self.zoom_control.zoom_level();
                         self.zoom_control.handle_event(event);
                         let after = self.zoom_control.zoom_level();
@@ -1486,11 +1770,21 @@ impl EventHandler for MapView {
                         }
                         return;
                     }
-                    if self.compass.base().geometry().contains_point(*pos) {
+                    if self.control_fits(self.compass.base().geometry())
+                        && self.compass.base().geometry().contains_point(*pos)
+                    {
+                        // The dial, not its bounding box, is the target, and a compass with
+                        // `clickable == false` reports nothing: only a real reset request
+                        // returns the needle to north. `enabled` is part of that test because
+                        // the companion itself returns early when disabled: without it the map
+                        // reset the needle while the compass emitted no reset request.
+                        let reset = self.compass.base().is_enabled()
+                            && self.compass.clickable()
+                            && self.compass.hit_dial(*pos);
                         self.compass.handle_event(event);
-                        // The compass's reset request means north-up; the map has no rotation of
-                        // its own, so the needle returning to 0 is the whole effect here.
-                        self.compass.set_bearing(0.0);
+                        if reset {
+                            self.compass.set_bearing(0.0);
+                        }
                         return;
                     }
                 }
@@ -1667,9 +1961,15 @@ impl Draw for MapView {
         self.layout_map_controls();
         self.sync_map_controls();
         if self.show_map_controls {
-            self.zoom_control.draw(context);
-            self.compass.draw(context);
-            self.scale_bar.draw(context);
+            if self.control_fits(self.zoom_control.base().geometry()) {
+                self.zoom_control.draw(context);
+            }
+            if self.control_fits(self.compass.base().geometry()) {
+                self.compass.draw(context);
+            }
+            if self.control_fits(self.scale_bar.base().geometry()) {
+                self.scale_bar.draw(context);
+            }
         }
     }
 }
@@ -1811,18 +2111,86 @@ mod tests {
     }
 
     #[test]
-    fn set_markers_replaces_and_clears_invalid_selection() {
+    fn set_markers_clears_a_selection_whose_id_disappeared() {
         let mut map = MapView::new(Rect::new(0, 0, 800, 600));
         map.set_markers(vec![MapMarker::new("m1", "A", 0.0, 0.0)]);
-        // Select marker index 0
         let _ = map.select_marker(0);
         assert_eq!(map.selected_marker_id(), Some("m1"));
 
-        // Replace with different markers - selection should clear
+        let deselected = Arc::new(Mutex::new(Vec::<String>::new()));
+        let sink = deselected.clone();
+        map.marker_deselected.connect(move |id| {
+            if let Ok(mut guard) = sink.lock() {
+                guard.push(id.as_ref().clone());
+            }
+        });
+
         map.set_markers(vec![MapMarker::new("m2", "B", 10.0, 10.0)]);
-        // Old selection index (0) is still valid, but it's a different marker now
-        // Let's actually test that old selection index is still 0
-        assert_eq!(map.selected_marker_id(), Some("m2"));
+
+        assert_eq!(map.selected_marker_id(), None, "the selected id is gone");
+        let got = deselected.lock().ok().map(|guard| guard.clone()).unwrap_or_default();
+        assert_eq!(got, vec!["m1".to_string()]);
+    }
+
+    /// A list replacement keeps the selected marker selected by id, wherever it moves.
+    #[test]
+    fn set_markers_keeps_the_selected_id_across_reordering() {
+        let mut map = MapView::new(Rect::new(0, 0, 800, 600));
+        map.set_markers(vec![
+            MapMarker::new("a", "A", 0.0, 0.0),
+            MapMarker::new("b", "B", 10.0, 0.0),
+        ]);
+        assert!(map.select_marker(1));
+        assert_eq!(map.selected_marker_id(), Some("b"));
+
+        let deselected = Arc::new(Mutex::new(Vec::<String>::new()));
+        let sink = deselected.clone();
+        map.marker_deselected.connect(move |id| {
+            if let Ok(mut guard) = sink.lock() {
+                guard.push(id.as_ref().clone());
+            }
+        });
+
+        // `b` moves from index 1 to index 0; the selection follows the id, not the slot.
+        map.set_markers(vec![
+            MapMarker::new("b", "B", 10.0, 0.0),
+            MapMarker::new("a", "A", 0.0, 0.0),
+        ]);
+
+        assert_eq!(map.selected_marker_id(), Some("b"));
+        assert!(
+            deselected.lock().map(|guard| guard.is_empty()).unwrap_or(true),
+            "a reorder is not a deselection"
+        );
+    }
+
+    /// A list handed straight to `set_markers` is deduped by id before anything can point at a
+    /// discarded marker.
+    #[test]
+    fn set_markers_drops_duplicate_ids_after_the_first() {
+        let mut map = MapView::new(Rect::new(0, 0, 400, 240));
+        map.set_markers(vec![
+            MapMarker::new("dup", "First", 0.0, 0.0),
+            MapMarker::new("other", "Other", 50.0, 0.0),
+            MapMarker::new("dup", "Second", 100.0, 0.0),
+        ]);
+
+        assert_eq!(map.markers().len(), 2, "the second `dup` was dropped");
+        assert_eq!(map.markers()[0].label, "First", "the first occurrence is kept");
+        assert_eq!(map.markers()[1].id, "other");
+
+        // Selection resolves to the retained first marker.
+        assert!(map.select_marker(0));
+        assert_eq!(map.selected_marker_id(), Some("dup"));
+
+        // The discarded marker's position is not a hit target.
+        let (sx, sy) = map.world_to_screen(100.0, 0.0);
+        assert!(
+            map.hit_marker_index(Point::new(sx as i32, sy as i32)).is_none(),
+            "the dropped duplicate must not be selectable"
+        );
+        let (sx, sy) = map.world_to_screen(0.0, 0.0);
+        assert_eq!(map.hit_marker_index(Point::new(sx as i32, sy as i32)), Some(0));
     }
 
     #[test]
@@ -1925,15 +2293,29 @@ mod tests {
         assert!(map.select_marker(1));
         assert_eq!(map.selected_marker_id(), Some("b"));
 
+        let deselected = Arc::new(Mutex::new(Vec::<String>::new()));
+        let sink = deselected.clone();
+        map.marker_deselected.connect(move |id| {
+            if let Ok(mut guard) = sink.lock() {
+                guard.push(id.as_ref().clone());
+            }
+        });
+
         // Removing a marker above the selection shifts it down, it does not clear it.
         let removed = map.remove_marker("a").expect("a exists");
         assert_eq!(removed.id, "a");
         assert_eq!(map.selected_marker_id(), Some("b"));
         assert_eq!(map.markers().len(), 1);
+        assert!(
+            deselected.lock().map(|guard| guard.is_empty()).unwrap_or(true),
+            "removing another marker is not a deselection"
+        );
 
-        // Removing the selected marker clears the selection.
+        // Removing the selected marker clears the selection and reports it.
         assert!(map.remove_marker("b").is_some());
         assert_eq!(map.selected_marker_id(), None);
+        let got = deselected.lock().ok().map(|guard| guard.clone()).unwrap_or_default();
+        assert_eq!(got, vec!["b".to_string()]);
     }
 
     #[test]
@@ -2014,6 +2396,18 @@ mod tests {
     }
 
     #[test]
+    fn a_non_finite_marker_is_neither_drawn_nor_clickable() {
+        // A negative origin makes `(0, 0)` an interior point, which is where a `NaN` coordinate
+        // used to land after the `f32`-to-`i32` cast.
+        let mut map = MapView::new(Rect::new(-100, -100, 400, 240));
+        map.set_markers(vec![MapMarker::new("bad", "Bad", f32::NAN, 0.0)]);
+
+        assert!(!map.marker_is_inside(0), "a NaN marker has no ink");
+        assert!(map.hit_marker_index(Point::new(0, 0)).is_none(), "a NaN marker has no hit box");
+        assert!(map.clusters().is_empty(), "a NaN marker forms no cluster");
+    }
+
+    #[test]
     fn marker_style_size_widens_the_hit_box() {
         let mut map = MapView::new(Rect::new(0, 0, 400, 240));
         map.set_markers(vec![MapMarker::new("big", "Big", 0.0, 0.0)
@@ -2022,6 +2416,29 @@ mod tests {
         assert!(map.hit_marker_index(Point::new(210, 120)).is_some());
         assert!(map.set_marker_style("big", MarkerStyle::new(Color::rgb(1, 2, 3), 6)));
         assert!(map.hit_marker_index(Point::new(210, 120)).is_none());
+    }
+
+    /// The pin's head is ink, so it is also part of the hit target.
+    ///
+    /// The hit test used to be a circle around the anchor while the head is painted above it, so
+    /// the top of a large pin could be seen and not clicked (and a pin near the pane's top edge
+    /// could be drawn outside it without the pane test noticing).
+    #[test]
+    fn the_pin_head_is_part_of_the_hit_target() {
+        let mut map = MapView::new(Rect::new(0, 0, 400, 240));
+        map.set_markers(vec![MapMarker::new("big", "Big", 0.0, 0.0)
+            .with_style(MarkerStyle::new(Color::rgb(1, 2, 3), 24))]);
+
+        // Anchor (200, 120); a 24 px pin's head starts at y = 96 and its tip ends at y = 132.
+        assert!(
+            map.hit_marker_index(Point::new(200, 98)).is_some(),
+            "the top of the pin's head is clickable"
+        );
+        assert!(map.hit_marker_index(Point::new(200, 131)).is_some(), "the tip is clickable");
+        assert!(
+            map.hit_marker_index(Point::new(200, 135)).is_none(),
+            "empty space below the tip is not clickable"
+        );
     }
 
     // ── COMP-13: map companions ────────────────────────────────────────────
@@ -2094,6 +2511,124 @@ mod tests {
         let _ = loader.load_tile(1, 1, 1);
         loader.clear_cache();
         assert_eq!(loader.cache_len(), 0);
+    }
+
+    /// Changing the source template forgets the old addresses instead of reporting them cached.
+    #[test]
+    fn changing_the_url_template_forgets_the_old_source_addresses() {
+        let mut loader = TileLoader::new(Rect::new(0, 0, 160, 24));
+        loader.set_url_template("https://old.example.org/{z}/{x}/{y}.png");
+        assert!(!loader.load_tile(2, 1, 3).expect("in range").cached);
+
+        loader.set_url_template("https://new.example.org/{z}/{x}/{y}.png");
+        let again = loader.load_tile(2, 1, 3).expect("in range");
+        assert!(!again.cached, "a new source must be fetched, not reused");
+        assert_eq!(again.url, "https://new.example.org/2/1/3.png");
+    }
+
+    /// Changing the tile extent drops payloads the new extent cannot describe.
+    #[test]
+    fn changing_the_tile_size_forgets_pixels_decoded_at_the_old_extent() {
+        let mut loader = TileLoader::new(Rect::new(0, 0, 160, 24));
+        let request = loader.load_tile(2, 1, 3).expect("in range");
+        assert!(loader.deliver_tile(request.key, vec![0; 256 * 256 * 4]));
+        assert!(loader.is_cached(request.key));
+
+        loader.set_tile_size(512);
+        let again = loader.load_tile(2, 1, 3).expect("in range");
+        assert!(!again.cached, "payloads at the old extent are not reusable");
+        assert!(!loader.is_cached(request.key));
+    }
+
+    /// A huge viewport cannot make `prefetch` walk one tile per pixel across the whole width.
+    #[test]
+    fn a_huge_viewport_does_not_enumerate_unbounded_tile_columns() {
+        let mut loader = TileLoader::new(Rect::new(0, 0, 1, 1));
+        loader.set_cache_limit(65536);
+
+        let requests = loader.prefetch(TileViewport::new(12, 0.0, 0.0, 1_000_000, 1));
+
+        assert!(
+            requests.len() <= 512,
+            "the capped grid must stay bounded, got {} requests",
+            requests.len()
+        );
+    }
+
+    /// The map's forwarded tile setters refresh the window the host fetches and repaint.
+    #[test]
+    fn tile_source_setters_refresh_the_map_window() {
+        let mut map = MapView::new(Rect::new(0, 0, 400, 300));
+        let requested = Arc::new(Mutex::new(0usize));
+        let sink = requested.clone();
+        map.tile_requested.connect(move |_| {
+            if let Ok(mut guard) = sink.lock() {
+                *guard += 1;
+            }
+        });
+
+        map.set_tile_url_template("https://new.example.org/{z}/{x}/{y}.png");
+        assert_eq!(map.tile_loader().url_template(), "https://new.example.org/{z}/{x}/{y}.png");
+        assert!(
+            requested.lock().map(|guard| *guard).unwrap_or(0) > 0,
+            "the new source's viewport is requested"
+        );
+
+        let before_size = requested.lock().map(|guard| *guard).unwrap_or(0);
+        map.set_tile_size(512);
+        assert_eq!(map.tile_loader().tile_size(), 512);
+        assert!(
+            requested.lock().map(|guard| *guard).unwrap_or(0) > before_size,
+            "a new tile extent requests the window again"
+        );
+    }
+
+    /// A loader whose minimum level is finer than the camera is clamped to a bounded grid.
+    ///
+    /// A sub-pixel tile is floored to one **screen pixel** of world, not one world unit, and the
+    /// paint/prefetch span is capped so the extreme case cannot enumerate the pane pixel by pixel.
+    #[test]
+    fn an_extreme_min_zoom_is_clamped_to_a_bounded_grid() {
+        let mut map = MapView::new(Rect::new(0, 0, 800, 600));
+        map.tile_loader_mut().set_zoom_range(22, 22);
+        map.set_zoom(8.0);
+        while map.tick(16) {}
+
+        let viewport = map.tile_viewport();
+        assert_eq!(viewport.zoom, 22);
+        let tile_pixels = viewport.tile_pixels.expect("the map reports the painted tile size");
+        assert!(
+            (tile_pixels - 1.0).abs() < 1e-6,
+            "a sub-pixel tile is clamped to one screen pixel, got {tile_pixels}"
+        );
+
+        let (cols, rows) = map.painted_tile_spans(&viewport);
+        assert_eq!((cols, rows), (MAX_PAINTED_TILES_PER_AXIS, MAX_PAINTED_TILES_PER_AXIS));
+        assert!(map.prefetch_tiles().len() <= map.tile_loader().cache_limit());
+    }
+
+    /// `map_view` no longer reports defaults for names it does not publish.
+    #[test]
+    fn map_view_defaults_cover_only_published_properties() {
+        for unpublished in [
+            "layer_count",
+            "anti_alias",
+            "show_grid",
+            "snap_to_grid",
+            "grid_step",
+            "zoom_range",
+            "zoom_step",
+        ] {
+            assert_eq!(
+                crate::maps::default_property_value("map_view", unpublished),
+                None,
+                "{unpublished} is not a published map_view property"
+            );
+        }
+        assert_eq!(
+            crate::maps::default_property_value("map_view", "marker_count"),
+            Some(CapabilityValue::UInt(0))
+        );
     }
 
     #[test]
@@ -2196,6 +2731,29 @@ mod tests {
         assert!((control.zoom_level() - 1.0).abs() < f32::EPSILON);
     }
 
+    /// A range change that clamps the level reports it, and one that does not stays silent.
+    #[test]
+    fn zoom_control_reports_the_level_a_range_change_clamps() {
+        let mut control = ZoomControl::new(Rect::new(0, 0, 96, 28));
+        control.set_zoom(8.0);
+        let requested = Arc::new(Mutex::new(Vec::<f32>::new()));
+        let sink = requested.clone();
+        control.zoom_requested.connect(move |level| {
+            if let Ok(mut guard) = sink.lock() {
+                guard.push(*level);
+            }
+        });
+
+        control.set_max(2.0);
+        assert!((control.zoom_level() - 2.0).abs() < f32::EPSILON);
+        let got = requested.lock().ok().map(|guard| guard.clone()).unwrap_or_default();
+        assert_eq!(got, vec![2.0], "the clamped level is a committed change");
+
+        control.set_max(4.0);
+        let got = requested.lock().ok().map(|guard| guard.clone()).unwrap_or_default();
+        assert_eq!(got, vec![2.0], "a range change that keeps the level reports nothing");
+    }
+
     #[test]
     fn zoom_control_buttons_are_hit_and_do_their_jobs() {
         let mut control = ZoomControl::new(Rect::new(0, 0, 96, 28));
@@ -2275,6 +2833,56 @@ mod tests {
         assert!((compass.bearing_deg() - 90.0).abs() < 0.001);
         compass.set("bearing_deg", CapabilityValue::Float(180.0)).expect("bearing property");
         assert!((compass.bearing_deg() - 180.0).abs() < 0.001);
+    }
+
+    /// A press on the compass only returns the map to north when the dial was actually hit.
+    ///
+    /// The map's press handler used to reset the bearing for any press inside the compass'
+    /// bounding box, whether the pointer was on the dial or the control was clickable at all.
+    #[test]
+    fn a_disabled_or_off_dial_compass_press_does_not_reset_north() {
+        let mut map = MapView::new(Rect::new(0, 0, 400, 300));
+        // The first event lays the companions out.
+        map.handle_event(&Event::mouse_press(10, 10, 1));
+        map.handle_event(&Event::mouse_release(10, 10, 1));
+        let dial = map.compass().base().geometry();
+        let center = Point::new(dial.x + dial.width as i32 / 2, dial.y + dial.height as i32 / 2);
+
+        map.compass_mut().set_bearing(90.0);
+        map.compass_mut().set_clickable(false);
+        map.handle_event(&Event::mouse_press(center.x, center.y, 1));
+        assert_eq!(map.compass().bearing_deg(), 90.0, "a non-clickable compass must not reset");
+
+        map.compass_mut().set_clickable(true);
+        map.handle_event(&Event::mouse_press(dial.x + 1, dial.y + 1, 1));
+        assert_eq!(
+            map.compass().bearing_deg(),
+            90.0,
+            "the dial, not its bounding box, is the target"
+        );
+
+        map.handle_event(&Event::mouse_press(center.x, center.y, 1));
+        assert_eq!(map.compass().bearing_deg(), 0.0, "a dial press resets north");
+    }
+
+    /// A disabled compass keeps its bearing: the map's own reset predicate honours `enabled`.
+    ///
+    /// The companion returns early when disabled and emits no reset request, but the map
+    /// recomputed the condition without that gate and moved the needle anyway.
+    #[test]
+    fn a_disabled_compass_press_does_not_reset_north() {
+        let mut map = MapView::new(Rect::new(0, 0, 400, 300));
+        map.handle_event(&Event::mouse_press(10, 10, 1));
+        map.handle_event(&Event::mouse_release(10, 10, 1));
+        let dial = map.compass().base().geometry();
+        let center = Point::new(dial.x + dial.width as i32 / 2, dial.y + dial.height as i32 / 2);
+
+        map.compass_mut().set_bearing(90.0);
+        map.compass_mut()
+            .set("enabled", CapabilityValue::Bool(false))
+            .expect("enabled is writable");
+        map.handle_event(&Event::mouse_press(center.x, center.y, 1));
+        assert_eq!(map.compass().bearing_deg(), 90.0, "a disabled compass must not reset");
     }
 
     /// The map mounts the zoom strip, compass and scale bar: a press on the strip's `+` cell zooms
@@ -2388,11 +2996,311 @@ mod tests {
         map.handle_event(&Event::pinch_at(1.5, anchor.x, anchor.y));
 
         assert!(map.zoom() > before_zoom, "a spread zooms in");
+        // The centre is computed for the destination zoom, while the driver still paints the old
+        // one on the event frame; settle the transition before measuring the anchored point.
+        while map.tick(16) {}
         let zoom_after = map.painted_zoom().max(0.0001);
         let world_after = map.center_x + (anchor.x as f32 - center_px) / zoom_after;
         assert!(
             (world_before - world_after).abs() < 0.5,
             "the anchored world point stays put: {world_before} vs {world_after}"
+        );
+    }
+
+    /// A wheel zoom anchors the world point under the pointer at the destination zoom.
+    ///
+    /// The defect this pins: `zoom_at` divided by `painted_zoom` after `set_zoom`, which leaves
+    /// the driver at its "from" endpoint, so the centre was adjusted by the old zoom and never
+    /// moved — the anchor slid away even though the stored zoom was correct.
+    #[test]
+    fn wheel_zoom_keeps_the_world_point_under_the_pointer() {
+        let mut map = MapView::new(Rect::new(0, 0, 400, 240));
+        let anchor = Point::new(90, 70);
+        map.handle_event(&Event::mouse_move(anchor.x, anchor.y));
+
+        let rect = map.geometry();
+        let center_px = rect.x as f32 + rect.width as f32 / 2.0;
+        let center_py = rect.y as f32 + rect.height as f32 / 2.0;
+        let zoom_before = map.painted_zoom().max(0.0001);
+        let (cx, cy) = map.center();
+        let world_before = (
+            cx + (anchor.x as f32 - center_px) / zoom_before,
+            cy + (anchor.y as f32 - center_py) / zoom_before,
+        );
+
+        map.handle_event(&Event::wheel(0, -120, 0));
+        assert!(map.zoom() > zoom_before, "the wheel zooms in");
+        while map.tick(250) {}
+
+        let zoom_after = map.painted_zoom().max(0.0001);
+        let (cx, cy) = map.center();
+        let world_after = (
+            cx + (anchor.x as f32 - center_px) / zoom_after,
+            cy + (anchor.y as f32 - center_py) / zoom_after,
+        );
+        assert!(
+            (world_before.0 - world_after.0).abs() < 0.01
+                && (world_before.1 - world_after.1).abs() < 0.01,
+            "the anchored world point stays put: {world_before:?} vs {world_after:?}"
+        );
+    }
+
+    /// A zoom change asks the host for the tile level the animation is heading for.
+    ///
+    /// `painted_zoom` still reports the old level on the frame `set_zoom` runs, so the sweep used
+    /// to request the level being left and never the destination level until the next gesture.
+    #[test]
+    fn a_zoom_change_requests_the_destination_tile_level() {
+        let mut map = MapView::new(Rect::new(0, 0, 400, 300));
+        let requested = Arc::new(Mutex::new(Vec::<TileKey>::new()));
+        let sink = requested.clone();
+        map.tile_requested.connect(move |request| {
+            if let Ok(mut guard) = sink.lock() {
+                guard.push(request.key);
+            }
+        });
+
+        map.set_zoom(2.0);
+
+        let got = requested.lock().ok().map(|guard| guard.clone()).unwrap_or_default();
+        assert!(!got.is_empty(), "the destination viewport was requested");
+        assert!(got.iter().all(|key| key.zoom == 1), "asked for level 0 instead of 1: {got:?}");
+    }
+
+    /// A fractional zoom prefetches the edge tiles the paint actually draws.
+    ///
+    /// Counting columns from the loader's `tile_size` assumes one source tile per `tile_size`
+    /// pixels; at `painted / 2^zoom < 1` a tile is painted smaller, so the rightmost column was
+    /// never asked for and stayed blank.
+    #[test]
+    fn a_fractional_zoom_prefetches_the_edge_tiles_the_paint_draws() {
+        let mut map = MapView::new(Rect::new(0, 0, 700, 300));
+        map.set_center(100.0, 0.0);
+        map.set_zoom(3.0);
+        while map.tick(16) {}
+        map.tile_loader_mut().clear_cache();
+
+        let viewport = map.tile_viewport();
+        assert_eq!(viewport.zoom, 2);
+        let tile_pixels = viewport.tile_pixels.expect("the map reports the painted tile size");
+        assert!((tile_pixels - 192.0).abs() < 0.001, "tile pixels were {tile_pixels}");
+        let last_col = ((viewport.x + f64::from(viewport.width) / tile_pixels).floor()) as i64;
+        assert!(last_col > 0 && last_col < i64::from(TileKey::tiles_per_axis(viewport.zoom)));
+
+        let requests = map.prefetch_tiles();
+        assert!(
+            requests.iter().any(|request| i64::from(request.key.x) == last_col),
+            "the right edge column {last_col} must be requested"
+        );
+    }
+
+    /// Changing the projection moves the visible tile rows, so the host is asked for the new
+    /// window instead of keeping the one the previous projection produced.
+    #[test]
+    fn changing_the_projection_refreshes_the_tile_window() {
+        let mut map = MapView::new(Rect::new(0, 0, 400, 300));
+        let requested = Arc::new(Mutex::new(0usize));
+        let sink = requested.clone();
+        map.tile_requested.connect(move |_| {
+            if let Ok(mut guard) = sink.lock() {
+                *guard += 1;
+            }
+        });
+
+        map.set_projection(MapProjection::Mercator);
+
+        assert!(
+            requested.lock().map(|guard| *guard).unwrap_or(0) > 0,
+            "the new projection's viewport is requested"
+        );
+    }
+
+    /// Losing focus ends a pan, so a later move does not keep dragging an unseen pointer.
+    #[test]
+    fn focus_loss_ends_a_drag() {
+        let mut map = MapView::new(Rect::new(0, 0, 400, 240));
+        map.set_map_controls_visible(false);
+        map.handle_event(&Event::mouse_press(10, 10, 1));
+        map.handle_event(&Event::mouse_move(60, 40));
+        let panned = map.center();
+        assert_ne!(panned, (0.0, 0.0), "the press started a pan");
+
+        map.handle_event(&Event::FocusLost);
+        map.handle_event(&Event::mouse_move(120, 80));
+
+        assert_eq!(map.center(), panned, "a lost focus must not keep panning");
+    }
+
+    /// A marker's id is its identity: adding an existing id replaces that entry.
+    #[test]
+    fn add_marker_keeps_marker_ids_unique() {
+        let mut map = MapView::new(Rect::new(0, 0, 320, 200));
+        map.add_marker(MapMarker::new("a", "Alpha", 0.0, 0.0));
+        let index = map.add_marker(MapMarker::new("a", "Alpha again", 10.0, 10.0));
+        assert_eq!(index, 0, "the existing entry is the marker with that id");
+        assert_eq!(map.markers().len(), 1);
+
+        let read_back = map.get("markers").expect("markers reads");
+        assert!(
+            map.set("markers", read_back).is_ok(),
+            "the published list must round-trip through its own schema"
+        );
+    }
+
+    /// The hit test picks the pin that is painted on top.
+    #[test]
+    fn the_hit_test_picks_the_painted_topmost_pin() {
+        let mut map = MapView::new(Rect::new(0, 0, 400, 240));
+        map.set_markers(vec![
+            MapMarker::new("under", "Under", 0.0, 0.0)
+                .with_style(MarkerStyle::new(Color::BLACK, 24)),
+            MapMarker::new("over", "Over", 0.0, 0.0).with_style(MarkerStyle::new(Color::WHITE, 24)),
+        ]);
+        let bounds = map.marker_bounds(1).expect("the top pin has a box");
+        let point =
+            Point::new(bounds.x + bounds.width as i32 / 2, bounds.y + bounds.height as i32 / 2);
+        assert_eq!(map.hit_marker_index(point), Some(1), "the visible pin is the target");
+    }
+
+    /// A member of a multi-marker cluster paints no pin, so it is not a hit target either.
+    #[test]
+    fn clustered_members_have_no_individual_hit_box() {
+        let mut map = MapView::new(Rect::new(0, 0, 400, 240));
+        map.set_markers(vec![
+            MapMarker::new("a", "A", -15.0, 0.0),
+            MapMarker::new("b", "B", 15.0, 0.0),
+        ]);
+        map.set_cluster_markers(true);
+        let clusters = map.clusters();
+        assert_eq!(clusters.len(), 1, "the two pins fall into one cell");
+        assert_eq!(clusters[0].indices.len(), 2);
+        let badge =
+            Point::new(clusters[0].screen.0.round() as i32, clusters[0].screen.1.round() as i32);
+        assert!(map.cluster_at(badge).is_some(), "the badge itself is the target");
+
+        let bounds = map.marker_bounds(0).expect("the member still has geometry");
+        let member = Point::new(bounds.x + 1, bounds.y + bounds.height as i32 / 2);
+        assert_eq!(map.hit_marker_index(member), None, "a clustered member has no ink to hit");
+    }
+
+    /// A centre-anchored zoom does not report a centre change.
+    #[test]
+    fn a_centre_anchored_zoom_reports_no_centre_change() {
+        let mut map = MapView::new(Rect::new(0, 0, 400, 240));
+        map.handle_event(&Event::mouse_move(200, 120));
+        let changes = Arc::new(Mutex::new(0usize));
+        let sink = changes.clone();
+        map.center_changed.connect(move |_| {
+            if let Ok(mut guard) = sink.lock() {
+                *guard += 1;
+            }
+        });
+
+        map.handle_event(&Event::wheel(0, -120, 0));
+
+        assert!(map.zoom() > 1.0, "the wheel still zooms");
+        assert_eq!(map.center(), (0.0, 0.0));
+        assert_eq!(*changes.lock().unwrap(), 0, "the centre did not move");
+    }
+
+    /// A parent fallback is painted under a delivered child, never over it.
+    #[test]
+    fn a_parent_fallback_never_covers_a_delivered_child() {
+        use rust_widgets::render::PaintBackend as _;
+
+        let mut map = MapView::new(Rect::new(0, 0, 256, 256));
+        map.set_center(128.0, 128.0);
+        // At painted zoom 2 the visible block is the four level-1 tiles in (0..=1, 0..=1); the
+        // level-0 tile is exactly their parent.
+        map.set_zoom(2.0);
+        while map.tick(16) {}
+        let parent = TileKey::new(0, 0, 0);
+        let child = TileKey::new(1, 0, 0);
+        map.tile_loader_mut().load_tile(0, 0, 0).expect("parent in range");
+        map.tile_loader_mut().load_tile(1, 0, 0).expect("child in range");
+        assert!(map.deliver_tile(parent, [255, 0, 0, 255].repeat(256 * 256)));
+        assert!(map.deliver_tile(child, [0, 0, 255, 255].repeat(256 * 256)));
+
+        let mut backend = rust_widgets::render::SoftwarePaintBackend::new(
+            rust_widgets::core::Size::new(256, 256),
+            1.0,
+        );
+        backend.begin_frame(rust_widgets::core::Color::BLACK);
+        {
+            let mut context = RenderContext::new(&mut backend);
+            map.draw(&mut context);
+        }
+        backend.end_frame();
+        let rgba = backend.frame_rgba();
+        // The delivered child is the top-left quadrant; its centre must be its own colour.
+        let index = (64 * 256 + 64) * 4;
+        let pixels = rgba.as_chunks::<4>().0;
+        let blue = pixels.iter().filter(|pixel| **pixel == [0, 0, 255, 255]).count();
+        let red = pixels.iter().filter(|pixel| **pixel == [255, 0, 0, 255]).count();
+        assert_eq!(
+            &rgba[index..index + 4],
+            &[0, 0, 255, 255],
+            "the delivered child survives the fallback blit (blue={blue}, red={red})"
+        );
+    }
+
+    /// The strip is only mirrored during a paint, so a press after a programmatic zoom stepped
+    /// from the stale level and could even zoom the map *out* on the `+` cell.
+    #[test]
+    fn a_plus_press_after_a_programmatic_zoom_steps_from_the_camera() {
+        let mut map = MapView::new(Rect::new(0, 0, 400, 300));
+        // The first event places the companions; the strip is 96 px wide at the top-right, so the
+        // `+` cell is the third of three 30 px buttons.
+        map.handle_event(&Event::mouse_press(10, 10, 1));
+        map.handle_event(&Event::mouse_release(10, 10, 1));
+        map.set_zoom(4.0);
+
+        map.handle_event(&Event::mouse_press(370, 12, 1));
+        assert!(map.zoom() > 4.0, "the + cell must step up from the camera's level, not down");
+    }
+
+    /// A companion laid out outside a small map is not painted or hit-tested.
+    ///
+    /// Its box can extend past the pane (the strip is 96 px wide), and events stop at the map's
+    /// own bounds: the out-of-bounds half used to be ink over a neighbour and a dead target.
+    #[test]
+    fn controls_that_do_not_fit_are_not_hit() {
+        let mut map = MapView::new(Rect::new(0, 0, 80, 80));
+        let before = map.zoom();
+        map.handle_event(&Event::mouse_press(60, 10, 1));
+        assert!((map.zoom() - before).abs() < f32::EPSILON, "a strip outside the pane cannot zoom");
+    }
+
+    /// Under Mercator the badge sits under the mean projected ordinate, so that is the world point
+    /// the press must report; averaging raw latitudes landed off the badge.
+    #[test]
+    fn a_cluster_reports_the_world_point_under_its_badge() {
+        let mut map = MapView::new(Rect::new(0, 0, 400, 300));
+        map.set_projection(MapProjection::Mercator);
+        map.set_zoom(0.25);
+        // Settle the zoom transition: the painted zoom, and so the badge's place, is the
+        // interpolated value until the animation finishes.
+        Widget::tick(&mut map, 1000);
+        map.set_cluster_markers(true);
+        map.add_marker(MapMarker::new("a", "A", 0.0, 0.0));
+        map.add_marker(MapMarker::new("b", "B", 0.0, 60.0));
+
+        let clicked = Arc::new(Mutex::new(Vec::<(f32, f32)>::new()));
+        let sink = clicked.clone();
+        map.cluster_clicked.connect(move |point| {
+            if let Ok(mut guard) = sink.lock() {
+                guard.push(*point);
+            }
+        });
+
+        // Both pins fall in one 36 px cell at this zoom; the badge is their screen mean.
+        map.handle_event(&Event::mouse_press(200, 159, 1));
+        let got = clicked.lock().ok().map(|guard| guard.clone()).unwrap_or_default();
+        assert_eq!(got.len(), 1, "the badge is a target of its own");
+        let (_, latitude) = got[0];
+        assert!(
+            latitude > 34.0 && latitude < 37.0,
+            "the payload is the latitude under the badge, got {latitude}"
         );
     }
 }

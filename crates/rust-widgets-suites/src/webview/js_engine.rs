@@ -209,7 +209,9 @@ pub type JsResult<T> = Result<T, JsError>;
 ///
 /// A context must be passed explicitly to every [`JsEngine`] call rather than
 /// being owned by the engine, which is what lets several engines share (or each
-/// keep separate) globals. It is a plain value type with no interior mutability.
+/// keep separate) globals: an engine imports the context's globals before running
+/// a script and writes them back afterwards. It is a plain value type with no
+/// interior mutability.
 #[derive(Debug, Clone)]
 pub struct JsContext {
     global: HashMap<String, JsValue>,
@@ -266,6 +268,13 @@ impl JsContext {
     pub fn get_global(&self, name: &str) -> Option<&JsValue> {
         self.global.get(name)
     }
+    /// Iterates every global defined in this context.
+    ///
+    /// An engine imports these before a script runs, so a value written through
+    /// [`Self::set_global`] is visible to the next evaluation.
+    pub fn globals(&self) -> impl Iterator<Item = (&String, &JsValue)> {
+        self.global.iter()
+    }
     /// All console output captured so far, in call order.
     pub fn console_messages(&self) -> &[ConsoleMessage] {
         &self.console_messages
@@ -291,9 +300,10 @@ crate::impl_default_via_new!(JsContext);
 /// The abstraction the rest of the library evaluates JavaScript through.
 ///
 /// Implementations must be `Send + Sync` because engines are shared behind a
-/// mutex (see [`SharedJsEngine`]). Globals live in the caller-supplied
-/// [`JsContext`], not in the engine, so an engine holds no per-script state that
-/// caller could not inspect.
+/// mutex (see [`SharedJsEngine`]). Globals are exchanged with the caller through
+/// the [`JsContext`] passed to every call: `SimpleJsEngine` imports the context's
+/// globals before a script runs and writes its own back afterwards, so a host can
+/// seed and inspect them.
 pub trait JsEngine: Send + Sync {
     /// Evaluates a complete `script` and returns its value.
     ///
@@ -337,14 +347,13 @@ pub trait JsEngine: Send + Sync {
 ///
 /// # What it does not do
 ///
-/// An argument that is itself an expression (`f(a + 1)`) is not evaluated: arguments are
-/// read as literals, so a bare identifier there becomes `undefined`. Pass the computed
-/// value from the caller or bind it to a variable first. There are no escapes inside
-/// string literals, and no arrow functions (`=>`).
+/// An argument that is itself an expression (`f(a + 1)`) is evaluated like any other
+/// expression, and a bare identifier argument reads its variable (an identifier that was
+/// never defined is `undefined`). There are no escapes inside string literals, and no arrow
+/// functions (`=>`).
 ///
-/// Globals are stored in the engine as well as in the passed [`JsContext`], and
-/// the context argument is ignored by the [`JsEngine`] methods, so two calls
-/// sharing one context still share nothing through the engine's own map.
+/// Globals are stored in the engine and mirrored into the passed [`JsContext`] after every
+/// [`JsEngine::evaluate`] call, so a host can inspect and seed them through the context.
 pub struct SimpleJsEngine {
     variables: HashMap<String, JsValue>,
     /// Defined functions (name -> FunctionDef)
@@ -421,8 +430,12 @@ impl SimpleJsEngine {
         // A trailing call is resolved here too, so an expression like `parseInt(x) + 1`
         // works: [`Self::eval_expression`] splits on operators and hands each operand to
         // this function, and a function call is an operand.
-        if let Some(call) = parse_call(s) {
-            if let Ok(value) = self.call_function(&call.0, &call.1, &mut JsContext::new()) {
+        if let Some((name, raw_args)) = parse_call(s) {
+            let mut evaluated = Vec::with_capacity(raw_args.len());
+            for arg in &raw_args {
+                evaluated.push(self.eval_expression(arg).unwrap_or(JsValue::Undefined));
+            }
+            if let Ok(value) = self.call_function(&name, &evaluated, &mut JsContext::new()) {
                 return value;
             }
         }
@@ -515,21 +528,16 @@ impl SimpleJsEngine {
         if let Some(value) = self.variables.get(expr) {
             return Ok(value.clone());
         }
-        if let Some((name, args)) = parse_call(expr) {
+        if let Some((name, raw_args)) = parse_call(expr) {
             let mut ctx = JsContext::new();
-            // Arguments are evaluated here so `f(a) + 1` reads `a`; `parse_call` can only
-            // see literals, so an identifier argument is resolved against the variables
-            // before the call.
-            let args: Vec<JsValue> = args
-                .into_iter()
-                .map(|arg| match arg {
-                    JsValue::String(token) => {
-                        self.eval_expression(&token).unwrap_or(JsValue::Undefined)
-                    }
-                    other => other,
-                })
-                .collect();
-            return self.call_function(&name, &args, &mut ctx);
+            // Arguments are expressions: a quoted literal stays a string, a bare identifier
+            // reads its variable, and `f(a + 1)` really computes the sum. Passing the raw
+            // text through a literal parser turned `String('hello')` into `"undefined"`.
+            let mut evaluated = Vec::with_capacity(raw_args.len());
+            for arg in &raw_args {
+                evaluated.push(self.eval_expression(arg).unwrap_or(JsValue::Undefined));
+            }
+            return self.call_function(&name, &evaluated, &mut ctx);
         }
         Ok(self.parse_literal(expr))
     }
@@ -541,7 +549,9 @@ impl SimpleJsEngine {
         if block.is_empty() {
             return Ok(JsValue::Undefined);
         }
-        // Split into top-level semicolons (naive; does not split inside {}, [], "", '').
+        // Split into top-level semicolons. Brackets and quoted strings are respected, so
+        // a `;`, `{` or `}` inside a literal does not split the statement (comments and
+        // escapes are still not handled).
         //
         // `char_indices` rather than `block.chars().collect::<Vec<_>>()`: the collected
         // vector was one heap allocation per block (and blocks nest), only to recover byte
@@ -554,9 +564,19 @@ impl SimpleJsEngine {
         } else {
             let mut parsed = Vec::new();
             let mut depth = 0usize;
+            let mut quote: Option<char> = None;
             let mut start = 0usize;
             for (i, ch) in block.char_indices() {
+                if let Some(open) = quote {
+                    // Inside a string literal: only the matching quote closes it, so every
+                    // delimiter up to that point is ordinary text.
+                    if ch == open {
+                        quote = None;
+                    }
+                    continue;
+                }
                 match ch {
+                    '"' | '\'' => quote = Some(ch),
                     '{' | '[' | '(' => depth += 1,
                     '}' | ']' | ')' => depth = depth.saturating_sub(1),
                     ';' if depth == 0 => {
@@ -618,6 +638,42 @@ impl SimpleJsEngine {
                 stmt.len(),
             ));
         }
+        // --- var / let / const declaration ---
+        //
+        // A declaration normally reaches `evaluate`'s dedicated arm, but one whose initialiser
+        // contains a `;` (inside a string literal) was routed here instead. Without this arm the
+        // fallback below read `var s = ...` as an assignment and created a variable called
+        // `var s`, silently losing the declaration.
+        if let Some(rest) = stmt
+            .strip_prefix("var ")
+            .or_else(|| stmt.strip_prefix("let "))
+            .or_else(|| stmt.strip_prefix("const "))
+        {
+            let rest = rest.trim();
+            if let Some(eq_pos) = rest.find('=') {
+                let name = rest[..eq_pos].trim();
+                if name.is_empty() {
+                    return Err(JsError::at_offset(
+                        "Declaration needs a name".to_string(),
+                        stmt,
+                        stmt.len(),
+                    ));
+                }
+                let value = self.eval_expression(rest[eq_pos + 1..].trim())?;
+                self.variables.insert(name.to_string(), value.clone());
+                return Ok(value);
+            }
+            let name = rest.trim_end_matches(';').trim();
+            if name.is_empty() {
+                return Err(JsError::at_offset(
+                    "Declaration needs a name".to_string(),
+                    stmt,
+                    stmt.len(),
+                ));
+            }
+            self.variables.insert(name.to_string(), JsValue::Undefined);
+            return Ok(JsValue::Undefined);
+        }
         // --- function definition ---
         if let Some(rest) = stmt.strip_prefix("function ") {
             // function name ( params ) { body }
@@ -662,7 +718,7 @@ impl SimpleJsEngine {
             let cond_start = stmt.find('(').ok_or_else(|| {
                 JsError::at_offset("Expected '(' after 'if'".to_string(), stmt, stmt.len())
             })?;
-            let cond_end = stmt[cond_start..].find(')').ok_or_else(|| {
+            let cond_end = matching_paren(&stmt[cond_start..]).ok_or_else(|| {
                 JsError::at_offset("Unclosed condition in 'if'".to_string(), stmt, stmt.len())
             })?;
             let condition = stmt[cond_start + 1..cond_start + cond_end].trim();
@@ -696,7 +752,10 @@ impl SimpleJsEngine {
             let paren_start = stmt.find('(').ok_or_else(|| {
                 JsError::at_offset("Expected '(' after 'for'".to_string(), stmt, stmt.len())
             })?;
-            let paren_end = stmt[paren_start..].find(')').ok_or_else(|| {
+            // Matched, not `find(')'`: the first `)` can belong to a nested call, which
+            // truncated `if (parseInt("5") > 3)` at `parseInt("5"` and silently took the
+            // else branch.
+            let paren_end = matching_paren(&stmt[paren_start..]).ok_or_else(|| {
                 JsError::at_offset("Unclosed 'for' condition".to_string(), stmt, stmt.len())
             })?;
             let header = stmt[paren_start + 1..paren_start + paren_end].trim();
@@ -727,7 +786,10 @@ impl SimpleJsEngine {
             }
             // Loop
             let mut completed = false;
-            for _ in 0..10000 {
+            // `0..=10000`: the range's last iteration is the condition test that ends an
+            // exactly-10000-iteration loop. `0..10000` ran the body 10000 times but never
+            // re-tested, so a loop that finishes on its 10000th pass was reported as runaway.
+            for _ in 0..=10000 {
                 let cond_val = self.eval_expression(&loop_cond)?;
                 if !cond_val.is_truthy() {
                     completed = true;
@@ -935,6 +997,15 @@ fn find_top_level_operator<'a>(text: &str, operators: &[&'a str]) -> Option<(usi
                 {
                     continue;
                 }
+                // Only the start of an operator token counts. `===` also matched a trailing
+                // `==` one byte later, and the rightmost-candidate rule then picked that inner
+                // one, so `1 === 1` evaluated as `==` over a stray `=` operand.
+                if (operator == &"==" || operator == &"!=")
+                    && index > 0
+                    && matches!(bytes[index - 1], b'=' | b'!')
+                {
+                    continue;
+                }
                 candidates.push((index, operator));
                 break;
             }
@@ -961,8 +1032,10 @@ fn apply_operator(operator: &str, left: &JsValue, right: &JsValue) -> JsValue {
         // already produces exactly those values.
         "/" => JsValue::Number(left.to_number() / right.to_number()),
         "%" => JsValue::Number(left.to_number() % right.to_number()),
-        "==" | "===" => JsValue::Boolean(loose_equals(left, right)),
-        "!=" | "!==" => JsValue::Boolean(!loose_equals(left, right)),
+        "==" => JsValue::Boolean(loose_equals(left, right)),
+        "!=" => JsValue::Boolean(!loose_equals(left, right)),
+        "===" => JsValue::Boolean(strict_equals(left, right)),
+        "!==" => JsValue::Boolean(!strict_equals(left, right)),
         "<" => JsValue::Boolean(compare(left, right) == Some(core::cmp::Ordering::Less)),
         ">" => JsValue::Boolean(compare(left, right) == Some(core::cmp::Ordering::Greater)),
         "<=" => JsValue::Boolean(matches!(
@@ -995,6 +1068,45 @@ fn loose_equals(left: &JsValue, right: &JsValue) -> bool {
     }
 }
 
+/// Equality with no coercion (`===`): both operands must have the same variant and the
+/// same value.
+///
+/// The parser deliberately keeps `===`/`!==` distinct from `==`/`!=`, so throwing that
+/// distinction away here made `1 === '1'` and `null === undefined` true.
+fn strict_equals(left: &JsValue, right: &JsValue) -> bool {
+    match (left, right) {
+        (JsValue::Number(a), JsValue::Number(b)) => a == b,
+        (JsValue::String(a), JsValue::String(b)) => a == b,
+        (JsValue::Boolean(a), JsValue::Boolean(b)) => a == b,
+        (JsValue::Null, JsValue::Null) | (JsValue::Undefined, JsValue::Undefined) => true,
+        // Arrays and functions are reference values; this engine has no identity tracking,
+        // so two distinct literals are never strictly equal (matching JS).
+        _ => false,
+    }
+}
+
+/// Parses the integer prefix of `text`, the way ECMAScript's `parseInt` does.
+///
+/// Digits are read until the first non-digit (`"12px"` is `12`), a leading sign is kept, and
+/// text with no digit at all is `NaN`. The plain `str::parse::<f64>` used before required the
+/// whole string to be numeric and returned a fraction for `parseInt(3.9)`.
+fn parse_int_text(text: &str) -> f64 {
+    let text = text.trim();
+    let mut end = 0usize;
+    for (index, ch) in text.char_indices() {
+        let sign = index == 0 && (ch == '+' || ch == '-');
+        if !sign && !ch.is_ascii_digit() {
+            break;
+        }
+        end = index + ch.len_utf8();
+    }
+    let digits = &text[..end];
+    if digits.is_empty() || digits == "+" || digits == "-" {
+        return f64::NAN;
+    }
+    digits.parse().unwrap_or(f64::NAN)
+}
+
 /// Ordering for the comparison operators, or `None` when the operands are not comparable.
 ///
 /// Two strings compare lexicographically (the `"a" < "b"` a caller expects); a numeric
@@ -1008,9 +1120,13 @@ fn compare(left: &JsValue, right: &JsValue) -> Option<core::cmp::Ordering> {
     }
 }
 
-/// Parses `name(args)` into the name and its evaluated arguments, or `None` when `text`
+/// Parses `name(args)` into the name and its raw argument texts, or `None` when `text`
 /// is not a call wrapped around the whole expression.
-fn parse_call(text: &str) -> Option<(String, Vec<JsValue>)> {
+///
+/// The arguments stay textual because only the caller can evaluate them: this free
+/// function cannot see the engine's variables, and a quoted literal's content must not be
+/// mistaken for an identifier.
+fn parse_call(text: &str) -> Option<(String, Vec<String>)> {
     let text = text.trim();
     let open = text.find('(')?;
     // The parenthesised part must be the tail: `f(1) + 2` is an expression, not a call,
@@ -1024,45 +1140,7 @@ fn parse_call(text: &str) -> Option<(String, Vec<JsValue>)> {
     }
     let inner = &text[open + 1..text.len() - 1];
     let args = split_top_level(inner);
-    // Argument *parsing* is deferred to the engine's own literal parser so a call site
-    // does not need a mutable borrow here; nested arithmetic in an argument is therefore
-    // not evaluated, which the module docs state.
-    let parsed: Vec<JsValue> = args.iter().map(|arg| literal_value(arg)).collect();
-    Some((name.to_string(), parsed))
-}
-
-/// A free function version of the literal parse, for [`parse_call`]'s arguments.
-///
-/// Kept separate from `SimpleJsEngine::parse_literal` because it cannot see the engine's
-/// variables: an argument that is a bare identifier becomes `Undefined` here, and the
-/// caller's own binding is used by `call_function` instead.
-fn literal_value(text: &str) -> JsValue {
-    let text = text.trim();
-    if text == "undefined" {
-        return JsValue::Undefined;
-    }
-    if text == "null" {
-        return JsValue::Null;
-    }
-    if text == "true" {
-        return JsValue::Boolean(true);
-    }
-    if text == "false" {
-        return JsValue::Boolean(false);
-    }
-    if text.len() >= 2 && text.starts_with('"') && text.ends_with('"') {
-        return JsValue::String(text[1..text.len() - 1].to_string());
-    }
-    if text.len() >= 2 && text.starts_with('\'') && text.ends_with('\'') {
-        return JsValue::String(text[1..text.len() - 1].to_string());
-    }
-    if let Ok(number) = text.parse::<f64>() {
-        return JsValue::Number(number);
-    }
-    // A bare identifier reaches the caller as a `String` token so a custom built-in can
-    // read a global by name; the engine's own built-ins use `to_number()`, which treats an
-    // unparsable string as `NaN`, so a mis-typed argument still behaves like JS.
-    JsValue::String(text.to_string())
+    Some((name.to_string(), args))
 }
 
 /// Whether `script` begins a construct only [`SimpleJsEngine::eval_stmt`] understands.
@@ -1139,77 +1217,100 @@ impl JsEngine for SimpleJsEngine {
     /// Handles `console.*(...)` calls and top-level `var`/`let`/`const`
     /// declarations directly, deferring everything else to an internal statement
     /// evaluator. Leading/trailing whitespace is ignored, and an empty script
-    /// evaluates to [`JsValue::Undefined`]. Note that declarations are stored in
-    /// the engine, so they persist across calls regardless of which
-    /// [`JsContext`] is passed.
+    /// evaluates to [`JsValue::Undefined`]. The context's globals are imported before
+    /// the script runs and the engine's are written back afterwards, so declarations
+    /// persist both in the engine and in the context it was handed.
     fn evaluate(&mut self, script: &str, context: &mut JsContext) -> JsResult<JsValue> {
-        let script = script.trim();
-        if script.is_empty() {
-            return Ok(JsValue::Undefined);
+        // The context is the shared namespace: import its globals so a value a host wrote
+        // through `JsContext::set_global` (or another engine sharing this context) is visible.
+        for (name, value) in context.globals() {
+            self.variables.insert(name.clone(), value.clone());
         }
-        // --- console.log / console.info ---
-        if script.starts_with("console.log(")
-            || script.starts_with("console.info(")
-            || script.starts_with("console.warn(")
-            || script.starts_with("console.error(")
-            || script.starts_with("console.debug(")
-        {
-            let start = script.find('(').ok_or_else(|| {
-                JsError::at_offset("Missing '(' in console call".to_string(), script, script.len())
-            })? + 1;
-            let end = script.rfind(')').ok_or_else(|| {
-                JsError::at_offset("Missing ')' in console call".to_string(), script, script.len())
-            })?;
-            let content = &script[start..end];
-            let value = self.eval_expression(content)?;
-            context.log(value.to_string());
-            return Ok(value);
-        }
-        // --- var / let / const declarations ---
-        //
-        // Only a **declaration-only** script is handled here, so that the declaration's
-        // initialiser is stored. A script that continues past the declaration
-        // (`var a = 3; a + 1`) goes to the block evaluator, which evaluates the
-        // declaration as a statement and then the rest. Handling it here and returning
-        // would silently drop everything after the first `;` — the script would appear to
-        // run and produce the wrong value, which is worse than an error.
-        if (script.starts_with("var ")
-            || script.starts_with("let ")
-            || script.starts_with("const "))
-            && !script.contains(';')
-        {
-            let prefix_len = if script.starts_with("const ") { 6 } else { 4 };
-            let rest = &script[prefix_len..];
-            if let Some(eq_pos) = rest.find('=') {
-                let name = rest[..eq_pos].trim().to_string();
-                let value_str = rest[eq_pos + 1..].trim();
-                // Check if value is a function definition or complex expression
-                let value = self.eval_expression(value_str)?;
-                self.variables.insert(name, value.clone());
-                return Ok(value);
-            } else {
-                let name = rest.trim().trim_end_matches(';').to_string();
-                self.variables.insert(name, JsValue::Undefined);
+        // The body below is a closure so every early returns still funnels through the export; a
+        // copied export at each `return` is exactly the kind of drift this avoids.
+        let result = (|| -> JsResult<JsValue> {
+            let script = script.trim();
+            if script.is_empty() {
                 return Ok(JsValue::Undefined);
             }
+            // --- console.log / console.info ---
+            if script.starts_with("console.log(")
+                || script.starts_with("console.info(")
+                || script.starts_with("console.warn(")
+                || script.starts_with("console.error(")
+                || script.starts_with("console.debug(")
+            {
+                let start = script.find('(').ok_or_else(|| {
+                    JsError::at_offset(
+                        "Missing '(' in console call".to_string(),
+                        script,
+                        script.len(),
+                    )
+                })? + 1;
+                let end = script.rfind(')').ok_or_else(|| {
+                    JsError::at_offset(
+                        "Missing ')' in console call".to_string(),
+                        script,
+                        script.len(),
+                    )
+                })?;
+                let content = &script[start..end];
+                let value = self.eval_expression(content)?;
+                context.log(value.to_string());
+                return Ok(value);
+            }
+            // --- var / let / const declarations ---
+            //
+            // Only a **declaration-only** script is handled here, so that the declaration's
+            // initialiser is stored. A script that continues past the declaration
+            // (`var a = 3; a + 1`) goes to the block evaluator, which evaluates the
+            // declaration as a statement and then the rest. Handling it here and returning
+            // would silently drop everything after the first `;` — the script would appear to
+            // run and produce the wrong value, which is worse than an error.
+            if (script.starts_with("var ")
+                || script.starts_with("let ")
+                || script.starts_with("const "))
+                && !script.contains(';')
+            {
+                let prefix_len = if script.starts_with("const ") { 6 } else { 4 };
+                let rest = &script[prefix_len..];
+                if let Some(eq_pos) = rest.find('=') {
+                    let name = rest[..eq_pos].trim().to_string();
+                    let value_str = rest[eq_pos + 1..].trim();
+                    // Check if value is a function definition or complex expression
+                    let value = self.eval_expression(value_str)?;
+                    self.variables.insert(name, value.clone());
+                    return Ok(value);
+                } else {
+                    let name = rest.trim().trim_end_matches(';').to_string();
+                    self.variables.insert(name, JsValue::Undefined);
+                    return Ok(JsValue::Undefined);
+                }
+            }
+            // A multi-statement script (or any construct `eval_stmt` owns) is evaluated as a
+            // block, so every statement runs and the last one's value is the result.
+            if script.contains(';') {
+                return self.eval_block(script, context);
+            }
+            // An expression is evaluated as an expression, **not** through `eval_stmt`.
+            //
+            // `eval_stmt`'s fallback treats a `name = value` shape as an assignment, and its
+            // guard for `==` was too narrow to keep `1 == 1` out: the text starts with `1`, so
+            // a naive `find('=')` found the first `=` of `==` and stored a variable called
+            // `1 =`. Routing on "does this contain a comparison operator" would be brittle, so
+            // the expression evaluator is asked first and its verdict is used whenever the
+            // script is not one of the statement forms `eval_stmt` owns.
+            if starts_a_statement(script) || is_assignment_expression(script) {
+                return self.eval_stmt(script, context);
+            }
+            self.eval_expression(script)
+        })();
+        // Write the namespace back so the context (and any engine sharing it) sees the
+        // script's declarations and assignments.
+        for (name, value) in &self.variables {
+            context.set_global(name, value.clone());
         }
-        // A multi-statement script (or any construct `eval_stmt` owns) is evaluated as a
-        // block, so every statement runs and the last one's value is the result.
-        if script.contains(';') {
-            return self.eval_block(script, context);
-        }
-        // An expression is evaluated as an expression, **not** through `eval_stmt`.
-        //
-        // `eval_stmt`'s fallback treats a `name = value` shape as an assignment, and its
-        // guard for `==` was too narrow to keep `1 == 1` out: the text starts with `1`, so
-        // a naive `find('=')` found the first `=` of `==` and stored a variable called
-        // `1 =`. Routing on "does this contain a comparison operator" would be brittle, so
-        // the expression evaluator is asked first and its verdict is used whenever the
-        // script is not one of the statement forms `eval_stmt` owns.
-        if starts_a_statement(script) || is_assignment_expression(script) {
-            return self.eval_stmt(script, context);
-        }
-        self.eval_expression(script)
+        result
     }
     /// Calls a user-defined function if one exists, otherwise a built-in.
     ///
@@ -1230,8 +1331,11 @@ impl JsEngine for SimpleJsEngine {
     ) -> JsResult<JsValue> {
         // User-defined function
         {
+            // A user-defined function takes precedence over a built-in of the same name, as
+            // the contract says: `variables` holds script-defined functions, `functions` the
+            // five built-ins.
             let candidate =
-                self.functions.get(name).or_else(|| self.variables.get(name)).and_then(|v| {
+                self.variables.get(name).or_else(|| self.functions.get(name)).and_then(|v| {
                     if let JsValue::FunctionDef { ref params, ref body, .. } = v {
                         Some((params.clone(), body.clone()))
                     } else {
@@ -1239,21 +1343,26 @@ impl JsEngine for SimpleJsEngine {
                     }
                 });
             if let Some((params, body)) = candidate {
-                // Save existing variables that collide with parameter names
-                let mut saved = Vec::new();
+                // Save existing variables that collide with parameter names. `None` means the
+                // name was not defined before the call, so restoring must remove it rather than
+                // leave `undefined` behind as a global the script never declared.
+                let mut saved: Vec<(String, Option<JsValue>)> = Vec::new();
                 for (i, p) in params.iter().enumerate() {
-                    if let Some(existing) = self.variables.get(p.as_str()) {
-                        saved.push((p.clone(), existing.clone()));
-                    } else {
-                        saved.push((p.clone(), JsValue::Undefined));
-                    }
+                    saved.push((p.clone(), self.variables.get(p.as_str()).cloned()));
                     let arg_val = args.get(i).cloned().unwrap_or(JsValue::Undefined);
                     self.variables.insert(p.clone(), arg_val);
                 }
                 let result = self.eval_block(&body, context);
                 // Restore saved variables
                 for (p, val) in saved {
-                    self.variables.insert(p, val);
+                    match val {
+                        Some(value) => {
+                            self.variables.insert(p, value);
+                        }
+                        None => {
+                            self.variables.remove(&p);
+                        }
+                    }
                 }
                 return result;
             }
@@ -1262,9 +1371,10 @@ impl JsEngine for SimpleJsEngine {
             "parseInt" => {
                 if let Some(arg) = args.first() {
                     if let JsValue::String(s) = arg {
-                        return Ok(JsValue::Number(s.parse().unwrap_or(f64::NAN)));
+                        return Ok(JsValue::Number(parse_int_text(s)));
                     }
-                    return Ok(JsValue::Number(arg.to_number()));
+                    // `parseInt` returns an integer: JS truncates toward zero.
+                    return Ok(JsValue::Number(arg.to_number().trunc()));
                 }
                 Ok(JsValue::Number(f64::NAN))
             }
@@ -1304,21 +1414,22 @@ impl JsEngine for SimpleJsEngine {
             }
         }
     }
-    /// Defines or overwrites a global as an engine variable.
+    /// Defines or overwrites a global as an engine variable, and mirrors it into `context`.
     ///
-    /// The `context` argument is ignored, so globals set here are *not* visible
-    /// through [`JsContext::get_global`] and do not carry across engines. Always
-    /// succeeds.
-    fn set_global(&mut self, name: &str, value: JsValue, _context: &mut JsContext) -> JsResult<()> {
-        self.variables.insert(name.to_string(), value);
+    /// `evaluate` imports the context's globals at the start of every call and writes the
+    /// engine's back afterwards, so this value is visible to the next script and to any other
+    /// engine sharing the context. Always succeeds.
+    fn set_global(&mut self, name: &str, value: JsValue, context: &mut JsContext) -> JsResult<()> {
+        self.variables.insert(name.to_string(), value.clone());
+        context.set_global(name, value);
         Ok(())
     }
     /// Reads an engine variable by name, or `None` if it was never defined.
     ///
-    /// Like [`JsEngine::set_global`] this ignores `context`, so it sees only
-    /// variables defined through the engine, not those set on the context.
-    fn get_global(&self, name: &str, _context: &JsContext) -> Option<JsValue> {
-        self.variables.get(name).cloned()
+    /// A name that only the context knows is still answered, because the two namespaces are
+    /// synchronised around every `evaluate`.
+    fn get_global(&self, name: &str, context: &JsContext) -> Option<JsValue> {
+        self.variables.get(name).cloned().or_else(|| context.get_global(name).cloned())
     }
 }
 /// A shared, mutable JavaScript engine.
@@ -1653,6 +1764,26 @@ mod tests {
         );
     }
 
+    /// A semicolon or brace inside a string literal is text, not a statement delimiter.
+    ///
+    /// The block splitter tracked brackets but not quotes, so `var s = "a;b{c}"` was cut at
+    /// the `;` inside the literal (and the `{` even changed the nesting depth), leaving
+    /// fragments that evaluated to `undefined` instead of the string.
+    #[test]
+    fn string_literals_do_not_split_the_statement() {
+        let mut engine = SimpleJsEngine::new();
+        let mut context = JsContext::new();
+        assert_eq!(
+            engine.evaluate("var s = \"a;b{c}\"; s", &mut context).unwrap(),
+            JsValue::String("a;b{c}".to_string())
+        );
+        assert_eq!(
+            engine.get_global("s", &context),
+            Some(JsValue::String("a;b{c}".to_string())),
+            "the whole literal is the stored value"
+        );
+    }
+
     /// `+` concatenates when either side is a string, and a variable is read rather than
     /// treated as an identifier token.
     #[test]
@@ -1755,6 +1886,126 @@ mod tests {
         let mut context = JsContext::new();
         let result = engine.evaluate("console.log('hello')", &mut context).unwrap();
         assert_eq!(result, JsValue::String("hello".to_string()));
+    }
+
+    /// `===` compares without coercion, as the parser's distinct token promises.
+    #[test]
+    fn strict_equality_does_not_coerce() {
+        let mut engine = SimpleJsEngine::new();
+        let mut context = JsContext::new();
+        assert_eq!(engine.evaluate("1 === '1'", &mut context).unwrap(), JsValue::Boolean(false));
+        assert_eq!(engine.evaluate("1 == '1'", &mut context).unwrap(), JsValue::Boolean(true));
+        assert_eq!(engine.evaluate("1 !== '1'", &mut context).unwrap(), JsValue::Boolean(true));
+        assert_eq!(
+            engine.evaluate("null === undefined", &mut context).unwrap(),
+            JsValue::Boolean(false)
+        );
+        assert_eq!(engine.evaluate("'a' === 'a'", &mut context).unwrap(), JsValue::Boolean(true));
+    }
+
+    /// A nested call in an `if`/`for` header does not truncate the condition at its own `)`.
+    #[test]
+    fn a_nested_call_does_not_truncate_a_header() {
+        let mut engine = SimpleJsEngine::new();
+        let mut context = JsContext::new();
+        assert_eq!(
+            engine.evaluate("if (parseInt('5') > 3) { 1 } else { 2 }", &mut context).unwrap(),
+            JsValue::Number(1.0),
+            "the nested call's parenthesis must not end the condition"
+        );
+        let result = engine
+            .evaluate("for (var i = 0; i < parseInt('3'); i = i + 1) { var y = i; }", &mut context);
+        assert!(result.is_ok(), "the for header keeps its nested call: {result:?}");
+    }
+
+    /// Call arguments are expressions: quoted text stays text and an identifier reads itself.
+    #[test]
+    fn call_arguments_are_evaluated_as_expressions() {
+        let mut engine = SimpleJsEngine::new();
+        let mut context = JsContext::new();
+        assert_eq!(
+            engine.evaluate("String('hello')", &mut context).unwrap(),
+            JsValue::String("hello".to_string())
+        );
+        engine.evaluate("var n = 5;", &mut context).unwrap();
+        assert_eq!(
+            engine.evaluate("String(n)", &mut context).unwrap(),
+            JsValue::String("5".to_string()),
+            "a bare identifier argument reads its variable"
+        );
+        assert_eq!(
+            engine.evaluate("Number(n + 1)", &mut context).unwrap(),
+            JsValue::Number(6.0),
+            "an argument may be a whole expression"
+        );
+    }
+
+    /// A loop that finishes on its 10000th pass is not reported as runaway.
+    #[test]
+    fn a_loop_at_the_iteration_limit_completes() {
+        let mut engine = SimpleJsEngine::new();
+        let mut context = JsContext::new();
+        let result =
+            engine.evaluate("for (var i = 0; i < 10000; i = i + 1) { var y = i; }", &mut context);
+        assert!(result.is_ok(), "10000 iterations is within the limit: {result:?}");
+    }
+
+    /// `parseInt` truncates and reads the integer prefix, as ECMAScript's does.
+    #[test]
+    fn parse_int_truncates_and_reads_a_prefix() {
+        let mut engine = SimpleJsEngine::new();
+        let mut context = JsContext::new();
+        assert_eq!(engine.evaluate("parseInt(3.9)", &mut context).unwrap(), JsValue::Number(3.0));
+        assert_eq!(
+            engine.evaluate("parseInt('12px')", &mut context).unwrap(),
+            JsValue::Number(12.0)
+        );
+        assert_eq!(engine.evaluate("parseInt('-7')", &mut context).unwrap(), JsValue::Number(-7.0));
+    }
+
+    /// A parameter that did not exist before the call is not left behind as a global.
+    #[test]
+    fn parameters_are_removed_after_the_call() {
+        let mut engine = SimpleJsEngine::new();
+        let mut context = JsContext::new();
+        engine.evaluate("function f(a) { return a; }", &mut context).unwrap();
+        engine.evaluate("f(1)", &mut context).unwrap();
+        assert_eq!(engine.get_global("a", &context), None, "`a` was never declared globally");
+    }
+
+    /// A script-defined function shadows a built-in of the same name.
+    #[test]
+    fn a_user_function_shadows_a_builtin() {
+        let mut engine = SimpleJsEngine::new();
+        let mut context = JsContext::new();
+        engine.evaluate("function parseInt(x) { return 42; }", &mut context).unwrap();
+        assert_eq!(engine.evaluate("parseInt(1)", &mut context).unwrap(), JsValue::Number(42.0));
+    }
+
+    /// Context globals reach the script, and script globals reach the context.
+    #[test]
+    fn the_context_is_the_shared_namespace() {
+        let mut engine = SimpleJsEngine::new();
+        let mut context = JsContext::new();
+        context.set_global("x", JsValue::Number(3.0));
+        assert_eq!(
+            engine.evaluate("x + 1", &mut context).unwrap(),
+            JsValue::Number(4.0),
+            "a host-seeded context global is readable"
+        );
+        engine.evaluate("var y = 5;", &mut context).unwrap();
+        assert_eq!(
+            context.get_global("y"),
+            Some(&JsValue::Number(5.0)),
+            "the script's declaration is written back"
+        );
+
+        let mut second = SimpleJsEngine::new();
+        assert_eq!(
+            second.evaluate("y + 1", &mut context).unwrap(),
+            JsValue::Number(6.0),
+            "a second engine sharing the context sees the same globals"
+        );
     }
 }
 

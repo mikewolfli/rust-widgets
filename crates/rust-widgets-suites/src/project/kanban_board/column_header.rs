@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 use super::*;
+use rust_widgets::event::key_codes::{BACKSPACE, ENTER, ESCAPE, F2};
 use rust_widgets::impl_draw_bridge;
 
 /// The header control of a kanban column.
@@ -21,8 +22,6 @@ pub struct KanbanColumnHeader {
     edit_buffer: Option<String>,
     /// The badge label, with the `(count, wip_limit)` pair it was built for (BK-P12).
     badge_text_cache: (usize, Option<usize>, String),
-    /// The count-only label the badge width is measured from, with the count it was built for.
-    count_text_cache: (usize, String),
     /// Emitted with the new title after a rename.
     pub column_renamed: Signal1<String>,
     /// Emitted with the new collapsed flag.
@@ -43,7 +42,6 @@ impl KanbanColumnHeader {
             editable: true,
             edit_buffer: None,
             badge_text_cache: (0, None, String::from("0")),
-            count_text_cache: (0, String::from("0")),
             column_renamed: Signal1::new(),
             column_collapsed_changed: Signal1::new(),
             add_card_requested: GenericSignal::new(),
@@ -212,6 +210,13 @@ impl Widget for KanbanColumnHeader {
     fn size_hint(&self) -> rust_widgets::core::Size {
         rust_widgets::core::Size::new(220, HEADER_SIDE as u32)
     }
+
+    /// A column header takes keyboard focus so F2/Enter can start a rename. The kind's stripped
+    /// build does not list every companion, so the control states it directly.
+    fn is_focusable(&self) -> bool {
+        true
+    }
+
     impl_draw_bridge!();
     impl_widget_property_hooks!();
     /// Resolves the header's three events; see `DiffViewer`'s note for why the arms are explicit.
@@ -324,13 +329,13 @@ impl EventHandler for KanbanColumnHeader {
                     self.base.request_redraw();
                 }
                 Event::KeyPress { key, .. } => match *key {
-                    13 => {
+                    ENTER => {
                         let _ = self.commit_title_edit();
                     }
-                    27 => {
+                    ESCAPE => {
                         self.cancel_title_edit();
                     }
-                    8 => {
+                    BACKSPACE => {
                         if let Some(buffer) = self.edit_buffer.as_mut() {
                             buffer.pop();
                         }
@@ -343,6 +348,11 @@ impl EventHandler for KanbanColumnHeader {
             return;
         }
         match event {
+            Event::KeyPress { key, .. }
+                if self.base.focus_reason().is_some() && matches!(*key, ENTER | F2) =>
+            {
+                let _ = self.begin_title_edit();
+            }
             Event::MousePress { pos, button: 1, .. } => {
                 if self.collapse_rect().contains_point(*pos) {
                     self.set_collapsed(!self.collapsed);
@@ -410,8 +420,7 @@ impl Draw for KanbanColumnHeader {
             None => self.title.as_str(),
         };
         let add = self.add_rect();
-        // Both labels are rebuilt only when the pair they spell changes. The width is still
-        // measured from the count alone, exactly as before, so the frame is unchanged.
+        // The label is rebuilt only when the pair it spells changes.
         if self.badge_text_cache.0 != self.count || self.badge_text_cache.1 != self.wip_limit {
             self.badge_text_cache.0 = self.count;
             self.badge_text_cache.1 = self.wip_limit;
@@ -423,13 +432,9 @@ impl Draw for KanbanColumnHeader {
                 let _ = write!(badge_text, "{}", self.count);
             }
         }
-        if self.count_text_cache.0 != self.count {
-            self.count_text_cache.0 = self.count;
-            let count_text = &mut self.count_text_cache.1;
-            count_text.clear();
-            let _ = write!(count_text, "{}", self.count);
-        }
-        let badge_width = context.measure_text(&self.count_text_cache.1, &font).width as i32 + 10;
+        // The pill is measured from the text it will paint. Measuring the bare count made a
+        // `{count}/{limit}` label run past its own rounded rect and under the add button.
+        let badge_width = context.measure_text(&self.badge_text_cache.2, &font).width as i32 + 10;
         let text_left = self.collapse_rect().x + HEADER_ICON + 6;
         let text_right = (add.x - 6 - badge_width).max(text_left + 8);
         let text = rust_widgets::widget::text_utils::elide_end(

@@ -12,7 +12,7 @@
 //! * [`BrowserHistory`] stores entries **oldest first**: [`BrowserHistory::add_entry`]
 //!   appends to the back, so [`BrowserHistory::entries`] reads from the oldest
 //!   visit to the newest, and eviction drops from the front, i.e. the oldest
-//!   entry. The default cap is [`MAX_HISTORY_ENTRIES`] (100);
+//!   entry. The default cap is `MAX_HISTORY_ENTRIES` (100);
 //!   [`BrowserHistory::with_capacity`] changes it.
 //! * [`SessionHistory`] keeps the *navigated* order rather than visit order:
 //!   [`SessionHistory::back_entries`] is oldest-first with the most recently
@@ -198,6 +198,31 @@ impl Default for BrowserHistory {
     }
 }
 
+/// The document a session-history entry displayed.
+///
+/// A history stack that remembers only URLs cannot restore a page: going back moved the address
+/// but left the body of the page being left on screen. The entry therefore carries the document
+/// it showed — title and body — and [`SessionHistory::go_back`] hands it back with the URL.
+///
+/// Snapshots are bounded twice over: an entry whose body exceeds
+/// [`SessionHistory::MAX_PAGE_SNAPSHOT_BYTES`] is not cached (Back then behaves as it did before
+/// snapshots existed, keeping the URL only), and the cached bodies together are kept under
+/// [`SessionHistory::MAX_SNAPSHOT_BYTES`], dropping the oldest bodies first.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PageSnapshot {
+    /// Title the entry displayed.
+    pub title: String,
+    /// Body the entry displayed.
+    pub content: String,
+}
+
+impl PageSnapshot {
+    /// Bytes this snapshot accounts for in the history budget.
+    fn byte_len(&self) -> usize {
+        self.content.len() + self.title.len()
+    }
+}
+
 /// Back/forward navigation state for one browsing session.
 ///
 /// Holds the URL currently being viewed plus the two stacks of URLs reachable
@@ -205,6 +230,9 @@ impl Default for BrowserHistory {
 /// onto the back stack and discards the forward stack, which is the standard
 /// browser behaviour. Both stacks are capped at the size given to
 /// [`SessionHistory::new`], dropping the oldest navigation when full.
+///
+/// Each entry may also carry the [`PageSnapshot`] it displayed; the snapshot stacks are kept in
+/// lockstep with the URL stacks, so every push, pop and eviction moves both.
 ///
 /// [`SessionHistory::current`] is `Option` because a fresh history has no page
 /// loaded: it is `None` until the first [`SessionHistory::navigate`], and
@@ -214,6 +242,14 @@ pub struct SessionHistory {
     back_stack: VecDeque<String>,
     forward_stack: VecDeque<String>,
     current: Option<String>,
+    /// Document snapshots for [`Self::back_stack`], index-aligned with it.
+    back_pages: VecDeque<Option<PageSnapshot>>,
+    /// Document snapshots for [`Self::forward_stack`], index-aligned with it.
+    forward_pages: VecDeque<Option<PageSnapshot>>,
+    /// Document snapshot for [`Self::current`].
+    current_page: Option<PageSnapshot>,
+    /// Total bytes held by all cached snapshots, kept in step with the three stacks above.
+    snapshot_bytes: usize,
     max_size: usize,
 }
 /// Creates a history capped at `50` entries per stack.
@@ -234,9 +270,25 @@ impl SessionHistory {
             back_stack: VecDeque::with_capacity(max_size),
             forward_stack: VecDeque::with_capacity(max_size),
             current: None,
+            back_pages: VecDeque::with_capacity(max_size),
+            forward_pages: VecDeque::with_capacity(max_size),
+            current_page: None,
+            snapshot_bytes: 0,
             max_size,
         }
     }
+
+    /// Largest body cached for one entry (2 MiB).
+    ///
+    /// A bigger body is not snapshotted: caching it would let a handful of large pages pin
+    /// hundreds of megabytes for history that may never be revisited.
+    pub const MAX_PAGE_SNAPSHOT_BYTES: usize = 2 * 1024 * 1024;
+
+    /// Total bytes all cached bodies may occupy (8 MiB).
+    ///
+    /// Reaching the budget drops the oldest cached bodies, never the current entry's: that is the
+    /// one the reader could not otherwise get back to.
+    pub const MAX_SNAPSHOT_BYTES: usize = 8 * 1024 * 1024;
     /// Navigates to `url`, as if the user followed a link.
     ///
     /// The previous current URL is pushed onto the back stack (if there was
@@ -244,18 +296,79 @@ impl SessionHistory {
     /// nothing to go forward to. Re-navigating to the URL already being viewed
     /// pushes a duplicate onto the back stack rather than being ignored.
     pub fn navigate(&mut self, url: String) {
+        // Take the page with the URL: they are one entry. `set_current_page` can record a body
+        // while no URL is current (it is a public writer), and taking only inside the `Some`
+        // branch left that body budgeted forever after the overwrite below.
+        let page = self.current_page.take();
         if let Some(current) = self.current.take() {
             // A zero cap forgets the previous page: nothing is pushed onto the
             // back stack, so there is never anything to go back to.
             if self.max_size > 0 {
                 if self.back_stack.len() >= self.max_size {
                     self.back_stack.pop_front();
+                    if let Some(dropped) = self.back_pages.pop_front() {
+                        self.snapshot_bytes -= Self::snapshot_len(&dropped);
+                    }
                 }
                 self.back_stack.push_back(current);
+                self.back_pages.push_back(page);
+            } else {
+                // The URL is forgotten, so its cached body must be too; otherwise the budget
+                // would keep paying for a page that nothing can navigate to.
+                self.snapshot_bytes -= Self::snapshot_len(&page);
             }
+        } else {
+            self.snapshot_bytes -= Self::snapshot_len(&page);
         }
         self.forward_stack.clear();
+        for page in self.forward_pages.drain(..) {
+            self.snapshot_bytes -= Self::snapshot_len(&page);
+        }
         self.current = Some(url);
+        self.current_page = None;
+        self.trim_snapshots();
+    }
+
+    /// The number of bytes a snapshot stack slot accounts for.
+    fn snapshot_len(page: &Option<PageSnapshot>) -> usize {
+        page.as_ref().map_or(0, PageSnapshot::byte_len)
+    }
+
+    /// Records (or clears) the document shown by the current entry.
+    ///
+    /// Called by the view once a page reaches its final state: navigation alone does not know the
+    /// body, and an asynchronous fetch only delivers it later. A body over
+    /// [`Self::MAX_PAGE_SNAPSHOT_BYTES`] is dropped rather than cached.
+    pub fn set_current_page(&mut self, page: Option<PageSnapshot>) {
+        let page = page.filter(|page| page.byte_len() <= Self::MAX_PAGE_SNAPSHOT_BYTES);
+        self.snapshot_bytes -= Self::snapshot_len(&self.current_page);
+        self.current_page = page;
+        self.snapshot_bytes += Self::snapshot_len(&self.current_page);
+        self.trim_snapshots();
+    }
+
+    /// Borrows the document the current entry displayed, when one was recorded.
+    pub fn current_page(&self) -> Option<&PageSnapshot> {
+        self.current_page.as_ref()
+    }
+
+    /// Drops the oldest cached bodies until the budget is met.
+    ///
+    /// Back-stack pages go first (oldest navigation first), then forward-stack pages (farthest
+    /// future first). The current entry's snapshot is retained even if it alone is over budget;
+    /// [`Self::MAX_PAGE_SNAPSHOT_BYTES`] bounds that single snapshot.
+    fn trim_snapshots(&mut self) {
+        while self.snapshot_bytes > Self::MAX_SNAPSHOT_BYTES {
+            if let Some(dropped) = self.back_pages.front_mut().and_then(|slot| slot.take()) {
+                self.snapshot_bytes -= dropped.byte_len();
+                continue;
+            }
+            if let Some(dropped) = self.forward_pages.back_mut().and_then(|slot| slot.take()) {
+                self.snapshot_bytes -= dropped.byte_len();
+                continue;
+            }
+            break;
+        }
     }
     /// Returns `true` when there is a previous page to go back to.
     pub fn can_go_back(&self) -> bool {
@@ -276,16 +389,25 @@ impl SessionHistory {
         if !self.can_go_back() {
             return None;
         }
+        let page = self.current_page.take();
         if let Some(current) = self.current.take() {
             // The page being left becomes the immediate successor, so it goes at
             // the front of the forward stack; the farthest future page (the back)
             // is the one evicted when the cap is reached.
             if self.forward_stack.len() >= self.max_size {
                 self.forward_stack.pop_back();
+                if let Some(dropped) = self.forward_pages.pop_back() {
+                    self.snapshot_bytes -= Self::snapshot_len(&dropped);
+                }
             }
             self.forward_stack.push_front(current);
+            self.forward_pages.push_front(page);
+        } else {
+            self.snapshot_bytes -= Self::snapshot_len(&page);
         }
         self.current = self.back_stack.pop_back();
+        self.current_page = self.back_pages.pop_back().flatten();
+        self.trim_snapshots();
         self.current.clone()
     }
     /// Moves to the next page and returns it.
@@ -296,13 +418,22 @@ impl SessionHistory {
         if !self.can_go_forward() {
             return None;
         }
+        let page = self.current_page.take();
         if let Some(current) = self.current.take() {
             if self.back_stack.len() >= self.max_size {
                 self.back_stack.pop_front();
+                if let Some(dropped) = self.back_pages.pop_front() {
+                    self.snapshot_bytes -= Self::snapshot_len(&dropped);
+                }
             }
             self.back_stack.push_back(current);
+            self.back_pages.push_back(page);
+        } else {
+            self.snapshot_bytes -= Self::snapshot_len(&page);
         }
         self.current = self.forward_stack.pop_front();
+        self.current_page = self.forward_pages.pop_front().flatten();
+        self.trim_snapshots();
         self.current.clone()
     }
     /// Borrows the URL currently being viewed, or `None` when no page is loaded.
@@ -330,7 +461,11 @@ impl SessionHistory {
     pub fn clear(&mut self) {
         self.back_stack.clear();
         self.forward_stack.clear();
+        self.back_pages.clear();
+        self.forward_pages.clear();
         self.current = None;
+        self.current_page = None;
+        self.snapshot_bytes = 0;
     }
 }
 
@@ -706,5 +841,130 @@ mod tests {
         // Clear still returns to the initial empty state.
         history.clear();
         assert!(history.current().is_none());
+    }
+
+    // ── PageSnapshot tests ──
+
+    fn snapshot(title: &str, content: &str) -> PageSnapshot {
+        PageSnapshot { title: title.to_string(), content: content.to_string() }
+    }
+
+    /// A snapshot recorded for a page travels with it: Back returns the body it replaced.
+    #[test]
+    fn a_navigation_carries_the_recorded_body_back() {
+        let mut history = SessionHistory::new(10);
+        history.navigate("https://a.com".to_string());
+        history.set_current_page(Some(snapshot("A", "<p>a</p>")));
+        history.navigate("https://b.com".to_string());
+        history.set_current_page(Some(snapshot("B", "<p>b</p>")));
+
+        assert_eq!(history.go_back().as_deref(), Some("https://a.com"));
+        let page = history.current_page().expect("the back entry kept its document");
+        assert_eq!(page.content, "<p>a</p>");
+        assert_eq!(page.title, "A");
+
+        assert_eq!(history.go_forward().as_deref(), Some("https://b.com"));
+        assert_eq!(history.current_page().unwrap().content, "<p>b</p>");
+    }
+
+    /// An entry without a recorded body reports none rather than inventing one.
+    #[test]
+    fn an_entry_without_a_snapshot_reports_none() {
+        let mut history = SessionHistory::new(10);
+        history.navigate("https://a.com".to_string());
+        history.navigate("https://b.com".to_string());
+        assert!(history.current_page().is_none());
+        history.go_back();
+        assert!(history.current_page().is_none());
+    }
+
+    /// Evicting the oldest navigation evicts its snapshot too, so the budget cannot be pinned by
+    /// pages that are no longer reachable.
+    #[test]
+    fn an_evicted_entry_takes_its_snapshot_with_it() {
+        let mut history = SessionHistory::new(1);
+        history.navigate("https://a.com".to_string());
+        history.set_current_page(Some(snapshot("A", "aaaa")));
+        history.navigate("https://b.com".to_string());
+        history.set_current_page(Some(snapshot("B", "bbbb")));
+        history.navigate("https://c.com".to_string());
+        history.set_current_page(Some(snapshot("C", "cccc")));
+
+        assert_eq!(history.back_entries().len(), 1);
+        assert_eq!(history.go_back().as_deref(), Some("https://b.com"));
+        assert_eq!(
+            history.current_page().unwrap().content,
+            "bbbb",
+            "the cached body belongs to the surviving entry, not the evicted one"
+        );
+        assert!(!history.can_go_back());
+    }
+
+    /// A body over the per-entry cap is not cached; the URL-only behaviour is preserved.
+    #[test]
+    fn an_oversized_body_is_not_cached() {
+        let mut history = SessionHistory::new(10);
+        history.navigate("https://big.example".to_string());
+        let oversized = "x".repeat(SessionHistory::MAX_PAGE_SNAPSHOT_BYTES + 1);
+        history.set_current_page(Some(snapshot("Big", &oversized)));
+        assert!(history.current_page().is_none());
+    }
+
+    /// The total budget drops the oldest cached bodies first and keeps the current one.
+    #[test]
+    fn the_budget_drops_the_oldest_bodies_first() {
+        let mut history = SessionHistory::new(10);
+        // Three bodies of 1 MiB each are under the per-entry cap but over the 3-budget test below;
+        // the real budget is 8 MiB, so fill it with five 2 MiB bodies.
+        let chunk = "x".repeat(2 * 1024 * 1024 - 4);
+        for index in 0..5 {
+            history.navigate(format!("https://page{index}.com"));
+            history.set_current_page(Some(snapshot(&format!("P{index}"), &chunk)));
+        }
+        // Five 2 MiB bodies exceed the 8 MiB budget, so the oldest one is dropped.
+        assert_eq!(
+            history.current_page().map(|page| page.title.as_str()),
+            Some("P4"),
+            "the current entry always keeps its body"
+        );
+        let restored_titles: Vec<Option<String>> = (0..4)
+            .map(|_| {
+                history.go_back();
+                history.current_page().map(|page| page.title.clone())
+            })
+            .collect();
+        assert_eq!(restored_titles.first(), Some(&Some("P3".to_string())));
+        assert_eq!(
+            restored_titles.last(),
+            Some(&None),
+            "the oldest body was dropped by the budget"
+        );
+    }
+
+    /// A body recorded while no URL is current is budgeted, then released by the next navigation.
+    ///
+    /// `set_current_page` can be written with no current entry (it is a public writer, and the
+    /// view records a body after the stacks were cleared); taking the body only inside the
+    /// `current.is_some()` branch dropped it without subtracting its bytes, so the budget leaked.
+    #[test]
+    fn a_body_recorded_with_no_current_page_is_released_by_the_next_navigation() {
+        let mut history = SessionHistory::new(4);
+        history.set_current_page(Some(snapshot("A", "<p>a</p>")));
+        assert_eq!(history.snapshot_bytes, "<p>a</p>".len() + 1);
+
+        history.navigate("https://a.com".to_string());
+        assert_eq!(history.snapshot_bytes, 0, "the dropped body is no longer budgeted");
+        assert!(history.current_page().is_none());
+    }
+
+    /// Clearing the history releases every cached body.
+    #[test]
+    fn clear_releases_the_cached_bodies() {
+        let mut history = SessionHistory::new(10);
+        history.navigate("https://a.com".to_string());
+        history.set_current_page(Some(snapshot("A", "<p>a</p>")));
+        history.clear();
+        assert!(history.current_page().is_none());
+        assert_eq!(history.snapshot_bytes, 0);
     }
 }

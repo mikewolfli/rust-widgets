@@ -324,6 +324,14 @@ fn parse_html_blocks(html: &str) -> Vec<HtmlBlock> {
                         }
                         in_anchor = false;
                     } else {
+                        // Text accumulated before the opening tag is not part of the link.
+                        // Without this flush the run merged into the anchor's text (and was
+                        // painted in the link colour) because the closing tag pushed whatever
+                        // had been collected since the previous block boundary.
+                        if !text.trim().is_empty() {
+                            blocks.push(HtmlBlock { text: text.trim().to_string(), kind });
+                            text.clear();
+                        }
                         in_anchor = true;
                     }
                 }
@@ -474,6 +482,12 @@ pub struct WebEngineView {
     find_case_sensitive: bool,
     /// Find actions a companion bar queued for the next tick (MW-014).
     find_requests: Arc<Mutex<VecDeque<WebFindRequest>>>,
+    /// Where the last find result is published for an attached bar (MW-014).
+    ///
+    /// A view cannot call back into the bar that queued the request (a widget holds no borrow of
+    /// another), so the bar owns the read end of this cell and drains it on its own paint/event
+    /// path. Without it the bar's counter kept painting `0/0` while the view's find state moved.
+    find_progress_sink: Option<Arc<Mutex<Option<(usize, usize)>>>>,
     /// Vertical page scroll offset in logical pixels (MW-10).
     scroll_offset: i32,
     /// The page's painted content height, measured by the last draw.
@@ -825,7 +839,7 @@ macro_rules! impl_web_engine_wrapper_traits {
                 ///
                 /// All ten wrappers report `WebEngineView` as their kind (see
                 /// `WidgetKind::WebEngineView`), so the capability lookup resolves them to
-                /// `web_engine_view` and its eleven published names. Without this forward each
+                /// `web_engine_view` and its nineteen published names. Without this forward each
                 /// name was accepted by `connect_event` and wired to nothing: the wrapper
                 /// delegates its behaviour, so it must delegate its signal resolution too, or the
  /// forwarding promise stops at the event side.
@@ -928,6 +942,7 @@ impl WebEngineView {
             find_whole_word: false,
             find_case_sensitive: false,
             find_requests: Arc::new(Mutex::new(VecDeque::new())),
+            find_progress_sink: None,
             scroll_offset: 0,
             page_content_height: 0,
             download_dir: None,
@@ -1269,12 +1284,22 @@ impl WebEngineView {
         self.url_bar_rect
     }
 
+    /// The page area below the URL bar, the same band [`Self::draw`] paints into.
+    fn content_viewport(&self) -> Rect {
+        ControlMetrics::content_below_top_band(self.geometry(), dimensions::WEB_URL_BAR_HEIGHT)
+    }
+
+    /// The largest offset that keeps the measured page inside [`Self::content_viewport`].
+    ///
+    /// Both the scrollbar in `draw` and [`Self::set_scroll_offset`] use this, so a wheel
+    /// notch cannot move the page past the end the scrollbar reports.
+    fn max_scroll_offset(&self) -> i32 {
+        (self.page_content_height - self.content_viewport().height as i32).max(0)
+    }
+
     /// Scrolls the page, clamped to the content the last frame measured.
     pub fn set_scroll_offset(&mut self, offset: i32) {
-        let max = (self.page_content_height
-            - rust_widgets::widget::metrics::dimensions::WEB_URL_BAR_HEIGHT as i32)
-            .max(0);
-        let clamped = offset.clamp(0, max);
+        let clamped = offset.clamp(0, self.max_scroll_offset());
         if clamped == self.scroll_offset {
             return;
         }
@@ -1324,14 +1349,18 @@ impl WebEngineView {
         self.html_revision = self.html_revision.wrapping_add(1);
         self.page_layout = None;
         self.scroll_offset = 0;
+        // The old document's measured height is not this document's height; leaving it in
+        // place let a scroll request between the load and the next paint use a stale bound.
+        self.page_content_height = 0;
         self.clear_find();
         self.url = "data:text/html".to_string();
         self.push_history(&self.url.clone());
         self.sync_history_flags();
-        self.title = "HTML Content".to_string();
         self.begin_loading();
         self.finish_loading();
-        self.title_changed.emit(self.title.clone());
+        // Route the title through `set_title` so the history entry pushed above records it;
+        // assigning the field directly left the new entry holding the previous page's title.
+        self.set_title("HTML Content".to_string());
         self.url_changed.emit(self.url.clone());
         self.update_navigation_state();
         self.base.request_redraw();
@@ -1352,14 +1381,16 @@ impl WebEngineView {
         self.html_blocks = parse_html_blocks(&self.html_content);
         self.html_revision = self.html_revision.wrapping_add(1);
         self.page_layout = None;
+        self.scroll_offset = 0;
+        self.page_content_height = 0;
         self.clear_find();
         self.url = base_url.to_string();
         self.push_history(&self.url.clone());
         self.sync_history_flags();
-        self.title = "Data Content".to_string();
         self.begin_loading();
         self.finish_loading();
-        self.title_changed.emit(self.title.clone());
+        // See `load_html`: the title must be recorded on the history entry it belongs to.
+        self.set_title("Data Content".to_string());
         self.url_changed.emit(self.url.clone());
         self.update_navigation_state();
         self.base.request_redraw();
@@ -1391,13 +1422,19 @@ impl WebEngineView {
         }
     }
 
-    /// Restores the URL and title an entry records, emitting `title_changed` when the title differs.
+    /// Restores the URL and scroll position an entry records, emitting `title_changed` when the
+    /// title differs.
     fn restore_history_entry(&mut self, entry: HistoryEntry) {
         self.url = entry.url;
+        // `set_history_scroll` records where the reader was when the page was left; applying it
+        // here is the other half of that contract, and the entry otherwise carried a value no
+        // navigation ever read.
+        self.scroll_offset = entry.scroll_pos.max(0.0).round() as i32;
         if self.title != entry.title {
             self.title = entry.title.clone();
             self.title_changed.emit(entry.title);
         }
+        self.base.request_redraw();
     }
 
     /// Re-derives the back/forward flags from the history index.
@@ -1874,6 +1911,14 @@ impl WebEngineView {
         Arc::clone(&self.find_requests)
     }
 
+    /// Publishes each drained find result into `sink`, for an attached find bar.
+    ///
+    /// The bar drains the cell on its own paint/event path; see [`Self::poll_find_requests`].
+    /// Attaching replaces any previous sink, so re-attaching a bar does not leave two readers.
+    pub fn accept_find_progress(&mut self, sink: Arc<Mutex<Option<(usize, usize)>>>) {
+        self.find_progress_sink = Some(sink);
+    }
+
     /// Applies every queued find request, returning the latest progress.
     ///
     /// Returns `None` when the queue was empty. Each request goes through the same public find
@@ -1910,6 +1955,9 @@ impl WebEngineView {
                 WebFindRequest::Clear => self.clear_find(),
             }
             latest = Some(self.find_progress());
+        }
+        if let (Some(sink), Some(progress)) = (self.find_progress_sink.as_ref(), latest) {
+            *lock(sink) = Some(progress);
         }
         latest
     }
@@ -2129,7 +2177,7 @@ impl Widget for WebEngineView {
 
     /// Resolves a published event name to this view's own signal.
     ///
-    /// `web_engine_view` publishes eleven names and the view emits all eleven, so the mapping is
+    /// `web_engine_view` publishes nineteen names and the view emits all nineteen, so the mapping is
     /// one-to-one. Without an arm each name was accepted by `connect_event` and never reached: the
     /// load pipeline emitted `loading_started`, the hub held a slot nobody called.
     ///
@@ -2703,6 +2751,30 @@ impl Draw for WebEngineView {
                 });
             }
             let layout = self.page_layout.as_ref().expect("the layout was filled above");
+            // Measure the whole document before painting so the offset is clamped against the
+            // height this frame actually draws. Deriving the height from the paint cursor left
+            // the setter and the scrollbar using different maxima, so a wheel notch could
+            // scroll past the end into blank space.
+            let total_height = self
+                .html_blocks
+                .iter()
+                .zip(layout.lines.iter())
+                .map(|(block, ranges)| {
+                    if block.kind == HtmlBlockKind::Image {
+                        line_h * 3 + 6
+                    } else {
+                        ranges.len() as i32 * line_h + 6
+                    }
+                })
+                .sum::<i32>()
+                + 12;
+            self.page_content_height = total_height.max(0);
+            let max_scroll = self.max_scroll_offset();
+            if self.scroll_offset > max_scroll {
+                // A zoom change or shorter document can leave the offset past the end; clamp it
+                // before painting so the frame the scrollbar describes is the frame shown.
+                self.scroll_offset = max_scroll;
+            }
             let mut y = content.y + 6 - self.scroll_offset;
             ctx.push_clip(content.x, content.y, content.width, content.height);
             for (block, ranges) in self.html_blocks.iter().zip(layout.lines.iter()) {
@@ -2745,10 +2817,8 @@ impl Draw for WebEngineView {
                 y += 6;
             }
             ctx.pop_clip();
-            self.page_content_height = (y + self.scroll_offset - content.y).max(0) + 6;
 
             // Vertical scrollbar, drawn only when the page overflows.
-            let max_scroll = (self.page_content_height - content.height as i32).max(0);
             if max_scroll > 0 {
                 let track = Rect::new(content.right() - 8, content.y, 8, content.height);
                 ctx.fill_rect(track, secondary.with_alpha(50));
@@ -2801,6 +2871,16 @@ impl Draw for WebEngineView {
                         ctx.fill_rect(Rect::new(bar.x, bar.y, filled, bar.height), accent);
                     }
                 }
+            }
+        } else {
+            // No document (or no room to paint one): the measured height and the zoom
+            // controls' hit rectangles belong to the previous document. Clearing them keeps a
+            // click from landing on a control this frame did not paint.
+            self.page_content_height = 0;
+            self.zoom_out_rect = None;
+            self.zoom_in_rect = None;
+            if self.scroll_offset != 0 {
+                self.scroll_offset = 0;
             }
         }
 
@@ -3257,6 +3337,109 @@ mod tests {
         assert!(view.commit_url_edit());
         assert!(!view.is_editing_url());
         assert_eq!(view.url(), "https://example.com/next");
+    }
+
+    /// Text accumulated before an opening anchor is not part of the link.
+    ///
+    /// The parser only flushed the buffer at a block boundary, so `<p>See <a>here</a></p>`
+    /// produced one link block reading "See here" and painted the prose in the link colour.
+    #[test]
+    fn text_before_a_link_stays_plain_text() {
+        let blocks = parse_html_blocks("<p>See <a href=\"/x\">here</a> now</p>");
+        let rendered: Vec<(&str, HtmlBlockKind)> =
+            blocks.iter().map(|block| (block.text.as_str(), block.kind)).collect();
+        assert_eq!(
+            rendered,
+            [
+                ("See", HtmlBlockKind::Text),
+                ("here", HtmlBlockKind::Link),
+                ("now", HtmlBlockKind::Text),
+            ]
+        );
+    }
+
+    /// Scrolling is bounded by the page height and the visible page area, not by the bar height.
+    ///
+    /// `set_scroll_offset` subtracted the URL-bar height from the document height and compared
+    /// that with the scroll offset, while `draw` subtracted the whole viewport. The setter
+    /// therefore accepted offsets the page did not have, scrolling a short document into blank
+    /// space.
+    #[test]
+    fn scrolling_is_clamped_to_the_measured_page_height() {
+        let mut view = WebEngineView::new(Rect::new(0, 0, 300, 200));
+        view.load_html("<p>short</p>");
+        let _ = rust_widgets::widget::svg::render_to_svg(&mut view);
+        view.set_scroll_offset(10_000);
+        assert_eq!(view.scroll_offset(), 0, "a page that fits must not scroll at all");
+
+        let tall: String = (0..100).map(|index| format!("<p>line {index}</p>")).collect();
+        view.load_html(&tall);
+        let _ = rust_widgets::widget::svg::render_to_svg(&mut view);
+        let viewport = 200 - rust_widgets::widget::metrics::dimensions::WEB_URL_BAR_HEIGHT as i32;
+        let max = view.page_content_height - viewport;
+        assert!(max > 0, "the tall document overflows the viewport");
+        view.set_scroll_offset(10_000);
+        assert_eq!(
+            view.scroll_offset(),
+            max,
+            "the offset stops where the measured page ends, not at the bar height"
+        );
+    }
+
+    /// An empty document leaves no zoom hit targets behind.
+    ///
+    /// The zoom rectangles were only assigned when a document had blocks, so loading an empty
+    /// document afterwards kept the previous frame's rectangles and a click in that (now blank)
+    /// corner still changed the zoom.
+    #[test]
+    fn an_empty_document_clears_the_zoom_controls() {
+        let mut view = WebEngineView::new(Rect::new(0, 0, 300, 200));
+        view.load_html("<p>content</p>");
+        let _ = rust_widgets::widget::svg::render_to_svg(&mut view);
+        let stale = view.zoom_in_rect.expect("a document paints the zoom controls");
+
+        view.load_html("");
+        let _ = rust_widgets::widget::svg::render_to_svg(&mut view);
+        assert!(view.zoom_in_rect.is_none(), "no document paints no zoom control");
+
+        view.handle_event(&Event::MousePress { pos: stale.center(), button: 1, modifiers: 0 });
+        assert_eq!(view.zoom_factor(), 1.0, "the cleared target must not react");
+    }
+
+    /// Back restores the scroll position recorded against the entry.
+    ///
+    /// `set_history_scroll` documented that going back restores where the reader was, but
+    /// `restore_history_entry` only copied the URL and title.
+    #[test]
+    fn back_restores_the_recorded_scroll_position() {
+        let mut view = WebEngineView::new(Rect::new(0, 0, 300, 200));
+        view.set_url("https://example.com/a".to_string());
+        view.set_history_scroll(64.0);
+        view.set_url("https://example.com/b".to_string());
+        assert_eq!(view.scroll_offset(), 0);
+
+        view.go_back();
+        assert_eq!(view.scroll_offset(), 64, "the entry's scroll position is restored");
+    }
+
+    /// A synchronously loaded document records its own title in history.
+    ///
+    /// Both loaders assigned `title` directly, after the history entry had been pushed, so the
+    /// entry kept the previous page's title and `go_back` would restore that stale value.
+    #[test]
+    fn synchronous_loads_record_their_own_history_title() {
+        let mut view = WebEngineView::new(Rect::new(0, 0, 300, 200));
+        view.load_html("<p>hello</p>");
+        assert_eq!(
+            view.history_entries().last().map(|entry| entry.title.as_str()),
+            Some("HTML Content")
+        );
+
+        view.load_data(b"payload", "text/plain", "UTF-8", "data:text/plain");
+        assert_eq!(
+            view.history_entries().last().map(|entry| entry.title.as_str()),
+            Some("Data Content")
+        );
     }
 
     /// The wrapped page layout is reused until a document, width or zoom input changes (MW-011).

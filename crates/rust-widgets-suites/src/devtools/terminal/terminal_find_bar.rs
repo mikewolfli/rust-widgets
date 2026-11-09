@@ -255,7 +255,14 @@ impl TerminalFindBar {
         }
         self.match_count = count;
         self.current_match = current;
+        // The cached scan describes the terminal, not this host-supplied pair. Dropping its key
+        // makes the next navigation scan the terminal again; otherwise a cached hit reported the
+        // host's total while `select` indexed a match set that no longer agreed with it.
+        self.rescan_key = None;
         self.base.request_redraw();
+        // The host-facing route reports its match set like every other path: a host mirroring the
+        // counter in its own chrome would otherwise keep the old pair while the bar repaints.
+        self.emit_matches();
     }
 
     /// Returns the reported total match count.
@@ -354,7 +361,12 @@ impl TerminalFindBar {
         let next = match self.current_match {
             Some(index) if index + 1 < total => index + 1,
             Some(_) if self.wrap_search => 0,
-            Some(_) => return None,
+            // A refused step still compares the rescanned counts: the scan may have changed them
+            // even though the cursor cannot advance, and a subscriber must hear about that.
+            Some(_) => {
+                self.report_if_changed(before);
+                return None;
+            }
             None => 0,
         };
         self.select(next)
@@ -374,7 +386,10 @@ impl TerminalFindBar {
         }
         let previous = match self.current_match {
             Some(0) if self.wrap_search => total - 1,
-            Some(0) => return None,
+            Some(0) => {
+                self.report_if_changed(before);
+                return None;
+            }
             Some(index) => index - 1,
             None => total - 1,
         };
@@ -449,12 +464,16 @@ impl TerminalFindBar {
 
     /// Clears the counts and snapshot because the query or its options moved.
     fn invalidate_matches(&mut self) {
+        let before = (self.match_count, self.current_match);
         self.match_count = 0;
         self.current_match = None;
         self.matches.clear();
         // The cached scan describes the old query options; dropping the key forces a rescan.
         self.rescan_key = None;
         self.base.request_redraw();
+        // The published count is part of the control's state, not just a paint detail: a host that
+        // mirrors `on_matches_changed` would otherwise keep showing the old total.
+        self.report_if_changed(before);
     }
 
     /// Emits the current report.
@@ -772,6 +791,29 @@ mod tests {
         assert_eq!(bar.match_count(), 0);
     }
 
+    /// A refused step still reports a count the rescan changed.
+    #[test]
+    fn a_refused_step_still_reports_the_rescanned_count() {
+        let mut terminal = terminal_with(&["a", "a"]);
+        let mut bar = TerminalFindBar::new(Rect::new(0, 0, 320, 30));
+        bar.set_query("a");
+        bar.set_wrap_search(false);
+        bar.attach(&mut terminal);
+        assert_eq!(bar.find_next_in(&mut terminal), Some((0, 0)));
+        assert_eq!(bar.find_next_in(&mut terminal), Some((1, 0)));
+
+        let emitted = reports(&mut bar);
+        // The trim leaves one match, so the cursor clamps to it and cannot advance any further.
+        terminal.set_scrollback_lines(1);
+        assert_eq!(bar.find_next_in(&mut terminal), None, "the last match cannot advance");
+        assert_eq!(bar.current_match(), Some(0));
+        assert_eq!(
+            emitted.lock().ok().map(|guard| guard.clone()).unwrap_or_default(),
+            vec![(1, 0)],
+            "the new total is reported even though the step was refused"
+        );
+    }
+
     /// A host-supplied count is clamped into the total, and a zero total clears the cursor.
     #[test]
     fn set_match_count_clamps_the_current_index() {
@@ -784,6 +826,22 @@ mod tests {
         bar.set_match_count(0, 3);
         assert_eq!(bar.match_count(), 0);
         assert_eq!(bar.current_match(), None);
+    }
+
+    /// Navigation scans the terminal, so it replaces a host-supplied count instead of walking a
+    /// match set that belongs to a different search engine.
+    #[test]
+    fn navigation_replaces_a_host_supplied_count() {
+        let mut terminal = terminal_with(&["a"]);
+        let mut bar = TerminalFindBar::new(Rect::new(0, 0, 320, 30));
+        bar.set_query("a");
+        bar.attach(&mut terminal);
+
+        bar.set_match_count(99, 5);
+        assert_eq!(bar.match_count(), 99);
+
+        assert_eq!(bar.find_next_in(&mut terminal), Some((0, 0)));
+        assert_eq!(bar.match_count(), 1, "the terminal's own scan is the honest total");
     }
 
     /// An empty query has no matches, and navigation reports that honestly.
@@ -868,5 +926,41 @@ mod tests {
         assert_eq!(bar.query(), "er");
         bar.handle_event(&Event::key_press(ESCAPE, 0));
         assert!(!bar.is_open());
+    }
+
+    /// A host-supplied match count is reported like every other scan result.
+    #[test]
+    fn a_host_supplied_count_is_reported() {
+        let mut bar = TerminalFindBar::new(Rect::new(0, 0, 320, 30));
+        let emitted = reports(&mut bar);
+
+        bar.set_match_count(4, 1);
+
+        assert_eq!(bar.get("match_count"), Ok(CapabilityValue::UInt(4)));
+        assert_eq!(
+            emitted.lock().ok().map(|guard| guard.clone()).unwrap_or_default(),
+            vec![(4, 1)],
+            "the counter a host mirrors is kept in step"
+        );
+    }
+
+    /// Changing the query clears the published count and reports the reset.
+    ///
+    /// `invalidate_matches` reset the state without emitting, so a host mirroring
+    /// `on_matches_changed` kept showing the old total while `get("match_count")` read zero.
+    #[test]
+    fn a_query_change_reports_the_reset_counts() {
+        let mut bar = TerminalFindBar::new(Rect::new(0, 0, 500, 30));
+        bar.set_match_count(3, 1);
+        let emitted = reports(&mut bar);
+
+        bar.set_query("other");
+
+        assert_eq!(bar.get("match_count"), Ok(CapabilityValue::UInt(0)));
+        assert_eq!(
+            emitted.lock().ok().map(|guard| guard.clone()).unwrap_or_default(),
+            vec![(0, 0)],
+            "the reset is an edge a host can mirror"
+        );
     }
 }

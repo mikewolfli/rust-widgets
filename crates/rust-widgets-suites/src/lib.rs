@@ -9,8 +9,8 @@
 //! runtime and the platform backends. Controls that are useful but not universal live here in
 //! **suites** — groups of controls that solve one job together.
 //!
-//! The first group is [`form_widgets`]: [`Form`](form_widgets::Form) collects labelled fields and
-//! validates them, and [`FormSet`](form_widgets::FormSet) pages several forms with one active page
+//! The first group is [`form_widgets`]: [`Form`] collects labelled fields and
+//! validates them, and [`FormSet`] pages several forms with one active page
 //! and aggregate validity. The [`webview`] group carries the browser model and its controls; the
 //! other groups are enabled through their Cargo features.
 //!

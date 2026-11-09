@@ -68,10 +68,11 @@ impl CodeEditor {
         let document_slots = self.document.slots();
         let title_count = document_slots.len();
         let active = self.active_buffer();
-        // The dirty flag is a maintained boolean, not a string comparison: the
-        // saved text is a full copy of the document, so comparing against it
-        // costs one pass over the file, once per tab, every frame.
-        let active_dirty = self.model.borrow().dirty;
+        // The dirty flag is a maintained boolean **per buffer**, not a string comparison:
+        // the saved text is a full copy of the document, so comparing against it costs
+        // one pass over the file, once per tab, every frame. Reading the slot's own model
+        // also lets every tab show its state; the previous `index == active` gate hid the
+        // unsaved mark on background buffers entirely.
         let strip_height = row_height_of(self.config.resolved_line_advance());
         context.fill_rect(
             Rect::new(rect.x, rect.y, rect.width, strip_height as u32),
@@ -89,7 +90,7 @@ impl CodeEditor {
         slots.reserve(title_count);
         let mut x = rect.x + 6;
         for (index, document_slot) in document_slots.iter().enumerate() {
-            let dirty = index == active && active_dirty;
+            let dirty = document_slot.model.borrow().dirty;
             // The dirty marker is a **drawn dot**, not the `U+2022` bullet the label used to
             // carry. No bundled face covers the general-punctuation bullet's block with an outline
             // that clips inside a tab's narrow cell, so the character fell back to an 8x8 bitmap
@@ -186,12 +187,12 @@ impl CodeEditor {
             // The marker sits in its own slot between the title and the close box, so
             // toggling it on and off cannot move either neighbour.
             let marker_center = label_right + TAB_MARKER_SLOT / 2;
-            if index == active && dirty {
+            if dirty {
                 let radius = (line_box as f32 * 0.16).round().max(1.0) as u32;
                 context.fill_circle_aa(
                     Point::new(marker_center, title_y + line_box / 2 - 1),
                     radius,
-                    chrome.ink,
+                    if index == active { chrome.ink } else { chrome.dim_ink },
                 );
             }
             let close = if closeable {

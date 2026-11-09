@@ -19,7 +19,9 @@ impl CodeEditor {
     /// the left edge of the *row*, which is where a character from the first segment
     /// was drawn.
     pub(super) fn unwrapped_x(&self, line: usize, column: usize) -> (usize, f32) {
-        let text = self.line_text(line).unwrap_or_default();
+        // Borrowed, not cloned: this runs once per caret per frame, and the old
+        // `line_text` allocated a `String` for the whole line on every call.
+        let text = self.line_text_borrowed(line);
         let grid = LineGrid::new(&text, self.config.tab_width);
         let cell = self.cell_width();
         if !self.config.word_wrap {
@@ -126,7 +128,7 @@ impl CodeEditor {
                 // caret is painted on one segment. Subtract the segment's own
                 // measured origin and add the continuation indent, the same way
                 // the row itself is drawn.
-                let text = self.line_text(position.line).unwrap_or_default();
+                let text = self.line_text_borrowed(position.line);
                 let grid = LineGrid::new(&text, self.config.tab_width);
                 let columns = self.text_columns().max(1);
                 let (segment, segment_start) = grid.segment_of_char(position.column, columns);
@@ -178,9 +180,11 @@ impl CodeEditor {
                 let y = map.row_y(row);
                 let x = self.caret_x(caret.head);
                 self.draw_caret_shape(context, x, y, row_height, chrome);
-            } else if let Some(rect) = self.rect_for_range(caret.bounds().0, caret.bounds().1) {
-                context.fill_rect(rect, chrome.selection);
             }
+            // A non-collapsed secondary selection is painted per row by
+            // `draw_row_text`, under its glyphs. Drawing it here painted over the text
+            // and as one bounding rectangle, which left every row after the first
+            // uncovered on the left.
         }
         // Primary caret. A selection is not a caret, so the blink gates only the collapsed form: a
         // selected range must stay fully visible in both halves of the cycle. A non-collapsed

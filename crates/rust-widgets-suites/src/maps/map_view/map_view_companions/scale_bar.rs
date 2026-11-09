@@ -152,13 +152,28 @@ impl ScaleBar {
 
     /// The largest 1/2/5 × 10ⁿ distance whose bar fits in `max_px`.
     ///
+    /// The quantisation happens in the unit the label prints. Quantising metres and then
+    /// converting for an imperial label made `2000 m` print `1.2 mi` while the bar was drawn
+    /// 2000 m long — a 3.4 % error in a control whose purpose is measuring.
+    ///
     /// Returns `0.0` for a degenerate or non-finite width; a caller drawing the
     /// result should skip the bar rather than paint a zero-length one.
     pub fn bar_distance(&self, max_px: f64) -> f64 {
         if !max_px.is_finite() || max_px <= 0.0 {
             return 0.0;
         }
-        nice_floor(self.meters_per_pixel * max_px)
+        let meters = self.meters_per_pixel * max_px;
+        match self.units {
+            ScaleUnits::Metric => nice_floor(meters),
+            ScaleUnits::Imperial => {
+                let feet = meters * FEET_PER_METER;
+                if feet >= FEET_PER_MILE {
+                    nice_floor(feet / FEET_PER_MILE) * FEET_PER_MILE / FEET_PER_METER
+                } else {
+                    nice_floor(feet) / FEET_PER_METER
+                }
+            }
+        }
     }
 
     /// The label a caller would draw, derived from the control's width.
@@ -191,6 +206,11 @@ impl ScaleBar {
     }
 }
 
+/// Feet in one metre, as used by the imperial label.
+const FEET_PER_METER: f64 = 3.280_839_895;
+/// Feet in one mile.
+const FEET_PER_MILE: f64 = 5280.0;
+
 /// Rounds `value` down to the nearest 1, 2 or 5 times a power of ten.
 fn nice_floor(value: f64) -> f64 {
     if !value.is_finite() || value <= 0.0 {
@@ -222,9 +242,9 @@ fn format_scale_distance(units: ScaleUnits, meters: f64) -> String {
             }
         }
         ScaleUnits::Imperial => {
-            let feet = meters * 3.280_839_895;
-            if feet >= 5280.0 {
-                format_scaled(feet / 5280.0, "mi")
+            let feet = meters * FEET_PER_METER;
+            if feet >= FEET_PER_MILE {
+                format_scaled(feet / FEET_PER_MILE, "mi")
             } else if feet >= 1.0 {
                 format_scaled(feet, "ft")
             } else {

@@ -215,18 +215,17 @@ impl EventHandler for MarkdownEditor {
 
         match event {
             // The find bar owns text input while it is open: otherwise typing a query would edit
-            // the document behind it. The mounted bar is kept in step through the same query, so
-            // the painted counter always describes the text Enter will search.
-            Event::TextInput { text } if self.find.visible => {
-                self.find.query.push_str(text);
-                self.find.current = None;
-                self.find_bar.set_query(self.find.query.clone());
+            // the document behind it. The event is handed to the mounted bar rather than to a
+            // second copy of "append to the query" logic, so its focused field decides where the
+            // text goes — the replacement row used to receive nothing because this arm always
+            // appended to the query.
+            Event::TextInput { .. } | Event::ImeCommit { .. } if self.find.visible => {
+                self.find_bar.handle_event(event);
+                self.sync_find_query_from_bar();
                 self.base.request_redraw();
             }
-            Event::ImeCommit { text } if self.find.visible => {
-                self.find.query.push_str(text);
-                self.find.current = None;
-                self.find_bar.set_query(self.find.query.clone());
+            Event::ImePreedit { .. } if self.find.visible => {
+                self.find_bar.handle_event(event);
                 self.base.request_redraw();
             }
             // Printable text and IME commits are what the platform delivers for typing; a
@@ -273,7 +272,7 @@ impl EventHandler for MarkdownEditor {
                 // the query band); the document caret must not move for them.
                 if self.find.visible && self.find_bar_rect().contains_point(*pos) {
                     self.find_bar.handle_event(event);
-                    self.find.query = self.find_bar.query().to_string();
+                    self.sync_find_query_from_bar();
                     self.base.request_redraw();
                     return;
                 }
@@ -372,6 +371,30 @@ impl EventHandler for MarkdownEditor {
 }
 
 impl MarkdownEditor {
+    /// Copies the bar's query into the editor's own find state.
+    ///
+    /// `find.visible`/`find.query` are what the header and the remaining in-place commands read;
+    /// the bar remains the authority while it is open, so this only mirrors, never rewrites.
+    pub(crate) fn sync_find_query_from_bar(&mut self) {
+        self.find.visible = self.find_bar.is_visible();
+        self.find.query = self.find_bar.query().to_string();
+        self.find.current = None;
+    }
+
+    /// Selects the bar's active match in the editor.
+    ///
+    /// The bar owns the match list and the counter, so its `current_range` is the one answer to
+    /// "where is the match". Mirroring its byte offsets into the editor's selection is what makes
+    /// Enter and the painted counter agree instead of stepping two independent lists.
+    pub(crate) fn sync_find_selection_from_bar(&mut self) {
+        let Some((start, end)) = self.find_bar.current_range() else {
+            self.find.current = None;
+            return;
+        };
+        self.find.current = Some(start);
+        self.select_byte_range(start, end);
+    }
+
     /// Routes one key press to the editor or to the open find bar.
     pub(crate) fn handle_key(&mut self, key: u32, modifiers: u32) {
         let shift = crate::shortcut::Modifiers::from_event_bits(modifiers)
@@ -382,22 +405,19 @@ impl MarkdownEditor {
         let primary = crate::shortcut::event_carries_primary(modifiers);
 
         if self.find.visible {
-            match key {
-                8 => {
-                    self.find.query.pop();
-                    self.find.current = None;
-                    self.find_bar.set_query(self.find.query.clone());
-                }
-                13 => {
-                    let query = self.find.query.clone();
-                    if !self.find_next(&query) {
-                        self.find.current = None;
-                    }
-                    let _ = self.find_bar.find_next();
-                }
-                27 => self.close_find(),
-                _ if primary_shortcut_pressed(key, modifiers, Key::F) => self.close_find(),
-                _ => { /* The find bar ignores editing chords it does not own. */ }
+            // One keyboard contract: the mounted bar handles the key (so Backspace follows its
+            // focused field, Tab switches fields, Enter navigates its own match list), then the
+            // editor mirrors the result. The previous arm popped `find.query` unconditionally and
+            // navigated a second, differently-matched list.
+            self.find_bar.handle_event(&Event::KeyPress { key, modifiers });
+            self.sync_find_query_from_bar();
+            if self.find_bar.is_visible() {
+                self.sync_find_selection_from_bar();
+            } else {
+                // Escape was handled by the bar, which already requested its own
+                // layout. The editor's mirror is now closed, so the header row returns
+                // on the next frame; ask for the layout that removes the find band.
+                self.base.request_layout();
             }
             self.base.request_redraw();
             return;

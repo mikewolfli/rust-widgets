@@ -132,6 +132,9 @@ TOO_LONG_PENDING = {
     "src/widget/nav_widgets/adaptive_scaffold.rs": "id-slot routing vs responsive layout vs paint → `adaptive_scaffold/{ids,layout,paint}.rs`",
     "src/widget/special_widgets/freeform_shape/shape.rs": "outline model vs paint vs editing → `freeform_shape/shape/{model,paint,edit}.rs`",
     "src/widget/view_widgets/list_view.rs": "model traits vs row paint vs selection → `list_view/{model,paint}.rs`",
+    # Measured 2026-11-09 (issue-20261106 §11.4 round): `sample_fill.rs` (helpers + tests) and
+    # `code_editor/editor.rs` (free helpers) were split so no debt entry is needed. The old rows
+    # must stay absent; re-adding one means the split regressed.
 }
 
 

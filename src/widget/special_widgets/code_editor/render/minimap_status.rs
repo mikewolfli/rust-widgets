@@ -132,7 +132,11 @@ impl CodeEditor {
         // — drawing the marker there produced a full-height accent frame around the
         // strip (visible in the first run of this demo).
         if total_rows > rows_visible {
-            let scale = height as f32 / total_rows as f32;
+            // The band must use the **same vertical mapping as the bars above it**.
+            // Bars are placed at `bucket * pitch`, and `pitch` is capped so a short
+            // document compacts at the top; mapping the band over the full strip height
+            // (`height / total_rows`) then put the band below the last painted bar.
+            let scale = (rows as f32 * pitch) / total_rows as f32;
             let viewport_top = top + (self.scroll_visual_row as f32 * scale).round() as i32;
             let viewport_height = ((rows_visible as f32 * scale).max(8.0)) as u32;
             let band = Rect::new(x, viewport_top, width as u32, viewport_height.min(height));

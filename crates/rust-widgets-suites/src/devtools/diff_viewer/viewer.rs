@@ -258,6 +258,11 @@ impl DiffViewer {
         }
         self.syntax_dirty = false;
         if !self.syntax_highlight || self.language == LanguageId::PlainText {
+            // "No tokens" is represented by an empty table, not by leaving the last language's
+            // spans in place: the paint path reads the table whenever highlighting is on, so a
+            // stale table painted Rust colours for a plain-text view (and for new text, since the
+            // spans are only clamped to its length).
+            self.syntax_spans = None;
             return;
         }
         let highlighter = BuiltinHighlighter::new(self.language);
@@ -367,7 +372,13 @@ impl DiffViewer {
         if index >= self.lines.len() {
             return false;
         }
-        self.set_selection(Some(index));
+        self.ensure_display_rows();
+        // A folded line has no row of its own. Selecting it would leave the ring on nothing and
+        // make the next arrow key step from a line the viewport does not paint, so a folded index
+        // selects the nearest line that is painted. When the fold covers the whole document there
+        // is no painted neighbour at all; clearing the selection is the honest answer, because
+        // keeping the hidden index named a row that does not exist.
+        self.set_selection(self.nearest_painted_line(index));
         self.base.request_redraw();
         true
     }
@@ -423,7 +434,12 @@ impl DiffViewer {
     }
 
     /// Recomputes every changed row's inline spans under the current granularity.
+    ///
+    /// The measured advances are keyed by display row and font size, so they describe the spans
+    /// that were current when they were measured. Recomputing the spans invalidates them; keeping
+    /// them made a granularity switch tint the previous run's pixels until the rows were rebuilt.
     fn refresh_changed_spans(&mut self) {
+        self.span_widths.borrow_mut().clear();
         for line in &mut self.lines {
             let Some(((left_start, left_end), (right_start, right_end))) = line.changed_spans
             else {
@@ -451,6 +467,8 @@ impl DiffViewer {
         self.fold_unchanged = fold;
         self.first_visible_line = 0;
         self.display_dirty = true;
+        self.ensure_display_rows();
+        self.reconcile_selection_with_display();
         self.fold_changed.emit(fold);
         self.base.request_redraw();
     }
@@ -538,6 +556,8 @@ impl DiffViewer {
         self.fold_threshold = threshold;
         self.first_visible_line = 0;
         self.display_dirty = true;
+        self.ensure_display_rows();
+        self.reconcile_selection_with_display();
         self.base.request_redraw();
     }
 
@@ -554,6 +574,8 @@ impl DiffViewer {
         self.fold_context_lines = lines;
         self.first_visible_line = 0;
         self.display_dirty = true;
+        self.ensure_display_rows();
+        self.reconcile_selection_with_display();
         self.base.request_redraw();
     }
 
@@ -603,6 +625,15 @@ impl DiffViewer {
         self.display_rows.len()
     }
 
+    /// The number of cached measured span widths.
+    ///
+    /// Exposed to the tests so the invalidation of the measurement cache can be pinned without a
+    /// pixel comparison.
+    #[cfg(test)]
+    pub(super) fn measured_span_rows(&self) -> usize {
+        self.span_widths.borrow().len()
+    }
+
     /// Selects the next changed row after the current selection.
     pub fn next_change(&mut self) -> bool {
         let start = self.selected_index.map_or(0, |index| index + 1);
@@ -649,8 +680,45 @@ impl DiffViewer {
     fn display_row_of_line(&self, index: usize) -> Option<usize> {
         self.display_rows.iter().position(|row| match row.source {
             RowSource::Line { index: painted, .. } => painted == index,
-            RowSource::Fold { run, .. } => index >= run.0 && index < run.1,
+            // A fold marker paints a caption and a rule, not the lines it stands for: they are
+            // exactly the lines this method documents as absent.
+            RowSource::Fold { .. } => false,
         })
+    }
+
+    /// The painted line nearest to `index` (itself when it is painted).
+    ///
+    /// Used to keep the selection on a row the viewport paints when the line it names is hidden
+    /// inside a fold.
+    fn nearest_painted_line(&self, index: usize) -> Option<usize> {
+        if self.display_row_of_line(index).is_some() {
+            return Some(index);
+        }
+        let row = self.display_rows.iter().position(|row| {
+            matches!(&row.source, RowSource::Fold { run, .. } if index >= run.0 && index < run.1)
+        })?;
+        let line_of = |row: &DisplayRow| match &row.source {
+            RowSource::Line { index, .. } => Some(*index),
+            RowSource::Fold { .. } => None,
+        };
+        // Prefer the painted row below the marker, then the one above.
+        self.display_rows.get(row + 1).and_then(line_of).or_else(|| {
+            row.checked_sub(1).and_then(|above| self.display_rows.get(above)).and_then(line_of)
+        })
+    }
+
+    /// Keeps the selection on a line the rebuilt rows paint.
+    fn reconcile_selection_with_display(&mut self) {
+        let Some(selected) = self.selected_index else {
+            return;
+        };
+        match self.nearest_painted_line(selected) {
+            Some(nearest) if nearest != selected => self.set_selection(Some(nearest)),
+            Some(_) => {}
+            // The whole document folded into one marker: nothing is painted, so no line can be
+            // selected.
+            None => self.set_selection(None),
+        }
     }
 
     /// The selected row as patch text, for copying.
@@ -675,11 +743,12 @@ impl DiffViewer {
 
     /// How many diff rows fit below the column headings.
     ///
-    /// At least one, so a short viewer still paints a row instead of scrolling everything away.
+    /// Zero when the pane is too short for even one row: the paint then shows nothing, and the
+    /// hit test must agree rather than accepting a row the painter skipped.
     pub(super) fn visible_line_count(&self) -> usize {
         let usable = self.geometry().height as i32 - ROW_TOP - ROW_BOTTOM_INSET;
         if usable < 0 {
-            return 1;
+            return 0;
         }
         (usable / ROW_HEIGHT + 1) as usize
     }
@@ -736,10 +805,17 @@ impl DiffViewer {
                     self.expanded_hunks.iter().any(|(first, last)| *first <= start && end <= *last);
                 let folded = run > self.fold_threshold && run > context * 2 && !expanded;
                 if folded {
+                    // Context rows are ordinary rows of the current mode: unified mode paints one
+                    // column, so a `Both` row would draw the same line twice in two places.
+                    let side = if self.view_mode == DiffViewMode::Unified {
+                        RowSide::Right
+                    } else {
+                        RowSide::Both
+                    };
                     for offset in 0..context {
                         self.push_line_row(
                             start + offset,
-                            RowSide::Both,
+                            side,
                             false,
                             &mut left_number,
                             &mut right_number,
@@ -772,7 +848,7 @@ impl DiffViewer {
                     for offset in (end - context)..end {
                         self.push_line_row(
                             offset,
-                            RowSide::Both,
+                            side,
                             false,
                             &mut left_number,
                             &mut right_number,
@@ -951,9 +1027,16 @@ impl DiffViewer {
             self.refresh_changed_spans();
         }
 
-        let next_selection = if self.lines.is_empty() { None } else { Some(0) };
+        // Nothing is selectable when the pane is too short to paint a row: naming line 0 would
+        // put the selection on a row the paint path skips.
+        let next_selection =
+            if self.lines.is_empty() || self.visible_line_count() == 0 { None } else { Some(0) };
         self.set_selection(next_selection);
         self.display_dirty = true;
+        // The selection resets to the first row, so the viewport follows it. A comparison rebuilt
+        // under a new whitespace or case rule could otherwise leave a stale scroll offset that
+        // pointed past the new row count, and `scroll_lines` would then jump to the end.
+        self.first_visible_line = 0;
         self.ensure_display_rows();
         self.compared.emit(self.change_count());
         self.base.request_layout();
@@ -1401,15 +1484,18 @@ impl EventHandler for DiffViewer {
             match *key {
                 38 => {
                     if let Some(index) = self.selected_index {
-                        if index > 0 {
-                            let _ = self.select_index(index - 1);
+                        if index > 0 && self.select_index(index - 1) {
+                            // A row selected by the keyboard must be scrolled into view; without
+                            // this the caret moved past the painted window and the reader could no
+                            // longer see what was selected.
+                            self.reveal_line(index - 1);
                         }
                     }
                 }
                 40 => {
                     if let Some(index) = self.selected_index {
-                        if index + 1 < self.lines.len() {
-                            let _ = self.select_index(index + 1);
+                        if index + 1 < self.lines.len() && self.select_index(index + 1) {
+                            self.reveal_line(index + 1);
                         }
                     }
                 }
@@ -1437,18 +1523,27 @@ impl EventHandler for DiffViewer {
             // A click selects the row under it, or expands the fold marker under it. Rows, not
             // lines: a unified changed pair and a folded run both break the one-to-one mapping.
             let rect = self.geometry();
-            let row = (pos.y - rect.y - ROW_TOP + 10) / ROW_HEIGHT;
-            if row >= 0 {
-                self.ensure_display_rows();
-                let display_row = self.visible_start() + row as usize;
-                match self.display_rows.get(display_row).map(|row| row.source) {
-                    Some(RowSource::Fold { .. }) => {
-                        self.expand_hunk(display_row);
+            if rect.contains_point(*pos) {
+                // A row's fill starts ten pixels above its text origin, so that band is the hit
+                // area. Clamping the band's top (and the viewport's painted row count) keeps a
+                // click in the column headings or below the last row from selecting a row that is
+                // not on screen.
+                let top = pos.y - rect.y - (ROW_TOP - 10);
+                if top >= 0 {
+                    let row = (top / ROW_HEIGHT) as usize;
+                    if row < self.visible_line_count() {
+                        self.ensure_display_rows();
+                        let display_row = self.visible_start() + row;
+                        match self.display_rows.get(display_row).map(|row| row.source) {
+                            Some(RowSource::Fold { .. }) => {
+                                self.expand_hunk(display_row);
+                            }
+                            Some(RowSource::Line { index, .. }) => {
+                                let _ = self.select_index(index);
+                            }
+                            None => {}
+                        }
                     }
-                    Some(RowSource::Line { index, .. }) => {
-                        let _ = self.select_index(index);
-                    }
-                    None => {}
                 }
             }
         }

@@ -19,7 +19,7 @@ use rust_widgets::event::{Event, EventHandler};
 use rust_widgets::impl_widget_property_hooks;
 use rust_widgets::property_names_of;
 use rust_widgets::render::RenderContext;
-use rust_widgets::signal::{GenericSignal, Signal1};
+use rust_widgets::signal::{ConnectionScope, GenericSignal, Signal1};
 use rust_widgets::widget::capability::coercion::{expect_bool, expect_f32, expect_string};
 use rust_widgets::widget::capability::properties_trait::{base_property_get, base_property_set};
 use rust_widgets::widget::capability::types::{CapabilityAccessError, CapabilityValue};
@@ -326,6 +326,10 @@ pub struct VideoPlayer {
     pending_transport_requests: Option<Arc<Mutex<Vec<TransportRequest>>>>,
     /// A scrubber kept in step with the chapter model and the playback clock.
     scrubber: Option<crate::media_playback::media_player::media_scrubber::MediaScrubber>,
+    /// The reverse half of the scrubber pairing: a committed drag queues its fraction here and
+    /// the player drains it through [`Self::apply_pending_scrubber_seeks`]. The scope disconnects
+    /// the subscription when the scrubber is detached or replaced.
+    scrubber_seeks: Option<ScrubberSeekBinding>,
     /// Whether cues are painted.
     subtitles_enabled: bool,
     /// Whether the player is in fullscreen presentation.
@@ -387,6 +391,12 @@ pub struct VideoPlayer {
     metadata: VideoMetadata,
     /// Cached cue index for [`Self::subtitle_at`], so a forward-playing clock is O(1).
     subtitle_cursor: Cell<usize>,
+    /// Prefix maxima of the cue end times, index-aligned with the sorted cue list.
+    ///
+    /// See `MediaPlayer::subtitle_max_end`: the walk-back needs to know whether *any* earlier
+    /// cue can still reach the position, and the prefix maximum answers that in one compare
+    /// instead of turning every frame's lookup into a scan of the track.
+    subtitle_max_end: Vec<f64>,
     /// A tightly packed copy of the presented frame, used when the host's frame has a row
     /// stride larger than `width * 4` (MW-08). Keyed by the shared buffer's identity.
     packed_frame: Option<PackedVideoFrame>,
@@ -430,6 +440,13 @@ struct SubtitleWrap {
     ranges: Vec<(usize, usize)>,
 }
 
+/// The write end of an attached scrubber's seek stream.
+struct ScrubberSeekBinding {
+    seeks: Arc<Mutex<Vec<f64>>>,
+    /// Disconnects the scrubber's `committed` subscription when the binding is dropped.
+    _scope: ConnectionScope,
+}
+
 impl VideoPlayer {
     /// Creates a new VideoPlayer with the given geometry.
     pub fn new(geometry: Rect) -> Self {
@@ -456,6 +473,7 @@ impl VideoPlayer {
             pending_chapter_seeks: None,
             pending_transport_requests: None,
             scrubber: None,
+            scrubber_seeks: None,
             subtitles_enabled: true,
             fullscreen: false,
             buffered: 0.0,
@@ -482,6 +500,7 @@ impl VideoPlayer {
             active_subtitle_track: None,
             metadata: VideoMetadata::default(),
             subtitle_cursor: Cell::new(0),
+            subtitle_max_end: Vec::new(),
             packed_frame: None,
             auto_hide_ms: 3000,
             idle_ms: 0,
@@ -516,10 +535,25 @@ impl VideoPlayer {
         self.is_playing = false;
         self.back = None;
         self.front = None;
+        // The repacked copy belongs to the frame that was on screen.
+        self.packed_frame = None;
         self.subtitle_cursor.set(0);
+        // A new media has reported no buffered data yet; keeping the previous stream's buffer
+        // would paint its run against the new timeline.
+        if self.buffered != 0.0 {
+            self.buffered = 0.0;
+            self.buffering_progress_changed.emit(0.0);
+        }
         self.pipeline =
             if source.is_empty() { VideoPipelineState::Idle } else { VideoPipelineState::Demuxing };
         self.set_status(if source.is_empty() { MediaStatus::Idle } else { MediaStatus::Paused });
+        // The clock moved to zero. Every other clock change announces itself, so a bound
+        // transport bar or caption companion does not keep the previous media's position,
+        // buffered run or cue.
+        self.time_updated.emit(0.0);
+        self.sync_chapter();
+        self.sync_scrubber_chapters();
+        self.sync_scrubber_clock();
         self.base.request_redraw();
     }
 
@@ -685,6 +719,10 @@ impl VideoPlayer {
         };
         let pts = frame.pts_ms;
         self.front = Some(frame);
+        // The repack cache belongs to the frame that was on screen; a newly presented frame
+        // must not inherit it, or a padded stream that reuses the buffer's address keeps
+        // painting the first frame's pixels.
+        self.packed_frame = None;
         self.pipeline = VideoPipelineState::Presenting;
         self.frame_presented.emit(pts as f64 / 1000.0);
         self.base.request_redraw();
@@ -744,6 +782,8 @@ impl VideoPlayer {
         if was_active {
             self.playback_paused.emit();
         }
+        self.sync_chapter();
+        self.sync_scrubber_clock();
         self.time_updated.emit(0.0);
         self.base.request_redraw();
     }
@@ -791,10 +831,15 @@ impl VideoPlayer {
     /// Replaces the host-supplied subtitle tracks, keeping the active track when it still exists.
     pub fn set_subtitle_tracks(&mut self, tracks: Vec<SubtitleTrack>) {
         self.subtitle_tracks = tracks;
+        let had_active = self.active_subtitle_track.is_some();
         self.active_subtitle_track =
             self.active_subtitle_track.filter(|index| *index < self.subtitle_tracks.len());
         if let Some(index) = self.active_subtitle_track {
             self.set_subtitles(self.subtitle_tracks[index].cues.clone());
+        } else if had_active {
+            // The selected track was dropped with the old list: its cues are gone too, or the
+            // player would keep painting captions from a track the host no longer supplies.
+            self.set_subtitles(Vec::new());
         }
         self.base.request_redraw();
     }
@@ -947,6 +992,27 @@ impl VideoPlayer {
         count
     }
 
+    /// Applies every seek an attached scrubber has committed since the last call.
+    ///
+    /// A committed value is a `0.0..=1.0` fraction, resolved against the duration and clamped by
+    /// [`Self::seek`], so the scrubber cannot move the clock past the timeline. Returns the number
+    /// of seeks consumed.
+    pub fn apply_pending_scrubber_seeks(&mut self) -> usize {
+        let seeks: Vec<f64> = match self.scrubber_seeks.as_ref() {
+            Some(binding) => {
+                let mut guard = rust_widgets::compat::lock(&binding.seeks);
+                core::mem::take(&mut *guard)
+            }
+            None => return 0,
+        };
+        let count = seeks.len();
+        let duration = self.duration.max(0.0);
+        for fraction in seeks {
+            self.seek(fraction.clamp(0.0, 1.0) * duration);
+        }
+        count
+    }
+
     /// The chapter containing `time`, or `None` before the first marker.
     pub fn chapter_at(&self, time: f64) -> Option<usize> {
         if !time.is_finite() {
@@ -960,14 +1026,48 @@ impl VideoPlayer {
         self.current_chapter
     }
 
-    /// Attaches a scrubber, pushing the chapter markers into it (MW-002).
+    /// Attaches a scrubber: pushes the chapter markers and the clock into it, and wires a
+    /// committed drag back into this player's seek path.
+    ///
+    /// The scrubber's `committed` fraction is resolved against the duration by
+    /// [`Self::apply_pending_scrubber_seeks`], which the paint and event paths drain, so a host
+    /// that forwards pointer events through [`Self::scrubber_mut`] gets a seek from a drag. The
+    /// subscription lives in a [`ConnectionScope`] that is dropped when the scrubber is detached
+    /// or replaced. Returns whether a scrubber is attached afterwards.
     pub fn attach_scrubber(
         &mut self,
         scrubber: Option<crate::media_playback::media_player::media_scrubber::MediaScrubber>,
     ) -> bool {
+        // Dropping the old binding disconnects the replaced scrubber before it is dropped.
+        self.scrubber_seeks = None;
         self.scrubber = scrubber;
         self.sync_scrubber_chapters();
+        self.sync_scrubber_clock();
+        if let Some(scrubber) = self.scrubber.as_ref() {
+            let seeks = Arc::new(Mutex::new(Vec::new()));
+            let scope = ConnectionScope::new();
+            let sink = Arc::clone(&seeks);
+            let redraw = self.base.redraw_requested_signal().clone();
+            // Only a committed value moves the clock: the intermediate `scrubbing` samples are
+            // the track's own preview, and seeking on each would fight the playback clock.
+            scrubber.committed.connect_ref_scoped(&scope, move |fraction| {
+                rust_widgets::compat::lock(&sink).push(*fraction);
+                redraw.emit();
+            });
+            self.scrubber_seeks = Some(ScrubberSeekBinding { seeks, _scope: scope });
+        }
         self.scrubber.is_some()
+    }
+
+    /// The attached scrubber for editing, if any.
+    ///
+    /// A host that embeds the attached scrubber forwards pointer events to it through this
+    /// accessor; its committed drags then reach this player through
+    /// [`Self::apply_pending_scrubber_seeks`].
+    pub fn scrubber_mut(
+        &mut self,
+    ) -> Option<&mut crate::media_playback::media_player::media_scrubber::MediaScrubber> {
+        self.scrubber.as_mut()
     }
 
     /// The attached scrubber, if any.
@@ -1001,6 +1101,24 @@ impl VideoPlayer {
                 .map(|chapter| (chapter.start_seconds / duration).clamp(0.0, 1.0))
                 .collect(),
         );
+    }
+
+    /// Pushes the clock and the buffered run to the attached scrubber.
+    ///
+    /// The scrubber paints its own `value`, so a player that never wrote it showed a frozen
+    /// handle while the timeline advanced. The buffered fraction is the same fact in the other
+    /// drawn run, so both follow the clock together.
+    fn sync_scrubber_clock(&mut self) {
+        let value = self.progress();
+        let buffered = self.buffering_progress();
+        if let Some(scrubber) = self.scrubber.as_mut() {
+            // A drag owns the handle until it commits; writing the clock over it would make the
+            // handle jump back on every tick while the user is still holding it.
+            if !scrubber.is_dragging() {
+                scrubber.set_value(value);
+            }
+            scrubber.set_buffered(buffered);
+        }
     }
 
     /// The attached caption companion, if any.
@@ -1055,7 +1173,19 @@ impl VideoPlayer {
         cues.sort_by(|a, b| a.start.partial_cmp(&b.start).unwrap_or(core::cmp::Ordering::Equal));
         self.subtitles = cues;
         self.subtitle_cursor.set(0);
+        self.rebuild_subtitle_max_end();
         self.base.request_redraw();
+    }
+
+    /// Recomputes the end-time prefix maxima after the cue list changed.
+    fn rebuild_subtitle_max_end(&mut self) {
+        self.subtitle_max_end.clear();
+        self.subtitle_max_end.reserve(self.subtitles.len());
+        let mut max_end = 0.0_f64;
+        for cue in &self.subtitles {
+            max_end = max_end.max(cue.end);
+            self.subtitle_max_end.push(max_end);
+        }
     }
 
     /// Appends a subtitle cue.
@@ -1064,6 +1194,7 @@ impl VideoPlayer {
         self.subtitles
             .sort_by(|a, b| a.start.partial_cmp(&b.start).unwrap_or(core::cmp::Ordering::Equal));
         self.subtitle_cursor.set(0);
+        self.rebuild_subtitle_max_end();
         self.base.request_redraw();
     }
 
@@ -1074,6 +1205,7 @@ impl VideoPlayer {
         }
         self.subtitles.clear();
         self.subtitle_cursor.set(0);
+        self.subtitle_max_end.clear();
         self.base.request_redraw();
     }
 
@@ -1110,7 +1242,9 @@ impl VideoPlayer {
             if time >= cue.start && time < cue.end {
                 return Some(cue);
             }
-            if cue.end <= time {
+            // No cue at or before this one reaches past `time`, so none can contain it. Testing
+            // the cue's own end instead pruned an enclosing cue that still covered `time`.
+            if self.subtitle_max_end.get(probe).is_none_or(|max| *max <= time) {
                 break;
             }
         }
@@ -1244,6 +1378,11 @@ impl VideoPlayer {
             self.current_time = clamped_time;
             self.time_updated.emit(self.current_time);
         }
+        // The chapter marks are duration fractions and the clamp can cross a chapter edge, so
+        // both derived views follow the new bound.
+        self.sync_scrubber_chapters();
+        self.sync_chapter();
+        self.sync_scrubber_clock();
         self.base.request_redraw();
     }
 
@@ -1256,6 +1395,12 @@ impl VideoPlayer {
             return;
         }
         if !self.is_playing {
+            // "Play" on a finished clip means "play it again": the timeline was left at its end,
+            // so the first tick would immediately report the end again — the dead play button the
+            // shared clock documents and avoids.
+            if self.duration > 0.0 && self.current_time >= self.duration {
+                self.seek(0.0);
+            }
             self.is_playing = true;
             self.pipeline = VideoPipelineState::Decoding;
             // A host-reported buffer stall outranks the user's play request: playback is intended,
@@ -1302,8 +1447,15 @@ impl VideoPlayer {
             return;
         }
         self.current_time = time.clamp(0.0, self.duration.max(0.0));
+        // Leaving the end is a status change: a rewound player that still reported `Ended` (with no
+        // `media_status_changed`) contradicted its own clock.
+        if self.status == MediaStatus::Ended && self.current_time < self.duration {
+            self.pipeline = VideoPipelineState::Demuxing;
+            self.set_status(MediaStatus::Paused);
+        }
         self.subtitle_cursor.set(0);
         self.sync_chapter();
+        self.sync_scrubber_clock();
         self.time_updated.emit(self.current_time);
         self.base.request_redraw();
     }
@@ -1320,6 +1472,10 @@ impl VideoPlayer {
 
     /// Sets the volume level (0.0 = silent, 1.0 = full).
     pub fn set_volume(&mut self, vol: f32) {
+        // `f32::clamp` propagates `NaN`, which would poison the level and every mirror of it.
+        if !vol.is_finite() {
+            return;
+        }
         let volume = vol.clamp(0.0, 1.0);
         if self.volume == volume {
             return;
@@ -1576,6 +1732,7 @@ impl VideoPlayer {
                 self.subtitle_cursor.set(0);
                 self.pipeline = VideoPipelineState::Decoding;
                 self.sync_chapter();
+                self.sync_scrubber_clock();
                 self.time_updated.emit(self.current_time);
                 self.base.request_redraw();
                 return false;
@@ -1586,12 +1743,14 @@ impl VideoPlayer {
             self.set_status(MediaStatus::Ended);
             self.playback_ended.emit();
             self.sync_chapter();
+            self.sync_scrubber_clock();
             self.time_updated.emit(self.current_time);
             self.base.request_redraw();
             return true;
         }
 
         self.sync_chapter();
+        self.sync_scrubber_clock();
         self.time_updated.emit(self.current_time);
         self.base.request_redraw();
         false
@@ -1854,6 +2013,7 @@ impl Draw for VideoPlayer {
         // point after that wake where the clock can be moved safely (COMP-A6).
         self.apply_pending_chapter_seeks();
         self.apply_pending_transport_requests();
+        self.apply_pending_scrubber_seeks();
         let rect = self.geometry();
         let is_enabled = self.base.is_enabled();
 
@@ -2182,12 +2342,14 @@ impl EventHandler for VideoPlayer {
         }
         self.apply_pending_chapter_seeks();
         self.apply_pending_transport_requests();
+        self.apply_pending_scrubber_seeks();
         match event {
             Event::MouseMove { pos } => {
                 let bar_top = self.geometry().bottom()
                     - rust_widgets::widget::metrics::dimensions::VIDEO_CONTROL_BAR_HEIGHT as i32;
-                if pos.y >= bar_top && self.geometry().contains_point(*pos) && self.controls_visible
-                {
+                // Hovering the bar must be able to reveal hidden controls: the guard used to
+                // require `controls_visible`, which is the state this call exists to leave.
+                if pos.y >= bar_top && self.geometry().contains_point(*pos) {
                     self.notify_pointer_activity();
                 }
             }
@@ -2274,6 +2436,24 @@ impl EventHandler for VideoPlayer {
                     self.notify_pointer_activity();
                 }
             }
+            // A release can land outside the control, and focus can move mid-drag; either
+            // leaves the scrub latch set, so the next drag moved a clock nobody was holding.
+            Event::FocusLost => {
+                let was_scrubbing = self.scrubbing;
+                self.scrubbing = false;
+                self.scrub_time = None;
+                self.base.handle_event(event);
+                if was_scrubbing {
+                    self.base.request_redraw();
+                }
+            }
+            Event::MouseLeave { .. } if self.scrubbing => {
+                self.scrubbing = false;
+                self.scrub_time = None;
+                // The base still needs the leave to clear its hover state.
+                self.base.handle_event(event);
+                self.base.request_redraw();
+            }
             Event::KeyPress { key, modifiers } => {
                 match (key, modifiers) {
                     // Space bar toggles play/pause.
@@ -2317,7 +2497,30 @@ impl EventHandler for VideoPlayer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rust_widgets::render::PaintBackend;
     use std::sync::{Arc, Mutex};
+
+    /// An enclosing cue still covers a position after a nested cue has ended.
+    #[test]
+    fn an_enclosing_cue_still_covers_after_a_nested_cue_ends() {
+        let mut player = VideoPlayer::new(Rect::new(0, 0, 320, 180));
+        player.set_subtitles(vec![
+            SubtitleCue::new(0.0, 3.0, "outer"),
+            SubtitleCue::new(1.0, 2.0, "inner"),
+        ]);
+
+        assert_eq!(
+            player.subtitle_at(1.5).map(|cue| cue.text.as_str()),
+            Some("inner"),
+            "the latest start wins"
+        );
+        assert_eq!(
+            player.subtitle_at(2.5).map(|cue| cue.text.as_str()),
+            Some("outer"),
+            "the enclosing cue still covers it"
+        );
+        assert!(player.subtitle_at(3.0).is_none(), "the interval is half-open");
+    }
 
     /// RW-82: `source` is writable, and the two clock scalars are honestly read-only.
     #[test]
@@ -3083,5 +3286,239 @@ mod tests {
         let detached = vp.detach_subtitle_bar();
         assert!(detached.is_some());
         assert!(vp.subtitle_bar().is_none());
+    }
+
+    #[test]
+    fn a_non_finite_volume_is_ignored() {
+        let mut vp = VideoPlayer::new(Rect::new(0, 0, 320, 240));
+        vp.set_volume(0.5);
+        for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            vp.set_volume(bad);
+            assert_eq!(vp.volume(), 0.5, "set_volume({bad}) must be a no-op");
+            assert!(vp.volume().is_finite(), "the level must stay finite");
+        }
+    }
+
+    /// A removed subtitle track must take its cues with it.
+    #[test]
+    fn dropping_the_selected_subtitle_track_clears_its_cues() {
+        let mut vp = VideoPlayer::new(Rect::new(0, 0, 320, 240));
+        vp.set_subtitle_tracks(vec![SubtitleTrack::new(
+            "s1",
+            "English",
+            vec![SubtitleCue::new(0.0, 2.0, "hello")],
+        )]);
+        vp.set_subtitle_track(0).expect("the track exists");
+        assert_eq!(vp.subtitle_at(1.0).map(|cue| cue.text.as_str()), Some("hello"));
+
+        vp.set_subtitle_tracks(Vec::new());
+        assert_eq!(vp.subtitle_track(), None);
+        assert!(vp.subtitle_at(1.0).is_none(), "a removed track's cues must not keep painting");
+    }
+
+    /// Loading rewinds the clock, so it must announce that like every other clock change.
+    ///
+    /// The transport bar and the caption companion mirror `time_updated`; a silent reset left
+    /// both showing the previous media's position and cue until the next tick.
+    #[test]
+    fn loading_a_new_source_announces_the_rewound_clock_and_chapter() {
+        let mut vp = VideoPlayer::new(Rect::new(0, 0, 320, 240));
+        vp.load("first.mp4");
+        vp.set_duration(100.0);
+        vp.set_chapters(vec![VideoChapter::new("One", 0.0), VideoChapter::new("Two", 50.0)]);
+        vp.seek(60.0);
+        assert_eq!(vp.current_chapter(), Some(1));
+
+        let times = Arc::new(Mutex::new(Vec::<f64>::new()));
+        let sink = Arc::clone(&times);
+        vp.time_updated.connect(move |time: Arc<f64>| sink.lock().unwrap().push(*time));
+        let chapters = Arc::new(Mutex::new(Vec::<usize>::new()));
+        let sink = Arc::clone(&chapters);
+        vp.on_chapter_entered.connect(move |index: Arc<usize>| sink.lock().unwrap().push(*index));
+
+        vp.load("second.mp4");
+        assert_eq!(vp.current_time(), 0.0);
+        assert_eq!(*times.lock().unwrap(), vec![0.0], "the rewound clock is announced");
+        assert_eq!(*chapters.lock().unwrap(), vec![0], "and the chapter at zero is reported");
+        assert_eq!(vp.current_chapter(), Some(0));
+    }
+
+    /// The attached scrubber is documented as "kept in step with the chapter model and the
+    /// playback clock"; its handle and its duration-relative chapter marks must follow both.
+    #[test]
+    fn an_attached_scrubber_follows_the_clock_and_the_chapter_fractions() {
+        use crate::media_playback::media_player::media_scrubber::MediaScrubber;
+
+        let mut vp = VideoPlayer::new(Rect::new(0, 0, 320, 240));
+        vp.set_duration(100.0);
+        assert!(vp.attach_scrubber(Some(MediaScrubber::new(Rect::new(0, 0, 200, 24)))));
+        vp.seek(25.0);
+        assert_eq!(vp.scrubber().expect("attached").value(), 0.25, "the handle follows the clock");
+
+        vp.set_chapters(vec![VideoChapter::new("Half", 50.0)]);
+        assert_eq!(vp.scrubber().expect("attached").chapters(), &[0.5]);
+        vp.set_duration(200.0);
+        assert_eq!(
+            vp.scrubber().expect("attached").chapters(),
+            &[0.25],
+            "a chapter fraction is relative to the duration, so it follows a duration change"
+        );
+
+        vp.set_chapters(vec![VideoChapter::new("Start", 0.0), VideoChapter::new("End", 150.0)]);
+        vp.seek(160.0);
+        assert_eq!(vp.current_chapter(), Some(1));
+        vp.stop();
+        assert_eq!(vp.current_chapter(), Some(0), "stopping reports the chapter at zero");
+        assert_eq!(vp.scrubber().expect("attached").value(), 0.0, "and rewinds the handle");
+    }
+
+    /// A committed drag on an attached scrubber seeks the player through the shared stream, and a
+    /// clock move during the drag must not clobber the handle.
+    #[test]
+    fn dragging_an_attached_scrubber_seeks_the_player() {
+        use crate::media_playback::media_player::media_scrubber::MediaScrubber;
+
+        let mut vp = VideoPlayer::new(Rect::new(0, 0, 320, 240));
+        vp.set_duration(100.0);
+        assert!(vp.attach_scrubber(Some(MediaScrubber::new(Rect::new(0, 0, 200, 24)))));
+
+        {
+            let scrubber = vp.scrubber_mut().expect("attached");
+            scrubber.handle_event(&Event::MousePress {
+                pos: Point::new(8, 12),
+                button: 1,
+                modifiers: 0,
+            });
+            scrubber.handle_event(&Event::Drag {
+                pos: Point::new(100, 12),
+                touch_id: 0,
+                delta: Point::new(92, 0),
+            });
+            assert!(scrubber.is_dragging());
+            assert_eq!(scrubber.value(), 0.5, "the handle tracks the pointer");
+        }
+
+        // The clock moves while the drag is in flight; the gesture keeps the handle.
+        vp.seek(80.0);
+        assert_eq!(vp.scrubber().expect("attached").value(), 0.5);
+
+        {
+            let scrubber = vp.scrubber_mut().expect("attached");
+            scrubber.handle_event(&Event::MouseRelease { pos: Point::new(100, 12), button: 1 });
+        }
+        assert_eq!(vp.apply_pending_scrubber_seeks(), 1, "the commit queues one seek");
+        assert!(
+            (vp.current_time() - 50.0).abs() < 0.01,
+            "the committed fraction resolves against the duration, got {}",
+            vp.current_time()
+        );
+
+        assert!(!vp.attach_scrubber(None), "detaching removes the scrubber");
+        assert_eq!(vp.apply_pending_scrubber_seeks(), 0, "and its subscription with it");
+    }
+
+    #[test]
+    fn losing_focus_drops_the_scrub_latch() {
+        let mut vp = VideoPlayer::new(Rect::new(0, 0, 320, 240));
+        vp.load("clip.mp4");
+        vp.set_duration(100.0);
+        let mut backend = rust_widgets::render::SoftwarePaintBackend::new(
+            rust_widgets::core::Size::new(320, 240),
+            1.0,
+        );
+        backend.begin_frame(Color::BLACK);
+        vp.draw(&mut rust_widgets::render::RenderContext::new(&mut backend));
+        backend.end_frame();
+        let bar = vp.seek_bar_rect.expect("the transport painted a seek bar");
+        vp.handle_event(&Event::MousePress {
+            pos: Point::new(bar.x + bar.width as i32 / 2, bar.y + 1),
+            button: 1,
+            modifiers: 0,
+        });
+        assert!(vp.scrubbing);
+        let pressed_at = vp.current_time();
+        vp.handle_event(&Event::FocusLost);
+        vp.handle_event(&Event::Drag {
+            pos: Point::new(bar.x + bar.width as i32 - 2, bar.y + 1),
+            touch_id: 0,
+            delta: Point::new(100, 0),
+        });
+        assert_eq!(vp.current_time(), pressed_at, "a drag after focus loss must be ignored");
+    }
+
+    /// A new frame must not inherit the repacked copy of the previous one.
+    ///
+    /// The cache was keyed by the pixel buffer's address, which an allocator can hand back to
+    /// the next same-sized capture: a padded stream could then paint the first frame's pixels
+    /// for the rest of the media. The cache is dropped on every presentation instead.
+    #[test]
+    fn a_presented_frame_does_not_reuse_the_previous_packed_buffer() {
+        let mut vp = VideoPlayer::new(Rect::new(0, 0, 320, 240));
+        vp.load("movie.mp4");
+        let padded =
+            |fill: u8| -> std::sync::Arc<[u8]> { std::sync::Arc::from(vec![fill; 12 * 2]) };
+
+        vp.set_video_frame_shared(std::sync::Arc::new(VideoFrame::from_shared(
+            2,
+            2,
+            0,
+            VideoPixelFormat::Rgba8888,
+            12,
+            padded(5),
+        )))
+        .expect("a padded frame is valid");
+        assert!(vp.present_frame());
+        let front = vp.front.clone().expect("the frame is on screen");
+        assert!(vp.ensure_packed_frame(&front), "a padded frame is repacked");
+        assert!(vp.packed_frame.is_some());
+
+        vp.set_video_frame_shared(std::sync::Arc::new(VideoFrame::from_shared(
+            2,
+            2,
+            1,
+            VideoPixelFormat::Rgba8888,
+            12,
+            padded(9),
+        )))
+        .expect("a padded frame is valid");
+        assert!(vp.present_frame());
+        assert!(
+            vp.packed_frame.is_none(),
+            "a newly presented frame must not inherit the previous packed buffer"
+        );
+    }
+
+    /// Playing a finished clip restarts it instead of ending again on the first frame.
+    #[test]
+    fn playing_after_the_end_restarts_the_clip() {
+        let mut player = VideoPlayer::new(Rect::new(0, 0, 320, 240));
+        player.load("clip.mp4");
+        player.set_duration(10.0);
+        player.play();
+        assert!(player.tick(15.0), "the clip ran past its end");
+        assert_eq!(player.current_time(), 10.0);
+
+        player.play();
+        assert_eq!(player.current_time(), 0.0, "playing a finished clip rewinds it");
+        assert_eq!(player.media_status(), MediaStatus::Playing);
+        assert!(!player.tick(1.0), "the first frame must not report the end again");
+        assert!((player.current_time() - 1.0).abs() < 1e-9, "and the clock advances");
+    }
+
+    /// Hovering the control bar reveals controls the auto-hide countdown put away.
+    #[test]
+    fn moving_over_the_bar_reveals_hidden_controls() {
+        let mut player = VideoPlayer::new(Rect::new(0, 0, 320, 240));
+        player.load("clip.mp4");
+        player.set_duration(60.0);
+        player.play();
+        player.set_auto_hide_ms(100);
+        // Auto-hide is driven by the widget frame clock (`Widget::tick`, milliseconds); the
+        // inherent `VideoPlayer::tick` only advances the media clock and takes seconds.
+        Widget::tick(&mut player, 100);
+        assert!(!player.controls_visible(), "the bar hid itself");
+
+        player.handle_event(&Event::MouseMove { pos: Point::new(160, 236) });
+        assert!(player.controls_visible(), "hovering the bar brings it back");
     }
 }

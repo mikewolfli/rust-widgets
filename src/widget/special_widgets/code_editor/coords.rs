@@ -101,13 +101,22 @@ impl CoordinateMap {
     /// document line still has to run it through
     /// [`CodeEditor::visual_row_to_line`], because folding and wrapping make the
     /// two differ.
+    ///
+    /// # Exact inverse of `row_y`
+    ///
+    /// `row_y` rounds each row top (`round(k * h)`), so neither `floor` nor `round`
+    /// of `local / h` is its inverse when `h` is fractional (`19.2` px rows are
+    /// routine at fractional DPI): `floor` put the painted top of row 1 into row 0,
+    /// and `round` put the lower half of row 0 into row 1. The row whose top is at
+    /// or before `local` is the largest `k` with `k * h < local + 0.5`, which is
+    /// `ceil((local + 0.5) / h) - 1`.
     pub(crate) fn row_at_y(&self, y: i32) -> usize {
         let local = y - self.origin_y;
         if local <= 0 {
             return self.scroll_row;
         }
-        let offset = (local as f32 / self.row_height).floor() as usize;
-        self.scroll_row.saturating_add(offset)
+        let row = ((local as f32 + 0.5) / self.row_height).ceil().max(1.0) as usize - 1;
+        self.scroll_row.saturating_add(row)
     }
 
     /// Character column at screen `x`, clamped to a non-negative value.
@@ -189,6 +198,30 @@ mod tests {
         // The first visible row now sits at the text origin.
         assert_eq!(map.row_y(map.scroll_row), map.origin_y);
         assert_eq!(map.row_at_y(map.origin_y), map.scroll_row);
+    }
+
+    /// A fractional row height must round-trip through both directions.
+    ///
+    /// Real row heights are rarely integers (19.2 px at fractional DPI), and the
+    /// old `floor(local / h)` inverse disagreed with `round(k * h)` on both sides
+    /// of the boundary, so a click could land one row away from the row drawn.
+    #[test]
+    fn a_fractional_row_height_round_trips() {
+        let map = CoordinateMap {
+            bounds: Rect::new(0, 0, 400, 300),
+            origin_x: 0,
+            origin_y: 0,
+            cell: 8.0,
+            row_height: 19.2,
+            scroll_row: 0,
+            scroll_column: 0,
+            clip_bottom: 300,
+            clip_right: 400,
+        };
+        for row in 0..16 {
+            let y = map.row_y(row);
+            assert_eq!(map.row_at_y(y), row, "row {row} at y {y} must round-trip");
+        }
     }
 
     /// A point outside the text area must be rejected, not clamped into it: the

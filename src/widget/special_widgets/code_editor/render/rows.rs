@@ -239,7 +239,6 @@ impl CodeEditor {
                         line,
                         segment_start,
                         segment_end,
-                        text,
                         &geom,
                         chrome,
                     );
@@ -761,22 +760,18 @@ impl CodeEditor {
         line: usize,
         segment_start: usize,
         segment_end: usize,
-        text: &str,
         geom: &RowGeometry<'_>,
         chrome: &EditorChrome,
     ) {
         let step = self.config.tab_width.max(1);
-        // Indentation is counted in characters (a tab is one), and the guide's x is
-        // taken from the measured layout: in a proportional face `4 spaces` is not
-        // `4 × cell`, so a grid-placed guide would float away from the code it
-        // indents.
-        let mut indent = 0usize;
-        for ch in text.chars() {
-            match ch {
-                ' ' | '\t' => indent += 1,
-                _ => break,
-            }
-        }
+        // Guides are placed on **grid columns**, not character indices: a tab is one
+        // character but spans up to `tab_width` columns, so the old `indent += 1`
+        // counted a tab as a single level and `geom.x_of(level)` addressed a character
+        // that was already code. The grid maps a column back to the character whose
+        // leading edge starts it, which is where the guide belongs.
+        let indent_columns = geom.grid.leading_indent_columns();
+        let seg_first_column = geom.grid.column_of_char(segment_start);
+        let seg_last_column = geom.grid.column_of_char(segment_end);
         let height = self.line_height().round() as i32;
         // The innermost guide on the caret's line is the one the caret is *inside*,
         // so it is the one that answers "which block am I in". Zed paints exactly
@@ -784,12 +779,13 @@ impl CodeEditor {
         // hairlines. Only the caret's line is promoted — a whole file of accent
         // guides would be louder than the code.
         let active_guide = (line == self.cursor.head.line)
-            .then(|| indent / step * step)
+            .then(|| indent_columns / step * step)
             .filter(|level| *level > 0);
         let mut level = step;
-        while level <= indent {
-            if level >= segment_start && level < segment_end {
-                let x = self.screen_x(left, geom.x_of(level));
+        while level <= indent_columns {
+            if level >= seg_first_column && level < seg_last_column {
+                let index = geom.grid.char_at_or_after_column(level);
+                let x = self.screen_x(left, geom.x_of(index));
                 if Some(level) == active_guide {
                     context.fill_rect(
                         Rect::new(x, y, 1, height as u32),
@@ -882,38 +878,66 @@ impl CodeEditor {
     ) {
         let seg_byte_start = geom.byte_of_char(segment_start);
         let seg_byte_end = geom.byte_of_char(segment_end);
-        if seg_byte_start >= seg_byte_end {
-            // An empty (or segment-free) row can still own the caret's selection
-            // cell, but there is no glyph to paint.
-            return;
+
+        // Selection backgrounds for this visual row, measured the same way the glyphs
+        // are: the selected span's two boundaries give its pixel extent. Every caret's
+        // selection is painted here — under the glyphs and per row — instead of as one
+        // bounding rectangle after the text; that rectangle covered the glyphs of a
+        // secondary selection, and starting it at the caret's x left the left part of
+        // every row after the first unpainted.
+        let selection_band =
+            |sel_start: TextPosition, sel_end: TextPosition| -> Option<(i32, u32)> {
+                let row_start = TextPosition::new(line, segment_start);
+                let row_end = TextPosition::new(line, segment_end);
+                if sel_start > row_end || sel_end < row_start {
+                    return None;
+                }
+                let from = if sel_start.line < line {
+                    segment_start
+                } else {
+                    sel_start.column.max(segment_start).min(segment_end)
+                };
+                let to =
+                    if sel_end.line > line { segment_end } else { sel_end.column.min(segment_end) };
+                let from_x = geom.x_of(from);
+                let to_x = if to > from {
+                    geom.x_of(to)
+                } else if segment_start == segment_end {
+                    // A selected empty line has no glyph to measure, but it still owns a
+                    // cell: without this the reader saw an unselected gap in the middle of
+                    // a multi-line selection.
+                    from_x + geom.cell.max(1.0)
+                } else {
+                    from_x
+                };
+                if to_x <= from_x {
+                    return None;
+                }
+                let x = self.screen_x(left, from_x);
+                let width = (to_x - from_x).round().max(1.0) as u32;
+                Some((x, width))
+            };
+        if !self.cursor.is_collapsed() {
+            if let Some((x, width)) = selection_band(selection_start, selection_end) {
+                context
+                    .fill_rect(Rect::new(x, y, width, row_height.ceil() as u32), chrome.selection);
+            }
+        }
+        for caret in self.extra_cursors.iter().copied() {
+            if caret == self.cursor || caret.is_collapsed() {
+                continue;
+            }
+            let (start, end) = caret.bounds();
+            if let Some((x, width)) = selection_band(start, end) {
+                context
+                    .fill_rect(Rect::new(x, y, width, row_height.ceil() as u32), chrome.selection);
+            }
         }
 
-        // Selection background for this visual row, measured the same way the glyphs
-        // are: the selected span's two boundaries give its pixel extent.
-        if !self.cursor.is_collapsed() {
-            let row_start = TextPosition::new(line, segment_start);
-            let row_end = TextPosition::new(line, segment_end);
-            if selection_start <= row_end && selection_end >= row_start {
-                let from = selection_start
-                    .column
-                    .max(segment_start)
-                    .max(if selection_start.line < line { 0 } else { selection_start.column });
-                let to = if selection_end.line > line {
-                    segment_end
-                } else {
-                    selection_end.column.min(segment_end)
-                };
-                if to > from {
-                    let from_x = geom.x_of(from);
-                    let to_x = geom.x_of(to);
-                    let x = self.screen_x(left, from_x);
-                    let width = (to_x - from_x).round().max(1.0) as u32;
-                    context.fill_rect(
-                        Rect::new(x, y, width, row_height.ceil() as u32),
-                        chrome.selection,
-                    );
-                }
-            }
+        if seg_byte_start >= seg_byte_end {
+            // An empty (or segment-free) row has no glyph to paint; its selection band
+            // was already drawn above, which is all it owns.
+            return;
         }
 
         // The row's glyph origin comes from the same line-box derivation the gutter

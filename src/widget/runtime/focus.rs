@@ -17,6 +17,27 @@ pub fn has_focus(id: ObjectId) -> bool {
     FOCUS.try_with(|focus| focus.borrow().has_focus(id)).unwrap_or(false)
 }
 
+/// Whether the focused control is `root` itself or lies inside its subtree.
+///
+/// Hiding a container has to release the keyboard from a focused **descendant**, not
+/// only from the container itself: a form page or tab page is a container, while the
+/// control holding focus is one of its fields. Walking up from the focused control is
+/// the cheap direction (the focused node is known, the subtree is not), and it avoids
+/// reading `root` while that widget is lent out to the very handler that is hiding it.
+pub(crate) fn focus_is_in_subtree(root: ObjectId) -> bool {
+    let Some(mut cursor) = focused_widget() else { return false };
+    for _ in 0..256 {
+        if cursor == root {
+            return true;
+        }
+        match read_widget(cursor, |widget| widget.base().parent()) {
+            Some(Some(parent)) => cursor = parent,
+            _ => return false,
+        }
+    }
+    false
+}
+
 /// Whether `id` may take keyboard focus from a pointer press.
 ///
 /// The widget must be a mounted, enabled control that reports

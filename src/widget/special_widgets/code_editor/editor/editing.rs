@@ -88,9 +88,15 @@ impl CodeEditor {
             let line_delta =
                 insert.matches('\n').count() as isize - (end.line - start.line) as isize;
             let last_line_len = trailing_line_len(&insert);
+            // Where the inserted text's last line starts within the original line: after
+            // a newline it starts at column 0, otherwise it continues at the edit's own
+            // `start.column`. Omitting that origin put an insertion's shifted positions
+            // `start.column` cells too far left, which made the batch's undo span and
+            // the rebuilt carets disagree with the document.
+            let tail_origin = if insert.contains('\n') { 0 } else { start.column };
             let shift = |position: &mut TextPosition| {
                 if position.line == end.line && position.column >= end.column {
-                    position.column = last_line_len + (position.column - end.column);
+                    position.column = tail_origin + last_line_len + (position.column - end.column);
                 }
                 if position.line >= end.line {
                     position.line = (position.line as isize + line_delta).max(0) as usize;
@@ -141,6 +147,11 @@ impl CodeEditor {
         }
         self.active_typing = None;
         self.revision.set(self.revision.get().wrapping_add(1));
+        // A batch edits several lines at disjoint positions, so every cached lexer
+        // state and measured run is suspect. `refresh_derived_state` only reconciles
+        // the cache's length, not its contents, which left the edited lines coloured
+        // with their pre-edit tokens.
+        self.invalidate_line_states();
         // Several disjoint word changes cannot be applied to the completion index one
         // range at a time, so it is dropped and rebuilt on the next trigger.
         self.completion_index = None;
@@ -1294,6 +1305,14 @@ impl CodeEditor {
         self.scale = DocumentScale::for_lines(self.line_count());
         self.clamp_cursor_to_document();
         self.refresh_derived_state();
+        // An undo may restore a much shorter document than the one that was on
+        // screen. `set_text` clamps both scroll fields after a wholesale replacement;
+        // this path writes the buffer directly, so it repeats the same clamp or the
+        // viewport is left scrolled past the restored end and paints nothing.
+        let rows = self.visible_rows().max(1);
+        let max_first = self.total_visual_rows().saturating_sub(rows);
+        self.scroll_visual_row = self.scroll_visual_row.min(max_first);
+        self.scroll_line = self.visual_row_to_line(self.scroll_visual_row);
         self.text_changed.emit(restored);
         self.emit_text_change(TextChange::document(self.line_count()));
         self.emit_cursor_and_selection();

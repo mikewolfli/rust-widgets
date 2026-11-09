@@ -71,17 +71,20 @@ impl Draw for KanbanBoard {
         // Columns that the horizontal scroll has moved past either edge are skipped, and the rest
         // are clipped to the board: a column laid out at a negative x would otherwise paint over
         // whatever the layout put to the left of the board (nothing clips a widget at this layer).
+        // The left edge advances by one running sum, so a frame is O(columns) rather than calling
+        // `column_rect` (which re-sums every preceding width) once per column.
         context.push_clip(rect.x, rect.y, rect.width, rect.height);
+        let mut column_x = self.first_column_x();
         for index in 0..self.columns.len() {
-            let Some(column_rect) = self.column_rect(index) else {
-                continue;
-            };
+            let width = self.column_width_at(index);
+            let column_rect = Rect::new(column_x, rect.y, width, rect.height);
+            column_x = column_x.saturating_add(width as i32).saturating_add(COLUMN_GAP);
             if column_rect.x + column_rect.width as i32 <= rect.x
                 || column_rect.x >= rect.x + rect.width as i32
             {
                 continue;
             }
-            self.draw_column(context, index, &chrome, &fonts);
+            self.draw_column(context, index, column_rect, &chrome, &fonts);
         }
         if self.lanes_active() {
             self.draw_lane_headers(context, &chrome, &fonts);
@@ -207,20 +210,21 @@ impl BoardChrome {
 
 impl KanbanBoard {
     /// Draws one column: its background, header, cards and the drop preview.
+    ///
+    /// `column_rect` is resolved once by the board's paint loop, so the cards inside the column do
+    /// not each re-derive the preceding widths and the horizontal-scroll clamp.
     pub(super) fn draw_column(
         &mut self,
         context: &mut RenderContext,
         index: usize,
+        column_rect: Rect,
         chrome: &BoardChrome,
         fonts: &ColumnFonts,
     ) {
-        let Some(column_rect) = self.column_rect(index) else {
-            return;
-        };
         // Borrowed rather than cloned: the tuple used to copy the title `String`, the whole
         // card vector (and every card's title/description) once per column per frame. Every
-        // helper below (`column_rect`, `card_rect`, `draw_card`) takes `&self`, so the borrow
-        // can live across the column.
+        // helper below (`card_rect_in`, `column_collapse_rect`, `draw_card`) takes `&self`, so the
+        // borrow can live across the column.
         let Some(column) = self.columns.get(index) else {
             return;
         };
@@ -327,7 +331,7 @@ impl KanbanBoard {
         // `for i in first..last { &cards[i] }` form is what `clippy::needless_range_loop` flags.
         for (card_index, card) in cards.iter().enumerate().take(last_card).skip(first_card) {
             let position = CardPosition { column: index, card: card_index };
-            let Some(card_rect) = self.card_rect(position) else {
+            let Some(card_rect) = self.card_rect_in(column_rect, position) else {
                 continue;
             };
             self.draw_card(context, card, card_rect, position, chrome, title_font, desc_font);
@@ -484,6 +488,28 @@ impl KanbanBoard {
         }
     }
 
+    /// The y of the insertion indicator for a drop at `pos`, or `None` outside a column.
+    ///
+    /// Derived from the pointer's own slot, the same arithmetic [`Self::insert_index_at`] uses. The
+    /// model index includes the column's scroll (and names a lane-local card in lane mode), so
+    /// multiplying it by the row pitch drew the indicator at the wrong height; the pointer slot is
+    /// what the commit resolves too.
+    pub(super) fn insertion_line_y(&self, pos: Point) -> Option<i32> {
+        let column = self.column_at(pos)?;
+        let column_rect = self.column_rect(column)?;
+        let mut first_card_y = column_rect.y + HEADER_HEIGHT as i32;
+        if self.lanes_active() {
+            if let Some(lane) = self.lane_at(pos) {
+                if let Some(band) = self.lane_band_rect(lane) {
+                    first_card_y = band.y + LANE_HEADER_HEIGHT;
+                }
+            }
+        }
+        let stride = CARD_HEIGHT as i32 + CARD_GAP;
+        let slot = ((pos.y - first_card_y).max(0) + stride / 2) / stride;
+        Some(first_card_y + slot * stride - CARD_GAP / 2)
+    }
+
     /// Draws the card following the pointer.
     ///
     /// Uses [`DropTarget::preview_rect`] on this board to find the landing column,
@@ -501,17 +527,14 @@ impl KanbanBoard {
         // A landing indicator at the resolved position: an insertion line where the
         // card would go, which is the feedback that makes the drop predictable.
         if let Some(column_rect) = preview {
-            let insert_index = self.insert_index_at(self.hovered_column.unwrap_or(0), current);
-            let line_y = column_rect.y
-                + HEADER_HEIGHT as i32
-                + (insert_index as i32) * (CARD_HEIGHT as i32 + CARD_GAP)
-                - CARD_GAP / 2;
-            context.draw_line_stroke(
-                Point::new(column_rect.x + 6, line_y),
-                Point::new(column_rect.x + column_rect.width as i32 - 6, line_y),
-                chrome.insertion(),
-                3,
-            );
+            if let Some(line_y) = self.insertion_line_y(current) {
+                context.draw_line_stroke(
+                    Point::new(column_rect.x + 6, line_y),
+                    Point::new(column_rect.x + column_rect.width as i32 - 6, line_y),
+                    chrome.insertion(),
+                    3,
+                );
+            }
         }
 
         // The card itself, centred on the pointer and semi-transparent so the board

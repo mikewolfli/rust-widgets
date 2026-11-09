@@ -463,17 +463,26 @@ pub fn atr(highs: &[f64], lows: &[f64], closes: &[f64], period: usize) -> Vec<f6
 
     let ranges = true_range(highs, lows, closes, length);
     let seed_ranges = &ranges[1..=period];
-    if !seed_ranges.iter().all(|v| v.is_finite()) {
-        return out;
-    }
-    let mut average: f64 = seed_ranges.iter().sum::<f64>() / period as f64;
+    let mut average: f64 = if seed_ranges.iter().all(|v| v.is_finite()) {
+        seed_ranges.iter().sum::<f64>() / period as f64
+    } else {
+        f64::NAN
+    };
     out[period] = average;
 
     for index in (period + 1)..length {
         if !ranges[index].is_finite() {
-            return out;
+            // A gap makes this position undefined, then the next finite range re-seeds the
+            // Wilder recursion — the same rule `ema` follows. Returning here blanked ATR from the
+            // gap to the end of a live series, which only ever grows.
+            average = f64::NAN;
+            continue;
         }
-        average = (average * (period as f64 - 1.0) + ranges[index]) / period as f64;
+        average = if average.is_nan() {
+            ranges[index]
+        } else {
+            (average * (period as f64 - 1.0) + ranges[index]) / period as f64
+        };
         out[index] = average;
     }
     out
@@ -1262,6 +1271,22 @@ mod tests {
         assert!(result.iter().all(|value| value.is_nan()));
     }
 
+    /// A gap blanks its own position and the next finite range re-seeds the recursion.
+    ///
+    /// The early return blanked ATR from the first gap to the end of a series that only grows.
+    #[test]
+    fn atr_resumes_after_a_gap() {
+        let highs = [2.0, 3.0, 4.0, f64::NAN, 6.0, 7.0, 8.0];
+        let lows = [1.0, 2.0, 3.0, f64::NAN, 5.0, 6.0, 7.0];
+        let closes = [1.5, 2.5, 3.5, 4.5, 5.5, 6.5, 7.5];
+        let result = atr(&highs, &lows, &closes, 2);
+
+        assert!(result[2].is_finite(), "the seeding window is intact");
+        assert!(result[3].is_nan(), "the gap position is undefined");
+        assert!(result[4].is_finite(), "the next finite range re-seeds");
+        assert!(result[5].is_finite());
+    }
+
     /// Trailing extremes use a window, and the window moves.
     #[test]
     fn trailing_extremes_follow_the_window() {
@@ -1487,6 +1512,29 @@ mod tests {
         assert_eq!(align_left(&values, 3), values);
     }
 
+    /// A streaming average reports its gap and never averages across it.
+    ///
+    /// Regression: `SmaStream` kept its window across a non-finite sample, so the next
+    /// average was taken over a window spanning the hole; `EmaStream` returned the *previous*
+    /// average for the gap, contradicting its own contract and smoothing across the hole.
+    #[test]
+    fn a_streaming_average_breaks_at_a_gap() {
+        let mut sma_stream = SmaStream::new(3);
+        assert_eq!(sma_stream.push(1.0), None);
+        assert_eq!(sma_stream.push(2.0), None);
+        assert_eq!(sma_stream.push(f64::NAN), None);
+        assert_eq!(sma_stream.push(4.0), None, "the pre-gap window must not survive");
+        assert_eq!(sma_stream.push(5.0), None, "nor count as a full window");
+        assert!(close(sma_stream.push(6.0).expect("a fresh full window"), 5.0));
+        assert!(close(sma_stream.push(7.0).expect("the next window"), 6.0));
+
+        let mut ema_stream = EmaStream::new(3);
+        assert!(close(ema_stream.push(10.0).expect("seeded by the first sample"), 10.0));
+        assert_eq!(ema_stream.push(f64::NAN), None, "a gap has no average");
+        assert_eq!(ema_stream.value(), None, "and the chain must not carry a value over it");
+        assert!(close(ema_stream.push(20.0).expect("re-seeded by the next sample"), 20.0));
+    }
+
     /// Every indicator must preserve the input length, since the panes align by index.
     ///
     /// This is the one property the whole overlay design depends on: a series of the
@@ -1537,8 +1585,13 @@ impl SmaStream {
     }
 
     /// Adds one sample and returns the average once the window is full.
+    ///
+    /// A non-finite sample breaks the window, matching the batch [`sma`]: every window that
+    /// contains a gap is undefined, and the next finite sample starts a fresh window rather
+    /// than averaging across the hole.
     pub fn push(&mut self, value: f64) -> Option<f64> {
         if !value.is_finite() {
+            self.reset();
             return None;
         }
         self.window.push_back(value);
@@ -1580,9 +1633,14 @@ impl EmaStream {
     }
 
     /// Adds one sample and returns the updated average, or `None` for a non-finite sample.
+    ///
+    /// A gap ends the chain exactly as it does in the batch [`ema`]: reporting the previous
+    /// average would claim a value for a bar the feed did not deliver, and carrying it
+    /// forward would smooth across the hole. The next finite sample re-seeds instead.
     pub fn push(&mut self, value: f64) -> Option<f64> {
         if !value.is_finite() {
-            return self.value;
+            self.value = None;
+            return None;
         }
         let next = match self.value {
             Some(previous) => previous + self.alpha * (value - previous),

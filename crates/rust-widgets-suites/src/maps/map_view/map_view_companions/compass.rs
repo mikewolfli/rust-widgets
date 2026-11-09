@@ -77,18 +77,30 @@ impl Compass {
 
     /// Whether `point` falls inside the dial.
     pub fn hit_dial(&self, point: Point) -> bool {
+        let radius = self.radius();
+        // A collapsed control has no dial to press; the old 4 px floor made a zero-sized
+        // compass still report a hit at its own origin.
+        if radius == 0 {
+            return false;
+        }
         let rect = self.geometry();
         let center = Point::new(rect.x + rect.width as i32 / 2, rect.y + rect.height as i32 / 2);
-        let radius = i64::from(self.radius());
-        let dx = i64::from(point.x) - i64::from(center.x);
-        let dy = i64::from(point.y) - i64::from(center.y);
+        // `i128` because the squared distance between two `i32` extremes does not fit `i64`:
+        // an `i64` product overflowed in debug builds for a pointer far outside the widget.
+        let radius = i128::from(radius);
+        let dx = i128::from(point.x) - i128::from(center.x);
+        let dy = i128::from(point.y) - i128::from(center.y);
         dx * dx + dy * dy <= radius * radius
     }
 
     /// The dial's radius in pixels.
     fn radius(&self) -> u32 {
         let rect = self.geometry();
-        (rect.width.min(rect.height) as i32 / 2 - 2).max(4) as u32
+        let extent = rect.width.min(rect.height) as i32;
+        if extent < 8 {
+            return 0;
+        }
+        (extent / 2 - 2).max(4) as u32
     }
 }
 
@@ -176,6 +188,11 @@ impl Draw for Compass {
         let (surface, border, ink) = companion_palette(style, "compass");
         let center = rect.center();
         let radius = self.radius();
+        // A collapsed control has no dial: `hit_dial` refuses it, so painting one would be ink no
+        // press can reach (and the needle's length would go negative).
+        if radius == 0 {
+            return;
+        }
         context.fill_circle(center, radius, surface);
         context.draw_circle(center, radius, border);
         context.draw_text(
@@ -210,6 +227,7 @@ impl Draw for Compass {
 mod tests {
     use super::super::{ScaleBar, TileLoader, ZoomControl};
     use super::*;
+    use crate::maps::ScaleUnits;
 
     /// The tile status, the scale label and the zoom strip's label metrics are rebuilt only when
     /// their inputs move, not on every frame (SP-120).
@@ -294,5 +312,90 @@ mod tests {
         controller.set_zoom_level(8.0);
         assert!(!strip.poll_zoom_pan(), "a detached controller reports nothing");
         assert!((strip.zoom_level() - fitted).abs() < 1e-5, "the last applied level stays");
+    }
+
+    /// A pointer far outside the widget is outside the dial, and the distance test cannot
+    /// overflow even when both coordinates are `i32` extremes.
+    #[test]
+    fn an_extreme_pointer_is_outside_the_dial_without_overflowing() {
+        let compass = Compass::new(Rect::new(0, 0, 48, 48));
+        assert!(compass.hit_dial(Point::new(24, 24)));
+        assert!(!compass.hit_dial(Point::new(i32::MAX, i32::MIN)));
+
+        let collapsed = Compass::new(Rect::new(0, 0, 0, 0));
+        assert!(!collapsed.hit_dial(Point::new(0, 0)), "a collapsed compass has no dial");
+    }
+
+    /// Binding a controller adopts its level without announcing a user zoom.
+    ///
+    /// `attach_zoom_pan` went through `set_zoom`, so a host that forwards `zoom_requested` back to
+    /// the controller overwrote the controller's level with the strip's clamped copy.
+    #[test]
+    fn attaching_a_controller_does_not_announce_a_user_zoom() {
+        use rust_widgets::core::Size;
+        use rust_widgets::widget::companions::ZoomPanController;
+
+        let mut strip = ZoomControl::new(Rect::new(0, 0, 96, 28));
+        let mut controller = ZoomPanController::new(Rect::new(0, 0, 200, 100));
+        controller.set_content_size(Size::new(50, 25));
+        controller.set_zoom_level(4.0);
+        let requested = std::sync::Arc::new(std::sync::Mutex::new(Vec::<f32>::new()));
+        let sink = std::sync::Arc::clone(&requested);
+        strip.zoom_requested.connect(move |level| {
+            sink.lock().unwrap().push(*level);
+        });
+
+        strip.attach_zoom_pan(&controller);
+        let expected = ZoomPanController::map_zoom_to_range(
+            4.0,
+            controller.zoom_range(),
+            (strip.min(), strip.max()),
+        );
+        assert!((strip.zoom_level() - expected).abs() < 1e-5, "the controller level is adopted");
+        assert!(requested.lock().unwrap().is_empty(), "a binding is not a user gesture");
+    }
+
+    /// The paint-path drain mirrors the controller silently; the event path is what publishes.
+    #[test]
+    fn a_paint_pass_mirrors_the_controller_silently() {
+        use rust_widgets::core::Size;
+        use rust_widgets::widget::companions::ZoomPanController;
+
+        let mut strip = ZoomControl::new(Rect::new(0, 0, 96, 28));
+        let mut controller = ZoomPanController::new(Rect::new(0, 0, 200, 100));
+        controller.set_content_size(Size::new(50, 25));
+        strip.attach_zoom_pan(&controller);
+
+        controller.set_zoom_level(2.0);
+        let requested = std::sync::Arc::new(std::sync::Mutex::new(Vec::<f32>::new()));
+        let sink = std::sync::Arc::clone(&requested);
+        strip.zoom_requested.connect(move |level| {
+            sink.lock().unwrap().push(*level);
+        });
+
+        assert!(strip.sync_zoom_pan(), "the paint pass drains the level");
+        assert!(
+            requested.lock().unwrap().is_empty(),
+            "draw cannot publish a signal a host may handle"
+        );
+    }
+
+    /// An imperial bar labels the distance it is actually drawn at.
+    ///
+    /// The quantisation happened in metres and only the label converted, so a 2000 m bar printed
+    /// `1.2 mi` (1931 m) — a 3.4 % error in a measuring control.
+    #[test]
+    fn an_imperial_bar_measures_the_distance_it_labels() {
+        let mut bar = ScaleBar::new(Rect::new(0, 0, 400, 24));
+        bar.set_units(ScaleUnits::Imperial);
+        bar.set_scale(10.0);
+
+        assert_eq!(bar.label(), "2 mi");
+        let meters = f64::from(bar.bar_pixels()) * 10.0;
+        let labeled = 2.0 * 1609.344;
+        assert!(
+            (meters - labeled).abs() < 10.0,
+            "the painted length {meters} m must match the label ({labeled} m)"
+        );
     }
 }

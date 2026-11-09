@@ -3,7 +3,7 @@
 
 //! WebEngineViewEnhanced widget — a web engine view wrapper.
 //!
-//! This type shares ~95% of its implementation with [`WebViewEnhanced`](crate::webview::web_view_enhanced::WebViewEnhanced).
+//! This type shares ~95% of its implementation with [`WebViewEnhanced`].
 //! Both delegate to a common [`WebViewCore`] to avoid code duplication.
 //!
 //! **Unique to this type:**
@@ -25,10 +25,10 @@
 //! class as an event that is published but never emitted (BLUE19 #97).
 //!
 //! What this control *can* do is evaluate JavaScript, through the pure-Rust
-//! [`boa`](super::js_engine) engine. That is an independent capability and is
+//! [`boa`](crate::webview::js_engine) engine. That is an independent capability and is
 //! unaffected by the removal: it runs the script and returns its value, which is
 //! useful for validating expressions, templating and small computations
-//! (see [`Self::evaluate_javascript`]).
+//! (see [`WebEngineViewEnhanced::evaluate_javascript`]).
 //!
 //! A caller can ask whether a real engine is available with
 //! [`rust_widgets::platform::Platform::supports_web_engine`]; it answers `false` on every
@@ -36,11 +36,13 @@
 
 use super::js_engine::{JsResult, JsValue};
 use super::web_core::{delegate_widget, WebViewCore};
+use super::web_view_enhanced::WebViewPainter;
 use rust_widgets::core::{ObjectId, Point, Rect, Size};
 use rust_widgets::event::{Event, EventHandler};
+use rust_widgets::render::RenderContext;
 use rust_widgets::signal::{ConnectionScope, GenericSignal, Signal1};
 use rust_widgets::style::WidgetStyle;
-use rust_widgets::widget::{Widget, WidgetKind};
+use rust_widgets::widget::{Draw, Widget, WidgetKind};
 
 /// Enhanced web engine view widget.
 ///
@@ -49,6 +51,11 @@ use rust_widgets::widget::{Widget, WidgetKind};
 /// is no rendering engine behind it.
 pub struct WebEngineViewEnhanced {
     core: WebViewCore,
+    /// The browser-chrome/body painter shared with [`super::web_view_enhanced::WebViewEnhanced`].
+    ///
+    /// Without it this wrapper had no `Draw` implementation at all and rendered an empty frame,
+    /// even though it owns the same [`WebViewCore`] state the other wrapper paints.
+    painter: WebViewPainter,
     /// Emitted when the engine rejects a site certificate, carrying the
     /// description of the failure, through [`Self::report_certificate_error`].
     pub certificate_error: Signal1<String>,
@@ -63,6 +70,7 @@ impl WebEngineViewEnhanced {
     pub fn new(geometry: Rect) -> Self {
         Self {
             core: WebViewCore::new(WidgetKind::WebEngineView, geometry, "WebEngineView", ""),
+            painter: WebViewPainter::new(),
             certificate_error: Signal1::new(),
             download_requested: Signal1::new(),
         }
@@ -222,8 +230,8 @@ impl WebEngineViewEnhanced {
     /// `file://`.
     ///
     /// A URL with an unrecognised scheme is logged and rejected, leaving the view
-    /// untouched and returning silently; navigating to the URL already displayed just
-    /// marks the load complete at 100%.
+    /// untouched. Navigating to the URL already displayed is a no-op: it neither
+    /// restarts the load nor marks it complete.
     pub fn set_url(&mut self, url: String) {
         self.core.set_url(url);
     }
@@ -354,6 +362,12 @@ impl WebEngineViewEnhanced {
 
 // Delegate Widget trait to core via the shared macro
 delegate_widget!(WebEngineViewEnhanced);
+
+impl Draw for WebEngineViewEnhanced {
+    fn draw(&mut self, context: &mut RenderContext) {
+        self.painter.draw(&self.core, context);
+    }
+}
 
 impl EventHandler for WebEngineViewEnhanced {
     fn handle_event(&mut self, event: &Event) {
@@ -519,6 +533,55 @@ mod tests {
         let engine = WebEngineViewEnhanced::new(Rect::new(0, 0, 800, 600));
         let _ = &engine.certificate_error;
         let _ = &engine.download_requested;
+    }
+
+    /// The wrapper forwards the core's duplicate-URL no-op.
+    ///
+    /// `set_url` only delegates, but the forwarding path had no coverage: a wrapper that copied
+    /// the old "mark it 100%" behaviour would have restarted the load and recorded a second
+    /// history entry.
+    #[test]
+    fn repeating_the_current_url_is_a_no_op_through_the_wrapper() {
+        use std::sync::{Arc, Mutex};
+
+        let mut engine = WebEngineViewEnhanced::new(Rect::new(0, 0, 320, 200));
+        let starts = Arc::new(Mutex::new(0usize));
+        let sink = starts.clone();
+        engine.core.loading_started.connect(move |_| {
+            *sink.lock().unwrap() += 1;
+        });
+
+        engine.set_url("https://example.com/".to_string());
+        assert_eq!(*starts.lock().unwrap(), 1);
+        let back_entries = engine.history().back_entries().len();
+
+        engine.set_url("https://example.com/".to_string());
+        assert_eq!(*starts.lock().unwrap(), 1, "the load must not restart");
+        assert_eq!(
+            engine.history().back_entries().len(),
+            back_entries,
+            "the repeat must not record another history entry"
+        );
+        assert_eq!(engine.url(), "https://example.com/");
+    }
+
+    /// The engine-flavoured wrapper must paint the state it owns.
+    ///
+    /// It used to have no `Draw` implementation, so `render_to_svg` produced an empty frame even
+    /// though the same core state rendered fine through `WebViewEnhanced`.
+    #[test]
+    fn the_enhanced_engine_view_paints_a_non_empty_frame() {
+        let _theme_guard = rust_widgets::style::theme_test_guard();
+        let mut engine = WebEngineViewEnhanced::new(Rect::new(0, 0, 320, 200));
+        engine.load_html("<p>painted body</p>", Some("https://example.com/"));
+
+        let svg = rust_widgets::widget::svg::render_to_svg(&mut engine);
+        assert!(svg.starts_with("<svg"));
+        assert!(svg.contains("<rect"), "the chrome must paint shapes, got:\n{svg}");
+        assert!(
+            !rust_widgets::widget::svg::text_ink_boxes(&svg).is_empty(),
+            "the URL, title and body preview must paint text"
+        );
     }
 
     #[test]

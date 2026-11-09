@@ -104,16 +104,23 @@ pub const QUOTE_BOARD_PROPERTIES: &[PropertySchema] = &[
             "none",
             "symbol_ascending",
             "symbol_descending",
+            "name_ascending",
+            "name_descending",
             "last_ascending",
             "last_descending",
             "change_magnitude_ascending",
             "change_magnitude_descending",
+            "high_ascending",
+            "high_descending",
+            "low_ascending",
+            "low_descending",
+            "volume_ascending",
+            "volume_descending",
         ],
     ),
     PropertySchema::new("selected_index", K::UInt, true, true),
-    // Read-only: `QuoteBoard::set` answers `OutOfRange` because the board's row
-    // height is a layout decision the control owns, and `selected_index` is derived
-    // from the rows rather than assignable.
+    // Read-only: `QuoteBoard::set` answers `ReadOnlyProperty` because the board's row
+    // height is a layout decision the control owns.
     PropertySchema::new("row_height", K::UInt, true, false),
     PropertySchema::new("scroll_offset", K::UInt, true, true),
     // RW-79: the quote rows as typed records, written through `set_quotes`.
@@ -162,8 +169,9 @@ const DEPTH_CHART_EVENTS: &[EventSchema] = &[
 
 /// `OrderBookWidget`'s published events.
 const ORDER_BOOK_EVENTS: &[EventSchema] = &[
-    // `(side, price)`: the side is a token and the price a float, so the payload is
-    // `Mixed` — there is no single-element kind to promise.
+    // `(side, level index)`: the side is a token and the index is a `UInt`, so the payload is
+    // `Mixed` — there is no single-element kind to promise. The index is absolute into
+    // `bids()`/`asks()`, not a price.
     EventSchema { name: "level_clicked", payload: Some(K::String), shape: Some(S::Mixed) },
     EventSchema { name: "level_hovered", payload: Some(K::String), shape: Some(S::Mixed) },
     EventSchema { name: "level_unhovered", payload: Some(K::String), shape: Some(S::Mixed) },
@@ -173,6 +181,9 @@ const ORDER_BOOK_EVENTS: &[EventSchema] = &[
 const QUOTE_BOARD_EVENTS: &[EventSchema] = &[
     EventSchema::scalar("quote_clicked", K::String),
     EventSchema::scalar("quote_hovered", K::String),
+    // The symbol of the row the pointer left: leaving the board, moving off a row,
+    // scrolling the window, or a replacement list that no longer holds the hovered index.
+    EventSchema::scalar("quote_unhovered", K::String),
     // `Option<String>`: a cleared selection carries no symbol, which the shape says
     // rather than the payload kind (the kind is the element's).
     EventSchema {

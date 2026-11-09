@@ -122,7 +122,9 @@ impl Overlay {
     pub fn warm_up_bars(self) -> usize {
         match self {
             Overlay::MovingAverage { period } => period,
-            Overlay::ExponentialMovingAverage { period } => period,
+            // The EMA is seeded with its first sample, so no leading bar is overlay-free — see
+            // `indicators::ema`. Reporting `period` hid bars where the line is in fact painted.
+            Overlay::ExponentialMovingAverage { .. } => 0,
             Overlay::BollingerBands { period, .. } => period,
             Overlay::Vwap { period } => period,
             Overlay::DonchianChannel { period } => period,
@@ -308,6 +310,16 @@ impl CandlestickChart {
             self.hovered_index = None;
         }
         self.rebuild_series_cache();
+        // The window was measured against the old bars; re-running the one clamping entry
+        // point keeps it inside the bars that now exist. Without this a view past the end
+        // of a shorter series selected no bars at all and the pane drew an empty plot.
+        if let Some(range) = self.view {
+            self.set_view_range(Some(range));
+        }
+        // A full replacement can differ in the middle of the series while keeping its
+        // length, last close and overlay tails — which is all the cheap snapshot key
+        // covers — so the attached table must not be skipped on the next poll.
+        self.data_table_key = None;
         self.base.request_redraw();
     }
 
@@ -404,21 +416,27 @@ impl CandlestickChart {
     }
 
     /// The decimals the series' prices appear to use.
+    ///
+    /// The maximum over the whole series: returning the first value that happens to round-trip
+    /// let one integral print at the head of a series fix the precision of every bar after it, so
+    /// a close of `100.25` was reported as `100.0`.
     fn infer_decimals(bars: &[Bar]) -> usize {
+        let mut needed = None;
         for bar in bars {
             for value in [bar.open, bar.high, bar.low, bar.close] {
                 if !value.is_finite() {
                     continue;
                 }
-                for decimals in 0..=4usize {
-                    let scaled = value * 10f64.powi(decimals as i32);
-                    if (scaled - scaled.round()).abs() < 1e-6 {
-                        return decimals;
-                    }
-                }
+                let place = (0..=4usize)
+                    .find(|decimals| {
+                        let scaled = value * 10f64.powi(*decimals as i32);
+                        (scaled - scaled.round()).abs() < 1e-6
+                    })
+                    .unwrap_or(4);
+                needed = Some(needed.map_or(place, |best: usize| best.max(place)));
             }
         }
-        2
+        needed.unwrap_or(2)
     }
 
     /// The overlays, in draw order.
@@ -467,6 +485,7 @@ impl CandlestickChart {
     /// one value per overlay is computed from its trailing window, and nothing is rescanned
     /// (J-P16).
     pub fn append_bar(&mut self, bar: Bar) {
+        let first_bar = self.series.is_empty();
         self.series.push(bar);
         self.closes.push(bar.close);
         self.highs.push(bar.high);
@@ -474,7 +493,14 @@ impl CandlestickChart {
         self.volumes.push(bar.volume);
         let index = self.series.len().saturating_sub(1);
         self.append_overlay_tail(index);
-        self.grow_extent_with_bar(bar);
+        if first_bar {
+            // There is no prior extent to grow: the constructor's placeholder would keep a
+            // zero price inside the axis and squash the streamed series against the top.
+            self.inferred_decimals = Self::infer_decimals(self.series.bars());
+            self.rebuild_extent();
+        } else {
+            self.grow_extent_with_bar(bar);
+        }
         self.base.request_redraw();
     }
 
@@ -681,10 +707,15 @@ impl CandlestickChart {
     /// The range is clamped to the series and kept non-empty. This is the chart's zoom: a
     /// long history draws every bar at one pixel otherwise, and the marks are unreadable.
     pub fn set_view_range(&mut self, range: Option<(usize, usize)>) {
-        let range = range.map(|(start, end)| {
-            let start = start.min(self.series.len().saturating_sub(1));
-            let end = end.clamp(start + 1, self.series.len().max(start + 1));
-            (start, end)
+        let range = range.and_then(|(start, end)| {
+            // A view over an empty series would name no bars; `None` is the only honest
+            // answer, and it is what the next bar appended must start from.
+            if self.series.is_empty() {
+                return None;
+            }
+            let start = start.min(self.series.len() - 1);
+            let end = end.clamp(start + 1, self.series.len());
+            Some((start, end))
         });
         if self.view == range {
             return;
@@ -692,6 +723,16 @@ impl CandlestickChart {
         self.view = range;
         let (start, end) = self.view_bounds();
         self.view_changed.emit((start, end));
+        // The window moved under a stationary pointer: a hover outside it names a bar the reader
+        // can no longer see. `hovered_summary` and `hover_anchor` used to disagree about it, and
+        // the exit was never reported.
+        if let Some(previous) = self.hovered_index {
+            if previous < start || previous >= end {
+                self.hovered_index = None;
+                self.hovered_price = None;
+                self.bar_unhovered.emit(previous);
+            }
+        }
         self.base.request_redraw();
     }
 
@@ -745,7 +786,7 @@ impl CandlestickChart {
     /// Called from `draw` and `handle_event`, so a table edit is visible on the next frame. An
     /// unchanged pane, an idle table and no attachment all return `false`.
     ///
-    /// The snapshot is only built when its inputs moved: a cheap [`ChartDataKey`] covers the
+    /// The snapshot is only built when its inputs moved: a cheap `ChartDataKey` covers the
     /// series length, the last close and every overlay's identity, last value and visibility,
     /// so a steady-state frame or a bare pointer move no longer allocates a full snapshot for
     /// the binding to throw away (FIN-1). A refused toggle still forces the push, because the
@@ -1079,11 +1120,8 @@ impl CandlestickChart {
         let visible = &bars[start..end];
         let index_axis = area.index_axis(visible.len());
         let body_width = index_axis.body_width();
-        let wick_x_offset = body_width / 2;
 
         for (position, bar) in visible.iter().enumerate() {
-            let index = start + position;
-            let _ = index;
             if !bar.open.is_finite()
                 || !bar.high.is_finite()
                 || !bar.low.is_finite()
@@ -1091,11 +1129,13 @@ impl CandlestickChart {
             {
                 continue;
             }
-            let slot_x = index_axis.x_for(position);
             let color = if bar.is_rising() { Self::rising_color() } else { Self::falling_color() };
 
-            // Wick first, so the body covers its middle and the extremes stay visible.
-            let wick_x = slot_x + wick_x_offset;
+            // The wick and the body share the column centre `center_for` documents, which is also
+            // where the crosshair is drawn. Offsetting from the slot origin instead left the body
+            // without its left gap and put the wick one pixel off the marker naming it.
+            let centre = index_axis.center_for(position);
+            let wick_x = centre;
             context.draw_line_stroke(
                 rust_widgets::core::Point { x: wick_x, y: price_axis.y_for(bar.high) },
                 rust_widgets::core::Point { x: wick_x, y: price_axis.y_for(bar.low) },
@@ -1106,9 +1146,10 @@ impl CandlestickChart {
             let y_open = price_axis.y_for(bar.open);
             let y_close = price_axis.y_for(bar.close);
             let body_top = y_open.min(y_close);
+            let body_x = index_axis.body_x_for(position);
             context.fill_rect(
                 Rect::new(
-                    slot_x,
+                    body_x,
                     body_top,
                     body_width as u32,
                     // A doji has no body; one pixel keeps it visible rather than absent.
@@ -1130,6 +1171,11 @@ impl CandlestickChart {
         let index_axis = area.index_axis(end.saturating_sub(start));
 
         for (overlay_index, cached) in self.overlay_values.iter().enumerate() {
+            // A hidden overlay is not painted, matching the extent (which already excludes
+            // it) and the legend/data-table state that says it is hidden.
+            if !self.overlay_visible(overlay_index) {
+                continue;
+            }
             let color = Self::overlay_color(overlay_index);
             match cached {
                 CachedOverlay::Single(values) => Self::draw_series_line(
@@ -1354,7 +1400,15 @@ impl CandlestickChart {
         self.refresh_legend_cache(context, &font);
 
         let max_rows = (((area.bottom() - area.rect.y - 4) / 14).max(1)) as usize;
-        let shown = self.legend_cache.names.len().min(max_rows);
+        // A hidden overlay is not drawn, so its legend row must not be either: the pane said the
+        // series was hidden while the swatch kept advertising it in full colour.
+        let rows: Vec<usize> = (0..self.legend_cache.names.len())
+            .filter(|index| self.overlay_visible(*index))
+            .take(max_rows)
+            .collect();
+        if rows.is_empty() {
+            return;
+        }
 
         // A surface behind the legend, sized to its widest label before anything is drawn.
         //
@@ -1363,15 +1417,15 @@ impl CandlestickChart {
         // appearance, reading as a strikethrough rather than as a reference line. An opaque fill
         // in the pane's own colour is what separates the two; a translucent wash would still show
         // the dash.
-        let widest = self.legend_cache.widths.iter().take(shown).max().copied().unwrap_or(0);
+        let widest = rows.iter().map(|index| self.legend_cache.widths[*index]).max().unwrap_or(0);
         let box_width = (widest + 24).min(area.rect.width as i32).max(1);
         let box_x = (area.right() - box_width).max(area.rect.x);
-        let box_height = (shown as u32) * 14 + 4;
+        let box_height = (rows.len() as u32) * 14 + 4;
         context
             .fill_rect(Rect::new(box_x, area.rect.y, box_width as u32, box_height), chrome.surface);
 
         let mut y = area.rect.y + 4;
-        for index in 0..shown {
+        for index in rows {
             let name = self.legend_cache.names[index].as_str();
             let text_width = self.legend_cache.widths[index];
             let x = area.right() - text_width - 20;
@@ -1831,10 +1885,16 @@ impl EventHandler for CandlestickChart {
                 let area = self.plot_area();
                 let (start, end) = self.view_bounds();
                 let index_axis = area.index_axis(end.saturating_sub(start));
-                let next = index_axis
-                    .index_at(pos.x)
-                    .map(|index| start + index)
-                    .filter(|index| *index < end);
+                // The pane's bottom strip is its index axis, so a y test is part of "inside":
+                // testing only x let the axis row hover (and crosshair) a bar.
+                let next = if area.contains_y(pos.y) {
+                    index_axis
+                        .index_at(pos.x)
+                        .map(|index| start + index)
+                        .filter(|index| *index < end)
+                } else {
+                    None
+                };
                 if next != self.hovered_index {
                     if let Some(previous) = self.hovered_index {
                         self.bar_unhovered.emit(previous);
@@ -1857,10 +1917,15 @@ impl EventHandler for CandlestickChart {
                 }
             }
             Event::MouseLeave { .. } => {
-                if let Some(previous) = self.hovered_index {
+                // The price half of the crosshair is tracked independently of the bar under
+                // the pointer (a pointer in the axis margin has a price but no bar), so it
+                // has to be cleared on exit too rather than only when a bar was hovered.
+                let left_bar = self.hovered_index.take();
+                let left_price = self.hovered_price.take();
+                if let Some(previous) = left_bar {
                     self.bar_unhovered.emit(previous);
-                    self.hovered_index = None;
-                    self.hovered_price = None;
+                }
+                if left_bar.is_some() || left_price.is_some() {
                     self.base.request_redraw();
                 }
             }
@@ -1874,19 +1939,30 @@ impl EventHandler for CandlestickChart {
                     let new_span = ((span as f64 * factor).round() as usize).clamp(4, total);
                     let half = new_span / 2;
                     let new_start = anchor.saturating_sub(half).min(total - new_span);
-                    self.set_view_range(Some((new_start, new_start + new_span)));
+                    // Showing every bar is the `None` spelling of the view, exactly what
+                    // `reset_view` and the strip's Fit produce; a zoom-out that leaves a pinned
+                    // `Some((0, total))` made one state look like two to a host binding
+                    // `view_range`.
+                    let range = if new_span >= total {
+                        None
+                    } else {
+                        Some((new_start, new_start + new_span))
+                    };
+                    self.set_view_range(range);
                 }
             }
             Event::MousePress { pos, .. } | Event::PointerPress { pos, .. } => {
                 let area = self.plot_area();
                 let (start, end) = self.view_bounds();
                 let index_axis = area.index_axis(end.saturating_sub(start));
-                if let Some(index) = index_axis
-                    .index_at(pos.x)
-                    .map(|index| start + index)
-                    .filter(|index| *index < end)
-                {
-                    self.bar_clicked.emit(index);
+                if area.contains_y(pos.y) {
+                    if let Some(index) = index_axis
+                        .index_at(pos.x)
+                        .map(|index| start + index)
+                        .filter(|index| *index < end)
+                    {
+                        self.bar_clicked.emit(index);
+                    }
                 }
             }
             _ => {}
@@ -2117,6 +2193,18 @@ mod tests {
     /// fails here rather than reporting zero.
     #[test]
     fn every_overlay_reports_its_warm_up() {
+        // The EMA is seeded with its first sample, so it has no overlay-free lead; the
+        // window-based overlays start after their window. Reporting `period` for the EMA hid bars
+        // whose line is in fact painted.
+        assert_eq!(Overlay::moving_average(20).warm_up_bars(), 20);
+        assert_eq!(Overlay::exponential_moving_average(9).warm_up_bars(), 0);
+        assert_eq!(Overlay::bollinger_bands(20, 2.0).warm_up_bars(), 20);
+        assert_eq!(Overlay::vwap(14).warm_up_bars(), 14);
+        assert_eq!(Overlay::donchian_channel(20).warm_up_bars(), 20);
+        assert!(
+            crate::finance::indicators::ema(&[10.0, 11.0], 9)[0].is_finite(),
+            "the EMA defines index 0, which is why its warm-up is zero"
+        );
         for overlay in [
             Overlay::moving_average(20),
             Overlay::exponential_moving_average(9),
@@ -2124,7 +2212,6 @@ mod tests {
             Overlay::vwap(14),
             Overlay::donchian_channel(20),
         ] {
-            assert!(overlay.warm_up_bars() > 0, "{overlay:?} must report a warm-up");
             assert!(!overlay.as_str().is_empty());
         }
     }
@@ -2229,6 +2316,133 @@ mod tests {
         assert!(
             chart.hovered_index().is_none_or(|index| index < 3),
             "a hover must not survive past the series it pointed into"
+        );
+    }
+
+    /// Whether `target` appears anywhere in the frame a draw produces.
+    fn frame_contains_color(
+        chart: &mut CandlestickChart,
+        size: (u32, u32),
+        target: [u8; 4],
+    ) -> bool {
+        use rust_widgets::render::PaintBackend as _;
+        let mut backend = rust_widgets::render::SoftwarePaintBackend::new(
+            rust_widgets::core::Size::new(size.0, size.1),
+            1.0,
+        );
+        backend.begin_frame(rust_widgets::core::Color::BLACK);
+        {
+            let mut context = RenderContext::new(&mut backend);
+            chart.draw(&mut context);
+        }
+        backend.end_frame();
+        let rgba = backend.frame_rgba();
+        rgba.as_chunks::<4>().0.contains(&target)
+    }
+
+    /// A hidden overlay is not painted, matching the extent and the table that say it is off.
+    ///
+    /// Regression: the visibility flag removed the overlay from the price extent and from the
+    /// data table's visible rows, but `draw_overlays` walked every cached overlay regardless,
+    /// so a hidden series kept drawing over the candles.
+    #[test]
+    fn a_hidden_overlay_is_not_painted() {
+        let mut chart = CandlestickChart::new(Rect::new(0, 0, 480, 320));
+        chart.set_series(fixtures::sample_series(60));
+        chart.add_overlay(Overlay::moving_average(2));
+        // The legend draws a swatch in the same palette colour, so it is turned off for this
+        // pixel assertion; it is not the subject of the test.
+        chart.set_show_overlay_legend(false);
+        let color = CandlestickChart::overlay_color(0);
+        let target = [color.r, color.g, color.b, 255];
+
+        assert!(
+            frame_contains_color(&mut chart, (480, 320), target),
+            "the visible overlay must be painted"
+        );
+        assert!(chart.set_overlay_visible(0, false));
+        assert!(
+            !frame_contains_color(&mut chart, (480, 320), target),
+            "a hidden overlay must not leave a pixel of its colour behind"
+        );
+    }
+
+    /// Leaving the pane clears the price crosshair even when the pointer was in the margin.
+    ///
+    /// Regression: `MouseLeave` only cleared state when a bar was hovered, so a pointer that
+    /// left from the price-axis margin kept `hovered_price` set for the next entry.
+    #[test]
+    fn leaving_the_pane_clears_a_price_hover_even_without_a_bar() {
+        let mut chart = CandlestickChart::new(Rect::new(0, 0, 640, 360));
+        chart.set_series(fixtures::sample_series(20));
+        chart.handle_event(&rust_widgets::event::Event::MouseMove {
+            pos: rust_widgets::core::Point { x: 5, y: 100 },
+        });
+        assert!(chart.hovered_index().is_none(), "the price axis is not over a bar");
+        assert!(chart.hovered_price().is_some(), "the crosshair price is still tracked");
+
+        chart.handle_event(&rust_widgets::event::Event::MouseLeave {
+            pos: rust_widgets::core::Point { x: 0, y: 0 },
+        });
+        assert!(chart.hovered_index().is_none());
+        assert!(chart.hovered_price().is_none(), "leaving must clear the price hover too");
+    }
+
+    /// A window measured against a longer series is pulled back inside a shorter one.
+    ///
+    /// Regression: `set_series` kept the stored range verbatim, so replacing a 50-bar series
+    /// with a 5-bar one left a `(40, 50)` window that selected no bars — the pane drew its
+    /// axes and no candles, and `view_range()` reported a window the control did not hold.
+    #[test]
+    fn replacing_the_series_pulls_the_view_back_inside_it() {
+        let mut chart = CandlestickChart::new(Rect::new(0, 0, 320, 200));
+        chart.set_series(fixtures::sample_series(50));
+        chart.set_view_range(Some((40, 50)));
+
+        chart.set_series(fixtures::sample_series(5));
+        let (start, end) = chart.view_range().expect("a clamped window must remain");
+        assert!(start < 5, "the window start must be inside the new series, got {start}");
+        assert!(start < end && end <= 5, "the window must select existing bars: {start}..{end}");
+        assert_eq!(chart.view_bounds(), (start, end));
+    }
+
+    /// A chart streamed from empty derives its axis from the first bar.
+    ///
+    /// Regression: `grow_extent_with_bar` grew the constructor's `(0, 1)` placeholder, so the
+    /// first streamed price kept a zero in the axis and every later bar was squashed against
+    /// the top of the pane.
+    #[test]
+    fn streaming_into_an_empty_chart_does_not_keep_the_placeholder_axis() {
+        let mut chart = CandlestickChart::new(Rect::new(0, 0, 320, 200));
+        for index in 0..5 {
+            chart.append_bar(Bar::flat(100.0 + index as f64, 10.0));
+        }
+        let (low, high) = chart.effective_price_extent();
+        assert!(low > 90.0, "the axis still spans a placeholder zero: {low}");
+        assert!(high >= 104.0, "the axis must contain the streamed prices: {high}");
+    }
+
+    /// A full replacement reaches an attached data table even when the cheap key matches.
+    ///
+    /// Regression: the key covers the length, the last close and the overlay tails only, so a
+    /// series whose middle changed was treated as unchanged and the table kept the old rows.
+    #[test]
+    fn replacing_the_series_refreshes_an_attached_data_table() {
+        let mut chart = CandlestickChart::new(Rect::new(0, 0, 480, 240));
+        chart.set_series(fixtures::sample_series(20));
+        let mut table = ChartDataTable::new(Rect::new(0, 0, 240, 180));
+        chart.attach_chart_data_table(&mut table);
+        assert!(!chart.poll_chart_data_table(), "an idle pane queues nothing");
+
+        let mut series = fixtures::sample_series(20);
+        let mut first = series.bars()[0];
+        first.close += 5.0;
+        assert!(series.set_bar(0, first));
+        chart.set_series(series);
+
+        assert!(
+            chart.poll_chart_data_table(),
+            "a replaced series must be pushed even when length and last close match"
         );
     }
 
@@ -2388,6 +2602,33 @@ mod tests {
         assert_eq!(count.load(Ordering::SeqCst), 0, "a press on the price axis is not on a bar");
     }
 
+    /// The index-axis strip below the plot is not a bar.
+    ///
+    /// The hit test mapped x alone, so the tick row hovered and clicked whichever bar shared its
+    /// column — the same defect `DepthChart` documents for its price axis.
+    #[test]
+    fn the_index_axis_strip_is_not_a_bar() {
+        let mut chart = CandlestickChart::new(Rect::new(0, 0, 640, 360));
+        chart.set_series(fixtures::sample_series(20));
+        let count = Arc::new(AtomicUsize::new(0));
+        let sink = Arc::clone(&count);
+        chart.bar_clicked.connect(move |_| {
+            sink.fetch_add(1, Ordering::SeqCst);
+        });
+        let area = chart.plot_area();
+        chart.handle_event(&rust_widgets::event::Event::mouse_press(
+            area.rect.x + 30,
+            area.bottom() + 5,
+            1,
+        ));
+        assert_eq!(count.load(Ordering::SeqCst), 0, "the tick row is not a bar");
+
+        chart.handle_event(&rust_widgets::event::Event::MouseMove {
+            pos: rust_widgets::core::Point { x: area.rect.x + 30, y: area.bottom() + 5 },
+        });
+        assert_eq!(chart.hovered_index(), None, "and it does not hover one either");
+    }
+
     /// Hovering emits the index and then the un-hover on exit.
     #[test]
     fn hovering_emits_and_exiting_un_hovers() {
@@ -2415,5 +2656,92 @@ mod tests {
             "leaving reports the bar that was hovered"
         );
         assert!(chart.hovered_index().is_none());
+    }
+
+    /// A hidden overlay's legend row is not painted either.
+    ///
+    /// `draw_overlays` skipped hidden overlays, but the legend kept their swatch and name at full
+    /// opacity in the same palette colour, so the pane painted a key entry for a series it was not
+    /// drawing.
+    #[test]
+    fn a_hidden_overlay_is_not_in_the_legend() {
+        let mut chart = CandlestickChart::new(Rect::new(0, 0, 480, 320));
+        chart.set_series(fixtures::sample_series(60));
+        chart.add_overlay(Overlay::moving_average(2));
+        let color = CandlestickChart::overlay_color(0);
+        let target = [color.r, color.g, color.b, 255];
+
+        assert!(
+            frame_contains_color(&mut chart, (480, 320), target),
+            "a visible overlay is painted (line and legend)"
+        );
+        assert!(chart.set_overlay_visible(0, false));
+        assert!(
+            !frame_contains_color(&mut chart, (480, 320), target),
+            "a hidden overlay's legend swatch must not keep advertising it"
+        );
+    }
+
+    /// Narrowing the view drops a hover it excludes, and reports the exit.
+    ///
+    /// `set_view_range` moved the window without re-deriving the hover, so `hovered_summary`
+    /// returned a bar `hover_anchor` refused to anchor and no `bar_unhovered` was emitted.
+    #[test]
+    fn narrowing_the_view_drops_a_hover_it_excludes() {
+        let mut chart = CandlestickChart::new(Rect::new(0, 0, 640, 360));
+        chart.set_series(fixtures::sample_series(50));
+        let area = chart.plot_area();
+        let (start, end) = chart.view_bounds();
+        let target = 30usize;
+        let x = area.index_axis(end - start).center_for(target - start);
+        chart.handle_event(&rust_widgets::event::Event::MouseMove {
+            pos: rust_widgets::core::Point { x, y: area.rect.y + 40 },
+        });
+        assert_eq!(chart.hovered_index(), Some(target));
+
+        let unhovered = std::sync::Arc::new(std::sync::Mutex::new(Vec::<usize>::new()));
+        let sink = unhovered.clone();
+        chart.bar_unhovered.connect(move |index: Arc<usize>| {
+            sink.lock().unwrap().push(*index);
+        });
+
+        chart.set_view_range(Some((0, 10)));
+        assert_eq!(chart.hovered_index(), None);
+        assert!(chart.hovered_summary().is_empty(), "no tooltip for a bar outside the window");
+        assert!(chart.hover_anchor().is_none(), "the crosshair is not anchored either");
+        assert_eq!(*unhovered.lock().unwrap(), vec![target], "the exit is published");
+    }
+
+    /// The inferred precision covers the whole series, not its first price.
+    #[test]
+    fn the_axis_precision_covers_the_whole_series() {
+        let mut chart = CandlestickChart::new(Rect::new(0, 0, 480, 320));
+        let mut series = PriceSeries::new();
+        series.push(Bar::flat(100.0, 1.0));
+        series.push(Bar::flat(100.25, 1.0));
+        chart.set_series(series);
+
+        assert_eq!(chart.inferred_decimals, 2, "the finer price decides the precision");
+        assert_eq!(format_fixed(chart.series().bars()[1].close, chart.inferred_decimals), "100.25");
+    }
+
+    /// Zooming all the way out restores the unzoomed spelling of the view.
+    #[test]
+    fn zooming_out_to_the_whole_series_restores_the_unzoomed_view() {
+        let mut chart = CandlestickChart::new(Rect::new(0, 0, 640, 360));
+        chart.set_series(fixtures::sample_series(20));
+        chart.set_view_range(Some((5, 15)));
+
+        for _ in 0..12 {
+            chart.handle_event(&rust_widgets::event::Event::Wheel {
+                delta: rust_widgets::core::Point::new(0, 1),
+                modifiers: 0,
+            });
+        }
+        assert_eq!(
+            chart.view_range(),
+            None,
+            "a full zoom-out is the same state `reset_view` produces"
+        );
     }
 }

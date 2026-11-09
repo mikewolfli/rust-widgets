@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
 // SPDX-License-Identifier: MIT
 
+use super::board::remap_by_column_id;
 use super::*;
 
 /// `KanbanBoard`'s property contract.
@@ -79,20 +80,68 @@ impl WidgetProperties for KanbanBoard {
                     .iter()
                     .map(kanban_column_from_record)
                     .collect::<Result<Vec<_>, CapabilityAccessError>>()?;
+                // Index-keyed state (focus/hover/drag/scroll) names a slot in the *old* column
+                // list; capture the identities before the slots move, so each piece of state can
+                // follow the column it referred to.
+                let old_ids: Vec<String> =
+                    self.columns.iter().map(|column| column.id.clone()).collect();
+                let old_scroll = self.column_scroll.clone();
                 for column in &mut columns {
                     if let Some(existing) = self.columns.iter().find(|entry| entry.id == column.id)
                     {
                         column.cards = existing.cards.clone();
                     }
                 }
+                // A width override belongs to the column that owns it: a write that drops a column
+                // must drop its override too, or the stale width resurrects if that id returns
+                // (the rule `remove_column` already follows).
+                let live_columns: HashSet<String> =
+                    columns.iter().map(|column| column.id.clone()).collect();
+                self.column_widths.retain(|id, _| live_columns.contains(id));
                 self.columns = columns;
-                let live: Vec<String> = self
+                let live: HashSet<String> = self
                     .columns
                     .iter()
                     .flat_map(|entry| entry.cards.iter().map(|card| card.id.clone()))
                     .collect();
-                self.card_lanes.retain(|card_id, _| live.iter().any(|id| id == card_id));
+                self.card_lanes.retain(|card_id, _| live.contains(card_id));
+                // Per-column scroll offsets are keyed by index; carry each one to the column id it
+                // belonged to. An identity write keeps them as they are, so a round-trip no longer
+                // scrolled every column back to row 0.
+                let order_unchanged = old_ids.len() == self.columns.len()
+                    && old_ids.iter().zip(self.columns.iter()).all(|(old, new)| *old == new.id);
+                if order_unchanged {
+                    self.column_scroll.truncate(self.columns.len());
+                    self.column_scroll.resize(self.columns.len(), 0);
+                } else {
+                    let mut carried = vec![0usize; self.columns.len()];
+                    for (new_index, column) in self.columns.iter().enumerate() {
+                        if let Some(old_index) = old_ids.iter().position(|id| *id == column.id) {
+                            carried[new_index] = old_scroll.get(old_index).copied().unwrap_or(0);
+                        }
+                    }
+                    self.column_scroll = carried;
+                }
+                // Focus, hover, drag origin and the hovered column follow their column ids; a
+                // column that left takes its state with it (and reports the hover exit).
+                self.focused_card = remap_by_column_id(self.focused_card, &old_ids, &self.columns);
+                let hover_was_set = self.hovered_card.is_some();
+                self.hovered_card = remap_by_column_id(self.hovered_card, &old_ids, &self.columns);
+                if hover_was_set && self.hovered_card.is_none() {
+                    self.card_hovered.emit(None);
+                }
+                self.drag_origin = remap_by_column_id(self.drag_origin, &old_ids, &self.columns);
+                self.hovered_column = self.hovered_column.and_then(|old| {
+                    old_ids
+                        .get(old)
+                        .and_then(|id| self.columns.iter().position(|column| column.id == *id))
+                });
                 self.invalidate_layout();
+                self.prune_card_state();
+                // The write can reorder the columns, and the selection's documented order is
+                // display order.
+                self.sort_selection();
+                self.clamp_horizontal_scroll();
                 self.base.request_redraw();
                 Ok(())
             }
@@ -110,6 +159,21 @@ impl WidgetProperties for KanbanBoard {
                     }
                 })?;
                 let column_count = self.columns.len();
+                // The whole rows list is being replaced, so index-keyed state has to be re-resolved
+                // by card id: a slot can now hold a different card (or none).
+                let card_id_at = |columns: &[KanbanColumn], position: CardPosition| {
+                    columns
+                        .get(position.column)
+                        .and_then(|column| column.cards.get(position.card))
+                        .map(|card| card.id.clone())
+                };
+                let focused_id =
+                    self.focused_card.and_then(|position| card_id_at(&self.columns, position));
+                let hovered_id =
+                    self.hovered_card.and_then(|position| card_id_at(&self.columns, position));
+                let origin_id =
+                    self.drag_origin.and_then(|position| card_id_at(&self.columns, position));
+                let selection_before = self.selected_cards.clone();
                 let mut buckets: Vec<Vec<KanbanCard>> = vec![Vec::new(); column_count];
                 let mut lanes: HashMap<String, String> = HashMap::new();
                 for record in list.items() {
@@ -142,6 +206,24 @@ impl WidgetProperties for KanbanBoard {
                 }
                 self.card_lanes = lanes;
                 self.invalidate_layout();
+                // The rows were replaced whole: the focus, hover, drag origin and selection can
+                // now name a card (or a slot) that the new list does not contain.
+                let hover_was_set = self.hovered_card.is_some();
+                self.focused_card = focused_id.as_deref().and_then(|id| self.position_of(id));
+                self.hovered_card = hovered_id.as_deref().and_then(|id| self.position_of(id));
+                self.drag_origin = origin_id.as_deref().and_then(|id| self.position_of(id));
+                if hover_was_set && self.hovered_card.is_none() {
+                    self.card_hovered.emit(None);
+                }
+                self.prune_card_state();
+                // A write may reorder the cards; the selection's documented order is display order,
+                // so a pure reorder is republished (drops were already reported by `prune`).
+                self.sort_selection();
+                if self.selected_cards != selection_before
+                    && self.selected_cards.len() == selection_before.len()
+                {
+                    self.selection_changed.emit(self.selected_cards.clone());
+                }
                 self.base.request_redraw();
                 Ok(())
             }

@@ -70,6 +70,11 @@ impl DateFormat {
 /// caller can ask which date a pixel stands for, and where a date falls, without
 /// re-deriving the chart's margins. `range` is authoritative — `zoom_level` is the
 /// magnification the host requested, kept for display and for the next zoom step.
+///
+/// When a [`GanttWidget`](crate::project::gantt::gantt_widget::GanttWidget) mounts this axis, the
+/// owner keeps the range equal to its viewport on every layout and paint. A range or `zoom_level`
+/// written through the axis handle is therefore transient in that arrangement; change the chart's
+/// viewport instead. Standalone, the axis owns its range and this does not apply.
 pub struct TimelineAxis {
     base: BaseWidget,
     tick_density: u32,
@@ -83,9 +88,11 @@ pub struct TimelineAxis {
     /// Tick positions, labels and label widths, with the key they were built for.
     ///
     /// Every tick used to be formatted and measured on every frame, which made a scrub or a zoom
-    /// pay for the whole axis per animation step.
+    /// pay for the whole axis per animation step. The key carries the track's left edge as well as
+    /// its width: the cached `x` values are absolute, so moving the control without resizing it
+    /// left every tick painted at its old position.
     tick_entries: Vec<(i32, String, i32)>,
-    tick_key: Option<(i64, i64, u32, &'static str, Font, u32)>,
+    tick_key: Option<(i32, i64, i64, u32, &'static str, Font, u32)>,
     /// Emitted with the new visible range after a range or zoom change.
     pub scale_changed: Signal1<(i64, i64)>,
 }
@@ -122,7 +129,7 @@ impl TimelineAxis {
             return;
         }
         self.range = (start, end);
-        self.base_span = (end - start).max(1) as f64;
+        self.base_span = end.saturating_sub(start).max(1) as f64;
         self.zoom_level = 1.0;
         self.scale_changed.emit(self.range);
         self.base.request_redraw();
@@ -199,10 +206,17 @@ impl TimelineAxis {
     pub fn ticks(&self) -> Vec<(i64, i32)> {
         let density = i64::from(self.tick_density.max(1));
         let (start, end) = self.range;
-        let span = (end - start).max(1);
+        // The span is widened in `i128` so a range that spans the whole `i64` axis cannot overflow
+        // the intermediate multiplication by the tick index.
+        let span = (i128::from(end) - i128::from(start)).max(1);
         let mut ticks: Vec<(i64, i32)> = Vec::new();
         for index in 0..=density {
-            let value = if index == density { end } else { start + span * index / density };
+            let value = if index == density {
+                end
+            } else {
+                let offset = span * i128::from(index) / i128::from(density);
+                start.saturating_add(i64::try_from(offset).unwrap_or(i64::MAX))
+            };
             if ticks.last().is_some_and(|(previous, _)| *previous == value) {
                 continue;
             }
@@ -217,9 +231,9 @@ impl TimelineAxis {
     /// inverse of [`Self::date_to_pixel`] up to rounding.
     pub fn pixel_to_date(&self, x: i32) -> i64 {
         let (left, width) = self.track_geometry();
-        let span = (self.range.1 - self.range.0).max(1) as f64;
+        let span = self.range.1.saturating_sub(self.range.0).max(1) as f64;
         let ratio = (f64::from(x - left) / f64::from(width)).clamp(0.0, 1.0);
-        self.range.0 + (ratio * span).round() as i64
+        self.range.0.saturating_add((ratio * span).round() as i64)
     }
 
     /// Converts an axis value to an x coordinate.
@@ -228,8 +242,8 @@ impl TimelineAxis {
     /// a caller can tell "off the axis" from "at the edge".
     pub fn date_to_pixel(&self, date: i64) -> i32 {
         let (left, width) = self.track_geometry();
-        let span = (self.range.1 - self.range.0).max(1) as f64;
-        let ratio = (date - self.range.0) as f64 / span;
+        let span = self.range.1.saturating_sub(self.range.0).max(1) as f64;
+        let ratio = date.saturating_sub(self.range.0) as f64 / span;
         left + (ratio * f64::from(width)).round() as i32
     }
 
@@ -393,6 +407,7 @@ impl Draw for TimelineAxis {
         // the face and the track width; those form the cache key and nothing else is measured
         // while they hold.
         let key = (
+            left,
             self.range.0,
             self.range.1,
             self.tick_density,
@@ -428,5 +443,49 @@ impl Draw for TimelineAxis {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rust_widgets::core::Size;
+    use rust_widgets::render::{PaintBackend, SoftwarePaintBackend};
+
+    fn draw(axis: &mut TimelineAxis) {
+        let size = Size::new(axis.geometry().width, axis.geometry().height);
+        let mut backend = SoftwarePaintBackend::new(size, 1.0);
+        backend.begin_frame(Color::WHITE);
+        {
+            let mut context = RenderContext::new(&mut backend);
+            axis.draw(&mut context);
+        }
+        backend.end_frame();
+    }
+
+    /// The cached tick x values are absolute, so moving the control must rebuild them.
+    #[test]
+    fn moving_the_axis_reprojects_the_cached_ticks() {
+        let mut axis = TimelineAxis::new(Rect::new(0, 0, 320, 24));
+        draw(&mut axis);
+        let before = axis.tick_entries.first().map(|entry| entry.0).expect("a tick");
+        assert_eq!(before, axis.date_to_pixel(axis.range().0));
+
+        axis.base_mut().set_geometry(Rect::new(100, 0, 320, 24));
+        draw(&mut axis);
+        let after = axis.tick_entries.first().map(|entry| entry.0).expect("a tick");
+        assert_eq!(after - before, 100, "the cached ticks follow the new track origin");
+        assert_eq!(after, axis.date_to_pixel(axis.range().0));
+    }
+
+    /// A range that spans the whole integer axis must not overflow while formatting ticks.
+    #[test]
+    fn an_extreme_range_formats_ticks_without_overflow() {
+        let mut axis = TimelineAxis::new(Rect::new(0, 0, 320, 24));
+        axis.set_range(i64::MIN, i64::MAX);
+        let ticks = axis.ticks();
+        assert_eq!(ticks.first().map(|(value, _)| *value), Some(i64::MIN));
+        assert_eq!(ticks.last().map(|(value, _)| *value), Some(i64::MAX));
+        assert!(ticks.windows(2).all(|pair| pair[0].0 <= pair[1].0));
     }
 }

@@ -16,7 +16,7 @@
 //! [`WidgetKind::WebFindBar`], registered in the factory like any other companion.
 
 use crate::webview::web_engine::{WebEngineView, WebFindRequest};
-use rust_widgets::compat::Arc;
+use rust_widgets::compat::{lock, Arc, Mutex};
 use rust_widgets::core::{Color, HorizontalAlignment, Rect, Size};
 use rust_widgets::event::{Event, EventHandler};
 use rust_widgets::impl_draw_bridge;
@@ -53,6 +53,12 @@ pub struct WebFindBar {
     pub closed: GenericSignal,
     /// The live wiring to a view's find queue, when one is attached (MW-014).
     binding: Option<WebFindBinding>,
+    /// Where an attached view publishes the last find result for this bar.
+    ///
+    /// The bar owns the read end and drains it on its own paint/event path; the view writes it
+    /// from `poll_find_requests`. Without the cell the bar kept painting `0/0` while the view's
+    /// find state moved, because a signal callback cannot borrow the bar.
+    find_progress: Option<Arc<Mutex<Option<(usize, usize)>>>>,
 }
 
 /// The subscription that feeds a `WebEngineView`'s find queue (MW-014).
@@ -79,6 +85,7 @@ impl WebFindBar {
             previous_requested: GenericSignal::new(),
             closed: GenericSignal::new(),
             binding: None,
+            find_progress: None,
         }
     }
 
@@ -118,6 +125,9 @@ impl WebFindBar {
             return;
         }
         self.query = query;
+        // The old counts describe the old query; the view's answer arrives through
+        // `sync_find_progress` once the attached queue is drained.
+        self.set_match_progress(0, 0);
         self.base.request_redraw();
         self.search_requested.emit((self.query.clone(), self.case_sensitive));
     }
@@ -201,6 +211,9 @@ impl WebFindBar {
         });
 
         self.binding = Some(WebFindBinding { _scope: scope });
+        let progress = Arc::new(Mutex::new(None));
+        view.accept_find_progress(Arc::clone(&progress));
+        self.find_progress = Some(progress);
         if !self.query.is_empty() {
             self.apply_to(view);
         }
@@ -209,6 +222,18 @@ impl WebFindBar {
     /// Stops feeding a view.
     pub fn detach(&mut self) {
         self.binding = None;
+        self.find_progress = None;
+    }
+
+    /// Drains the result an attached view published since the last call.
+    fn sync_find_progress(&mut self) {
+        let Some(sink) = self.find_progress.as_ref() else {
+            return;
+        };
+        let Some((index, count)) = lock(sink).take() else {
+            return;
+        };
+        self.set_match_progress(index, count);
     }
 
     /// Whether the bar is attached to a view's find queue.
@@ -387,6 +412,8 @@ impl WidgetProperties for WebFindBar {
 
 impl Draw for WebFindBar {
     fn draw(&mut self, context: &mut RenderContext) {
+        // An attached view published its result on its own drain; painting is this bar's drain.
+        self.sync_find_progress();
         let rect = self.geometry();
         if rect.width == 0 || rect.height == 0 {
             return;
@@ -444,6 +471,7 @@ impl Draw for WebFindBar {
 impl EventHandler for WebFindBar {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
+        self.sync_find_progress();
         if !self.base.is_enabled() || !self.visible {
             return;
         }
@@ -461,6 +489,7 @@ impl EventHandler for WebFindBar {
             Event::KeyPress { key: 8, .. } => {
                 if self.query.pop().is_some() {
                     let query = self.query.clone();
+                    self.set_match_progress(0, 0);
                     self.base.request_redraw();
                     self.search_requested.emit((query, self.case_sensitive));
                 }
@@ -468,6 +497,7 @@ impl EventHandler for WebFindBar {
             Event::TextInput { text } => {
                 self.query.push_str(text);
                 let query = self.query.clone();
+                self.set_match_progress(0, 0);
                 self.base.request_redraw();
                 self.search_requested.emit((query, self.case_sensitive));
             }
@@ -610,11 +640,17 @@ mod tests {
         bar.set_query("cat");
         assert_eq!(view.poll_find_requests(), Some((1, 3)));
         assert_eq!(view.find_progress(), (1, 3), "the query reached the engine find state");
+        // The view published the result into the bar's cell on that drain; the bar adopts it on
+        // its own next paint/event. Without this it kept painting `0/0`.
+        bar.sync_find_progress();
+        assert_eq!(bar.match_progress(), (1, 3), "the bar adopts the view's result");
 
         // The step signals drive the engine's own next/previous methods.
         bar.next_match();
         assert_eq!(view.poll_find_requests(), Some((2, 3)));
         assert_eq!(view.find_progress(), (2, 3));
+        bar.sync_find_progress();
+        assert_eq!(bar.match_progress(), (2, 3), "stepping updates the counter too");
         bar.previous_match();
         assert_eq!(view.poll_find_requests(), Some((1, 3)));
 
@@ -627,5 +663,6 @@ mod tests {
         assert!(!bar.is_attached());
         bar.set_query("dog");
         assert_eq!(view.poll_find_requests(), None);
+        assert_eq!(bar.match_progress(), (0, 0), "a new query clears the old counts");
     }
 }

@@ -492,6 +492,22 @@ fn find_matches(
     matches
 }
 
+/// The literal match ranges of `needle` in `hay`, using the bar's own matcher.
+///
+/// The bar and the editor's keyboard `find_next` both route here, so Enter, the painted match
+/// counter and a host's own search cannot disagree about what a match is. The bar precomputes
+/// the character index because it searches on every keystroke; this one-shot entry builds it
+/// for a caller that searches once.
+pub(crate) fn literal_matches(
+    hay: &str,
+    needle: &str,
+    case_sensitive: bool,
+    whole_word: bool,
+) -> Vec<(usize, usize)> {
+    let chars: Vec<(usize, char)> = hay.char_indices().collect();
+    find_matches(hay, &chars, needle, case_sensitive, whole_word)
+}
+
 impl Widget for FindBar {
     fn base(&self) -> &BaseWidget {
         &self.base

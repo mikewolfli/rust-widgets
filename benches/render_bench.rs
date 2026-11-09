@@ -293,6 +293,62 @@ fn bench_render_frame_full(c: &mut Criterion) {
     runtime::unregister(root_id);
 }
 
+/// Measures one **pointer-drag frame** of the code editor.
+///
+/// This is the interactive shape the issue's runtime-sampling item names: a press, a
+/// motion and a repaint per drag tick, with wrapping and occurrence highlighting on a
+/// 200-line source. The benchmark reports frame time, so a regression in the drag path
+/// (line cloning, per-row measurement, match rescanning) is observable.
+#[cfg(not(feature = "mini"))]
+#[cfg(not(target_arch = "wasm32"))]
+fn bench_code_editor_pointer_drag(c: &mut Criterion) {
+    use rust_widgets::core::Point;
+    use rust_widgets::event::Event;
+    use rust_widgets::widget::runtime;
+    use rust_widgets::widget::special_widgets::code_editor::{CodeEditor, CodeEditorConfig};
+
+    let surface = Size::new(800, 600);
+    let mut source = String::new();
+    for line in 0..200 {
+        source.push_str(&format!("let value_{line} = compute({line}, \"alpha alpha\");\n"));
+    }
+    let mut editor = CodeEditor::with_config(
+        Rect::new(0, 0, surface.width, surface.height),
+        CodeEditorConfig::new().word_wrap(true),
+    )
+    .expect("valid editor configuration");
+    editor.set_text(source);
+    editor.set_search_query("alpha");
+
+    let Some(id) = runtime::register(Box::new(editor)) else {
+        panic!("the runtime must accept the editor");
+    };
+
+    // Warm the row layouts and the frame cache before sampling.
+    runtime::render_frame(id, surface, Color::WHITE);
+    runtime::dispatch_pointer_event(
+        id,
+        &Event::MousePress { pos: Point::new(120, 120), button: 1, modifiers: 0 },
+        Point::new(120, 120),
+    );
+    runtime::render_frame(id, surface, Color::WHITE);
+
+    c.bench_function("code_editor_pointer_drag 800x600 200_lines", |b| {
+        b.iter(|| {
+            runtime::dispatch_pointer_event(
+                id,
+                &Event::MouseMove { pos: Point::new(480, 360) },
+                Point::new(480, 360),
+            );
+            let frame = runtime::render_frame(id, surface, Color::WHITE);
+            debug_assert!(frame.is_some(), "a drag frame must paint");
+            black_box(frame);
+        })
+    });
+
+    runtime::unregister(id);
+}
+
 // The two runtime benchmarks are compiled only where `widget::runtime` exists: the
 // alloc-frugal profile (`mini`) compiles the widget runtime out, and a benchmark cannot
 // measure a path that is not there. Grouping them separately keeps the pixel-level
@@ -308,7 +364,8 @@ criterion_group!(
     bench_render_frame_tree,
     bench_render_frame_dirty,
     bench_render_frame_full,
-    bench_dispatch_pointer_event
+    bench_dispatch_pointer_event,
+    bench_code_editor_pointer_drag
 );
 
 #[cfg(not(feature = "mini"))]

@@ -265,7 +265,7 @@ impl CodeEditor {
                 return Some(self.clamp_position(TextPosition::new(line, column)));
             }
         }
-        let text = self.line_text(line).unwrap_or_default();
+        let text = self.line_text_borrowed(line);
         let grid = LineGrid::new(&text, self.config.tab_width);
         let column = if self.config.word_wrap {
             // A wrapped row shows one segment; the click is measured from that
@@ -316,16 +316,24 @@ impl CodeEditor {
         let start_row = self.visual_row_of(start)?;
         let end_row = self.visual_row_of(end)?;
         let top = map.row_y(start_row);
+        if end_row > start_row {
+            // A range spanning rows covers whole rows after the first. Starting the
+            // shared rectangle at the first row's caret x left the left half of every
+            // later row unpainted whenever the selection began mid-line. The band is
+            // anchored to the text area's left edge instead.
+            let left = map.bounds().x + self.text_origin_x();
+            let right = map.bounds().x + map.bounds().width as i32
+                - self.scrollbar_width()
+                - self.minimap_width();
+            let rows = end_row.saturating_sub(start_row) + 1;
+            let height = (rows as f32 * map.row_height()).round().max(1.0) as u32;
+            return Some(Rect::new(left, top, (right - left).max(1) as u32, height));
+        }
         // Both edges come from the same measured x the caret uses, so a selection
         // outline starts and ends exactly where the highlight and the cursor do.
         let left = self.caret_x(start);
-        let rows = end_row.saturating_sub(start_row) + 1;
-        let width = if end_row > start_row {
-            map.bounds().width.max(1)
-        } else {
-            (self.caret_x(end) - left).max(1) as u32
-        };
-        let height = (rows as f32 * map.row_height()).round().max(1.0) as u32;
+        let width = (self.caret_x(end) - left).max(1) as u32;
+        let height = map.row_height().round().max(1.0) as u32;
         Some(Rect::new(left, top, width, height))
     }
 
@@ -353,8 +361,11 @@ impl CodeEditor {
         let width = (rect.width as i32 / 2).clamp(180, 340) as u32;
         let height = self.completion_visible_rows().max(1) as u32 * MIN_TOUCH_TARGET as u32;
         let map = self.coordinate_map();
-        let caret_row = self.line_to_visual_row(self.cursor.head.line);
-        // One row below the caret line, so the popup never covers what is being
+        // The popup follows the caret's **wrap segment**, not the line's first row:
+        // on a soft-wrapped line the caret can sit several rows below the line start,
+        // and anchoring to the first row put the popup above the text being completed.
+        let caret_row = self.caret_visual_row();
+        // One row below the caret row, so the popup never covers what is being
         // completed.
         let y = map.row_y(caret_row + 1);
         let max_y = (rect.y + rect.height as i32 - height as i32).max(rect.y);

@@ -1007,8 +1007,13 @@ impl BaseWidget {
         // primitive: it clears the manager and announces the loss through the normal path. During a
         // mutation the FocusLost delivery resolves to the lender and is skipped, which is correct —
         // the control being hidden is the one running this code.
+        //
+        // A container (a form page, a tab page) is the case the equality check missed: the widget
+        // holding focus is a **descendant**, so hiding the container left the keyboard typing into
+        // an invisible field. `focus_is_in_subtree` walks up from the focused control and covers
+        // both the direct and the nested case.
         #[cfg(not(alloc_frugal))]
-        if crate::widget::runtime::focused_widget() == Some(self.id()) {
+        if crate::widget::runtime::focus_is_in_subtree(self.id()) {
             crate::widget::runtime::clear_focus();
         }
         self.request_layout();

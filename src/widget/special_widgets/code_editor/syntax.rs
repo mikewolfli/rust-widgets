@@ -30,6 +30,14 @@ pub enum LineState {
     Clean,
     /// Inside a `/* … */` block comment.
     BlockComment,
+    /// Inside a **nested** block comment (Rust, Swift), carrying the number of
+    /// still-open comment levels at the start of the line. `BlockComment` is the
+    /// one-level case; this variant is what lets `/* /* */ */` close at the right
+    /// `*/` instead of ending at the inner one.
+    NestedBlockComment {
+        /// Open comment levels at the start of the line (never less than 2).
+        depth: u32,
+    },
     /// Inside a double-quoted multi-line string (`"""` for Python, `"` for
     /// a line-continued string in the C family).
     MultiLineString,
@@ -1004,25 +1012,31 @@ impl SyntaxHighlighter for BuiltinHighlighter {
         // must do is finish whatever the line above left open.
         if !state.is_clean() {
             match state {
-                LineState::BlockComment => {
-                    let end = match line.find("*/") {
-                        Some(offset) => offset + 2,
-                        None => {
-                            // The whole line is comment body; state is unchanged
-                            // and the next line continues it.
-                            if len > 0 {
-                                spans.push(TokenSpan::new(0, len, TokenKind::BlockComment));
-                            }
-                            return (spans, state);
-                        }
+                LineState::BlockComment | LineState::NestedBlockComment { .. } => {
+                    let depth = match state {
+                        LineState::NestedBlockComment { depth } => depth.max(2),
+                        _ => 1,
                     };
-                    spans.push(TokenSpan::new(0, end, TokenKind::BlockComment));
-                    index = end;
+                    let (scan_end, remaining) = scan_block_comment(
+                        line,
+                        depth,
+                        matches!(self.language, LanguageId::Rust | LanguageId::Swift),
+                    );
+                    if scan_end > 0 {
+                        spans.push(TokenSpan::new(0, scan_end, TokenKind::BlockComment));
+                    }
+                    index = scan_end;
+                    if remaining > 0 {
+                        return (spans, block_comment_state(remaining));
+                    }
                     state = LineState::Clean;
                 }
                 LineState::MultiLineString | LineState::MultiLineCharString => {
                     let quote = if state == LineState::MultiLineString { "\"\"\"" } else { "'''" };
-                    let end = match line.find(quote) {
+                    // Python processes backslash escapes inside a triple-quoted string,
+                    // so `\"\"\"` does not close it. Scanning verbatim ended the string
+                    // on an escaped delimiter and coloured the rest of the line as code.
+                    let end = match find_unescaped(line, 0, quote) {
                         Some(offset) => offset + quote.len(),
                         None => {
                             if len > 0 {
@@ -1154,20 +1168,21 @@ impl SyntaxHighlighter for BuiltinHighlighter {
                 }
             }
             if self.language.supports_block_comments() && rest.starts_with("/*") {
-                match rest.find("*/") {
-                    Some(offset) => {
-                        let end = (index + offset + 2).min(len);
-                        spans.push(TokenSpan::new(index, end, TokenKind::BlockComment));
-                        index = end;
-                        continue;
-                    }
-                    None => {
-                        // Unterminated: the block comment continues on the next
-                        // line, and saying so is the whole point of `LineState`.
-                        spans.push(TokenSpan::new(index, len, TokenKind::BlockComment));
-                        return (spans, LineState::BlockComment);
-                    }
+                let nestable = matches!(self.language, LanguageId::Rust | LanguageId::Swift);
+                // The opener itself is already consumed: scanning `rest` from byte 0 would
+                // count it as a second, nested opener and never reach depth 0.
+                let (scanned, remaining) = scan_block_comment(&rest[2..], 1, nestable);
+                let end = (index + 2 + scanned).min(len);
+                spans.push(TokenSpan::new(index, end, TokenKind::BlockComment));
+                if remaining > 0 {
+                    // Unterminated: the block comment continues on the next line, and
+                    // saying so is the whole point of `LineState`. A Rust/Swift nested
+                    // comment carries how many levels are still open so a later `*/`
+                    // cannot close it early.
+                    return (spans, block_comment_state(remaining));
                 }
+                index = end;
+                continue;
             }
 
             // Zig's multiline string literal is a run of lines whose first
@@ -1209,33 +1224,13 @@ impl SyntaxHighlighter for BuiltinHighlighter {
                 };
                 let search_from = quote.len();
                 // Backslash escapes protect the delimiter in normal strings and
-                // chars. Go raw strings (backticks) and Python triple quotes are
-                // scanned verbatim; so is a shell single-quoted string, where a
-                // backslash is literal.
-                let escape_aware = quote.len() == 1
-                    && ch != '`'
-                    && !(self.language == LanguageId::Shell && ch == '\'');
+                // chars, and Python applies them inside triple quotes too. Go raw
+                // strings (backticks) and shell single-quoted strings scan verbatim.
+                let escape_aware = ch != '`' && !(self.language == LanguageId::Shell && ch == '\'');
                 let found = if escape_aware {
-                    let mut cursor = search_from;
-                    let mut found = None;
-                    while cursor < rest.len() {
-                        if rest.as_bytes()[cursor] == b'\\' {
-                            // Skip the backslash **and the escaped character**, whose byte length
-                            // is not 1. Advancing by a literal two bytes assumed an ASCII escape,
-                            // so highlighting a line such as `"a\é"` left `cursor` inside the `é`
-                            // and the `rest[cursor..]` below panicked the whole frame.
-                            cursor += 1;
-                            cursor +=
-                                rest[cursor..].chars().next().map(|c| c.len_utf8()).unwrap_or(0);
-                            continue;
-                        }
-                        if rest[cursor..].starts_with(quote) {
-                            found = Some((index + cursor + quote.len()).min(len));
-                            break;
-                        }
-                        cursor += rest[cursor..].chars().next().map(|c| c.len_utf8()).unwrap_or(1);
-                    }
-                    found
+                    find_unescaped(rest, search_from, quote)
+                        .map(|offset| index + offset + quote.len())
+                        .map(|end| end.min(len))
                 } else {
                     rest[search_from.min(rest.len())..]
                         .find(quote)
@@ -1344,6 +1339,68 @@ impl SyntaxHighlighter for BuiltinHighlighter {
     fn language_name(&self) -> &str {
         self.language.name()
     }
+}
+
+/// The line state for a block comment with `depth` open levels remaining.
+fn block_comment_state(depth: u32) -> LineState {
+    if depth > 1 {
+        LineState::NestedBlockComment { depth }
+    } else {
+        LineState::BlockComment
+    }
+}
+
+/// Scans a block comment body and returns `(bytes consumed, open levels left)`.
+///
+/// `depth` is the number of `/*` already open when the scan starts. Nested
+/// comments are only recognised for languages that actually nest them (Rust and
+/// Swift): for a C-family language the first `*/` still closes the comment, which
+/// is the same rule the compiler applies.
+fn scan_block_comment(text: &str, depth: u32, nestable: bool) -> (usize, u32) {
+    let mut depth = depth.max(1);
+    let mut cursor = 0usize;
+    while cursor < text.len() {
+        let rest = &text[cursor..];
+        if nestable && rest.starts_with("/*") {
+            depth += 1;
+            cursor += 2;
+            continue;
+        }
+        if rest.starts_with("*/") {
+            depth -= 1;
+            cursor += 2;
+            if depth == 0 {
+                return (cursor, 0);
+            }
+            continue;
+        }
+        cursor += rest.chars().next().map(|ch| ch.len_utf8()).unwrap_or(1);
+    }
+    (text.len(), depth)
+}
+
+/// Byte offset of the first unescaped occurrence of `quote` at or after `from`.
+///
+/// A backslash escapes the **next character**, which may be multi-byte, so the
+/// cursor advances by that character's length rather than by one byte. This is
+/// the one scanner both the continuation arm and the opening arm use, so a
+/// Python triple-quoted string and a plain string cannot disagree about where
+/// their delimiter is.
+fn find_unescaped(text: &str, from: usize, quote: &str) -> Option<usize> {
+    let bytes = text.as_bytes();
+    let mut cursor = from.min(text.len());
+    while cursor < bytes.len() {
+        if bytes[cursor] == b'\\' {
+            cursor += 1;
+            cursor += text[cursor..].chars().next().map(|ch| ch.len_utf8()).unwrap_or(0);
+            continue;
+        }
+        if text[cursor..].starts_with(quote) {
+            return Some(cursor);
+        }
+        cursor += text[cursor..].chars().next().map(|ch| ch.len_utf8()).unwrap_or(1);
+    }
+    None
 }
 
 /// Returns the opening length and `#` count of a Rust raw string at `text`'s start.

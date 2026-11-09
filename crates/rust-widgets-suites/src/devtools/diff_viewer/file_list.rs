@@ -101,13 +101,17 @@ impl FileDiffEntry {
     }
 
     /// Parses [`Self::to_token`]; an unknown status is a `TypeMismatch` for the caller.
+    ///
+    /// The fixed fields are read from the right: a path may legally contain `|` (it is a legal
+    /// Unix file-name character), so anchoring the path at the front parsed `a|b.rs` as a status
+    /// and made the property write fail for a path the control itself published.
     pub fn from_token(token: &str) -> Option<Self> {
-        let mut parts = token.splitn(4, '|');
-        let path = parts.next()?.to_string();
-        let status = FileDiffStatus::from_token(parts.next()?)?;
-        let additions = parts.next().unwrap_or("0").trim().parse().unwrap_or(0);
+        let mut parts = token.rsplitn(3, '|');
         let deletions = parts.next().unwrap_or("0").trim().parse().unwrap_or(0);
-        Some(Self { path, status, additions, deletions })
+        let additions = parts.next().unwrap_or("0").trim().parse().unwrap_or(0);
+        let (path, status) = parts.next()?.rsplit_once('|')?;
+        let status = FileDiffStatus::from_token(status)?;
+        Some(Self { path: path.to_string(), status, additions, deletions })
     }
 }
 
@@ -128,7 +132,7 @@ struct FileCountsCache {
     width: i32,
 }
 
-/// A file selector that drives a multi-file [`DiffViewer`].
+/// A file selector that drives a multi-file [`DiffViewer`](crate::devtools::diff_viewer::DiffViewer).
 ///
 /// `DiffViewer::set_texts` compares exactly one pair of snapshots, so a review of several files
 /// has always needed a host-owned list beside it. This control is that list: it holds the file set
@@ -143,6 +147,12 @@ pub struct DiffFileList {
     files: Vec<FileDiffEntry>,
     /// The selected rows, as indices into `files`.
     selected: Vec<usize>,
+    /// The row an `Extended` Shift-extend grows from.
+    ///
+    /// Only meaningful in `SelectionMode::Extended`; every other mode leaves it `None`.
+    selection_anchor: Option<usize>,
+    /// Whether a pointer drag that began on a row is still growing an `Extended` selection.
+    drag_selecting: bool,
     /// How many rows a press may add to the selection.
     selection_mode: rust_widgets::widget::view_widgets::list_view::SelectionMode,
     /// The first row the viewport paints.
@@ -164,6 +174,8 @@ impl DiffFileList {
             base: BaseWidget::new(WidgetKind::DiffFileList, geometry, "DiffFileList"),
             files: Vec::new(),
             selected: Vec::new(),
+            selection_anchor: None,
+            drag_selecting: false,
             selection_mode: rust_widgets::widget::view_widgets::list_view::SelectionMode::Single,
             first_visible: 0,
             counts_cache: Vec::new(),
@@ -198,6 +210,15 @@ impl DiffFileList {
             .into_iter()
             .filter_map(|path| self.files.iter().position(|file| file.path == path))
             .collect();
+        // A refreshed list has different indices, so an anchor kept across it would extend from
+        // an unrelated file. Re-anchor on the surviving selection instead.
+        self.selection_anchor = if self.selection_mode
+            == rust_widgets::widget::view_widgets::list_view::SelectionMode::Extended
+        {
+            self.selected.first().copied()
+        } else {
+            None
+        };
         // Keep the counts cache index-aligned with the new list; entries are keyed by the counts
         // themselves, so an entry that survives a reorder is reused only when it still applies.
         self.counts_cache.truncate(self.files.len());
@@ -224,6 +245,14 @@ impl DiffFileList {
         if !matches!(mode, rust_widgets::widget::view_widgets::list_view::SelectionMode::Multi) {
             self.selected.truncate(1);
         }
+        // Leaving `Extended` must not leave an anchor behind for a later switch back to extend
+        // from; entering it starts from whatever row survived the mode change.
+        self.selection_anchor =
+            if mode == rust_widgets::widget::view_widgets::list_view::SelectionMode::Extended {
+                self.selected.first().copied()
+            } else {
+                None
+            };
         self.base.request_redraw();
     }
 
@@ -249,6 +278,21 @@ impl DiffFileList {
         let Some(index) = self.files.iter().position(|file| file.path == path) else {
             return false;
         };
+        // `select_index` toggles in `Multi` mode (a click on a selected row removes it), but this
+        // method's contract is to *select*: calling it for an already-selected path must not
+        // deselect the file the caller asked for, nor report it as newly selected.
+        if self.selection_mode
+            == rust_widgets::widget::view_widgets::list_view::SelectionMode::Multi
+        {
+            if !self.selected.contains(&index) {
+                self.selected.push(index);
+                self.selected.sort_unstable();
+                self.reveal(index);
+                self.file_selected.emit(path.to_string());
+                self.base.request_redraw();
+            }
+            return true;
+        }
         self.select_index(index);
         true
     }
@@ -257,18 +301,37 @@ impl DiffFileList {
     pub fn select_index(&mut self, index: usize) {
         let Some(file) = self.files.get(index) else { return };
         let path = file.path.clone();
+        // Whether the path is now selected, so a Multi-mode click that removes a row does not
+        // report it as the newly selected file.
+        let mut announce = true;
         let changed = match self.selection_mode {
-            rust_widgets::widget::view_widgets::list_view::SelectionMode::None => false,
+            rust_widgets::widget::view_widgets::list_view::SelectionMode::None => {
+                self.selection_anchor = None;
+                false
+            }
             rust_widgets::widget::view_widgets::list_view::SelectionMode::Multi => {
+                self.selection_anchor = None;
                 if let Some(position) = self.selected.iter().position(|row| *row == index) {
                     self.selected.remove(position);
+                    announce = false;
                 } else {
                     self.selected.push(index);
                     self.selected.sort_unstable();
                 }
                 true
             }
-            _ => {
+            rust_widgets::widget::view_widgets::list_view::SelectionMode::Extended => {
+                // A plain click starts a new extension from the clicked row.
+                self.selection_anchor = Some(index);
+                if self.selected == [index] {
+                    false
+                } else {
+                    self.selected = vec![index];
+                    true
+                }
+            }
+            rust_widgets::widget::view_widgets::list_view::SelectionMode::Single => {
+                self.selection_anchor = None;
                 if self.selected == [index] {
                     false
                 } else {
@@ -279,9 +342,95 @@ impl DiffFileList {
         };
         if changed {
             self.reveal(index);
-            self.file_selected.emit(path);
+            if announce {
+                self.file_selected.emit(path);
+            }
             self.base.request_redraw();
         }
+    }
+
+    /// Extends an `Extended` selection from its anchor to `index`, reporting the head.
+    ///
+    /// The selected rows are the inclusive display-order range, so a backward Shift-click and a
+    /// forward one describe the same set. Without this the published `extended` mode behaved
+    /// exactly like `single`.
+    fn extend_selection_to(&mut self, index: usize) {
+        let Some(file) = self.files.get(index) else {
+            return;
+        };
+        let path = file.path.clone();
+        let Some(anchor) = self.selection_anchor.filter(|anchor| *anchor < self.files.len()) else {
+            self.select_index(index);
+            return;
+        };
+        let (start, end) = if anchor <= index { (anchor, index) } else { (index, anchor) };
+        let next: Vec<usize> = (start..=end).collect();
+        if self.selected == next {
+            return;
+        }
+        self.selected = next;
+        self.reveal(index);
+        self.file_selected.emit(path);
+        self.base.request_redraw();
+    }
+
+    /// The end of an `Extended` selection that a Shift-arrow moves.
+    ///
+    /// When the range grew downward the head is its last row; when it grew upward the head is its
+    /// first; a one-row selection uses the anchor itself.
+    fn selection_head(&self) -> Option<usize> {
+        let anchor = self.selection_anchor?;
+        let start = self.selected.first().copied()?;
+        let end = self.selected.last().copied()?;
+        Some(if end > anchor {
+            end
+        } else if start < anchor {
+            start
+        } else {
+            anchor
+        })
+    }
+
+    /// Whether a Shift modifier bit is held.
+    fn shift_held(modifiers: u32) -> bool {
+        use rust_widgets::shortcut::Modifiers;
+        Modifiers::from_event_bits(modifiers).contains(Modifiers::SHIFT)
+    }
+
+    /// The row a drag points at, clamped to the painted rows.
+    ///
+    /// A drag keeps extending even when the pointer leaves the control horizontally or moves past
+    /// the first/last painted row: the nearest painted row is the one the reader means. Unlike
+    /// `row_at`, the horizontal position is irrelevant here.
+    fn drag_row_at(&self, pos: Point) -> Option<usize> {
+        if self.files.is_empty() {
+            return None;
+        }
+        let rect = self.geometry();
+        let offset = pos.y - rect.y - FILE_TOP;
+        let row = if offset <= 0 { 0 } else { (offset / Self::row_height()) as usize };
+        let last_painted = self.visible_rows().saturating_sub(1);
+        let index = self.first_visible + row.min(last_painted);
+        (index < self.files.len()).then_some(index)
+    }
+
+    /// Scrolls the list when a drag reaches past the top or bottom edge.
+    ///
+    /// Returns whether the viewport moved. [`Self::drag_row_at`] clamps to the painted rows, so
+    /// without this the range could only grow as far as the rows already on screen; the arrow-key
+    /// path already reveals as it extends, the pointer path had nothing.
+    fn autoscroll_drag(&mut self, pos: Point) -> bool {
+        let rect = self.geometry();
+        let top = rect.y + FILE_TOP;
+        let bottom = top + self.visible_rows() as i32 * Self::row_height();
+        let delta = if pos.y < top {
+            -1
+        } else if pos.y >= bottom {
+            1
+        } else {
+            0
+        };
+        delta != 0 && self.scroll_by(delta)
     }
 
     /// Activates the row at `index`, reporting it.
@@ -319,23 +468,37 @@ impl DiffFileList {
         self.clamp_scroll();
     }
 
-    /// The row index under `pos`, when the point is on a file row.
+    /// The row index under `pos`, when the point is on a painted file row.
     fn row_at(&self, pos: Point) -> Option<usize> {
         let rect = self.geometry();
         if !rect.contains_point(pos) {
             return None;
         }
-        let row = (pos.y - rect.y - FILE_TOP) / Self::row_height();
-        if row < 0 {
+        let offset = pos.y - rect.y - FILE_TOP;
+        // The gap above the first row is part of the control but not of any row; truncating a
+        // small negative offset towards zero would otherwise make it row 0.
+        if offset < 0 {
             return None;
         }
-        let index = self.first_visible + row as usize;
+        let row = (offset / Self::row_height()) as usize;
+        // Only the rows the viewport paints are hit targets: a press below the last painted row
+        // must not select a file the reader cannot see.
+        if row >= self.visible_rows() {
+            return None;
+        }
+        let index = self.first_visible + row;
         (index < self.files.len()).then_some(index)
     }
 
     /// The painted box of row `index`, for hit tests and tests of the layout.
     pub fn row_rect(&self, index: usize) -> Option<Rect> {
-        if index < self.first_visible || index >= self.files.len() {
+        // Only the rows the viewport paints have a box: `draw` stops at `visible_rows()` and
+        // `row_at` rejects anything past it, so a row below the window has no painted box to
+        // report.
+        if index < self.first_visible
+            || index >= self.files.len()
+            || index >= self.first_visible + self.visible_rows()
+        {
             return None;
         }
         let row = (index - self.first_visible) as i32;
@@ -484,39 +647,119 @@ impl EventHandler for DiffFileList {
             return;
         }
         match event {
-            Event::MousePress { pos, button: 1, .. } => {
+            Event::MousePress { pos, button: 1, modifiers, .. } => {
                 if let Some(index) = self.row_at(*pos) {
-                    self.select_index(index);
+                    let extended = self.selection_mode
+                        == rust_widgets::widget::view_widgets::list_view::SelectionMode::Extended;
+                    if extended && Self::shift_held(*modifiers) {
+                        self.extend_selection_to(index);
+                    } else {
+                        self.select_index(index);
+                    }
+                    // A press on a row starts a drag that grows the range as the pointer moves.
+                    self.drag_selecting = extended;
                 }
             }
+            Event::MouseMove { pos } => {
+                if self.drag_selecting
+                    && self.selection_mode
+                        == rust_widgets::widget::view_widgets::list_view::SelectionMode::Extended
+                {
+                    // Edge auto-scroll runs before the row lookup, so the range grows against the
+                    // viewport the scroll just produced.
+                    self.autoscroll_drag(*pos);
+                    if let Some(index) = self.drag_row_at(*pos) {
+                        self.extend_selection_to(index);
+                    }
+                }
+            }
+            Event::MouseRelease { .. } => self.drag_selecting = false,
+            Event::MouseLeave { .. } => {
+                // A release outside the control is not delivered to it, so leaving is the last
+                // signal that the drag ended.
+                self.drag_selecting = false;
+            }
+            Event::FocusLost => self.drag_selecting = false,
             Event::MouseDoubleClick { pos, button: 1, .. } => {
                 if let Some(index) = self.row_at(*pos) {
                     self.activate_index(index);
                 }
             }
-            Event::KeyPress { key, .. } => match *key {
-                38 => {
-                    let next = self.selected.first().map_or(0, |index| index.saturating_sub(1));
+            Event::KeyPress { key, modifiers, .. } => {
+                let extend = Self::shift_held(*modifiers)
+                    && self.selection_mode
+                        == rust_widgets::widget::view_widgets::list_view::SelectionMode::Extended;
+                // A Shift-arrow with no anchor starts the extension at the first row instead of
+                // jumping two rows (the arrow step would otherwise apply to a row just selected).
+                if extend && matches!(*key, 38 | 40) && self.selection_head().is_none() {
                     if !self.files.is_empty() {
-                        self.select_index(next);
+                        self.select_index(0);
                     }
+                    return;
                 }
-                40 => {
-                    if !self.files.is_empty() {
-                        let next = self
-                            .selected
-                            .first()
-                            .map_or(0, |index| (index + 1).min(self.files.len() - 1));
-                        self.select_index(next);
+                match *key {
+                    38 => {
+                        if extend {
+                            if let Some(head) = self.selection_head() {
+                                if head > 0 {
+                                    self.extend_selection_to(head - 1);
+                                }
+                            }
+                        } else {
+                            let next =
+                                self.selected.first().map_or(0, |index| index.saturating_sub(1));
+                            if !self.files.is_empty() {
+                                self.select_index(next);
+                            }
+                        }
                     }
-                }
-                13 => {
-                    if let Some(index) = self.selected.first().copied() {
-                        self.activate_index(index);
+                    40 => {
+                        if extend {
+                            if let Some(head) = self.selection_head() {
+                                let last = self.files.len().saturating_sub(1);
+                                if head < last {
+                                    self.extend_selection_to(head + 1);
+                                }
+                            }
+                        } else if !self.files.is_empty() {
+                            let next = self
+                                .selected
+                                .first()
+                                .map_or(0, |index| (index + 1).min(self.files.len() - 1));
+                            self.select_index(next);
+                        }
                     }
+                    36 => {
+                        if extend && !self.files.is_empty() {
+                            if self.selection_head().is_none() {
+                                self.select_index(0);
+                            }
+                            self.extend_selection_to(0);
+                        } else if !self.files.is_empty() {
+                            // A plain Home moves the selection to the first row. It used to do
+                            // nothing at all unless Shift was held, which left the documented
+                            // navigation keys half-implemented.
+                            self.select_index(0);
+                        }
+                    }
+                    35 => {
+                        if extend && !self.files.is_empty() {
+                            if self.selection_head().is_none() {
+                                self.select_index(0);
+                            }
+                            self.extend_selection_to(self.files.len() - 1);
+                        } else if !self.files.is_empty() {
+                            self.select_index(self.files.len() - 1);
+                        }
+                    }
+                    13 => {
+                        if let Some(index) = self.selected.first().copied() {
+                            self.activate_index(index);
+                        }
+                    }
+                    _ => { /* Other keys are not relevant */ }
                 }
-                _ => { /* Other keys are not relevant */ }
-            },
+            }
             Event::Wheel { delta, modifiers, .. } => {
                 let scroll = WheelScroll::from_event(*delta, *modifiers, 3);
                 self.scroll_by(-scroll.lines_y);

@@ -4,8 +4,8 @@
 //! The diff viewer family: the viewer itself, its compared-row model and the file selector
 //! beside it.
 //!
-//! The control's row model lives in [`model`], the viewer in [`viewer`], and the file selector
-//! beside it in [`file_list`]. This file only declares and re-exports them, so the historical
+//! The control's row model lives in `model`, the viewer in `viewer`, and the file selector
+//! beside it in `file_list`. This file only declares and re-exports them, so the historical
 //! `diff_viewer::DiffViewer` / `diff_viewer::DiffFileList` paths keep resolving.
 
 mod file_list;

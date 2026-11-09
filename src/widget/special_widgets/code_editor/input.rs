@@ -601,15 +601,15 @@ impl CodeEditor {
         }
     }
 
-    pub(crate) fn pointer_release(&mut self) {
-        if self.dragging_text {
-            if let Some(pos) = self.last_pointer_position {
-                if let Some(target) = self.position_at_point(pos) {
-                    self.move_selection_to(target);
-                }
-            }
-        }
+    /// Drops every pointer-driven latch without committing anything.
+    ///
+    /// A window can lose focus mid-gesture (alt-tab, a modal dialog, a platform
+    /// grab), and the closing release event then never arrives. The stale latch made
+    /// the next pointer move extend a selection or drag text the reader had already
+    /// let go of. `FocusLost` routes here.
+    pub(crate) fn cancel_pointer_gestures(&mut self) {
         self.column_selecting = false;
+        self.column_select_anchor = None;
         self.mouse_selecting = false;
         self.minimap_dragging = false;
         self.scrollbar_dragging = false;
@@ -619,6 +619,17 @@ impl CodeEditor {
         self.drag_origin = None;
         self.last_pointer_position = None;
         self.base.set_mouse_pressed(false);
+    }
+
+    pub(crate) fn pointer_release(&mut self) {
+        if self.dragging_text {
+            if let Some(pos) = self.last_pointer_position {
+                if let Some(target) = self.position_at_point(pos) {
+                    self.move_selection_to(target);
+                }
+            }
+        }
+        self.cancel_pointer_gestures();
     }
 
     /// Tracks which line's diagnostic message is under the pointer.
@@ -684,7 +695,7 @@ impl CodeEditor {
             if self.is_hidden(line) {
                 continue;
             }
-            let text = self.line_text(line).unwrap_or_default();
+            let text = self.line_text_borrowed(line);
             let grid = LineGrid::new(&text, self.config.tab_width);
             let start = grid.char_at_or_after_column(from_column);
             let end = grid.char_at_or_after_column(to_column);
@@ -714,7 +725,7 @@ impl CodeEditor {
 
     /// The grid column of a document position.
     fn visual_column_at(&self, position: TextPosition) -> usize {
-        let text = self.line_text(position.line).unwrap_or_default();
+        let text = self.line_text_borrowed(position.line);
         LineGrid::new(&text, self.config.tab_width).column_of_char(position.column)
     }
 

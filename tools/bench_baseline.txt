@@ -21,6 +21,21 @@
 # render_frame_1280x800_full                     839.45 us   cargo bench --bench render_bench -- render_frame_1280x800_full --quick
 # json_loader_load_1000_nodes                     1.1712 ms  cargo bench --bench json_bench -- json_loader_load_1000_nodes --quick
 # window_layout_apply_60_children_resize_sweep    5.0300 ms  cargo bench --bench capability_bench -- window_layout_apply_60_children_resize_sweep --quick
+# code_editor_pointer_drag 800x600 200_lines      824.39 us   cargo bench --bench render_bench -- code_editor_pointer_drag --quick
+#
+# `code_editor_pointer_drag` is one press-held motion plus the full editor repaint per sample
+# (200 wrapped lines, occurrence highlighting on). The 2026-11-09 run measured
+# [820.81 us 824.39 us 825.29 us] median 824.39 us.
+#
+# # Runtime allocation and upload samples (same host, same day)
+#
+# code_editor drag frame allocations                 24.60 / frame  cargo test --test code_editor_drag_allocations -- --nocapture
+# GPU text coverage uploads, repeated caption        1 (not per frame)  cargo test --lib --no-default-features -F desktop,gpu-wgpu a_repeated_caption_uploads_its_coverage_once
+#
+# The allocation sample counts 20 steady-state `CodeEditor::draw` frames after six warm frames;
+# the backend's begin/end frame are outside the counting window. The GPU sample asserts the
+# RD3-04 property directly through `TextCoverageCache`'s upload counter (two identical captions,
+# one upload).
 #
 # `json_loader_load_1000_nodes` is one full `load_layout_from_str` of the generated 1000-node
 # document (parse + instantiate + bind), not a parse-only measurement.

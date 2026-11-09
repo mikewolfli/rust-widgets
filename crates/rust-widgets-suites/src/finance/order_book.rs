@@ -104,12 +104,16 @@ pub struct OrderBookWidget {
     /// rest was simply not drawn. The offset is shared by both ladders so they stay aligned
     /// across the spread rule (FIN-06).
     scroll_offset: usize,
-    /// Bumped whenever the book or the visible depth changes.
+    /// Bumped whenever the book, the visible depth or the resolved precision changes.
     data_generation: u64,
-    /// `(generation, decimals, max level quantity)` inferred for the current book.
+    /// `(generation, decimals, max level quantity)` for the current book.
     ///
-    /// Both are pure functions of the visible levels and both are read on every frame. The
-    /// generation is what makes the cache a cache and not a stale guess (J-P15).
+    /// `decimals` is inferred from the visible window (a scrolled-to ticker's levels may
+    /// print at their own precision), while `max` is the largest level quantity in the
+    /// **whole** book: the size bars keep one scale as the ladder scrolls, so a bar's length
+    /// is comparable across windows instead of rescaling each time. Both are read on every
+    /// frame, and the generation is what makes the cache a cache and not a stale guess
+    /// (J-P15).
     facts_cache: core::cell::Cell<Option<(u64, usize, f64)>>,
     /// Emitted with the side and the level index when a row is clicked.
     pub level_clicked: rust_widgets::signal::Signal1<(BookSide, usize)>,
@@ -187,15 +191,7 @@ impl OrderBookWidget {
         self.data_generation = self.data_generation.wrapping_add(1);
         self.clamp_scroll();
         self.rebuild_cumulative();
-        if let Some((side, index)) = self.hovered {
-            let count = match side {
-                BookSide::Bid => self.book.bids().len(),
-                BookSide::Ask => self.book.asks().len(),
-            };
-            if index >= count {
-                self.hovered = None;
-            }
-        }
+        self.revalidate_hover();
         self.base.request_redraw();
     }
 
@@ -235,20 +231,16 @@ impl OrderBookWidget {
             BookSide::Bid => &mut self.flash_bid,
             BookSide::Ask => &mut self.flash_ask,
         };
-        flashes.clear();
-        flashes.resize(level_count, 0);
+        // A same-length update keeps the other rows' fading flashes; only an insert/remove shifts
+        // the indices enough to invalidate them.
+        if flashes.len() != level_count {
+            flashes.clear();
+            flashes.resize(level_count, 0);
+        }
         if let Some(index) = changed_index {
             flashes[index] = 255;
         }
-        if let Some((hovered_side, index)) = self.hovered {
-            let count = match hovered_side {
-                BookSide::Bid => self.book.bids().len(),
-                BookSide::Ask => self.book.asks().len(),
-            };
-            if index >= count {
-                self.hovered = None;
-            }
-        }
+        self.revalidate_hover();
         self.base.request_redraw();
         true
     }
@@ -309,15 +301,7 @@ impl OrderBookWidget {
         self.data_generation = self.data_generation.wrapping_add(1);
         self.clamp_scroll();
         self.rebuild_cumulative();
-        if let Some((side, index)) = self.hovered {
-            let count = match side {
-                BookSide::Bid => self.book.bids().len(),
-                BookSide::Ask => self.book.asks().len(),
-            };
-            if index >= count {
-                self.hovered = None;
-            }
-        }
+        self.revalidate_hover();
         self.base.request_redraw();
     }
 
@@ -344,8 +328,20 @@ impl OrderBookWidget {
         self.rebuild_cumulative();
         // A row that scrolled out of the window keeps its absolute index, but the hovered
         // marker should follow what is on screen; drop it rather than highlight a hidden row.
-        self.hovered = None;
+        self.clear_hover();
         self.base.request_redraw();
+    }
+
+    /// Drops the hovered row and reports the exit.
+    ///
+    /// Every other path that removes a hover emits `level_unhovered`; the scroll and revalidation
+    /// paths cleared the field directly, so a host that closes a tooltip on the exit kept it open
+    /// against a row that is no longer drawn. The quote board's `clear_hover` is the same rule.
+    fn clear_hover(&mut self) {
+        if let Some(previous) = self.hovered.take() {
+            self.level_unhovered.emit(previous);
+            self.base.request_redraw();
+        }
     }
 
     /// Scrolls by `delta` levels.
@@ -357,6 +353,23 @@ impl OrderBookWidget {
     fn clamp_scroll(&mut self) {
         let deepest = self.book.bids().len().max(self.book.asks().len());
         self.scroll_offset = self.scroll_offset.min(deepest.saturating_sub(self.depth));
+    }
+
+    /// Drops a hovered row that the visible window no longer holds.
+    ///
+    /// Hover, click and flash indices are absolute into the book side, so a hover can stay
+    /// in range for the book while a shrunken depth or a moved window has taken its row off
+    /// screen. Leaving it set would let `hovered()` and `hovered_summary()` name a row that
+    /// is not drawn, and `hover_anchor()` return `None` for a hover that claims to exist.
+    fn revalidate_hover(&mut self) {
+        let Some((side, index)) = self.hovered else { return };
+        let (start, count) = {
+            let (start, levels) = self.level_window(side);
+            (start, levels.len())
+        };
+        if index < start || index >= start + count {
+            self.clear_hover();
+        }
     }
 
     /// The explicit price precision, if one was set.
@@ -373,6 +386,10 @@ impl OrderBookWidget {
             return;
         }
         self.decimals = decimals;
+        // The resolved precision is part of the cached `(generation, decimals, max)` tuple;
+        // the cache is keyed by the generation, so a write that changes the precision has
+        // to advance it or the ladder keeps drawing the value it inferred before the write.
+        self.data_generation = self.data_generation.wrapping_add(1);
         self.base.request_redraw();
     }
 
@@ -551,12 +568,18 @@ impl OrderBookWidget {
         self.visible_facts().0
     }
 
-    /// The price precision and the largest visible quantity for the current book.
+    /// The price precision and the size-bar scale for the current book.
     ///
-    /// Both are pure functions of data that only changes when the book (or the visible
-    /// depth) does, and both are read once per frame. The previous code inferred the
-    /// decimals from every level and scanned every level for the maximum on each repaint,
-    /// so a still ladder paid two full scans per frame (J-P15).
+    /// The precision is inferred from the **visible window**, so scrolling to a level with
+    /// its own number of places follows the data. The scale is deliberately the **whole
+    /// book's** largest level quantity rather than the visible slice's: a window that
+    /// rescaled its bars on every scroll would make two windows incomparable, and the
+    /// ladder's size bars are read as a stable proportion of the book. The trade is that a
+    /// level outside the window still sets the scale for the visible bars, which is what
+    /// keeps a bar's length meaning the same thing before and after a scroll. Both are read
+    /// once per frame; the previous code inferred the decimals from every level and scanned
+    /// every level for the maximum on each repaint, so a still ladder paid two full scans
+    /// per frame (J-P15).
     fn visible_facts(&self) -> (usize, f64) {
         if let Some((generation, decimals, max)) = self.facts_cache.get() {
             if generation == self.data_generation {
@@ -571,22 +594,36 @@ impl OrderBookWidget {
 
     /// Infers the precision from the visible levels.
     fn infer_decimals(&self) -> usize {
-        // Infer from the levels, the same way the K-line pane infers from its bars: a
-        // feed's precision is a property of the data, not a setting.
+        // The precision is the widest the visible book needs, capped at what the column can show.
+        // Falling back to 2 turned an 8-dp book (BTC/alt pairs) into two decimals: every level
+        // printed the same and each was several percent away from its price.
+        let mut widest = 0usize;
+        let mut seen = false;
         for side in [BookSide::Bid, BookSide::Ask] {
             for level in self.level_slice(side) {
                 if !level.price.is_finite() {
                     continue;
                 }
+                seen = true;
+                let mut needed = 6;
                 for decimals in 0..=6usize {
                     let scaled = level.price * 10f64.powi(decimals as i32);
                     if (scaled - scaled.round()).abs() < 1e-6 {
-                        return decimals;
+                        needed = decimals;
+                        break;
                     }
+                }
+                widest = widest.max(needed);
+                if widest == 6 {
+                    return 6;
                 }
             }
         }
-        2
+        if seen {
+            widest
+        } else {
+            2
+        }
     }
 
     /// The height of one row.
@@ -682,8 +719,9 @@ fn write_price(value: f64, decimals: usize, out: &mut alloc::string::String) {
     }
     let digits_len = price_digit_count(digits);
     if digits_len <= decimals {
-        // Matches the padded form: "." followed by enough zeros to reach `decimals` places.
-        out.push('.');
+        // A sub-unit price keeps its leading zero: `".8456"` does not line up with `1.0000` in a
+        // column whose whole purpose is aligning the decimal points.
+        out.push_str("0.");
         for _ in 0..(decimals - digits_len) {
             out.push('0');
         }
@@ -733,7 +771,7 @@ impl Widget for OrderBookWidget {
         if !self.is_flashing() {
             return false;
         }
-        let decay = (delta_ms / 4).min(255) as u8;
+        let decay = (delta_ms / 4).clamp(1, 255) as u8;
         for alpha in &mut self.flash_bid {
             *alpha = alpha.saturating_sub(decay);
         }
@@ -1224,6 +1262,30 @@ mod tests {
         assert_eq!(ladder.book().bids().len(), 5);
     }
 
+    /// Scrolling a hovered row away reports the exit.
+    ///
+    /// `set_scroll_offset` cleared the hover directly, so a host that closes a tooltip on
+    /// `level_unhovered` kept it open against a row that was no longer drawn. Every other path
+    /// that removes a hover emits it.
+    #[test]
+    fn scrolling_away_from_a_hovered_row_reports_the_exit() {
+        let mut ladder = OrderBookWidget::new(Rect::new(0, 0, 320, 240));
+        ladder.set_book(fixtures::sample_book(10));
+        ladder.set_depth(3);
+
+        let exited = Arc::new(std::sync::Mutex::new(Vec::<(BookSide, usize)>::new()));
+        let sink = Arc::clone(&exited);
+        ladder.level_unhovered.connect(move |row| sink.lock().unwrap().push(*row));
+
+        ladder.handle_event(&Event::MouseMove { pos: Point::new(10, 2) });
+        let hovered = ladder.hovered().expect("the first row is hovered");
+        assert!(exited.lock().unwrap().is_empty());
+
+        ladder.scroll_by(1);
+        assert_eq!(ladder.hovered(), None);
+        assert_eq!(*exited.lock().unwrap(), vec![hovered], "the dropped hover is reported");
+    }
+
     /// The default depth is five, matching the conventional published depth.
     #[test]
     fn the_default_depth_is_five() {
@@ -1541,6 +1603,54 @@ mod tests {
         assert_eq!(ladder.row_at(rule_row + 1), Some((BookSide::Ask, 0)));
     }
 
+    /// An explicit precision must be the one the ladder measures and draws with.
+    ///
+    /// Regression: `set_decimals` did not advance `data_generation`, so the `visible_facts`
+    /// cache kept the precision inferred before the write and the ladder drew the old one
+    /// while `decimals()` reported the new one.
+    #[test]
+    fn forcing_the_decimals_reaches_the_drawn_precision() {
+        let mut ladder = OrderBookWidget::new(Rect::new(0, 0, 320, 240));
+        ladder.set_book(fixtures::sample_book(5));
+        assert_eq!(ladder.effective_decimals(), 1, "99.9 infers one place");
+
+        ladder.set_decimals(Some(4));
+        assert_eq!(
+            ladder.effective_decimals(),
+            4,
+            "the cached inference must not outlive the precision write"
+        );
+
+        ladder.set_decimals(None);
+        assert_eq!(ladder.effective_decimals(), 1, "inference is available again");
+    }
+
+    /// Shrinking the depth drops a hover whose row is no longer drawn.
+    ///
+    /// The hover is an absolute index, so it stayed in range for the book while the visible
+    /// window no longer held its row; `hovered_summary` then named a row that was not on
+    /// screen and `hover_anchor` refused the hover it had just reported.
+    #[test]
+    fn shrinking_the_depth_drops_a_hover_that_is_no_longer_drawn() {
+        let mut ladder = OrderBookWidget::new(Rect::new(0, 0, 320, 240));
+        ladder.set_depth(8);
+        ladder.set_book(fixtures::sample_book(8));
+        // 240 px over 16 rows is 15 px a row; the top row is the deepest level of the upper
+        // block, so it is absolute index 7 on that side.
+        ladder.handle_event(&Event::MouseMove { pos: Point::new(100, 5) });
+        let (side, index) = ladder.hovered().expect("the top row is inside the ladder");
+        assert_eq!(side, BookSide::Ask, "asks are drawn above the rule by default");
+        assert_eq!(index, 7, "the upper block is drawn deepest-first");
+
+        ladder.set_depth(2);
+        assert_eq!(
+            ladder.hovered(),
+            None,
+            "a row outside the visible window must not stay hovered"
+        );
+        assert!(ladder.hover_anchor().is_none());
+    }
+
     /// RW-80: a book tick can edit one level without a full snapshot.
     #[test]
     fn levels_can_be_applied_incrementally() {
@@ -1557,5 +1667,55 @@ mod tests {
 
         assert!(!ladder.apply_bid_level(f64::NAN, 1.0), "a non-finite price is refused");
         assert!(!ladder.apply_bid_level(99.0, 0.0), "removing an absent level changes nothing");
+    }
+
+    /// A sub-unit price keeps its leading zero so the column still aligns.
+    #[test]
+    fn a_sub_unit_price_keeps_its_leading_zero() {
+        let mut out = String::new();
+        write_price(0.8456, 4, &mut out);
+        assert_eq!(out, "0.8456");
+        out.clear();
+        write_price(-0.5, 2, &mut out);
+        assert_eq!(out, "-0.50", "the sign comes before the zero");
+        out.clear();
+        write_price(12.5, 2, &mut out);
+        assert_eq!(out, "12.50");
+    }
+
+    /// Writing the quantity a level already holds is not a change.
+    #[test]
+    fn a_same_quantity_tick_is_not_a_change() {
+        let mut book = OrderBook::new();
+        book.set_bids(vec![BookLevel::new(100.0, 1.0)]);
+        assert!(!book.apply_bid_level(100.0, 1.0), "nothing moved");
+        assert!(book.apply_bid_level(100.0, 2.0));
+    }
+
+    /// A book with more precision than the column can show infers the cap, not two decimals.
+    #[test]
+    fn an_eight_decimal_book_infers_the_six_place_cap() {
+        let mut ladder = OrderBookWidget::new(Rect::new(0, 0, 320, 240));
+        let mut book = OrderBook::new();
+        book.set_bids(vec![BookLevel::new(0.12345678, 1.0)]);
+        book.set_asks(vec![BookLevel::new(0.12345679, 1.0)]);
+        ladder.set_book(book);
+        assert_eq!(ladder.effective_decimals(), 6);
+    }
+
+    /// A same-length update keeps the other rows' flashes, and a 1 ms tick still advances.
+    #[test]
+    fn a_same_length_update_keeps_the_other_flashes() {
+        let mut ladder = OrderBookWidget::new(Rect::new(0, 0, 320, 240));
+        let mut book = OrderBook::new();
+        book.set_bids(vec![BookLevel::new(100.0, 1.0), BookLevel::new(99.0, 1.0)]);
+        ladder.set_book(book);
+
+        assert!(ladder.apply_bid_level(100.0, 2.0));
+        assert!(ladder.apply_bid_level(99.0, 2.0));
+        assert_eq!(ladder.flash_bid, vec![255, 255], "both edits stay visible");
+
+        assert!(Widget::tick(&mut ladder, 1));
+        assert_eq!(ladder.flash_bid, vec![254, 254], "a sub-4 ms tick still decays");
     }
 }

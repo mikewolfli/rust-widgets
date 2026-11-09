@@ -167,12 +167,25 @@ impl PriceSeries {
     ///
     /// A bar appended without a label leaves every existing label at its own index, so
     /// no label can end up attached to the wrong bar — the new bar simply has none.
+    ///
+    /// The label list is kept at the bars' length once it exists (an unlabelled bar gets an
+    /// empty label), because the alternative — appending only to `bars` — made a *later*
+    /// `push_with_label` write its label at the wrong index. See [`Self::label_at`].
     pub fn push(&mut self, bar: Bar) {
         self.bars.push(bar);
+        if !self.labels.is_empty() {
+            self.labels.push(String::new());
+        }
     }
 
     /// Appends one bar with an axis label.
+    ///
+    /// If earlier bars were appended without labels, they get empty placeholders first, so
+    /// this label stays attached to the bar it was supplied for.
     pub fn push_with_label(&mut self, bar: Bar, label: String) {
+        if self.labels.is_empty() {
+            self.labels.resize(self.bars.len(), String::new());
+        }
         self.bars.push(bar);
         self.labels.push(label);
     }
@@ -220,13 +233,19 @@ impl PriceSeries {
     }
 
     /// The axis labels, empty when none were supplied.
+    ///
+    /// Once any bar carries a label the slice is aligned with the bars, so a bar appended
+    /// without one holds an empty string here.
     pub fn labels(&self) -> &[String] {
         &self.labels
     }
 
     /// The label for bar `index`, if one was supplied.
+    ///
+    /// An empty placeholder — a bar appended without a label after some other bar had
+    /// one — reads as no label, not as an empty label.
     pub fn label_at(&self, index: usize) -> Option<&str> {
-        self.labels.get(index).map(String::as_str)
+        self.labels.get(index).map(String::as_str).filter(|label| !label.is_empty())
     }
 
     /// How many bars the series holds.
@@ -427,6 +446,11 @@ impl OrderBook {
         match index {
             Ok(slot) => {
                 if keep {
+                    // Writing the quantity a level already has is not a change: the widget uses
+                    // this answer to decide whether to flash the row and bump the generation.
+                    if (levels[slot].quantity - quantity).abs() <= f64::EPSILON {
+                        return false;
+                    }
                     levels[slot].quantity = quantity;
                 } else {
                     levels.remove(slot);
@@ -739,6 +763,37 @@ mod tests {
         let ask_prices: Vec<f64> = book.asks().iter().map(|level| level.price).collect();
         assert_eq!(bid_prices, vec![100.0, 99.0, 98.0], "bids descend");
         assert_eq!(ask_prices, vec![100.0, 101.0, 102.0], "asks ascend");
+    }
+
+    /// A label appended after an unlabelled bar belongs to its own bar.
+    ///
+    /// Regression: `push` appended only to `bars`, so the label list stayed shorter than the
+    /// bars and the next `push_with_label` wrote its label at the previous bar's index. The
+    /// type's whole reason to exist is that this alignment cannot drift.
+    #[test]
+    fn a_label_appended_after_an_unlabelled_bar_stays_on_its_own_bar() {
+        let mut series = PriceSeries::new();
+        series.push(Bar::flat(10.0, 1.0));
+        series.push_with_label(Bar::flat(20.0, 1.0), String::from("second"));
+        series.push(Bar::flat(30.0, 1.0));
+        series.push_with_label(Bar::flat(40.0, 1.0), String::from("fourth"));
+
+        assert_eq!(series.len(), 4);
+        assert_eq!(series.labels().len(), 4, "the labels stay aligned with the bars");
+        assert_eq!(series.label_at(0), None, "the first bar was appended without a label");
+        assert_eq!(series.label_at(1), Some("second"));
+        assert_eq!(series.label_at(2), None, "an unlabelled bar reads as no label");
+        assert_eq!(series.label_at(3), Some("fourth"));
+    }
+
+    /// Mixing labelled and unlabelled appends must not shift a label that already existed.
+    #[test]
+    fn an_unlabelled_append_does_not_move_an_existing_label() {
+        let mut series = PriceSeries::new();
+        series.push_with_label(Bar::flat(10.0, 1.0), String::from("first"));
+        series.push(Bar::flat(20.0, 1.0));
+        assert_eq!(series.label_at(0), Some("first"));
+        assert_eq!(series.label_at(1), None);
     }
 
     /// A percentage is undefined against a non-positive base, and must say so.

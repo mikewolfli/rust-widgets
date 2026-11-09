@@ -3301,6 +3301,37 @@ fn unregistering_a_focused_widget_drops_it_from_the_tab_order() {
     unregister(second);
 }
 
+/// Hiding a container must release focus from a **descendant**.
+///
+/// The old check only compared `focused_widget()` with the hidden widget's own id, so a
+/// form/tab page whose field held the keyboard stayed focused after its page was hidden:
+/// keys kept typing into a control no longer on screen.
+#[test]
+#[cfg(full_widgets)]
+fn hiding_a_container_releases_focus_from_a_focused_descendant() {
+    let child = register(sample_editor("a")).expect("registry");
+    let mut parent =
+        crate::widget::container_widgets::groupbox::GroupBox::new(Rect::new(0, 0, 300, 300));
+    assert!(
+        parent.base_mut().add_child_linked(child),
+        "the child must be linked under the container"
+    );
+    let parent = register(Box::new(parent)).expect("registry");
+
+    assert!(focus_widget(child));
+    assert_eq!(focused_widget(), Some(child));
+
+    let hidden = with_widget_mut(parent, |widget| {
+        widget.set_visible(false);
+        widget.is_visible()
+    });
+    assert_eq!(hidden, Some(false));
+    assert_eq!(focused_widget(), None, "hiding the page must release its field's focus");
+
+    unregister(child);
+    unregister(parent);
+}
+
 /// Tab must actually move focus. Before the manager was wired into the
 /// registry this moved nothing, which is the defect these tests pin.
 #[test]

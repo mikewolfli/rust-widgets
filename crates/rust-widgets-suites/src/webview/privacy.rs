@@ -40,12 +40,31 @@ pub enum TrackingType {
 /// of the presets ([`PrivacySettings::new`], [`PrivacySettings::strict`],
 /// [`PrivacySettings::balanced`], [`PrivacySettings::permissive`]), hand it to
 /// [`TrackingProtection::new`], and let that type apply the policy.
+///
+/// # What [`TrackingProtection`] applies, and what the host applies
+///
+/// * [`Self::block_tracking_types`], [`Self::blocked_domains`] and
+///   [`Self::block_all_cookies`] (for [`TrackingType::Cookies`]) are read by
+///   [`TrackingProtection::check_tracking`].
+/// * [`Self::block_third_party_cookies`] needs the page's own origin, which a
+///   single `check_tracking` call does not receive; the host compares the cookie
+///   domain with the page domain (`Cookie::is_third_party` is the rule).
+/// * [`Self::block_tracking_cookies`] is covered by putting the tracker list into
+///   [`Self::blocked_domains`], which refuses every channel for those domains —
+///   the stricter verdict, so no separate cookie check can add anything.
+/// * [`Self::clear_cookies_on_exit`], [`Self::do_not_track`] and
+///   [`Self::cookie_duration_limit`] are actions on the host's cookie store and
+///   request headers; there is no store or header inside this module.
 pub struct PrivacySettings {
     /// Refuse cookies whose domain does not match the page's own domain.
     pub block_third_party_cookies: bool,
     /// Refuse cookies whose domain appears in the tracker lists.
     pub block_tracking_cookies: bool,
     /// Refuse every cookie, first-party included. Implies the two flags above are moot.
+    ///
+    /// [`TrackingProtection::check_tracking`] applies this to
+    /// [`TrackingType::Cookies`]; a host that routes cookie decisions through that
+    /// method therefore never sees an allowed cookie while this is set.
     pub block_all_cookies: bool,
     /// Drop the cookie store when the session ends rather than persisting it.
     pub clear_cookies_on_exit: bool,
@@ -175,6 +194,16 @@ impl PrivacySettings {
         self.block_tracking_types.contains(&tracking_type)
     }
 }
+/// The jar's key for `domain` and `name`.
+///
+/// Host names are ASCII-case-insensitive, and the jar's lookups (`cookies_for_domain`,
+/// `clear_for_domain`) already compare domains that way. Building the key from the raw domain
+/// let `Example.COM` and `example.com` coexist as two rows: removing the cookie by its
+/// lower-case spelling deleted only one and the other was still served.
+fn cookie_key(domain: &str, name: &str) -> String {
+    format!("{}:{}", domain.to_ascii_lowercase(), name)
+}
+
 /// Reports whether a cookie stored for `cookie_domain` applies to a request for
 /// `request_domain`.
 ///
@@ -204,17 +233,21 @@ fn domain_matches(request_domain: &str, cookie_domain: &str) -> bool {
     // A cookie for `example.com` covers `a.example.com`: the request must end with
     // `.example.com`, and the shortened request must still be non-empty (so a cookie
     // for `.example.com` — an empty leading label — cannot match everything).
-    let request = request_domain.as_bytes();
-    let cookie = cookie_domain.as_bytes();
     // Need room for at least one label plus the separating dot, so an empty cookie
-    // domain (which would make `split_at` the whole string) cannot match everything.
-    if request.len() <= cookie.len() + 1 {
+    // domain (which would make the split the whole string) cannot match everything.
+    if request_domain.len() <= cookie_domain.len() + 1 {
         return false;
     }
-    let split = request.len() - cookie.len();
-    let (head, tail) = request.split_at(split);
+    let split = request_domain.len() - cookie_domain.len();
+    // Host names are ASCII in practice, but the parameters are plain strings. A byte
+    // offset that lands inside a multi-byte character is not a valid slice boundary,
+    // and `split_at` would panic on it; such a pair cannot be a label-boundary match.
+    if !request_domain.is_char_boundary(split) {
+        return false;
+    }
+    let (head, tail) = request_domain.split_at(split);
     // `head` ends at the boundary, so the character just before it must be the dot.
-    head.ends_with(b".") && tail.eq_ignore_ascii_case(cookie)
+    head.ends_with('.') && tail.eq_ignore_ascii_case(cookie_domain)
 }
 
 #[derive(Debug, Clone)]
@@ -294,7 +327,7 @@ impl Cookie {
     }
     /// Reports whether the cookie is third-party relative to `request_domain`.
     ///
-    /// The answer is the negation of the crate's single domain rule ([`domain_matches`]): a cookie
+    /// The answer is the negation of the crate's single domain rule (`domain_matches`): a cookie
     /// for `example.com` is first-party for a request to `example.com` or `sub.example.com`, and a
     /// merely similar domain (`ple.com` vs `example.com`) is **not** first-party. The suffix test
     /// this used to be got both of those wrong and disagreed with the same file's
@@ -322,7 +355,7 @@ impl CookieJar {
     }
     /// Stores `cookie`, overwriting any existing cookie with the same domain and name.
     pub fn add(&mut self, cookie: Cookie) {
-        let key = format!("{}:{}", cookie.domain, cookie.name);
+        let key = cookie_key(&cookie.domain, &cookie.name);
         self.cookies.insert(key, cookie);
     }
     /// Looks up the cookie for `domain` and `name`, or `None` if absent.
@@ -330,13 +363,11 @@ impl CookieJar {
     /// Expiry is not considered; use [`Cookie::is_expired`] on the result if the
     /// caller needs a live cookie.
     pub fn get(&self, domain: &str, name: &str) -> Option<&Cookie> {
-        let key = format!("{domain}:{name}");
-        self.cookies.get(&key)
+        self.cookies.get(&cookie_key(domain, name))
     }
     /// Removes and returns the cookie for `domain` and `name`, or `None` if absent.
     pub fn remove(&mut self, domain: &str, name: &str) -> Option<Cookie> {
-        let key = format!("{domain}:{name}");
-        self.cookies.remove(&key)
+        self.cookies.remove(&cookie_key(domain, name))
     }
     /// Discards every cookie, expired ones included.
     pub fn clear(&mut self) {
@@ -409,10 +440,11 @@ pub struct TrackingAttempt {
 /// Evaluates tracking requests against a [`PrivacySettings`] policy and keeps a
 /// running log of the verdicts.
 ///
-/// The log is unbounded: every call to [`TrackingProtection::check_tracking`]
-/// appends an entry, so a long-lived instance accumulates one record per check
-/// until [`TrackingProtection::clear_attempts`] or
-/// [`TrackingProtection::clear_stats`] is called.
+/// The log keeps at most 1000 entries: every call to
+/// [`TrackingProtection::check_tracking`] appends one, and the oldest is dropped when
+/// the cap is reached. The bound matters because this is a per-request write on a
+/// long-lived instance, while the audit view can only show the recent verdicts anyway;
+/// [`TrackingProtection::blocked_count`] keeps the lifetime total.
 pub struct TrackingProtection {
     /// The policy applied to every check.
     settings: PrivacySettings,
@@ -437,15 +469,20 @@ impl TrackingProtection {
     /// Decides whether a `tracking_type` request on `domain` for `url` may proceed.
     ///
     /// The request is blocked when its type is in
-    /// [`PrivacySettings::block_tracking_types`] **or** `domain` is not allowed
-    /// by [`PrivacySettings::is_domain_allowed`]. Either way the outcome is
-    /// recorded in the attempt log — this method is the log's only writer — and
-    /// the count of blocked attempts is incremented when the verdict is `true`.
+    /// [`PrivacySettings::block_tracking_types`], `domain` is not allowed by
+    /// [`PrivacySettings::is_domain_allowed`], or it is a
+    /// [`TrackingType::Cookies`] check while `block_all_cookies` is set. Either way
+    /// the outcome is recorded in the attempt log — this method is the log's only
+    /// writer — and the count of blocked attempts is incremented when the verdict is
+    /// `true`.
     ///
     /// The `url` is stored verbatim for auditing; it takes no part in the decision.
     pub fn check_tracking(&mut self, tracking_type: TrackingType, domain: &str, url: &str) -> bool {
+        let cookie_refused =
+            self.settings.block_all_cookies && matches!(tracking_type, TrackingType::Cookies);
         let blocked = self.settings.should_block_tracking_type(tracking_type)
-            || !self.settings.is_domain_allowed(domain);
+            || !self.settings.is_domain_allowed(domain)
+            || cookie_refused;
         let attempt = TrackingAttempt {
             tracking_type,
             domain: domain.to_string(),
@@ -465,7 +502,9 @@ impl TrackingProtection {
         self.attempts.push(attempt);
         blocked
     }
-    /// The full request log, oldest first.
+    /// The retained request log, oldest first.
+    ///
+    /// At most 1000 entries are kept; see [`TrackingProtection`] for why.
     pub fn attempts(&self) -> &[TrackingAttempt] {
         &self.attempts
     }
@@ -860,6 +899,24 @@ mod tests {
         );
     }
 
+    /// A multi-byte request domain must not panic the byte-offset domain test.
+    ///
+    /// `domain_matches` compares a suffix by byte length. When that offset fell inside a
+    /// multi-byte character, `split_at` panicked on caller-supplied strings. A cookie for a
+    /// one-character non-ASCII domain is enough to reach it.
+    #[test]
+    fn a_multibyte_domain_does_not_panic_the_boundary_test() {
+        let mut jar = CookieJar::new();
+        jar.add(Cookie::new("umlaut".to_string(), "1".to_string(), "ä".to_string()));
+
+        assert!(
+            jar.cookies_for_domain("aäb").is_empty(),
+            "a mid-character offset is not a label-boundary match"
+        );
+        jar.clear_for_domain("aäb");
+        assert!(jar.get("ä", "umlaut").is_some(), "an unrelated cookie must survive");
+    }
+
     /// Host matching is ASCII-case-insensitive, because host names are.
     #[test]
     fn domain_matching_is_case_insensitive() {
@@ -965,6 +1022,52 @@ mod tests {
         tp.check_tracking(TrackingType::Cookies, "ad.com", "https://ad.com/tracker");
         assert_eq!(tp.attempts().len(), 1);
         assert_eq!(tp.attempts()[0].domain, "ad.com");
+    }
+
+    #[test]
+    fn test_tracking_protection_page_origin_is_the_host_decision() {
+        // The policy knob the tracker can apply on its own: every cookie is refused.
+        let mut settings = PrivacySettings::permissive();
+        settings.block_all_cookies = true;
+        let mut tp = TrackingProtection::new(settings);
+        assert!(
+            tp.check_tracking(TrackingType::Cookies, "example.com", "https://example.com/"),
+            "block_all_cookies refuses even a first-party cookie"
+        );
+        assert!(
+            !tp.check_tracking(TrackingType::LocalStorage, "example.com", "https://example.com/"),
+            "the flag is about cookies, not every storage channel"
+        );
+    }
+
+    /// Cookie identity is case-insensitive, like the host names it is built from.
+    #[test]
+    fn a_cookie_is_its_domain_and_name_regardless_of_case() {
+        let mut jar = CookieJar::new();
+        jar.add(Cookie::new("a".to_string(), "1".to_string(), "Example.COM".to_string()));
+        assert!(jar.get("example.com", "a").is_some(), "the lookup normalises the host");
+
+        jar.add(Cookie::new("a".to_string(), "2".to_string(), "example.com".to_string()));
+        assert_eq!(jar.len(), 1, "the same identity replaces rather than duplicates");
+        assert_eq!(jar.get("EXAMPLE.com", "a").map(|cookie| cookie.value.as_str()), Some("2"));
+
+        assert!(jar.remove("example.com", "a").is_some());
+        assert!(jar.is_empty(), "one removal deletes the single identity");
+    }
+
+    /// The audit log keeps the newest 1000 verdicts and the lifetime counter keeps climbing.
+    #[test]
+    fn the_attempt_log_is_bounded_but_the_count_is_not() {
+        let mut tp = TrackingProtection::new(PrivacySettings::permissive());
+        for index in 0..1005 {
+            tp.check_tracking(
+                TrackingType::Cookies,
+                "example.com",
+                &format!("https://example.com/{index}"),
+            );
+        }
+        assert_eq!(tp.attempts().len(), 1000, "the log is capped");
+        assert_eq!(tp.attempts()[0].url, "https://example.com/5", "the oldest five were dropped");
     }
 
     #[test]

@@ -1392,7 +1392,7 @@ impl RiveWidget {
     /// The decoder parses the Rive header, property table and object stream, and makes the
     /// artboard, animation and state-machine names available through [`Self::artboard_names`],
     /// [`Self::animation_names`] and [`Self::state_machine_names`]. The **shape list and the
-    /// timeline are not parsed**: [`RiveAnimationData`]'s `shapes` stays empty and the animation's
+    /// timeline are not parsed**: `RiveAnimationData`'s `shapes` stays empty and the animation's
     /// duration/frame rate come from the object stream's animation record alone. That is a
     /// documented header/name-only parse, not a partial scene that silently renders nothing;
     /// a host that wants pixels flattens the artboard through
@@ -1586,9 +1586,19 @@ impl RiveWidget {
     /// Does nothing until animation data has actually been loaded through
     /// [`Self::load_animation_from_json`]: a name alone is not a loaded
     /// animation.
+    ///
+    /// A scrub pin is released first (a pinned playhead never advances, so `play` would report
+    /// playing while the picture stood still), and a finished animation replays from its start
+    /// (its playhead was at `1.0` and its loop count spent, so the first tick re-completed it).
     pub fn play(&mut self) {
         if self.animation_name.is_empty() || self.animation_data.is_none() {
             return;
+        }
+        self.release_progress_pin();
+        if self.state == RiveState::Completed || self.animation_progress >= 1.0 {
+            self.animation_progress = 0.0;
+            self.loops_completed = 0;
+            self.frame_timer = 0;
         }
         self.is_playing = true;
         self.set_state(RiveState::Playing);
@@ -1605,8 +1615,13 @@ impl RiveWidget {
     }
 
     /// Stops playback and resets the animation to the beginning.
+    ///
+    /// The `"progress"` pin is released: it is a scrub latch that [`Self::tick`] re-applies
+    /// before the playback gate, so leaving it set made the next tick restore the scrubbed
+    /// playhead and contradict this method's promise.
     pub fn stop(&mut self) {
         self.is_playing = false;
+        self.release_progress_pin();
         self.animation_progress = 0.0;
         self.frame_timer = 0;
         self.set_state(if self.animation_data.is_some() {
@@ -1615,6 +1630,14 @@ impl RiveWidget {
             RiveState::Idle
         });
         self.base.request_redraw();
+    }
+
+    /// Drops a `"progress"` scrub pin, if one is set.
+    ///
+    /// The pin is what keeps a scrubbed playhead from advancing, so a lifecycle call that moves
+    /// the playhead deliberately must release it first.
+    fn release_progress_pin(&mut self) {
+        self.state_machine_inputs.retain(|input| input.name != "progress");
     }
 
     /// The lifecycle state of this control's lightweight state machine.
@@ -2294,19 +2317,18 @@ impl EventHandler for RiveWidget {
         if !self.base.is_enabled() {
             return;
         }
-        match event {
-            // Playback toggles on **release** only (L-P01).
-            Event::MouseRelease { pos, button } => {
-                if *button == 1 && self.geometry().contains_point(*pos) {
-                    if self.is_playing {
-                        self.pause();
-                    } else {
-                        self.play();
-                    }
+        // The base always sees the gesture: it arms its pressed state on the press, so a
+        // release routed only to this control's own arm would leave the widget reporting
+        // itself pressed (and never emit `mouse_up`).
+        self.base.handle_event(event);
+        // Playback toggles on **release** only (L-P01).
+        if let Event::MouseRelease { pos, button } = event {
+            if *button == 1 && self.geometry().contains_point(*pos) {
+                if self.is_playing {
+                    self.pause();
+                } else {
+                    self.play();
                 }
-            }
-            _ => {
-                self.base.handle_event(event);
             }
         }
     }
@@ -2833,5 +2855,68 @@ mod tests {
         assert!((rive.animation_progress() - 1.0).abs() < f32::EPSILON, "the value is clamped");
         assert!(!rive.tick(16), "a pinned playhead does not advance");
         assert!((rive.animation_progress() - 1.0).abs() < f32::EPSILON);
+    }
+
+    /// A click's release must reach the base so the pressed state is cleared.
+    #[test]
+    fn a_click_clears_the_base_press_state_and_still_toggles_playback() {
+        let mut rive = RiveWidget::new(Rect::new(0, 0, 100, 100));
+        rive.load_animation_from_json("run", &make_rive_json()).unwrap();
+        rive.handle_event(&Event::mouse_press(10, 10, 1));
+        assert!(rive.base().is_pressed(), "the press arms the base gesture");
+        rive.handle_event(&Event::MouseRelease { pos: Point::new(10, 10), button: 1 });
+        assert!(!rive.base().is_pressed(), "the release must clear what the press armed");
+        assert!(rive.is_playing(), "and the click still toggles playback");
+    }
+
+    /// `stop` releases a scrub pin, so the next tick keeps the rewound playhead.
+    ///
+    /// `tick` re-applies the `"progress"` pin before the playback gate, so leaving it set made the
+    /// next frame restore the scrubbed value and `play` freeze.
+    #[test]
+    fn stop_releases_a_scrubbed_playhead() {
+        let mut rive = RiveWidget::new(Rect::new(0, 0, 200, 200));
+        rive.load_animation_from_json("run", &make_rive_json()).unwrap();
+        rive.set_progress(0.4);
+        assert!(rive.get_input("progress").is_some(), "the scrub is pinned");
+
+        rive.stop();
+        assert_eq!(rive.animation_progress(), 0.0, "stop rewinds");
+        rive.tick(16);
+        assert_eq!(rive.animation_progress(), 0.0, "the pin must not restore the scrub");
+        assert!(rive.get_input("progress").is_none(), "the pin is released");
+
+        rive.play();
+        rive.tick(100);
+        assert!(rive.animation_progress() > 0.0, "playback advances again");
+    }
+
+    /// `play` replays a finished animation instead of completing it on the first frame.
+    #[test]
+    fn play_replays_a_completed_animation() {
+        let mut rive = RiveWidget::new(Rect::new(0, 0, 200, 200));
+        rive.load_animation_from_json("walk", &make_rive_json()).unwrap();
+        rive.set_loop_count(1);
+        let finished = std::sync::Arc::new(std::sync::Mutex::new(0usize));
+        let sink = finished.clone();
+        rive.animation_finished.connect(move || {
+            *sink.lock().unwrap() += 1;
+        });
+
+        rive.play();
+        assert!(rive.tick(1000), "the single loop completes");
+        assert_eq!(rive.loops_completed(), 1);
+        assert_eq!(*finished.lock().unwrap(), 1);
+
+        rive.play();
+        rive.tick(17);
+        assert!(rive.animation_progress() < 0.1, "the replay starts at the beginning");
+        assert_eq!(rive.loops_completed(), 0, "a replay starts a fresh loop count");
+        assert_eq!(*finished.lock().unwrap(), 1, "no second completion signal");
+
+        // The replayed run completes again on its own, exactly once.
+        assert!(rive.tick(1000));
+        assert_eq!(rive.loops_completed(), 1);
+        assert_eq!(*finished.lock().unwrap(), 2);
     }
 }

@@ -127,6 +127,9 @@ const DIFF_FILE_LIST_EVENTS: &[EventSchema] = &[
 ];
 
 /// `terminal_find_bar`'s published events.
+///
+/// The bar publishes exactly `on_matches_changed`; the control resolves it and emits it from every
+/// path that changes or reports the match set.
 const TERMINAL_FIND_BAR_EVENTS: &[EventSchema] =
     &[EventSchema { name: "on_matches_changed", payload: Some(K::UInt), shape: Some(S::Tuple2) }];
 
@@ -175,7 +178,7 @@ pub fn diff_file_list_capability() -> WidgetCapability {
 /// Terminal scrollback find bar (COMP-A2).
 ///
 /// It shares `WidgetKind::SearchBar` with the search field; the bar attaches to a `TerminalView`
-/// and reports no factory event of its own.
+/// and publishes exactly one event, `on_matches_changed`.
 pub fn terminal_find_bar_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::SearchBar,
@@ -267,9 +270,10 @@ pub fn default_property_value(kind: &str, name: &str) -> Option<CapabilityValue>
         ("terminal_find_bar", "visible") => Some(CapabilityValue::Bool(false)),
         ("terminal_find_bar", "match_count") => Some(CapabilityValue::UInt(0)),
         ("diff_viewer", "left_text" | "right_text") => Some(CapabilityValue::String(String::new())),
-        ("diff_viewer", "line_count" | "change_count" | "selected_index") => {
-            Some(CapabilityValue::UInt(0))
-        }
+        ("diff_viewer", "line_count" | "change_count") => Some(CapabilityValue::UInt(0)),
+        // A fresh viewer has no selected row; `get("selected_index")` answers `Null` until a
+        // comparison exists, so the declared default must be the same value.
+        ("diff_viewer", "selected_index") => Some(CapabilityValue::Null),
         ("diff_viewer", "fold_threshold") => Some(CapabilityValue::UInt(8)),
         ("diff_viewer", "fold_context_lines") => Some(CapabilityValue::UInt(0)),
         ("diff_viewer", "fold_unchanged") => Some(CapabilityValue::Bool(false)),

@@ -21,6 +21,13 @@ use rust_widgets::{impl_widget_property_hooks, property_names_of};
 /// The highest zoom level a [`TileLoader`] accepts.
 pub const MAX_TILE_ZOOM: u8 = 22;
 
+/// The most tile columns and rows one [`TileLoader::prefetch`] enumerates on one axis.
+///
+/// A tile is never painted smaller than one logical pixel, so a normal viewport needs far fewer
+/// columns. The cap only bites for a source whose minimum level is finer than the camera, where
+/// the visible window would otherwise span one tile per pixel across its whole width/height.
+const MAX_PREFETCH_TILES_PER_AXIS: i64 = 256;
+
 /// Addresses one tile in the slippy-map pyramid.
 ///
 /// Derives `Ord`/`Hash` because the crate's map alias is a `BTreeMap` in frugal
@@ -86,12 +93,30 @@ pub struct TileViewport {
     pub width: u32,
     /// Viewport height in logical pixels.
     pub height: u32,
+    /// The logical size one tile of this level is actually painted at.
+    ///
+    /// A tile is painted at `tile_size * painted_zoom / 2^zoom` pixels, which differs from the
+    /// loader's `tile_size` whenever the camera is at a fractional zoom or the level is clamped
+    /// to the loader's range. `None` keeps the older assumption — one tile per `tile_size`
+    /// pixels — for a caller that builds a viewport by hand.
+    pub tile_pixels: Option<f64>,
 }
 
 impl TileViewport {
     /// Creates a tile window.
     pub fn new(zoom: u8, x: f64, y: f64, width: u32, height: u32) -> Self {
-        Self { zoom, x, y, width, height }
+        Self { zoom, x, y, width, height, tile_pixels: None }
+    }
+
+    /// Declares the logical size one tile is painted at.
+    ///
+    /// [`TileLoader::prefetch`] counts its columns and rows from this size when it is present;
+    /// without it a fractional zoom requests too few tiles at the right and bottom edges.
+    pub fn with_tile_pixels(mut self, tile_pixels: f64) -> Self {
+        if tile_pixels.is_finite() && tile_pixels > 0.0 {
+            self.tile_pixels = Some(tile_pixels);
+        }
+        self
     }
 }
 
@@ -151,13 +176,20 @@ impl TileLoader {
     }
 
     /// Sets the URL template; an empty template is ignored.
+    ///
+    /// Changing the template changes the source every address resolves to, so the remembered
+    /// addresses are dropped: keeping them would make `load_tile` report each one as `cached`
+    /// and the host would never ask the new source for pixels.
     pub fn set_url_template(&mut self, template: impl Into<String>) {
         let template = template.into();
         if template.trim().is_empty() {
             return;
         }
+        if self.url_template == template {
+            return;
+        }
         self.url_template = template;
-        self.base.request_redraw();
+        self.clear_cache();
     }
 
     /// Returns the lowest accepted zoom level.
@@ -191,13 +223,17 @@ impl TileLoader {
     }
 
     /// Sets the tile edge length, clamped to `16 ..= 1024`.
+    ///
+    /// The delivered payloads are `tile_size`×`tile_size` pixels, so changing the extent makes
+    /// every remembered tile unreadable at the new size; the cache is dropped with the old
+    /// extent rather than resampling bytes that no longer describe it.
     pub fn set_tile_size(&mut self, tile_size: u32) {
         let size = tile_size.clamp(16, 1024);
         if self.tile_size == size {
             return;
         }
         self.tile_size = size;
-        self.base.request_redraw();
+        self.clear_cache();
     }
 
     /// Returns the maximum number of remembered tiles.
@@ -256,8 +292,11 @@ impl TileLoader {
     /// Requests every tile the viewport touches, row-major.
     ///
     /// The batch is capped at `cache_limit` entries so prefetching cannot evict
-    /// the tiles it just asked for. Tiles outside the world are skipped, and a
-    /// non-finite or degenerate viewport requests nothing.
+    /// the tiles it just asked for. The grid itself is also capped at
+    /// `MAX_PREFETCH_TILES_PER_AXIS` columns and rows per axis, which bounds a source whose
+    /// `min_zoom` is finer than the camera; a normal viewport stays far below that cap.
+    /// Tiles outside the world are skipped, and a non-finite or degenerate viewport requests
+    /// nothing.
     pub fn prefetch(&mut self, viewport: TileViewport) -> Vec<TileRequest> {
         if !viewport.x.is_finite() || !viewport.y.is_finite() {
             return Vec::new();
@@ -269,11 +308,17 @@ impl TileLoader {
         if per_axis <= 0 {
             return Vec::new();
         }
-        let tile = self.tile_size.max(1) as f64;
+        let tile = viewport
+            .tile_pixels
+            .filter(|pixels| pixels.is_finite() && *pixels > 0.0)
+            .map(|pixels| pixels.round().max(1.0))
+            .unwrap_or_else(|| self.tile_size.max(1) as f64);
         let first_col = viewport.x.floor();
         let first_row = viewport.y.floor();
-        let cols = (viewport.width as f64 / tile).ceil().max(1.0) as i64 + 1;
-        let rows = (viewport.height as f64 / tile).ceil().max(1.0) as i64 + 1;
+        let cols = ((viewport.width as f64 / tile).ceil().max(1.0) as i64 + 1)
+            .min(MAX_PREFETCH_TILES_PER_AXIS);
+        let rows = ((viewport.height as f64 / tile).ceil().max(1.0) as i64 + 1)
+            .min(MAX_PREFETCH_TILES_PER_AXIS);
         let limit = self.cache_limit.max(1);
         let mut requests = Vec::new();
         for row in 0..rows {

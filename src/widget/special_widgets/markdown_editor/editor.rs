@@ -172,8 +172,12 @@ impl MarkdownEditor {
     }
 
     /// Sets markdown text.
+    ///
+    /// Line terminators are normalised to `\n` on the way in: the editor's line index, caret
+    /// columns and list/heading rules all assume one terminator per line, and a `\r` that
+    /// survived a load became a visible cell after a line merge.
     pub fn set_text(&mut self, text: impl Into<String>) {
-        let next = text.into();
+        let next = normalize_line_endings(text.into());
         self.commit_text(next);
     }
 
@@ -350,7 +354,7 @@ impl MarkdownEditor {
         let metrics = self.text.lines().fold(Metrics::default(), |mut total, line| {
             total.lines += 1;
             total.words += line.split_whitespace().count();
-            total.headings += usize::from(line.trim_start().starts_with('#'));
+            total.headings += usize::from(heading_of(line).is_some());
             total
         });
         *self.metrics.borrow_mut() = Some((self.revision, metrics));
@@ -358,17 +362,19 @@ impl MarkdownEditor {
     }
 
     /// Returns headings in document order, as navigation targets.
+    ///
+    /// Uses the one heading rule in [`heading_of`], which the metrics and the preview also
+    /// read: the three used to disagree about `#no-space`, 7+ hashes and trailing whitespace,
+    /// so the outline could list a row the preview did not render as a heading.
     pub fn outline(&self) -> Vec<MarkdownOutlineEntry> {
         self.text
             .lines()
             .enumerate()
             .filter_map(|(line, text)| {
-                let trimmed = text.trim_start();
-                let level = trimmed.chars().take_while(|ch| *ch == '#').count();
-                (level > 0).then_some(MarkdownOutlineEntry {
+                heading_of(text).map(|(level, title)| MarkdownOutlineEntry {
                     line,
-                    level: level.min(6) as u8,
-                    title: trimmed[level..].trim().to_string(),
+                    level,
+                    title: title.to_string(),
                 })
             })
             .collect()
@@ -487,22 +493,28 @@ impl MarkdownEditor {
     ///
     /// The match becomes the selection and the caret moves to its end, which is what makes
     /// repeated calls step through the document instead of finding the same match again.
+    ///
+    /// The ranges come from the mounted [`FindBar`]'s matcher ([`literal_matches`]), the same
+    /// engine that paints the bar's counter. The editor used to run `str::find` here, so a case
+    /// or whole-word policy set on the bar and the match this command selected were two
+    /// different answers to the same question.
     pub fn find_next(&mut self, needle: &str) -> bool {
         if needle.is_empty() {
             return false;
         }
-        let haystack = &self.text;
         let from = self.find_search_origin(true);
-        let found = haystack
-            .get(from..)
-            .and_then(|tail| tail.find(needle).map(|offset| from + offset))
-            .or_else(|| haystack.find(needle));
-        let Some(byte) = found else {
+        let matches = literal_matches(&self.text, needle, true, false);
+        let found = matches
+            .iter()
+            .copied()
+            .find(|(start, _)| *start >= from)
+            .or_else(|| matches.first().copied());
+        let Some((byte, end)) = found else {
             self.find.current = None;
             return false;
         };
         self.find.current = Some(byte);
-        self.select_byte_range(byte, byte + needle.len());
+        self.select_byte_range(byte, end);
         true
     }
 
@@ -511,18 +523,20 @@ impl MarkdownEditor {
         if needle.is_empty() {
             return false;
         }
-        let haystack = &self.text;
         let from = self.find_search_origin(false);
-        let found = haystack
-            .get(..from.min(haystack.len()))
-            .and_then(|head| head.rfind(needle))
-            .or_else(|| haystack.rfind(needle));
-        let Some(byte) = found else {
+        let matches = literal_matches(&self.text, needle, true, false);
+        let found = matches
+            .iter()
+            .rev()
+            .copied()
+            .find(|(_, end)| *end <= from)
+            .or_else(|| matches.last().copied());
+        let Some((byte, end)) = found else {
             self.find.current = None;
             return false;
         };
         self.find.current = Some(byte);
-        self.select_byte_range(byte, byte + needle.len());
+        self.select_byte_range(byte, end);
         true
     }
 
@@ -1130,7 +1144,10 @@ impl MarkdownEditor {
             return;
         }
         let mut blocks = Vec::new();
-        let mut fence: Option<(LanguageId, LineState)> = None;
+        // `(marker, run length, language, lexer state)`. The marker and its length are part of
+        // the state because a closing fence must repeat the opener's character at least as
+        // many times; a ```` block containing ``` lines used to close at the first one.
+        let mut fence: Option<(char, usize, LanguageId, LineState)> = None;
         // One lexer per fenced block, carried across its lines. A fresh highlighter per line reset
         // the interpreter state a multi-line construct depends on (block comments, template
         // literals) and re-created the lexer for every line of a long block.
@@ -1138,8 +1155,11 @@ impl MarkdownEditor {
         for line in self.text.split('\n') {
             let trimmed = line.trim_start();
             match fence {
-                Some((language, state)) => {
-                    if fence_marker(trimmed).is_some() {
+                Some((marker, run, language, state)) => {
+                    let closes = fence_marker(trimmed).is_some_and(|(next, next_run, info)| {
+                        next == marker && next_run >= run && info.is_empty()
+                    });
+                    if closes {
                         blocks.push(BlockStart::Fence);
                         fence = None;
                         highlighter = None;
@@ -1153,15 +1173,15 @@ impl MarkdownEditor {
                             // Unreachable: the branch above always installs a lexer.
                             None => state,
                         };
-                        fence = Some((language, next));
+                        fence = Some((marker, run, language, next));
                     }
                 }
                 None => match fence_marker(trimmed) {
-                    Some(info) => {
+                    Some((marker, run, info)) => {
                         blocks.push(BlockStart::Fence);
                         let language = language_from_info(info);
                         highlighter = Some((language, BuiltinHighlighter::new(language)));
-                        fence = Some((language, LineState::initial()));
+                        fence = Some((marker, run, language, LineState::initial()));
                     }
                     None => blocks.push(BlockStart::Normal),
                 },

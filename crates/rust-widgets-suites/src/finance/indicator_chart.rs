@@ -202,11 +202,21 @@ impl IndicatorChart {
     pub fn set_series(&mut self, series: PriceSeries) {
         self.series = series;
         self.values_valid = false;
-        self.view = self.clamped_view(self.view);
+        // Re-clamped through the one emitting entry point: assigning the clamped view directly
+        // moved the window silently and left a host mirroring `view_changed` on the old range.
+        self.set_view_range(self.view);
         if self.hovered_index.is_some_and(|index| index >= self.series.len()) {
             self.hovered_index = None;
         }
         self.base.request_redraw();
+    }
+
+    /// Whether the current series carries positive, finite volume for every bar.
+    ///
+    /// A volume-weighted mode needs all of it: MFI divides by volume and OBV accumulates its
+    /// sign, so a zero or non-finite bar makes the whole derived series meaningless.
+    fn series_has_volume(&self) -> bool {
+        self.series.bars().iter().all(|bar| bar.volume.is_finite() && bar.volume > 0.0)
     }
 
     /// Appends one bar, returning its index.
@@ -216,7 +226,7 @@ impl IndicatorChart {
     pub fn append_point(&mut self, bar: Bar) -> usize {
         self.series.push(bar);
         self.values_valid = false;
-        self.view = self.clamped_view(self.view);
+        self.set_view_range(self.view);
         self.base.request_redraw();
         self.series.len() - 1
     }
@@ -242,8 +252,9 @@ impl IndicatorChart {
     pub fn clear(&mut self) {
         self.series = PriceSeries::new();
         self.values_valid = false;
-        self.view = None;
         self.hovered_index = None;
+        // Routed through the emitting entry point so a mirror learns the window is gone.
+        self.set_view_range(None);
         self.base.request_redraw();
     }
 
@@ -318,11 +329,16 @@ impl IndicatorChart {
     }
 
     fn clamped_view(&self, range: Option<(usize, usize)>) -> Option<(usize, usize)> {
-        range.map(|(start, end)| {
+        range.and_then(|(start, end)| {
             let total = self.series.len();
-            let start = start.min(total.saturating_sub(1));
-            let end = end.clamp(start + 1, total.max(start + 1));
-            (start, end)
+            // A window over no bars names nothing; keeping one would also make the first bar
+            // appended later inherit a one-bar window instead of the full view.
+            if total == 0 {
+                return None;
+            }
+            let start = start.min(total - 1);
+            let end = end.clamp(start + 1, total);
+            Some((start, end))
         })
     }
 
@@ -679,7 +695,9 @@ impl IndicatorChart {
             let top = y.min(zero_y);
             let height = (y - zero_y).unsigned_abs().max(1);
             context.fill_rect(
-                Rect::new(index_axis.x_for(offset), top, body_width as u32, height),
+                // The body starts one pixel inside its slot and is centred on the marker that
+                // names it, exactly as the K-line bodies are.
+                Rect::new(index_axis.body_x_for(offset), top, body_width as u32, height),
                 if *value >= 0.0 { Color::rgb(38, 166, 91) } else { Color::rgb(220, 68, 70) },
             );
         }
@@ -869,10 +887,16 @@ impl rust_widgets::event::EventHandler for IndicatorChart {
                 let area = self.plot_area();
                 let (start, end) = self.view_bounds();
                 let index_axis = area.index_axis(end.saturating_sub(start));
-                let next = index_axis
-                    .index_at(pos.x)
-                    .map(|index| start + index)
-                    .filter(|index| *index < end);
+                // The pane's bottom strip is its index axis, so a y test is part of "inside":
+                // testing only x let the axis row hover a bar.
+                let next = if area.contains_y(pos.y) {
+                    index_axis
+                        .index_at(pos.x)
+                        .map(|index| start + index)
+                        .filter(|index| *index < end)
+                } else {
+                    None
+                };
                 if next != self.hovered_index {
                     if let Some(index) = next {
                         self.bar_hovered.emit(index);
@@ -897,19 +921,28 @@ impl rust_widgets::event::EventHandler for IndicatorChart {
                     let new_span = ((span as f64 * factor).round() as usize).clamp(4, total);
                     let half = new_span / 2;
                     let new_start = anchor.saturating_sub(half).min(total - new_span);
-                    self.set_view_range(Some((new_start, new_start + new_span)));
+                    // `None` is the spelling for "every bar", the same one `reset_view` and the
+                    // strip's Fit produce.
+                    let range = if new_span >= total {
+                        None
+                    } else {
+                        Some((new_start, new_start + new_span))
+                    };
+                    self.set_view_range(range);
                 }
             }
             Event::MousePress { pos, .. } | Event::PointerPress { pos, .. } => {
                 let area = self.plot_area();
                 let (start, end) = self.view_bounds();
                 let index_axis = area.index_axis(end.saturating_sub(start));
-                if let Some(index) = index_axis
-                    .index_at(pos.x)
-                    .map(|index| start + index)
-                    .filter(|index| *index < end)
-                {
-                    self.bar_clicked.emit(index);
+                if area.contains_y(pos.y) {
+                    if let Some(index) = index_axis
+                        .index_at(pos.x)
+                        .map(|index| start + index)
+                        .filter(|index| *index < end)
+                    {
+                        self.bar_clicked.emit(index);
+                    }
                 }
             }
             _ => {}
@@ -1065,6 +1098,12 @@ impl WidgetProperties for IndicatorChart {
                 };
                 let mode =
                     IndicatorMode::from_name(&text).ok_or(CapabilityAccessError::OutOfRange)?;
+                // The same guard the `series` write carries, from the other side: writing a
+                // closes-only series first and a volume-weighted mode second used to accept the
+                // pair the `series` arm refuses, leaving MFI `NAN` throughout with no error.
+                if mode.requires_volume() && !self.series_has_volume() {
+                    return Err(CapabilityAccessError::UnsupportedOnWidget);
+                }
                 self.set_mode(mode);
                 Ok(())
             }
@@ -1126,6 +1165,7 @@ impl WidgetProperties for IndicatorChart {
 mod tests {
     use super::*;
     use crate::finance::types::fixtures;
+    use rust_widgets::event::EventHandler;
 
     /// The pane carries the series it was given.
     #[test]
@@ -1134,6 +1174,23 @@ mod tests {
         assert!(chart.series().is_empty());
         chart.set_series(fixtures::sample_series(60));
         assert_eq!(chart.series().len(), 60);
+    }
+
+    /// A view cannot outlive the series it was measured against.
+    ///
+    /// Regression: `clamped_view` kept a `Some` window for an empty series, so the first bar
+    /// streamed afterwards was drawn alone instead of from the full view `clear` promises.
+    #[test]
+    fn a_view_over_an_emptied_series_is_cleared() {
+        let mut chart = IndicatorChart::new(Rect::new(0, 0, 240, 80));
+        chart.set_series(fixtures::sample_series(10));
+        chart.set_view_range(Some((2, 5)));
+
+        chart.set_series(PriceSeries::new());
+        assert_eq!(chart.view_range(), None, "no window can name bars that do not exist");
+
+        assert_eq!(chart.append_point(Bar::flat(10.0, 1.0)), 0);
+        assert_eq!(chart.view_range(), None, "the first new bar is shown in the full view");
     }
 
     /// MACD is the default mode, as it is the most common secondary pane.
@@ -1159,6 +1216,67 @@ mod tests {
         assert_eq!(chart.compute()[0].len(), 5);
         chart.reset_view();
         assert_eq!(*seen.lock().unwrap(), vec![(1, 4), (0, 5)]);
+    }
+
+    /// Replacing the series with a shorter one re-clamps the window *and* reports it.
+    #[test]
+    fn replacing_with_a_shorter_series_reports_the_clamped_view() {
+        let mut chart = IndicatorChart::new(Rect::new(0, 0, 240, 80));
+        let mut series = PriceSeries::new();
+        for value in 1..=10 {
+            series.push(Bar::flat(f64::from(value), 1.0));
+        }
+        chart.set_series(series);
+        chart.set_view_range(Some((8, 10)));
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::<(usize, usize)>::new()));
+        let sink = std::sync::Arc::clone(&seen);
+        chart.view_changed.connect(move |range| sink.lock().unwrap().push(*range));
+
+        let mut shorter = PriceSeries::new();
+        for value in 1..=5 {
+            shorter.push(Bar::flat(f64::from(value), 1.0));
+        }
+        chart.set_series(shorter);
+        assert_eq!(chart.view_range(), Some((4, 5)));
+        assert_eq!(*seen.lock().unwrap(), vec![(4, 5)], "the clamped window is published");
+
+        chart.clear();
+        assert_eq!(chart.view_range(), None);
+        assert_eq!(*seen.lock().unwrap(), vec![(4, 5), (0, 0)]);
+    }
+
+    /// A volume-weighted mode is refused for a price-only series, in either write order.
+    ///
+    /// The `series` property refused a volume mode with a closes-only series, but writing the
+    /// series first and the mode second reached the same undefined state with `Ok(())`.
+    #[test]
+    fn a_volume_mode_is_refused_for_a_price_only_series() {
+        use rust_widgets::widget::capability::WidgetProperties;
+
+        let mut chart = IndicatorChart::new(Rect::new(0, 0, 240, 80));
+        assert!(chart
+            .set("series", CapabilityValue::String(alloc::string::String::from("1 2 3 4 5")),)
+            .is_ok());
+
+        assert_eq!(
+            chart.set(
+                "mode",
+                CapabilityValue::String(alloc::string::String::from("money_flow_index"))
+            ),
+            Err(CapabilityAccessError::UnsupportedOnWidget)
+        );
+        assert_eq!(chart.mode(), IndicatorMode::Macd, "the refused mode is not applied");
+
+        // A series that carries volume feeds the same mode.
+        let mut series = PriceSeries::new();
+        for value in [1.0, 2.0, 3.0, 4.0, 5.0] {
+            series.push(Bar::flat(value, 10.0));
+        }
+        chart.set_series(series);
+        assert!(chart
+            .set("mode", CapabilityValue::String(alloc::string::String::from("on_balance_volume")))
+            .is_ok());
+        assert_eq!(chart.mode(), IndicatorMode::OnBalanceVolume);
     }
 
     #[test]
@@ -1426,5 +1544,30 @@ mod tests {
         assert_eq!(chart.series().len(), 0);
         assert_eq!(chart.view_range(), None);
         assert!(!chart.update_last(Bar::flat(1.0, 1.0)), "an empty series has no last bar");
+    }
+
+    /// The index-axis strip below the plot is not a bar, for the hover or the click.
+    ///
+    /// The hit test mapped x alone, so the tick row hovered and clicked whichever bar shared its
+    /// column.
+    #[test]
+    fn the_index_axis_strip_is_not_a_bar() {
+        let mut chart = IndicatorChart::new(Rect::new(0, 0, 480, 160));
+        chart.set_series(fixtures::sample_series(20));
+        let clicks = std::sync::Arc::new(std::sync::Mutex::new(Vec::<usize>::new()));
+        let sink = std::sync::Arc::clone(&clicks);
+        chart.bar_clicked.connect(move |index| sink.lock().unwrap().push(*index));
+        let area = chart.plot_area();
+
+        chart.handle_event(&rust_widgets::event::Event::mouse_press(
+            area.rect.x + 30,
+            area.bottom() + 5,
+            1,
+        ));
+        assert!(clicks.lock().unwrap().is_empty(), "the tick row is not a bar");
+        chart.handle_event(&rust_widgets::event::Event::MouseMove {
+            pos: rust_widgets::core::Point { x: area.rect.x + 30, y: area.bottom() + 5 },
+        });
+        assert_eq!(chart.hovered_index(), None, "and it does not hover one either");
     }
 }

@@ -66,6 +66,89 @@ fn arrow_keys_move_selected_line() {
     assert_eq!(viewer.selected_index(), Some(1));
 }
 
+/// A keyboard selection past the painted window scrolls the window to it.
+#[test]
+fn arrow_keys_scroll_the_selected_row_into_view() {
+    let text: Vec<String> = (0..20).map(|n| format!("line{n}")).collect();
+    let joined = text.join("\n");
+    let mut viewer = DiffViewer::new(Rect::new(0, 0, 640, 100));
+    viewer.set_texts(joined.clone(), joined);
+    viewer.handle_event(&Event::FocusGained { reason: rust_widgets::event::FocusReason::Tab });
+    assert_eq!(viewer.first_visible_line, 0);
+
+    for _ in 0..5 {
+        viewer.handle_event(&Event::key_press(40, 0));
+    }
+    assert_eq!(viewer.selected_index(), Some(5));
+    assert_eq!(
+        viewer.first_visible_line,
+        5 + 1 - viewer.visible_line_count(),
+        "the selected row is the last painted one instead of staying below the window"
+    );
+}
+
+/// Only the rows the paint path actually draws are hit targets.
+#[test]
+fn a_click_outside_the_painted_rows_selects_nothing() {
+    let text: Vec<String> = (0..40).map(|n| format!("line{n}")).collect();
+    let joined = text.join("\n");
+    let mut viewer = DiffViewer::new(Rect::new(0, 0, 640, 100));
+    viewer.set_texts(joined.clone(), joined);
+    assert!(viewer.select_index(2));
+
+    // The column heading is not a row.
+    viewer.handle_event(&Event::mouse_press(10, 20, 1));
+    assert_eq!(viewer.selected_index(), Some(2), "a heading click is not a row click");
+
+    // The first row's fill starts ten pixels above its text origin; a press below the last
+    // painted band must not reach an off-screen row.
+    let below = ROW_TOP - 10 + viewer.visible_line_count() as i32 * 16 + 2;
+    viewer.handle_event(&Event::mouse_press(10, below, 1));
+    assert_eq!(viewer.selected_index(), Some(2), "a click below the window selects nothing");
+}
+
+/// A granularity switch must discard the advances measured for the previous spans.
+#[test]
+fn toggling_word_granularity_invalidates_the_measured_spans() {
+    let mut viewer = DiffViewer::new(Rect::new(0, 0, 640, 300));
+    viewer.set_texts("alpha beta", "alphabet beta");
+    rust_widgets::widget::svg::render_to_svg(&mut viewer);
+    assert!(viewer.measured_span_rows() > 0, "painting a changed row measures its spans");
+
+    viewer.set_word_granularity(true);
+    assert_eq!(viewer.measured_span_rows(), 0, "the widened span is measured afresh");
+}
+
+/// A rebuilt comparison selects the first row, so the viewport returns to it.
+#[test]
+fn a_recomparison_returns_the_viewport_to_the_first_row() {
+    let text: Vec<String> = (0..30).map(|n| format!("line{n}")).collect();
+    let mut changed = text.clone();
+    changed[20] = "line twenty".to_string();
+    let mut viewer = DiffViewer::new(Rect::new(0, 0, 640, 100));
+    viewer.set_texts(text.join("\n"), changed.join("\n"));
+
+    for _ in 0..2 {
+        viewer.handle_event(&Event::Wheel { delta: Point::new(0, -1), modifiers: 0 });
+    }
+    assert!(viewer.first_visible_line > 0, "the wheel moved the viewport");
+
+    viewer.set_whitespace_mode(WhitespaceMode::IgnoreEol);
+    assert_eq!(viewer.selected_index(), Some(0), "the comparison selects its first row");
+    assert_eq!(viewer.first_visible_line, 0, "the viewport shows the row it selected");
+}
+
+/// The declared `selected_index` default is the value a fresh control reports.
+#[test]
+fn the_declared_selected_index_default_matches_a_fresh_viewer() {
+    let viewer = DiffViewer::new(Rect::new(0, 0, 10, 10));
+    assert_eq!(
+        crate::devtools::default_property_value("diff_viewer", "selected_index"),
+        Some(CapabilityValue::Null)
+    );
+    assert_eq!(viewer.get("selected_index"), Ok(CapabilityValue::Null));
+}
+
 #[test]
 fn leading_insertion_leaves_the_rest_equal() {
     let mut viewer = DiffViewer::new(Rect::new(0, 0, 640, 300));
@@ -398,6 +481,220 @@ fn file_list_multi_selection_keeps_every_clicked_row() {
     assert_eq!(list.selected_paths(), vec!["src/c.rs"]);
 }
 
+/// A press outside the painted rows is not a selection, even when the list holds more files.
+#[test]
+fn file_list_ignores_clicks_outside_the_painted_rows() {
+    let mut list = DiffFileList::new(Rect::new(0, 0, 300, 60));
+    list.set_files(
+        (0..10)
+            .map(|index| FileDiffEntry::new(format!("f{index}.rs"), FileDiffStatus::Modified))
+            .collect(),
+    );
+
+    // The gap above the first row is part of the control but not of a row.
+    list.handle_event(&Event::mouse_press(10, 2, 1));
+    assert_eq!(list.selected_path(), None, "the top gap is not row zero");
+
+    // Two 22 px rows fit below the six-pixel gap; the press below them must not reach row two.
+    list.handle_event(&Event::mouse_press(10, 6 + 2 * 22 + 2, 1));
+    assert_eq!(list.selected_path(), None, "an unpainted row is not a hit target");
+
+    list.handle_event(&Event::mouse_press(10, 6 + 2, 1));
+    assert_eq!(list.selected_path(), Some("f0.rs"));
+}
+
+/// `Extended` mode grows a contiguous range from a Shift-click or a Shift-arrow.
+#[test]
+fn file_list_extended_mode_selects_a_range() {
+    use rust_widgets::shortcut::Modifiers;
+    use rust_widgets::widget::view_widgets::list_view::SelectionMode;
+
+    let shift = Modifiers::SHIFT.bits() as u32;
+    let mut list = DiffFileList::new(Rect::new(0, 0, 300, 200));
+    list.set_files(
+        ["a.rs", "b.rs", "c.rs", "d.rs"]
+            .iter()
+            .map(|path| FileDiffEntry::new(*path, FileDiffStatus::Modified))
+            .collect(),
+    );
+    list.set_selection_mode(SelectionMode::Extended);
+
+    let picked = Arc::new(Mutex::new(Vec::<String>::new()));
+    let sink = picked.clone();
+    list.file_selected.connect(move |path| {
+        if let Ok(mut guard) = sink.lock() {
+            guard.push(path.as_str().to_string());
+        }
+    });
+
+    let row0 = list.row_rect(0).expect("row 0");
+    let row2 = list.row_rect(2).expect("row 2");
+    list.handle_event(&Event::mouse_press(row0.x + 4, row0.y + 4, 1));
+    assert_eq!(list.selected_paths(), vec!["a.rs"]);
+
+    list.handle_event(&Event::mouse_press_with(row2.x + 4, row2.y + 4, 1, shift));
+    assert_eq!(list.selected_paths(), vec!["a.rs", "b.rs", "c.rs"], "Shift-click extends");
+
+    list.handle_event(&Event::FocusGained { reason: rust_widgets::event::FocusReason::Tab });
+    list.handle_event(&Event::key_press(40, shift));
+    assert_eq!(list.selected_paths(), vec!["a.rs", "b.rs", "c.rs", "d.rs"]);
+
+    list.handle_event(&Event::key_press(38, shift));
+    list.handle_event(&Event::key_press(38, shift));
+    assert_eq!(list.selected_paths(), vec!["a.rs", "b.rs"], "Shift-Up shrinks to the anchor");
+    list.handle_event(&Event::key_press(38, shift));
+    assert_eq!(list.selected_paths(), vec!["a.rs"]);
+    list.handle_event(&Event::key_press(38, shift));
+    assert_eq!(list.selected_paths(), vec!["a.rs"], "the anchor row has no predecessor");
+
+    let picked = picked.lock().ok().map(|guard| guard.clone()).unwrap_or_default();
+    assert_eq!(
+        picked,
+        vec!["a.rs", "c.rs", "d.rs", "c.rs", "b.rs", "a.rs"],
+        "each extension reports the head it reached"
+    );
+}
+
+/// Shift+Home and Shift+End extend an `Extended` selection to the list edges.
+#[test]
+fn file_list_extended_shift_home_and_end_reach_the_edges() {
+    use rust_widgets::shortcut::Modifiers;
+    use rust_widgets::widget::view_widgets::list_view::SelectionMode;
+
+    let shift = Modifiers::SHIFT.bits() as u32;
+    let mut list = DiffFileList::new(Rect::new(0, 0, 300, 200));
+    list.set_files(
+        ["a.rs", "b.rs", "c.rs", "d.rs", "e.rs"]
+            .iter()
+            .map(|path| FileDiffEntry::new(*path, FileDiffStatus::Modified))
+            .collect(),
+    );
+    list.set_selection_mode(SelectionMode::Extended);
+    list.handle_event(&Event::FocusGained { reason: rust_widgets::event::FocusReason::Tab });
+
+    let row2 = list.row_rect(2).expect("row 2");
+    list.handle_event(&Event::mouse_press(row2.x + 4, row2.y + 4, 1));
+    assert_eq!(list.selected_paths(), vec!["c.rs"]);
+
+    list.handle_event(&Event::key_press(35, shift));
+    assert_eq!(list.selected_paths(), vec!["c.rs", "d.rs", "e.rs"], "Shift+End");
+
+    list.handle_event(&Event::key_press(36, shift));
+    assert_eq!(list.selected_paths(), vec!["a.rs", "b.rs", "c.rs"], "Shift+Home");
+}
+
+/// Plain Home and End move the selection to the list edges; they used to do nothing.
+#[test]
+fn file_list_plain_home_and_end_move_the_selection() {
+    use rust_widgets::event::FocusReason;
+
+    let mut list = DiffFileList::new(Rect::new(0, 0, 300, 200));
+    list.set_files(
+        ["a.rs", "b.rs", "c.rs", "d.rs", "e.rs"]
+            .iter()
+            .map(|path| FileDiffEntry::new(*path, FileDiffStatus::Modified))
+            .collect(),
+    );
+    list.handle_event(&Event::FocusGained { reason: FocusReason::Tab });
+
+    let row2 = list.row_rect(2).expect("row 2");
+    list.handle_event(&Event::mouse_press(row2.x + 4, row2.y + 4, 1));
+    assert_eq!(list.selected_paths(), vec!["c.rs"]);
+
+    list.handle_event(&Event::key_press(35, 0));
+    assert_eq!(list.selected_paths(), vec!["e.rs"], "End picks the last row");
+
+    list.handle_event(&Event::key_press(36, 0));
+    assert_eq!(list.selected_paths(), vec!["a.rs"], "Home picks the first row");
+}
+
+/// Dragging past an edge of an `Extended` selection scrolls the list, so the range can grow past
+/// the rows that happened to be on screen when the drag began.
+#[test]
+fn file_list_extended_drag_scrolls_at_the_edges() {
+    use rust_widgets::widget::view_widgets::list_view::SelectionMode;
+    use rust_widgets::widget::Widget as _;
+
+    let mut list = DiffFileList::new(Rect::new(0, 0, 300, 200));
+    list.set_files(
+        (0..20)
+            .map(|index| FileDiffEntry::new(format!("f{index}.rs"), FileDiffStatus::Modified))
+            .collect(),
+    );
+    list.set_selection_mode(SelectionMode::Extended);
+
+    let row6 = list.row_rect(6).expect("row 6");
+    list.handle_event(&Event::mouse_press(row6.x + 4, row6.y + 4, 1));
+    assert_eq!(list.selected_paths().len(), 1);
+
+    let below = list.geometry().bottom() + 20;
+    for _ in 0..3 {
+        list.handle_event(&Event::mouse_move(row6.x + 4, below));
+    }
+    assert!(
+        list.row_rect(0).is_none(),
+        "the viewport scrolled under the drag, so row 0 is no longer painted"
+    );
+    assert_eq!(
+        list.selected_paths().last().copied(),
+        Some("f10.rs"),
+        "each edge move scrolled one row and extended to it"
+    );
+
+    // Dragging back above the top edge scrolls back up and shrinks the range.
+    let above = list.geometry().y - 20;
+    for _ in 0..3 {
+        list.handle_event(&Event::mouse_move(row6.x + 4, above));
+    }
+    assert!(list.row_rect(0).is_some(), "the viewport came back to the first row");
+    assert_eq!(
+        list.selected_paths(),
+        vec!["f0.rs", "f1.rs", "f2.rs", "f3.rs", "f4.rs", "f5.rs", "f6.rs"],
+        "the head followed the scroll back to the first row, anchored at the press"
+    );
+}
+
+/// A pointer drag grows an `Extended` range and a release stops it.
+#[test]
+fn file_list_extended_drag_selects_a_range_until_release() {
+    use rust_widgets::widget::view_widgets::list_view::SelectionMode;
+
+    let mut list = DiffFileList::new(Rect::new(0, 0, 300, 200));
+    list.set_files(
+        ["a.rs", "b.rs", "c.rs", "d.rs", "e.rs"]
+            .iter()
+            .map(|path| FileDiffEntry::new(*path, FileDiffStatus::Modified))
+            .collect(),
+    );
+    list.set_selection_mode(SelectionMode::Extended);
+
+    let row0 = list.row_rect(0).expect("row 0");
+    let row1 = list.row_rect(1).expect("row 1");
+    let row2 = list.row_rect(2).expect("row 2");
+    let row3 = list.row_rect(3).expect("row 3");
+    let row4 = list.row_rect(4).expect("row 4");
+
+    list.handle_event(&Event::mouse_press(row1.x + 4, row1.y + 4, 1));
+    assert_eq!(list.selected_paths(), vec!["b.rs"]);
+    list.handle_event(&Event::mouse_move(row3.x + 4, row3.y + 4));
+    assert_eq!(list.selected_paths(), vec!["b.rs", "c.rs", "d.rs"], "the drag extends");
+
+    list.handle_event(&Event::mouse_release(row3.x + 4, row3.y + 4, 1));
+    list.handle_event(&Event::mouse_move(row0.x + 4, row0.y + 4));
+    assert_eq!(
+        list.selected_paths(),
+        vec!["b.rs", "c.rs", "d.rs"],
+        "a move after the release does not extend"
+    );
+
+    // Leaving the control is the last signal when the release lands outside it.
+    list.handle_event(&Event::mouse_press(row1.x + 4, row1.y + 4, 1));
+    list.handle_event(&Event::mouse_move(row2.x + 4, row2.y + 4));
+    list.handle_event(&Event::mouse_leave(row4.x + 4, row4.y + 4));
+    list.handle_event(&Event::mouse_move(row4.x + 4, row4.y + 4));
+    assert_eq!(list.selected_paths(), vec!["b.rs", "c.rs"], "the leave ended the drag");
+}
+
 /// The Myers trace is bounded by bytes, and an over-deep comparison is reported as such.
 #[test]
 fn the_myers_trace_is_bounded() {
@@ -510,5 +807,168 @@ mod issue_2_8_tests {
         viewer.draw(&mut context);
         backend.end_frame();
         assert!(!backend.frame_rgba().is_empty());
+    }
+
+    /// Turning syntax highlighting off (or to plain text) drops the token table.
+    ///
+    /// The rebuild used to return early and leave the last language's spans in place, so a
+    /// plain-text view kept painting token colours — including over unrelated new text, since the
+    /// spans are only clamped to the line length.
+    #[test]
+    fn plain_text_language_clears_the_stale_token_spans() {
+        let mut viewer = DiffViewer::new(Rect::new(0, 0, 640, 400));
+        viewer.set_texts("fn main() {}", "fn main() { }");
+        viewer.set_syntax_highlight(true);
+        viewer.set_language(LanguageId::Rust);
+        viewer.ensure_syntax_spans();
+        assert!(viewer.syntax_spans.is_some(), "Rust produces token spans");
+
+        viewer.set_language(LanguageId::PlainText);
+        viewer.ensure_syntax_spans();
+        assert!(viewer.syntax_spans.is_none(), "no language means no token spans");
+    }
+
+    /// Unified mode's fold context rows are ordinary single-column rows.
+    #[test]
+    fn unified_fold_context_rows_are_single_column() {
+        let text: Vec<String> = (0..20).map(|n| format!("line{n}")).collect();
+        let mut changed = text.clone();
+        changed[15] = "line fifteen".to_string();
+        let mut viewer = DiffViewer::new(Rect::new(0, 0, 640, 400));
+        viewer.set_texts(text.join("\n"), changed.join("\n"));
+        viewer.set_view_mode(DiffViewMode::Unified);
+        viewer.set_fold_unchanged(true);
+        viewer.set_fold_threshold(4);
+        viewer.set_fold_context_lines(2);
+        viewer.display_row_count();
+
+        assert!(matches!(viewer.display_rows[2].source, RowSource::Fold { .. }));
+        assert!(
+            viewer
+                .display_rows
+                .iter()
+                .all(|row| !matches!(row.source, RowSource::Line { side: RowSide::Both, .. })),
+            "unified mode has no two-column row"
+        );
+    }
+
+    /// A selection never names a line the folded view does not paint.
+    #[test]
+    fn a_folded_selection_never_names_a_hidden_row() {
+        let text: Vec<String> = (0..30).map(|n| format!("line{n}")).collect();
+        let mut changed = text.clone();
+        changed[25] = "line twenty-five".to_string();
+        let mut viewer = DiffViewer::new(Rect::new(0, 0, 640, 100));
+        viewer.set_texts(text.join("\n"), changed.join("\n"));
+        assert!(viewer.select_index(10));
+
+        viewer.set_fold_unchanged(true);
+        viewer.display_row_count();
+
+        let selected = viewer.selected_index().expect("a selection survives the fold");
+        assert!(
+            viewer.display_rows.iter().any(|row| matches!(
+                row.source,
+                RowSource::Line { index, .. } if index == selected
+            )),
+            "the selected line {selected} must be painted by some row"
+        );
+        // Selecting a folded line directly snaps to the nearest painted one.
+        assert!(viewer.select_index(5));
+        let selected = viewer.selected_index().expect("the snap keeps a selection");
+        assert!(viewer.display_rows.iter().any(|row| matches!(
+            row.source,
+            RowSource::Line { index, .. } if index == selected
+        )));
+    }
+
+    /// A document folded into a single marker paints nothing, so it cannot hold a selection.
+    ///
+    /// `nearest_painted_line` returns `None` when the fold has no painted neighbour on either
+    /// side; both `select_index` and the reconcile pass used to keep the hidden index anyway.
+    #[test]
+    fn folding_the_whole_document_clears_the_selection() {
+        let text: Vec<String> = (0..30).map(|n| format!("line{n}")).collect();
+        let mut viewer = DiffViewer::new(Rect::new(0, 0, 640, 300));
+        viewer.set_texts(text.join("\n"), text.join("\n"));
+        assert!(viewer.select_index(10));
+
+        viewer.set_fold_unchanged(true);
+        assert_eq!(viewer.display_row_count(), 1, "the whole comparison is one marker");
+        assert_eq!(
+            viewer.selected_index(),
+            None,
+            "a fold with no painted neighbour cannot keep a selected line"
+        );
+
+        assert!(viewer.select_index(5));
+        assert_eq!(viewer.selected_index(), None, "and a new select of a hidden line is refused");
+    }
+
+    /// A viewer shorter than one row paints nothing, so it accepts no click.
+    ///
+    /// `visible_line_count` used to answer 1 for a negative usable height while `draw` broke
+    /// before painting row 0; a press in that band selected a row that was never on screen.
+    #[test]
+    fn a_viewer_too_short_to_paint_a_row_selects_nothing() {
+        let mut viewer = DiffViewer::new(Rect::new(0, 0, 320, 40));
+        viewer.set_texts("a\nb", "a\nB");
+        assert_eq!(viewer.visible_line_count(), 0, "nothing fits below the headings");
+        assert_eq!(viewer.selected_index(), None, "nothing is selected before the click");
+
+        viewer.handle_event(&Event::mouse_press(10, 35, 1));
+        assert_eq!(viewer.selected_index(), None, "no painted row, no selection");
+    }
+
+    /// `select_file` selects in every mode, and a deselection reports nothing.
+    #[test]
+    fn select_file_never_deselects_in_multi_mode() {
+        use rust_widgets::widget::view_widgets::list_view::SelectionMode;
+
+        let mut list = DiffFileList::new(Rect::new(0, 0, 300, 200));
+        list.set_files(
+            ["a.rs", "b.rs", "c.rs"]
+                .iter()
+                .map(|path| FileDiffEntry::new(*path, FileDiffStatus::Modified))
+                .collect(),
+        );
+        list.set_selection_mode(SelectionMode::Multi);
+        let emitted = Arc::new(Mutex::new(Vec::<String>::new()));
+        let sink = emitted.clone();
+        list.file_selected.connect(move |path| {
+            if let Ok(mut guard) = sink.lock() {
+                guard.push(path.as_str().to_string());
+            }
+        });
+
+        assert!(list.select_file("a.rs"));
+        assert!(list.select_file("c.rs"));
+        assert!(list.select_file("a.rs"));
+        assert_eq!(list.selected_paths(), vec!["a.rs", "c.rs"], "select_file selects");
+        assert_eq!(
+            *emitted.lock().unwrap(),
+            vec!["a.rs", "c.rs"],
+            "a path that was not newly selected is never reported"
+        );
+    }
+
+    /// A path containing the token separator round-trips through the published property.
+    #[test]
+    fn a_path_containing_a_pipe_round_trips() {
+        let entry = FileDiffEntry::new("src/a|b.rs", FileDiffStatus::Renamed).with_counts(2, 3);
+        assert_eq!(FileDiffEntry::from_token(&entry.to_token()), Some(entry));
+    }
+
+    /// `row_rect` reports only rows the viewport paints.
+    #[test]
+    fn row_rect_reports_only_painted_rows() {
+        let mut list = DiffFileList::new(Rect::new(0, 0, 300, 60));
+        list.set_files(
+            (0..10)
+                .map(|index| FileDiffEntry::new(format!("f{index}.rs"), FileDiffStatus::Modified))
+                .collect(),
+        );
+        assert!(list.row_rect(1).is_some());
+        assert_eq!(list.row_rect(2), None, "a two-row viewport does not paint row 2");
     }
 }

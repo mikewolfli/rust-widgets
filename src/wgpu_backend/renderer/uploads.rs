@@ -366,6 +366,15 @@ impl WgpuRenderer {
         self.text_draw_bind_group(rect, color, view)
     }
 
+    /// The number of GPU text coverage uploads this renderer has made.
+    ///
+    /// Exposed for the RD3-04 regression test: the property is "a repeated caption uploads
+    /// its coverage once", and the counter is the only direct witness of the upload itself.
+    #[cfg(test)]
+    pub(crate) fn text_coverage_uploads(&self) -> u64 {
+        self.text_coverage_cache.borrow().uploads()
+    }
+
     /// Creates the `R8Unorm` coverage texture for `rect` and writes `coverage` into it.
     fn coverage_texture(
         &self,

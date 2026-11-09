@@ -767,6 +767,14 @@ pub(crate) struct CachedTextCoverage {
 pub(crate) struct TextCoverageCache {
     entries: HashMap<TextCoverageKey, CachedTextCoverage>,
     order: VecDeque<TextCoverageKey>,
+    /// How many coverage textures this cache has uploaded (misses, not lookups).
+    ///
+    /// A counter rather than an inferred number: the RD3-04 property is "a repeated caption
+    /// uploads once", and a test that only checked the cache length could pass while the
+    /// renderer kept rasterising and uploading the same coverage. Test-only so the release
+    /// build carries no bookkeeping for a measurement it does not publish.
+    #[cfg(test)]
+    uploads: u64,
 }
 
 impl TextCoverageCache {
@@ -790,6 +798,10 @@ impl TextCoverageCache {
         texture: wgpu::Texture,
         view: wgpu::TextureView,
     ) {
+        #[cfg(test)]
+        {
+            self.uploads = self.uploads.saturating_add(1);
+        }
         if self.entries.insert(key, CachedTextCoverage { text, _texture: texture, view }).is_none()
         {
             self.order.push_back(key);
@@ -799,6 +811,12 @@ impl TextCoverageCache {
                 self.entries.remove(&oldest);
             }
         }
+    }
+
+    /// The number of coverage uploads made so far (cache misses).
+    #[cfg(test)]
+    pub(crate) fn uploads(&self) -> u64 {
+        self.uploads
     }
 }
 

@@ -134,7 +134,6 @@ pub const KANBAN_CARD_VIEW_PROPERTIES: &[PropertySchema] = &[
     PropertySchema::new("done", PropertyValueKind::Bool, true, true),
     PropertySchema::new("tags", PropertyValueKind::StringList, true, true),
     PropertySchema::new("assignee", PropertyValueKind::String, true, true),
-    PropertySchema::new("draggable", PropertyValueKind::Bool, true, true),
     PropertySchema::new("editing", PropertyValueKind::Bool, true, false),
     PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
     PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
@@ -420,12 +419,13 @@ pub fn default_property_value(kind: &str, name: &str) -> Option<CapabilityValue>
         },
         "gantt_task_grid" => match name {
             // The constructor's initial values (`GanttTaskGrid::new`): 24-pixel rows, a
-            // 12-pixel indent step and a visible header (RW-105). The two counts stay zero
-            // because a fresh grid has no columns or tasks beyond its one header band.
+            // 12-pixel indent step and a visible header (RW-105). The constructor also creates
+            // its one `Task` column, so `columns` starts at one; only `tasks` is empty.
             "row_height" => Some(CapabilityValue::UInt(24)),
             "indent_step" => Some(CapabilityValue::UInt(12)),
             "header_visible" => Some(CapabilityValue::Bool(true)),
-            "columns" | "tasks" => Some(CapabilityValue::UInt(0)),
+            "columns" => Some(CapabilityValue::UInt(1)),
+            "tasks" => Some(CapabilityValue::UInt(0)),
             _ => None,
         },
         "timeline_axis" => match name {
@@ -475,7 +475,6 @@ pub fn default_property_value(kind: &str, name: &str) -> Option<CapabilityValue>
             "title" | "description" | "assignee" => Some(CapabilityValue::String(String::new())),
             "done" | "editing" => Some(CapabilityValue::Bool(false)),
             "tags" => Some(CapabilityValue::Tuple(rust_widgets::compat::Vec::new())),
-            "draggable" => Some(CapabilityValue::Bool(true)),
             _ => None,
         },
         "kanban_column_header" => match name {
@@ -526,4 +525,26 @@ pub fn published_event_names() -> Vec<(&'static str, Vec<&'static str>)> {
         ),
         ("dependency_editor", DEPENDENCY_EDITOR_EVENTS.iter().map(|schema| schema.name).collect()),
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rust_widgets::widget::capability::WidgetProperties;
+
+    /// A declared default has to be what a fresh control reports, or a dropped binding resets to a
+    /// state the constructor can never produce.
+    #[test]
+    fn a_task_grids_declared_defaults_match_its_constructor() {
+        let grid =
+            crate::project::gantt::gantt_widget::GanttTaskGrid::new(Rect::new(0, 0, 220, 200));
+        for name in ["row_height", "indent_step", "header_visible", "columns", "tasks"] {
+            assert_eq!(
+                default_property_value("gantt_task_grid", name),
+                Some(grid.get(name).expect("the property is published")),
+                "{name} must mirror a fresh grid"
+            );
+        }
+        assert_eq!(grid.get("columns"), Ok(CapabilityValue::UInt(1)));
+    }
 }

@@ -34,13 +34,18 @@ impl CodeEditor {
     }
 
     /// Scrolls by a number of lines, clamped to the document.
+    ///
+    /// The clamp is in **visual rows**, not document lines: with wrapping or folding
+    /// the two disagree, and clamping by `line_count` let the first row pass the last
+    /// painted row (leaving a blank viewport) or stopped short of the end.
     pub fn scroll_by(&mut self, delta_lines: isize) {
-        let rows = self.visible_rows();
-        let max_first = self.line_count().saturating_sub(rows);
-        let target = (self.scroll_line as isize + delta_lines).clamp(0, max_first as isize);
-        if target as usize != self.scroll_line {
-            self.scroll_line = target as usize;
-            self.scroll_visual_row = self.line_to_visual_row(self.scroll_line);
+        let rows = self.visible_rows().max(1);
+        let max_first = self.total_visual_rows().saturating_sub(rows);
+        let target =
+            (self.scroll_visual_row as isize + delta_lines).clamp(0, max_first as isize) as usize;
+        if target != self.scroll_visual_row {
+            self.scroll_visual_row = target;
+            self.scroll_line = self.visual_row_to_line(target);
             self.base.request_redraw();
         }
     }
@@ -171,8 +176,16 @@ impl CodeEditor {
                 self.scroll_column = self.cursor.head.column + 1 - columns;
             }
         }
-        let max_first = self.line_count().saturating_sub(rows);
-        self.scroll_line = self.scroll_line.min(max_first);
+        // Clamp the row, then derive the line from it. Clamping `scroll_line` alone
+        // left `scroll_visual_row` pointing past the last row: the two fields are the
+        // pair every scroll path publishes, and a caret move was the one place that
+        // could make them disagree.
+        let max_row = self.total_visual_rows().saturating_sub(rows);
+        if self.scroll_visual_row > max_row {
+            self.scroll_visual_row = max_row;
+            self.base.request_redraw();
+        }
+        self.scroll_line = self.visual_row_to_line(self.scroll_visual_row);
     }
 
     pub(super) fn clamp_cursor_to_document(&mut self) {
@@ -257,7 +270,16 @@ impl CodeEditor {
             self.line_tokens.resize(count, None);
         }
         self.clamp_cursor_to_visible();
+        let matches_before = self.find.match_count();
         self.recompute_match_cache_incremental(dirty);
+        // An edit changes the hit list. Publishing only from `set_search_query` meant a
+        // host showing "3 of 12" kept the count from before the edit, even though the
+        // list it navigates by had already changed. The signals are emitted only when
+        // the count actually moved, so a keystroke with no query stays silent.
+        if self.find.match_count() != matches_before {
+            self.search_changed.emit(self.find.match_count());
+            self.emit_search_result();
+        }
         self.refresh_visible_rows();
         // The document shape changed (lines, folds, or the wrap geometry the callers
         // above may have moved), so the row-prefix table is rebuilt here rather than

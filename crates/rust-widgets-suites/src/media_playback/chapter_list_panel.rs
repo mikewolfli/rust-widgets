@@ -13,7 +13,7 @@
 //! (the same `ColorWell`/`ColorHistory` pattern) pushes a press back to the player.
 //!
 //! Registration surface (out of scope for this file): canonical name `chapter_list_panel`, kind
-//! [`WidgetKind::VideoPlayer`].
+//! `WidgetKind::VideoPlayer`.
 
 use crate::media_playback::video_player::{VideoChapter, VideoPlayer};
 use rust_widgets::compat::{lock, Arc, Mutex, Vec};
@@ -121,6 +121,14 @@ fn panel_palette(style: &rust_widgets::style::WidgetStyle, role: &str) -> (Color
 /// The live chapter index an attached player reports.
 struct ChapterBinding {
     active: Arc<Mutex<Option<usize>>>,
+    /// The chapter start times the clock callback maps onto rows.
+    ///
+    /// Shared and rewritten by [`ChapterListPanel::set_chapters`] so the mapped index always
+    /// names a row of the list on screen; a list captured once at attach time desynchronised as
+    /// soon as an attached panel replaced its chapters.
+    starts: Arc<Mutex<Vec<f64>>>,
+    /// The followed clock position in milliseconds, when a player is attached.
+    position: Arc<Mutex<Option<u64>>>,
     _scope: ConnectionScope,
 }
 
@@ -134,7 +142,7 @@ struct ChapterSeekSink {
 ///
 /// The panel mirrors the player's sanitising rule — non-finite and negative starts are dropped
 /// and the rest are sorted — so a row index means the same chapter in both controls. Row geometry
-/// is shared by painting and hit-testing through [`Self::row_rect`].
+/// is shared by painting and hit-testing through `Self::row_rect`.
 pub struct ChapterListPanel {
     base: BaseWidget,
     chapters: Vec<VideoChapter>,
@@ -182,6 +190,10 @@ impl ChapterListPanel {
             .collect();
         chapters.sort_by(|left, right| left.start_seconds.total_cmp(&right.start_seconds));
         self.chapters = chapters;
+        if let Some(binding) = self.binding.as_ref() {
+            *lock(&binding.starts) =
+                self.chapters.iter().map(|chapter| chapter.start_seconds).collect();
+        }
         self.rebuild_chapter_views();
     }
 
@@ -191,6 +203,13 @@ impl ChapterListPanel {
     /// sanitising rule. The list stays sorted, so a row index means the same chapter here as in
     /// the player.
     pub fn add_chapter(&mut self, chapter: VideoChapter) -> Option<usize> {
+        // While a player is bound it owns the chapter model (this companion owns the chrome), and
+        // a row index must keep naming the same chapter on both sides. A local insert would make
+        // the index this panel reports unresolvable in the player; the host pushes the edited list
+        // through `VideoPlayer::set_chapters` instead.
+        if self.is_attached() {
+            return None;
+        }
         if !chapter.start_seconds.is_finite() || chapter.start_seconds < 0.0 {
             return None;
         }
@@ -207,6 +226,9 @@ impl ChapterListPanel {
     /// The list is re-sorted afterwards, because changing a start time moves the row; a
     /// non-finite or negative start is refused and leaves the list untouched.
     pub fn update_chapter(&mut self, index: usize, chapter: VideoChapter) -> bool {
+        if self.is_attached() {
+            return false;
+        }
         if !chapter.start_seconds.is_finite() || chapter.start_seconds < 0.0 {
             return false;
         }
@@ -221,6 +243,9 @@ impl ChapterListPanel {
 
     /// Removes the chapter at `index`, returning it when the index named a row.
     pub fn remove_chapter(&mut self, index: usize) -> Option<VideoChapter> {
+        if self.is_attached() {
+            return None;
+        }
         if index >= self.chapters.len() {
             return None;
         }
@@ -233,7 +258,15 @@ impl ChapterListPanel {
     fn rebuild_chapter_views(&mut self) {
         self.times =
             self.chapters.iter().map(|chapter| Self::format_start(chapter.start_seconds)).collect();
-        let active = self.chapter_index_at(self.position_ms);
+        // An attached panel's active row is the player's report, delivered through
+        // `on_chapter_entered`. Re-deriving it from `position_ms` here would overwrite that
+        // report with a clock the panel does not follow, so a list refresh would jump the
+        // highlight back to the chapter under a stale position.
+        let bound = self.binding.as_ref().map(|binding| *lock(&binding.active));
+        let active = match bound {
+            Some(Some(index)) if index < self.chapters.len() => Some(index),
+            _ => self.chapter_index_at(self.position_ms),
+        };
         self.set_active(active);
         self.clamp_scroll();
         self.base.request_layout();
@@ -295,7 +328,10 @@ impl ChapterListPanel {
 
     /// The playback position the panel maps to a chapter, in milliseconds.
     pub fn position_ms(&self) -> u64 {
-        self.position_ms
+        match self.binding.as_ref().and_then(|binding| *lock(&binding.position)) {
+            Some(position) => position,
+            None => self.position_ms,
+        }
     }
 
     /// Sets the playback position and moves the active chapter to the one containing it.
@@ -334,11 +370,38 @@ impl ChapterListPanel {
             *lock(&active_sink) = Some(*index);
             redraw.emit();
         });
+        // The chapter signal is only emitted on entry, so leaving every chapter (back before the
+        // first marker) left the highlight naming a row the clock had left. The clock is the
+        // player's published truth; map it with the panel's own rule.
+        let starts: Arc<Mutex<Vec<f64>>> =
+            Arc::new(Mutex::new(self.chapters.iter().map(|c| c.start_seconds).collect()));
+        let clock_sink = Arc::clone(&active_mirror);
+        let clock_redraw = self.base.redraw_requested_signal().clone();
+        let clock_starts = Arc::clone(&starts);
+        let clock_position = Arc::new(Mutex::new(Some(self.position_ms)));
+        let position_sink = Arc::clone(&clock_position);
+        player.time_updated.connect_ref_scoped(&scope, move |time| {
+            // The property is read-only while attached, so the clock is its only source: publish
+            // the followed position through the same cell the active index uses.
+            *lock(&position_sink) = Some((time.max(0.0) * 1000.0) as u64);
+            let starts = lock(&clock_starts);
+            let next = starts.iter().rposition(|start| *start <= *time);
+            let mut active = lock(&clock_sink);
+            if *active != next {
+                *active = next;
+                clock_redraw.emit();
+            }
+        });
 
         let seeks = Arc::new(Mutex::new(Vec::new()));
         let seek_redraw = player.accept_chapter_seeks(Arc::clone(&seeks));
         self.seek_sink = Some(ChapterSeekSink { seeks, redraw: seek_redraw });
-        self.binding = Some(ChapterBinding { active: active_mirror, _scope: scope });
+        self.binding = Some(ChapterBinding {
+            active: active_mirror,
+            starts,
+            position: clock_position,
+            _scope: scope,
+        });
         self.base.request_redraw();
     }
 
@@ -378,6 +441,12 @@ impl ChapterListPanel {
             return None;
         }
         let visible = (local_y / self.row_height as i32) as usize;
+        // The painted row set is `0..visible_row_count()`, which can be empty when the panel is
+        // shorter than one row; `row_rect` alone accepts any non-empty band, so it answered for a
+        // row the paint never draws and a press there selected a chapter that was not on screen.
+        if visible >= self.visible_row_count() {
+            return None;
+        }
         self.row_rect(visible)?;
         let index = self.scroll_offset + visible;
         (index < self.chapters.len()).then_some(index)
@@ -699,6 +768,31 @@ mod tests {
         assert_eq!(seen.lock().map(|guard| guard.clone()).unwrap_or_default(), alloc::vec![1usize]);
     }
 
+    /// A panel shorter than one row paints nothing, so it has no hit target either.
+    ///
+    /// `hit_chapter` validated the row against `row_rect`, which accepts any non-empty band, so a
+    /// 20 px panel below its 32 px row height reported row 0 and a press selected a chapter that
+    /// was not on screen.
+    #[test]
+    fn a_panel_shorter_than_one_row_has_no_hit_target() {
+        let mut panel = ChapterListPanel::new(Rect::new(0, 0, 240, 20));
+        panel.set_row_height(32);
+        panel.set_chapters(chapters());
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&seen);
+        panel.on_chapter_selected.connect(move |index| {
+            if let Ok(mut guard) = sink.lock() {
+                guard.push(*index);
+            }
+        });
+
+        assert_eq!(panel.hit_chapter(Point::new(20, 5)), None);
+        let before = panel.active_chapter();
+        panel.handle_event(&Event::MousePress { pos: Point::new(20, 5), button: 1, modifiers: 0 });
+        assert_eq!(panel.active_chapter(), before, "a press on nothing selects nothing");
+        assert!(seen.lock().map(|guard| guard.clone()).unwrap_or_default().is_empty());
+    }
+
     /// An attached panel follows the player's chapter-entry reports.
     #[test]
     fn attach_follows_the_players_chapter_reports() {
@@ -787,5 +881,93 @@ mod tests {
         assert_eq!(removed.title, "Later");
         assert_eq!(panel.chapters().len(), 3);
         assert!(panel.remove_chapter(9).is_none());
+    }
+
+    /// Refreshing the list must not overwrite the player's live chapter report with the
+    /// panel's own (unfollowed) position.
+    #[test]
+    fn refreshing_the_list_keeps_the_players_active_chapter() {
+        let mut player = VideoPlayer::new(Rect::new(0, 0, 320, 240));
+        player.set_duration(200.0);
+        player.set_chapters(chapters());
+        let mut panel = ChapterListPanel::new(Rect::new(0, 0, 240, 120));
+        panel.attach_video_player(&mut player);
+
+        player.seek(65.0);
+        assert_eq!(panel.active_chapter(), Some(1), "the player reports the chapter it entered");
+
+        let rows = panel.chapters().to_vec();
+        panel.set_chapters(rows);
+        assert_eq!(panel.active_chapter(), Some(1), "a refresh must keep the player's report");
+        assert_eq!(player.current_chapter(), Some(1));
+    }
+
+    /// Leaving every chapter clears the highlight an attached player reported.
+    #[test]
+    fn leaving_every_chapter_clears_the_attached_highlight() {
+        let mut player = VideoPlayer::new(Rect::new(0, 0, 320, 240));
+        player.set_duration(200.0);
+        player.set_chapters(vec![VideoChapter::new("Intro", 10.0)]);
+        let mut panel = ChapterListPanel::new(Rect::new(0, 0, 240, 120));
+        panel.attach_video_player(&mut player);
+
+        player.seek(15.0);
+        assert_eq!(panel.active_chapter(), Some(0));
+        player.seek(0.0);
+        assert_eq!(player.current_chapter(), None);
+        assert_eq!(
+            panel.active_chapter(),
+            None,
+            "the panel must follow the player out of the chapter"
+        );
+    }
+
+    /// An attached panel refuses local row edits: the player owns the row set.
+    #[test]
+    fn an_attached_panel_refuses_local_row_edits() {
+        let mut player = VideoPlayer::new(Rect::new(0, 0, 320, 240));
+        player.set_duration(200.0);
+        player.set_chapters(chapters());
+        let mut panel = ChapterListPanel::new(Rect::new(0, 0, 240, 120));
+        panel.attach_video_player(&mut player);
+
+        assert_eq!(panel.add_chapter(VideoChapter::new("Late", 90.0)), None);
+        assert!(!panel.update_chapter(0, VideoChapter::new("Changed", 5.0)));
+        assert_eq!(panel.remove_chapter(1), None);
+        assert_eq!(panel.chapters().len(), 3, "the player's rows are untouched");
+    }
+
+    /// Replacing the rows while attached rewrites the clock mapping with them.
+    ///
+    /// The start list was captured once at attach; a replacement left the clock mapping onto the
+    /// old starts and could name a row that no longer exists.
+    #[test]
+    fn replacing_chapters_while_attached_keeps_the_mapping_in_step() {
+        let mut player = VideoPlayer::new(Rect::new(0, 0, 320, 240));
+        player.set_duration(200.0);
+        player.set_chapters(chapters());
+        player.seek(65.0);
+        let mut panel = ChapterListPanel::new(Rect::new(0, 0, 240, 120));
+        panel.attach_video_player(&mut player);
+        assert_eq!(panel.active_chapter(), Some(1));
+
+        panel.set_chapters(alloc::vec![VideoChapter::new("A", 0.0), VideoChapter::new("B", 90.0),]);
+        player.seek(95.0);
+        assert_eq!(panel.active_chapter(), Some(1));
+        assert!(panel.active_chapter().expect("a row") < panel.chapters().len());
+    }
+
+    /// While attached, `position_ms` follows the player's clock instead of freezing at bind time.
+    #[test]
+    fn position_ms_follows_the_attached_clock() {
+        let mut player = VideoPlayer::new(Rect::new(0, 0, 320, 240));
+        player.set_duration(200.0);
+        player.set_chapters(chapters());
+        let mut panel = ChapterListPanel::new(Rect::new(0, 0, 240, 120));
+        panel.attach_video_player(&mut player);
+        assert_eq!(panel.position_ms(), 0);
+
+        player.seek(65.0);
+        assert_eq!(panel.position_ms(), 65_000, "the readout follows the followed clock");
     }
 }

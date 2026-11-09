@@ -102,7 +102,7 @@ pub struct WebViewCore {
     pub loading_progress: Signal1<u8>,
     pub title_changed: Signal1<String>,
     pub url_changed: Signal1<String>,
-    /// Emitted when a load fails, through [`WebEngine::report_error`].
+    /// Emitted when a load fails, through `WebEngine::report_error`.
     ///
     /// Was named `_error_occurred`, which marked it as unused while it was still a
     /// `pub` field: a leading underscore on a public item tells readers the wrong
@@ -112,6 +112,13 @@ pub struct WebViewCore {
     pub navigation_state_changed: Signal1<(bool, bool)>,
     pub console_message: Signal1<(String, u32, String)>,
     pub content: String,
+    /// Monotonic version of [`Self::content`], bumped on every write.
+    ///
+    /// A painter caches a rendered preview of the body. Comparing the body itself every frame
+    /// is O(document), while this counter is O(1) and changes exactly when the text does, so a
+    /// cache keyed on it cannot serve a preview of a previous document (the older key used the
+    /// length plus the first and last byte, which two different bodies can share).
+    content_revision: u64,
     /// Optional simulation engine for injecting mock data in tests.
     /// When set, navigation methods will delegate to this engine
     /// instead of the default simulated 0→50→100 progress.
@@ -163,6 +170,7 @@ impl WebViewCore {
             navigation_state_changed: Signal1::new(),
             console_message: Signal1::new(),
             content: String::new(),
+            content_revision: 0,
             simulation_engine: None,
             #[cfg(feature = "web-http")]
             pending_load: None,
@@ -265,19 +273,32 @@ impl WebViewCore {
         }
 
         if self.url == url {
-            // URL already set — mark as fully loaded.
-            self.load_progress = 100;
+            // A repeat navigation to the page already open is a no-op. The old early return
+            // forced the progress to 100 while leaving an in-flight load marked as loading,
+            // so a view could report a finished load that had not delivered anything. Doing
+            // nothing keeps both facts truthful: an in-flight load stays in flight and an idle
+            // view stays idle.
             return;
         }
+
+        // Whether this navigation produced a body of its own. Only then is a snapshot recorded:
+        // the simulated (non-fetching) path leaves the previous body on screen, and caching that
+        // under the new URL would tell a later Back that this page showed the old document.
+        let mut produced_body = false;
 
         // Delegate to simulation engine if one is set (primarily for testing).
         if let Some(ref mut engine) = self.simulation_engine {
             match engine.simulate_navigation(&url) {
                 Ok(content) => {
-                    self.content = content;
+                    self.store_content(content);
+                    produced_body = true;
                 }
                 Err(e) => {
-                    log::error!("[web] simulation engine error for '{url}': {e}");
+                    // The engine is the source of the failure, so it is reported through the
+                    // same signal an invalid scheme uses; a log line is invisible to the host.
+                    let message = format!("simulation engine error for '{url}': {e}");
+                    log::error!("[web] {message}");
+                    self.error_occurred.emit(message);
                     return;
                 }
             }
@@ -301,7 +322,11 @@ impl WebViewCore {
         // superseded load is now dropped by generation rather than by luck of timing.
         #[cfg(feature = "web-http")]
         {
-            if url.starts_with("http://") || url.starts_with("https://") {
+            // A simulation engine is the source of the body; fetching the same URL over the
+            // network would overwrite exactly the content the caller asked the engine for.
+            if produced_body {
+                self.load_progress = 50;
+            } else if url.starts_with("http://") || url.starts_with("https://") {
                 self.load_progress = 10;
                 self.loading_progress.emit(self.load_progress);
 
@@ -348,6 +373,12 @@ impl WebViewCore {
         // page whose bytes have not been read yet.
         #[cfg(feature = "web-http")]
         if self.pending_load.is_some() {
+            // Only the completion is deferred: `history.navigate` above has already changed
+            // `can_go_back`, and `stop()` ends the load without reaching `apply_http_outcome`,
+            // so the state change has to be published here or it never is. The URL bar and the
+            // progress strip changed too, so the frame has to be requested before the return.
+            self.update_navigation_state();
+            self.base.request_redraw();
             return;
         }
 
@@ -359,6 +390,9 @@ impl WebViewCore {
         self.title_changed.emit(self.title.clone());
         self.update_navigation_state();
         self.browser_history.add_entry(self.url.clone(), self.title.clone());
+        if produced_body {
+            self.record_current_page();
+        }
         self.base.request_redraw();
     }
 
@@ -369,11 +403,18 @@ impl WebViewCore {
         self.invalidate_pending_load();
 
         self.url = base_url.unwrap_or("data:text/html").to_string();
+        // A document load is a navigation, so it belongs in the session history: without this
+        // an HTML page was invisible to `go_back`, which could only ever reach pages visited
+        // through `set_url`. The URL is the one this loader has always published
+        // (`base_url`, or `data:text/html`); a per-document synthetic URL would change the
+        // public `url()` value that the wrappers document and tests assert, so the stable
+        // existing URL is kept and two anonymous HTML documents share one history spelling.
+        self.history.navigate(self.url.clone());
         self.title = "HTML Content".to_string();
         self.loading = true;
         self.load_progress = 0;
         self.loading_started.emit(self.url.clone());
-        self.content = html.to_string();
+        self.store_content(html.to_string());
 
         // Emit progress at 50%.
         self.load_progress = 50;
@@ -387,6 +428,11 @@ impl WebViewCore {
         self.title_changed.emit(self.title.clone());
         self.url_changed.emit(self.url.clone());
         self.update_navigation_state();
+        // A document load is a navigation, so the panel-facing history records it exactly as
+        // `set_url` does; otherwise `browser_history()` described a different session than
+        // `history()` for the same loads.
+        self.browser_history.add_entry(self.url.clone(), self.title.clone());
+        self.record_current_page();
         self.base.request_redraw();
     }
 
@@ -397,11 +443,13 @@ impl WebViewCore {
         self.invalidate_pending_load();
 
         self.url = base_url.to_string();
+        // See `load_html`: a data load is a navigation and must be reachable through Back.
+        self.history.navigate(self.url.clone());
         self.title = format!("Data: {mime_type}");
         self.loading = true;
         self.load_progress = 0;
         self.loading_started.emit(self.url.clone());
-        self.content = String::from_utf8_lossy(data).to_string();
+        self.store_content(String::from_utf8_lossy(data).to_string());
 
         // Emit progress at 50%.
         self.load_progress = 50;
@@ -413,7 +461,13 @@ impl WebViewCore {
         self.loading_progress.emit(self.load_progress);
         self.loading_finished.emit(self.url.clone());
         self.title_changed.emit(self.title.clone());
+        // A data load changes the displayed URL, so the address bar must hear about it;
+        // `load_html` already published this and the history paths were fixed for the same
+        // reason, which left a data load as the one navigation that moved silently.
+        self.url_changed.emit(self.url.clone());
         self.update_navigation_state();
+        self.browser_history.add_entry(self.url.clone(), self.title.clone());
+        self.record_current_page();
         self.base.request_redraw();
     }
 
@@ -425,8 +479,10 @@ impl WebViewCore {
             self.invalidate_pending_load();
 
             self.url = url;
+            self.restore_current_page();
             self.loading = true;
             self.load_progress = 0;
+            self.url_changed.emit(self.url.clone());
             self.loading_started.emit(self.url.clone());
 
             // Emit progress at 50%.
@@ -451,8 +507,10 @@ impl WebViewCore {
             self.invalidate_pending_load();
 
             self.url = url;
+            self.restore_current_page();
             self.loading = true;
             self.load_progress = 0;
+            self.url_changed.emit(self.url.clone());
             self.loading_started.emit(self.url.clone());
 
             // Emit progress at 50%.
@@ -508,10 +566,15 @@ impl WebViewCore {
     }
 
     pub fn set_title(&mut self, title: String) {
-        if self.title != title {
-            self.title = title.clone();
-            self.title_changed.emit(title);
+        if self.title == title {
+            return;
         }
+        self.title = title.clone();
+        self.title_changed.emit(title);
+        // The title belongs to the page on screen, so the snapshot Back replays has to carry it
+        // too; otherwise stepping away and back restored the old title.
+        self.record_current_page();
+        self.base.request_redraw();
     }
 
     pub fn evaluate_javascript(&mut self, script: &str) -> JsResult<JsValue> {
@@ -527,6 +590,10 @@ impl WebViewCore {
             let level = format!("{:?}", msg.level);
             self.console_message.emit((level, msg.line, msg.message.clone()));
         }
+        // The context accumulates messages for as long as it lives, so a second evaluation
+        // would re-emit everything the first one logged. The signal is the only reader;
+        // clearing after forwarding makes each call report exactly its own output.
+        self.js_context.clear_console();
         Ok(result)
     }
 
@@ -538,6 +605,56 @@ impl WebViewCore {
         &self.content
     }
 
+    /// The version of [`Self::content`] (see the field docs).
+    ///
+    /// A repaint can key a derived cache on this instead of hashing or comparing the whole
+    /// body every frame.
+    pub fn content_revision(&self) -> u64 {
+        self.content_revision
+    }
+
+    /// Replaces the body and bumps [`Self::content_revision`].
+    fn store_content(&mut self, content: String) {
+        self.content = content;
+        self.content_revision = self.content_revision.wrapping_add(1);
+    }
+
+    /// Records the document on screen against the current session-history entry.
+    ///
+    /// Called once a page reaches its final state — the engine returned a body, the async fetch
+    /// delivered one, or a document/data loader finished — because that is the first moment the
+    /// view knows what the entry displayed. `go_back`/`go_forward` replay it, so stepping through
+    /// history restores the body instead of leaving the page being left on screen.
+    ///
+    /// The body is copied once per completed navigation; [`SessionHistory`] bounds both the size
+    /// of one cached body and their total, so a long session cannot pin unbounded memory.
+    fn record_current_page(&mut self) {
+        if self.url.is_empty() {
+            return;
+        }
+        let page = super::history::PageSnapshot {
+            title: self.title.clone(),
+            content: self.content.clone(),
+        };
+        self.history.set_current_page(Some(page));
+    }
+
+    /// Replays the body recorded for the current history entry, when there is one.
+    ///
+    /// An entry with no snapshot (a page larger than the per-entry cap, or one whose body was
+    /// dropped by the total budget) keeps the previous behaviour: the URL moves and the body is
+    /// left as it was, rather than blanking the view for a page no source can re-fetch yet.
+    fn restore_current_page(&mut self) {
+        let Some(page) = self.history.current_page().cloned() else {
+            return;
+        };
+        if self.title != page.title {
+            self.title = page.title;
+            self.title_changed.emit(self.title.clone());
+        }
+        self.store_content(page.content);
+    }
+
     pub fn html(&self) -> &str {
         &self.content
     }
@@ -546,9 +663,19 @@ impl WebViewCore {
         if data.cookies {
             self.cookies.clear();
         }
+        if data.plugin_data {
+            // The core owns the plugin registry and it is the one non-cookie store the model can
+            // actually hold; `PluginManager::clear` existed but no path called it.
+            self.plugins.clear();
+        }
         if data.history {
             self.browser_history.clear();
             self.history.clear();
+            // Both stacks are gone, so `can_go_back`/`can_go_forward` flipped. This signal is the
+            // only channel a host has for that, and every other path that mutates the stacks
+            // publishes it; clearing also changes what the view paints (history panel, buttons).
+            self.update_navigation_state();
+            self.base.request_redraw();
         }
     }
 
@@ -595,7 +722,7 @@ impl WebViewCore {
             Ok(body) => {
                 self.load_progress = 60;
                 self.loading_progress.emit(self.load_progress);
-                self.content = body;
+                self.store_content(body);
                 if let Some(title_start) = self.content.find("<title>") {
                     let after = &self.content[title_start..];
                     if let Some(title_end) = after.find("</title>") {
@@ -608,6 +735,7 @@ impl WebViewCore {
                 self.loading_finished.emit(self.url.clone());
                 self.title_changed.emit(self.title.clone());
                 self.browser_history.add_entry(self.url.clone(), self.title.clone());
+                self.record_current_page();
                 self.update_navigation_state();
                 self.base.request_redraw();
             }
@@ -845,12 +973,78 @@ mod tests {
             "test_webview",
             "https://example.com",
         );
-        // First call sets the URL.
-        assert_eq!(core.url(), "https://example.com");
-        // Second call with same URL — load should be short-circuited.
+        // The navigation is a no-op: it must not fabricate a completed load.
         core.set_url("https://example.com".to_string());
         assert!(!core.is_loading());
-        assert_eq!(core.load_progress(), 100);
+        assert_eq!(core.load_progress(), 0, "nothing was loaded, so nothing completed");
+        assert!(core.history.current().is_none(), "a repeat navigation records no history entry");
+    }
+
+    /// Repeating the current URL while its load is in flight leaves that load alone.
+    ///
+    /// The old early return set `load_progress` to 100 without clearing `loading`, so the view
+    /// simultaneously claimed a finished and an in-flight load. A no-op keeps the in-flight
+    /// load and its progress intact and emits no second `loading_started`.
+    #[test]
+    fn repeating_the_current_url_while_loading_keeps_the_load() {
+        use std::sync::{Arc, Mutex};
+
+        let mut core = WebViewCore::new(
+            WidgetKind::WebEngineView,
+            Rect::new(0, 0, 800, 600),
+            "test_webview",
+            "https://example.com",
+        );
+        core.loading = true;
+        core.load_progress = 40;
+        let started = Arc::new(Mutex::new(0usize));
+        let sink = started.clone();
+        core.loading_started.connect(move |_| {
+            *sink.lock().unwrap() += 1;
+        });
+
+        core.set_url("https://example.com".to_string());
+
+        assert!(core.is_loading(), "the original load is still in flight");
+        assert_eq!(core.load_progress(), 40, "its progress is not overwritten");
+        assert_eq!(*started.lock().unwrap(), 0, "no second loading_started is emitted");
+    }
+
+    /// A simulation-engine failure is reported through `error_occurred`.
+    ///
+    /// The failure path used to stop at a log line, so a host that injected an engine to
+    /// simulate a network error never learned that the navigation failed.
+    #[test]
+    fn a_simulation_failure_is_reported_through_error_occurred() {
+        use std::sync::{Arc, Mutex};
+
+        struct FailingEngine;
+        impl SimulationEngine for FailingEngine {
+            fn simulate_navigation(&mut self, _url: &str) -> Result<String, String> {
+                Err(String::from("simulated network failure"))
+            }
+        }
+
+        let mut core = WebViewCore::new(
+            WidgetKind::WebEngineView,
+            Rect::new(0, 0, 800, 600),
+            "test_webview",
+            "about:blank",
+        );
+        core.simulation_engine = Some(Box::new(FailingEngine));
+        let reported = Arc::new(Mutex::new(Vec::new()));
+        let sink = reported.clone();
+        core.error_occurred.connect(move |message: Arc<String>| {
+            sink.lock().unwrap().push((*message).clone());
+        });
+
+        core.set_url("https://example.com/fails".to_string());
+
+        assert_eq!(core.url(), "about:blank", "a failed simulation does not navigate");
+        assert!(!core.is_loading());
+        let messages = reported.lock().unwrap();
+        assert_eq!(messages.len(), 1, "exactly one failure is reported");
+        assert!(messages[0].contains("simulated network failure"), "got {messages:?}");
     }
 
     #[test]
@@ -892,6 +1086,233 @@ mod tests {
         assert_eq!(core.url(), "https://data.url");
         assert_eq!(core.title(), "Data: text/plain");
         assert_eq!(core.content(), "raw data");
+    }
+
+    /// An HTML document is a navigation, so Back returns to it.
+    #[test]
+    fn an_html_load_is_reachable_through_back() {
+        let mut core = WebViewCore::new(
+            WidgetKind::WebEngineView,
+            Rect::new(0, 0, 800, 600),
+            "test_webview",
+            "about:blank",
+        );
+        core.load_html("<p>first</p>", None);
+        core.set_url("https://next.invalid/".to_string());
+        assert!(core.can_go_back(), "the HTML document is behind the new URL");
+
+        core.go_back();
+        assert_eq!(core.url(), "data:text/html", "Back restores the loaded document's URL");
+        assert!(!core.can_go_back(), "there is nothing older than the first document");
+    }
+
+    /// A data payload is a navigation too, and keeps its base URL in session history.
+    #[test]
+    fn a_data_load_is_reachable_through_back() {
+        let mut core = WebViewCore::new(
+            WidgetKind::WebEngineView,
+            Rect::new(0, 0, 800, 600),
+            "test_webview",
+            "about:blank",
+        );
+        core.load_data(b"payload", "text/plain", "https://data.url");
+        core.set_url("https://next.invalid/".to_string());
+        assert!(core.can_go_back());
+
+        core.go_back();
+        assert_eq!(core.url(), "https://data.url");
+    }
+
+    /// A document load is recorded in the panel-facing browser history too.
+    ///
+    /// `load_html`/`load_data` called `history.navigate` (session stack) but never
+    /// `browser_history.add_entry`, so the two models described different sessions.
+    #[test]
+    fn a_document_load_enters_the_browser_history() {
+        let mut core = WebViewCore::new(
+            WidgetKind::WebEngineView,
+            Rect::new(0, 0, 800, 600),
+            "test_webview",
+            "about:blank",
+        );
+        core.load_html("<p>one</p>", Some("https://doc.url"));
+        assert_eq!(core.browser_history().len(), 1);
+        assert_eq!(core.browser_history().entries()[0].url, "https://doc.url");
+
+        core.load_data(b"data", "text/plain", "https://data.url");
+        assert_eq!(core.browser_history().len(), 2, "a data load is a visit as well");
+    }
+
+    /// A title a host sets belongs to the page, so Back restores the host's title.
+    #[test]
+    fn a_host_title_survives_a_back_navigation() {
+        let mut core = WebViewCore::new(
+            WidgetKind::WebEngineView,
+            Rect::new(0, 0, 800, 600),
+            "test_webview",
+            "about:blank",
+        );
+        core.load_html("<p>one</p>", None);
+        core.set_title("Mine".to_string());
+        core.set_url("https://next.invalid/".to_string());
+
+        core.go_back();
+        assert_eq!(
+            core.title(),
+            "Mine",
+            "the snapshot carries the title the page had when it was left"
+        );
+    }
+
+    /// Back restores the body the previous entry displayed, not just its URL.
+    ///
+    /// Two anonymous `load_html` documents share the `data:text/html` URL by contract, so the
+    /// snapshot — not the URL — is what tells them apart: without it Back moved the address and
+    /// left the document being left on screen.
+    #[test]
+    fn going_back_restores_the_previous_documents_body() {
+        let mut core = WebViewCore::new(
+            WidgetKind::WebEngineView,
+            Rect::new(0, 0, 800, 600),
+            "test_webview",
+            "about:blank",
+        );
+        core.load_html("<p>first</p>", None);
+        core.load_html("<p>second</p>", None);
+        assert_eq!(core.content(), "<p>second</p>");
+
+        core.go_back();
+        assert_eq!(core.url(), "data:text/html");
+        assert_eq!(core.content(), "<p>first</p>", "the entry's own body is restored");
+        assert_eq!(core.title(), "HTML Content");
+
+        core.go_forward();
+        assert_eq!(core.content(), "<p>second</p>", "forward restores the newer body too");
+    }
+
+    /// A data load records its body as well, so Back replays the payload.
+    #[test]
+    fn going_back_restores_a_data_payload() {
+        let mut core = WebViewCore::new(
+            WidgetKind::WebEngineView,
+            Rect::new(0, 0, 800, 600),
+            "test_webview",
+            "about:blank",
+        );
+        core.load_data(b"first payload", "text/plain", "https://data.url");
+        core.load_data(b"second payload", "text/plain", "https://data2.url");
+
+        core.go_back();
+        assert_eq!(core.url(), "https://data.url");
+        assert_eq!(core.content(), "first payload");
+        assert_eq!(core.title(), "Data: text/plain");
+    }
+
+    /// A data load announces the URL it moved to, like the HTML loader does.
+    #[test]
+    fn a_data_load_announces_the_new_url() {
+        use std::sync::{Arc, Mutex};
+
+        let mut core = WebViewCore::new(
+            WidgetKind::WebEngineView,
+            Rect::new(0, 0, 800, 600),
+            "test_webview",
+            "about:blank",
+        );
+        let seen = Arc::new(Mutex::new(Vec::<String>::new()));
+        let sink = seen.clone();
+        core.url_changed.connect(move |url: Arc<String>| sink.lock().unwrap().push((*url).clone()));
+
+        core.load_data(b"payload", "text/plain", "https://data.url");
+        assert_eq!(*seen.lock().unwrap(), ["https://data.url"]);
+        assert_eq!(core.url(), "https://data.url");
+    }
+
+    /// Clearing history publishes the disabled back/forward state.
+    #[test]
+    fn clearing_history_announces_the_disabled_back_button() {
+        use std::sync::{Arc, Mutex};
+
+        let mut core = WebViewCore::new(
+            WidgetKind::WebEngineView,
+            Rect::new(0, 0, 800, 600),
+            "test_webview",
+            "about:blank",
+        );
+        core.set_url("https://page1.invalid".to_string());
+        core.set_url("https://page2.invalid".to_string());
+        assert!(core.can_go_back());
+
+        let seen = Arc::new(Mutex::new(Vec::<(bool, bool)>::new()));
+        let sink = seen.clone();
+        core.navigation_state_changed.connect(move |state: Arc<(bool, bool)>| {
+            sink.lock().unwrap().push(*state);
+        });
+
+        core.clear_browsing_data(BrowsingData {
+            cookies: false,
+            history: true,
+            ..Default::default()
+        });
+        assert!(!core.can_go_back());
+        assert_eq!(*seen.lock().unwrap(), [(false, false)], "the reset is published");
+    }
+
+    /// A navigation whose fetch is still in flight publishes the new back/forward state.
+    ///
+    /// Only the completion is deferred; `history.navigate` has already changed the stacks, and
+    /// `stop()` ends the load without reaching `apply_http_outcome`.
+    #[cfg(feature = "web-http")]
+    #[test]
+    fn an_in_flight_navigation_announces_the_back_state() {
+        use std::sync::{Arc, Mutex};
+
+        let mut core = WebViewCore::new(
+            WidgetKind::WebEngineView,
+            Rect::new(0, 0, 800, 600),
+            "test_webview",
+            "https://first.example",
+        );
+        let seen = Arc::new(Mutex::new(Vec::<(bool, bool)>::new()));
+        let sink = seen.clone();
+        core.navigation_state_changed.connect(move |state: Arc<(bool, bool)>| {
+            sink.lock().unwrap().push(*state);
+        });
+
+        // A simulated navigation first, so the in-flight hop has a page behind it.
+        core.set_url("file://first".to_string());
+        // Loopback port 9 refuses immediately, so the helper thread does not linger.
+        core.set_url("http://127.0.0.1:9/".to_string());
+        assert!(core.can_go_back());
+        assert!(
+            seen.lock().unwrap().contains(&(true, false)),
+            "the new back state is published before the completion events: {:?}",
+            seen.lock().unwrap()
+        );
+        core.stop();
+    }
+
+    /// A navigation that produced no body of its own does not fabricate one for the history entry.
+    ///
+    /// The simulated path leaves the old document on screen (no source to fetch from), so recording
+    /// that body under the new URL would make a later Back claim the new page showed the old one.
+    #[test]
+    fn a_simulated_navigation_does_not_snapshot_the_previous_body() {
+        let mut core = WebViewCore::new(
+            WidgetKind::WebEngineView,
+            Rect::new(0, 0, 800, 600),
+            "test_webview",
+            "about:blank",
+        );
+        core.load_html("<p>only</p>", None);
+        core.set_url("file://next".to_string());
+        assert_eq!(core.content(), "<p>only</p>", "the simulated path leaves the body alone");
+
+        core.go_back();
+        assert_eq!(core.content(), "<p>only</p>", "the HTML entry restores its own body");
+        core.go_forward();
+        assert_eq!(core.content(), "<p>only</p>", "no body was cached for the file navigation");
+        assert_eq!(core.history.current_page().map(|page| page.title.as_str()), None);
     }
 
     #[cfg(feature = "web-http")]
@@ -1059,6 +1480,72 @@ mod tests {
         let result = core.evaluate_javascript("42");
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), JsValue::Number(42.0));
+    }
+
+    /// Each evaluation reports only the console output it produced.
+    ///
+    /// The context accumulates every message for the life of the view, so forwarding the
+    /// whole slice on every call re-emitted the first script's output when the second one
+    /// ran — a duplicated signal for output the host had already handled.
+    #[test]
+    fn console_messages_are_reported_once_per_evaluation() {
+        use std::sync::{Arc, Mutex};
+
+        let mut core = WebViewCore::new(
+            WidgetKind::WebEngineView,
+            Rect::new(0, 0, 800, 600),
+            "test_webview",
+            "about:blank",
+        );
+        core.set_javascript_enabled(true);
+        let messages = Arc::new(Mutex::new(Vec::new()));
+        let sink = messages.clone();
+        core.console_message.connect(move |value: Arc<(String, u32, String)>| {
+            sink.lock().unwrap().push(value.2.clone());
+        });
+
+        core.evaluate_javascript("console.log(\"first\")").unwrap();
+        assert_eq!(*messages.lock().unwrap(), ["first"], "only the first script's output");
+
+        core.evaluate_javascript("console.log(\"second\")").unwrap();
+        assert_eq!(
+            *messages.lock().unwrap(),
+            ["first", "second"],
+            "the second call must not replay the first message"
+        );
+    }
+
+    /// Stepping through session history announces the URL the view moved to.
+    ///
+    /// `set_url` emitted `url_changed` but `go_back`/`go_forward` changed the URL silently,
+    /// so an address bar bound to the signal kept showing the page that was left.
+    #[test]
+    fn going_through_history_announces_the_new_url() {
+        use std::sync::{Arc, Mutex};
+
+        let mut core = WebViewCore::new(
+            WidgetKind::WebEngineView,
+            Rect::new(0, 0, 800, 600),
+            "test_webview",
+            "about:blank",
+        );
+        core.set_url("https://page1.invalid".to_string());
+        core.set_url("https://page2.invalid".to_string());
+
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let sink = seen.clone();
+        core.url_changed.connect(move |value: Arc<String>| {
+            sink.lock().unwrap().push((*value).clone());
+        });
+
+        core.go_back();
+        assert_eq!(*seen.lock().unwrap(), ["https://page1.invalid"]);
+        core.go_forward();
+        assert_eq!(
+            *seen.lock().unwrap(),
+            ["https://page1.invalid", "https://page2.invalid"],
+            "forward reports where it landed"
+        );
     }
 
     #[test]

@@ -28,6 +28,7 @@ pub mod form;
 pub mod formset;
 mod model;
 mod rules;
+mod state;
 
 #[cfg(test)]
 mod tests;

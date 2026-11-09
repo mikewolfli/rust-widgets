@@ -135,15 +135,20 @@ impl GanttTaskGrid {
     }
 
     /// Sets the row height, floored at 8 pixels.
+    ///
+    /// While bound the chart owns the row height: `binding.row_height` is the chart's published
+    /// mirror, so writing it here painted rows the chart does not have and the chart never heard
+    /// about it. The write is ignored rather than desynchronising the pair (the same rule the
+    /// wheel follows while bound).
     pub fn set_row_height(&mut self, row_height: u32) {
+        if self.binding.is_some() {
+            return;
+        }
         let row_height = row_height.max(8);
         if self.current_row_height() == row_height && self.row_height == row_height {
             return;
         }
         self.row_height = row_height;
-        if let Some(binding) = &self.binding {
-            *lock(&binding.row_height) = row_height;
-        }
         self.clamp_scroll();
         self.base.request_layout();
         self.base.request_redraw();
@@ -182,6 +187,10 @@ impl GanttTaskGrid {
     /// Replaces the task rows. Only the id and label are copied; hierarchy comes from
     /// [`Self::attach_gantt`] or from the existing parent map when both ids survive.
     pub fn set_tasks(&mut self, tasks: &[GanttTask]) {
+        // The selection is an index, and replacing the rows can put a different task there. The id
+        // is captured first so a surviving task keeps its highlight; a task that left is dropped.
+        let selected_id =
+            self.selected.and_then(|index| self.tasks.get(index)).map(|task| task.id.clone());
         self.tasks = tasks
             .iter()
             .map(|task| GridTask { id: task.id.clone(), label: task.label.clone() })
@@ -190,9 +199,7 @@ impl GanttTaskGrid {
         self.parents.retain(|child, parent| {
             ids.contains(&child.as_str()) && ids.contains(&parent.as_str())
         });
-        if self.selected.is_some_and(|index| index >= self.tasks.len()) {
-            self.selected = None;
-        }
+        self.selected = selected_id.and_then(|id| self.tasks.iter().position(|task| task.id == id));
         self.clamp_scroll();
         self.base.request_layout();
         self.base.request_redraw();
@@ -203,7 +210,14 @@ impl GanttTaskGrid {
     /// The binding is live: a later row-height change or scroll on the chart updates this grid
     /// on the next paint, so the two panes stay row-aligned without the host copying state each
     /// frame. Calling this again replaces the previous subscriptions.
+    ///
+    /// The mirror is one way: while bound, the chart owns the row offset and this grid refuses
+    /// its own wheel so a local scroll cannot leave the chart's lanes behind.
     pub fn attach_gantt(&mut self, gantt: &mut GanttWidget) {
+        // Drop the previous binding before adopting the new chart's state: a stale binding would
+        // keep answering `current_scroll_offset`/`current_row_height` with the old chart's values
+        // while `clamp_scroll` runs, so re-attaching could import neither chart's real offset.
+        self.binding = None;
         self.max_depth = usize::MAX;
         self.set_tasks(gantt.tasks());
         self.parents = gantt
@@ -294,7 +308,13 @@ impl GanttTaskGrid {
         if local_y < 0 {
             return None;
         }
-        let visible = (local_y / self.current_row_height() as i32) as usize;
+        let row_height = self.current_row_height().max(1) as i32;
+        let visible = (local_y / row_height) as usize;
+        // Paint only walks `visible_row_count` rows; a partially fitting row below that window is
+        // never drawn, so it must not answer a hit either.
+        if visible >= self.visible_row_count() {
+            return None;
+        }
         self.row_rect(visible)?;
         let indices = self.visible_indices();
         indices.get(self.current_scroll_offset() + visible).copied()
@@ -363,7 +383,19 @@ impl GanttTaskGrid {
 
     /// The largest valid scroll offset for the currently visible rows.
     fn max_scroll(&self) -> usize {
-        self.visible_indices().len().saturating_sub(self.visible_row_count())
+        self.visible_index_count().saturating_sub(self.visible_row_count())
+    }
+
+    /// How many rows pass the depth filter, without materialising the index list.
+    ///
+    /// The paint path asks for the scroll clamp every frame, so counting in place avoids the
+    /// `Vec` allocation `visible_indices()` would make for a value that is only a length.
+    fn visible_index_count(&self) -> usize {
+        self.tasks
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| self.depth_of(*index) <= self.max_depth)
+            .count()
     }
 
     /// The task indices that pass the depth filter, in display order.
@@ -595,6 +627,12 @@ impl EventHandler for GanttTaskGrid {
                 }
             }
             Event::Wheel { delta, .. } if delta.y != 0 => {
+                // The chart owns the offset while bound: the binding only mirrors chart → grid, so
+                // scrolling the replica here moved the rows and left the chart's lanes where they
+                // were, silently breaking the row alignment the binding exists to keep.
+                if self.binding.is_some() {
+                    return;
+                }
                 self.scroll_by(if delta.y > 0 { -1 } else { 1 });
             }
             _ => {}
@@ -751,6 +789,27 @@ mod tests {
         assert_eq!(editor.dependencies().len(), 1, "a refused write keeps the live list");
     }
 
+    /// A bound grid refuses its own wheel: the chart owns the row offset.
+    ///
+    /// The binding mirrors chart → grid only, so scrolling the replica moved the task rows while
+    /// the chart's lanes stayed put — the two panes stopped being row-aligned.
+    #[test]
+    fn a_bound_grid_does_not_scroll_itself() {
+        let mut gantt = GanttWidget::new(Rect::new(0, 0, 400, 160));
+        for index in 0..10 {
+            gantt.add_task(GanttTask::new(format!("t{index}"), "Task", 0, 1, index));
+        }
+        let mut grid = GanttTaskGrid::new(Rect::new(0, 0, 200, 120));
+        grid.attach_gantt(&mut gantt);
+        let before = grid.scroll_offset();
+        let chart_before = gantt.scroll_offset();
+
+        grid.handle_event(&Event::wheel(0, 1, 0));
+
+        assert_eq!(grid.scroll_offset(), before, "the grid mirror did not move");
+        assert_eq!(gantt.scroll_offset(), chart_before, "the chart is the owner");
+    }
+
     /// A press on a task row selects it and reports its id.
     #[test]
     fn a_press_selects_the_task_under_the_pointer() {
@@ -857,5 +916,121 @@ mod tests {
         assert_eq!(grid.scroll_offset(), 1, "the chart's scroll reaches the list");
         assert!(grid.scroll_to_task("t5"));
         assert!(grid.scroll_offset() > 1, "the grid can jump to a task on its own");
+    }
+
+    /// Paint walks whole rows only, so a partially visible row below the window is not a target.
+    #[test]
+    fn hit_task_ignores_a_row_the_paint_loop_does_not_draw() {
+        let mut grid = GanttTaskGrid::new(Rect::new(0, 0, 200, 60));
+        grid.set_row_height(20);
+        grid.set_tasks(&[
+            GanttTask::new("a", "Alpha", 0, 1, 0),
+            GanttTask::new("b", "Beta", 0, 1, 0),
+            GanttTask::new("c", "Gamma", 0, 1, 0),
+        ]);
+        // 18 px header + two 20 px rows leave 2 px for a third row that is never painted.
+        assert_eq!(grid.visible_row_count(), 2);
+        assert_eq!(grid.hit_task(Point::new(10, 40)), Some(1), "a painted row still hits");
+        assert_eq!(
+            grid.hit_task(Point::new(10, 59)),
+            None,
+            "the unpainted partial row must not select its task"
+        );
+    }
+
+    /// Replacing the rows keeps the highlight on the same task, not on the same slot.
+    #[test]
+    fn set_tasks_keeps_the_selection_on_the_same_task() {
+        let mut grid = GanttTaskGrid::new(Rect::new(0, 0, 200, 160));
+        grid.set_row_height(20);
+        grid.set_tasks(&[
+            GanttTask::new("a", "Alpha", 0, 1, 0),
+            GanttTask::new("b", "Beta", 0, 1, 0),
+        ]);
+        grid.handle_event(&Event::MousePress {
+            pos: Point::new(10, 18 + 20 + 5),
+            button: 1,
+            modifiers: 0,
+        });
+        assert_eq!(grid.selected_index(), Some(1));
+
+        grid.set_tasks(&[
+            GanttTask::new("b", "Beta", 0, 1, 0),
+            GanttTask::new("a", "Alpha", 0, 1, 0),
+        ]);
+        let selected = grid.selected_index().expect("b is still on the board");
+        assert_eq!(grid.tasks[selected].id, "b", "the highlight follows the task, not the index");
+
+        grid.set_tasks(&[GanttTask::new("a", "Alpha", 0, 1, 0)]);
+        assert_eq!(grid.selected_index(), None, "a removed task clears the selection");
+    }
+
+    /// Re-attaching adopts the new chart's scroll instead of keeping the old binding's value.
+    #[test]
+    fn reattaching_adopts_the_new_charts_scroll() {
+        let mut first = GanttWidget::new(Rect::new(0, 0, 200, 60));
+        first.set_tasks(
+            (0..6)
+                .map(|index| GanttTask::new(format!("f{index}"), "First", 0, 1, 0))
+                .collect::<Vec<_>>(),
+        );
+        first.set_row_height(20);
+        let mut grid = GanttTaskGrid::new(Rect::new(0, 0, 200, 60));
+        grid.attach_gantt(&mut first);
+        first.scroll_by(2);
+        assert_eq!(grid.scroll_offset(), 2);
+
+        let mut second = GanttWidget::new(Rect::new(0, 0, 200, 60));
+        second.set_tasks(
+            (0..6)
+                .map(|index| GanttTask::new(format!("s{index}"), "Second", 0, 1, 0))
+                .collect::<Vec<_>>(),
+        );
+        second.set_row_height(20);
+        grid.attach_gantt(&mut second);
+        assert_eq!(grid.scroll_offset(), 0, "the new chart starts at its own offset");
+    }
+
+    /// The allocation-free visible count the scroll clamp uses equals the materialised list.
+    #[test]
+    fn max_scroll_counts_only_rows_that_pass_the_depth_filter() {
+        let mut gantt = GanttWidget::new(Rect::new(0, 0, 200, 60));
+        gantt.set_tasks(
+            (0..6)
+                .map(|index| GanttTask::new(format!("t{index}"), "Row", 0, 1, 0))
+                .collect::<Vec<_>>(),
+        );
+        for index in 1..6 {
+            assert!(gantt.set_task_parent(&format!("t{index}"), "t0"));
+        }
+        gantt.set_row_height(20);
+
+        let mut grid = GanttTaskGrid::new(Rect::new(0, 0, 200, 60));
+        grid.attach_gantt(&mut gantt);
+        grid.expand_to_depth(0);
+        assert_eq!(grid.max_scroll(), 0, "only the root is visible");
+        grid.expand_to_depth(1);
+        assert_eq!(
+            grid.max_scroll(),
+            grid.visible_indices().len().saturating_sub(grid.visible_row_count())
+        );
+        assert_eq!(grid.max_scroll(), 4);
+    }
+
+    /// A bound grid refuses a row-height write: the chart owns the height it mirrors.
+    ///
+    /// Writing `binding.row_height` made the grid paint rows the chart did not have (the chart's
+    /// `row_height_changed` is the only thing that may move that cell).
+    #[test]
+    fn a_bound_grid_ignores_a_row_height_write() {
+        let mut gantt = GanttWidget::new(Rect::new(0, 0, 400, 200));
+        gantt.set_tasks(alloc::vec![GanttTask::new("t", "Task", 0, 1, 0)]);
+        gantt.set_row_height(24);
+        let mut grid = GanttTaskGrid::new(Rect::new(0, 0, 200, 200));
+        grid.attach_gantt(&mut gantt);
+        assert_eq!(grid.row_height(), 24, "the chart's height is adopted");
+
+        grid.set_row_height(40);
+        assert_eq!(grid.row_height(), 24, "the chart still owns the bound height");
     }
 }

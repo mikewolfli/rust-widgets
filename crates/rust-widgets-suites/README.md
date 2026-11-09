@@ -115,7 +115,10 @@ written into the child widget's geometry, so the tree painter draws it exactly t
 public, and the active form is moved into `content_rect()` while the other forms are hidden. A
 page whose form reports `valid = false` is marked in the header, so the blocking step is visible
 before the submit. `goto_page(key)` navigates by page key and `move_page(key, index)` reorders the
-pages while the active page keeps its identity.
+pages while the active page keeps its identity. `current_changed` reports the new index whenever
+the active page changes: a different page at the same index (the active page was removed), the
+same page at another index (a page before it was removed, or the page itself moved), or the set
+becoming empty. An empty set that stays empty changed nothing and announces nothing.
 
 ## Overflow
 
@@ -138,12 +141,25 @@ A form does not store a second copy of any value. `value_of(key)` reads the chil
 required check is "the property is empty". The write path probes the same spellings (`text`, then
 `current_text`, then `value` as `Int` / `UInt` / `Float`), so a bound editable combo or numeric
 field is writable and not just readable. A user's keystrokes reach the child directly, so the form
-re-reads the fields on the next event it forwards and publishes `field_changed` plus the
-`dirty`/`valid` edges; a host that writes a child behind the form's back calls `refresh()`.
+re-reads the fields on the next event it receives and publishes `field_changed` plus the
+`dirty`/`valid` edges. A host that writes a child behind the form's back has two calls:
+`refresh()` re-applies the fields' presentation (the children's visibility) and asks for layout
+and repaint, while `resync()` re-reads the values, retires asynchronous verdicts for text that
+changed and **publishes** the `field_changed` / `dirty_changed` / `validity_changed` edges.
+`refresh` is the presentation half; `resync` is the signal half.
 
 A field may also carry a host rule: `set_field_validator(key, |value| …)` runs after the required
 check inside `validate` / `validate_field`, and `clear_field_validator` removes it. That is what
 keeps `Form`, the child control and the host from disagreeing about the same fact.
+
+## Visibility and validity
+
+`set_field_visible(key, false)` takes a row out of the layout, the aggregate validity and
+`focus_first_invalid` together: a hidden row paints no error, cannot be focused, and therefore
+never blocks a submit (nor appears in `submit_failed`'s count). Showing it again puts it back under
+all three rules, and the transition publishes the `validity_changed` / `dirty_changed` edge it
+produced. A host that flips the field through `field_mut` calls `refresh()` for the presentation
+and `resync()` for the edges.
 
 ## Adding a group later
 

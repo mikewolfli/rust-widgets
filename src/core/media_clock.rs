@@ -231,9 +231,12 @@ impl MediaClock {
 
     /// Moves the position, clamped to the known range.
     ///
-    /// The state is **not** changed: seeking while paused stays paused and seeking while playing
-    /// stays playing, which is what a scrubber needs. Landing exactly on the end reports `Ended`,
-    /// because that is what the position means.
+    /// The state is **not** changed except at the two ends of the timeline: seeking while paused
+    /// stays paused and seeking while playing stays playing, which is what a scrubber needs.
+    /// Landing exactly on the end reports `Ended`, because that is what the position means; moving
+    /// back inside the range from `Ended` returns to `Paused`. Without that second half, a player
+    /// that had reached the end would treat the next `play()` as “restart from zero” and silently
+    /// discard the seek the user just made.
     pub fn seek(&mut self, position_secs: f64) {
         if !position_secs.is_finite() {
             return;
@@ -242,6 +245,10 @@ impl MediaClock {
         self.position = position_secs.clamp(0.0, upper);
         if self.duration > 0.0 && self.position >= self.duration {
             self.state = PlaybackState::Ended;
+        } else if self.state == PlaybackState::Ended {
+            // The position is no longer the end, so the `Ended` state would be a lie. `Paused`
+            // keeps the user's new position for the next `play()` instead of letting it rewind.
+            self.state = PlaybackState::Paused;
         }
     }
 
@@ -481,6 +488,26 @@ mod tests {
         clock.seek(4.0);
         clock.seek(f64::NAN);
         assert_eq!(clock.position(), 4.0);
+    }
+
+    /// Seeking back from the end must not be undone by `play()`.
+    ///
+    /// `play()` restarts an `Ended` clock from zero (the “play again” gesture). Leaving the state
+    /// at `Ended` after a backwards seek therefore silently discarded the seek: the common
+    /// “scrub back to the middle, press play” sequence restarted from zero instead.
+    #[test]
+    fn seeking_back_from_the_end_keeps_the_new_position_on_play() {
+        let mut clock = MediaClock::new();
+        clock.set_duration(10.0);
+        clock.play();
+        clock.seek(10.0);
+        assert_eq!(clock.state(), PlaybackState::Ended, "the end is the end");
+
+        clock.seek(2.0);
+        assert_eq!(clock.state(), PlaybackState::Paused, "inside the range is no longer ended");
+        clock.play();
+        assert_eq!(clock.state(), PlaybackState::Playing);
+        assert_eq!(clock.position(), 2.0, "play must resume at the scrub position");
     }
 
     /// Discovering a shorter duration than the position must clamp the position into `[0, duration]`,

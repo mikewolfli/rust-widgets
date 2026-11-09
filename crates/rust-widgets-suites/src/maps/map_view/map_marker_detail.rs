@@ -106,8 +106,13 @@ impl MapMarkerDetail {
     }
 
     /// Whether the window is showing.
+    ///
+    /// Opening records the request, but a window has nothing to paint at until the host reports a
+    /// projection. Until then it is hidden, so `is_visible` reports what is on screen rather than
+    /// the pending request: answering `true` here let a press outside close a window that had
+    /// never been shown and fire `closed` for it.
     pub fn is_visible(&self) -> bool {
-        self.visible
+        self.visible && self.anchor_screen.is_some()
     }
 
     /// The marker id the window was opened for, if any.
@@ -207,6 +212,10 @@ impl MapMarkerDetail {
     ) {
         self.anchor = Some(marker_id.into());
         self.anchor_point = None;
+        // The screen point belonged to the marker that was open before. Keeping it would paint
+        // this marker's content at the previous marker's place until the host reports a new
+        // projection, so the window stays hidden until the anchor is supplied again.
+        self.anchor_screen = None;
         self.title = title.into();
         self.lines = lines;
         self.visible = true;
@@ -223,6 +232,8 @@ impl MapMarkerDetail {
     ) {
         self.anchor = None;
         self.anchor_point = Some((world_x, world_y));
+        // Opened for a different world point: the previous projection names the old one.
+        self.anchor_screen = None;
         self.title = title.into();
         self.lines = lines;
         self.visible = true;
@@ -254,16 +265,22 @@ impl MapMarkerDetail {
     }
 
     /// Closes the window and emits [`Self::closed`].
+    ///
+    /// A window whose anchor was never projected was never shown, so closing it reports nothing:
+    /// `closed` means "what the host saw is gone".
     pub fn close(&mut self) {
         if !self.visible {
             return;
         }
+        let was_shown = self.anchor_screen.is_some();
         self.visible = false;
         self.anchor = None;
         self.anchor_point = None;
         self.anchor_screen = None;
         self.base.request_redraw();
-        self.closed.emit(());
+        if was_shown {
+            self.closed.emit(());
+        }
     }
 
     /// The window's rectangle, or `None` while it has nothing to show.
@@ -343,7 +360,7 @@ impl WidgetProperties for MapMarkerDetail {
                 None => CapabilityValue::Null,
             }),
             "title" => Ok(CapabilityValue::String(self.title.clone())),
-            "visible" => Ok(CapabilityValue::Bool(self.visible)),
+            "visible" => Ok(CapabilityValue::Bool(self.is_visible())),
             "follow_marker" => Ok(CapabilityValue::Bool(self.follow_marker)),
             "dismiss_on_map_press" => Ok(CapabilityValue::Bool(self.dismiss_on_map_press)),
             "max_width" => Ok(CapabilityValue::UInt(u64::from(self.max_width))),
@@ -373,6 +390,20 @@ impl WidgetProperties for MapMarkerDetail {
                     return Err(CapabilityAccessError::TypeMismatch);
                 };
                 if visible {
+                    // Painting needs an anchor, and `is_visible`/`get("visible")` report this flag.
+                    // Accepting the write without one claimed a window was on screen while
+                    // `detail_rect()` was `None`, and the next press then closed it as if it had
+                    // been shown. The window is opened through `open_for_marker`/`open_at`, which
+                    // set the anchor.
+                    if self.anchor_screen.is_none() {
+                        return Err(CapabilityAccessError::ConstraintViolation {
+                            property: rust_widgets::compat::String::from("visible"),
+                            reason: rust_widgets::compat::String::from(
+                                "the window has no anchor to show at; open it through \
+                                 `open_for_marker` or `open_at` first",
+                            ),
+                        });
+                    }
                     self.visible = true;
                     self.base.request_redraw();
                 } else {
@@ -459,9 +490,10 @@ impl EventHandler for MapMarkerDetail {
                     }
                 }
                 // A press inside the window but outside its action keeps it open; a press outside
-                // it closes it, which is the same rule a popover follows.
+                // it closes it when the host asked for that, which is the same rule a popover
+                // follows. A host that wants the window to survive a map press disables the rule.
                 let inside = self.detail_rect().is_some_and(|rect| rect.contains_point(*pos));
-                if !inside {
+                if !inside && self.dismiss_on_map_press {
                     self.close();
                 }
             }
@@ -545,14 +577,39 @@ mod tests {
         let mut detail = MapMarkerDetail::new(Rect::new(0, 0, 300, 200));
         assert!(!detail.is_visible());
         detail.open_for_marker("m1", "Station", vec![DetailLine::new("Line 2")]);
-        assert!(detail.is_visible());
+        assert!(
+            !detail.is_visible(),
+            "the open request is not a window until the anchor is projected"
+        );
         assert_eq!(detail.anchor(), Some("m1"));
         // Nothing is painted until the host supplies the projection.
         assert!(detail.detail_rect().is_none());
         detail.set_projection_anchor(Point::new(120, 90));
+        assert!(detail.is_visible(), "the projected anchor puts the window on screen");
         let rect = detail.detail_rect().expect("the window has an anchor");
         assert_eq!(rect.width, detail.max_width());
         assert!(rect.height > 0);
+    }
+
+    /// A window closed before its anchor was projected never reported itself as shown.
+    ///
+    /// `open_for_marker` records the request while the window is still hidden; `closed` means the
+    /// host's visible window is gone, so a never-shown one must not fire it.
+    #[test]
+    fn closing_a_window_that_was_never_projected_reports_nothing() {
+        let mut detail = MapMarkerDetail::new(Rect::new(0, 0, 300, 200));
+        let closed = std::sync::Arc::new(std::sync::Mutex::new(0usize));
+        let sink = closed.clone();
+        detail.closed.connect(move |_| {
+            if let Ok(mut guard) = sink.lock() {
+                *guard += 1;
+            }
+        });
+        detail.open_for_marker("m1", "Station", Vec::new());
+        assert!(!detail.is_visible());
+        detail.close();
+        assert_eq!(*closed.lock().expect("closed lock"), 0);
+        assert!(detail.anchor().is_none(), "the pending request is discarded");
     }
 
     #[test]
@@ -573,6 +630,27 @@ mod tests {
         assert_eq!(*closed.lock().expect("closed lock"), 1);
     }
 
+    /// `visible = true` without an anchor is refused rather than claiming a hidden window is up.
+    ///
+    /// Painting needs an anchor and the readout reports this flag, so accepting the write made
+    /// `get("visible")` say yes while `detail_rect()` was `None`; the next press then closed a
+    /// window that had never been shown.
+    #[test]
+    fn showing_a_window_without_an_anchor_is_refused() {
+        let mut detail = MapMarkerDetail::new(Rect::new(0, 0, 300, 200));
+        detail.open_for_marker("m1", "Station", vec![DetailLine::new("One")]);
+        detail.set_projection_anchor(Point::new(40, 80));
+        detail.close();
+        assert!(!detail.is_visible());
+
+        assert!(matches!(
+            detail.set("visible", CapabilityValue::Bool(true)),
+            Err(CapabilityAccessError::ConstraintViolation { .. })
+        ));
+        assert!(!detail.is_visible(), "the refused write is not applied");
+        assert!(detail.detail_rect().is_none());
+    }
+
     #[test]
     fn the_action_button_reports_its_label() {
         let mut detail = MapMarkerDetail::new(Rect::new(0, 0, 300, 200));
@@ -590,5 +668,40 @@ mod tests {
         detail.handle_event(&Event::mouse_press(action.x + 2, action.y + 2, 1));
         assert_eq!(*emitted.lock().expect("emitted lock"), vec!["Directions".to_string()]);
         assert!(detail.is_visible(), "an action press must not dismiss the window");
+    }
+
+    /// Opening for another anchor waits for a fresh projection instead of reusing the old point.
+    #[test]
+    fn reopening_for_another_anchor_waits_for_a_fresh_projection() {
+        let mut detail = MapMarkerDetail::new(Rect::new(0, 0, 300, 200));
+        detail.open_for_marker("m1", "Station", vec![DetailLine::new("One")]);
+        detail.set_projection_anchor(Point::new(40, 80));
+        assert!(detail.detail_rect().is_some());
+
+        detail.open_for_marker("m2", "Depot", vec![DetailLine::new("Two")]);
+        assert!(
+            detail.detail_rect().is_none(),
+            "the previous marker's projection must not place the new one"
+        );
+
+        detail.set_projection_anchor(Point::new(120, 100));
+        let rect = detail.detail_rect().expect("the new anchor places the window");
+        assert_eq!(rect.x, 120);
+    }
+
+    /// `dismiss_on_map_press` gates the press-outside rule.
+    #[test]
+    fn a_map_press_respects_dismiss_on_map_press() {
+        let mut detail = MapMarkerDetail::new(Rect::new(0, 0, 300, 200));
+        detail.open_for_marker("m1", "Station", vec![DetailLine::new("One")]);
+        detail.set_projection_anchor(Point::new(100, 100));
+
+        detail.set_dismiss_on_map_press(false);
+        detail.handle_event(&Event::mouse_press(0, 0, 1));
+        assert!(detail.is_visible(), "the host asked the window to survive a map press");
+
+        detail.set_dismiss_on_map_press(true);
+        detail.handle_event(&Event::mouse_press(0, 0, 1));
+        assert!(!detail.is_visible(), "a map press dismisses when the host allows it");
     }
 }

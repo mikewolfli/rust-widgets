@@ -13,7 +13,7 @@ use rust_widgets::core::ObjectId;
 
 /// The value grammar a field is expected to hold.
 ///
-/// The kind is suite metadata, not a second value store: [`Form::add_field`]
+/// The kind is suite metadata, not a second value store: [`Form::add_field`](crate::form_widgets::Form::add_field)
 /// uses it to install the matching `rust_widgets` input validator, and a host
 /// can read it to choose an editor control. `Text` is the default and imposes no
 /// rule of its own.
