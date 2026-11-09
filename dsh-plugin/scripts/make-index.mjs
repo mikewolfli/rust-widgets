@@ -26,6 +26,7 @@ const REPO_ROOT = dirname(PACKAGE_DIR)
 /** The package's POSIX path inside its repository; absent means the repository root. */
 const PACKAGE_DIR_IN_REPO = relative(REPO_ROOT, PACKAGE_DIR).split(sep).join('/')
 const GIT_MODE = process.argv.includes('--git')
+const CHECK = process.argv.includes('--check')
 const COMMIT_PATTERN = /^[0-9a-f]{40}$/
 
 const packageJson = JSON.parse(readFileSync(PACKAGE_PATH, 'utf8'))
@@ -67,15 +68,25 @@ function npmSource() {
   return { publishTimestamp, source: { type: 'npm' } }
 }
 
-/** The source and time of the commit that carries this package. */
+/** The package directory's files, minus the index this script owns. */
+const PACKAGE_PATHSPEC = [PACKAGE_DIR_IN_REPO, `:(exclude)${PACKAGE_DIR_IN_REPO}/${basename(OUTPUT_PATH)}`]
+
+/** The source and time of the last commit that changed the package. */
 function gitSource() {
+  const dirty = git(['status', '--porcelain', '--', ...PACKAGE_PATHSPEC])
+  if (dirty !== '') {
+    fail(`uncommitted changes under ${PACKAGE_DIR_IN_REPO}; commit the package first:\n${dirty}`)
+  }
+
+  // Pin the newest commit that changed the package, not HEAD: the index itself
+  // is not a package input, so rewriting it must not move the pin.
   let commit
   try {
-    commit = git(['rev-parse', 'HEAD'])
+    commit = git(['log', '-1', '--format=%H', '--', ...PACKAGE_PATHSPEC])
   } catch {
-    fail(`cannot resolve the HEAD commit of ${REPO_ROOT}`)
+    fail(`cannot read the commit history of ${PACKAGE_DIR_IN_REPO}`)
   }
-  if (!COMMIT_PATTERN.test(commit)) fail(`HEAD is not a full commit id: ${commit}`)
+  if (!COMMIT_PATTERN.test(commit)) fail(`no commit carries ${PACKAGE_DIR_IN_REPO}`)
 
   // Refuse to point the index at a commit whose package is a different version:
   // the pin would install something the index does not describe.
@@ -140,5 +151,21 @@ const index = {
   ],
 }
 
-writeFileSync(OUTPUT_PATH, `${JSON.stringify(index, null, 2)}\n`)
+const text = `${JSON.stringify(index, null, 2)}\n`
+
+if (CHECK) {
+  let current
+  try {
+    current = readFileSync(OUTPUT_PATH, 'utf8')
+  } catch {
+    fail(`${OUTPUT_PATH} is missing; run: npm run market-index${GIT_MODE ? ' -- --git' : ''}`)
+  }
+  if (current !== text) {
+    fail(`${OUTPUT_PATH} is out of date; run: npm run market-index${GIT_MODE ? ' -- --git' : ''}`)
+  }
+  console.log(`index ok: ${name}@${version} (${source.type} source)`)
+  process.exit(0)
+}
+
+writeFileSync(OUTPUT_PATH, text)
 console.log(`wrote ${OUTPUT_PATH} (${source.type} source)`)

@@ -52,6 +52,7 @@
     "check-skill": "node scripts/sync-skill.mjs --check",
     "prepack": "node scripts/sync-skill.mjs",
     "test": "node --test test/plugin.test.mjs",
-    "market-index": "node scripts/make-index.mjs"
+    "market-index": "node scripts/make-index.mjs",
+    "check-index": "node scripts/make-index.mjs --git --check"
   }
 }

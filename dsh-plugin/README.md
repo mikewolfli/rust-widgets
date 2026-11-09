@@ -50,6 +50,7 @@ The package has no runtime dependencies.
 ```sh
 npm run sync-skill   # copy .dsh/skills into ./assets and rebuild index.json
 npm run check-skill  # fail if the bundled copy drifted
+npm run check-index  # fail if market-index.json drifted from the package
 npm test             # node:test against the provider contract
 npm pack --dry-run   # inspect the published file list
 ```
@@ -73,12 +74,14 @@ entry pins an exact commit, so that install is reproducible.
 Regenerate the index whenever the package changes:
 
 ```sh
-npm run market-index -- --git   # git source pinned to the current commit
+npm run market-index -- --git   # git source, pinned to the package's last commit
 npm run market-index            # npm source, after `npm publish`
+npm run check-index             # drift gate for CI
 ```
 
-`--git` refuses to point the index at a commit whose `dsh-plugin/package.json`
-does not carry the version being described, so commit the package first.
+`--git` pins the newest commit that changed `dsh-plugin/` (the index file itself
+does not move the pin, so regenerating is idempotent) and refuses an uncommitted
+package, so commit the package first.
 
 ## How it works
 
