@@ -264,21 +264,30 @@ pub(crate) fn widget_at_inner(root: ObjectId, point: Point, trust_root: bool) ->
             let mut deepest: Option<(ObjectId, i32)> = None;
             let mut open_popup = None;
             for child in children.iter().rev().copied() {
-                let (visible, overlay, accepts, z) = read_widget(child, |widget| {
+                let (visible, overlay, accepts, paint_clip, z) = read_widget(child, |widget| {
                     (
                         widget.is_visible(),
                         widget.has_open_popup(),
                         widget.contains_point(point),
+                        widget.paint_clip(),
                         widget.z_index(),
                     )
                 })
-                .unwrap_or((false, false, false, 0));
-                if !visible || !accepts {
+                .unwrap_or((false, false, false, None, 0));
+                // A widget the host confined to a rectangle (an adopted surface) only receives
+                // input inside that rectangle. A real platform surface is the same: the pointer
+                // outside its box belongs to whatever is drawn there. Without this rule a clipped
+                // popup would still claim presses over the neighbours it can no longer paint over.
+                let within_box = paint_clip.is_none_or(|rect| rect.contains_point(point));
+                if !visible || !within_box {
                     continue;
                 }
                 if overlay {
                     open_popup = Some(child);
                     break;
+                }
+                if !accepts {
+                    continue;
                 }
                 // A higher `z_index` wins over a later sibling; for equal values the reverse
                 // walk already prefers the later one, so `>` (not `>=`) keeps declaration order.

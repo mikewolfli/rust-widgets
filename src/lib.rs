@@ -802,6 +802,32 @@ fn mount_widget_object(
     let host_parent = widget::runtime::host_window_for(parent).unwrap_or(parent);
 
     if !platform::get_platform().mount_surface(host_parent, id, rect) {
+        // A backend that keeps a record table of its own widgets (wasm, Android, iOS,
+        // Harmony) refuses a surface for a widget it did not create — but its painter
+        // draws the **window tree**, which is exactly the path `new_*` and
+        // `create_widget_of_kind` take for such controls. Adopting the widget as a child
+        // of `parent` keeps the promise this function makes ("the widget is on screen at
+        // `rect`") instead of dropping it, and the two halves cannot disagree because the
+        // runtime registration above is already the one the tree painter reads.
+        //
+        // The surface link is cleared first: the widget is a tree child now, and a stale
+        // surface record would make `render_window_frame` composite it a second time.
+        //
+        // The adopted widget also inherits the surface's **clipping** guarantee. A platform
+        // surface is rasterised into a buffer of `rect`, so nothing the control paints can land
+        // outside that box; a tree child has no such bound, and an open popup (a cascader's
+        // overlay, a drop-down list) would paint over whatever the host mounted beside it. The
+        // host mounted this widget *at* `rect`, so that rectangle is the box it promised.
+        let _ = widget::runtime::with_widget_mut(id, |widget| {
+            widget.base_mut().set_paint_clip(Some(rect));
+        });
+        let adopted = widget::runtime::with_widget_mut(parent, |host| host.add_child(id));
+        if adopted.is_some() {
+            widget::runtime::set_surface_window(id, 0);
+            widget::runtime::request_repaint(id);
+            return Ok(id);
+        }
+
         // Do not leave a widget stranded when the backend refused to show it.
         widget::runtime::unregister(id);
         if !supports_surfaces() {

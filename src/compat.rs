@@ -471,26 +471,120 @@ unsafe impl<T> Send for OnceLock<T> {}
 pub use std::sync::OnceLock;
 
 // ── Instant (real clock in both profiles) ──
-// Both arms must be a *real* monotonic clock. A zero-valued stub was rejected:
+// Every arm must be a *real* monotonic clock. A zero-valued stub was rejected:
 // it would silently break every timing-based subsystem (timers, FPS counters,
 // animation frames) rather than fail visibly.
 //
-// No arm is a bare `pub use std::time::Instant`. The `alloc_frugal` arm is a
-// wrapper whose methods delegate to `std::time::Instant`, so a caller sees one
-// type with one behaviour in both profiles:
+// Three arms, one type:
 //
-// * `spin`, the profile's lock crate, carries no clock at all — a spin lock has
-//   nothing to read time from — so it cannot supply one;
-// * `core::time` provides only `Duration`, with no way to read a clock;
-// * and the `std` the crate does link under `mini` (see the
-//   `#[macro_use] extern crate std` in `lib.rs`) *does* have a real monotonic
-//   clock. Reaching it from here, rather than from `compat`'s callers, is what
-//   keeps the `std` dependency confined to the one module whose job is to
-//   reconcile the two profiles.
+// * a plain host build re-exports `std::time::Instant`;
+// * `alloc_frugal` cannot reach `std` from a call site (`spin`, the profile's lock
+//   crate, carries no clock, and `core::time` only provides `Duration`), so it goes
+//   through the wrapper below, whose readings are `std`'s. The `std` the crate does
+//   link under `mini` (see the `#[macro_use] extern crate std` in `lib.rs`) *does*
+//   have a real monotonic clock; reaching it from here keeps that dependency
+//   confined to the one module whose job is to reconcile the profiles;
+// * a browser `wasm32` build has no `std` clock at all — `Instant::now()` aborts
+//   with "time not implemented on this platform" — so the same wrapper stores a
+//   `Duration` read from the browser's `performance.now()`. One wrapper, one set of
+//   operations, two clock backends.
 
 /// Monotonic clock reading used across the crate.
-#[cfg(not(alloc_frugal))]
+///
+/// This is `std`'s own type wherever `std` has a clock. A browser `wasm32` build is
+/// the exception: `std::time::Instant::now()` aborts there with "time not
+/// implemented on this platform", so [`browser_clock`](self) builds read the
+/// browser's `performance.now()` through the wrapper below instead.
+#[cfg(not(any(alloc_frugal, browser_clock)))]
 pub use std::time::Instant;
+
+/// The reading a browser target stores: milliseconds from page start.
+#[cfg(browser_clock)]
+type ClockReading = Duration;
+
+/// The reading an `alloc_frugal` host build stores.
+#[cfg(all(alloc_frugal, not(browser_clock)))]
+type ClockReading = std::time::Instant;
+
+/// The clock operations [`Instant`] needs, so one wrapper serves both backends.
+///
+/// Splitting these out is what keeps the wrapper's arithmetic in one place: only
+/// "read the clock" and "move a reading" differ between `std`'s type and the
+/// browser's millisecond `Duration`.
+#[cfg(any(alloc_frugal, browser_clock))]
+trait ClockReadingOps: Copy {
+    /// Reads the clock.
+    fn read() -> Self;
+    /// Elapsed time since `earlier`, saturating at zero.
+    fn elapsed_since(self, earlier: Self) -> Duration;
+    /// Elapsed time since `earlier`, or `None` when `earlier` is the later reading.
+    fn checked_elapsed_since(self, earlier: Self) -> Option<Duration>;
+    /// A reading `by` earlier, saturating at the clock's floor.
+    fn shifted_back(self, by: Duration) -> Self;
+    /// A reading `by` later.
+    fn shifted_forward(self, by: Duration) -> Self;
+}
+
+#[cfg(all(alloc_frugal, not(browser_clock)))]
+impl ClockReadingOps for std::time::Instant {
+    fn read() -> Self {
+        std::time::Instant::now()
+    }
+
+    fn elapsed_since(self, earlier: Self) -> Duration {
+        self.saturating_duration_since(earlier)
+    }
+
+    fn checked_elapsed_since(self, earlier: Self) -> Option<Duration> {
+        self.checked_duration_since(earlier)
+    }
+
+    fn shifted_back(self, by: Duration) -> Self {
+        // `checked_sub` yields `None` only when the result would precede the clock's
+        // epoch. Stepping back from "now" by everything it has elapsed lands on that
+        // floor without naming a platform-specific minimum.
+        self.checked_sub(by).unwrap_or_else(|| {
+            let base = std::time::Instant::now();
+            base - base.elapsed()
+        })
+    }
+
+    fn shifted_forward(self, by: Duration) -> Self {
+        self + by
+    }
+}
+
+#[cfg(browser_clock)]
+impl ClockReadingOps for Duration {
+    fn read() -> Self {
+        // `performance.now()` is monotonic from page start, in milliseconds.
+        let millis = web_sys::window()
+            .and_then(|page| page.performance())
+            .map(|performance| performance.now())
+            .unwrap_or(0.0);
+        if millis.is_finite() && millis > 0.0 {
+            Duration::from_secs_f64(millis / 1000.0)
+        } else {
+            Duration::ZERO
+        }
+    }
+
+    fn elapsed_since(self, earlier: Self) -> Duration {
+        self.saturating_sub(earlier)
+    }
+
+    fn checked_elapsed_since(self, earlier: Self) -> Option<Duration> {
+        self.checked_sub(earlier)
+    }
+
+    fn shifted_back(self, by: Duration) -> Self {
+        self.saturating_sub(by)
+    }
+
+    fn shifted_forward(self, by: Duration) -> Self {
+        self + by
+    }
+}
 
 /// Monotonic clock reading used across the crate.
 ///
@@ -499,15 +593,15 @@ pub use std::time::Instant;
 /// arithmetic — so timing code behaves identically in both profiles. The wrapper
 /// exists so that `compat`, not each call site, answers which `std` items this
 /// profile is allowed to name.
-#[cfg(alloc_frugal)]
+#[cfg(any(alloc_frugal, browser_clock))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct Instant(std::time::Instant);
+pub struct Instant(ClockReading);
 
-#[cfg(alloc_frugal)]
+#[cfg(any(alloc_frugal, browser_clock))]
 impl Instant {
     /// Reads the monotonic clock.
     pub fn now() -> Self {
-        Self(std::time::Instant::now())
+        Self(ClockReading::read())
     }
 
     /// Time elapsed since `earlier`, saturating at zero.
@@ -517,28 +611,34 @@ impl Instant {
     /// aborting — the same reasoning as the desktop arm, where a `Instant`
     /// comparison, not `duration_since`, is normally what guards this.
     pub fn duration_since(&self, earlier: Instant) -> Duration {
-        self.0.saturating_duration_since(earlier.0)
+        self.0.elapsed_since(earlier.0)
     }
 
     /// Time elapsed since `earlier`, or `None` when `earlier` is the later of the
     /// two readings — the same contract as `std::time::Instant`'s method.
     pub fn checked_duration_since(&self, earlier: Instant) -> Option<Duration> {
-        self.0.checked_duration_since(earlier.0)
+        self.0.checked_elapsed_since(earlier.0)
     }
 
     /// Alias of [`Instant::duration_since`], spelled as callers of the newer
     /// `std` API write it.
     pub fn saturating_duration_since(&self, earlier: Instant) -> Duration {
-        self.0.saturating_duration_since(earlier.0)
+        self.0.elapsed_since(earlier.0)
     }
 
     /// Time elapsed since this reading was taken.
     pub fn elapsed(&self) -> Duration {
-        self.0.elapsed()
+        ClockReading::read().elapsed_since(self.0)
+    }
+
+    /// This reading moved later by `by`, or `None` when the clock cannot represent
+    /// it.
+    pub fn checked_add(&self, by: Duration) -> Option<Instant> {
+        self.0.checked_add(by).map(Instant)
     }
 }
 
-#[cfg(alloc_frugal)]
+#[cfg(any(alloc_frugal, browser_clock))]
 impl core::ops::Sub for Instant {
     type Output = Duration;
 
@@ -551,7 +651,7 @@ impl core::ops::Sub for Instant {
     }
 }
 
-#[cfg(alloc_frugal)]
+#[cfg(any(alloc_frugal, browser_clock))]
 impl core::ops::Sub<Duration> for Instant {
     type Output = Instant;
 
@@ -566,19 +666,11 @@ impl core::ops::Sub<Duration> for Instant {
     /// derived cooldown look *staler* than requested, which lets the owning check
     /// run rather than holding it back.
     fn sub(self, rhs: Duration) -> Instant {
-        Instant(self.0.checked_sub(rhs).unwrap_or_else(|| {
-            // `checked_sub` yields `None` only when the result would precede the
-            // clock's epoch. Stepping forward from a floor built at the epoch, then
-            // walking back to it, is what expresses "as early as this clock can go"
-            // without naming a platform-specific minimum.
-            let base = std::time::Instant::now();
-            let elapsed = base.elapsed();
-            base - elapsed
-        }))
+        Instant(self.0.shifted_back(rhs))
     }
 }
 
-#[cfg(alloc_frugal)]
+#[cfg(any(alloc_frugal, browser_clock))]
 impl core::ops::SubAssign<Duration> for Instant {
     /// The in-place spelling of `SubAssign`, matching the `a -= interval` form the
     /// desktop arm inherits from `std`.
@@ -591,7 +683,7 @@ impl core::ops::SubAssign<Duration> for Instant {
     }
 }
 
-#[cfg(alloc_frugal)]
+#[cfg(any(alloc_frugal, browser_clock))]
 impl core::ops::Add<Duration> for Instant {
     type Output = Instant;
 
@@ -600,17 +692,17 @@ impl core::ops::Add<Duration> for Instant {
     /// timer and animation call sites are shared with the desktop arm, and
     /// carrying a `#[cfg]` at each of them is exactly what `compat` is for.
     fn add(self, rhs: Duration) -> Instant {
-        Instant(self.0 + rhs)
+        Instant(self.0.shifted_forward(rhs))
     }
 }
 
-#[cfg(alloc_frugal)]
+#[cfg(any(alloc_frugal, browser_clock))]
 impl core::ops::AddAssign<Duration> for Instant {
     /// Provides the `a += interval` spelling used by the animation clock, which
     /// is the same deadline arithmetic as the `Add` impl written in place. Spelled
     /// as a code span because `Add` does not resolve in every doc profile.
     fn add_assign(&mut self, rhs: Duration) {
-        self.0 += rhs;
+        *self = *self + rhs;
     }
 }
 

@@ -1000,7 +1000,7 @@ impl Canvas {
     /// allocation-free: the flattened index is accumulated from the end of the layer stack
     /// rather than from a prebuilt offset table (SP-P53).
     pub fn hit_test(&self, point: Point) -> Option<usize> {
-        let local = self.transform.inverse_point(point);
+        let local = self.to_drawing_space(point);
         // The bounds are cached with the visible command set, so a press no longer walks every
         // path command to rebuild them; the vector is searched back-to-front for the topmost hit
         // (SP-111).
@@ -1017,10 +1017,22 @@ impl Canvas {
     /// decoration or an untagged stroke has no node identity to give. A tagged command is one
     /// pushed inside [`Self::begin_group_with_tag`], and the tag survives redo.
     pub fn hit_test_tagged(&self, point: Point) -> Option<(usize, CanvasTag)> {
-        let local = self.transform.inverse_point(point);
+        let local = self.to_drawing_space(point);
         self.hit_entries().iter().rev().find_map(|(index, bounds, tag)| {
             tag.as_ref().filter(|_| bounds.contains_point(local)).map(|tag| (*index, *tag))
         })
+    }
+
+    /// Maps a window-space point into the space this canvas stores its commands in.
+    ///
+    /// Commands are in the canvas's **own** space — `(0, 0)` is its top-left corner — which is the
+    /// same space every `RenderContext` primitive uses. A pointer event carries window
+    /// coordinates, so the control's origin is subtracted once here and the zoom/pan transform is
+    /// undone. Without the subtraction the hit test compared window points against local command
+    /// bounds, so a canvas mounted away from the frame origin reported a miss for every mark.
+    fn to_drawing_space(&self, point: Point) -> Point {
+        let rect = self.geometry();
+        self.transform.inverse_point(Point::new(point.x - rect.x, point.y - rect.y))
     }
 
     /// Exports the canvas to an SVG document.
@@ -1037,6 +1049,13 @@ impl Canvas {
     }
 
     // ── Drawing API ──────────────────────────────────────────────────────
+    //
+    // Coordinates are the canvas's **own**: `(0, 0)` is its top-left corner, exactly as every
+    // `RenderContext` primitive is interpreted. The painter mounts each control in a surface of
+    // its own, so a command written in window coordinates would land outside it — a canvas
+    // mounted anywhere but the frame origin painted nothing but its background. `hit_test`
+    // takes window coordinates and converts them here, so a press still resolves to the mark
+    // under the pointer.
 
     /// Fill the entire canvas area with a solid color.
     pub fn fill_rect(&mut self, rect: Rect, color: Color) {
@@ -1486,6 +1505,19 @@ impl Draw for Canvas {
         // nobody can see.
         let transform = self.transform;
         let viewport = logical_viewport(transform, rect);
+        // The painter draws this control inside a surface whose origin is the control's own
+        // top-left corner, and hands that translation over through the render context. Commands
+        // are replayed with `execute_command_ref`, which is the **raw** dispatch path and does
+        // not add the translation the way `RenderContext::fill_rect` does — so it is folded into
+        // the replay transform here. Without this a canvas mounted anywhere but the frame origin
+        // issued its marks at absolute window coordinates, inside a surface that starts at its
+        // own corner: every mark fell outside the surface and the control painted nothing but
+        // its background.
+        let (offset_x, offset_y) = context.offset();
+        let replay = CanvasTransform {
+            scale: transform.scale,
+            offset: Point::new(transform.offset.x + offset_x, transform.offset.y + offset_y),
+        };
         for layer in &mut self.layers {
             if !layer.visible || layer.commands.is_empty() {
                 continue;
@@ -1505,12 +1537,15 @@ impl Draw for Canvas {
                     }
                 }
                 for stored in layer.commands.range_mut(chunk.start..chunk.end) {
-                    let command = stored.replay_under(transform);
-                    if let Some(bounds) = command_bounds(command) {
+                    // Cull in the logical space the commands are stored in, then map for the
+                    // surface: the replayed bounds already carry the offset, so comparing them
+                    // against `rect` here would reject every mark that was mapped.
+                    if let Some(bounds) = command_bounds(&stored.command) {
                         if !rects_intersect(rect, bounds) {
                             continue;
                         }
                     }
+                    let command = stored.replay_under(replay);
                     context.execute_command_ref(command);
                 }
             }

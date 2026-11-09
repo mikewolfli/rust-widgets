@@ -5376,6 +5376,159 @@ fn the_tree_painter_clips_descendants_to_the_container_content_box() {
     unregister(root);
 }
 
+/// A host-imposed `paint_clip` confines the node's **own** paint, not just its descendants.
+///
+/// # The defect this pins
+///
+/// [`crate::mount_surface`] adopts a widget into the tree when the backend cannot host a surface.
+/// A surface is rasterised into a buffer of its own rectangle, so nothing it paints escapes that
+/// box; a tree child has no such bound, so an open popup painted over whatever the host had
+/// mounted beside it. The fill below deliberately reaches outside its geometry, the way such a
+/// popup does: with a `paint_clip` it must lose exactly the pixels beyond the box.
+#[test]
+fn a_paint_clip_confines_the_node_its_own_draw_reaches() {
+    use crate::core::Color;
+    use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+
+    struct Spill {
+        base: BaseWidget,
+        clip: Option<Rect>,
+        color: Color,
+    }
+    impl Widget for Spill {
+        fn base(&self) -> &BaseWidget {
+            &self.base
+        }
+        fn base_mut(&mut self) -> &mut BaseWidget {
+            &mut self.base
+        }
+        fn paint_clip(&self) -> Option<Rect> {
+            self.clip
+        }
+        fn as_draw_mut(&mut self) -> Option<&mut dyn Draw> {
+            Some(self)
+        }
+    }
+    impl crate::event::EventHandler for Spill {
+        fn handle_event(&mut self, _event: &crate::event::Event) {}
+    }
+    impl Draw for Spill {
+        fn draw(&mut self, context: &mut RenderContext) {
+            // Paints the whole root box even though the node's geometry is 20×20, which is what
+            // an open popup does: the draw calls are not bounded by `geometry`.
+            context.fill_rect(Rect::new(0, 0, 60, 60), self.color);
+        }
+    }
+
+    let root = register(Box::new(Spill {
+        base: BaseWidget::new(WidgetKind::Panel, Rect::new(0, 0, 60, 60), "root"),
+        clip: None,
+        color: Color::WHITE,
+    }))
+    .expect("mount root");
+    let child = register(Box::new(Spill {
+        base: BaseWidget::new(WidgetKind::Panel, Rect::new(10, 10, 20, 20), "child"),
+        clip: Some(Rect::new(10, 10, 20, 20)),
+        color: Color::RED,
+    }))
+    .expect("mount child");
+    with_widget_mut(root, |widget| {
+        widget.base_mut().add_child_linked(child);
+    })
+    .expect("the root is mounted");
+
+    let frame = render_frame_tree(root, Size::new(60, 60), Color::WHITE).expect("frame");
+    let pixel = |x: usize, y: usize| {
+        let index = (y * 60 + x) * 4;
+        (frame[index], frame[index + 1], frame[index + 2])
+    };
+    assert_eq!(pixel(15, 15), (255, 0, 0), "inside the host's box the child paints");
+    assert_eq!(pixel(5, 5), (255, 255, 255), "its spill above the box is dropped");
+    assert_eq!(pixel(40, 40), (255, 255, 255), "and its spill below the box too");
+
+    unregister(child);
+    unregister(root);
+}
+
+/// A host-confined widget wins the pointer only inside its box.
+///
+/// # The defect this pins
+///
+/// An open popup wins the hit test **anywhere**, because its list hangs outside the field's
+/// rectangle (see [`Widget::has_open_popup`]). When the host has confined the control to a
+/// rectangle — an adopted surface — that popup is also clipped there, so it must not keep
+/// claiming presses over the neighbours it can no longer paint over. Otherwise one gallery card
+/// with an open list swallows every click in the window, including the paging buttons'.
+#[test]
+fn a_paint_clip_confines_the_pointer_to_the_host_box() {
+    use crate::widget::{BaseWidget, Widget, WidgetKind};
+
+    struct Claimer {
+        base: BaseWidget,
+        clip: Option<Rect>,
+        popup: bool,
+    }
+    impl Widget for Claimer {
+        fn base(&self) -> &BaseWidget {
+            &self.base
+        }
+        fn base_mut(&mut self) -> &mut BaseWidget {
+            &mut self.base
+        }
+        fn paint_clip(&self) -> Option<Rect> {
+            self.clip
+        }
+        fn has_open_popup(&self) -> bool {
+            self.popup
+        }
+        fn contains_point(&self, _point: Point) -> bool {
+            true
+        }
+    }
+    impl crate::event::EventHandler for Claimer {
+        fn handle_event(&mut self, _event: &crate::event::Event) {}
+    }
+
+    let root = register(Box::new(Claimer {
+        base: BaseWidget::new(WidgetKind::Panel, Rect::new(0, 0, 100, 40), "root"),
+        clip: None,
+        popup: false,
+    }))
+    .expect("mount root");
+    let confined = register(Box::new(Claimer {
+        base: BaseWidget::new(WidgetKind::Panel, Rect::new(0, 0, 20, 40), "confined"),
+        clip: Some(Rect::new(0, 0, 20, 40)),
+        popup: true,
+    }))
+    .expect("mount confined");
+    let plain = register(Box::new(Claimer {
+        base: BaseWidget::new(WidgetKind::Panel, Rect::new(20, 0, 80, 40), "plain"),
+        clip: None,
+        popup: false,
+    }))
+    .expect("mount plain");
+    with_widget_mut(root, |widget| {
+        widget.base_mut().add_child_linked(confined);
+        widget.base_mut().add_child_linked(plain);
+    })
+    .expect("the root is mounted");
+
+    assert_eq!(
+        widget_at(root, Point::new(10, 20)),
+        Some(confined),
+        "inside its box the open popup still wins"
+    );
+    assert_eq!(
+        widget_at(root, Point::new(60, 20)),
+        Some(plain),
+        "outside the box the confined popup must not claim the press"
+    );
+
+    unregister(confined);
+    unregister(plain);
+    unregister(root);
+}
+
 /// An event a control declines reaches its parent instead of disappearing.
 ///
 /// # What this pins

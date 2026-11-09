@@ -56,17 +56,23 @@ use crate::widget::advanced_widgets::dial::Dial;
 use crate::widget::advanced_widgets::pie_menu::PieMenu;
 use crate::widget::advanced_widgets::ribbon_bar::RibbonBar;
 use crate::widget::advanced_widgets::tab_bar::TabBar;
+use crate::widget::advanced_widgets::time_edit::{Time, TimeEdit};
+use crate::widget::chart_widgets::gauge::Gauge;
+use crate::widget::chart_widgets::pie_chart::{PieChart, PieSlice};
 use crate::widget::chart_widgets::{
     ChartCrosshair, ChartReferenceLine, LineChart, ReferenceLineSpec,
 };
 use crate::widget::companions::{
-    CommandPaletteHost, DragGhostLayer, DrawerSectionHeader, DropDownPopupHost, FindReplaceBar,
-    HeaderMenu, LayerEntry, LayerPanel, Legend, LegendEntry, ListState, ListStateHost, MenuPanel,
-    MenuPanelItem, PaletteEntryRef, PlaylistPanel, PopupItem, SpeedDial, SpeedDialAction,
-    SwipeAction, SwipeActions, TreeFindBar,
+    AxisEdge, AxisPicker, ChartDataTable, ChartTooltip, ColumnAggregate, ColumnAggregateKind,
+    CommandPaletteHost, DragGhostLayer, DrawerSectionHeader, DropDownPopupHost, FilterRow,
+    FindReplaceBar, HeaderMenu, LayerEntry, LayerPanel, Legend, LegendEntry, LineNumberGutter,
+    ListState, ListStateHost, MenuPanel, MenuPanelItem, PaletteEntryRef, PlaylistPanel, PopupItem,
+    SpeedDial, SpeedDialAction, SummaryRow, SwipeAction, SwipeActions, ToastHost, TooltipLine,
+    TreeFindBar,
 };
 use crate::widget::container_widgets::carousel::Carousel;
 use crate::widget::container_widgets::groupbox::GroupBox;
+use crate::widget::container_widgets::masonry_layout::MasonryLayout;
 use crate::widget::container_widgets::mdiarea::MdiArea;
 use crate::widget::container_widgets::scrollarea::ScrollArea;
 use crate::widget::container_widgets::splitter::Splitter;
@@ -76,14 +82,25 @@ use crate::widget::cupertino::core::{MaterialNavigationRail, MaterialSnackbar};
 use crate::widget::cupertino::segmented_control::CupertinoSegmentedControl;
 use crate::widget::dialog::bottom_sheet::BottomSheet;
 use crate::widget::dialog::dialog_widget::Dialog;
+use crate::widget::dialog::file_dialog::FileDialog;
 use crate::widget::dialog::font_dialog::FontDialog;
 use crate::widget::dialog::input_dialog::InputDialog;
 use crate::widget::dialog::message_box::MessageBox;
 use crate::widget::dialog::modal_bottom_sheet::ModalBottomSheet;
 use crate::widget::dialog::popover::Popover;
+use crate::widget::dialog::popup_window::PopupWindow;
 use crate::widget::dialog::progress_dialog::ProgressDialog;
 use crate::widget::dialog::wizard::WizardDialog;
 use crate::widget::display_widgets::mini_canvas::MiniCanvas;
+// `Arc` is the gauge, not the reference-counted pointer imported from `compat`.
+use crate::widget::display_widgets::arc::Arc as ArcGauge;
+use crate::widget::display_widgets::emoji_picker::{EmojiGlyph, EmojiPicker};
+use crate::widget::display_widgets::image_view::ImageView;
+use crate::widget::display_widgets::lcd_number::LCDNumber;
+use crate::widget::display_widgets::meter::Meter;
+use crate::widget::display_widgets::mini_chart::{DataPoint, MiniChart};
+use crate::widget::display_widgets::progress_circle::ProgressCircle;
+use crate::widget::display_widgets::progressbar::ProgressBar;
 use crate::widget::display_widgets::slider::{Slider, TickPosition};
 use crate::widget::display_widgets::switch::Switch;
 use crate::widget::display_widgets::tag_group::TagGroup;
@@ -95,12 +112,20 @@ use crate::widget::input_widgets::font_combo_box::FontComboBox;
 use crate::widget::input_widgets::listbox::ListBox;
 use crate::widget::input_widgets::multi_select_combo_box::{MultiSelectComboBox, MultiSelectItem};
 use crate::widget::input_widgets::shortcut_editor::{ShortcutEditor, ShortcutEntry};
+use crate::widget::macos::segmented_control::MacSegmentedControl;
+use crate::widget::macos::source_list::{MacSourceList, SourceListRow, SourceListSection};
+use crate::widget::macos::toolbar::{MacToolbar, MacToolbarItem};
+use crate::widget::media_widgets::animated_image::{AnimatedFrame, AnimatedImage};
+use crate::widget::media_widgets::hero_animation::HeroAnimation;
+use crate::widget::menu_toolbar::dropdown_menu::{DropdownItem as MenuEntryItem, DropdownMenu};
 use crate::widget::menu_toolbar::menu::Menu;
 use crate::widget::menu_toolbar::menu_bar::MenuBar;
 use crate::widget::menu_toolbar::menu_button::{MenuButton, MenuItem};
 use crate::widget::menu_toolbar::tool_bar::ToolBar;
 use crate::widget::misc_widgets::avatar::{Avatar, GroupAvatar};
+use crate::widget::misc_widgets::barcode_scanner::{BarcodeFormat, BarcodeScanner};
 use crate::widget::misc_widgets::date_range_picker::{RangePreset, RangePresetBar};
+use crate::widget::misc_widgets::drum_column::DrumColumn;
 use crate::widget::misc_widgets::mobile_date_picker::MobileDatePicker;
 use crate::widget::misc_widgets::preset_chip_bar::PresetChipBar;
 use crate::widget::misc_widgets::segmented_button::{Segment, SegmentedButton};
@@ -111,17 +136,23 @@ use crate::widget::overlay_widgets::refresh_control::RefreshControl;
 use crate::widget::overlay_widgets::swipe_to_dismiss::SwipeToDismiss;
 use crate::widget::special_widgets::breadcrumb::{Breadcrumb, BreadcrumbSegment};
 use crate::widget::special_widgets::canvas::Canvas;
-use crate::widget::special_widgets::chip::{Chip, ChipItem};
+use crate::widget::special_widgets::chip::{Chip, ChipInput, ChipItem};
 use crate::widget::special_widgets::command_palette::{CommandEntry, CommandPalette};
+use crate::widget::special_widgets::freeform_shape::{FreeformShapeWidget, ShapeCanvas, ShapePath};
 use crate::widget::special_widgets::grid::GridWidget;
+use crate::widget::special_widgets::markdown_editor::{
+    FindBar, MarkdownOutlineEntry, MarkdownOutlinePanel,
+};
 use crate::widget::special_widgets::notification_center::{
     NotificationCenter, NotificationItem, NotificationLevel,
 };
 use crate::widget::special_widgets::segmented_control::{SegmentItem, SegmentedControl};
+use crate::widget::special_widgets::signature_pad::{SignaturePad, SignatureStroke};
 use crate::widget::special_widgets::snackbar::Snackbar;
 use crate::widget::special_widgets::timeline_widget::{TimelineItem, TimelineWidget};
 use crate::widget::special_widgets::toast::{ToastItem, ToastLevel, ToastStack};
 use crate::widget::view_widgets::data_grid::DataGrid;
+use crate::widget::view_widgets::data_grid::{ColumnSpec, GridViewHeader};
 use crate::widget::view_widgets::data_source::IncrementalTableDataSource;
 use crate::widget::view_widgets::grid_table::GridTableWidget;
 use crate::widget::view_widgets::image_gallery::ImageGallery;
@@ -129,11 +160,13 @@ use crate::widget::view_widgets::list_view::{ListView, VecListModel};
 use crate::widget::view_widgets::properties_panel::{
     PropertiesPanel, PropertyEntry, PropertyValue,
 };
+use crate::widget::view_widgets::query_builder::{FilterField, QueryBuilder};
 use crate::widget::view_widgets::table_widget::{TableModel, TableWidget};
 use crate::widget::view_widgets::tree_table::TreeTable;
 use crate::widget::view_widgets::tree_view::{TreeView, VecTreeModel};
 use crate::widget::view_widgets::virtual_list::VirtualList;
 use crate::widget::view_widgets::virtual_table::VirtualTable;
+use crate::widget::view_widgets::FilterOperator;
 
 /// The day every date-bearing sample is pinned to.
 ///
@@ -555,7 +588,20 @@ pub fn apply(name: &str, widget: &mut dyn Widget) -> bool {
         },
         "modal_bottom_sheet" => match widget_as_mut::<ModalBottomSheet>(widget) {
             Some(sheet) => {
+                sheet.set_title("Filters");
+                sheet.set_content(Box::new(Label::new(
+                    "Sheet content".to_string(),
+                    Rect::new(0, 0, 200, 40),
+                )));
                 sheet.show();
+                // The panel rises in; a half-arrived sheet is a blank card. See `bottom_sheet`.
+                settle(widget, |w| {
+                    let mut settled = false;
+                    if let Some(sheet) = widget_as_mut::<ModalBottomSheet>(w) {
+                        settled = !sheet.tick(1000);
+                    }
+                    settled
+                });
                 true
             }
             None => false,
@@ -1056,19 +1102,26 @@ pub fn apply(name: &str, widget: &mut dyn Widget) -> bool {
         },
 
         // ── Immediate-mode surfaces: a shape is the content ──
-        "canvas" => match widget_as_mut::<Canvas>(widget) {
-            Some(canvas) => {
-                canvas.fill_rect(Rect::new(12, 16, 80, 40), Color::rgb(33, 150, 243));
-                canvas.draw_line(
-                    Point::new(12, 72),
-                    Point::new(228, 72),
-                    Color::rgb(200, 200, 200),
-                );
-                canvas.fill_circle(Point::new(160, 60), 18, Color::rgb(255, 152, 0));
-                true
+        // The commands are in the widget's own space, so they are offset by its geometry. Fixed
+        // literals put them at `(12, 16)` **of the window**, and the control's own viewport test
+        // then discarded every command outside its rectangle — a mounted canvas drew an empty box.
+        "canvas" => {
+            let origin = widget.geometry();
+            match widget_as_mut::<Canvas>(widget) {
+                Some(canvas) => {
+                    let (dx, dy) = (origin.x, origin.y);
+                    canvas.fill_rect(Rect::new(12 + dx, 16 + dy, 80, 40), Color::rgb(33, 150, 243));
+                    canvas.draw_line(
+                        Point::new(12 + dx, 72 + dy),
+                        Point::new(228 + dx, 72 + dy),
+                        Color::rgb(200, 200, 200),
+                    );
+                    canvas.fill_circle(Point::new(160 + dx, 60 + dy), 18, Color::rgb(255, 152, 0));
+                    true
+                }
+                None => false,
             }
-            None => false,
-        },
+        }
         "mini_canvas" => match widget_as_mut::<MiniCanvas>(widget) {
             Some(canvas) => {
                 canvas.fill_rect(Rect::new(12, 16, 70, 32), Color::rgb(33, 150, 243));
@@ -1118,11 +1171,23 @@ pub fn apply(name: &str, widget: &mut dyn Widget) -> bool {
         },
         "navigation_drawer" => match widget_as_mut::<NavigationDrawer>(widget) {
             Some(drawer) => {
-                drawer.add_item("H", "Home");
-                drawer.add_item("S", "Search");
-                drawer.add_item("G", "Settings");
+                drawer.set_title("Library");
+                drawer.add_section_header("Browse");
+                drawer.add_item("home", "Home");
+                drawer.add_item("search", "Search");
+                drawer.add_section_header("Library");
+                drawer.add_item("star", "Favourites");
+                drawer.add_item("folder", "Documents");
                 drawer.set_selected_index(0);
                 drawer.open();
+                // The drawer slides in; without settling it the card shows the bare page.
+                settle(widget, |w| {
+                    let mut settled = false;
+                    if let Some(drawer) = widget_as_mut::<NavigationDrawer>(w) {
+                        settled = !drawer.tick(1000);
+                    }
+                    settled
+                });
                 true
             }
             None => false,
@@ -1373,8 +1438,588 @@ pub fn apply(name: &str, widget: &mut dyn Widget) -> bool {
             None => false,
         },
 
+        // ── Data-bearing controls that were still given nothing ──
+        //
+        // Each of these draws content it does not own and was constructed with none, so a gallery
+        // of every control showed an empty box or its own "nothing here" placeholder. The data set
+        // is the same small, fixed one the rest of this module uses.
+        "animated_image" => match widget_as_mut::<AnimatedImage>(widget) {
+            Some(image) => {
+                // Two 24×24 RGBA frames: a picture and a frame counter, a few kilobytes of data.
+                const SIDE: usize = 24;
+                let mut frames = Vec::new();
+                for color in [Color::rgb(33, 150, 243), Color::rgb(255, 152, 0)] {
+                    let mut data = Vec::with_capacity(SIDE * SIDE * 4);
+                    for _ in 0..(SIDE * SIDE) {
+                        data.push(color.r);
+                        data.push(color.g);
+                        data.push(color.b);
+                        data.push(color.a);
+                    }
+                    frames.push(AnimatedFrame {
+                        data,
+                        width: SIDE as u32,
+                        height: SIDE as u32,
+                        delay_ms: 400,
+                    });
+                }
+                image.load_frames(frames).is_ok()
+            }
+            None => false,
+        },
+        "arc" => match widget_as_mut::<ArcGauge>(widget) {
+            Some(arc) => {
+                arc.set_range(0, 100);
+                arc.set_value(72);
+                true
+            }
+            None => false,
+        },
+        "axis_picker" => match widget_as_mut::<AxisPicker>(widget) {
+            Some(picker) => {
+                picker.set_series(vec![
+                    "Revenue".to_string(),
+                    "Cost".to_string(),
+                    "Margin".to_string(),
+                ]);
+                picker.set_edge_label(AxisEdge::Left, "Value");
+                picker.set_edge_label(AxisEdge::Bottom, "Time");
+                true
+            }
+            None => false,
+        },
+        "barcode_scanner" => match widget_as_mut::<BarcodeScanner>(widget) {
+            Some(scanner) => {
+                scanner.detect_barcode("RW-2026-09-16".to_string(), BarcodeFormat::QRCode);
+                true
+            }
+            None => false,
+        },
+        "chart_data_table" => match widget_as_mut::<ChartDataTable>(widget) {
+            Some(table) => {
+                let series: Vec<(String, Vec<(f64, f64)>)> = sample::SERIES
+                    .iter()
+                    .map(|(name, points)| {
+                        ((*name).to_string(), points.iter().map(|(x, y)| (*x, *y)).collect())
+                    })
+                    .collect();
+                table.set_from_series(&series);
+                true
+            }
+            None => false,
+        },
+        "gauge" => match widget_as_mut::<Gauge>(widget) {
+            Some(gauge) => {
+                let _ = gauge.set_maximum(100.0);
+                gauge.set_value(65.0);
+                gauge.set_unit_label("deg".to_string());
+                true
+            }
+            None => false,
+        },
+        "meter" => match widget_as_mut::<Meter>(widget) {
+            Some(meter) => {
+                meter.set_range(0, 100);
+                meter.set_value(65);
+                true
+            }
+            None => false,
+        },
+        "lcd_number" => match widget_as_mut::<LCDNumber>(widget) {
+            Some(lcd) => {
+                lcd.set_range(0.0, 9999.0);
+                lcd.set_value(2026.0);
+                true
+            }
+            None => false,
+        },
+        "progress_bar" => match widget_as_mut::<ProgressBar>(widget) {
+            Some(bar) => {
+                bar.set_range(0, 100);
+                bar.set_value(45);
+                true
+            }
+            None => false,
+        },
+        "progress_circle" => match widget_as_mut::<ProgressCircle>(widget) {
+            Some(circle) => {
+                circle.set_value(0.45);
+                // The groove is themed from the accent role and the arc is the accent too, so at
+                // the default colours the progress was invisible against its own track.
+                circle.set_track_color(Color::rgb(224, 224, 224));
+                // The ring paints the driver's current value, so the tween is advanced here or a
+                // still frame shows an empty ring. Bounded, so a stuck driver cannot wedge us.
+                for _ in 0..600 {
+                    let _ = circle.tick(16);
+                    if !circle.is_animating() {
+                        break;
+                    }
+                }
+                true
+            }
+            None => false,
+        },
+        "mini_chart" => match widget_as_mut::<MiniChart>(widget) {
+            Some(chart) => {
+                chart.set_data(Vec::from([
+                    DataPoint::new("Mon", 12),
+                    DataPoint::new("Tue", 48),
+                    DataPoint::new("Wed", 31),
+                    DataPoint::new("Thu", 7),
+                    DataPoint::new("Fri", 25),
+                ]));
+                true
+            }
+            None => false,
+        },
+        "pie_chart" => match widget_as_mut::<PieChart>(widget) {
+            Some(chart) => {
+                // The constructor seeds values but no names, which is why the slices read as "...".
+                chart.set_slices(Vec::from([
+                    PieSlice::new("Alpha", 40.0, Color::rgb(33, 150, 243)),
+                    PieSlice::new("Beta", 30.0, Color::rgb(255, 152, 0)),
+                    PieSlice::new("Gamma", 20.0, Color::rgb(76, 175, 80)),
+                    PieSlice::new("Delta", 10.0, Color::rgb(244, 67, 54)),
+                ]));
+                true
+            }
+            None => false,
+        },
+        "time_edit" | "time_picker" => match widget_as_mut::<TimeEdit>(widget) {
+            Some(edit) => {
+                edit.set_time(Time::new(9, 30, 0, 0));
+                true
+            }
+            None => false,
+        },
+        "line_number_gutter" => match widget_as_mut::<LineNumberGutter>(widget) {
+            Some(gutter) => {
+                // `set_range` is the document, `set_visible_lines` is the viewport.
+                gutter.set_range(1, 12);
+                gutter.set_visible_lines(1, 12);
+                gutter.set_current_line(3);
+                true
+            }
+            None => false,
+        },
+        "summary_row" => match widget_as_mut::<SummaryRow>(widget) {
+            Some(row) => {
+                row.set_aggregates(Vec::from([
+                    ColumnAggregate::new("qty", ColumnAggregateKind::Sum, "Sum"),
+                    ColumnAggregate::new("price", ColumnAggregateKind::Average, "Avg"),
+                ]));
+                row.set_value("qty", 102.0);
+                row.set_value("price", 88.75);
+                true
+            }
+            None => false,
+        },
+        "filter_row" => match widget_as_mut::<FilterRow>(widget) {
+            Some(row) => {
+                row.set_columns(Vec::from([
+                    "Name".to_string(),
+                    "Qty".to_string(),
+                    "Status".to_string(),
+                ]));
+                true
+            }
+            None => false,
+        },
+        "drum_column" => match widget_as_mut::<DrumColumn>(widget) {
+            Some(column) => {
+                column.set_items(sample::list_items());
+                column.set_selected_index(2);
+                true
+            }
+            None => false,
+        },
+        "chip_input" => match widget_as_mut::<ChipInput>(widget) {
+            Some(input) => {
+                input.set_items(Vec::from([
+                    ChipItem::new("alpha", "Alpha"),
+                    ChipItem::new("bravo", "Bravo"),
+                    ChipItem::new("charlie", "Charlie"),
+                ]));
+                true
+            }
+            None => false,
+        },
+        "dropdown_menu" => match widget_as_mut::<DropdownMenu>(widget) {
+            Some(menu) => {
+                menu.add_item(MenuEntryItem::new("new", "New"));
+                menu.add_item(MenuEntryItem::new("open", "Open"));
+                menu.add_item(MenuEntryItem::new("save", "Save").with_shortcut("Ctrl+S"));
+                menu.select("open");
+                true
+            }
+            None => false,
+        },
+        "file_dialog" => match widget_as_mut::<FileDialog>(widget) {
+            Some(dialog) => {
+                // List mode, not Details: at 240 × 120 a Details view spends its whole list band
+                // on the column-header row, so no data row could ever fit.
+                dialog.set_view_mode(crate::widget::dialog::file_dialog::ViewMode::List);
+                dialog.set_directory("Documents");
+                dialog.set_source(Box::new(SampleFileSource));
+                true
+            }
+            None => false,
+        },
+        "emoji_picker" => match widget_as_mut::<EmojiPicker>(widget) {
+            Some(picker) => {
+                // The bundled faces have no pictographs (☺ ♥ ✓ ★ all paint as tofu), so the sample
+                // uses the text emoticons these faces can actually draw.
+                picker.set_glyphs(Vec::from([
+                    EmojiGlyph::new("smile", ":)", "Faces").keyword("happy"),
+                    EmojiGlyph::new("grin", ":D", "Faces").keyword("laugh"),
+                    EmojiGlyph::new("wink", ";)", "Faces").keyword("wink"),
+                    EmojiGlyph::new("heart", "<3", "Symbols").keyword("love"),
+                ]));
+                picker.set_categories(Vec::from(["Faces".to_string(), "Symbols".to_string()]));
+                true
+            }
+            None => false,
+        },
+        "mac_segmented_control" => match widget_as_mut::<MacSegmentedControl>(widget) {
+            Some(control) => {
+                control.set_segments(Vec::from([
+                    "Day".to_string(),
+                    "Week".to_string(),
+                    "Month".to_string(),
+                ]));
+                true
+            }
+            None => false,
+        },
+        "mac_source_list" => match widget_as_mut::<MacSourceList>(widget) {
+            Some(list) => {
+                list.set_sections(Vec::from([
+                    SourceListSection::new("Library").with_rows(Vec::from([
+                        SourceListRow::new("all", "All"),
+                        SourceListRow::new("recent", "Recent"),
+                    ])),
+                    SourceListSection::new("Folders").with_rows(Vec::from([
+                        SourceListRow::new("documents", "Documents"),
+                        SourceListRow::new("downloads", "Downloads"),
+                    ])),
+                ]));
+                true
+            }
+            None => false,
+        },
+        "chart_tooltip" => {
+            let origin = widget.geometry();
+            match widget_as_mut::<ChartTooltip>(widget) {
+                Some(tooltip) => {
+                    tooltip.show_at(
+                        Point::new(origin.x + 16, origin.y + 16),
+                        Vec::from([
+                            TooltipLine::new("Revenue 12.0"),
+                            TooltipLine::colored("Cost 8.0", Color::rgb(255, 152, 0)),
+                        ]),
+                    );
+                    true
+                }
+                None => false,
+            }
+        }
+        "toast_host" => match widget_as_mut::<ToastHost>(widget) {
+            Some(host) => {
+                host.push_item(ToastItem::new(
+                    "saved",
+                    "Saved successfully",
+                    ToastLevel::Info,
+                    4000,
+                ));
+                true
+            }
+            None => false,
+        },
+
+        // ── Content that needs a host: shapes, strokes, images, rows ──
+        //
+        // These render data they do not own. Constructed with nothing they paint their empty state,
+        // which teaches a reader nothing. The data is generated here rather than loaded, so the
+        // snapshots stay byte-identical on any machine.
+        "freeform_shape" => match widget_as_mut::<FreeformShapeWidget>(widget) {
+            Some(shape) => {
+                shape.set_path(ShapePath::Star { points: 6, inner_radius: 0.5 });
+                true
+            }
+            None => false,
+        },
+        "shape_canvas" => {
+            let origin = widget.geometry();
+            match widget_as_mut::<ShapeCanvas>(widget) {
+                Some(canvas) => {
+                    canvas.add_shape(FreeformShapeWidget::new(
+                        Rect::new(origin.x + 14, origin.y + 18, 70, 70),
+                        ShapePath::Star { points: 5, inner_radius: 0.45 },
+                    ));
+                    canvas.add_shape(FreeformShapeWidget::new(
+                        Rect::new(origin.x + 110, origin.y + 26, 90, 70),
+                        ShapePath::Heart,
+                    ));
+                    true
+                }
+                None => false,
+            }
+        }
+        "signature_pad" => {
+            let origin = widget.geometry();
+            match widget_as_mut::<SignaturePad>(widget) {
+                Some(pad) => {
+                    let stroke = SignatureStroke::from_points(Vec::from([
+                        Point::new(origin.x + 24, origin.y + 76),
+                        Point::new(origin.x + 60, origin.y + 40),
+                        Point::new(origin.x + 100, origin.y + 80),
+                        Point::new(origin.x + 148, origin.y + 36),
+                    ]));
+                    pad.set_strokes(Vec::from([stroke]));
+                    true
+                }
+                None => false,
+            }
+        }
+        "image_view" => match widget_as_mut::<ImageView>(widget) {
+            Some(view) => {
+                // A generated checkerboard: no asset, no decoder, visible at any size.
+                const SIDE: u32 = 32;
+                let mut pixels = Vec::with_capacity((SIDE * SIDE * 4) as usize);
+                for y in 0..SIDE {
+                    for x in 0..SIDE {
+                        let light = (x / 8 + y / 8) % 2 == 0;
+                        let (r, g, b) = if light { (33, 150, 243) } else { (236, 240, 245) };
+                        pixels.extend_from_slice(&[r, g, b, 255]);
+                    }
+                }
+                view.set_image(crate::image::Image::from_raw(
+                    crate::image::ImageData::Rgba8(pixels),
+                    SIDE,
+                    SIDE,
+                ));
+                true
+            }
+            None => false,
+        },
+        "hero_animation" => {
+            let origin = widget.geometry();
+            match widget_as_mut::<HeroAnimation>(widget) {
+                Some(hero) => {
+                    let source_rect = Rect::new(origin.x + 12, origin.y + 16, 80, 56);
+                    let target_rect = Rect::new(origin.x + 132, origin.y + 16, 80, 56);
+                    hero.set_source(Box::new(Label::new("Source".to_string(), source_rect)));
+                    hero.set_target(Box::new(Label::new("Target".to_string(), target_rect)));
+                    hero.set_transition_rects(Some(source_rect), Some(target_rect));
+                    hero.set_progress(0.5);
+                    true
+                }
+                None => false,
+            }
+        }
+        "query_builder" => match widget_as_mut::<QueryBuilder>(widget) {
+            Some(builder) => {
+                builder.set_fields(Vec::from([
+                    FilterField::text(0, "Name"),
+                    FilterField::number(1, "Qty"),
+                ]));
+                if let Some(row) = builder.add_row(0) {
+                    let _ = builder.set_row_operator(row, FilterOperator::Contains);
+                    let _ = builder.set_row_operand(row, "Widget");
+                }
+                if let Some(row) = builder.add_row(1) {
+                    let _ = builder.set_row_operator(row, FilterOperator::GreaterThan);
+                    let _ = builder.set_row_operand(row, "10");
+                }
+                true
+            }
+            None => false,
+        },
+        "masonry_layout" => match widget_as_mut::<MasonryLayout>(widget) {
+            Some(layout) => {
+                layout.add_item("Alpha", 48, Color::rgb(33, 150, 243));
+                layout.add_item("Bravo", 72, Color::rgb(255, 152, 0));
+                layout.add_item("Charlie", 40, Color::rgb(76, 175, 80));
+                layout.add_item("Delta", 60, Color::rgb(156, 39, 176));
+                true
+            }
+            None => false,
+        },
+        "markdown_outline_panel" => match widget_as_mut::<MarkdownOutlinePanel>(widget) {
+            Some(panel) => {
+                panel.set_entries(Vec::from([
+                    MarkdownOutlineEntry { line: 0, level: 1, title: "Overview".to_string() },
+                    MarkdownOutlineEntry { line: 12, level: 2, title: "Details".to_string() },
+                    MarkdownOutlineEntry { line: 24, level: 2, title: "History".to_string() },
+                ]));
+                panel.set_active_index(Some(0));
+                true
+            }
+            None => false,
+        },
+        "find_bar" => match widget_as_mut::<FindBar>(widget) {
+            Some(bar) => {
+                bar.set_query("widget");
+                true
+            }
+            None => false,
+        },
+        "grid_view_header" => match widget_as_mut::<GridViewHeader>(widget) {
+            Some(header) => {
+                header.set_columns(Vec::from([
+                    ColumnSpec::new("Name", 110),
+                    ColumnSpec::new("Qty", 60),
+                    ColumnSpec::new("Status", 70),
+                ]));
+                true
+            }
+            None => false,
+        },
+        "popup_window" => match widget_as_mut::<PopupWindow>(widget) {
+            Some(window) => {
+                window.set_title("Popup".to_string());
+                if let Some(id) = crate::widget::runtime::register(Box::new(Label::new(
+                    "Popup content".to_string(),
+                    Rect::new(0, 0, 160, 24),
+                ))) {
+                    window.set_content_widget(Some(id));
+                }
+                true
+            }
+            None => false,
+        },
+        "mac_toolbar" => match widget_as_mut::<MacToolbar>(widget) {
+            Some(toolbar) => {
+                toolbar.set_items(Vec::from([
+                    MacToolbarItem::new("back", "Back"),
+                    MacToolbarItem::new("forward", "Forward"),
+                    MacToolbarItem::new("share", "Share"),
+                ]));
+                true
+            }
+            None => false,
+        },
+
         _ => false,
     }
+}
+
+/// A fixed listing for the sample file dialog.
+///
+/// The dialog reads its rows from a host-supplied source, so a constructed dialog with no source
+/// can only show `(file list)`: there is nowhere for a row to come from. This source is the
+/// smallest honest host: three entries, one of them a directory, so the name column and the
+/// selection have something to address.
+struct SampleFileSource;
+
+impl crate::widget::dialog::file_dialog::FileEntrySource for SampleFileSource {
+    fn entries(&self, _directory: &str) -> Vec<crate::widget::dialog::file_dialog::FileEntry> {
+        Vec::from([
+            crate::widget::dialog::file_dialog::FileEntry::new("Documents", true),
+            crate::widget::dialog::file_dialog::FileEntry::new("report.pdf", false)
+                .with_metadata(Some(48_000), None),
+            crate::widget::dialog::file_dialog::FileEntry::new("notes.txt", false)
+                .with_metadata(Some(1_200), None),
+        ])
+    }
+}
+
+/// Mounts sample children inside a container whose content is a mounted widget.
+///
+/// # Why this is part of the sample, not of the exporter
+///
+/// A container's content is a **child widget**, not a value: `ScrollArea`, `StackedWidget`,
+/// `Splitter` and `MdiArea` paint what is mounted under them, so [`apply`] alone leaves them
+/// blank. This used to live in `examples/export_control_svgs.rs`, which meant the snapshots had
+/// content and every other consumer — the wasm gallery is one — still showed an empty box. Moving
+/// it here gives both paths one implementation, and the geometry is translated by the container's
+/// own origin so the same call works at the census rectangle (origin `0,0`) and on a mounted card.
+///
+/// Returns the ids that were mounted. A caller that destroys the container must unregister them:
+/// the runtime does not walk a child list on teardown.
+pub fn compose_container(name: &str, widget: &mut dyn Widget) -> Vec<crate::core::ObjectId> {
+    let origin = widget.geometry();
+    let mut mounted: Vec<crate::core::ObjectId> = Vec::new();
+    let mount = |rect: Rect, text: &str, mounted: &mut Vec<crate::core::ObjectId>| {
+        let rect = Rect::new(rect.x + origin.x, rect.y + origin.y, rect.width, rect.height);
+        let mut label = Label::new(String::from(text), rect);
+        crate::theme::apply_theme_to_widget(&mut label);
+        if let Some(id) = crate::widget::runtime::register(Box::new(label)) {
+            mounted.push(id);
+            Some(id)
+        } else {
+            None
+        }
+    };
+    match name {
+        "splitter" => {
+            let Some(splitter) = widget_as_mut::<Splitter>(widget) else {
+                return mounted;
+            };
+            // `apply` already put two *model* panes in place (ids with no widget behind them), so
+            // the real children replace those slots rather than adding two more.
+            let panes = [
+                (Rect::new(0, 0, 100, 80), "Left pane"),
+                (Rect::new(100, 0, 140, 80), "Right pane"),
+            ];
+            for (index, (rect, text)) in panes.into_iter().enumerate() {
+                let Some(id) = mount(rect, text, &mut mounted) else {
+                    continue;
+                };
+                if index < splitter.pane_count() {
+                    splitter.replace_widget(index, id);
+                } else {
+                    splitter.add_pane(id, 1);
+                }
+            }
+        }
+        "scroll_area" => {
+            let Some(area) = widget_as_mut::<ScrollArea>(widget) else {
+                return mounted;
+            };
+            if let Some(id) = mount(Rect::new(0, 0, 160, 24), "Scrollable content", &mut mounted) {
+                area.set_widget(Some(id));
+            }
+        }
+        "stacked_widget" => {
+            let Some(stack) = widget_as_mut::<StackedWidget>(widget) else {
+                return mounted;
+            };
+            // The two pages `apply` added are model entries; replace them with mounted labels so
+            // the current page is painted. Removing first keeps `count` equal to the tree.
+            while stack.count() > 0 {
+                stack.remove_widget_at(0);
+            }
+            for text in ["Page one", "Page two"] {
+                if let Some(id) = mount(Rect::new(0, 0, 200, 80), text, &mut mounted) {
+                    stack.add_widget(id);
+                }
+            }
+            stack.set_current_index(0);
+        }
+        "mdi_area" => {
+            let Some(area) = widget_as_mut::<MdiArea>(widget) else {
+                return mounted;
+            };
+            // Same replacement: the sub-windows `apply` added are model entries.
+            area.close_all_sub_windows();
+            let windows = [
+                (Rect::new(16, 16, 160, 56), "Document 1", "Editor 1"),
+                (Rect::new(48, 48, 160, 56), "Document 2", "Editor 2"),
+            ];
+            for (rect, title, content) in windows {
+                let Some(id) = mount(rect, content, &mut mounted) else {
+                    continue;
+                };
+                let index = area.add_sub_window(id, rect);
+                if let Some(subwindow) = area.sub_window_mut(index) {
+                    subwindow.set_title(String::from(title));
+                }
+            }
+        }
+        _ => {}
+    }
+    mounted
 }
 
 /// Tick a control until it reports it has settled, under a hard frame cap.

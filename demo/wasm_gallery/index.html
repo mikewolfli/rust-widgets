@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>rust_widgets — WASM control gallery</title>
+    <style>
+      :root {
+        color-scheme: dark;
+      }
+      html,
+      body {
+        margin: 0;
+        min-height: 100%;
+        background: #17181b;
+        color: #d7d9dd;
+        font: 14px/1.5 system-ui, -apple-system, Segoe UI, sans-serif;
+      }
+      body {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 10px;
+        padding: 16px;
+      }
+      /* No CSS scaling: the backend maps pointer coordinates through the
+         canvas's own bounding rectangle, so displaying it at 1:1 keeps the
+         hit-testing honest. */
+      canvas {
+        display: block;
+        border-radius: 8px;
+        box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+      }
+      p {
+        margin: 0;
+        max-width: 1040px;
+        opacity: 0.7;
+        font-size: 12px;
+      }
+      code {
+        color: #9ecbff;
+      }
+      #error {
+        display: none;
+        max-width: 1040px;
+        padding: 10px 12px;
+        border-radius: 6px;
+        background: #4a1d21;
+        color: #ffd7d9;
+        white-space: pre-wrap;
+      }
+      #status {
+        max-width: 1040px;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 12px;
+        color: #8fbce6;
+      }
+    </style>
+  </head>
+  <body>
+    <!-- The id is the one the wasm backend binds to (`WasmPlatform::new`). -->
+    <canvas id="wgpu-canvas" width="1040" height="700"></canvas>
+    <p>
+      Every registered control kind is one card; a composite control is shown as a
+      composite, never as its children. Use <code>Prev</code> / <code>Next</code> to
+      page through the kinds.
+    </p>
+    <div id="status"></div>
+    <div id="error"></div>
+
+    <script type="module">
+      import init from './pkg/wasm_gallery_demo.js'
+
+      // Top-level await: the document's load event then waits for the wasm module,
+      // so the first frame is already painted when the page reports ready (and a
+      // headless screenshot is not racing the instantiation).
+      try {
+        await init()
+      } catch (error) {
+        const box = document.getElementById('error')
+        box.style.display = 'block'
+        // Keep whatever the Rust panic hook already wrote: it names the panic,
+        // while this branch can only name the abort.
+        box.textContent = box.textContent
+          ? `${box.textContent}\n${error}`
+          : `failed to start: ${error}`
+        throw error
+      }
+    </script>
+  </body>
+</html>

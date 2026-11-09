@@ -301,6 +301,19 @@ pub trait Widget: EventHandler + Any {
     fn children_clip(&self) -> Option<Rect> {
         None
     }
+    /// The rectangle this control's **own paint and subtree** are confined to, if any.
+    ///
+    /// [`Widget::children_clip`] confines a container's descendants; this confines the node's own
+    /// draw calls as well. The runtime sets it when a host mounted the control as a surface but the
+    /// backend could only adopt it into the widget tree
+    /// ([`crate::mount_surface`]): a surface is rasterised into a buffer of its own rectangle, so
+    /// adopting it must not let an open popup paint outside that rectangle and over a neighbour.
+    ///
+    /// The default reads the base state, so the runtime can set it through [`Widget::base_mut`] and
+    /// every control inherits the answer without implementing anything.
+    fn paint_clip(&self) -> Option<Rect> {
+        self.base().paint_clip()
+    }
     /// This control's paint order among its siblings; higher paints later and hit-tests first.
     ///
     /// The tree painter sorts each sibling list by this value before painting (stable, so equal

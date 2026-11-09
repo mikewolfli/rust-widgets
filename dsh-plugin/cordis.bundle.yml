@@ -1,0 +1,19 @@
+# Install the bundled rust-widgets skill.
+#
+# The package itself is the Cordis plugin: `lib/index.js` registers a skill
+# provider on `ctx.skills`. Installing this bundle is the only step — the row is
+# enabled by default, so the skill appears in the session catalog with no
+# profile configuration.
+#
+# # Why this file is not named `*.patch.yml`
+#
+# DSH reads a bundle's layer from `dsh.bundle.patch` in `package.json`, so the
+# name is the package's choice. The schema catalogue maps `*.patch.yml` to the
+# **JSON Patch** (RFC 6902) schema, whose operations are `add`/`replace`/`test`;
+# an editor applying it rejects DSH's `insert` entry for not being JSON Patch.
+# The formats have nothing in common — DSH selects its operation by the `insert`
+# key (`PatchOptions` in `@deepseek-ai/cordis-plugin-include`) — so the file keeps
+# a name that belongs to DSH rather than to JSON Patch.
+- insert:
+    - id: rust-widgets-skill
+      name: 'dsh-skill-rust-widgets'

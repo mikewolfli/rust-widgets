@@ -124,7 +124,7 @@ done
 # ---------------------------------------------------------------------------
 # [4] The lockfiles must agree (they carry the version cargo resolved)
 # ---------------------------------------------------------------------------
-for lock in "Cargo.lock" "demo/control/Cargo.lock" "demo/finance/Cargo.lock" "demo/code_editor/Cargo.lock"; do
+for lock in "Cargo.lock" "demo/control/Cargo.lock" "demo/finance/Cargo.lock" "demo/code_editor/Cargo.lock" "demo/wasm_gallery/Cargo.lock"; do
     [[ -f "$lock" ]] || continue
     got="$(grep -A 1 '^name = "rust_widgets"$' "$lock" | sed -n 's/^version = "\(.*\)"$/\1/p' | head -1)"
     if [[ "$got" != "$VERSION" ]]; then

@@ -85,6 +85,7 @@ fn declare_cfg_aliases() {
     println!("cargo:rustc-check-cfg=cfg(widgets_unstripped)");
     println!("cargo:rustc-check-cfg=cfg(alloc_frugal)");
     println!("cargo:rustc-check-cfg=cfg(embedded_surface)");
+    println!("cargo:rustc-check-cfg=cfg(browser_clock)");
     println!("cargo:rustc-check-cfg=cfg(gtk_probe)");
     println!("cargo:rustc-check-cfg=cfg(declarative_view)");
     // The designer gate (BLUE19 D7-b-3). Declared here so a `cfg(designer_tooling)`
@@ -157,6 +158,14 @@ fn declare_cfg_aliases() {
 
     if is_mini {
         println!("cargo:rustc-cfg=alloc_frugal");
+    }
+    // `std::time::Instant` and `SystemTime` are unimplemented on
+    // `wasm32-unknown-unknown`: reading either aborts with "time not implemented on
+    // this platform". `compat` therefore reads the browser's own monotonic clock on
+    // that target, and this cfg names exactly that build. WASI has a real clock and
+    // is deliberately excluded.
+    if target_arch.starts_with("wasm") && target_os != "wasi" && feature_enabled("wasm") {
+        println!("cargo:rustc-cfg=browser_clock");
     }
     if is_embedded {
         println!("cargo:rustc-cfg=embedded_surface");

@@ -1,9 +1,0 @@
-# Install the bundled rust-widgets skill.
-#
-# The package itself is the Cordis plugin: `lib/index.js` registers a skill
-# provider on `ctx.skills`. Installing this bundle is the only step — the row is
-# enabled by default, so the skill appears in the session catalog with no
-# profile configuration.
-- insert:
-    - id: rust-widgets-skill
-      name: 'dsh-skill-rust-widgets'

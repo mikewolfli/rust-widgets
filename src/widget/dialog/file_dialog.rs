@@ -1818,14 +1818,19 @@ impl FileDialog {
         let sidebar = self.sidebar_width();
         let x = rect.x + 10 + sidebar as i32;
         let width = rect.width.saturating_sub(20 + sidebar);
-        let line_h = self.list_line_height() as i32;
-        let list_min_h = line_h + 4;
         let reserved_below = SEL_H + SELECTED_STRIP_GAP;
-        let list_h = if button_top - list_y >= list_min_h {
-            (button_top - reserved_below - list_y).max(list_min_h) as u32
-        } else {
-            (button_top - list_y).max(0) as u32
-        };
+        // The selected-file strip above the buttons is a *conditional* row: the draw drops it
+        // when it cannot fit between the list and the buttons (see `sel_fits`). Reserving its
+        // band unconditionally therefore squeezed the list for a row nobody paints — on a short
+        // dialog (the census rectangle is 240 x 120) the list was left one pixel shy of a single
+        // row, so a dialog with entries painted an empty field while the strip was dropped too.
+        // The reservation is only made when what is left still shows a row; otherwise the list
+        // takes the whole band and the strip drops itself, which is the pair of decisions the
+        // draw already makes.
+        let available = (button_top - list_y).max(0);
+        let with_strip = available - reserved_below;
+        let one_row = self.list_row_height() as i32;
+        let list_h = if with_strip >= one_row { with_strip as u32 } else { available as u32 };
         Rect::new(x, list_y, width, list_h)
     }
 
@@ -2754,6 +2759,34 @@ mod tests {
     use crate::core::Point;
     use crate::event::Event;
     use std::sync::{Arc, Mutex};
+
+    /// A short dialog keeps a listing row instead of paying for the selected-file strip.
+    ///
+    /// # The defect this pins
+    ///
+    /// `list_rect` reserved `SEL_H + SELECTED_STRIP_GAP` unconditionally, but the draw drops
+    /// that strip when it does not fit (`sel_fits`). At the census rectangle (240 x 120) the
+    /// reservation left the list one pixel short of a single row, so a dialog with entries
+    /// painted an empty field **and** no strip — both halves lost to the same band. The list now
+    /// takes the whole band when the strip would not fit, which is the same decision the draw
+    /// makes, so one row is visible.
+    #[test]
+    fn a_short_dialog_still_shows_a_listing_row() {
+        struct OneFile;
+        impl FileEntrySource for OneFile {
+            fn entries(&self, _directory: &str) -> Vec<FileEntry> {
+                vec![FileEntry::new("report.pdf", false)]
+            }
+        }
+
+        let mut dialog = FileDialog::new(Rect::new(0, 0, 240, 120));
+        dialog.set_source(Box::new(OneFile));
+        assert_eq!(dialog.entries().len(), 1, "the source is read");
+        assert!(
+            !dialog.visible_rows().is_empty(),
+            "a dialog with one entry must paint one row, even when it is short"
+        );
+    }
 
     #[test]
     fn select_file_updates_selection_and_emits_signal() {

@@ -84,6 +84,18 @@ pub struct BaseWidget {
     pub(crate) object: Object,
     pub(crate) kind: WidgetKind,
     pub(crate) geometry: Rect,
+    /// The rectangle this control's **own paint and its whole subtree** is confined to, or `None`.
+    ///
+    /// [`crate::Widget::children_clip`] confines a container's descendants to a viewport, but the
+    /// node itself still paints wherever its draw calls reach. A surface has the stronger
+    /// guarantee: the platform rasterises it into a buffer of its own rectangle, so nothing it
+    /// paints can land outside that box. When a backend cannot host a surface and
+    /// [`crate::mount_surface`] adopts the widget into the window tree instead, that guarantee has
+    /// to survive, or a control with an open popup paints over a neighbour.
+    ///
+    /// `None` on every control that was never adopted, so ordinary tree children keep painting
+    /// their popups outside their geometry exactly as before.
+    pub(crate) paint_clip: Option<Rect>,
     /// Settled item-level affine matrix, compiled only with the `3d` feature.
     ///
     /// The matrix is the transform applied to this control's own drawing, not to its
@@ -287,6 +299,7 @@ impl BaseWidget {
             object: Object::new(class_name),
             kind,
             geometry,
+            paint_clip: None,
             #[cfg(feature = "3d")]
             item_transform: crate::render::math3d::Mat3::IDENTITY,
             #[cfg(feature = "3d")]
@@ -386,6 +399,28 @@ impl BaseWidget {
         }
         self.geometry = geometry;
         self.request_layout();
+        self.request_redraw();
+    }
+
+    /// The rectangle this control's own paint and subtree are confined to, or `None`.
+    ///
+    /// See the `paint_clip` field for why the distinction from
+    /// [`crate::Widget::children_clip`] exists. This is an *external* constraint imposed by the
+    /// host that mounted the control (see [`crate::mount_surface`]), not a control's own layout
+    /// decision, which is why it lives in the base state rather than in each control.
+    pub fn paint_clip(&self) -> Option<Rect> {
+        self.paint_clip
+    }
+
+    /// Sets the rectangle this control's own paint and subtree are confined to.
+    ///
+    /// A change requests a redraw: the constraint is pixel-visible, since it decides which of the
+    /// control's paint calls survive.
+    pub fn set_paint_clip(&mut self, clip: Option<Rect>) {
+        if self.paint_clip == clip {
+            return;
+        }
+        self.paint_clip = clip;
         self.request_redraw();
     }
 

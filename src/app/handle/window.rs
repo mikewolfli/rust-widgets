@@ -477,6 +477,15 @@ impl WindowHandle {
     /// The same call works on every backend; when one cannot host a surface it
     /// says so through `Err`, rather than the caller pre-checking an OS.
     ///
+    /// # The widget paints inside `rect`
+    ///
+    /// A surface is rasterised into a buffer of its own rectangle, so nothing the
+    /// widget paints can land outside it — an open popup is cut off at the edge
+    /// rather than drawn over a neighbour. A record-backed backend that cannot host
+    /// a surface adopts the widget into its window tree, and it keeps the same
+    /// bound (`Widget::paint_clip`), so the picture does not depend on which of the
+    /// two paths the backend took.
+    ///
     /// # Ownership
     ///
     /// The window takes ownership through the process-wide widget registry; the

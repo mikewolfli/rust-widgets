@@ -1153,17 +1153,20 @@ fn paint_subtree_into(
             return;
         }
         children.extend_from_slice(widget.base().children());
-        child_clip = intersect_clip(clip, widget.children_clip());
+        // A host-imposed clip (`paint_clip`) confines this node's own draw as well as its
+        // descendants; `children_clip` confines only the descendants.
+        let own_clip = intersect_clip(clip, widget.paint_clip());
+        child_clip = intersect_clip(own_clip, widget.children_clip());
         let Some(drawable) = widget.as_draw_mut() else {
             return;
         };
         let mut context = RenderContext::new(backend);
         context.push_offset(-origin.0, -origin.1);
-        if let Some(rect) = clip {
+        if let Some(rect) = own_clip {
             context.push_clip(rect.x, rect.y, rect.width, rect.height);
         }
         drawable.draw(&mut context);
-        if clip.is_some() {
+        if own_clip.is_some() {
             context.pop_clip();
         }
         context.pop_offset();
@@ -1197,6 +1200,12 @@ pub(crate) struct SubtreeMetrics {
     pub(crate) bounds: Option<Rect>,
     /// Whether any visible node in the subtree paints an overlay outside its own rectangle.
     pub(crate) has_open_popup: bool,
+    /// The rectangle the host confined this node's paint to, if any (an adopted surface).
+    ///
+    /// Carried here rather than re-read from the widget so the per-frame layer decision costs no
+    /// extra registry lookup, and so it is refreshed with the same generation that refreshes
+    /// `bounds`.
+    pub(crate) paint_clip: Option<Rect>,
 }
 
 /// The retained `subtree_metrics` table and the key it was computed under (RD3-02).
@@ -1239,7 +1248,7 @@ pub(crate) fn subtree_metrics(
     if let Some(cached) = memo.get(&id) {
         return *cached;
     }
-    let empty = SubtreeMetrics { bounds: None, has_open_popup: false };
+    let empty = SubtreeMetrics { bounds: None, has_open_popup: false, paint_clip: None };
     if depth >= MAX_LAYER_DEPTH {
         return empty;
     }
@@ -1252,10 +1261,15 @@ pub(crate) fn subtree_metrics(
     children.clear();
     let info = read_widget(id, |widget| {
         children.extend_from_slice(widget.base().children());
-        (widget.is_visible(), widget.has_open_popup(), grow_by_damage_margin(widget.geometry()))
+        (
+            widget.is_visible(),
+            widget.has_open_popup(),
+            widget.paint_clip(),
+            grow_by_damage_margin(widget.geometry()),
+        )
     });
     let metrics = match info {
-        Some((true, has_open_popup, mut bounds)) => {
+        Some((true, has_open_popup, paint_clip, mut bounds)) => {
             let mut has_open_popup = has_open_popup;
             for &child in &children {
                 let child_metrics = subtree_metrics(child, depth + 1, memo);
@@ -1264,7 +1278,7 @@ pub(crate) fn subtree_metrics(
                     bounds = union_rect(bounds, child_bounds);
                 }
             }
-            SubtreeMetrics { bounds: Some(bounds), has_open_popup }
+            SubtreeMetrics { bounds: Some(bounds), has_open_popup, paint_clip }
         }
         // A hidden node hides its whole subtree, and an id that is no longer mounted paints
         // nothing. Both are ordinary states, not errors.
@@ -1326,10 +1340,21 @@ pub(crate) fn paint_widget_layer(
     let Some(raw_bounds) = subtree.bounds else {
         return LayerPaint { drew: false, cacheable: true };
     };
+    // A host-imposed clip confines the node and its subtree, so a layer may cover just that
+    // intersection: the pixels a fill would have put outside it are not part of the picture.
+    let (raw_bounds, confined) = match subtree.paint_clip {
+        Some(paint_clip) => match intersect_clip(Some(raw_bounds), Some(paint_clip)) {
+            Some(bounds) => (bounds, true),
+            None => return LayerPaint { drew: false, cacheable: true },
+        },
+        None => (raw_bounds, false),
+    };
     // A subtree that paints outside its own box (an open drop-down list) cannot be captured in
     // a bounded layer without clipping the overlay. Paint it straight into the target instead,
-    // and mark it uncacheable so no ancestor captures a layer that omits the overlay.
-    if subtree.has_open_popup {
+    // and mark it uncacheable so no ancestor captures a layer that omits the overlay. A confined
+    // node is the exception: its overlay is clipped to the host's rectangle by definition, so the
+    // layer is exactly what the screen shows.
+    if subtree.has_open_popup && !confined {
         return paint_widget_direct(
             id,
             clip,
@@ -1372,6 +1397,8 @@ pub(crate) fn paint_widget_layer(
         };
         let mut context = RenderContext::new(&mut offscreen);
         context.push_offset(-bounds.x, -bounds.y);
+        // The offscreen is `bounds`-sized, and `bounds` is already the node's own box
+        // intersected with any host-imposed clip, so the frame itself confines this draw.
         drawable.draw(&mut context);
         context.pop_offset();
         self_drew = true;
@@ -1461,17 +1488,20 @@ pub(crate) fn paint_widget_direct(
         }
         children.clear();
         children.extend_from_slice(widget.base().children());
-        child_clip = intersect_clip(clip, widget.children_clip());
+        // A host-imposed clip (`paint_clip`) confines this node's own draw as well as its
+        // descendants; `children_clip` confines only the descendants.
+        let own_clip = intersect_clip(clip, widget.paint_clip());
+        child_clip = intersect_clip(own_clip, widget.children_clip());
         let Some(drawable) = widget.as_draw_mut() else {
             return;
         };
         let mut context = RenderContext::new(backend);
         context.push_offset(-origin.0, -origin.1);
-        if let Some(rect) = clip {
+        if let Some(rect) = own_clip {
             context.push_clip(rect.x, rect.y, rect.width, rect.height);
         }
         drawable.draw(&mut context);
-        if clip.is_some() {
+        if own_clip.is_some() {
             context.pop_clip();
         }
         context.pop_offset();

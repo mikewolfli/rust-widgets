@@ -212,6 +212,9 @@ SHAPE_ONLY = {
     # arc *is* the whole of these controls; asking for more would demand invented content.
     "action", "avatar", "command_link", "divider", "frame", "icon", "label",
     "line", "progress_circle", "window",
+    # An image view's content *is* one raster: the snapshot carries the decoded pixels as a
+    # single `<image>` element, so two elements (frame + raster) is the whole of the control.
+    "image_view",
     # An icon's extra appearance is still one icon.
     "icon_info",
     # Skeleton placeholders are one shape by definition; the extra appearances prove the

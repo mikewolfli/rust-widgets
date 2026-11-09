@@ -53,14 +53,8 @@
 use rust_widgets::core::{Color, ObjectId, Point, Rect, Size};
 use rust_widgets::render::{PaintBackend, RenderContext, SvgPaintBackend};
 use rust_widgets::theme::{theme_test_guard, AppearanceMode};
-use rust_widgets::widget::base_widgets::label::Label;
-use rust_widgets::widget::capability::coercion::widget_as_mut;
 use rust_widgets::widget::census::{install_preset_appearances, CENSUS_RECT, CENSUS_TEXT};
-use rust_widgets::widget::container_widgets::mdiarea::MdiArea;
-use rust_widgets::widget::container_widgets::scrollarea::ScrollArea;
-use rust_widgets::widget::container_widgets::splitter::Splitter;
-use rust_widgets::widget::container_widgets::stackedwidget::StackedWidget;
-use rust_widgets::widget::runtime::{register, unregister, with_widget_mut};
+use rust_widgets::widget::runtime::{unregister, with_widget_mut};
 use rust_widgets::widget::{draw_bridge::draw_of, Draw, Widget, WidgetFactory};
 use std::fs;
 use std::path::Path;
@@ -746,7 +740,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Composite containers paint their children through the tree painter, which a
             // single-control snapshot does not run. Mount the sample content so the picture shows
             // a populated split/page/area instead of bare chrome.
-            let preview_children = compose_container_preview(name, widget.as_mut());
+            let preview_children =
+                rust_widgets::widget::sample_fill::compose_container(name, widget.as_mut());
 
             write_one(
                 dir,
@@ -933,90 +928,6 @@ fn settle(widget: &mut dyn rust_widgets::widget::Widget) {
 /// So the exporter composes the picture the way a window does: mount real labels and hand them to
 /// the container's own model (`add_pane` / `add_widget` / `add_sub_window` / `set_widget`), which
 /// also places them. The returned ids are unmounted by the caller after the file is written.
-fn compose_container_preview(name: &str, widget: &mut dyn Widget) -> Vec<ObjectId> {
-    let mut mounted: Vec<ObjectId> = Vec::new();
-    match name {
-        "splitter" => {
-            let Some(splitter) = widget_as_mut::<Splitter>(widget) else {
-                return mounted;
-            };
-            // The sample fill already put two *model* panes in place (ids with no widget behind
-            // them), so the real children replace those slots rather than adding two more.
-            let panes = [
-                (Rect::new(0, 0, 100, 80), "Left pane"),
-                (Rect::new(100, 0, 140, 80), "Right pane"),
-            ];
-            for (index, (rect, text)) in panes.into_iter().enumerate() {
-                let Some(id) = mount_preview_label(rect, text) else {
-                    continue;
-                };
-                mounted.push(id);
-                if index < splitter.pane_count() {
-                    splitter.replace_widget(index, id);
-                } else {
-                    splitter.add_pane(id, 1);
-                }
-            }
-        }
-        "scroll_area" => {
-            let Some(area) = widget_as_mut::<ScrollArea>(widget) else {
-                return mounted;
-            };
-            if let Some(id) = mount_preview_label(Rect::new(0, 0, 160, 24), "Scrollable content") {
-                mounted.push(id);
-                area.set_widget(Some(id));
-            }
-        }
-        "stacked_widget" => {
-            let Some(stack) = widget_as_mut::<StackedWidget>(widget) else {
-                return mounted;
-            };
-            // The sample fill's two pages are model entries; replace them with mounted labels so
-            // the current page is painted. Removing first keeps `count` equal to the tree.
-            while stack.count() > 0 {
-                stack.remove_widget_at(0);
-            }
-            for text in ["Page one", "Page two"] {
-                if let Some(id) = mount_preview_label(Rect::new(0, 0, 200, 80), text) {
-                    mounted.push(id);
-                    stack.add_widget(id);
-                }
-            }
-            stack.set_current_index(0);
-        }
-        "mdi_area" => {
-            let Some(area) = widget_as_mut::<MdiArea>(widget) else {
-                return mounted;
-            };
-            // Same replacement: the sample fill's sub-windows are model entries.
-            area.close_all_sub_windows();
-            let windows = [
-                (Rect::new(16, 16, 160, 56), "Document 1"),
-                (Rect::new(48, 48, 160, 56), "Document 2"),
-            ];
-            for (rect, title) in windows {
-                let Some(id) = mount_preview_label(rect, title) else {
-                    continue;
-                };
-                mounted.push(id);
-                let index = area.add_sub_window(id, rect);
-                if let Some(subwindow) = area.sub_window_mut(index) {
-                    subwindow.set_title(rust_widgets::compat::String::from(title));
-                }
-            }
-        }
-        _ => {}
-    }
-    mounted
-}
-
-/// Mounts one themed sample label for [`compose_container_preview`].
-fn mount_preview_label(rect: Rect, text: &str) -> Option<ObjectId> {
-    let mut label = Label::new(rust_widgets::compat::String::from(text), rect);
-    rust_widgets::theme::apply_theme_to_widget(&mut label);
-    register(Box::new(label))
-}
-
 /// Draws a widget **and its mounted descendants** into one SVG document.
 ///
 /// The runtime paints a frame by drawing the root and then every tree child (a child is a widget

@@ -40,6 +40,51 @@ ships the DSH skill plugin, which touches no crate code.
 
 ### Fixed
 
+- **A short file dialog shows its listing.** `list_rect` reserved the selected-file strip's band
+  unconditionally, but the draw drops that strip when it does not fit. At the census rectangle
+  (240 × 120) the reservation left the list one pixel short of a single row, so a dialog with
+  entries painted an empty field *and* no strip — both halves lost to the same band. The list now
+  takes the whole band when the strip would not fit, which is the decision the draw already makes.
+- **`SignaturePad` can be seeded with ink.** `set_strokes` replaces the committed strokes with the
+  effects a gesture has (limit re-applied, ink cache dropped, `changed` emitted, repaint), so a host
+  restoring a saved signature and a gallery that wants to show the stroke rendering can both reach
+  the state the pointer is otherwise the only way to produce.
+- **A container's sample content is one implementation.** The mounted-child composition for
+  `scroll_area`, `stacked_widget`, `splitter` and `mdi_area` lived in the snapshot exporter, so the
+  snapshots had content and every other consumer still showed an empty box. It is now
+  `sample_fill::compose_container`, with the child geometry translated by the container's origin,
+  and the exporter calls it.
+- **A canvas mounted away from the window origin painted nothing.** `Canvas` replays its stored
+  commands through `RenderContext::execute_command_ref`, which is the raw dispatch path and does not
+  add the painter's translation, while the control's own layer clip *is* translated. Every mark of a
+  canvas whose rectangle did not start at `(0, 0)` therefore landed outside the off-screen surface
+  it was drawn into, leaving only its background. The replay transform now carries the context
+  offset, culling still happens in the command's logical space, and `hit_test` maps the window-space
+  pointer into that same space. A regression probe mounts the control at `(14, 428)` and asks for
+  the pixel its first fill must occupy.
+- **An adopted surface is clipped to the rectangle the host mounted it at.** A platform surface is
+  rasterised into a buffer of its own rectangle, so nothing a control paints can escape it; a widget
+  adopted into the window tree when the backend cannot host a surface had no such bound, and an open
+  popup (a cascader's overlay, a drop-down list) painted over the card beside it. The runtime now
+  records the mount rectangle as `Widget::paint_clip`, all three paint walks confine the node's own
+  draw and its subtree to it, and the hit test refuses a point outside it — an invisible popup no
+  longer swallows presses on its neighbours.
+- **A `TabWidget` in document mode fills its current tab.** The accent rule alone left the selected
+  page indistinguishable from its neighbours at small tab sizes. The current tab now carries the
+  accent as a background (with an accent outline), and its label ink is resolved against that fill,
+  so the selected state survives both appearances.
+
+- **A browser build has a clock.** `crate::compat::Instant` re-exported `std::time::Instant`, whose
+  `now()` aborts on `wasm32-unknown-unknown` with "time not implemented on this platform"; `App::init`
+  (lifecycle `started_at`) and every `drive_frame` read it, so a browser application panicked before
+  its first frame. The compat clock now reads the browser's monotonic `performance.now()` on that
+  target, through the same wrapper `mini` already used, and `checked_add` is part of that surface.
+- **A widget mounted on a surface is adopted by backends that keep their own widget table.** WASM,
+  Android, iOS and Harmony paint the window tree and cannot host a library-owned widget on a platform
+  surface; `mount_surface` treated that refusal as fatal, so `WindowHandle::mount_surface` and
+  `create_widget_of_kind` dropped the control. The widget is now adopted as a child of the parent
+  instead, which is the same path `new_*` takes, and the surface link is cleared so the frame does not
+  composite it twice.
 - **A window drag or a live resize no longer stops the frame.** Both macOS backends drove frames
   only from their own loop, and Win32 queued its `Resized` trigger only to drain it from
   `Platform::run` — but a drag runs an OS **modal** loop of its own (AppKit pumps in

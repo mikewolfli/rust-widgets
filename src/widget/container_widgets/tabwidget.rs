@@ -2525,6 +2525,13 @@ impl Draw for TabWidget {
         // The accent that marks the current tab in document mode comes from the theme's own accent
         // token rather than a literal, so it follows an appearance switch.
         let accent = theme.accent().unwrap_or(Color::PRIMARY);
+        // In document mode the current tab is **filled** with the accent, the way a selected
+        // button carries its selected state in its background. The rule along the strip's inner
+        // edge stays as the crisp marker; on its own it left the tab's body indistinguishable from
+        // its neighbours, which is what "which page am I on" failed to answer. The fill is the
+        // accent stepped 30% toward the strip so it sits on the band instead of floating over it;
+        // the label ink is resolved against this fill below, so neither appearance loses contrast.
+        let current_tab_fill = accent.blend(&strip_background, 0.30);
 
         // Document mode fills the strip with the control's surface, so the row reads as one band
         // instead of a set of raised tabs. The other modes leave the strip as it was — the window's
@@ -2623,7 +2630,7 @@ impl Draw for TabWidget {
                     disabled_tab
                 } else if is_current {
                     if document_mode {
-                        strip_background
+                        current_tab_fill
                     } else {
                         content_background
                     }
@@ -2638,18 +2645,23 @@ impl Draw for TabWidget {
                 } else {
                     inactive_tab
                 };
+                // A current tab shares its edge with the content area, so its outline uses the
+                // surface border; a plain tab is outlined more faintly. In document mode the
+                // outline takes the accent as well, so the filled tab reads as one selected pill
+                // rather than as a tint with an unrelated edge.
+                let border_color = if !is_enabled {
+                    border
+                } else if is_current && document_mode {
+                    accent
+                } else if is_current {
+                    border
+                } else {
+                    border.blend(&content_background, 0.5)
+                };
                 match self.tab_shape {
                     TabShape::Rounded => {
                         let radius = 4;
                         context.fill_rounded_rect(tab_rect, radius, bg_color);
-                        // A current tab shares its edge with the content area, so its
-                        // outline uses the surface border; a plain tab is outlined more
-                        // faintly.
-                        let border_color = if !is_enabled || is_current {
-                            border
-                        } else {
-                            border.blend(&content_background, 0.5)
-                        };
                         context.draw_rounded_rect_stroke(tab_rect, radius, border_color, 1);
                     }
                     TabShape::Triangular => {
@@ -2663,26 +2675,16 @@ impl Draw for TabWidget {
                             Point::new(tab_rect.x + tab_rect.width as i32, base_y),
                         ];
                         context.draw_path(&points, true, bg_color, true, 0);
-                        let border_color = if !is_enabled || is_current {
-                            border
-                        } else {
-                            border.blend(&content_background, 0.5)
-                        };
                         context.draw_path(&points, true, border_color, false, 1);
                     }
                     _ => {
                         context.fill_rect(tab_rect, bg_color);
-                        let border_color = if !is_enabled || is_current {
-                            border
-                        } else {
-                            border.blend(&content_background, 0.5)
-                        };
                         context.draw_rect(tab_rect, border_color);
                     }
                 };
-                // Document mode marks the current tab with an accent rule along the strip's inner
-                // edge: the tab is not filled with the page colour, so something has to say which
-                // one is current.
+                // Document mode also marks the current tab with an accent rule along the strip's
+                // inner edge: the fill above says which tab is selected, and the rule adds the
+                // crisp edge that a page strip is read by.
                 if document_mode && is_current && is_enabled {
                     context.fill_rect(self.document_rule_rect(tab_rect), accent);
                 }
@@ -2693,7 +2695,18 @@ impl Draw for TabWidget {
                 // tab's centre and ran off its right edge, with its top edge on the tab's
                 // vertical midpoint. `draw_text_fitted` with `Center` states the intent and
                 // elides a title that cannot fit, instead of letting it leave the control.
-                let text_color = if !is_enabled { disabled_text } else { text_color };
+                //
+                // The label ink follows the **fill** it sits on: the ordinary ink if it is legible
+                // there, otherwise a step toward the fill's contrast colour. A document-mode tab
+                // is filled with the accent, whose lightness differs between appearances, so a
+                // fixed ink would be unreadable on one of them.
+                let text_color = if !is_enabled {
+                    disabled_text
+                } else if document_mode && is_current {
+                    text_color.legible_on(bg_color, 4.5)
+                } else {
+                    text_color
+                };
                 let font = effective_font(style);
                 let tab_line = context.text_line(tab_rect, font);
                 // ── Caption ──
@@ -2803,17 +2816,25 @@ impl Draw for TabWidget {
                 // derived here from `tab_line.y` while the hit test used `tab_rect.y` — the two
                 // ruled the same row and disagreed by half a line.
                 if let Some(close_rect) = self.close_button_rect(i, tab_rect, font) {
+                    // The close glyph is secondary chrome over the tab's own fill, so it is stepped
+                    // from the label ink of that fill rather than from the page ink — on a filled
+                    // current tab the page ink can be the fill's own tone.
+                    let close_ink = if document_mode && is_current && is_enabled {
+                        text_color.blend(&bg_color, 0.25)
+                    } else {
+                        close_color
+                    };
                     let close_x = close_rect.x;
                     let close_y = close_rect.y;
                     context.draw_line(
                         Point::new(close_x, close_y),
                         Point::new(close_x + CLOSE_SIZE, close_y + CLOSE_SIZE),
-                        close_color,
+                        close_ink,
                     );
                     context.draw_line(
                         Point::new(close_x + CLOSE_SIZE, close_y),
                         Point::new(close_x, close_y + CLOSE_SIZE),
-                        close_color,
+                        close_ink,
                     );
                 }
             }

@@ -326,6 +326,27 @@ impl SignaturePad {
         &self.strokes
     }
 
+    /// Replaces every committed stroke with `strokes`.
+    ///
+    /// # Why this exists
+    ///
+    /// The pad could only gain ink through the pointer: `push` records a point, and the gesture
+    /// commits it. A host restoring a saved signature, or a gallery that wants to *show* the
+    /// control's stroke rendering rather than an empty sheet, had no entry point at all — the
+    /// `strokes` field is private and the only public mutators were `undo`/`redo`. This is the
+    /// restore half, with the same effects a committed gesture has: the ink cache is dropped, the
+    /// limit is re-applied, `changed` is emitted, and the pad repaints. The redo branch is
+    /// discarded, exactly as a new stroke discards it.
+    pub fn set_strokes(&mut self, strokes: Vec<SignatureStroke>) {
+        self.strokes = strokes;
+        self.redo_stack.clear();
+        self.current = None;
+        self.trim_stroke_history();
+        self.invalidate_ink_cache();
+        self.changed.emit();
+        self.base.request_redraw();
+    }
+
     /// Returns the total number of committed strokes.
     pub fn stroke_count(&self) -> usize {
         self.strokes.len()
@@ -1327,6 +1348,36 @@ mod tests {
 
     fn pad() -> SignaturePad {
         SignaturePad::new(Rect::new(0, 0, 320, 160))
+    }
+
+    /// `set_strokes` is the restore half of a gesture: it replaces the ink, clamps it to the
+    /// stroke limit, drops the (now stale) render cache and announces the change.
+    #[test]
+    fn set_strokes_restores_ink_and_respects_the_limit() {
+        let mut p = pad();
+        let changes = Arc::new(AtomicUsize::new(0));
+        {
+            let changes = Arc::clone(&changes);
+            p.changed.connect(move || {
+                changes.fetch_add(1, Ordering::SeqCst);
+            });
+        }
+        let stroke = |y: i32| {
+            SignatureStroke::from_points(vec![
+                Point::new(10, y),
+                Point::new(40, y + 20),
+                Point::new(80, y),
+            ])
+        };
+
+        p.set_strokes(vec![stroke(10), stroke(30)]);
+        assert_eq!(p.stroke_count(), 2, "every restored stroke is committed ink");
+        assert_eq!(changes.load(Ordering::SeqCst), 1, "the pad announces the restore");
+
+        p.set_stroke_limit(1);
+        p.set_strokes(vec![stroke(10), stroke(30), stroke(50)]);
+        assert_eq!(p.stroke_count(), 1, "the limit evicts the oldest restored strokes");
+        assert_eq!(p.strokes()[0].points()[0], Point::new(10, 50), "the newest one survives");
     }
 
     #[test]

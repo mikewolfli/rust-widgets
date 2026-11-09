@@ -946,6 +946,9 @@ web-sys = { version = "0.3", features = [
     "ResizeObserverEntry",
     "ResizeObserverSize",
     "DomRectReadOnly",
+    # The browser's monotonic clock (`performance.now()`), which `compat::Instant`
+    # reads on a browser target: `std`'s clock is unimplemented there.
+    "Performance",
 ], optional = true }
 
 jni = { version = "0.21", features = ["invocation"], optional = true }

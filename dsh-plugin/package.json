@@ -9,13 +9,13 @@
   "exports": {
     ".": "./lib/index.js",
     "./package.json": "./package.json",
-    "./cordis.patch.yml": "./cordis.patch.yml"
+    "./cordis.bundle.yml": "./cordis.bundle.yml"
   },
   "files": [
     "assets",
     "icon.svg",
     "lib",
-    "cordis.patch.yml",
+    "cordis.bundle.yml",
     "README.md",
     "LICENSE"
   ],
@@ -44,7 +44,7 @@
   "dsh": {
     "manifestVersion": 1,
     "bundle": {
-      "patch": "./cordis.patch.yml"
+      "patch": "./cordis.bundle.yml"
     }
   },
   "scripts": {

@@ -62,6 +62,7 @@ coverage/
 demo/control/target
 demo/code_editor/target
 demo/finance/target
+demo/wasm_gallery/target
 
 # Test outputs
 **/test_output/

@@ -2,12 +2,12 @@
 # ============================================================================
 # check_demo_crates.sh — the demo crates must compile
 # ============================================================================
-# `demo/control`, `demo/finance` and `demo/code_editor` are separate crates that
-# depend on this library by path. No root-workspace target compiles them, so a
-# library change that breaks a demo is invisible to `cargo test` at the root:
-# two of the three were found broken (missing `Layout::arrange*` /
-# `Layout::update_with_context` implementations, which the trait requires with
-# no default) only when they were built by hand.
+# `demo/control`, `demo/finance`, `demo/code_editor` and `demo/wasm_gallery` are
+# separate crates that depend on this library by path. No root-workspace target
+# compiles them, so a library change that breaks a demo is invisible to
+# `cargo test` at the root: two of the three were found broken (missing
+# `Layout::arrange*` / `Layout::update_with_context` implementations, which the
+# trait requires with no default) only when they were built by hand.
 #
 # `--all-targets` is deliberate: each demo carries its own unit tests, and those
 # are part of the same contract.
@@ -27,7 +27,7 @@ DEMO_BUDGET="${RW_GATE_TIMEOUT:-900}"
 PASS=0
 FAIL=0
 
-for crate in demo/control demo/finance demo/code_editor; do
+for crate in demo/control demo/finance demo/code_editor demo/wasm_gallery; do
     echo "═══ DEMO CRATE: $crate ═══"
     if [[ ! -f "$crate/Cargo.toml" ]]; then
         echo "  ❌ $crate has no Cargo.toml"
