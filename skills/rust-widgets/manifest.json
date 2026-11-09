@@ -1,0 +1,78 @@
+{
+  "schema": "dsh-skill-filesystem/1",
+  "consumedByDsh": false,
+  "note": "dsh does not read manifest.json. This file mirrors the discovery contract; the loadable interface is .dsh/skills/rust-widgets-maintainer/SKILL.md.",
+  "skill": {
+    "name": "rust-widgets-maintainer",
+    "path": "../../.dsh/skills/rust-widgets-maintainer/SKILL.md",
+    "format": "markdown+yaml-frontmatter",
+    "source": "project-dsh",
+    "rank": 100
+  },
+  "discovery": {
+    "projectRoot": "nearest ancestor containing .git, else cwd",
+    "roots": [
+      { "rank": 100, "source": "project-dsh", "path": "<projectRoot>/.dsh/skills" },
+      { "rank": 200, "source": "project-agents", "path": "<projectRoot>/.agents/skills" },
+      { "rank": 300, "source": "custom", "path": "<Config.customSkillDirs>" },
+      { "rank": 400, "source": "user-dsh", "path": "<dshHome>/skills" },
+      { "rank": 500, "source": "user-agents", "path": "<agentsHome>/skills" },
+      { "rank": 600, "source": "bundled", "path": "<Config.bundledSkillDir>" }
+    ],
+    "bundle": "<name>/SKILL.md",
+    "flat": "<name>.md",
+    "nestedRecursive": false,
+    "namePattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+  },
+  "frontmatter": {
+    "required": ["name", "description"],
+    "optional": [
+      "whenToUse",
+      "disable-model-invocation",
+      "user-invocable",
+      "metadata"
+    ],
+    "rejectedLegacy": [
+      "disableModelInvocation",
+      "modelInvocable",
+      "userInvocable"
+    ]
+  },
+  "invocation": {
+    "modelInvocable": true,
+    "userInvocable": true
+  },
+  "capabilities": [
+    "add-widget",
+    "audit-widget-completeness",
+    "extend-code-editor-language",
+    "platform-backend-work",
+    "json-layout-loading",
+    "capability-metadata",
+    "run-validation-gates",
+    "benchmark"
+  ],
+  "codeEditorLanguages": [
+    "Rust",
+    "Python",
+    "JavaScript",
+    "Go",
+    "Zig",
+    "C",
+    "Java",
+    "C#",
+    "C++",
+    "Kotlin",
+    "Swift",
+    "HTML",
+    "XML",
+    "JSON",
+    "CSS",
+    "YAML",
+    "TOML",
+    "Shell",
+    "SQL",
+    "Markdown",
+    "Plain Text"
+  ]
+}
